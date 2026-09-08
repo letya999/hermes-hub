@@ -1,0 +1,13 @@
+/spaces/
+/reports/
+/.coverage
+/dist/
+/bin/
+coverage.out
+**/node_modules/
+**/__pycache__/
+**/.ruff_cache/
+.env
+secrets.env
+*.log
+.DS_Store

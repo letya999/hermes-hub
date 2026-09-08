@@ -1,0 +1,15 @@
+description: Bootstrap delivery verification.
+last_updated: '2026-09-07T00:00:00+00:00'
+done:
+  - Inspected pinned upstream contracts.
+  - Implemented CLI, MCP tools, native bridge and runtime wiring.
+current:
+  - Local gates and release verification.
+next:
+  - Package and record evidence.
+evidence: []
+review:
+  open:
+    - Docker daemon unavailable in build workspace; CI must exercise runtime.
+    - Account-dependent integrations require owner bootstrap.
+  resolved: []

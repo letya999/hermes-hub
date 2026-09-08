@@ -1,0 +1,9 @@
+**
+!go.mod
+!go.sum
+!cmd/**
+!internal/**
+!docker/**
+**/node_modules
+**/__pycache__
+**/.ruff_cache

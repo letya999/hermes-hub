@@ -1,0 +1,21 @@
+description: Bootstrap delivery evidence.
+last_updated: '2026-09-07T00:00:00+00:00'
+done:
+  - Inspected pinned upstream contracts and Memory Bank templates.
+  - Implemented CLI, MCP tools, native bridge, career integration and Docker wiring.
+  - Passed just check and just security.
+  - Validated all-feature Docker Compose configuration with Compose 2.40.3.
+  - Installed pinned upstream environments under Python 3.13.
+  - Verified Hermes MCP 2 client against the real Go stdio server.
+current: []
+next: []
+evidence:
+  - docs/validation.md
+review:
+  open:
+    - Docker Engine unavailable; run container CI before deployment.
+    - Live accounts and native OS permissions require owner bootstrap.
+  resolved:
+    - Separate incompatible MCP Python environments.
+    - Bind Google callback inside container while publishing only host loopback.
+    - Prepare shared file ownership with explicit CHOWN/DAC_OVERRIDE/FOWNER capabilities.

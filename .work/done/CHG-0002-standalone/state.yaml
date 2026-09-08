@@ -1,0 +1,21 @@
+description: Standalone correction complete; deployment acceptance remains external.
+last_updated: '2026-09-08T00:00:00+00:00'
+done:
+  - Removed embedded business services and JobFetch adapter.
+  - Implemented spaces/user, Docker dev/prod targets and independent env/volumes.
+  - Exposed generic MCP and native skills, hooks, memory and session search.
+  - Applied AGPL-3.0-only and prepared Actions/trusted Runner.
+  - Passed Jest CI; Go 90.88%, Python runtime 96.43%, JS helper 100%.
+  - Passed Go/npm security checks and standalone Compose dev/prod parsing.
+current: []
+next: []
+evidence:
+  - docs/validation.md
+review:
+  open:
+    - Docker Engine unavailable here; run image/runtime acceptance on Docker host.
+    - Live account and native OS checks require owner authentication.
+  resolved:
+    - User namespace remains spaces/user; no spaces/user/dev hierarchy.
+    - Dev source mounts exclude private spaces and production secrets.
+    - Custom self-hosted runner labels configured for actionlint.

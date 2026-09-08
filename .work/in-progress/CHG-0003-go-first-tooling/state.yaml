@@ -1,0 +1,18 @@
+description: Replace Jest and Python development wrappers with Go-first Just tooling.
+last_updated: '2026-09-08T00:00:00+03:00'
+done:
+  - Inventoried CI, runtime and release tooling.
+  - Replaced project-owned Python runtime supervision and tests with Go.
+  - Removed root Jest/npm and Python development tooling; retained pinned Playwright npm runtime package.
+  - Added cross-platform Go packaging and Windows-safe Just recipes.
+  - Passed just check at 85.12% Go coverage, just security, just build and Linux cross-build.
+current:
+  - Docker smoke validation remains external.
+next:
+  - Re-run just docker-check prod and dev when GHCR download is responsive.
+evidence:
+  - docs/validation.md
+review:
+  open:
+    - Docker Engine 29.4.3 was available, but the pinned GHCR base pull stalled before either smoke test completed.
+  resolved: []
