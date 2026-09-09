@@ -1,15 +1,16 @@
 description: Bootstrap delivery verification.
-last_updated: '2026-09-07T00:00:00+00:00'
+last_updated: '2026-09-09T00:00:00+03:00'
 done:
   - Inspected pinned upstream contracts.
   - Implemented CLI, MCP tools, native bridge and runtime wiring.
+  - Passed local Go, security and Docker gates; verified the configured provider route live.
 current:
-  - Local gates and release verification.
+  - Local runtime is healthy; remaining provider integrations are opt-in.
 next:
-  - Package and record evidence.
-evidence: []
+  - Package and record evidence for any release.
+evidence:
+  - docs/validation.md
 review:
   open:
-    - Docker daemon unavailable in build workspace; CI must exercise runtime.
-    - Account-dependent integrations require owner bootstrap.
+    - Other account-dependent integrations require owner bootstrap.
   resolved: []
