@@ -1,6 +1,7 @@
 /spaces/
 /reports/
 /.coverage
+/.local/
 /dist/
 /bin/
 coverage.out

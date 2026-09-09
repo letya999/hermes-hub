@@ -25,7 +25,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s ../
 WORKDIR /opt/hermes
 RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp --extra messaging --extra google --extra voice
 COPY docker/meet-requirements.txt /opt/hub/meet-requirements.txt
-RUN uv pip install --python /opt/hermes/.venv/bin/python --require-hashes -r /opt/hub/meet-requirements.txt && .venv/bin/python -m playwright install --with-deps chromium && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
+RUN uv pip install --python /opt/hermes/.venv/bin/python --no-config --no-deps --require-hashes -r /opt/hub/meet-requirements.txt && .venv/bin/python -m playwright install --with-deps chromium && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 WORKDIR /opt/telegram
 RUN git init && git remote add origin https://github.com/chigwell/telegram-mcp.git && git fetch --depth 1 origin c9460f8ded6e2457bd70ebabfad840b58d23645d && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev
 WORKDIR /opt/google
