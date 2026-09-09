@@ -1,6 +1,6 @@
 ---
 description: Measured 0.2.0 coverage and explicit runtime validation boundaries.
-last_verified: 2026-09-08
+last_verified: 2026-09-09
 ---
 # Delivery evidence — 0.2.0
 
@@ -10,7 +10,7 @@ formatting, vet, staticcheck, documentation and GitHub workflow lint.
 
 | Coverage scope | Measured | Required |
 |---|---|---|
-| All original Go statements, including runtime and packaging | 85.12% | >=85% |
+| All original Go statements, including runtime and packaging | 85.01% | >=85% |
 
 Upstream Hermes/connector source and test code do not inflate the coverage denominator.
 The Go coverage parser accepts valid zero-statement profile rows emitted on Windows.
@@ -25,12 +25,10 @@ Previously installed pinned Hermes/Google/Telegram virtualenvs and a real Hermes
 client verified basic compatibility with the Go stdio server. The 0.2.0 local suite
 verifies generic MCP configuration and the native bridge without real account credentials.
 
-`just build` and a Linux/amd64 cross-build passed. Docker Engine 29.4.3 was available,
-but the cold prod image build stalled while pulling the pinned uv base image from GHCR;
-it was interrupted after sustained zero network progress. Neither prod nor dev runtime
-smoke is therefore claimed as passed. Re-run `just docker-check prod` and then dev; the
-downloaded layers remain cached. Real Telegram/Google/HH/Slack/Meet/native
-OS access requires owner authentication, account permissions and live verification.
+`just build` and a Linux/amd64 cross-build passed. `just docker-check` passed with the
+pinned prod image and standalone runtime smoke. A separately authorized local
+CLIProxyAPI/Antigravity OAuth session was live-verified through Hermes with a marker
+response; this does not claim access to other account integrations or external sending.
 No application or message was sent and no private account was read during testing.
 
 No GitHub repository or release was published. Actions and a trusted self-hosted Runner
