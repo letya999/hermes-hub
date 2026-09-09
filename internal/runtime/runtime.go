@@ -152,6 +152,9 @@ func supervise(mode string) error {
 
 	browser := os.Getenv("HUB_BROWSER") == "true" || os.Getenv("HUB_MEET") == "true"
 	if browser {
+		if err := clearBrowserLocks(filepath.Join(state, "browser")); err != nil {
+			return err
+		}
 		if err := os.Setenv("DISPLAY", ":99"); err != nil {
 			return err
 		}
@@ -196,6 +199,25 @@ func supervise(mode string) error {
 			return fmt.Errorf("supervised process exited: %w", err)
 		}
 	}
+}
+
+func clearBrowserLocks(dir string) error {
+	for _, name := range []string{"SingletonCookie", "SingletonLock", "SingletonSocket"} {
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func waitForBrowser() error {

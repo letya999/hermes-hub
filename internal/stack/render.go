@@ -83,7 +83,7 @@ func Config(s Settings) M {
 	if s.Has("meet") {
 		toolsets = append(toolsets, "google_meet")
 	}
-	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
+	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
 }
 func Compose(s Settings, projectRoot, dir string) M {
 	volumes := []any{

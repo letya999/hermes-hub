@@ -24,6 +24,10 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 				t.Fatal(err)
 			}
 			c := Config(s)
+			model := c["model"].(M)
+			if model["api_key"] != "${OPENAI_API_KEY}" {
+				t.Fatal("model key is not environment-backed")
+			}
 			if !c["memory"].(M)["memory_enabled"].(bool) || len(c["mcp_servers"].(M)) != 4 {
 				t.Fatal(c)
 			}

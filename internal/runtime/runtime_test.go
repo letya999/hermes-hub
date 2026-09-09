@@ -217,3 +217,27 @@ func TestCopyIfExists(t *testing.T) {
 		t.Fatal("destination not updated")
 	}
 }
+
+func TestClearBrowserLocksRemovesOnlySymlinks(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"SingletonCookie", "SingletonLock", "SingletonSocket"} {
+		if err := os.Symlink("stale", filepath.Join(dir, name)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	regular := filepath.Join(dir, "SingletonRegular")
+	if err := os.WriteFile(regular, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearBrowserLocks(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"SingletonCookie", "SingletonLock", "SingletonSocket"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatal(name, err)
+		}
+	}
+	if body, err := os.ReadFile(regular); err != nil || string(body) != "keep" {
+		t.Fatal("regular lock changed", err)
+	}
+}
