@@ -17,6 +17,11 @@ x64, hermes-hub and only main. Register a dedicated runner through repository Se
 -> Actions -> Runners; install the same toolchain. Use a disposable runner for PR jobs;
 this workflow does not run untrusted pull requests on your personal VPS.
 
+Branch flow: `dev` is the default integration branch. Do not commit directly to `dev`;
+create a short-lived `codex/<name>` branch from `dev`, then open a PR back to `dev`.
+`main` is the protected release branch: changes reach it only through a PR whose source
+branch is `dev`. Keep both protected branches free of direct pushes.
+
 Go modifications belong in cmd/internal; runtime process changes in internal/runtime.
 Follow AGENTS.md and Memory Bank's rules/docs/ADR/spec/plans separation. Add behavior
 regressions and preserve existing user assets on rendering. Accepted ADRs are immutable;
