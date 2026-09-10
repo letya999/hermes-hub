@@ -120,8 +120,8 @@ func TestRenderAllFeatures(t *testing.T) {
 	if string(got) != "owner changes" {
 		t.Fatal("overwrote memory")
 	}
-	compose, _ := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if strings.Contains(string(compose), "127.0.0.1:") || strings.Contains(string(compose), "docker.sock") {
+	compose, _ := os.ReadFile(filepath.Join(d, "compose.prod.yaml"))
+	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") || strings.Contains(string(compose), "docker.sock") {
 		t.Fatal("network or mount boundary")
 	}
 }
@@ -216,7 +216,7 @@ func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 func TestSelfEnvKeysIncludeCatalogConnectors(t *testing.T) {
 	s := Settings{Features: []string{"telegram", "gitlab", "atlassian"}, MCP: map[string]MCPServer{"custom": {URL: "https://example.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${CUSTOM_TOKEN}"}}}}
 	keys := strings.Join(selfEnvKeys(s), ",")
-	if !strings.Contains(keys, "OPENAI_API_KEY") || !strings.Contains(keys, "FIRECRAWL_API_KEY") || !strings.Contains(keys, "TELEGRAM_BOT_TOKEN") || !strings.Contains(keys, "GITLAB_TOKEN") || !strings.Contains(keys, "JIRA_URL") || !strings.Contains(keys, "JIRA_USERNAME") || !strings.Contains(keys, "JIRA_API_TOKEN") || !strings.Contains(keys, "CUSTOM_TOKEN") || !strings.Contains(keys, "TELEGRAM_API_ID") {
+	if !strings.Contains(keys, "OPENAI_API_KEY") || !strings.Contains(keys, "FIRECRAWL_API_KEY") || strings.Contains(keys, "TELEGRAM_BOT_TOKEN") || !strings.Contains(keys, "GITLAB_TOKEN") || !strings.Contains(keys, "JIRA_URL") || !strings.Contains(keys, "JIRA_USERNAME") || !strings.Contains(keys, "JIRA_API_TOKEN") || !strings.Contains(keys, "CUSTOM_TOKEN") || !strings.Contains(keys, "TELEGRAM_API_ID") {
 		t.Fatalf("unexpected self-env keys: %s", keys)
 	}
 }

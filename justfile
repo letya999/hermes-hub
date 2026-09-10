@@ -30,7 +30,7 @@ security:
 build:
     go build -buildvcs=false -trimpath -o bin/hubctl ./cmd/hubctl
     go build -buildvcs=false -trimpath -o bin/hub-runtime ./cmd/runtime
-    go build -buildvcs=false -trimpath -o bin/communication-hub ./cmd/communication-hub
+    go build -buildvcs=false -trimpath -o bin/communication-hub ./cmd/communication
 
 release version:
     go run ./cmd/package {{version}}

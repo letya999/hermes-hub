@@ -143,7 +143,7 @@ func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 	foundOrg := false
 	for _, raw := range volumes {
 		volume := raw.(M)
-		if volume["target"] == "/scope/org" {
+		if volume["target"] == "/org" {
 			foundOrg = volume["read_only"] == true
 		}
 	}

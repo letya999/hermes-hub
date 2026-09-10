@@ -1,6 +1,6 @@
 ---
 description: Measured CHG-0009 validation evidence and unverified boundaries.
-last_verified: 2026-09-10
+last_verified: 2026-09-11
 ---
 # Delivery evidence — CHG-0009
 
@@ -11,7 +11,7 @@ symlink/unrelated-data/active-runtime refusal, and existing MCP/self-service beh
 
 | Coverage scope | Measured | Required |
 |---|---|---|
-| All original Go statements, including runtime and packaging | 85.20% | >=85% |
+| All original Go statements, including runtime and packaging | 85.01% | >=85% |
 
 Upstream Hermes/connector source and test code do not inflate the coverage denominator.
 The Go coverage parser accepts valid zero-statement profile rows emitted on Windows.
@@ -30,9 +30,10 @@ polling, message deletion or model/provider integration is claimed by these test
 
 `just security` passed: Go vulnerability check and browser npm audit reported no
 known vulnerabilities. This does not scan every upstream Python or OS dependency.
-Both all-feature dev/prod Compose configurations were parsed using Compose 2.40.3:
-only agent is started, runtime volumes differ, dev source mounts exclude spaces/root
-and prod has no source mounts. Hosted Actions pins resolve to official upstream refs.
+Both dev/prod images passed the standalone Docker smoke. Rendered Compose separates
+`communication-hub` from `hermes-runtime`; the gateway receives no user-space mounts or
+provider credentials, while dev source mounts exclude spaces and prod has no source mounts.
+Hosted Actions pins resolve to official upstream refs.
 
 Previously installed pinned Hermes/Google/Telegram virtualenvs and a real Hermes MCP 2
 client verified basic compatibility with the Go stdio server. The 0.2.0 local suite
@@ -45,8 +46,8 @@ Atlassian or GitLab account access; Google OAuth consent, Jira API-token validit
 GitLab PAT and a read operation require deployment acceptance, while any mutation
 requires a separate explicit owner instruction.
 
-`just build` and a Linux/amd64 cross-build passed. `just docker-check` passed with the
-pinned prod image and standalone runtime smoke. A separately authorized local
+`just build` and a Linux/amd64 cross-build passed. `just docker-check prod` and
+`just docker-check dev` passed with standalone runtime smoke. A separately authorized local
 CLIProxyAPI/Antigravity OAuth session was live-verified through Hermes with a marker
 response; this does not claim access to other account integrations or external sending.
 No application or message was sent and no private account was read during testing.

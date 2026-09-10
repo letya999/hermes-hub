@@ -9,12 +9,12 @@ import (
 
 func TestUpdateLoadsOnlyAllowedUserKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
-	keys, err := Update(path, "GITHUB_TOKEN=test-github-token", "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN")
+	keys, err := Update(path, "GITHUB_TOKEN=value=with-equals\n# comment\n", "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN")
 	if err != nil || len(keys) != 1 || keys[0] != "GITHUB_TOKEN" {
 		t.Fatal(keys, err)
 	}
 	values, err := Load(path, "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN")
-	if err != nil || values["GITHUB_TOKEN"] != "test-github-token" {
+	if err != nil || values["GITHUB_TOKEN"] != "value=with-equals" {
 		t.Fatal(values, err)
 	}
 	if strings.Contains(string(mustRead(t, path)), "SLACK") {
@@ -83,7 +83,7 @@ func TestLoadRejectsSymlink(t *testing.T) {
 
 func TestEnvstoreRejectsMalformedPoliciesAndFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
-	for _, raw := range []string{"BAD KEY=blocked", "TOKEN-foo=blocked", ""} {
+	for _, raw := range []string{"BAD KEY=blocked", "TOKEN=first\nTOKEN=second", ""} {
 		if _, err := Parse(raw); raw != "" && err == nil {
 			t.Fatalf("accepted %q", raw)
 		}

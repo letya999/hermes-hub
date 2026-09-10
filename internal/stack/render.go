@@ -31,9 +31,6 @@ func remote(url, key string) M {
 	}
 	return m
 }
-func basicRemote(url, key string) M {
-	return M{"url": url, "timeout": 90, "skip_preflight": true, "headers": M{"Authorization": "Basic ${" + key + "}"}}
-}
 func Config(s Settings) M {
 	organizationSkills := s.OrganizationSkillsDir
 	if organizationSkills == "" && s.OrganizationDir != "" {
@@ -138,9 +135,9 @@ func Compose(s Settings, projectRoot, dir string) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+s.Environment+".yaml")), "target": "/config/config.yaml", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
 	}
-	host := s.GitLabHost
-	if host == "" {
-		host = "gitlab.com"
+	ports := []string{}
+	if s.Has("browser") || s.Has("meet") {
+		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort))
 	}
 	// Keep the loopback OAuth callback available for a connector enabled from chat.
 	ports = append(ports, fmt.Sprintf("127.0.0.1:%d:8000", s.OAuthPort))

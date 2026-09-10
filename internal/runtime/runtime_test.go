@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -130,99 +129,6 @@ func TestRunRejectsInvalidGID(t *testing.T) {
 		t.Fatal("invalid gid accepted")
 	}
 }
-
-func TestRuntimeHermesRunnerBoundSuccessAndHelpers(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(root, "helper.go")
-	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main(){fmt.Print(\"reply\")}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(root, "helper")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	if output, err := exec.Command("go", "build", "-o", bin, source).CombinedOutput(); err != nil {
-		t.Skipf("cannot build helper: %v (%s)", err, output)
-	}
-	home := filepath.Join(root, "alice")
-	if err := os.MkdirAll(filepath.Join(home, "generated"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	config := filepath.Join(home, "generated", "hermes.yaml")
-	if err := os.WriteFile(config, []byte("model: test\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HUB_RUNTIME_CONFIG", config)
-	result, err := (HermesRunner{Command: bin, Binding: Binding{UserID: "alice", OrganizationID: "personal", UserHome: home, Env: map[string]string{"OPENAI_API_KEY": "private"}}}).Run(context.Background(), Job{ID: "job", UserID: "alice", ActorID: "alice", OrganizationID: "personal", ScopeID: "user:alice", IdempotencyKey: "idem", Text: "hello"})
-	if err != nil || result != "reply" {
-		t.Fatal(result, err)
-	}
-	if _, err := os.Stat(filepath.Join(home, "hermes", "config.yaml")); err != nil {
-		t.Fatal(err)
-	}
-	if got := parseList("one, two,,one"); len(got) != 2 || !got["one"] || !got["two"] {
-		t.Fatal(got)
-	}
-	if len(currentEnv()) == 0 || len(ProcessEnv(map[string]string{"OPENAI_API_KEY": "x", "TELEGRAM_BOT_TOKEN": "no"})) == 0 {
-		t.Fatal("runtime environment helpers returned no safe environment")
-	}
-}
-
-type blockingExecutor struct{ started chan struct{} }
-
-func (e blockingExecutor) Run(ctx context.Context, _ Job) (string, error) {
-	close(e.started)
-	<-ctx.Done()
-	return "", ErrUncertain
-}
-
-func TestRuntimeCancellationAndFailedReplay(t *testing.T) {
-	failing := NewServer(Binding{UserID: "alice", OrganizationID: "personal"}, "secret", ExecutorFunc(func(context.Context, Job) (string, error) { return "", errors.New("failed") }))
-	failingHTTP := httptest.NewServer(failing.Handler())
-	defer failingHTTP.Close()
-	client := NewHTTPClient(failingHTTP.URL, "secret")
-	job := Job{ID: "failed", UserID: "alice", ActorID: "alice", OrganizationID: "personal", ScopeID: "user:alice", IdempotencyKey: "failed-idem", Text: "hello"}
-	if _, err := client.Run(context.Background(), job); err == nil {
-		t.Fatal("failed execution accepted")
-	}
-	if _, err := client.Run(context.Background(), job); err == nil {
-		t.Fatal("failed replay accepted")
-	}
-	blocking := NewServer(Binding{UserID: "alice", OrganizationID: "personal"}, "secret", blockingExecutor{started: make(chan struct{})})
-	httpServer := httptest.NewServer(blocking.Handler())
-	defer httpServer.Close()
-	client = NewHTTPClient(httpServer.URL, "secret")
-	job.ID, job.IdempotencyKey = "cancel", "cancel-idem"
-	done := make(chan error, 1)
-	go func() { _, err := client.Run(context.Background(), job); done <- err }()
-	select {
-	case <-blocking.Exec.(blockingExecutor).started:
-	case <-time.After(time.Second):
-		t.Fatal("runtime did not start")
-	}
-	request, err := http.NewRequest(http.MethodDelete, httpServer.URL+"/v1/jobs/cancel", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer secret")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil || response.StatusCode != http.StatusAccepted {
-		t.Fatal(response, err)
-	}
-	_ = response.Body.Close()
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrUncertain) {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("runtime cancellation did not finish")
-	}
-}
-
-type ExecutorFunc func(context.Context, Job) (string, error)
-
-func (f ExecutorFunc) Run(ctx context.Context, job Job) (string, error) { return f(ctx, job) }
 
 func TestLoadSelfEnv(t *testing.T) {
 	oldState := state

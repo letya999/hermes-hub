@@ -1,15 +1,13 @@
 ---
 description: Peer organization/user homes and the private runtime boundary.
-last_verified: 2026-09-10
+last_verified: 2026-09-11
 ---
 # Architecture
 
-The current implementation below remains the AS IS architecture. The accepted target
-for the next change is [ADR-0009](adr/ADR-0009-scoped-homes-and-communication-hub.md):
-organization and user homes become peers under `spaces/`, mutable Hermes data moves
-into those homes, and `communication-hub` becomes a separate container. The executable
-and paths described below retain their current names until CHG-0009 is implemented and
-an explicit migration succeeds.
+The current implementation follows [ADR-0009](adr/ADR-0009-scoped-homes-and-communication-hub.md):
+organization and user homes are peers under `spaces/`, mutable Hermes data lives in
+those homes, and `communication-hub` is a separate container. Existing deployments
+retain their old layout until an explicit migration succeeds.
 
 Hermes owns reasoning, chat, tool selection, memory, skills, hooks and cron. Go owns
 space initialization, strict configuration, organization policy resolution, Docker

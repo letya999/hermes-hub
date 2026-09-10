@@ -2,7 +2,7 @@
 
 | Specification | Status |
 |---|---|
-| [SPEC-0009](active/SPEC-0009-scoped-homes-and-service-boundaries.md) | Planned scoped homes and communication-hub boundary |
+| [SPEC-0009](active/SPEC-0009-scoped-homes-and-service-boundaries.md) | Implemented scoped homes and communication-hub boundary; migration remains explicit |
 | [SPEC-0008](active/SPEC-0008-telegram-service-self-service.md) | Telegram connector catalog and self-service enablement |
 | [SPEC-0007](active/SPEC-0007-communication-gateway.md) | Communication gateway and scoped Hermes jobs |
 | [SPEC-0006](active/SPEC-0006-work-services.md) | Atlassian, GitLab CLI and Google access boundaries |

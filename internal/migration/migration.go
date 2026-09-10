@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -260,8 +261,13 @@ func inventory(root string) (Object, error) {
 	} else if err != nil {
 		return object, err
 	}
+	source, err := os.OpenRoot(root)
+	if err != nil {
+		return object, err
+	}
+	defer source.Close()
 	h := sha256.New()
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(source.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -271,7 +277,7 @@ func inventory(root string) (Object, error) {
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("symlink source is not allowed: %s", path)
 		}
-		f, err := os.Open(path)
+		f, err := source.Open(path)
 		if err != nil {
 			return err
 		}
@@ -295,7 +301,12 @@ func inventory(root string) (Object, error) {
 }
 
 func activeRuntime(path string) bool {
-	body, err := os.ReadFile(filepath.Join(path, "runtime.json"))
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	body, err := root.ReadFile("runtime.json")
 	if err != nil {
 		return false
 	}
@@ -430,41 +441,49 @@ func copyTree(source, destination string) error {
 	if _, err := os.Stat(source); err != nil {
 		return err
 	}
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		return err
+	}
+	sourceRoot, err := os.OpenRoot(source)
+	if err != nil {
+		return err
+	}
+	defer sourceRoot.Close()
+	destinationRoot, err := os.OpenRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer destinationRoot.Close()
+	return fs.WalkDir(sourceRoot.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("symlink source is not allowed: %s", path)
 		}
-		rel, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(destination, rel)
 		if entry.IsDir() {
-			return os.MkdirAll(target, 0700)
+			return destinationRoot.MkdirAll(path, 0700)
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		if err := destinationRoot.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			return err
 		}
-		body, err := os.ReadFile(path)
+		body, err := sourceRoot.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return atomicWrite(target, body)
+		return atomicWriteRoot(destinationRoot, path, body)
 	})
 }
 
-func atomicWrite(path string, body []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".migration-*")
+func atomicWriteRoot(root *os.Root, path string, body []byte) error {
+	tmpPath := fmt.Sprintf(".migration-%d", time.Now().UnixNano())
+	tmp, err := root.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err = tmp.Chmod(0600); err == nil {
-		_, err = tmp.Write(body)
+	defer root.Remove(tmpPath)
+	if _, err = tmp.Write(body); err == nil {
+		err = tmp.Sync()
 	}
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
@@ -472,5 +491,5 @@ func atomicWrite(path string, body []byte) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	return root.Rename(tmpPath, path)
 }

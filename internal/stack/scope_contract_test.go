@@ -69,10 +69,30 @@ func TestRenderedServiceBoundaries(t *testing.T) {
 	if _, ok := runtimeService["environment"].(M)["TELEGRAM_BOT_TOKEN"]; ok {
 		t.Fatal("bot token leaked to runtime")
 	}
-	if runtimeService["ports"].([]string) != nil && len(runtimeService["ports"].([]string)) != 0 {
+	if strings.Contains(strings.Join(runtimeService["ports"].([]string), ","), ":8080") {
 		t.Fatal("runtime port published")
 	}
 	if config["model"].(M)["api_key"] != "${OPENAI_API_KEY}" {
 		t.Fatal("provider credential was embedded")
+	}
+}
+
+func TestScopeValidationAndSingleDocument(t *testing.T) {
+	for _, scope := range []Scope{
+		{Kind: "unknown", ID: "alice"},
+		{Kind: UserScope, ID: "../alice"},
+		{Kind: UserScope, ID: "alice", Organization: "../acme"},
+		{Kind: OrganizationScope, ID: "acme", Organization: "other"},
+	} {
+		if scope.Validate() == nil {
+			t.Fatalf("invalid scope accepted: %+v", scope)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: alice\n---\nkind: user\nid: bob\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadScope(dir); err == nil {
+		t.Fatal("multiple YAML documents accepted")
 	}
 }

@@ -1,19 +1,16 @@
 package runtime
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"io/fs"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -57,63 +54,9 @@ func Run(args []string) error {
 			return err
 		}
 		return supervise(args[0])
-	case "serve":
-		return Serve()
 	default:
 		return errors.New("expected idle, gateway, prepare, serve or health")
 	}
-}
-
-func Serve() error {
-	if err := loadSelfEnv(); err != nil {
-		return err
-	}
-	userID := env("HUB_RUNTIME_USER_ID", "me")
-	orgID := os.Getenv("HUB_RUNTIME_ORGANIZATION_ID")
-	if orgID == "" || orgID == "personal" {
-		orgID = "personal"
-	}
-	if os.Getenv("HUB_RUNTIME_TOKEN") == "" {
-		return errors.New("HUB_RUNTIME_TOKEN is required")
-	}
-	bind := Binding{UserID: userID, OrganizationID: orgID, UserHome: env("HUB_RUNTIME_USER_HOME", "/scope/user"), OrganizationHome: os.Getenv("HUB_RUNTIME_ORGANIZATION_HOME"), Features: strings.Split(os.Getenv("HUB_FEATURES"), ","), Env: currentEnv(), OrgActions: parseList(os.Getenv("HUB_ORG_ACTIONS"))}
-	server := NewServer(bind, os.Getenv("HUB_RUNTIME_TOKEN"), nil)
-	bindState := filepath.Join(bind.UserHome, "connections")
-	if err := os.MkdirAll(bindState, 0700); err != nil {
-		return err
-	}
-	markerPath := filepath.Join(bindState, "runtime.json")
-	body, _ := json.Marshal(marker{PIDs: []int{os.Getpid()}})
-	if err := os.WriteFile(markerPath, body, 0600); err != nil {
-		return err
-	}
-	defer os.Remove(markerPath)
-	listener, err := net.Listen("tcp", env("HUB_RUNTIME_BIND", ":9090"))
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	return http.Serve(listener, server.Handler())
-}
-
-func parseList(raw string) map[string]bool {
-	result := map[string]bool{}
-	for _, item := range strings.Split(raw, ",") {
-		if item = strings.TrimSpace(item); item != "" {
-			result[item] = true
-		}
-	}
-	return result
-}
-
-func currentEnv() map[string]string {
-	result := map[string]string{}
-	for _, item := range os.Environ() {
-		if key, value, ok := strings.Cut(item, "="); ok {
-			result[key] = value
-		}
-	}
-	return result
 }
 
 func loadSelfEnv() error {

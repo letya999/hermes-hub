@@ -62,17 +62,6 @@ func ReadScope(dir string) (Scope, error) {
 	return s, s.Validate()
 }
 
-func scopeRoot(dir, id string) string {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return filepath.Join(dir, id)
-	}
-	if filepath.Base(filepath.Dir(abs)) == "spaces" {
-		return filepath.Dir(abs)
-	}
-	return filepath.Dir(filepath.Dir(abs))
-}
-
 func noSymlinkPath(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {

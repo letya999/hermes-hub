@@ -6,7 +6,7 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 | Change | State |
 |---|---|
 | [CHG-0010](in-progress/CHG-0010-direct-mcp-atlassian/plan.md) | Replace Atlassian Rovo with pinned direct mcp-atlassian |
-| [CHG-0009](in-progress/CHG-0009-scoped-homes-and-service-split/plan.md) | Planned scoped homes, migration and communication-hub split |
+| [CHG-0009](in-progress/CHG-0009-scoped-homes-and-service-split/plan.md) | Scoped homes and communication-hub split ready for deployment acceptance |
 | [CHG-0008](in-progress/CHG-0008-telegram-service-self-service/plan.md) | Telegram connector catalog and self-service enablement implemented |
 | [CHG-0007](in-progress/CHG-0007-communication-gateway/plan.md) | Communication gateway implemented; local gates passed, live Telegram acceptance pending |
 | [CHG-0006](in-progress/CHG-0006-work-services/plan.md) | Work-service integrations implemented |

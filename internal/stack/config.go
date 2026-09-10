@@ -17,28 +17,30 @@ import (
 )
 
 type Settings struct {
-	Environment         string               `yaml:"-"`
-	MCP                 map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks               map[string]any       `yaml:"hooks,omitempty"`
-	Memory              bool                 `yaml:"memory"`
-	Schema              int                  `yaml:"schema"`
-	User                string               `yaml:"user"`
-	Organization        string               `yaml:"organization,omitempty"`
-	DisabledMCP         []string             `yaml:"disabled_mcp,omitempty"`
-	Model               string               `yaml:"model"`
-	ModelURL            string               `yaml:"model_url"`
-	Timezone            string               `yaml:"timezone"`
-	Features            []string             `yaml:"features"`
-	GoogleEmail         string               `yaml:"google_email"`
-	GitLabHost          string               `yaml:"gitlab_host"`
-	DesktopURL          string               `yaml:"desktop_url"`
-	DraftsURL           string               `yaml:"drafts_url"`
-	OAuthPort           int                  `yaml:"oauth_port"`
-	BrowserPort         int                  `yaml:"browser_port"`
-	OrganizationDir     string               `yaml:"-"`
-	OrganizationDocsDir string               `yaml:"-"`
-	OrganizationRole    string               `yaml:"-"`
-	OrgActions          []string             `yaml:"-"`
+	Environment           string               `yaml:"-"`
+	MCP                   map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks                 map[string]any       `yaml:"hooks,omitempty"`
+	Memory                bool                 `yaml:"memory"`
+	Schema                int                  `yaml:"schema"`
+	User                  string               `yaml:"user"`
+	Organization          string               `yaml:"organization,omitempty"`
+	DisabledMCP           []string             `yaml:"disabled_mcp,omitempty"`
+	Model                 string               `yaml:"model"`
+	ModelURL              string               `yaml:"model_url"`
+	Timezone              string               `yaml:"timezone"`
+	Features              []string             `yaml:"features"`
+	GoogleEmail           string               `yaml:"google_email"`
+	GitLabHost            string               `yaml:"gitlab_host"`
+	DesktopURL            string               `yaml:"desktop_url"`
+	DraftsURL             string               `yaml:"drafts_url"`
+	OAuthPort             int                  `yaml:"oauth_port"`
+	BrowserPort           int                  `yaml:"browser_port"`
+	OrganizationDir       string               `yaml:"-"`
+	OrganizationDocsDir   string               `yaml:"-"`
+	OrganizationSkillsDir string               `yaml:"-"`
+	SpaceDir              string               `yaml:"-"`
+	OrganizationRole      string               `yaml:"-"`
+	OrgActions            []string             `yaml:"-"`
 }
 type Feature struct {
 	Name     string   `json:"name"`
@@ -256,6 +258,13 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
 	b, err := yaml.Marshal(s)
 	if err != nil {
+		return err
+	}
+	scopeBody, err := yaml.Marshal(Scope{Kind: UserScope, ID: profile, Organization: organization})
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "scope.yaml"), scopeBody, 0600); err != nil {
 		return err
 	}
 	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {

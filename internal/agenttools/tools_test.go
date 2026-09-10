@@ -69,23 +69,6 @@ func TestOrganizationRootIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestOrganizationWriteRequiresOrganizationScopeAndAction(t *testing.T) {
-	org := t.TempDir()
-	if err := os.WriteFile(filepath.Join(org, "MEMORY.md"), []byte("org fact"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HUB_SCOPE_ID", "organization:acme")
-	t.Setenv("HUB_ORG_ACTIONS", "organization.write")
-	v, err := Open(t.TempDir(), t.TempDir(), org)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer v.Close()
-	if _, err := v.File("write", Input{Root: "organization", Path: "MEMORY.md", Text: "changed", Revision: hash([]byte("org fact"))}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestOrganizationActionBlocksHHApply(t *testing.T) {
 	org := t.TempDir()
 	t.Setenv("HUB_ORG_ACTIONS", "")

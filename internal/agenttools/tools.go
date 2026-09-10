@@ -47,7 +47,6 @@ type Tools struct {
 	HTTP                             *http.Client
 	HHURL, HHKey, UserAgent          string
 	HHEnabled, OrgScoped             bool
-	OrganizationWritable             bool
 	OrgActions                       map[string]bool
 	StateDir                         string
 	Restart                          func() error
@@ -88,8 +87,7 @@ func Open(workspace, archive string, organization ...string) (*Tools, error) {
 	if stateDir == "" {
 		stateDir = "/state"
 	}
-	orgActions := parseActions(os.Getenv("HUB_ORG_ACTIONS"))
-	return &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrganizationWritable: o != nil && strings.HasPrefix(os.Getenv("HUB_SCOPE_ID"), "organization:") && orgActions["organization.write"], OrgActions: orgActions, StateDir: stateDir, Restart: func() error { return restartRuntime(stateDir) }, lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, Restart: func() error { return restartRuntime(stateDir) }, lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 func (t *Tools) Close() {
 	_ = t.Workspace.Close()
@@ -467,7 +465,7 @@ func (t *Tools) File(op string, r Input) (map[string]any, error) {
 	if op != "write" {
 		return nil, fmt.Errorf("unknown file operation")
 	}
-	if r.Root == "archive" || (r.Root == "organization" && !t.OrganizationWritable) {
+	if r.Root == "archive" || r.Root == "organization" {
 		return nil, fmt.Errorf("%s is read-only", r.Root)
 	}
 	if len(r.Text) > Limit || !utf8.ValidString(r.Text) {

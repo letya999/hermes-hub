@@ -1,14 +1,19 @@
 package devcheck
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestCoverage(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "coverage.out")
+	if _, err := Coverage(name, 85); err == nil {
+		t.Fatal("missing coverage file accepted")
+	}
 	for _, tc := range []struct {
 		body string
 		min  float64
@@ -33,6 +38,9 @@ func TestCoverage(t *testing.T) {
 }
 
 func TestProjectAndFormat(t *testing.T) {
+	if err := Project(t.TempDir()); err == nil {
+		t.Fatal("missing project files accepted")
+	}
 	root := t.TempDir()
 	for _, name := range []string{"AGENTS.md", "README.md", "SETUP.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "docs/index.md", "specs/index.md", ".work/index.md"} {
 		path := filepath.Join(root, filepath.FromSlash(name))
@@ -67,5 +75,38 @@ func TestProjectAndFormat(t *testing.T) {
 	}
 	if err := Format(root); err == nil {
 		t.Fatal("unformatted Go accepted")
+	}
+	if err := os.WriteFile(goFile, []byte("package main\n\nfunc main() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Format(root); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDockerSmokeRunsRequiredChecksAndPropagatesFailure(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "docker.log")
+	name := "docker"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\ncase \"$*\" in *\"$HUB_FAIL_MATCH\"*) [ -z \"$HUB_FAIL_MATCH\" ] || exit 7;; esac\n"
+	if runtime.GOOS == "windows" {
+		name = "docker.cmd"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif \"%HUB_FAIL_MATCH%\"==\"\" exit /b 0\r\necho %* | findstr /C:\"%HUB_FAIL_MATCH%\" >nul\r\nif not errorlevel 1 exit /b 7\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HUB_TEST_LOG", log)
+	if err := DockerSmoke(context.Background(), "test-image"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(log)
+	if err != nil || !strings.Contains(string(body), "--entrypoint hermes test-image --version") || !strings.Contains(string(body), "--entrypoint glab test-image --version") || !strings.Contains(string(body), "hub-runtime health") {
+		t.Fatal(string(body), err)
+	}
+	t.Setenv("HUB_FAIL_MATCH", "--entrypoint glab")
+	if err := DockerSmoke(context.Background(), "test-image"); err == nil {
+		t.Fatal("docker failure ignored")
 	}
 }
