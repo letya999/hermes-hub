@@ -12,10 +12,10 @@
 
 В примерах hubctl означает путь к выбранному бинарнику. Сборку запускай из корня проекта.
 
-**Пользовательский путь: spaces/<user>.** Внутри один settings.yaml, SOUL.md, отдельные
-secrets.dev.env и secrets.prod.env. Dev/prod — режимы Docker, а не дополнительные спейсы.
-Память, skills, hooks, токены OAuth, браузер и рабочие файлы каждого режима лежат в
-отдельных Docker-томах. Тестовый контейнер не пишет в память продакшена.
+**Путь scope: spaces/<id>.** Каждый home имеет scope.yaml; user дополнительно содержит
+settings.yaml, SOUL.md, secrets и каталоги hermes/, connections/, workspace/, archive/.
+Dev/prod — режимы Docker, а не дополнительные спейсы. Gateway queue хранится отдельно
+в communication-hub-data; runtime получает scope homes, communication-hub — только bot env.
 
 Для dev: заполни secrets.dev.env и выполни `hubctl up --user artem --env dev`.
 Dev содержит Go и монтирует исходники в /src. Prod не монтирует исходники проекта.
@@ -25,9 +25,18 @@ Skills, hooks и memory — штатные механизмы Hermes. Напри
 `hubctl exec --user artem -- hermes skills list`.
 Через exec можно запускать остальные штатные команды Hermes. Одновременно запускать
 CLI-агента и Telegram gateway с одной памятью нельзя; для экспериментов используй dev.
+Старую установку мигрируй явно: `hubctl migrate-spaces --user artem --org acme`
+(dry-run), затем добавь `--apply`.
 
 Подключения выбираются в features: Telegram, Google Workspace, HH, Slack, GitHub,
-Atlassian, Meet, браузер, локальная транскрибация. Другие MCP добавляются в mcp_servers.
+Atlassian, Meet, браузер, локальная транскрибация. Для Atlassian указываются
+`ATLASSIAN_EMAIL` и `ATLASSIAN_API_TOKEN`; для GitLab — `GITLAB_TOKEN`. Google по умолчанию доступен только
+для чтения; запись включает `google_write`. GitLab доступен через встроенный `glab`.
+Другие MCP добавляются в mcp_servers.
+В Telegram попроси «какие сервисы доступны», затем «включи GitLab» или другой
+self-service коннектор. Hermes покажет требуемые имена env, примет явные `KEY=value`,
+сохранит их в изолированном runtime и перезапустится. Host-managed функции бот только
+показывает — их нужно включать в settings.yaml.
 Интернет доступен через браузер; для web_search можно добавить Firecrawl/Tavily API key.
 
 Понадобятся твои ключи и входы: Telegram bot token и ID владельца; для чтения личного

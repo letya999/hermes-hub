@@ -1,0 +1,16 @@
+change: CHG-0009
+status: implementation
+updated: 2026-09-10
+steps:
+  - name: scope-paths
+    status: done
+  - name: persistent-space-storage
+    status: done
+  - name: explicit-migration
+    status: done
+  - name: runtime-execution-boundary
+    status: done
+  - name: communication-hub-container
+    status: done
+  - name: documentation-and-gates
+    status: pending

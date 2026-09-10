@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -65,6 +66,23 @@ func TestOrganizationRootIsReadOnly(t *testing.T) {
 	}
 	if _, err = v.File("write", Input{Root: "organization", Path: "MEMORY.md", Text: "changed"}); err == nil {
 		t.Fatal("organization write accepted")
+	}
+}
+
+func TestOrganizationWriteRequiresOrganizationScopeAndAction(t *testing.T) {
+	org := t.TempDir()
+	if err := os.WriteFile(filepath.Join(org, "MEMORY.md"), []byte("org fact"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_SCOPE_ID", "organization:acme")
+	t.Setenv("HUB_ORG_ACTIONS", "organization.write")
+	v, err := Open(t.TempDir(), t.TempDir(), org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if _, err := v.File("write", Input{Root: "organization", Path: "MEMORY.md", Text: "changed", Revision: hash([]byte("org fact"))}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -128,6 +146,96 @@ func TestSelfEnvUpdateReportsRestartFailureWithoutReturningValue(t *testing.T) {
 	}
 }
 
+func TestServiceCatalogAndEnable(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HUB_STATE", state)
+	t.Setenv("HUB_FEATURES", "workspace")
+	t.Setenv("HUB_ORG_SCOPED", "false")
+	t.Setenv("GITLAB_TOKEN", "pat")
+	v, err := Open(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if out, err := v.ServiceCatalog(); err != nil || out["secret_values_included"] != false || strings.Contains(fmt.Sprint(out), "pat") {
+		t.Fatal(out, err)
+	}
+	restarted := false
+	v.Restart = func() error { restarted = true; return nil }
+	out, err := v.ServiceEnable(Input{Service: "gitlab"})
+	if err != nil || out["enabled"] != true || !restarted {
+		t.Fatal(out, err)
+	}
+	body, err := os.ReadFile(filepath.Join(state, "self-services.json"))
+	if err != nil || string(body) == "" {
+		t.Fatal(string(body), err)
+	}
+	t.Setenv("ATLASSIAN_EMAIL", "")
+	t.Setenv("ATLASSIAN_API_TOKEN", "")
+	out, err = v.ServiceEnable(Input{Service: "atlassian"})
+	if err != nil || out["enabled"] != false {
+		t.Fatal(out, err)
+	}
+	missing := out["missing_env"].([]string)
+	if len(missing) != 2 || missing[0] != "ATLASSIAN_API_TOKEN" || missing[1] != "ATLASSIAN_EMAIL" {
+		t.Fatal(missing)
+	}
+}
+
+func TestServiceEnableRejectsOrganizationScope(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
+	t.Setenv("HUB_ORG_SCOPED", "true")
+	v := fixture(t)
+	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil {
+		t.Fatal("organization service change accepted")
+	}
+}
+
+func TestSelfServicesValidationAndDependencies(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HUB_STATE", state)
+	v := fixture(t)
+	for _, body := range [][]byte{
+		[]byte(`{"features":["gitlab"]}`),
+		[]byte(`{"features":["gitlab","gitlab"]}`),
+		[]byte(`{"features":["workspace"]}`),
+		[]byte(`not-json`),
+	} {
+		if err := os.WriteFile(filepath.Join(state, "self-services.json"), body, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.ServiceCatalog(); err == nil && string(body) != `{"features":["gitlab"]}` {
+			t.Fatal("invalid self-services accepted", string(body))
+		}
+	}
+	if err := os.WriteFile(filepath.Join(state, "self-services.json"), []byte(`{"features":["google_write"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.ServiceCatalog(); err != nil {
+		t.Fatal(err)
+	}
+	if deps := mustServiceDependencies("google_write"); !deps["google"] {
+		t.Fatal(deps)
+	}
+	if _, err := v.ServiceEnable(Input{Service: "unknown"}); err == nil {
+		t.Fatal("unknown service accepted")
+	}
+	if _, err := v.ServiceEnable(Input{Service: "browser"}); err == nil {
+		t.Fatal("host-managed service accepted")
+	}
+	t.Setenv("GITLAB_TOKEN", "pat")
+	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil {
+		t.Fatal("missing restart was accepted")
+	}
+	v.Restart = func() error { return fmt.Errorf("restart failed") }
+	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil {
+		t.Fatal("restart failure was hidden")
+	}
+	if info, err := v.ServiceCatalog(); err != nil || info["services"] == nil {
+		t.Fatal(info, err)
+	}
+}
+
 func TestRestartRuntimeValidation(t *testing.T) {
 	state := t.TempDir()
 	if err := restartRuntime(state); err == nil {
@@ -163,6 +271,27 @@ func TestRestartRuntimeSchedulesSupervisor(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("supervisor restart was not scheduled")
+	}
+}
+
+func TestRestartRuntimeCanDeferSupervisorSignal(t *testing.T) {
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "runtime.json"), []byte(fmt.Sprintf(`{"pids":[%d]}`, os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_DEFER_RUNTIME_RESTART", "true")
+	called := false
+	old := signalRuntime
+	signalRuntime = func(*os.Process) { called = true }
+	t.Cleanup(func() { signalRuntime = old })
+	if err := restartRuntime(state); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("deferred restart signaled supervisor immediately")
+	}
+	if _, err := os.Stat(filepath.Join(state, "restart.request")); err != nil {
+		t.Fatal("deferred restart request missing", err)
 	}
 }
 func TestSymlinkEscape(t *testing.T) {
@@ -270,7 +399,7 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 5 {
+	if err != nil || len(list.Tools) != 7 {
 		t.Fatal(list, err)
 	}
 	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "file_write", Arguments: map[string]any{"path": "drafts/test.md", "text": "real MCP call"}})

@@ -1,6 +1,7 @@
 # Connect your accounts
 
-All secrets stay in `spaces/<user>/secrets.dev.env` or `secrets.prod.env`. Use literal **unquoted**
+User secrets stay in `spaces/<user>/secrets.dev.env` or `secrets.prod.env`; organization
+secrets stay in the matching `spaces/<org>/` home. Use literal **unquoted**
 single-line `NAME=value` entries; dollar signs are not expanded. Never commit this
 directory. `hubctl render` rewrites generated configs but preserves SOUL and secrets.
 `doctor` validates configuration, not successful login or account entitlements.
@@ -12,6 +13,17 @@ Use `--env dev` for the dev Docker target and secrets.dev.env; prod is the defau
 The initial features are `workspace`, `browser`, `hh`. For Telegram operation
 add `telegram`; otherwise the container waits for `hubctl chat` sessions. `hubctl build`
 builds/prepares without requiring every credential, useful before Telegram login.
+
+For the prepared work-service bundle, add these settings once:
+
+```yaml
+features: [workspace, browser, hh, google, atlassian, gitlab]
+google_email: me@example.com
+gitlab_host: gitlab.com
+```
+
+Then only fill the matching secrets: Google OAuth client ID/secret, Atlassian email/API
+token and GitLab PAT. Keep `google_write` out unless Workspace mutations are needed.
 
 Run commands from the extracted project root, or pass `--root /absolute/project` on
 build/up/render. Use `hubctl logs` for runtime errors. Do not start simultaneous CLI
@@ -47,12 +59,23 @@ GITHUB_TOKEN=...
 SLACK_MCP_XOXP_TOKEN=...
 ```
 
-Hermes passes the message to `env_update`. Values are stored only in that user's
-runtime volume as `self-env.json`; the tool returns key names and schedules a supervisor
-restart. Organization secret keys and runtime-control variables cannot be changed this
-way. The initial bot token/model credential still has to be provisioned locally so the
-runtime can receive the first message. Telegram itself may retain the message in chat
-history; do not use this channel for secrets if that retention is unacceptable.
+Hermes passes the message to `env_update`. The bot accepts `KEY=value`, `KEY: value`,
+or a key on one line followed by its value on the next line. Values are stored only in
+that user's `spaces/<user>/connections` directory as `self-env.json`; the tool returns key names and schedules a
+supervisor restart after the Telegram reply is delivered. Organization secret keys and
+runtime-control variables cannot be changed this way. The initial bot token/model
+credential still has to be provisioned locally so the runtime can receive the first
+message. After processing, the communication gateway asks Telegram to delete the
+secret-bearing message and never writes its value to the gateway spool; deletion is
+best-effort, so Telegram retention policy still applies.
+
+The same Telegram bot can manage the connector lifecycle. Ask “какие сервисы доступны”
+to receive the current catalog and statuses, then say “включи GitLab” (or another
+self-service connector). Hermes returns the exact missing key names, accepts the next
+explicit connector env message through `env_update`, stores it in the user's isolated
+runtime and restarts after delivering the reply before retrying the enable request. Values are never returned by
+the tools. Browser, Meet, Telegram transport and native bridges remain host-managed and
+are reported as such.
 
 ## 3. Google Workspace and archive
 
@@ -60,10 +83,14 @@ Create a Google Cloud OAuth client of type **Web application**. Enable Gmail, Dr
 Calendar, Docs, Sheets, Slides and Tasks APIs. Configure the consent screen and add
 yourself as a test user if the app is in testing. Register exactly
 `http://localhost:8000/oauth2callback` (substitute your configured oauth_port).
-Fill GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and settings.google_email.
+Fill GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_EMAIL (or the
+equivalent settings.google_email value before rendering).
 Add `google`, start, and ask Hermes to list your upcoming calendar events. Follow its
-OAuth URL in your browser; tokens persist under `/state/google in the selected runtime volume`. Consent scopes are
+OAuth URL in your browser; tokens persist under `spaces/<user>/connections/google`. Consent scopes are
 determined by the selected upstream tools. Google testing-mode refresh tokens can expire.
+The `google` feature is read-only by default. Add `google_write` only when this runtime
+needs to send mail, change events/tasks, or modify Workspace files; individual mutations
+still require an explicit owner request.
 
 On a VPS establish the SSH tunnel below **before** OAuth. The callback binds to all
 interfaces inside the container but is published only on host loopback. The browser
@@ -76,9 +103,9 @@ Binary files need an appropriate reader. This does not implement Google Vault.
 
 ## 4. Browser, LinkedIn, Meet and speech
 
-Open `http://localhost:6080/vnc.html` after enabling `browser` (or `meet`). It is a
-private desktop without an additional VNC password: keep the localhost binding and
-SSH tunnel. Log into LinkedIn/HH/other sites yourself. Cookies persist in the selected runtime’s state volume under /state/browser.
+The browser remains internal to `hermes-runtime` and is not published on a host port.
+Use an explicitly approved operator path for login. Log into LinkedIn/HH/other sites
+yourself. Cookies persist in `spaces/<user>/connections/browser`.
 No private LinkedIn API, bulk outreach or CAPTCHA bypass is provided.
 
 For Meet add `meet`, run `hubctl up`, then `hubctl meet-auth`. Use noVNC to sign into
@@ -101,20 +128,30 @@ ID**, not an uploaded arbitrary PDF. Tests/CAPTCHA/platform rules may block appl
 An explicit task may authorize the exact application without another confirmation;
 the agent supplies `authorized: true` only for that task and records the returned receipt.
 
-## 6. GitHub, Slack, Atlassian
+## 6. GitHub, GitLab, Slack, Atlassian
 
 - `github`: GITHUB_TOKEN for the official remote MCP endpoint. Choose permissions for
   the repositories and operations you need. Account/organization policy still applies.
+- GitLab uses the bundled `glab` CLI with a PAT. Enable `gitlab`, put `GITLAB_TOKEN`
+  in the selected secrets file, and set `gitlab_host` only for a self-managed host
+  (the default is `gitlab.com`). No `glab auth login` command is needed: `glab` reads
+  the token from the runtime environment. Verify with `hubctl exec --user me --env prod
+  -- glab auth status`, then use `glab repo view`, `glab issue list` and `glab mr list`.
+  For repository and write operations, create the PAT with at least `api` and
+  `write_repository` scopes. Keep the PAT out of settings, commands, Git remotes and
+  logs; use a separate PAT for dev and prod when their access should differ.
+  Creating/editing issues or merge requests, comments, merges and pipeline actions
+  require an explicit owner request.
 - `slack`: SLACK_MCP_XOXP_TOKEN from your authorized Slack OAuth app. User scopes must
   cover search/read on your accessible conversations. Leave SLACK_MCP_ADD_MESSAGE_TOOL
   empty to disable posting; set a comma-separated channel ID allowlist to opt in.
-- `atlassian`: official remote OAuth MCP. After startup run
-  `hubctl exec --user me -- hermes mcp login atlassian`.
-  Follow Hermes's printed OAuth instructions. After browser consent, if its loopback
-  redirect cannot reach Docker, copy the complete redirect URL from your address bar
-  and paste it into Hermes's waiting terminal prompt. The pinned Hermes supports this
-  callback-paste flow and still verifies OAuth state. Do not paste it into chat or logs.
-  Atlassian's tenant policies and OAuth scopes must still permit the operation.
+- `atlassian`: official remote Rovo MCP with personal API-token auth. Set
+  `ATLASSIAN_EMAIL` and `ATLASSIAN_API_TOKEN` in the selected secrets file. An
+  Atlassian administrator must enable API-token authentication under Rovo MCP server
+  settings; the runtime derives the required Basic header automatically. For read-only
+  operation, block **Write** under Atlassian Administration > Rovo > Rovo MCP server >
+  Permissions. API-token mode can expose fewer tools than OAuth; the provider's
+  Read/Write/Search policy is authoritative.
 
 ## 7. Native Computer Use and Drafts
 
@@ -154,7 +191,7 @@ Create the host-owned overlay once, then initialize each member's isolated user 
 ./bin/hubctl-linux-amd64 init --org acme --user artem
 ```
 
-Edit `organizations/acme/settings.yaml`:
+Edit `spaces/acme/scope.yaml`:
 
 ```yaml
 schema: 1
@@ -167,28 +204,31 @@ read_only_mcp: []
 org_actions: []
 ```
 
-Add organization credentials to `organizations/acme/secrets.dev.env` or
+Add organization credentials to `spaces/acme/secrets.dev.env` or
 `secrets.prod.env`; add personal OAuth/API credentials only to the member's matching
 `spaces/<user>/secrets.*.env`. The organization file is loaded separately and is not
 copied into the user space. A member may only remove an approved MCP with
 `disabled_mcp`; they cannot add a feature, credential or MCP. Every organization MCP
 must be listed in `read_only_mcp` and must use a non-empty `tools.include` allowlist;
 the list is what Hermes exposes to the agent. Organization `docs/` is mounted as
-read-only `/org`. `org_actions` is empty by default; add an action only when
+read-only `/scope/org`. `org_actions` is empty by default; add an action only when
 the organization explicitly permits that mutation. The repository does not provide a
 public authentication gateway, so an external ingress must authenticate the principal
 and select the corresponding user space before invoking `hubctl`.
 
+Existing installations must be migrated explicitly; the command is dry-run by default:
+
+```bash
+./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme
+./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme --apply
+```
+
 ## VPS and another person
 
 Install Docker with Compose 2.30+, copy the project, run init/setup/up on the VPS.
-From your laptop, forward private login surfaces:
-
-```bash
-ssh -N -L 6080:127.0.0.1:6080 -L 8000:127.0.0.1:8000 user@your-vps
-```
-
-Do not open 6080 or 8000 in the VPS firewall. Telegram uses outbound polling.
+The runtime HTTP service is private to the Compose network and is not published.
+Telegram uses outbound polling. Use an explicitly approved SSH/Docker operator path
+for interactive browser or OAuth work; do not expose runtime ports publicly.
 For another person run init with a different user space, separate secrets and
 different base browser_port/oauth_port (reserve each base and base+1 for dev). Use their own bot/session and Google consent.
 Each deployment is fully capable within its own container; this is not a hostile-tenant
@@ -197,8 +237,9 @@ hosting platform. On Windows use the .exe binary and Docker Desktop's Linux cont
 ## Native skills, hooks and memory
 
 These are upstream Hermes features, not parallel implementations. Their paths inside
-each runtime are /state/hermes/skills, /state/hermes/hooks, /state/hermes/plugins and
-/state/hermes/memories. MEMORY.md and USER.md are enabled by default (memory: true).
+each runtime are `<space>/hermes/skills`, `<space>/hermes/hooks`,
+`<space>/hermes/plugins` and `<space>/hermes/memories`. MEMORY.md and USER.md are
+enabled by default (memory: true).
 Use `hubctl exec --user me -- hermes skills list`, `hermes hooks list`,
 `hermes plugins list` or `hermes memory --help` through the same exec command.
 Install skills with Hermes's own skill installer; review their code and permissions.

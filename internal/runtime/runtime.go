@@ -1,16 +1,19 @@
 package runtime
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -38,7 +41,7 @@ func env(name, fallback string) string {
 
 func Run(args []string) error {
 	if len(args) != 1 {
-		return errors.New("expected idle, gateway, prepare or health")
+		return errors.New("expected idle, gateway, prepare, serve or health")
 	}
 	switch args[0] {
 	case "health":
@@ -54,9 +57,63 @@ func Run(args []string) error {
 			return err
 		}
 		return supervise(args[0])
+	case "serve":
+		return Serve()
 	default:
-		return errors.New("expected idle, gateway, prepare or health")
+		return errors.New("expected idle, gateway, prepare, serve or health")
 	}
+}
+
+func Serve() error {
+	if err := loadSelfEnv(); err != nil {
+		return err
+	}
+	userID := env("HUB_RUNTIME_USER_ID", "me")
+	orgID := os.Getenv("HUB_RUNTIME_ORGANIZATION_ID")
+	if orgID == "" || orgID == "personal" {
+		orgID = "personal"
+	}
+	if os.Getenv("HUB_RUNTIME_TOKEN") == "" {
+		return errors.New("HUB_RUNTIME_TOKEN is required")
+	}
+	bind := Binding{UserID: userID, OrganizationID: orgID, UserHome: env("HUB_RUNTIME_USER_HOME", "/scope/user"), OrganizationHome: os.Getenv("HUB_RUNTIME_ORGANIZATION_HOME"), Features: strings.Split(os.Getenv("HUB_FEATURES"), ","), Env: currentEnv(), OrgActions: parseList(os.Getenv("HUB_ORG_ACTIONS"))}
+	server := NewServer(bind, os.Getenv("HUB_RUNTIME_TOKEN"), nil)
+	bindState := filepath.Join(bind.UserHome, "connections")
+	if err := os.MkdirAll(bindState, 0700); err != nil {
+		return err
+	}
+	markerPath := filepath.Join(bindState, "runtime.json")
+	body, _ := json.Marshal(marker{PIDs: []int{os.Getpid()}})
+	if err := os.WriteFile(markerPath, body, 0600); err != nil {
+		return err
+	}
+	defer os.Remove(markerPath)
+	listener, err := net.Listen("tcp", env("HUB_RUNTIME_BIND", ":9090"))
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	return http.Serve(listener, server.Handler())
+}
+
+func parseList(raw string) map[string]bool {
+	result := map[string]bool{}
+	for _, item := range strings.Split(raw, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result[item] = true
+		}
+	}
+	return result
+}
+
+func currentEnv() map[string]string {
+	result := map[string]string{}
+	for _, item := range os.Environ() {
+		if key, value, ok := strings.Cut(item, "="); ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func loadSelfEnv() error {
@@ -69,10 +126,22 @@ func loadSelfEnv() error {
 			return fmt.Errorf("set self-env %s: %w", key, err)
 		}
 	}
-	return nil
+	if email, token := os.Getenv("ATLASSIAN_EMAIL"), os.Getenv("ATLASSIAN_API_TOKEN"); email != "" && token != "" {
+		if err := os.Setenv("ATLASSIAN_BASIC_AUTH", base64.StdEncoding.EncodeToString([]byte(email+":"+token))); err != nil {
+			return fmt.Errorf("set Atlassian auth: %w", err)
+		}
+	}
+	return loadSelfServices()
 }
 
 func Prepare(roots []string, uid, gid int, chown func(string, int, int) error) error {
+	privateFiles := map[string]bool{}
+	for _, root := range roots {
+		glabDir := filepath.Join(root, "home", ".config", "glab-cli")
+		privateFiles[filepath.Join(glabDir, "config.yml")] = true
+		privateFiles[filepath.Join(glabDir, "aliases.yml")] = true
+		privateFiles[filepath.Join(root, "self-env.json")] = true
+	}
 	for _, root := range roots {
 		if err := os.MkdirAll(root, 0770); err != nil {
 			return err
@@ -93,6 +162,8 @@ func Prepare(roots []string, uid, gid int, chown func(string, int, int) error) e
 			mode := fs.FileMode(0660)
 			if entry.IsDir() {
 				mode = 0770
+			} else if privateFiles[path] {
+				mode = 0600
 			}
 			return os.Chmod(path, mode)
 		})
@@ -159,12 +230,16 @@ func superviseOnce(mode string) (bool, error) {
 	if err := copyIfExists("/config/config.yaml", filepath.Join(state, "hermes/config.yaml"), true); err != nil {
 		return false, err
 	}
+	if err := applySelfServices(filepath.Join(state, "hermes/config.yaml")); err != nil {
+		return false, err
+	}
 	if err := copyIfExists("/config/SOUL.md", filepath.Join(state, "hermes/SOUL.md"), false); err != nil {
 		return false, err
 	}
 
 	var children []*exec.Cmd
 	exits := make(chan error, 8)
+	remaining := 0
 	start := func(name string, args ...string) error {
 		cmd := command(name, args...)
 		configureProcess(cmd)
@@ -173,6 +248,7 @@ func superviseOnce(mode string) (bool, error) {
 			return err
 		}
 		children = append(children, cmd)
+		remaining++
 		go func() { exits <- cmd.Wait() }()
 		return nil
 	}
@@ -181,10 +257,16 @@ func superviseOnce(mode string) (bool, error) {
 		for i := len(children) - 1; i >= 0; i-- {
 			stopProcess(children[i])
 		}
+		for range remaining {
+			<-exits
+		}
 	}()
 
 	browser := os.Getenv("HUB_BROWSER") == "true" || os.Getenv("HUB_MEET") == "true"
 	if browser {
+		if err := clearDisplayLocks(); err != nil {
+			return false, err
+		}
 		if err := clearBrowserLocks(filepath.Join(state, "browser")); err != nil {
 			return false, err
 		}
@@ -208,7 +290,7 @@ func superviseOnce(mode string) (bool, error) {
 		}
 	}
 	if mode == "gateway" {
-		if err := start("hermes", "gateway", "run"); err != nil {
+		if err := start("communication-hub"); err != nil {
 			return false, err
 		}
 	}
@@ -234,9 +316,22 @@ func superviseOnce(mode string) (bool, error) {
 			}
 			return false, nil
 		case err := <-exits:
+			remaining--
 			return false, fmt.Errorf("supervised process exited: %w", err)
 		}
 	}
+}
+
+func clearDisplayLocks(paths ...string) error {
+	if len(paths) == 0 {
+		paths = []string{"/tmp/.X99-lock", "/tmp/.X11-unix/X99"}
+	}
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func clearBrowserLocks(dir string) error {

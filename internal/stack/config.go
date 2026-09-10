@@ -17,27 +17,30 @@ import (
 )
 
 type Settings struct {
-	Environment         string               `yaml:"-"`
-	MCP                 map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks               map[string]any       `yaml:"hooks,omitempty"`
-	Memory              bool                 `yaml:"memory"`
-	Schema              int                  `yaml:"schema"`
-	User                string               `yaml:"user"`
-	Organization        string               `yaml:"organization,omitempty"`
-	DisabledMCP         []string             `yaml:"disabled_mcp,omitempty"`
-	Model               string               `yaml:"model"`
-	ModelURL            string               `yaml:"model_url"`
-	Timezone            string               `yaml:"timezone"`
-	Features            []string             `yaml:"features"`
-	GoogleEmail         string               `yaml:"google_email"`
-	DesktopURL          string               `yaml:"desktop_url"`
-	DraftsURL           string               `yaml:"drafts_url"`
-	OAuthPort           int                  `yaml:"oauth_port"`
-	BrowserPort         int                  `yaml:"browser_port"`
-	OrganizationDir     string               `yaml:"-"`
-	OrganizationDocsDir string               `yaml:"-"`
-	OrganizationRole    string               `yaml:"-"`
-	OrgActions          []string             `yaml:"-"`
+	Environment           string               `yaml:"-"`
+	MCP                   map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks                 map[string]any       `yaml:"hooks,omitempty"`
+	Memory                bool                 `yaml:"memory"`
+	Schema                int                  `yaml:"schema"`
+	User                  string               `yaml:"user"`
+	Organization          string               `yaml:"organization,omitempty"`
+	DisabledMCP           []string             `yaml:"disabled_mcp,omitempty"`
+	Model                 string               `yaml:"model"`
+	ModelURL              string               `yaml:"model_url"`
+	Timezone              string               `yaml:"timezone"`
+	Features              []string             `yaml:"features"`
+	GoogleEmail           string               `yaml:"google_email"`
+	GitLabHost            string               `yaml:"gitlab_host"`
+	DesktopURL            string               `yaml:"desktop_url"`
+	DraftsURL             string               `yaml:"drafts_url"`
+	OAuthPort             int                  `yaml:"oauth_port"`
+	BrowserPort           int                  `yaml:"browser_port"`
+	OrganizationDir       string               `yaml:"-"`
+	OrganizationDocsDir   string               `yaml:"-"`
+	OrganizationSkillsDir string               `yaml:"-"`
+	OrganizationRole      string               `yaml:"-"`
+	OrgActions            []string             `yaml:"-"`
+	SpaceDir              string               `yaml:"-"`
 }
 type Feature struct {
 	Name     string   `json:"name"`
@@ -53,11 +56,13 @@ var Features = []Feature{
 	{"telegram_user", []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING"}, "Personal Telegram account MCP; does not receive bot messages"},
 	{"telegram_write", nil, "Adds send/reply/save_draft to Telegram MCP; requires telegram_user"},
 	{"google", []string{"GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"}, "Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth"},
+	{"google_write", nil, "Adds Google Workspace mutation tools; requires google"},
+	{"gitlab", []string{"GITLAB_TOKEN"}, "GitLab through the bundled glab CLI and personal access token"},
 	{"meet", nil, "Hermes Google Meet plugin; explicit joining and caption transcripts"},
 	{"transcription", nil, "Local faster-whisper through Hermes, downloads model on first use"},
 	{"github", []string{"GITHUB_TOKEN"}, "Official remote GitHub MCP"},
 	{"slack", []string{"SLACK_MCP_XOXP_TOKEN"}, "OAuth user token, search/read; posting opt-in per channel"},
-	{"atlassian", nil, "Official Atlassian Rovo remote MCP, interactive OAuth bootstrap"},
+	{"atlassian", []string{"ATLASSIAN_EMAIL", "ATLASSIAN_API_TOKEN"}, "Official Atlassian Rovo remote MCP with personal API token"},
 	{"desktop", []string{"DESKTOP_TOKEN"}, "Authenticated companion on a native Windows/macOS/Linux desktop"},
 	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
 }
@@ -66,6 +71,13 @@ var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
 
 func selfEnvKeys(s Settings) []string {
 	keys := map[string]bool{"OPENAI_API_KEY": true, "FIRECRAWL_API_KEY": true, "TAVILY_API_KEY": true}
+	for _, service := range ServiceCatalog() {
+		if service.SelfService {
+			for _, key := range service.Requires {
+				keys[key] = true
+			}
+		}
+	}
 	for _, enabled := range s.Features {
 		for _, feature := range Features {
 			if feature.Name == enabled {
@@ -90,6 +102,9 @@ func selfEnvKeys(s Settings) []string {
 	}
 	result := make([]string, 0, len(keys))
 	for key := range keys {
+		if key == "TELEGRAM_BOT_TOKEN" || key == "TELEGRAM_ALLOWED_USERS" {
+			continue
+		}
 		result = append(result, key)
 	}
 	slices.Sort(result)
@@ -139,8 +154,14 @@ func (s Settings) Validate() error {
 	if s.Has("telegram_write") && !s.Has("telegram_user") {
 		return fmt.Errorf("telegram_write requires telegram_user")
 	}
+	if s.Has("google_write") && !s.Has("google") {
+		return fmt.Errorf("google_write requires google")
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
+	}
+	if s.Has("gitlab") && s.GitLabHost != "" && !regexp.MustCompile(`^[A-Za-z0-9.-]+$`).MatchString(s.GitLabHost) {
+		return fmt.Errorf("gitlab_host must be a hostname")
 	}
 	if s.Has("desktop") && s.DesktopURL == "" {
 		return fmt.Errorf("desktop_url required")
@@ -169,6 +190,14 @@ func Read(path string) (Settings, error) {
 		return s, fmt.Errorf("one YAML document expected")
 	}
 	s.Environment = "prod"
+	s.SpaceDir = filepath.Dir(path)
+	if scope, scopeErr := ReadScope(s.SpaceDir); scopeErr == nil {
+		if scope.Kind != UserScope || scope.ID != s.User || scope.Organization != s.Organization {
+			return s, fmt.Errorf("user scope does not match settings.yaml")
+		}
+	} else if !os.IsNotExist(scopeErr) {
+		return s, scopeErr
+	}
 	return s, s.Validate()
 }
 
@@ -179,8 +208,8 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 		return s, err
 	}
 	if s.Organization != "" {
-		orgDir := organizationDir(dir, s.Organization)
-		org, e := ReadOrganization(filepath.Join(orgDir, "settings.yaml"))
+		orgDir := resolvedOrganizationDir(dir, s.Organization)
+		org, e := ReadOrganization(orgDir)
 		if e != nil {
 			return s, e
 		}
@@ -213,17 +242,20 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if organization != "" && !idPattern.MatchString(organization) {
 		return fmt.Errorf("invalid organization")
 	}
+	if err := ensureScope(dir, Scope{Kind: UserScope, ID: profile, Organization: organization}); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, p := range []string{"settings.yaml", "secrets.dev.env", "secrets.prod.env"} {
+	for _, p := range []string{"scope.yaml", "settings.yaml", "secrets.dev.env", "secrets.prod.env"} {
 		if _, err := os.Lstat(filepath.Join(dir, p)); err == nil {
 			return fmt.Errorf("%s already exists; init never overwrites", p)
 		} else if !os.IsNotExist(err) {
 			return err
 		}
 	}
-	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
+	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
 	b, err := yaml.Marshal(s)
 	if err != nil {
 		return err
@@ -231,11 +263,26 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
 		return err
 	}
-	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
+	scopeBody, err := yaml.Marshal(Scope{Kind: UserScope, ID: profile, Organization: organization})
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "scope.yaml"), scopeBody, 0600); err != nil {
+		return err
+	}
+	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nHUB_RUNTIME_TOKEN=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nATLASSIAN_EMAIL=\nATLASSIAN_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
 	for _, env := range []string{"dev", "prod"} {
 		if err := os.WriteFile(filepath.Join(dir, "secrets."+env+".env"), []byte(content), 0600); err != nil {
 			return err
 		}
+	}
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "workspace", "archive", "generated"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# User instructions\n\n"), 0600); err != nil {
+		return err
 	}
 	return nil
 }

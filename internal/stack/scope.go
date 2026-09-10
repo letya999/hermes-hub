@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,9 +15,121 @@ import (
 
 var orgActionPattern = regexp.MustCompile(`^[a-z][a-z0-9_.:-]{0,63}$`)
 
+type ScopeKind string
+
+const (
+	OrganizationScope ScopeKind = "organization"
+	UserScope         ScopeKind = "user"
+)
+
+// Scope is the small, host-owned identity file shared by every space.
+type Scope struct {
+	Kind         ScopeKind `yaml:"kind"`
+	ID           string    `yaml:"id"`
+	Organization string    `yaml:"organization,omitempty"`
+}
+
+func (s Scope) Validate() error {
+	if (s.Kind != UserScope && s.Kind != OrganizationScope) || !idPattern.MatchString(s.ID) {
+		return fmt.Errorf("scope kind and id are invalid")
+	}
+	if s.Kind == UserScope && s.Organization != "" && !idPattern.MatchString(s.Organization) {
+		return fmt.Errorf("scope organization is invalid")
+	}
+	if s.Kind == OrganizationScope && s.Organization != "" && s.Organization != s.ID {
+		return fmt.Errorf("organization scope must identify itself")
+	}
+	return nil
+}
+
+func ReadScope(dir string) (Scope, error) {
+	var s Scope
+	if err := noSymlinkPath(filepath.Join(dir, "scope.yaml")); err != nil {
+		return s, err
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "scope.yaml"))
+	if err != nil {
+		return s, err
+	}
+	d := yaml.NewDecoder(strings.NewReader(string(b)))
+	if err = d.Decode(&s); err != nil {
+		return s, err
+	}
+	var extra any
+	if err = d.Decode(&extra); err != io.EOF {
+		return s, fmt.Errorf("one YAML document expected")
+	}
+	return s, s.Validate()
+}
+
+func scopeRoot(dir, id string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Join(dir, id)
+	}
+	if filepath.Base(filepath.Dir(abs)) == "spaces" {
+		return filepath.Dir(abs)
+	}
+	return filepath.Dir(filepath.Dir(abs))
+}
+
+func noSymlinkPath(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(abs)
+	current := volume + string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(abs, current), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink path component is not allowed: %s", current)
+		}
+	}
+	return nil
+}
+
+func ensureScope(dir string, want Scope) error {
+	if err := want.Validate(); err != nil {
+		return err
+	}
+	for _, part := range strings.FieldsFunc(dir, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return errors.New("scope path traversal is not allowed")
+		}
+	}
+	if err := noSymlinkPath(dir); err != nil {
+		return err
+	}
+	if err := noSymlinkPath(filepath.Join(dir, "scope.yaml")); err != nil {
+		return err
+	}
+	if existing, err := ReadScope(dir); err == nil {
+		if existing != want {
+			return fmt.Errorf("scope %q already declares %s:%s", want.ID, existing.Kind, existing.ID)
+		}
+		return fmt.Errorf("scope %q already exists", want.ID)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // OrganizationSettings is the host-owned policy overlay. It is never written
 // into a user's runtime volume.
 type OrganizationSettings struct {
+	Kind         ScopeKind            `yaml:"kind,omitempty"`
+	ID           string               `yaml:"id,omitempty"`
 	Schema       int                  `yaml:"schema"`
 	Organization string               `yaml:"organization"`
 	Members      map[string]string    `yaml:"members"`
@@ -29,6 +142,12 @@ type OrganizationSettings struct {
 func (o OrganizationSettings) Validate() error {
 	if o.Schema != 1 || !idPattern.MatchString(o.Organization) {
 		return fmt.Errorf("organization schema must be 1 and id a lowercase identifier")
+	}
+	if o.Kind != "" && o.Kind != OrganizationScope {
+		return fmt.Errorf("organization scope kind must be organization")
+	}
+	if o.ID != "" && o.ID != o.Organization {
+		return fmt.Errorf("organization scope id mismatch")
 	}
 	for user, role := range o.Members {
 		if !idPattern.MatchString(user) {
@@ -76,6 +195,16 @@ func (o OrganizationSettings) Validate() error {
 
 func ReadOrganization(path string) (OrganizationSettings, error) {
 	var o OrganizationSettings
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		scopePath, settingsPath := filepath.Join(path, "scope.yaml"), filepath.Join(path, "settings.yaml")
+		selected := scopePath
+		if scopeInfo, scopeErr := os.Stat(scopePath); scopeErr != nil {
+			selected = settingsPath
+		} else if settingsInfo, settingsErr := os.Stat(settingsPath); settingsErr == nil && settingsInfo.ModTime().After(scopeInfo.ModTime()) {
+			selected = settingsPath
+		}
+		path = selected
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return o, err
@@ -144,6 +273,7 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	s.MCP = mcp
 	s.OrganizationDir = orgDir
 	s.OrganizationDocsDir = docsDir
+	s.OrganizationSkillsDir = filepath.Join(orgDir, "hermes", "skills")
 	s.OrganizationRole = role
 	s.OrgActions = append([]string(nil), o.OrgActions...)
 	return s, nil
@@ -165,9 +295,25 @@ func organizationDir(spaceDir, organization string) string {
 	}
 	root := filepath.Dir(abs)
 	if filepath.Base(root) == "spaces" {
-		root = filepath.Dir(root)
+		return filepath.Join(root, organization)
 	}
 	return filepath.Join(root, "organizations", organization)
+}
+
+func resolvedOrganizationDir(spaceDir, organization string) string {
+	modern := organizationDir(spaceDir, organization)
+	if _, err := os.Stat(modern); err == nil {
+		return modern
+	}
+	abs, err := filepath.Abs(spaceDir)
+	if err == nil {
+		root := filepath.Dir(filepath.Dir(abs))
+		legacy := filepath.Join(root, "organizations", organization)
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return modern
 }
 
 func ReadOrganizationSecrets(s Settings, environment string) (map[string]string, error) {
@@ -200,10 +346,18 @@ func InitOrganization(dir, organization, owner string) error {
 	if owner != "" && !idPattern.MatchString(owner) {
 		return fmt.Errorf("invalid organization owner")
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0700); err != nil {
+	if err := ensureScope(dir, Scope{Kind: OrganizationScope, ID: organization, Organization: organization}); err != nil {
 		return err
 	}
-	for _, name := range []string{"settings.yaml", "secrets.dev.env", "secrets.prod.env"} {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	for _, name := range []string{"docs", "hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections", "workspace", "archive", "generated"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{"scope.yaml", "settings.yaml", "SOUL.md", "secrets.dev.env", "secrets.prod.env"} {
 		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
 			return fmt.Errorf("%s already exists; org-init never overwrites", name)
 		} else if !os.IsNotExist(err) {
@@ -215,14 +369,26 @@ func InitOrganization(dir, organization, owner string) error {
 		members[owner] = "owner"
 	}
 	o := OrganizationSettings{
-		Schema: 1, Organization: organization, Members: members,
+		Kind: OrganizationScope, ID: organization, Schema: 1, Organization: organization, Members: members,
 		Features: organizationFeatures(),
 	}
-	b, err := yaml.Marshal(o)
+	scopeBody, err := yaml.Marshal(o)
 	if err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
+	legacy := o
+	legacy.Kind, legacy.ID = "", ""
+	settingsBody, err := yaml.Marshal(legacy)
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), settingsBody, 0600); err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "scope.yaml"), scopeBody, 0600); err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# Organization instructions\n\n"), 0600); err != nil {
 		return err
 	}
 	envTemplate := "# Fill locally. Never commit or send this file in chat.\n"

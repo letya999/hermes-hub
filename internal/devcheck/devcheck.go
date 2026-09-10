@@ -152,6 +152,7 @@ func DockerSmoke(ctx context.Context, image string) error {
 	defer exec.Command("docker", "rm", "-f", name).Run()
 	checks := [][]string{
 		{"run", "--rm", "--entrypoint", "hermes", image, "--version"},
+		{"run", "--rm", "--entrypoint", "glab", image, "--version"},
 		{"run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-c", "import sqlite3, playwright, faster_whisper; assert sqlite3.sqlite_version_info >= (3,53,4)"},
 		{"run", "--rm", "--entrypoint", "/opt/google/.venv/bin/python", image, "-c", "import fastmcp, google.auth"},
 		{"run", "--rm", "--entrypoint", "/opt/telegram/.venv/bin/python", image, "-c", "import telethon, mcp"},

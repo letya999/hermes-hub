@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/companion"
+	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"os"
@@ -28,7 +29,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.2.0: init | org-init | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.2.0: init | org-init | migrate-spaces | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -43,6 +44,11 @@ func run(ctx context.Context, args []string) error {
 	workspace := f.String("workspace", "/workspace", "workspace root")
 	archive := f.String("archive", "/archive", "read-only archive root")
 	config := f.String("config", "companion.yaml", "native bridge config")
+	apply := f.Bool("apply", false, "apply migration; default is dry-run")
+	stateSource := f.String("state-volume", "", "legacy runtime state directory")
+	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
+	userSource := f.String("user-source", "", "legacy user directory")
+	orgSource := f.String("organization-source", "", "legacy organization directory")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -63,9 +69,15 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("org-init requires --org")
 		}
 		if *organizationDir == "" {
-			*organizationDir = filepath.Join("organizations", *organization)
+			*organizationDir = filepath.Join("spaces", *organization)
 		}
 		return stack.InitOrganization(*organizationDir, *organization, *profile)
+	case "migrate-spaces":
+		report, err := migration.Run(migration.Options{Root: *root, User: *profile, Organization: *organization, Environment: *environment, Apply: *apply, UserSource: *userSource, OrganizationSource: *orgSource, StateSource: *stateSource, WorkspaceSource: *workspaceSource})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
 	case "catalog":
 		return json.NewEncoder(os.Stdout).Encode(stack.Features)
 	case "companion":
@@ -114,7 +126,11 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	prefix := []string{"compose", "-f", filepath.Join(abs, "compose."+*environment+".yaml")}
+	composePath := filepath.Join(abs, "generated", "compose."+*environment+".yaml")
+	if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) {
+		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
+	}
+	prefix := []string{"compose", "-f", composePath}
 	docker := func(a ...string) error {
 		cmd := exec.CommandContext(ctx, "docker", append(append([]string{}, prefix...), a...)...)
 		cmd.Stdin = os.Stdin
@@ -126,7 +142,7 @@ func run(ctx context.Context, args []string) error {
 		if err = docker("build"); err != nil {
 			return err
 		}
-		if err = docker("run", "--rm", "--no-deps", "--user", "0:0", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "agent", "prepare"); err != nil {
+		if err = docker("run", "--rm", "--no-deps", "--user", "0:0", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "hermes-runtime", "prepare"); err != nil {
 			return err
 		}
 		if op == "build" {
@@ -143,7 +159,7 @@ func run(ctx context.Context, args []string) error {
 		if f.NArg() == 0 {
 			return fmt.Errorf("exec requires -- command arguments")
 		}
-		return docker(append([]string{"exec", "agent"}, f.Args()...)...)
+		return docker(append([]string{"exec", "hermes-runtime"}, f.Args()...)...)
 	case "chat":
 		s, err := stack.ReadEnvironment(abs, *environment)
 		if err != nil {
@@ -152,11 +168,11 @@ func run(ctx context.Context, args []string) error {
 		if s.Has("telegram") {
 			return fmt.Errorf("gateway owns this home; use Telegram or a separate dev space for CLI chat")
 		}
-		return docker("exec", "agent", "hermes", "chat")
+		return docker("exec", "hermes-runtime", "hermes", "chat")
 	case "telegram-login":
-		return docker("run", "--rm", "--no-deps", "--entrypoint", "/opt/telegram/.venv/bin/python", "agent", "/opt/telegram/session_string_generator.py", "--phone")
+		return docker("run", "--rm", "--no-deps", "--entrypoint", "/opt/telegram/.venv/bin/python", "hermes-runtime", "/opt/telegram/session_string_generator.py", "--phone")
 	case "meet-auth":
-		return docker("exec", "agent", "hermes", "meet", "auth")
+		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
 	}
 	return nil
 }

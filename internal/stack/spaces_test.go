@@ -37,7 +37,7 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			if len(services) != 1 {
 				t.Fatal("embedded service")
 			}
-			agent := services["agent"].(M)
+			agent := services["hermes-runtime"].(M)
 			if agent["build"].(M)["target"] != environment {
 				t.Fatal(agent)
 			}

@@ -1,0 +1,16 @@
+change: CHG-0007
+status: complete
+updated: 2026-09-10
+steps:
+  - name: gateway-config-and-job-contract
+    status: complete
+  - name: telegram-adapter-and-spool
+    status: complete
+  - name: scoped-hermes-worker
+    status: complete
+  - name: commands-and-env-flow
+    status: complete
+  - name: isolation-and-recovery-checks
+    status: complete
+  - name: documentation-and-gates
+    status: complete

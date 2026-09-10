@@ -1,12 +1,16 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +37,34 @@ func TestPrepareDoesNotFollowSymlinks(t *testing.T) {
 	}
 	if seen[outside] || seen[filepath.Join(outside, "secret")] || seen[filepath.Join(state, "link")] {
 		t.Fatal("Prepare followed or modified a symlink")
+	}
+}
+
+func TestPrepareKeepsGlabConfigPrivate(t *testing.T) {
+	if filepath.Separator == '\\' {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	root := t.TempDir()
+	configDir := filepath.Join(root, "home", ".config", "glab-cli")
+	if err := os.MkdirAll(configDir, 0770); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.yml", "aliases.yml"} {
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte("token: redacted\n"), 0660); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Prepare([]string{root}, 1, 2, func(string, int, int) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.yml", "aliases.yml"} {
+		info, err := os.Stat(filepath.Join(configDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
 	}
 }
 
@@ -73,12 +105,107 @@ func TestRunRejectsInvalidGID(t *testing.T) {
 	}
 }
 
+func TestRuntimeHermesRunnerBoundSuccessAndHelpers(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "helper.go")
+	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main(){fmt.Print(\"reply\")}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "helper")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if output, err := exec.Command("go", "build", "-o", bin, source).CombinedOutput(); err != nil {
+		t.Skipf("cannot build helper: %v (%s)", err, output)
+	}
+	home := filepath.Join(root, "alice")
+	if err := os.MkdirAll(filepath.Join(home, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(home, "generated", "hermes.yaml")
+	if err := os.WriteFile(config, []byte("model: test\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_RUNTIME_CONFIG", config)
+	result, err := (HermesRunner{Command: bin, Binding: Binding{UserID: "alice", OrganizationID: "personal", UserHome: home, Env: map[string]string{"OPENAI_API_KEY": "private"}}}).Run(context.Background(), Job{ID: "job", UserID: "alice", ActorID: "alice", OrganizationID: "personal", ScopeID: "user:alice", IdempotencyKey: "idem", Text: "hello"})
+	if err != nil || result != "reply" {
+		t.Fatal(result, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "hermes", "config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if got := parseList("one, two,,one"); len(got) != 2 || !got["one"] || !got["two"] {
+		t.Fatal(got)
+	}
+	if len(currentEnv()) == 0 || len(ProcessEnv(map[string]string{"OPENAI_API_KEY": "x", "TELEGRAM_BOT_TOKEN": "no"})) == 0 {
+		t.Fatal("runtime environment helpers returned no safe environment")
+	}
+}
+
+type blockingExecutor struct{ started chan struct{} }
+
+func (e blockingExecutor) Run(ctx context.Context, _ Job) (string, error) {
+	close(e.started)
+	<-ctx.Done()
+	return "", ErrUncertain
+}
+
+func TestRuntimeCancellationAndFailedReplay(t *testing.T) {
+	failing := NewServer(Binding{UserID: "alice", OrganizationID: "personal"}, "secret", ExecutorFunc(func(context.Context, Job) (string, error) { return "", errors.New("failed") }))
+	failingHTTP := httptest.NewServer(failing.Handler())
+	defer failingHTTP.Close()
+	client := NewHTTPClient(failingHTTP.URL, "secret")
+	job := Job{ID: "failed", UserID: "alice", ActorID: "alice", OrganizationID: "personal", ScopeID: "user:alice", IdempotencyKey: "failed-idem", Text: "hello"}
+	if _, err := client.Run(context.Background(), job); err == nil {
+		t.Fatal("failed execution accepted")
+	}
+	if _, err := client.Run(context.Background(), job); err == nil {
+		t.Fatal("failed replay accepted")
+	}
+	blocking := NewServer(Binding{UserID: "alice", OrganizationID: "personal"}, "secret", blockingExecutor{started: make(chan struct{})})
+	httpServer := httptest.NewServer(blocking.Handler())
+	defer httpServer.Close()
+	client = NewHTTPClient(httpServer.URL, "secret")
+	job.ID, job.IdempotencyKey = "cancel", "cancel-idem"
+	done := make(chan error, 1)
+	go func() { _, err := client.Run(context.Background(), job); done <- err }()
+	select {
+	case <-blocking.Exec.(blockingExecutor).started:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not start")
+	}
+	request, err := http.NewRequest(http.MethodDelete, httpServer.URL+"/v1/jobs/cancel", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer secret")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusAccepted {
+		t.Fatal(response, err)
+	}
+	_ = response.Body.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUncertain) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime cancellation did not finish")
+	}
+}
+
+type ExecutorFunc func(context.Context, Job) (string, error)
+
+func (f ExecutorFunc) Run(ctx context.Context, job Job) (string, error) { return f(ctx, job) }
+
 func TestLoadSelfEnv(t *testing.T) {
 	oldState := state
 	state = t.TempDir()
 	t.Setenv("GITHUB_TOKEN", "original")
 	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN")
 	t.Setenv("HUB_PROTECTED_ENV_KEYS", "ORG_TOKEN")
+	t.Setenv("ATLASSIAN_EMAIL", "owner@example.com")
+	t.Setenv("ATLASSIAN_API_TOKEN", "token")
 	t.Cleanup(func() { state = oldState })
 	if err := os.WriteFile(filepath.Join(state, "self-env.json"), []byte(`{"GITHUB_TOKEN":"updated"}`), 0600); err != nil {
 		t.Fatal(err)
@@ -89,11 +216,143 @@ func TestLoadSelfEnv(t *testing.T) {
 	if os.Getenv("GITHUB_TOKEN") != "updated" {
 		t.Fatal("self env was not loaded")
 	}
+	if os.Getenv("ATLASSIAN_BASIC_AUTH") != "b3duZXJAZXhhbXBsZS5jb206dG9rZW4=" {
+		t.Fatal("Atlassian basic auth was not derived")
+	}
 	if err := os.WriteFile(filepath.Join(state, "self-env.json"), []byte(`{"ORG_TOKEN":"blocked"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := loadSelfEnv(); err == nil {
 		t.Fatal("protected self env was loaded")
+	}
+}
+
+func TestApplySelfServicesMergesMCPConfig(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["atlassian","gitlab"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(config, []byte("model: {}\nmcp_servers: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applySelfServices(config); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "mcp.atlassian.com/v2/mcp") || strings.Contains(text, "gitlab") {
+		t.Fatal(text)
+	}
+}
+
+func TestLoadSelfServicesSetsActiveFeatures(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	t.Setenv("HUB_FEATURES", "workspace")
+	t.Setenv("HUB_HH_ENABLED", "false")
+	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["hh","gitlab"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadSelfServices(); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("HUB_HH_ENABLED") != "true" || !strings.Contains(os.Getenv("HUB_ACTIVE_FEATURES"), "gitlab") {
+		t.Fatal(os.Getenv("HUB_ACTIVE_FEATURES"), os.Getenv("HUB_HH_ENABLED"))
+	}
+}
+
+func TestLoadSelfServicesRejectsInvalidState(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	for _, body := range []string{`not-json`, `{"features":["browser"]}`, `{"features":["gitlab","gitlab"]}`} {
+		if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := loadSelfServices(); err == nil {
+			t.Fatal("invalid self-services accepted", body)
+		}
+	}
+}
+
+func TestSelfServicesRejectsInvalidState(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	for _, body := range []string{`not-json`, `{"features":["workspace"]}`, `{"features":["gitlab","gitlab"]}`} {
+		if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readSelfServices(); err == nil {
+			t.Fatal("invalid self-services accepted", body)
+		}
+	}
+	if err := os.Remove(filepath.Join(state, selfServicesFile)); err != nil {
+		t.Fatal(err)
+	}
+	if features, err := readSelfServices(); err != nil || features != nil {
+		t.Fatal(features, err)
+	}
+	if err := os.Mkdir(filepath.Join(state, selfServicesFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSelfServices(); err == nil {
+		t.Fatal("directory self-services accepted")
+	}
+}
+
+func TestLoadSelfServicesMergesConfiguredFeatures(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["gitlab"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_FEATURES", "workspace")
+	if err := loadSelfServices(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("HUB_ACTIVE_FEATURES"); !strings.Contains(got, "workspace") || !strings.Contains(got, "gitlab") {
+		t.Fatal(got)
+	}
+	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["hh"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadSelfServices(); err != nil || os.Getenv("HUB_HH_ENABLED") != "true" {
+		t.Fatal(err, os.Getenv("HUB_HH_ENABLED"))
+	}
+}
+
+func TestApplySelfServicesNoopAndConfigErrors(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	if err := applySelfServices(filepath.Join(state, "missing.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["github"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(state, "bad.yaml")
+	if err := os.WriteFile(bad, []byte("not: [yaml"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applySelfServices(bad); err == nil {
+		t.Fatal("invalid Hermes config accepted")
+	}
+	noServers := filepath.Join(state, "no-servers.yaml")
+	if err := os.WriteFile(noServers, []byte("model: test\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applySelfServices(noServers); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -301,5 +560,23 @@ func TestClearBrowserLocksRemovesOnlySymlinks(t *testing.T) {
 	}
 	if body, err := os.ReadFile(regular); err != nil || string(body) != "keep" {
 		t.Fatal("regular lock changed", err)
+	}
+}
+
+func TestClearDisplayLocksRemovesStaleFiles(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "X99-lock"), filepath.Join(dir, "X99")}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("stale"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := clearDisplayLocks(paths...); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale display lock remains: %s", path)
+		}
 	}
 }

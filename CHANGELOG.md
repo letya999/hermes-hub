@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added peer `spaces/<id>` scope homes, `scope.yaml`, persistent Hermes/connection/workspace
+  storage and explicit dry-run/apply `migrate-spaces` migration with recoverable sources.
+- Split `communication-hub` from `hermes-runtime` behind an authenticated private job contract;
+  the gateway owns Telegram transport and queue data while the runtime owns scopes and Hermes.
+- Added the channel-neutral `communication-hub` gateway with Telegram sender mapping,
+  durable job/reply spool, scoped Hermes subprocesses, commands and best-effort secret
+  message deletion.
+- Added Telegram-visible service catalog and self-service connector enablement with
+  allowlisted env provisioning, isolated feature state and supervisor restart.
+- Added bundled GitLab `glab` with PAT env auth, Google read-only default with explicit
+  write opt-in, and Atlassian Rovo personal API-token auth.
 - Added organization/user scope overlay: membership checks, policy narrowing,
   separate organization secrets, read-only organization documents and action gates.
 - Separated Telegram bot transport from personal-account MCP and added explicit

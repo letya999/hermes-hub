@@ -134,16 +134,16 @@ func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 		t.Fatal("Slack write was not disabled by default")
 	}
 	compose := Compose(s, "/source", "/host/spaces/alice")
-	agent := compose["services"].(M)["agent"].(M)
+	agent := compose["services"].(M)["hermes-runtime"].(M)
 	envFiles := agent["env_file"].([]any)
-	if envFiles[0].(M)["path"] != "/host/organizations/acme/secrets.prod.env" {
+	if envFiles[0].(M)["path"] != "/host/spaces/alice/generated/runtime.prod.env" {
 		t.Fatal("organization secrets were not kept separate")
 	}
 	volumes := agent["volumes"].([]any)
 	foundOrg := false
 	for _, raw := range volumes {
 		volume := raw.(M)
-		if volume["target"] == "/org" {
+		if volume["target"] == "/scope/org" {
 			foundOrg = volume["read_only"] == true
 		}
 	}
