@@ -12,10 +12,10 @@
 
 В примерах hubctl означает путь к выбранному бинарнику. Сборку запускай из корня проекта.
 
-**Пользовательский путь: spaces/<user>.** Внутри один settings.yaml, SOUL.md, отдельные
-secrets.dev.env и secrets.prod.env. Dev/prod — режимы Docker, а не дополнительные спейсы.
-Память, skills, hooks, токены OAuth, браузер и рабочие файлы каждого режима лежат в
-отдельных Docker-томах. Тестовый контейнер не пишет в память продакшена.
+**Путь scope: spaces/<id>.** Каждый home имеет scope.yaml; user дополнительно содержит
+settings.yaml, SOUL.md, secrets и каталоги hermes/, connections/, workspace/, archive/.
+Dev/prod — режимы Docker, а не дополнительные спейсы. Gateway queue хранится отдельно
+в communication-hub-data; runtime получает scope homes, communication-hub — только bot env.
 
 Для dev: заполни secrets.dev.env и выполни `hubctl up --user artem --env dev`.
 Dev содержит Go и монтирует исходники в /src. Prod не монтирует исходники проекта.
@@ -25,6 +25,8 @@ Skills, hooks и memory — штатные механизмы Hermes. Напри
 `hubctl exec --user artem -- hermes skills list`.
 Через exec можно запускать остальные штатные команды Hermes. Одновременно запускать
 CLI-агента и Telegram gateway с одной памятью нельзя; для экспериментов используй dev.
+Старую установку мигрируй явно: `hubctl migrate-spaces --user artem --org acme`
+(dry-run), затем добавь `--apply`.
 
 Подключения выбираются в features: Telegram, Google Workspace, HH, Slack, GitHub,
 Atlassian, Meet, браузер, локальная транскрибация. Для Jira через Atlassian MCP указываются

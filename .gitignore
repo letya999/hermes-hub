@@ -1,5 +1,6 @@
 /spaces/
 /organizations/
+/spaces/*/generated/
 /reports/
 /.coverage
 /.local/

@@ -31,7 +31,14 @@ func remote(url, key string) M {
 	}
 	return m
 }
+func basicRemote(url, key string) M {
+	return M{"url": url, "timeout": 90, "skip_preflight": true, "headers": M{"Authorization": "Basic ${" + key + "}"}}
+}
 func Config(s Settings) M {
+	organizationSkills := s.OrganizationSkillsDir
+	if organizationSkills == "" && s.OrganizationDir != "" {
+		organizationSkills = filepath.Join(s.OrganizationDir, "hermes", "skills")
+	}
 	servers := M{}
 	if s.Has("workspace") || s.Has("hh") {
 		e := env("HH_TOKEN", "HH_USER_AGENT")
@@ -111,7 +118,11 @@ func Config(s Settings) M {
 	if s.Has("meet") {
 		toolsets = append(toolsets, "google_meet")
 	}
-	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
+	skills := M{}
+	if organizationSkills != "" {
+		skills["external_dirs"] = []string{"/org/hermes/skills"}
+	}
+	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
 }
 func Compose(s Settings, projectRoot, dir string) M {
 	stateVolumes := []any{
@@ -127,9 +138,9 @@ func Compose(s Settings, projectRoot, dir string) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+s.Environment+".yaml")), "target": "/config/config.yaml", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
 	}
-	ports := []string{}
-	if s.Has("browser") || s.Has("meet") {
-		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort))
+	host := s.GitLabHost
+	if host == "" {
+		host = "gitlab.com"
 	}
 	// Keep the loopback OAuth callback available for a connector enabled from chat.
 	ports = append(ports, fmt.Sprintf("127.0.0.1:%d:8000", s.OAuthPort))
@@ -263,6 +274,10 @@ func RenderEnvironment(dir, root, environment string) error {
 		if err != nil {
 			return err
 		}
+		if err = atomic(filepath.Join(dir, "generated", name), b); err != nil {
+			return err
+		}
+		// One-release compatibility for callers that still look beside settings.yaml.
 		if err = atomic(filepath.Join(dir, name), b); err != nil {
 			return err
 		}

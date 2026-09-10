@@ -100,6 +100,9 @@ func selfEnvKeys(s Settings) []string {
 	}
 	result := make([]string, 0, len(keys))
 	for key := range keys {
+		if key == "TELEGRAM_BOT_TOKEN" || key == "TELEGRAM_ALLOWED_USERS" {
+			continue
+		}
 		result = append(result, key)
 	}
 	slices.Sort(result)
@@ -185,6 +188,14 @@ func Read(path string) (Settings, error) {
 		return s, fmt.Errorf("one YAML document expected")
 	}
 	s.Environment = "prod"
+	s.SpaceDir = filepath.Dir(path)
+	if scope, scopeErr := ReadScope(s.SpaceDir); scopeErr == nil {
+		if scope.Kind != UserScope || scope.ID != s.User || scope.Organization != s.Organization {
+			return s, fmt.Errorf("user scope does not match settings.yaml")
+		}
+	} else if !os.IsNotExist(scopeErr) {
+		return s, scopeErr
+	}
 	return s, s.Validate()
 }
 
@@ -195,8 +206,8 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 		return s, err
 	}
 	if s.Organization != "" {
-		orgDir := organizationDir(dir, s.Organization)
-		org, e := ReadOrganization(filepath.Join(orgDir, "settings.yaml"))
+		orgDir := resolvedOrganizationDir(dir, s.Organization)
+		org, e := ReadOrganization(orgDir)
 		if e != nil {
 			return s, e
 		}
@@ -229,10 +240,13 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if organization != "" && !idPattern.MatchString(organization) {
 		return fmt.Errorf("invalid organization")
 	}
+	if err := ensureScope(dir, Scope{Kind: UserScope, ID: profile, Organization: organization}); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, p := range []string{"settings.yaml", "secrets.dev.env", "secrets.prod.env"} {
+	for _, p := range []string{"scope.yaml", "settings.yaml", "secrets.dev.env", "secrets.prod.env"} {
 		if _, err := os.Lstat(filepath.Join(dir, p)); err == nil {
 			return fmt.Errorf("%s already exists; init never overwrites", p)
 		} else if !os.IsNotExist(err) {
@@ -252,6 +266,14 @@ func initEnvironment(dir, profile, environment, organization string) error {
 		if err := os.WriteFile(filepath.Join(dir, "secrets."+env+".env"), []byte(content), 0600); err != nil {
 			return err
 		}
+	}
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "workspace", "archive", "generated"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# User instructions\n\n"), 0600); err != nil {
+		return err
 	}
 	return nil
 }

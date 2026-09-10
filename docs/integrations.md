@@ -30,7 +30,7 @@ this is not a bit-for-bit reproducible OS build.
 ## Organization and user MCP connections
 
 Standalone users may define `mcp_servers` in their own settings. In organization
-scope, only the host-owned `organizations/<org>/settings.yaml` can define MCP servers;
+scope, only the host-owned `spaces/<org>/scope.yaml` can define MCP servers;
 the user can only narrow the approved set with `disabled_mcp`. Every organization MCP
 must be listed in `read_only_mcp` and have a non-empty `tools.include` allowlist. The
 allowlist is passed to Hermes, so shared organization credentials are reserved for
@@ -61,10 +61,17 @@ an arbitrary REST API is not automatically MCP. StdIO executables and their depe
 must exist inside the agent image or selected workspace. No automatic unpinned package
 installation is performed. `doctor` detects missing referenced credentials.
 Native memory, skills and hooks are described in SETUP.md; user configuration passes
-through to Hermes without replacing its extension system.
+through to Hermes without replacing its extension system. Organization skills use the
+upstream `skills.external_dirs` setting and are mounted read-only from the organization
+home; same-named user skills take precedence in a user-scoped job.
 Connector credentials can also be supplied by an explicit owner `KEY=value` message to
 the hub `env_update` tool. It persists a constrained user-runtime overlay and restarts
 the supervisor; it is not a host `.env` editor and cannot alter organization-owned keys.
+
+`communication-hub` never mounts scope homes or receives provider credentials. It sends
+the immutable job envelope to `hermes-runtime` over a private Bearer-authenticated HTTP
+contract. Runtime binding rejects mismatched user, organization, actor or scope before
+opening a path; failed and uncertain results are not blindly replayed.
 
 HeadHunter application requests use form fields vacancy_id/resume_id/message. Only HTTP
 201 marks `sent: true`; receipt Location is preserved. A timeout may mean the send

@@ -1,12 +1,13 @@
 ---
-description: Measured coverage and explicit runtime validation boundaries.
+description: Measured CHG-0009 validation evidence and unverified boundaries.
 last_verified: 2026-09-10
 ---
-# Delivery evidence — 0.2.0
+# Delivery evidence — CHG-0009
 
-`just check` passed on Windows: native Go race tests, CLI integration, native bridge
-subprocess/HTTP MCP, file-boundary and HH contract tests, Go runtime-supervisor tests,
-formatting, vet, staticcheck, documentation and GitHub workflow lint.
+The local `go test ./...` suite passes on Windows. It covers peer scope initialization,
+kind/ID/path checks, organization policy, persistent service mount boundaries, runtime
+HTTP authentication and replay, cross-scope queued jobs, migration dry-run/apply,
+symlink/unrelated-data/active-runtime refusal, and existing MCP/self-service behavior.
 
 | Coverage scope | Measured | Required |
 |---|---|---|

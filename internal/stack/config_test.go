@@ -120,8 +120,8 @@ func TestRenderAllFeatures(t *testing.T) {
 	if string(got) != "owner changes" {
 		t.Fatal("overwrote memory")
 	}
-	compose, _ := os.ReadFile(filepath.Join(d, "compose.prod.yaml"))
-	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") || strings.Contains(string(compose), "docker.sock") {
+	compose, _ := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
+	if strings.Contains(string(compose), "127.0.0.1:") || strings.Contains(string(compose), "docker.sock") {
 		t.Fatal("network or mount boundary")
 	}
 }

@@ -48,7 +48,7 @@ func TestPack(t *testing.T) {
 		t.Fatal(err)
 	}
 	checksums, err := os.ReadFile(filepath.Join("dist", "SHA256SUMS"))
-	if err != nil || strings.Count(string(checksums), "\n") != 7 {
+	if err != nil || strings.Count(string(checksums), "\n") != 9 {
 		t.Fatalf("checksums: %q, %v", checksums, err)
 	}
 	archive, err := zip.OpenReader(filepath.Join("dist", "hermes-hub-test-source.zip"))

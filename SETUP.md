@@ -1,6 +1,7 @@
 # Connect your accounts
 
-All secrets stay in `spaces/<user>/secrets.dev.env` or `secrets.prod.env`. Use literal **unquoted**
+User secrets stay in `spaces/<user>/secrets.dev.env` or `secrets.prod.env`; organization
+secrets stay in the matching `spaces/<org>/` home. Use literal **unquoted**
 single-line `NAME=value` entries; dollar signs are not expanded. Never commit this
 directory. `hubctl render` rewrites generated configs but preserves SOUL and secrets.
 `doctor` validates configuration, not successful login or account entitlements.
@@ -85,7 +86,7 @@ yourself as a test user if the app is in testing. Register exactly
 Fill GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_EMAIL (or the
 equivalent settings.google_email value before rendering).
 Add `google`, start, and ask Hermes to list your upcoming calendar events. Follow its
-OAuth URL in your browser; tokens persist under `/state/google in the selected runtime volume`. Consent scopes are
+OAuth URL in your browser; tokens persist under `spaces/<user>/connections/google`. Consent scopes are
 determined by the selected upstream tools. Google testing-mode refresh tokens can expire.
 The `google` feature is read-only by default. Add `google_write` only when this runtime
 needs to send mail, change events/tasks, or modify Workspace files; individual mutations
@@ -102,9 +103,9 @@ Binary files need an appropriate reader. This does not implement Google Vault.
 
 ## 4. Browser, LinkedIn, Meet and speech
 
-Open `http://localhost:6080/vnc.html` after enabling `browser` (or `meet`). It is a
-private desktop without an additional VNC password: keep the localhost binding and
-SSH tunnel. Log into LinkedIn/HH/other sites yourself. Cookies persist in the selected runtime’s state volume under /state/browser.
+The browser remains internal to `hermes-runtime` and is not published on a host port.
+Use an explicitly approved operator path for login. Log into LinkedIn/HH/other sites
+yourself. Cookies persist in `spaces/<user>/connections/browser`.
 No private LinkedIn API, bulk outreach or CAPTCHA bypass is provided.
 
 For Meet add `meet`, run `hubctl up`, then `hubctl meet-auth`. Use noVNC to sign into
@@ -188,7 +189,7 @@ Create the host-owned overlay once, then initialize each member's isolated user 
 ./bin/hubctl-linux-amd64 init --org acme --user artem
 ```
 
-Edit `organizations/acme/settings.yaml`:
+Edit `spaces/acme/scope.yaml`:
 
 ```yaml
 schema: 1
@@ -201,28 +202,31 @@ read_only_mcp: []
 org_actions: []
 ```
 
-Add organization credentials to `organizations/acme/secrets.dev.env` or
+Add organization credentials to `spaces/acme/secrets.dev.env` or
 `secrets.prod.env`; add personal OAuth/API credentials only to the member's matching
 `spaces/<user>/secrets.*.env`. The organization file is loaded separately and is not
 copied into the user space. A member may only remove an approved MCP with
 `disabled_mcp`; they cannot add a feature, credential or MCP. Every organization MCP
 must be listed in `read_only_mcp` and must use a non-empty `tools.include` allowlist;
 the list is what Hermes exposes to the agent. Organization `docs/` is mounted as
-read-only `/org`. `org_actions` is empty by default; add an action only when
+read-only `/scope/org`. `org_actions` is empty by default; add an action only when
 the organization explicitly permits that mutation. The repository does not provide a
 public authentication gateway, so an external ingress must authenticate the principal
 and select the corresponding user space before invoking `hubctl`.
 
+Existing installations must be migrated explicitly; the command is dry-run by default:
+
+```bash
+./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme
+./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme --apply
+```
+
 ## VPS and another person
 
 Install Docker with Compose 2.30+, copy the project, run init/setup/up on the VPS.
-From your laptop, forward private login surfaces:
-
-```bash
-ssh -N -L 6080:127.0.0.1:6080 -L 8000:127.0.0.1:8000 user@your-vps
-```
-
-Do not open 6080 or 8000 in the VPS firewall. Telegram uses outbound polling.
+The runtime HTTP service is private to the Compose network and is not published.
+Telegram uses outbound polling. Use an explicitly approved SSH/Docker operator path
+for interactive browser or OAuth work; do not expose runtime ports publicly.
 For another person run init with a different user space, separate secrets and
 different base browser_port/oauth_port (reserve each base and base+1 for dev). Use their own bot/session and Google consent.
 Each deployment is fully capable within its own container; this is not a hostile-tenant
@@ -231,8 +235,9 @@ hosting platform. On Windows use the .exe binary and Docker Desktop's Linux cont
 ## Native skills, hooks and memory
 
 These are upstream Hermes features, not parallel implementations. Their paths inside
-each runtime are /state/hermes/skills, /state/hermes/hooks, /state/hermes/plugins and
-/state/hermes/memories. MEMORY.md and USER.md are enabled by default (memory: true).
+each runtime are `<space>/hermes/skills`, `<space>/hermes/hooks`,
+`<space>/hermes/plugins` and `<space>/hermes/memories`. MEMORY.md and USER.md are
+enabled by default (memory: true).
 Use `hubctl exec --user me -- hermes skills list`, `hermes hooks list`,
 `hermes plugins list` or `hermes memory --help` through the same exec command.
 Install skills with Hermes's own skill installer; review their code and permissions.
