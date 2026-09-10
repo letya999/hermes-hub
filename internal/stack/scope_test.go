@@ -122,7 +122,7 @@ func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 		t.Fatal("organization root was not passed to hub MCP")
 	}
 	hubEnv := hub["env"].(M)
-	if hubEnv["HUB_SELF_ENV_KEYS"] != "${HUB_SELF_ENV_KEYS}" || hubEnv["HUB_STATE"] != "/state" {
+	if hubEnv["HUB_SELF_ENV_KEYS"] != "${HUB_SELF_ENV_KEYS}" || hubEnv["HUB_STATE"] != "/state" || hubEnv["JIRA_API_TOKEN"] != "${JIRA_API_TOKEN}" {
 		t.Fatal("self-env runtime wiring missing")
 	}
 	orgMCP := c["mcp_servers"].(M)["org"].(M)
@@ -134,12 +134,12 @@ func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 		t.Fatal("Slack write was not disabled by default")
 	}
 	compose := Compose(s, "/source", "/host/spaces/alice")
-	agent := compose["services"].(M)["agent"].(M)
-	envFiles := agent["env_file"].([]any)
-	if envFiles[0].(M)["path"] != "/host/organizations/acme/secrets.prod.env" {
-		t.Fatal("organization secrets were not kept separate")
+	runtime := compose["services"].(M)["hermes-runtime"].(M)
+	envFiles := runtime["env_file"].([]any)
+	if envFiles[0].(M)["path"] != "/host/spaces/alice/runtime.prod.env" {
+		t.Fatal("runtime secret overlay was not rendered")
 	}
-	volumes := agent["volumes"].([]any)
+	volumes := runtime["volumes"].([]any)
 	foundOrg := false
 	for _, raw := range volumes {
 		volume := raw.(M)

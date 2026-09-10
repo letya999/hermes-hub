@@ -51,10 +51,10 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
-	if !strings.Contains(string(b), filepath.Join(d, "compose.prod.yaml")) || !strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "compose.prod.yaml")) || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
-	for _, fail := range []string{"build", "prepare", "up"} {
+	for _, fail := range []string{"build", "up"} {
 		t.Setenv("HUB_FAIL_MATCH", fail)
 		if run(context.Background(), []string{"up", "--dir", d, "--root", "../.."}) == nil {
 			t.Fatal("ignored docker error", fail)

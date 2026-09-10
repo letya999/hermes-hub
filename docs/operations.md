@@ -10,6 +10,12 @@ and waits for health. down stops containers and retains volumes. logs tails outp
 exec forwards explicit command arguments to the chosen container, for example:
 `hubctl exec --user artem --env dev -- sh -lc 'cd /src && go test ./...'`.
 
+When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
+sender IDs from the configured allowlist to the selected user scope, writes durable jobs
+and replies under `/state/gateway`, and runs one fresh bounded Hermes process per job.
+The current deployment uses one configured user; adding another is a configuration and
+isolated-space operation, not a shared Hermes home.
+
 Change settings, then run up. The runtime copies the generated Hermes config at startup;
 existing memory and installed skills/hooks persist. SOUL.md initializes a new runtime's
 instructions; edits made inside an established Hermes home remain there. To replace it,

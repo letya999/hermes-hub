@@ -10,7 +10,7 @@ formatting, vet, staticcheck, documentation and GitHub workflow lint.
 
 | Coverage scope | Measured | Required |
 |---|---|---|
-| All original Go statements, including runtime and packaging | 85.47% | >=85% |
+| All original Go statements, including runtime and packaging | 85.20% | >=85% |
 
 Upstream Hermes/connector source and test code do not inflate the coverage denominator.
 The Go coverage parser accepts valid zero-statement profile rows emitted on Windows.
@@ -20,6 +20,12 @@ gates. It does not claim a public authentication gateway or live provider access
 The self-env suite verifies atomic user-runtime updates, allowlist enforcement, protected
 organization/runtime keys, startup loading and restart signaling. It does not claim a
 live Telegram bot or personal Telegram account login.
+The service catalog/enablement suite verifies secret-free status output, missing-key
+guidance, dependency handling, organization blocking and isolated self-service state.
+The communication-gateway suite verifies channel-neutral job routing, Telegram command
+handling, durable job/reply spool recovery, bounded worker execution and that sensitive
+job text is not written to disk. It uses a fake Bot API and runner; no live Telegram
+polling, message deletion or model/provider integration is claimed by these tests.
 
 `just security` passed: Go vulnerability check and browser npm audit reported no
 known vulnerabilities. This does not scan every upstream Python or OS dependency.
@@ -30,6 +36,13 @@ and prod has no source mounts. Hosted Actions pins resolve to official upstream 
 Previously installed pinned Hermes/Google/Telegram virtualenvs and a real Hermes MCP 2
 client verified basic compatibility with the Go stdio server. The 0.2.0 local suite
 verifies generic MCP configuration and the native bridge without real account credentials.
+Google configuration tests verify the read-only default and explicit write opt-in;
+runtime and stack tests verify that Atlassian is configured as the pinned local
+`mcp-atlassian` stdio server with Jira credentials, without the legacy Rovo endpoint.
+Docker smoke verifies that `glab` is installed. These checks do not claim Google,
+Atlassian or GitLab account access; Google OAuth consent, Jira API-token validity,
+GitLab PAT and a read operation require deployment acceptance, while any mutation
+requires a separate explicit owner instruction.
 
 `just build` and a Linux/amd64 cross-build passed. `just docker-check` passed with the
 pinned prod image and standalone runtime smoke. A separately authorized local

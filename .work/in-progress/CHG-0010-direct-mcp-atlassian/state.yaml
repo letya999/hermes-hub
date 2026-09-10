@@ -1,0 +1,13 @@
+change: CHG-0010
+status: complete
+completed:
+  - upstream server and credential names verified
+  - Docker installation and local stdio configuration implemented
+  - tests and documentation updated
+  - local checks, security check and Docker smoke passed
+  - deployed dev image rebuilt and both services restarted healthy
+  - owner-provided Jira credentials accepted through Telegram self-env flow
+  - hubctl env propagation fixed and verified
+  - live read-only Jira search returned FLSA-795
+  - env_update now asks the next step after a successful restart
+pending: []

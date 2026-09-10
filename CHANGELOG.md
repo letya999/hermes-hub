@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added the channel-neutral `hub-communication` gateway with Telegram sender mapping,
+  durable job/reply spool, scoped Hermes subprocesses, commands and best-effort secret
+  message deletion.
+- Added Telegram-visible service catalog and self-service connector enablement with
+  allowlisted env provisioning, isolated feature state and supervisor restart.
+- Added bundled GitLab `glab` with PAT env auth, Google read-only default with explicit
+  write opt-in, and Atlassian Rovo personal API-token auth.
 - Added organization/user scope overlay: membership checks, policy narrowing,
   separate organization secrets, read-only organization documents and action gates.
 - Separated Telegram bot transport from personal-account MCP and added explicit

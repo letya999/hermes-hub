@@ -7,19 +7,21 @@ last_verified: 2026-09-10
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` | CLI, gateway, config.yaml, MCP, Meet plugin |
-| Telegram user | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
-| Google | [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp), `54b1c56f7f9912ce32681460d7ca38f9c2a37564` | stdio single-user, selected extended tools, persisted OAuth |
+| Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
+| Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
+| Google | [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp), `54b1c56f7f9912ce32681460d7ca38f9c2a37564` | stdio single-user, selected extended tools, read-only default, persisted OAuth |
 | Slack | [korotovsky/slack-mcp-server](https://github.com/korotovsky/slack-mcp-server), `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
 | Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | stdio, persistent Chromium over local CDP |
 | GitHub | [official MCP](https://github.com/github/github-mcp-server) | https://api.githubcopilot.com/mcp/ + bearer |
-| Atlassian | [official Rovo MCP](https://support.atlassian.com/atlassian-rovo-mcp-server/) | https://mcp.atlassian.com/v2/mcp + OAuth |
+| Atlassian | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian), `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | Local stdio MCP; Jira Cloud API token via `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
+| GitLab | Debian `glab` package from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT and optional `GITLAB_HOST` |
 | HH | [official API](https://api.hh.ru/openapi/redoc) | GET /vacancies, /vacancies/{id}, /resumes/mine; POST /negotiations |
 | Memory Bank | [letya999/memory_bank_setup](https://github.com/letya999/memory_bank_setup), `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | Documentation separation and change-folder conventions |
 
-Telegram has two independent paths: Hermes `telegram` is the Bot API input gateway,
-while `telegram_user` is the personal-account MCP. Enabling one does not enable the
-other. Telegram is installed from its pinned Git repository: the unrelated PyPI package named
-telegram-mcp is deliberately not used. Each Python MCP has a separate locked virtualenv
+Telegram has two independent paths: `hub-communication` is the Bot API channel adapter,
+while `telegram_user` is the personal-account MCP data/action connector. Enabling one does
+not enable the other. Telegram account access is installed from its pinned Git repository:
+the unrelated PyPI package named telegram-mcp is deliberately not used. Each Python MCP has a separate locked virtualenv
 because Telegram and Hermes depend on incompatible MCP major versions. Upstream lockfiles
 are honored. The Meet browser supplement has a separately pinned requirements lock.
 APT system packages follow the pinned Debian release's repositories and security updates;
@@ -73,3 +75,11 @@ Native bridges forward MCP tools and their schemas; they do not forward resource
 prompts, sampling or elicitation. A native MCP requiring those features is not compatible
 with this limited bridge. Remote providers are maintained upstream and can change their
 contracts independently; verify them after upgrades.
+
+Google uses the upstream `--read-only` mode unless `google_write` is enabled. Atlassian
+uses the pinned upstream `mcp-atlassian` stdio server installed inside the Hermes image.
+For Jira Cloud, the owner supplies `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN`;
+the server talks directly to Jira REST APIs and does not use the Atlassian Rovo endpoint.
+The upstream server also supports Confluence, but this preset currently enables Jira only.
+GitLab uses `glab`, not MCP. Provider content never grants permission to create, edit,
+send, merge or trigger operations.

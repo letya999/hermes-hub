@@ -30,6 +30,7 @@ type Settings struct {
 	Timezone            string               `yaml:"timezone"`
 	Features            []string             `yaml:"features"`
 	GoogleEmail         string               `yaml:"google_email"`
+	GitLabHost          string               `yaml:"gitlab_host"`
 	DesktopURL          string               `yaml:"desktop_url"`
 	DraftsURL           string               `yaml:"drafts_url"`
 	OAuthPort           int                  `yaml:"oauth_port"`
@@ -53,11 +54,13 @@ var Features = []Feature{
 	{"telegram_user", []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING"}, "Personal Telegram account MCP; does not receive bot messages"},
 	{"telegram_write", nil, "Adds send/reply/save_draft to Telegram MCP; requires telegram_user"},
 	{"google", []string{"GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"}, "Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth"},
+	{"google_write", nil, "Adds Google Workspace mutation tools; requires google"},
+	{"gitlab", []string{"GITLAB_TOKEN"}, "GitLab through the bundled glab CLI and personal access token"},
 	{"meet", nil, "Hermes Google Meet plugin; explicit joining and caption transcripts"},
 	{"transcription", nil, "Local faster-whisper through Hermes, downloads model on first use"},
 	{"github", []string{"GITHUB_TOKEN"}, "Official remote GitHub MCP"},
 	{"slack", []string{"SLACK_MCP_XOXP_TOKEN"}, "OAuth user token, search/read; posting opt-in per channel"},
-	{"atlassian", nil, "Official Atlassian Rovo remote MCP, interactive OAuth bootstrap"},
+	{"atlassian", []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, "Direct mcp-atlassian Jira MCP; optional Confluence credentials can be added later"},
 	{"desktop", []string{"DESKTOP_TOKEN"}, "Authenticated companion on a native Windows/macOS/Linux desktop"},
 	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
 }
@@ -66,6 +69,13 @@ var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
 
 func selfEnvKeys(s Settings) []string {
 	keys := map[string]bool{"OPENAI_API_KEY": true, "FIRECRAWL_API_KEY": true, "TAVILY_API_KEY": true}
+	for _, service := range ServiceCatalog() {
+		if service.SelfService {
+			for _, key := range service.Requires {
+				keys[key] = true
+			}
+		}
+	}
 	for _, enabled := range s.Features {
 		for _, feature := range Features {
 			if feature.Name == enabled {
@@ -139,8 +149,14 @@ func (s Settings) Validate() error {
 	if s.Has("telegram_write") && !s.Has("telegram_user") {
 		return fmt.Errorf("telegram_write requires telegram_user")
 	}
+	if s.Has("google_write") && !s.Has("google") {
+		return fmt.Errorf("google_write requires google")
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
+	}
+	if s.Has("gitlab") && s.GitLabHost != "" && !regexp.MustCompile(`^[A-Za-z0-9.-]+$`).MatchString(s.GitLabHost) {
+		return fmt.Errorf("gitlab_host must be a hostname")
 	}
 	if s.Has("desktop") && s.DesktopURL == "" {
 		return fmt.Errorf("desktop_url required")
@@ -223,7 +239,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 			return err
 		}
 	}
-	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
+	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
 	b, err := yaml.Marshal(s)
 	if err != nil {
 		return err
@@ -231,7 +247,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
 		return err
 	}
-	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
+	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
 	for _, env := range []string{"dev", "prod"} {
 		if err := os.WriteFile(filepath.Join(dir, "secrets."+env+".env"), []byte(content), 0600); err != nil {
 			return err

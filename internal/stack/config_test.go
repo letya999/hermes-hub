@@ -4,6 +4,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,7 @@ func TestInitNeverOverwrites(t *testing.T) {
 }
 func TestValidation(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	for _, modify := range []func(*Settings){func(s *Settings) { s.User = "../other" }, func(s *Settings) { s.Features = []string{"telegram_write"} }, func(s *Settings) { s.Features = []string{"missing"} }, func(s *Settings) { s.ModelURL = "http://" + "user:secret" + "@host/v1" }, func(s *Settings) { s.Timezone = "invalid/zone" }, func(s *Settings) { s.BrowserPort = 8000 }} {
+	for _, modify := range []func(*Settings){func(s *Settings) { s.User = "../other" }, func(s *Settings) { s.Features = []string{"telegram_write"} }, func(s *Settings) { s.Features = []string{"google_write"} }, func(s *Settings) { s.Features = []string{"missing"} }, func(s *Settings) { s.ModelURL = "http://" + "user:secret" + "@host/v1" }, func(s *Settings) { s.Timezone = "invalid/zone" }, func(s *Settings) { s.BrowserPort = 8000 }} {
 		copy := s
 		modify(&copy)
 		if copy.Validate() == nil {
@@ -89,6 +90,27 @@ func TestRenderAllFeatures(t *testing.T) {
 	if telegram["TELEGRAM_EXPOSED_TOOLS"] != "read-only" {
 		t.Fatal("unsafe default")
 	}
+	s.Features = []string{"google"}
+	googleArgs := Config(s)["mcp_servers"].(M)["google"].(M)["args"].([]string)
+	if !slices.Contains(googleArgs, "--read-only") {
+		t.Fatal("Google writes enabled by default")
+	}
+	s.Features = []string{"google", "google_write"}
+	googleArgs = Config(s)["mcp_servers"].(M)["google"].(M)["args"].([]string)
+	if slices.Contains(googleArgs, "--read-only") {
+		t.Fatal("Google write opt-in ignored")
+	}
+	s.Features = []string{"gitlab"}
+	s.GitLabHost = "gitlab.example.com"
+	composeEnv := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	if composeEnv["GITLAB_HOST"] != "gitlab.example.com" {
+		t.Fatal("GitLab host missing")
+	}
+	s.Features = []string{"atlassian"}
+	atlassian := Config(s)["mcp_servers"].(M)["atlassian"].(M)
+	if atlassian["command"] != "/opt/mcp-atlassian/.venv/bin/mcp-atlassian" || atlassian["headers"] != nil || atlassian["env"].(M)["JIRA_API_TOKEN"] != "${JIRA_API_TOKEN}" {
+		t.Fatal("direct Atlassian MCP config missing")
+	}
 	soul := filepath.Join(d, "SOUL.md")
 	_ = os.WriteFile(soul, []byte("owner changes"), 0600)
 	if err := Render(d, root); err != nil {
@@ -104,6 +126,71 @@ func TestRenderAllFeatures(t *testing.T) {
 	}
 }
 
+func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model.invalid/v1"
+	settings.Features = []string{"workspace", "telegram", "atlassian"}
+	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+		t.Fatal(err)
+	}
+	secrets := "OPENAI_API_KEY=model\nTELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\nJIRA_API_TOKEN=provider\n"
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayEnv, err := os.ReadFile(filepath.Join(d, "communication.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=model") || strings.Contains(string(runtimeEnv), "TELEGRAM_BOT_TOKEN") || strings.Contains(string(runtimeEnv), "TELEGRAM_ALLOWED_USERS") {
+		t.Fatalf("runtime env boundary broken: %q", runtimeEnv)
+	}
+	if string(gatewayEnv) != "TELEGRAM_ALLOWED_USERS=11\nTELEGRAM_BOT_TOKEN=bot\n" {
+		t.Fatalf("gateway env boundary broken: %q", gatewayEnv)
+	}
+	services := Compose(settings, root, d)["services"].(M)
+	if len(services) != 2 || services["communication-hub"].(M)["entrypoint"].([]string)[0] != "communication-hub" {
+		t.Fatalf("split services missing: %#v", services)
+	}
+	for _, raw := range services["communication-hub"].(M)["volumes"].([]any) {
+		if raw.(M)["target"] == "/state" || raw.(M)["target"] == "/workspace" {
+			t.Fatal("gateway received a user mount")
+		}
+	}
+	if _, ok := services["hermes-runtime"].(M)["ports"].([]string); !ok {
+		t.Fatal("runtime service missing browser/OAuth port mapping")
+	}
+}
+
+func saveSettings(path string, settings Settings) error {
+	b, err := yaml.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0600)
+}
+
 func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	s.Features = []string{"telegram"}
@@ -111,26 +198,54 @@ func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	if _, ok := config["mcp_servers"].(M)["telegram_user"]; ok {
 		t.Fatal("bot gateway enabled personal Telegram MCP")
 	}
-	if Compose(s, "/source", "/space")["services"].(M)["agent"].(M)["command"].([]string)[0] != "gateway" {
-		t.Fatal("bot gateway did not select gateway runtime")
+	services := Compose(s, "/source", "/space")["services"].(M)
+	if _, ok := services["communication-hub"]; !ok {
+		t.Fatal("bot gateway service missing")
 	}
 	s.Features = []string{"telegram_user"}
 	config = Config(s)
 	if _, ok := config["mcp_servers"].(M)["telegram_user"]; !ok {
 		t.Fatal("personal Telegram MCP missing")
 	}
-	if Compose(s, "/source", "/space")["services"].(M)["agent"].(M)["command"].([]string)[0] != "idle" {
-		t.Fatal("personal Telegram MCP selected bot gateway runtime")
+	services = Compose(s, "/source", "/space")["services"].(M)
+	if _, ok := services["communication-hub"]; ok {
+		t.Fatal("personal Telegram MCP selected bot gateway service")
 	}
 }
 
-func TestSelfEnvKeysFollowEnabledConnectors(t *testing.T) {
-	s := Settings{Features: []string{"telegram"}, MCP: map[string]MCPServer{"custom": {URL: "https://example.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${CUSTOM_TOKEN}"}}}}
+func TestSelfEnvKeysIncludeCatalogConnectors(t *testing.T) {
+	s := Settings{Features: []string{"telegram", "gitlab", "atlassian"}, MCP: map[string]MCPServer{"custom": {URL: "https://example.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${CUSTOM_TOKEN}"}}}}
 	keys := strings.Join(selfEnvKeys(s), ",")
-	if !strings.Contains(keys, "OPENAI_API_KEY") || !strings.Contains(keys, "FIRECRAWL_API_KEY") || !strings.Contains(keys, "TELEGRAM_BOT_TOKEN") || !strings.Contains(keys, "CUSTOM_TOKEN") || strings.Contains(keys, "TELEGRAM_API_ID") {
+	if !strings.Contains(keys, "OPENAI_API_KEY") || !strings.Contains(keys, "FIRECRAWL_API_KEY") || !strings.Contains(keys, "TELEGRAM_BOT_TOKEN") || !strings.Contains(keys, "GITLAB_TOKEN") || !strings.Contains(keys, "JIRA_URL") || !strings.Contains(keys, "JIRA_USERNAME") || !strings.Contains(keys, "JIRA_API_TOKEN") || !strings.Contains(keys, "CUSTOM_TOKEN") || !strings.Contains(keys, "TELEGRAM_API_ID") {
 		t.Fatalf("unexpected self-env keys: %s", keys)
 	}
 }
+
+func TestServiceCatalogConfig(t *testing.T) {
+	gitlab, ok := ServiceInfoByName("gitlab")
+	if !ok || !gitlab.SelfService || len(gitlab.Requires) != 1 || gitlab.Requires[0] != "GITLAB_TOKEN" {
+		t.Fatal(gitlab, ok)
+	}
+	server, config, ok, err := ServiceMCPConfig("atlassian")
+	if err != nil || !ok || server != "atlassian" || config["command"] != "/opt/mcp-atlassian/.venv/bin/mcp-atlassian" || config["env"].(M)["JIRA_USERNAME"] != "${JIRA_USERNAME}" {
+		t.Fatal(server, config, ok, err)
+	}
+	if _, _, _, err := ServiceMCPConfig("browser"); err == nil {
+		t.Fatal("host-managed service accepted")
+	}
+	for _, name := range []string{"google", "google_write", "github", "slack", "telegram_user", "telegram_write", "hh", "gitlab"} {
+		if _, _, _, err := ServiceMCPConfig(name); err != nil {
+			t.Fatal(name, err)
+		}
+	}
+	if _, _, _, err := ServiceMCPConfig("unknown"); err == nil {
+		t.Fatal("unknown service accepted")
+	}
+	if _, ok := ServiceInfoByName("unknown"); ok {
+		t.Fatal("unknown service found")
+	}
+}
+
 func TestSecretParsing(t *testing.T) {
 	for _, content := range []string{"TOKEN='quoted'\n", "TOKEN=a\nTOKEN=b\n", "BAD NAME=a\n"} {
 		p := filepath.Join(t.TempDir(), "env")

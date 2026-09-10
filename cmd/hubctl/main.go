@@ -126,24 +126,21 @@ func run(ctx context.Context, args []string) error {
 		if err = docker("build"); err != nil {
 			return err
 		}
-		if err = docker("run", "--rm", "--no-deps", "--user", "0:0", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "agent", "prepare"); err != nil {
-			return err
-		}
 		if op == "build" {
 			return nil
 		}
-		return docker("up", "-d", "--wait", "--wait-timeout", "180")
+		return docker("up", "-d", "--wait", "--wait-timeout", "180", "--remove-orphans")
 	}
 	switch op {
 	case "down":
-		return docker("down")
+		return docker("down", "--remove-orphans")
 	case "logs":
 		return docker("logs", "--tail", "100", "-f")
 	case "exec":
 		if f.NArg() == 0 {
 			return fmt.Errorf("exec requires -- command arguments")
 		}
-		return docker(append([]string{"exec", "agent"}, f.Args()...)...)
+		return docker(append([]string{"exec", "hermes-runtime"}, f.Args()...)...)
 	case "chat":
 		s, err := stack.ReadEnvironment(abs, *environment)
 		if err != nil {
@@ -152,11 +149,11 @@ func run(ctx context.Context, args []string) error {
 		if s.Has("telegram") {
 			return fmt.Errorf("gateway owns this home; use Telegram or a separate dev space for CLI chat")
 		}
-		return docker("exec", "agent", "hermes", "chat")
+		return docker("exec", "hermes-runtime", "hermes", "chat")
 	case "telegram-login":
-		return docker("run", "--rm", "--no-deps", "--entrypoint", "/opt/telegram/.venv/bin/python", "agent", "/opt/telegram/session_string_generator.py", "--phone")
+		return docker("run", "--rm", "--no-deps", "--entrypoint", "/opt/telegram/.venv/bin/python", "hermes-runtime", "/opt/telegram/session_string_generator.py", "--phone")
 	case "meet-auth":
-		return docker("exec", "agent", "hermes", "meet", "auth")
+		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
 	}
 	return nil
 }

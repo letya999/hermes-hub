@@ -63,14 +63,15 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 
 | Capability | Implementation |
 |---|---|
-| General agent | Upstream Hermes CLI, Telegram bot gateway, cron, files, terminal |
-| Self-environment | Explicit user `KEY=value` updates for connector credentials; per-runtime persistence and restart |
+| General agent | Upstream Hermes CLI, communication gateway with Telegram adapter, cron, files, terminal |
+| Self-environment | Telegram-visible service catalog, explicit `KEY=value` updates and self-service connector enablement; per-runtime persistence and restart |
 | Skills / hooks / memory | Native Hermes mechanisms persisted per user and runtime |
 | Personal Telegram | Separate pinned Telegram MCP source, server-enforced read-only default; not the bot transport |
-| Google Workspace | Calendar, Drive, Gmail, Docs, Sheets, Slides, Tasks over OAuth |
+| Google Workspace | Read-only Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth; writes opt-in |
 | Internet / LinkedIn | Persistent Chromium + Playwright MCP; optional native search providers |
 | HeadHunter | Official vacancy, personal resume and explicitly authorized application API |
-| Slack / GitHub / Atlassian | OAuth/token MCP connections; Atlassian covers Jira and Confluence |
+| Slack / GitHub / Atlassian | OAuth/token MCP connections; Atlassian covers Jira and Confluence with personal API-token auth |
+| GitLab | Bundled `glab` CLI with `GITLAB_TOKEN` PAT authentication |
 | Meet / audio | Native Meet caption plugin and local faster-whisper |
 | Native desktop / Drafts.app | Authenticated bridge to a trusted native stdio MCP server |
 | Other services | Arbitrary configured stdio/HTTP MCP; external services remain external |

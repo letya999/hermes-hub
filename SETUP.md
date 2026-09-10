@@ -13,6 +13,17 @@ The initial features are `workspace`, `browser`, `hh`. For Telegram operation
 add `telegram`; otherwise the container waits for `hubctl chat` sessions. `hubctl build`
 builds/prepares without requiring every credential, useful before Telegram login.
 
+For the prepared work-service bundle, add these settings once:
+
+```yaml
+features: [workspace, browser, hh, google, atlassian, gitlab]
+google_email: me@example.com
+gitlab_host: gitlab.com
+```
+
+Then only fill the matching secrets: Google OAuth client ID/secret, Jira URL/email/API
+token and GitLab PAT. Keep `google_write` out unless Workspace mutations are needed.
+
 Run commands from the extracted project root, or pass `--root /absolute/project` on
 build/up/render. Use `hubctl logs` for runtime errors. Do not start simultaneous CLI
 and gateway sessions that mutate the same Google OAuth session or browser context.
@@ -47,12 +58,23 @@ GITHUB_TOKEN=...
 SLACK_MCP_XOXP_TOKEN=...
 ```
 
-Hermes passes the message to `env_update`. Values are stored only in that user's
-runtime volume as `self-env.json`; the tool returns key names and schedules a supervisor
-restart. Organization secret keys and runtime-control variables cannot be changed this
-way. The initial bot token/model credential still has to be provisioned locally so the
-runtime can receive the first message. Telegram itself may retain the message in chat
-history; do not use this channel for secrets if that retention is unacceptable.
+Hermes passes the message to `env_update`. The bot accepts `KEY=value`, `KEY: value`,
+or a key on one line followed by its value on the next line. Values are stored only in
+that user's runtime volume as `self-env.json`; the tool returns key names and schedules a
+supervisor restart after the Telegram reply is delivered. Organization secret keys and
+runtime-control variables cannot be changed this way. The initial bot token/model
+credential still has to be provisioned locally so the runtime can receive the first
+message. After processing, the communication gateway asks Telegram to delete the
+secret-bearing message and never writes its value to the gateway spool; deletion is
+best-effort, so Telegram retention policy still applies.
+
+The same Telegram bot can manage the connector lifecycle. Ask “какие сервисы доступны”
+to receive the current catalog and statuses, then say “включи GitLab” (or another
+self-service connector). Hermes returns the exact missing key names, accepts the next
+explicit connector env message through `env_update`, stores it in the user's isolated
+runtime and restarts after delivering the reply before retrying the enable request. Values are never returned by
+the tools. Browser, Meet, Telegram transport and native bridges remain host-managed and
+are reported as such.
 
 ## 3. Google Workspace and archive
 
@@ -60,10 +82,14 @@ Create a Google Cloud OAuth client of type **Web application**. Enable Gmail, Dr
 Calendar, Docs, Sheets, Slides and Tasks APIs. Configure the consent screen and add
 yourself as a test user if the app is in testing. Register exactly
 `http://localhost:8000/oauth2callback` (substitute your configured oauth_port).
-Fill GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and settings.google_email.
+Fill GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_EMAIL (or the
+equivalent settings.google_email value before rendering).
 Add `google`, start, and ask Hermes to list your upcoming calendar events. Follow its
 OAuth URL in your browser; tokens persist under `/state/google in the selected runtime volume`. Consent scopes are
 determined by the selected upstream tools. Google testing-mode refresh tokens can expire.
+The `google` feature is read-only by default. Add `google_write` only when this runtime
+needs to send mail, change events/tasks, or modify Workspace files; individual mutations
+still require an explicit owner request.
 
 On a VPS establish the SSH tunnel below **before** OAuth. The callback binds to all
 interfaces inside the container but is published only on host loopback. The browser
@@ -101,20 +127,28 @@ ID**, not an uploaded arbitrary PDF. Tests/CAPTCHA/platform rules may block appl
 An explicit task may authorize the exact application without another confirmation;
 the agent supplies `authorized: true` only for that task and records the returned receipt.
 
-## 6. GitHub, Slack, Atlassian
+## 6. GitHub, GitLab, Slack, Atlassian
 
 - `github`: GITHUB_TOKEN for the official remote MCP endpoint. Choose permissions for
   the repositories and operations you need. Account/organization policy still applies.
+- GitLab uses the bundled `glab` CLI with a PAT. Enable `gitlab`, put `GITLAB_TOKEN`
+  in the selected secrets file, and set `gitlab_host` only for a self-managed host
+  (the default is `gitlab.com`). No `glab auth login` command is needed: `glab` reads
+  the token from the runtime environment. Verify with `hubctl exec --user me --env prod
+  -- glab auth status`, then use `glab repo view`, `glab issue list` and `glab mr list`.
+  For repository and write operations, create the PAT with at least `api` and
+  `write_repository` scopes. Keep the PAT out of settings, commands, Git remotes and
+  logs; use a separate PAT for dev and prod when their access should differ.
+  Creating/editing issues or merge requests, comments, merges and pipeline actions
+  require an explicit owner request.
 - `slack`: SLACK_MCP_XOXP_TOKEN from your authorized Slack OAuth app. User scopes must
   cover search/read on your accessible conversations. Leave SLACK_MCP_ADD_MESSAGE_TOOL
   empty to disable posting; set a comma-separated channel ID allowlist to opt in.
-- `atlassian`: official remote OAuth MCP. After startup run
-  `hubctl exec --user me -- hermes mcp login atlassian`.
-  Follow Hermes's printed OAuth instructions. After browser consent, if its loopback
-  redirect cannot reach Docker, copy the complete redirect URL from your address bar
-  and paste it into Hermes's waiting terminal prompt. The pinned Hermes supports this
-  callback-paste flow and still verifies OAuth state. Do not paste it into chat or logs.
-  Atlassian's tenant policies and OAuth scopes must still permit the operation.
+- `atlassian`: pinned [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian)
+  installed in the Hermes image and launched locally over stdio. For Jira Cloud set
+  `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN`. This bypasses the Atlassian Rovo
+  endpoint and its organization-level API-token switch. The upstream MCP also supports
+  Confluence; the built-in preset currently configures Jira only.
 
 ## 7. Native Computer Use and Drafts
 

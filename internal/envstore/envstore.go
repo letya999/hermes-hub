@@ -30,14 +30,42 @@ var blocked = map[string]bool{
 
 func Parse(text string) (map[string]string, error) {
 	entries := map[string]string{}
-	for lineNumber, line := range strings.Split(text, "\n") {
+	lines := strings.Split(text, "\n")
+	for lineNumber := 0; lineNumber < len(lines); lineNumber++ {
+		line := lines[lineNumber]
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || !keyPattern.MatchString(key) {
-			return nil, fmt.Errorf("invalid env entry at line %d", lineNumber+1)
+		key = strings.TrimSpace(key)
+		if ok {
+			if !keyPattern.MatchString(key) {
+				return nil, fmt.Errorf("invalid env entry at line %d", lineNumber+1)
+			}
+		} else if key, value, ok = strings.Cut(line, ":"); ok && keyPattern.MatchString(strings.TrimSpace(key)) {
+			key = strings.TrimSpace(key)
+			value = strings.TrimSpace(value)
+			if value == "" {
+				value, lineNumber, ok = followingValue(lines, lineNumber)
+				if !ok {
+					return nil, fmt.Errorf("missing value for %s at line %d", key, lineNumber+1)
+				}
+			}
+		} else if isBareEnvKey(line) {
+			value, lineNumber, ok = followingValue(lines, lineNumber)
+			if !ok {
+				return nil, fmt.Errorf("missing value for %s at line %d", line, lineNumber+1)
+			}
+			key = line
+		} else {
+			// Allow a short human preamble such as "Для Atlassian" around
+			// explicit connector entries, but reject malformed assignments.
+			if strings.Contains(line, "=") {
+				return nil, fmt.Errorf("invalid env entry at line %d", lineNumber+1)
+			}
+			continue
 		}
 		if _, exists := entries[key]; exists {
 			return nil, fmt.Errorf("duplicate env key %s", key)
@@ -45,6 +73,45 @@ func Parse(text string) (map[string]string, error) {
 		entries[key] = strings.TrimSpace(value)
 	}
 	return entries, nil
+}
+
+// LooksLikeEnv marks messages containing connector-style entries as sensitive
+// so the Telegram gateway can delete them after processing.
+func LooksLikeEnv(text string) bool {
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if key, _, ok := strings.Cut(line, "="); ok && keyPattern.MatchString(strings.TrimSpace(key)) {
+			return true
+		}
+		if key, _, ok := strings.Cut(line, ":"); ok && keyPattern.MatchString(strings.TrimSpace(key)) {
+			return true
+		}
+		if isBareEnvKey(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBareEnvKey(line string) bool {
+	return strings.Contains(line, "_") && keyPattern.MatchString(line)
+}
+
+func followingValue(lines []string, current int) (string, int, bool) {
+	for next := current + 1; next < len(lines); next++ {
+		value := strings.TrimSpace(lines[next])
+		if value == "" || strings.HasPrefix(value, "#") {
+			continue
+		}
+		if LooksLikeEnv(value) {
+			return "", current, false
+		}
+		return value, next, true
+	}
+	return "", current, false
 }
 
 func Update(path, text, allowedRaw, protectedRaw string) ([]string, error) {
@@ -127,6 +194,36 @@ func Load(path, allowedRaw, protectedRaw string) (map[string]string, error) {
 		}
 	}
 	return values, nil
+}
+
+// Remove deletes explicitly named legacy values after validating the complete
+// file. It is used for one-time migrations so obsolete credentials are not
+// carried into a new connector configuration.
+func Remove(path, allowedRaw, protectedRaw string, keys ...string) ([]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	legacyAllowed := allowedRaw
+	if legacyAllowed != "" {
+		legacyAllowed += ","
+	}
+	legacyAllowed += strings.Join(keys, ",")
+	values, err := Load(path, legacyAllowed, protectedRaw)
+	if err != nil || values == nil {
+		return nil, err
+	}
+	removed := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := values[key]; ok {
+			delete(values, key)
+			removed = append(removed, key)
+		}
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	slices.Sort(removed)
+	return removed, writeAtomic(path, values)
 }
 
 func policy(allowedRaw, protectedRaw string) (map[string]bool, map[string]bool, error) {

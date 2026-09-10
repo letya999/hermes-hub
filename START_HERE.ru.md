@@ -27,7 +27,14 @@ Skills, hooks и memory — штатные механизмы Hermes. Напри
 CLI-агента и Telegram gateway с одной памятью нельзя; для экспериментов используй dev.
 
 Подключения выбираются в features: Telegram, Google Workspace, HH, Slack, GitHub,
-Atlassian, Meet, браузер, локальная транскрибация. Другие MCP добавляются в mcp_servers.
+Atlassian, Meet, браузер, локальная транскрибация. Для Jira через Atlassian MCP указываются
+`JIRA_URL`, `JIRA_USERNAME` и `JIRA_API_TOKEN`; для GitLab — `GITLAB_TOKEN`. Google по умолчанию доступен только
+для чтения; запись включает `google_write`. GitLab доступен через встроенный `glab`.
+Другие MCP добавляются в mcp_servers.
+В Telegram попроси «какие сервисы доступны», затем «включи GitLab» или другой
+self-service коннектор. Hermes покажет требуемые имена env, примет явные `KEY=value`,
+сохранит их в изолированном runtime и перезапустится. Host-managed функции бот только
+показывает — их нужно включать в settings.yaml.
 Интернет доступен через браузер; для web_search можно добавить Firecrawl/Tavily API key.
 
 Понадобятся твои ключи и входы: Telegram bot token и ID владельца; для чтения личного

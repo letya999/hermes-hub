@@ -37,9 +37,9 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			if len(services) != 1 {
 				t.Fatal("embedded service")
 			}
-			agent := services["agent"].(M)
-			if agent["build"].(M)["target"] != environment {
-				t.Fatal(agent)
+			runtime := services["hermes-runtime"].(M)
+			if runtime["build"].(M)["target"] != environment {
+				t.Fatal(runtime)
 			}
 			if strings.Contains(strings.Join(Doctor(s, map[string]string{}), " "), "EXTERNAL_TOKEN") == false {
 				t.Fatal("missing connector secret not reported")

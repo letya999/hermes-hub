@@ -25,6 +25,31 @@ func TestUpdateLoadsOnlyAllowedUserKeys(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsHumanConnectorEntryForms(t *testing.T) {
+	raw := "Для Atlassian\nATLASSIAN_EMAIL\nowner@example.com\n\nATLASSIAN_API_TOKEN:\nsecret-token\n"
+	values, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["ATLASSIAN_EMAIL"] != "owner@example.com" || values["ATLASSIAN_API_TOKEN"] != "secret-token" {
+		t.Fatalf("parsed values=%v", values)
+	}
+	if !LooksLikeEnv(raw) {
+		t.Fatal("connector entries were not marked sensitive")
+	}
+	if LooksLikeEnv("Для Atlassian подключи Jira") {
+		t.Fatal("ordinary text marked sensitive")
+	}
+}
+
+func TestParseRejectsMissingHumanEntryValue(t *testing.T) {
+	for _, raw := range []string{"ATLASSIAN_EMAIL\n", "ATLASSIAN_API_TOKEN:\n"} {
+		if _, err := Parse(raw); err == nil {
+			t.Fatalf("accepted missing value %q", raw)
+		}
+	}
+}
+
 func TestUpdateRejectsProtectedAndRuntimeKeysWithoutChangingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	if _, err := Update(path, "GITHUB_TOKEN=keep", "GITHUB_TOKEN", "ORG_TOKEN"); err != nil {
@@ -94,6 +119,27 @@ func TestEnvstoreWriteFailure(t *testing.T) {
 	}
 	if _, err := Update(filepath.Join(parent, FileName), "TOKEN=x", "TOKEN", ""); err == nil {
 		t.Fatal("write through file accepted")
+	}
+}
+
+func TestRemoveLegacyValues(t *testing.T) {
+	if removed, err := Remove(filepath.Join(t.TempDir(), FileName), "TOKEN", ""); err != nil || removed != nil {
+		t.Fatal(removed, err)
+	}
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := os.WriteFile(path, []byte(`{"TOKEN":"kept","LEGACY":"removed"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := Remove(path, "TOKEN", "", "LEGACY")
+	if err != nil || len(removed) != 1 || removed[0] != "LEGACY" {
+		t.Fatal(removed, err)
+	}
+	values, err := Load(path, "TOKEN", "")
+	if err != nil || values["TOKEN"] != "kept" {
+		t.Fatal(values, err)
+	}
+	if _, ok := values["LEGACY"]; ok {
+		t.Fatal("legacy value was not removed")
 	}
 }
 
