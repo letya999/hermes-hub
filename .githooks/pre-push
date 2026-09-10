@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+. "$(dirname "$0")/common.sh"
+require_allowed_branch
+case "$(git symbolic-ref --quiet --short HEAD)" in
+	main|dev)
+		echo "Direct pushes to main and dev are forbidden; merge through the protected PR flow." >&2
+		exit 1
+		;;
+esac
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	case "$remote_ref" in
+		refs/heads/main|refs/heads/dev)
+			echo "Direct pushes to main and dev are forbidden; merge through a PR." >&2
+			exit 1
+			;;
+	esac
+done

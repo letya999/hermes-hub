@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+. "$(dirname "$0")/common.sh"
+require_allowed_branch
+case "$(git symbolic-ref --quiet --short HEAD)" in
+	main|dev)
+		echo "Direct commits to main and dev are forbidden; use a typed working branch and PR." >&2
+		exit 1
+		;;
+esac
+require_global_human_identity
