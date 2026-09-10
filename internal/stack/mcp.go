@@ -13,8 +13,14 @@ type MCPServer struct {
 	Args    []string          `yaml:"args,omitempty"`
 	Env     map[string]string `yaml:"env,omitempty"`
 	Headers map[string]string `yaml:"headers,omitempty"`
+	Tools   *MCPTools         `yaml:"tools,omitempty"`
 	Auth    string            `yaml:"auth,omitempty"`
 	Timeout int               `yaml:"timeout,omitempty"`
+}
+
+type MCPTools struct {
+	Include []string `yaml:"include,omitempty"`
+	Exclude []string `yaml:"exclude,omitempty"`
 }
 
 func validateMCP(servers map[string]MCPServer) error {
@@ -48,6 +54,9 @@ func validateMCP(servers map[string]MCPServer) error {
 				return fmt.Errorf("invalid MCP header")
 			}
 		}
+		if s.Tools != nil && len(s.Tools.Include) == 0 && len(s.Tools.Exclude) == 0 {
+			return fmt.Errorf("MCP tools filter cannot be empty")
+		}
 	}
 	return nil
 }
@@ -64,7 +73,14 @@ func (s MCPServer) Config() M {
 		if s.Auth != "" {
 			m["auth"] = s.Auth
 		}
+		if s.Tools != nil {
+			m["tools"] = s.Tools
+		}
 		return m
 	}
-	return M{"command": s.Command, "args": s.Args, "env": s.Env, "timeout": timeout}
+	m := M{"command": s.Command, "args": s.Args, "env": s.Env, "timeout": timeout}
+	if s.Tools != nil {
+		m["tools"] = s.Tools
+	}
+	return m
 }

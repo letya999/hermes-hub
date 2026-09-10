@@ -1,0 +1,12 @@
+change: CHG-0005
+status: complete
+updated: 2026-09-10
+steps:
+  - name: env-overlay
+    status: complete
+  - name: runtime-restart
+    status: complete
+  - name: telegram-separation
+    status: complete
+  - name: checks
+    status: complete

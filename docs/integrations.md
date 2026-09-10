@@ -1,6 +1,6 @@
 ---
-description: Connector contracts and source pins.
-last_verified: 2026-09-07
+description: Connector contracts, scope rules and source pins.
+last_verified: 2026-09-10
 ---
 # Integration contracts
 
@@ -16,12 +16,25 @@ last_verified: 2026-09-07
 | HH | [official API](https://api.hh.ru/openapi/redoc) | GET /vacancies, /vacancies/{id}, /resumes/mine; POST /negotiations |
 | Memory Bank | [letya999/memory_bank_setup](https://github.com/letya999/memory_bank_setup), `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | Documentation separation and change-folder conventions |
 
-Telegram is installed from its pinned Git repository: the unrelated PyPI package named
+Telegram has two independent paths: Hermes `telegram` is the Bot API input gateway,
+while `telegram_user` is the personal-account MCP. Enabling one does not enable the
+other. Telegram is installed from its pinned Git repository: the unrelated PyPI package named
 telegram-mcp is deliberately not used. Each Python MCP has a separate locked virtualenv
 because Telegram and Hermes depend on incompatible MCP major versions. Upstream lockfiles
 are honored. The Meet browser supplement has a separately pinned requirements lock.
 APT system packages follow the pinned Debian release's repositories and security updates;
 this is not a bit-for-bit reproducible OS build.
+
+## Organization and user MCP connections
+
+Standalone users may define `mcp_servers` in their own settings. In organization
+scope, only the host-owned `organizations/<org>/settings.yaml` can define MCP servers;
+the user can only narrow the approved set with `disabled_mcp`. Every organization MCP
+must be listed in `read_only_mcp` and have a non-empty `tools.include` allowlist. The
+allowlist is passed to Hermes, so shared organization credentials are reserved for
+explicitly selected read-only tools. Write-capable servers need their own upstream
+permissions and should not be granted as a shared organization connection. Built-in
+hub-owned mutations are separately gated by `org_actions`.
 
 ## External MCP connections
 
@@ -47,6 +60,9 @@ must exist inside the agent image or selected workspace. No automatic unpinned p
 installation is performed. `doctor` detects missing referenced credentials.
 Native memory, skills and hooks are described in SETUP.md; user configuration passes
 through to Hermes without replacing its extension system.
+Connector credentials can also be supplied by an explicit owner `KEY=value` message to
+the hub `env_update` tool. It persists a constrained user-runtime overlay and restarts
+the supervisor; it is not a host `.env` editor and cannot alter organization-owned keys.
 
 HeadHunter application requests use form fields vacancy_id/resume_id/message. Only HTTP
 201 marks `sent: true`; receipt Location is preserved. A timeout may mean the send

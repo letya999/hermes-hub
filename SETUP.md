@@ -22,6 +22,8 @@ and gateway sessions that mutate the same Google OAuth session or browser contex
 For `telegram`, create a bot with Telegram's BotFather. Fill TELEGRAM_BOT_TOKEN and
 TELEGRAM_ALLOWED_USERS with your numeric account ID (comma-separated owner IDs;
 no wildcard). Send the bot `/start`, then your task. Bot polling needs no public port.
+This is only the Hermes input transport; it does not let Hermes read your personal
+Telegram chats.
 
 For `telegram_user`, obtain your API ID/hash at [my.telegram.org](https://my.telegram.org).
 Fill TELEGRAM_API_ID and TELEGRAM_API_HASH, build, then run:
@@ -35,6 +37,22 @@ TELEGRAM_SESSION_STRING; it grants account access and must be treated like a pas
 Add `telegram_user` and restart with `up`. Default tools only read. Add `telegram_write`
 only if you want Hermes to send/reply or save Telegram drafts under your account.
 Enabling it makes these tools available; SOUL requires the owner's sending instruction.
+
+## 2a. Updating connector env from the owner chat
+
+After the runtime is already reachable, the owner can send explicit entries such as:
+
+```text
+GITHUB_TOKEN=...
+SLACK_MCP_XOXP_TOKEN=...
+```
+
+Hermes passes the message to `env_update`. Values are stored only in that user's
+runtime volume as `self-env.json`; the tool returns key names and schedules a supervisor
+restart. Organization secret keys and runtime-control variables cannot be changed this
+way. The initial bot token/model credential still has to be provisioned locally so the
+runtime can receive the first message. Telegram itself may retain the message in chat
+history; do not use this channel for secrets if that retention is unacceptable.
 
 ## 3. Google Workspace and archive
 
@@ -126,6 +144,40 @@ from Docker's host gateway; for direct Docker access bind to the host's private 
 interface and firewall it to the agent, then set desktop_url/drafts_url accordingly.
 Do not publish an unencrypted bearer endpoint on the public internet. Native companion
 binaries are included for Windows amd64, Linux amd64/arm64 and macOS arm64.
+
+## Organization scope
+
+Create the host-owned overlay once, then initialize each member's isolated user space:
+
+```bash
+./bin/hubctl-linux-amd64 org-init --org acme --user artem
+./bin/hubctl-linux-amd64 init --org acme --user artem
+```
+
+Edit `organizations/acme/settings.yaml`:
+
+```yaml
+schema: 1
+organization: acme
+members:
+  artem: owner
+features: [workspace, browser, google, slack, atlassian]
+mcp_servers: {}
+read_only_mcp: []
+org_actions: []
+```
+
+Add organization credentials to `organizations/acme/secrets.dev.env` or
+`secrets.prod.env`; add personal OAuth/API credentials only to the member's matching
+`spaces/<user>/secrets.*.env`. The organization file is loaded separately and is not
+copied into the user space. A member may only remove an approved MCP with
+`disabled_mcp`; they cannot add a feature, credential or MCP. Every organization MCP
+must be listed in `read_only_mcp` and must use a non-empty `tools.include` allowlist;
+the list is what Hermes exposes to the agent. Organization `docs/` is mounted as
+read-only `/org`. `org_actions` is empty by default; add an action only when
+the organization explicitly permits that mutation. The repository does not provide a
+public authentication gateway, so an external ingress must authenticate the principal
+and select the corresponding user space before invoking `hubctl`.
 
 ## VPS and another person
 

@@ -2,6 +2,8 @@ package agenttools
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T) *Tools {
@@ -44,6 +47,122 @@ func TestFilesIsolationAndRevision(t *testing.T) {
 	out, err := v.File("search", Input{Query: "two"})
 	if err != nil || len(out["items"].([]map[string]any)) != 1 {
 		t.Fatal(out, err)
+	}
+}
+
+func TestOrganizationRootIsReadOnly(t *testing.T) {
+	org := t.TempDir()
+	if err := os.WriteFile(filepath.Join(org, "MEMORY.md"), []byte("org fact"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := Open(t.TempDir(), t.TempDir(), org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if out, err := v.File("read", Input{Root: "organization", Path: "MEMORY.md"}); err != nil || out["text"] != "org fact" {
+		t.Fatal(out, err)
+	}
+	if _, err = v.File("write", Input{Root: "organization", Path: "MEMORY.md", Text: "changed"}); err == nil {
+		t.Fatal("organization write accepted")
+	}
+}
+
+func TestOrganizationActionBlocksHHApply(t *testing.T) {
+	org := t.TempDir()
+	t.Setenv("HUB_ORG_ACTIONS", "")
+	v, err := Open(t.TempDir(), t.TempDir(), org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	v.HHEnabled = true
+	v.HHKey = "private"
+	if _, err = v.API(context.Background(), "hh_apply", Input{Authorized: true, ID: "123", ResumeID: "resume"}); err == nil {
+		t.Fatal("organization action accepted")
+	}
+}
+
+func TestSelfEnvUpdateIsUserScopedAndDoesNotReturnValues(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HUB_STATE", state)
+	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN")
+	t.Setenv("HUB_PROTECTED_ENV_KEYS", "ORG_TOKEN")
+	v, err := Open(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	restarted := false
+	v.Restart = func() error { restarted = true; return nil }
+	out, err := v.EnvUpdate(Input{Text: "GITHUB_TOKEN=secret=not-in-result"})
+	if err != nil || !restarted || out["restart_required"] != true || out["restart_scheduled"] != true {
+		t.Fatal(out, err)
+	}
+	b, err := os.ReadFile(filepath.Join(state, "self-env.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) == "" || string(b) == "secret=not-in-result" {
+		t.Fatal("invalid self-env persistence")
+	}
+	var values map[string]string
+	if err := json.Unmarshal(b, &values); err != nil || values["GITHUB_TOKEN"] != "secret=not-in-result" {
+		t.Fatal(values, err)
+	}
+	if _, err := v.EnvUpdate(Input{Text: "ORG_TOKEN=blocked"}); err == nil {
+		t.Fatal("organization env update accepted")
+	}
+}
+
+func TestSelfEnvUpdateReportsRestartFailureWithoutReturningValue(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
+	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN")
+	v := fixture(t)
+	if out, err := v.EnvUpdate(Input{Text: "GITHUB_TOKEN=private"}); err == nil || out["restart_scheduled"] != false {
+		t.Fatal(out, err)
+	}
+	v.Restart = func() error { return fmt.Errorf("test restart failure") }
+	if out, err := v.EnvUpdate(Input{Text: "GITHUB_TOKEN=private2"}); err == nil || out["restart_scheduled"] != false {
+		t.Fatal(out, err)
+	}
+}
+
+func TestRestartRuntimeValidation(t *testing.T) {
+	state := t.TempDir()
+	if err := restartRuntime(state); err == nil {
+		t.Fatal("missing runtime marker accepted")
+	}
+	if err := os.WriteFile(filepath.Join(state, "runtime.json"), []byte("bad"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restartRuntime(state); err == nil {
+		t.Fatal("malformed runtime marker accepted")
+	}
+	if err := os.WriteFile(filepath.Join(state, "runtime.json"), []byte(`{"pids":[1]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restartRuntime(state); err == nil {
+		t.Fatal("unsafe runtime pid accepted")
+	}
+}
+
+func TestRestartRuntimeSchedulesSupervisor(t *testing.T) {
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "runtime.json"), []byte(fmt.Sprintf(`{"pids":[%d]}`, os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	called := make(chan struct{})
+	old := signalRuntime
+	signalRuntime = func(*os.Process) { close(called) }
+	t.Cleanup(func() { signalRuntime = old })
+	if err := restartRuntime(state); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("supervisor restart was not scheduled")
 	}
 }
 func TestSymlinkEscape(t *testing.T) {
@@ -151,7 +270,7 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 4 {
+	if err != nil || len(list.Tools) != 5 {
 		t.Fatal(list, err)
 	}
 	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "file_write", Arguments: map[string]any{"path": "drafts/test.md", "text": "real MCP call"}})

@@ -103,6 +103,34 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatal("network or mount boundary")
 	}
 }
+
+func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s.Features = []string{"telegram"}
+	config := Config(s)
+	if _, ok := config["mcp_servers"].(M)["telegram_user"]; ok {
+		t.Fatal("bot gateway enabled personal Telegram MCP")
+	}
+	if Compose(s, "/source", "/space")["services"].(M)["agent"].(M)["command"].([]string)[0] != "gateway" {
+		t.Fatal("bot gateway did not select gateway runtime")
+	}
+	s.Features = []string{"telegram_user"}
+	config = Config(s)
+	if _, ok := config["mcp_servers"].(M)["telegram_user"]; !ok {
+		t.Fatal("personal Telegram MCP missing")
+	}
+	if Compose(s, "/source", "/space")["services"].(M)["agent"].(M)["command"].([]string)[0] != "idle" {
+		t.Fatal("personal Telegram MCP selected bot gateway runtime")
+	}
+}
+
+func TestSelfEnvKeysFollowEnabledConnectors(t *testing.T) {
+	s := Settings{Features: []string{"telegram"}, MCP: map[string]MCPServer{"custom": {URL: "https://example.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${CUSTOM_TOKEN}"}}}}
+	keys := strings.Join(selfEnvKeys(s), ",")
+	if !strings.Contains(keys, "OPENAI_API_KEY") || !strings.Contains(keys, "FIRECRAWL_API_KEY") || !strings.Contains(keys, "TELEGRAM_BOT_TOKEN") || !strings.Contains(keys, "CUSTOM_TOKEN") || strings.Contains(keys, "TELEGRAM_API_ID") {
+		t.Fatalf("unexpected self-env keys: %s", keys)
+	}
+}
 func TestSecretParsing(t *testing.T) {
 	for _, content := range []string{"TOKEN='quoted'\n", "TOKEN=a\nTOKEN=b\n", "BAD NAME=a\n"} {
 		p := filepath.Join(t.TempDir(), "env")

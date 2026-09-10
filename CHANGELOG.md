@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added organization/user scope overlay: membership checks, policy narrowing,
+  separate organization secrets, read-only organization documents and action gates.
+- Separated Telegram bot transport from personal-account MCP and added explicit
+  user-runtime `env_update` with constrained persistent overlay and supervisor restart.
 - Replaced local Jest/Python tooling and the Python container supervisor with Go and Just.
 
 ## 0.2.0 — 2026-09-08

@@ -1,4 +1,4 @@
-// Package stack generates a private, single-person Hermes deployment.
+// Package stack generates a private, per-user Hermes deployment.
 package stack
 
 import (
@@ -17,21 +17,27 @@ import (
 )
 
 type Settings struct {
-	Environment string               `yaml:"-"`
-	MCP         map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks       map[string]any       `yaml:"hooks,omitempty"`
-	Memory      bool                 `yaml:"memory"`
-	Schema      int                  `yaml:"schema"`
-	User        string               `yaml:"user"`
-	Model       string               `yaml:"model"`
-	ModelURL    string               `yaml:"model_url"`
-	Timezone    string               `yaml:"timezone"`
-	Features    []string             `yaml:"features"`
-	GoogleEmail string               `yaml:"google_email"`
-	DesktopURL  string               `yaml:"desktop_url"`
-	DraftsURL   string               `yaml:"drafts_url"`
-	OAuthPort   int                  `yaml:"oauth_port"`
-	BrowserPort int                  `yaml:"browser_port"`
+	Environment         string               `yaml:"-"`
+	MCP                 map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks               map[string]any       `yaml:"hooks,omitempty"`
+	Memory              bool                 `yaml:"memory"`
+	Schema              int                  `yaml:"schema"`
+	User                string               `yaml:"user"`
+	Organization        string               `yaml:"organization,omitempty"`
+	DisabledMCP         []string             `yaml:"disabled_mcp,omitempty"`
+	Model               string               `yaml:"model"`
+	ModelURL            string               `yaml:"model_url"`
+	Timezone            string               `yaml:"timezone"`
+	Features            []string             `yaml:"features"`
+	GoogleEmail         string               `yaml:"google_email"`
+	DesktopURL          string               `yaml:"desktop_url"`
+	DraftsURL           string               `yaml:"drafts_url"`
+	OAuthPort           int                  `yaml:"oauth_port"`
+	BrowserPort         int                  `yaml:"browser_port"`
+	OrganizationDir     string               `yaml:"-"`
+	OrganizationDocsDir string               `yaml:"-"`
+	OrganizationRole    string               `yaml:"-"`
+	OrgActions          []string             `yaml:"-"`
 }
 type Feature struct {
 	Name     string   `json:"name"`
@@ -43,8 +49,8 @@ var Features = []Feature{
 	{"workspace", nil, "Bounded workspace and read-only extracted archive; Markdown drafts"},
 	{"browser", nil, "Persistent Chromium via Playwright MCP; manual login through private noVNC"},
 	{"hh", nil, "Public vacancy API; applicant OAuth for resumes and explicitly requested applications"},
-	{"telegram", []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}, "Hermes Bot API gateway, owner allowlist"},
-	{"telegram_user", []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING"}, "Personal account through Telegram MCP, read-only"},
+	{"telegram", []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}, "Telegram bot transport into Hermes; does not grant personal Telegram access"},
+	{"telegram_user", []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING"}, "Personal Telegram account MCP; does not receive bot messages"},
 	{"telegram_write", nil, "Adds send/reply/save_draft to Telegram MCP; requires telegram_user"},
 	{"google", []string{"GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"}, "Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth"},
 	{"meet", nil, "Hermes Google Meet plugin; explicit joining and caption transcripts"},
@@ -56,11 +62,54 @@ var Features = []Feature{
 	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
+var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
+
+func selfEnvKeys(s Settings) []string {
+	keys := map[string]bool{"OPENAI_API_KEY": true, "FIRECRAWL_API_KEY": true, "TAVILY_API_KEY": true}
+	for _, enabled := range s.Features {
+		for _, feature := range Features {
+			if feature.Name == enabled {
+				for _, key := range feature.Requires {
+					keys[key] = true
+				}
+				break
+			}
+		}
+	}
+	if s.Has("slack") && (!s.OrgScoped() || s.AllowsOrgAction("slack.write")) {
+		keys["SLACK_MCP_ADD_MESSAGE_TOOL"] = true
+	}
+	for _, server := range s.MCP {
+		for _, values := range []map[string]string{server.Headers, server.Env} {
+			for _, value := range values {
+				for _, match := range envReferencePattern.FindAllStringSubmatch(value, -1) {
+					keys[match[1]] = true
+				}
+			}
+		}
+	}
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	slices.Sort(result)
+	return result
+}
 
 func (s Settings) Has(name string) bool { return slices.Contains(s.Features, name) }
 func (s Settings) Validate() error {
 	if s.Schema != 1 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1 and profile a lowercase identifier")
+	}
+	if s.Organization != "" && !idPattern.MatchString(s.Organization) {
+		return fmt.Errorf("organization must be a lowercase identifier")
+	}
+	seenMCP := map[string]bool{}
+	for _, name := range s.DisabledMCP {
+		if seenMCP[name] || !idPattern.MatchString(name) {
+			return fmt.Errorf("invalid disabled MCP name %q", name)
+		}
+		seenMCP[name] = true
 	}
 	if _, err := time.LoadLocation(s.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone")
@@ -129,6 +178,17 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 	if err != nil {
 		return s, err
 	}
+	if s.Organization != "" {
+		orgDir := organizationDir(dir, s.Organization)
+		org, e := ReadOrganization(filepath.Join(orgDir, "settings.yaml"))
+		if e != nil {
+			return s, e
+		}
+		s, e = ApplyOrganization(org, s, orgDir)
+		if e != nil {
+			return s, e
+		}
+	}
 	s.Environment = environment
 	if environment == "dev" {
 		s.BrowserPort++
@@ -138,11 +198,20 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 }
 func Init(dir, profile string) error { return InitEnvironment(dir, profile, "prod") }
 func InitEnvironment(dir, profile, environment string) error {
+	return initEnvironment(dir, profile, environment, "")
+}
+func InitEnvironmentWithOrganization(dir, profile, environment, organization string) error {
+	return initEnvironment(dir, profile, environment, organization)
+}
+func initEnvironment(dir, profile, environment, organization string) error {
 	if environment != "dev" && environment != "prod" {
 		return fmt.Errorf("environment must be dev or prod")
 	}
 	if !idPattern.MatchString(profile) {
 		return fmt.Errorf("invalid profile")
+	}
+	if organization != "" && !idPattern.MatchString(organization) {
+		return fmt.Errorf("invalid organization")
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -154,7 +223,7 @@ func InitEnvironment(dir, profile, environment string) error {
 			return err
 		}
 	}
-	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Timezone: "UTC", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
+	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
 	b, err := yaml.Marshal(s)
 	if err != nil {
 		return err
@@ -198,7 +267,21 @@ func ReadSecrets(path string) (map[string]string, error) {
 	return out, nil
 }
 func Doctor(s Settings, secrets map[string]string) []string {
+	return DoctorScope(s, secrets, nil)
+}
+func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string {
+	secrets := map[string]string{}
+	for key, value := range orgSecrets {
+		secrets[key] = value
+	}
 	issues := []string{}
+	for key, value := range userSecrets {
+		if _, exists := secrets[key]; exists {
+			issues = append(issues, "secret key duplicated between organization and user scope: "+key)
+			continue
+		}
+		secrets[key] = value
+	}
 	if s.Model == "" {
 		issues = append(issues, "set model in settings.yaml")
 	}

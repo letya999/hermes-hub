@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-09-08
+last_verified: 2026-09-10
 ---
 # Documentation
 
@@ -8,11 +8,11 @@ last_verified: 2026-09-08
 
 | Document | Purpose | Verified |
 |---|---|---|
-| [architecture.md](architecture.md) | Current components, files and trust boundaries | 2026-09-08 |
-| [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-08 |
-| [operations.md](operations.md) | Deployment, backup and failure recovery | 2026-09-08 |
-| [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-08 |
-| [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-08 |
+| [architecture.md](architecture.md) | Current components, files and trust boundaries | 2026-09-10 |
+| [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-10 |
+| [operations.md](operations.md) | Deployment, backup and failure recovery | 2026-09-10 |
+| [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-10 |
+| [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-10 |
 
 <!-- КОНЕЦ СОДЕРЖИМОГО -->
 

@@ -28,7 +28,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.2.0: init | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion\nFlags: --dir spaces/me --root . --user me --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.2.0: init | org-init | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -36,6 +36,9 @@ func run(ctx context.Context, args []string) error {
 	dir := f.String("dir", "", "private deployment directory")
 	root := f.String("root", ".", "source root")
 	profile := f.String("user", "me", "person identifier")
+	organization := f.String("org", "", "organization identifier")
+	organizationRoot := f.String("organization", "", "mounted organization docs root for tools")
+	organizationDir := f.String("org-dir", "", "organization configuration directory")
 	environment := f.String("env", "prod", "dev or prod")
 	workspace := f.String("workspace", "/workspace", "workspace root")
 	archive := f.String("archive", "/archive", "read-only archive root")
@@ -51,13 +54,24 @@ func run(ctx context.Context, args []string) error {
 	}
 	switch op {
 	case "init":
+		if *organization != "" {
+			return stack.InitEnvironmentWithOrganization(*dir, *profile, *environment, *organization)
+		}
 		return stack.InitEnvironment(*dir, *profile, *environment)
+	case "org-init":
+		if *organization == "" {
+			return fmt.Errorf("org-init requires --org")
+		}
+		if *organizationDir == "" {
+			*organizationDir = filepath.Join("organizations", *organization)
+		}
+		return stack.InitOrganization(*organizationDir, *organization, *profile)
 	case "catalog":
 		return json.NewEncoder(os.Stdout).Encode(stack.Features)
 	case "companion":
 		return companion.Run(ctx, *config)
 	case "tools":
-		t, err := agenttools.Open(*workspace, *archive)
+		t, err := agenttools.Open(*workspace, *archive, *organizationRoot)
 		if err != nil {
 			return err
 		}
@@ -78,7 +92,11 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		issues := stack.Doctor(s, secrets)
+		orgSecrets, err := stack.ReadOrganizationSecrets(s, *environment)
+		if err != nil {
+			return err
+		}
+		issues := stack.DoctorScope(s, secrets, orgSecrets)
 		if len(issues) > 0 {
 			return fmt.Errorf("configuration incomplete:\n- %s", strings.Join(issues, "\n- "))
 		}

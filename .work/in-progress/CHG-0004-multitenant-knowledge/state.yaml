@@ -1,0 +1,12 @@
+change: CHG-0004
+status: complete
+updated: 2026-09-10
+steps:
+  - name: scope-model
+    status: complete
+  - name: runtime-boundary
+    status: complete
+  - name: tests-docs
+    status: complete
+  - name: checks
+    status: complete

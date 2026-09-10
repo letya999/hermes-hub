@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -32,7 +33,15 @@ func Config(s Settings) M {
 	if s.Has("workspace") || s.Has("hh") {
 		e := env("HH_TOKEN", "HH_USER_AGENT")
 		e["HUB_HH_ENABLED"] = fmt.Sprint(s.Has("hh"))
-		servers["hub"] = stdio("/usr/local/bin/hubctl", []string{"tools", "--workspace", "/workspace", "--archive", "/archive"}, e)
+		e["HUB_ORG_ACTIONS"] = "${HUB_ORG_ACTIONS}"
+		e["HUB_SELF_ENV_KEYS"] = "${HUB_SELF_ENV_KEYS}"
+		e["HUB_PROTECTED_ENV_KEYS"] = "${HUB_PROTECTED_ENV_KEYS}"
+		e["HUB_STATE"] = "/state"
+		args := []string{"tools", "--workspace", "/workspace", "--archive", "/archive"}
+		if s.OrgScoped() {
+			args = append(args, "--organization", "/org")
+		}
+		servers["hub"] = stdio("/usr/local/bin/hubctl", args, e)
 	}
 	if s.Has("telegram_user") {
 		e := env("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING")
@@ -63,7 +72,13 @@ func Config(s Settings) M {
 		servers["github"] = remote("https://api.githubcopilot.com/mcp/", "GITHUB_TOKEN")
 	}
 	if s.Has("slack") {
-		servers["slack"] = stdio("/usr/local/bin/slack-mcp-server", []string{"--transport", "stdio"}, env("SLACK_MCP_XOXP_TOKEN", "SLACK_MCP_ADD_MESSAGE_TOOL"))
+		e := env("SLACK_MCP_XOXP_TOKEN")
+		if !s.OrgScoped() || s.AllowsOrgAction("slack.write") {
+			e["SLACK_MCP_ADD_MESSAGE_TOOL"] = "${SLACK_MCP_ADD_MESSAGE_TOOL}"
+		} else {
+			e["SLACK_MCP_ADD_MESSAGE_TOOL"] = ""
+		}
+		servers["slack"] = stdio("/usr/local/bin/slack-mcp-server", []string{"--transport", "stdio"}, e)
 	}
 	if s.Has("atlassian") {
 		m := remote("https://mcp.atlassian.com/v2/mcp", "")
@@ -104,7 +119,15 @@ func Compose(s Settings, projectRoot, dir string) M {
 	if s.Has("telegram") {
 		mode = "gateway"
 	}
-	agent := M{"build": M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}, "image": "hermes-hub:0.2.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "env_file": []any{M{"path": filepath.ToSlash(filepath.Join(dir, "secrets."+s.Environment+".env")), "format": "raw"}}, "environment": M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache"}, "volumes": volumes, "ports": ports, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "command": []string{mode}, "healthcheck": M{"test": []string{"CMD", "hub-runtime", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}}
+	envFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "secrets."+s.Environment+".env")), "format": "raw"}}
+	if s.OrgScoped() {
+		envFiles = append([]any{M{"path": filepath.ToSlash(filepath.Join(s.OrganizationDir, "secrets."+s.Environment+".env")), "format": "raw"}}, envFiles...)
+	}
+	agentEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(selfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": organizationSecretKeys(s), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache"}
+	if s.OrgScoped() {
+		volumes = append(volumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
+	}
+	agent := M{"build": M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}, "image": "hermes-hub:0.2.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "env_file": envFiles, "environment": agentEnv, "volumes": volumes, "ports": ports, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "command": []string{mode}, "healthcheck": M{"test": []string{"CMD", "hub-runtime", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}}
 	if s.Environment == "dev" {
 		agent["restart"] = "no"
 		agent["read_only"] = false
@@ -135,6 +158,11 @@ func RenderEnvironment(dir, root, environment string) error {
 	secrets, err := ReadSecrets(filepath.Join(dir, "secrets."+s.Environment+".env"))
 	if err != nil {
 		return err
+	}
+	if s.OrgScoped() {
+		if _, err = ReadOrganizationSecrets(s, s.Environment); err != nil {
+			return err
+		}
 	}
 	if err = os.MkdirAll(filepath.Join(dir, "archive"), 0755); err != nil {
 		return err

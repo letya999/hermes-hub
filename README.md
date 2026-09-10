@@ -25,19 +25,34 @@ host. For Windows use the included .exe and Docker Desktop Linux containers.
 Start with 4 vCPU, 8 GB RAM and 30 GB free disk; browser/speech dependencies make the
 agent image larger than the small Go CLI. The first build downloads pinned upstreams.
 
-## Users and environments
+## Organizations, users and environments
 
 The user namespace is **spaces/<user>**. Each space has settings.yaml, SOUL.md,
-secrets.dev.env and secrets.prod.env. Dev/prod selects a Docker target and env file;
-it does not create another user namespace. The generated compose.dev.yaml and
-compose.prod.yaml use separate named volumes for runtime memory, credentials, browser
-sessions and working files. No automatic copying of tokens or memories between them.
+secrets.dev.env and secrets.prod.env. An optional organization overlay lives in
+**organizations/<org>** and contains membership, approved features/MCP servers,
+read-only `docs/`, separate organization secrets and explicit organization actions.
+The user can narrow that policy with `disabled_mcp`, but cannot expand it. Public
+authentication/routing is not part of this local control plane: the caller must map
+an authenticated principal to one user space before starting its runtime.
+
+Dev/prod selects a Docker target and env file; it does not create another user
+namespace. The generated compose.dev.yaml and compose.prod.yaml use separate named
+volumes for runtime memory, credentials, browser sessions and working files. No
+automatic copying of tokens or memories between users.
 
 ```bash
+./bin/hubctl-linux-amd64 org-init --org acme --user artem
+./bin/hubctl-linux-amd64 init --org acme --user artem
 ./bin/hubctl-linux-amd64 up --user artem --env dev
 ./bin/hubctl-linux-amd64 init --user another-person
 ./bin/hubctl-linux-amd64 up --user another-person --env prod
 ```
+
+Edit `organizations/acme/settings.yaml` to remove features, add approved read-only
+`mcp_servers` with `tools.include` allowlists, and grant only the required
+`org_actions` such as `slack.write` or `hh.apply`. Run
+`up`, `render` and `doctor` with the same `--org`/`--user` selection. Organization
+documents are available to the runtime only as read-only `/org`.
 
 Dev adds the Go toolchain and selected source mounts under /src for development. Prod has no project
 source mount or Go compiler. Both use an unprivileged runtime, private login ports and persistent data.
@@ -49,12 +64,13 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | Capability | Implementation |
 |---|---|
 | General agent | Upstream Hermes CLI, Telegram bot gateway, cron, files, terminal |
+| Self-environment | Explicit user `KEY=value` updates for connector credentials; per-runtime persistence and restart |
 | Skills / hooks / memory | Native Hermes mechanisms persisted per user and runtime |
-| Personal Telegram | Pinned Telegram MCP source, server-enforced read-only default |
+| Personal Telegram | Separate pinned Telegram MCP source, server-enforced read-only default; not the bot transport |
 | Google Workspace | Calendar, Drive, Gmail, Docs, Sheets, Slides, Tasks over OAuth |
 | Internet / LinkedIn | Persistent Chromium + Playwright MCP; optional native search providers |
 | HeadHunter | Official vacancy, personal resume and explicitly authorized application API |
-| Slack / GitHub / Atlassian | OAuth/token MCP connections |
+| Slack / GitHub / Atlassian | OAuth/token MCP connections; Atlassian covers Jira and Confluence |
 | Meet / audio | Native Meet caption plugin and local faster-whisper |
 | Native desktop / Drafts.app | Authenticated bridge to a trusted native stdio MCP server |
 | Other services | Arbitrary configured stdio/HTTP MCP; external services remain external |
@@ -62,6 +78,9 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 Default features are workspace, browser and hh. All account integrations are opt-in.
 Hermes works without CareerGo and JobFetch. If you run an external MCP service, add
 its URL and token reference under mcp_servers; see [connections](docs/integrations.md).
+An explicit owner message containing connector `KEY=value` lines can use the hub
+`env_update` tool. It changes only this user's runtime overlay and reports key names,
+never values; organization-owned and runtime-control keys are rejected.
 
 ## Engineering
 

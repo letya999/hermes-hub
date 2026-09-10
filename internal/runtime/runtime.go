@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/envstore"
 	"io/fs"
 	"net/http"
 	"os"
@@ -49,10 +50,26 @@ func Run(args []string) error {
 		}
 		return Prepare([]string{state, workspace}, 10001, gid, chownPath)
 	case "idle", "gateway":
+		if err := loadSelfEnv(); err != nil {
+			return err
+		}
 		return supervise(args[0])
 	default:
 		return errors.New("expected idle, gateway, prepare or health")
 	}
+}
+
+func loadSelfEnv() error {
+	values, err := envstore.Load(filepath.Join(state, envstore.FileName), os.Getenv("HUB_SELF_ENV_KEYS"), os.Getenv("HUB_PROTECTED_ENV_KEYS"))
+	if err != nil {
+		return err
+	}
+	for key, value := range values {
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set self-env %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 func Prepare(roots []string, uid, gid int, chown func(string, int, int) error) error {
@@ -117,17 +134,33 @@ func Health(markerPath string) error {
 }
 
 func supervise(mode string) error {
-	setUmask()
-	for _, folder := range []string{"home", "hermes", "browser", "cache", "hermes/skills", "hermes/hooks", "hermes/plugins", "hermes/memories"} {
-		if err := os.MkdirAll(filepath.Join(state, folder), 0770); err != nil {
+	for {
+		restart, err := superviseOnce(mode)
+		if err != nil || !restart {
+			return err
+		}
+		if err := loadSelfEnv(); err != nil {
 			return err
 		}
 	}
+}
+
+func superviseOnce(mode string) (bool, error) {
+	setUmask()
+	restartPath := filepath.Join(state, "restart.request")
+	if err := os.Remove(restartPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	for _, folder := range []string{"home", "hermes", "browser", "cache", "hermes/skills", "hermes/hooks", "hermes/plugins", "hermes/memories"} {
+		if err := os.MkdirAll(filepath.Join(state, folder), 0770); err != nil {
+			return false, err
+		}
+	}
 	if err := copyIfExists("/config/config.yaml", filepath.Join(state, "hermes/config.yaml"), true); err != nil {
-		return err
+		return false, err
 	}
 	if err := copyIfExists("/config/SOUL.md", filepath.Join(state, "hermes/SOUL.md"), false); err != nil {
-		return err
+		return false, err
 	}
 
 	var children []*exec.Cmd
@@ -153,30 +186,30 @@ func supervise(mode string) error {
 	browser := os.Getenv("HUB_BROWSER") == "true" || os.Getenv("HUB_MEET") == "true"
 	if browser {
 		if err := clearBrowserLocks(filepath.Join(state, "browser")); err != nil {
-			return err
+			return false, err
 		}
 		if err := os.Setenv("DISPLAY", ":99"); err != nil {
-			return err
+			return false, err
 		}
 		for _, command := range [][]string{{"Xvfb", ":99", "-screen", "0", "1440x900x24", "-nolisten", "tcp"}, {"fluxbox"}, {"x11vnc", "-display", ":99", "-localhost", "-forever", "-shared", "-nopw"}, {"websockify", "--web=/usr/share/novnc", "0.0.0.0:6080", "127.0.0.1:5900"}, {"chromium", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage", "--password-store=basic", "--user-data-dir=/state/browser", "--remote-debugging-port=9222", "--remote-debugging-address=127.0.0.1", "about:blank"}} {
 			if err := start(command[0], command[1:]...); err != nil {
-				return err
+				return false, err
 			}
 		}
 		if err := waitForBrowser(); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if os.Getenv("HUB_MEET") == "true" {
 		cmd := command("hermes", "plugins", "enable", "google_meet")
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if mode == "gateway" {
 		if err := start("hermes", "gateway", "run"); err != nil {
-			return err
+			return false, err
 		}
 	}
 	status := marker{PIDs: []int{os.Getpid()}, Browser: browser}
@@ -185,7 +218,7 @@ func supervise(mode string) error {
 	}
 	body, _ := json.Marshal(status)
 	if err := os.WriteFile(filepath.Join(state, "runtime.json"), body, 0660); err != nil {
-		return err
+		return false, err
 	}
 
 	signals := make(chan os.Signal, 1)
@@ -194,9 +227,14 @@ func supervise(mode string) error {
 	for {
 		select {
 		case <-signals:
-			return nil
+			if err := os.Remove(restartPath); err == nil {
+				return true, nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, err
+			}
+			return false, nil
 		case err := <-exits:
-			return fmt.Errorf("supervised process exited: %w", err)
+			return false, fmt.Errorf("supervised process exited: %w", err)
 		}
 	}
 }

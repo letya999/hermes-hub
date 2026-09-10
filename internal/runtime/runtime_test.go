@@ -73,6 +73,30 @@ func TestRunRejectsInvalidGID(t *testing.T) {
 	}
 }
 
+func TestLoadSelfEnv(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Setenv("GITHUB_TOKEN", "original")
+	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN")
+	t.Setenv("HUB_PROTECTED_ENV_KEYS", "ORG_TOKEN")
+	t.Cleanup(func() { state = oldState })
+	if err := os.WriteFile(filepath.Join(state, "self-env.json"), []byte(`{"GITHUB_TOKEN":"updated"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadSelfEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("GITHUB_TOKEN") != "updated" {
+		t.Fatal("self env was not loaded")
+	}
+	if err := os.WriteFile(filepath.Join(state, "self-env.json"), []byte(`{"ORG_TOKEN":"blocked"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadSelfEnv(); err == nil {
+		t.Fatal("protected self env was loaded")
+	}
+}
+
 func TestBrowserHealthAndWait(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer server.Close()
@@ -189,6 +213,44 @@ func TestRunPrepareAndIdleShutdown(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("supervisor did not stop")
+	}
+}
+
+func TestSupervisorRestartsInPlaceAfterEnvUpdate(t *testing.T) {
+	oldState, oldNotify, oldStop := state, signalNotify, signalStop
+	state = t.TempDir()
+	calls := 0
+	signalNotify = func(ch chan os.Signal) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(state, "restart.request"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ch <- os.Interrupt
+	}
+	signalStop = func(chan os.Signal) {}
+	t.Cleanup(func() { state, signalNotify, signalStop = oldState, oldNotify, oldStop })
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	if err := supervise("idle"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected in-place restart, got %d supervisor runs", calls)
+	}
+}
+
+func TestRunIdleLoadsEnvAndStops(t *testing.T) {
+	oldState, oldNotify, oldStop := state, signalNotify, signalStop
+	state = t.TempDir()
+	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
+	signalStop = func(chan os.Signal) {}
+	t.Cleanup(func() { state, signalNotify, signalStop = oldState, oldNotify, oldStop })
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	if err := Run([]string{"idle"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

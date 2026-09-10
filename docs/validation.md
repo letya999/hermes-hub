@@ -1,6 +1,6 @@
 ---
-description: Measured 0.2.0 coverage and explicit runtime validation boundaries.
-last_verified: 2026-09-09
+description: Measured coverage and explicit runtime validation boundaries.
+last_verified: 2026-09-10
 ---
 # Delivery evidence — 0.2.0
 
@@ -10,10 +10,16 @@ formatting, vet, staticcheck, documentation and GitHub workflow lint.
 
 | Coverage scope | Measured | Required |
 |---|---|---|
-| All original Go statements, including runtime and packaging | 85.01% | >=85% |
+| All original Go statements, including runtime and packaging | 85.47% | >=85% |
 
 Upstream Hermes/connector source and test code do not inflate the coverage denominator.
 The Go coverage parser accepts valid zero-statement profile rows emitted on Windows.
+The organization scope suite verifies member resolution, policy narrowing, separate
+organization/user secrets, read-only `/org`, MCP tool allowlists and hub-owned action
+gates. It does not claim a public authentication gateway or live provider access.
+The self-env suite verifies atomic user-runtime updates, allowlist enforcement, protected
+organization/runtime keys, startup loading and restart signaling. It does not claim a
+live Telegram bot or personal Telegram account login.
 
 `just security` passed: Go vulnerability check and browser npm audit reported no
 known vulnerabilities. This does not scan every upstream Python or OS dependency.

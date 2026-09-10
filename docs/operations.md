@@ -1,6 +1,6 @@
 ---
-description: Environment selection, data recovery and operating the standalone agent.
-last_verified: 2026-09-07
+description: Environment selection, data recovery and operating isolated user runtimes.
+last_verified: 2026-09-10
 ---
 # Operations
 
@@ -14,6 +14,10 @@ Change settings, then run up. The runtime copies the generated Hermes config at 
 existing memory and installed skills/hooks persist. SOUL.md initializes a new runtime's
 instructions; edits made inside an established Hermes home remain there. To replace it,
 explicitly copy the owner's new SOUL into that selected container and restart.
+An explicit owner `KEY=value` message can use the hub `env_update` tool. It persists a
+user-only `/state/self-env.json` overlay and asks the supervisor to restart; it does not
+rewrite `spaces/<user>/secrets.*.env` or organization secrets. Remove/reset the overlay
+when changing back to host-managed credentials.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
 Settings and source code are shared between the user's dev/prod selections, but env
@@ -22,12 +26,14 @@ For a deployment with stronger release isolation, use a tagged source checkout f
 Do not copy production tokens into dev just to make a test pass. All automated tests
 are credential-free. Dev uses browser_port+1 and oauth_port+1; reserve both ports per user.
 
-Back up all private user-space files and both selected runtime volumes to encrypted
-storage while their containers are stopped. `docker volume ls` identifies project-scoped
-volumes; use Docker's volume backup procedure or docker cp from a stopped container.
+Back up all private user-space files, any host-owned organization directory, and both
+selected runtime volumes to encrypted storage while their containers are stopped.
+`docker volume ls` identifies project-scoped volumes; use Docker's volume backup
+procedure or docker cp from a stopped container.
 Do not use down --volumes unless intentionally deleting that user's persistent data.
 On restore use the same Compose project identity or explicitly restore into its new
 volumes. Never merge two people's memories, Telegram sessions or Google credentials.
+Keep organization secrets and documents separate from member spaces during restore.
 
 Health checks measure supervisor/process liveness and Chromium CDP readiness. They do
 not prove OAuth or model access. If a connector fails, inspect its logs and verify its
