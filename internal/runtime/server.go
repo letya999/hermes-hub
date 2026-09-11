@@ -15,12 +15,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 const maxPromptBytes = 2 * 1024 * 1024
 
 // ExecuteRequest is the private communication-hub to runtime contract.
 type ExecuteRequest struct {
+	identity.Envelope
 	OrganizationID string `json:"organization_id"`
 	UserID         string `json:"user_id"`
 	ActorID        string `json:"actor_id"`
@@ -141,6 +144,9 @@ func decodeExecuteRequest(w http.ResponseWriter, r *http.Request) (ExecuteReques
 func validateExecuteRequest(request ExecuteRequest) error {
 	user := env("HUB_USER_ID", "me")
 	organization := env("HUB_ORGANIZATION_ID", "personal")
+	if err := request.Envelope.Validate(user, user, env("HUB_RUNTIME_ID", user), env("HUB_POLICY_VERSION", "policy-1")); err != nil {
+		return err
+	}
 	if request.UserID != user || request.ActorID != user {
 		return errors.New("runtime user mismatch")
 	}

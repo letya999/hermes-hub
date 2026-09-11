@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"gopkg.in/yaml.v3"
 )
@@ -294,6 +295,7 @@ func runtimeEnv(features []string) map[string]string {
 // Job is immutable routing context plus the user message. Sensitive prompts are
 // held only in memory by Spool and are intentionally absent from job files.
 type Job struct {
+	identity.Envelope
 	ID             string    `json:"id"`
 	OrganizationID string    `json:"organization_id"`
 	UserID         string    `json:"user_id"`
@@ -311,13 +313,15 @@ type Job struct {
 }
 
 type Delivery struct {
-	ID             string    `json:"id"`
-	JobID          string    `json:"job_id"`
-	IdempotencyKey string    `json:"idempotency_key,omitempty"`
-	ChatID         int64     `json:"chat_id"`
-	Text           string    `json:"text"`
-	Attempts       int       `json:"attempts"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID               string    `json:"id"`
+	JobID            string    `json:"job_id"`
+	IdempotencyKey   string    `json:"idempotency_key,omitempty"`
+	ConversationID   string    `json:"conversation_id"`
+	DeliveryTargetID string    `json:"delivery_target_id"`
+	ChatID           int64     `json:"chat_id"`
+	Text             string    `json:"text"`
+	Attempts         int       `json:"attempts"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
@@ -422,6 +426,16 @@ func (s *Spool) FailJob(id string) error {
 }
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
+	transportID := "telegram-" + strconv.FormatInt(d.ChatID, 10)
+	if d.ConversationID == "" {
+		d.ConversationID = transportID
+	}
+	if d.DeliveryTargetID == "" {
+		d.DeliveryTargetID = transportID
+	}
+	if d.ChatID <= 0 || !identity.ValidID(d.ConversationID) || d.DeliveryTargetID != transportID {
+		return errors.New("invalid delivery identity")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, dir := range []string{"pending", "sending", "done", "failed"} {
@@ -839,7 +853,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		}
 	}
 	sensitive := envstore.LooksLikeEnv(text)
-	job := Job{ID: "telegram-" + strconv.Itoa(update.UpdateID), OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:" + strconv.Itoa(update.UpdateID), ChatID: message.Chat.ID, MessageID: message.MessageID, Text: text, Sensitive: sensitive, CreatedAt: g.now().UTC()}
+	job := Job{Envelope: identity.TelegramEnvelope(user.ID, message.From.ID, envOr("HUB_RUNTIME_ID", user.ID), envOr("HUB_POLICY_VERSION", "policy-1")), ID: "telegram-" + strconv.Itoa(update.UpdateID), OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:" + strconv.Itoa(update.UpdateID), ChatID: message.Chat.ID, MessageID: message.MessageID, Text: text, Sensitive: sensitive, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}

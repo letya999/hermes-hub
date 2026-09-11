@@ -15,6 +15,13 @@ and replies under `/state/gateway`, and runs one fresh bounded Hermes process pe
 The current deployment uses one configured user; adding another is a configuration and
 isolated-space operation, not a shared Hermes home.
 
+Treat `scope.yaml` IDs as immutable. Moving or renaming a home does not change its
+principal or context identity. Today Telegram links are provisioned only in trusted
+host configuration after the operator verifies the numeric account ID; there is no
+self-linking endpoint. A future Slack/OIDC flow must authenticate the existing
+principal and require fresh issuer proof. Never link from a username, email string or
+message request. Unlinking stops routing but does not transfer or delete the principal.
+
 Change settings, then run up. The runtime copies the generated Hermes config at startup;
 existing memory and installed skills/hooks persist. SOUL.md initializes a new runtime's
 instructions; edits made inside an established Hermes home remain there. To replace it,

@@ -4,6 +4,23 @@ last_verified: 2026-09-11
 ---
 # Delivery evidence — CHG-0009
 
+CHG-0011 freezes the identity and ownership contract and maps it to the existing space
+layout without data migration. The Telegram gateway now creates a schema-1 canonical
+identity envelope; the private HTTP runner preserves it and the runtime rejects
+malformed IDs, principal/context/runtime mismatches and stale policy versions before
+Hermes execution. Delivery records bind the normalized conversation to the numeric
+Telegram audience, and spool restart tests preserve runtime and policy identity.
+Effective configuration produces one policy digest shared by gateway and runtime.
+
+On 2026-09-11, `just check` passed, including race tests, formatting, vet, staticcheck,
+documentation/workflow checks and 85.02% original Go statement coverage. `just
+security` found no Go or browser dependency vulnerability. `just docker-check prod`
+built image `00437cced4d1` and passed the standalone runtime smoke with Hermes Agent
+0.21.0. The smoke starts a separate real `hub-runtime serve` container and verifies
+that a missing canonical identity envelope is rejected with HTTP 409 before Hermes;
+no live provider call or external identity-provider integration is claimed.
+Host-provisioned Telegram IDs remain the only implemented account-linking mechanism.
+
 The local `go test ./...` suite passes on Windows. It covers peer scope initialization,
 kind/ID/path checks, organization policy, persistent service mount boundaries, runtime
 HTTP authentication and replay, cross-scope queued jobs, migration dry-run/apply,
@@ -11,7 +28,7 @@ symlink/unrelated-data/active-runtime refusal, and existing MCP/self-service beh
 
 | Coverage scope | Measured | Required |
 |---|---|---|
-| All original Go statements, including runtime and packaging | 85.01% | >=85% |
+| All original Go statements, including runtime and packaging | 85.02% | >=85% |
 
 Upstream Hermes/connector source and test code do not inflate the coverage denominator.
 The Go coverage parser accepts valid zero-statement profile rows emitted on Windows.
