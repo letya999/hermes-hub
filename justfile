@@ -38,3 +38,4 @@ release version:
 docker-check target="prod":
     docker build --target {{target}} -t hermes-hub:test -f docker/Dockerfile .
     go run ./cmd/devcheck docker-smoke hermes-hub:test
+    go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test

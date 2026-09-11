@@ -24,6 +24,14 @@ A small Go binary supervises container processes. There is no replacement agent 
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
 using files and tools.
 
+The pinned Hermes artifact also contains an opt-in authenticated HTTP API server. Its
+`/api/sessions` and `/v1/runs` contract is recorded in [SPEC-0011](../specs/active/SPEC-0011-hermes-api-contract.md)
+and validated against the real image by the Docker gate. This is a future adapter
+surface: the capability response explicitly reports `split_runtime=false`, so tools
+would execute on the API-server host. The current Go `/v1/execute` runtime remains the
+private identity and filesystem trust boundary until a split-runtime adapter is
+implemented.
+
 ## Scope homes
 
 Both organizations and users live at `spaces/<id>`. `scope.yaml` declares the kind and

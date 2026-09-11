@@ -119,11 +119,13 @@ func Format(root string) error {
 			if err != nil {
 				return err
 			}
-			formatted, err := format.Source(body)
+			// Git checks out text with CRLF on Windows; gofmt's canonical output is LF.
+			normalized := bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+			formatted, err := format.Source(normalized)
 			if err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
-			if !bytes.Equal(body, formatted) {
+			if !bytes.Equal(normalized, formatted) {
 				rel, _ := filepath.Rel(root, name)
 				bad = append(bad, rel)
 			}

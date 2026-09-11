@@ -19,6 +19,9 @@ func TestRunCoverageAndValidation(t *testing.T) {
 			t.Fatalf("accepted %#v", args)
 		}
 	}
+	if err := run([]string{"hermes-contract", "test-image"}); err == nil {
+		t.Fatal("integration-only Hermes contract accepted without build tag")
+	}
 }
 
 func TestRunProjectChecks(t *testing.T) {
