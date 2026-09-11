@@ -1,0 +1,9 @@
+change: CHG-0015
+title: Current-to-target migration and deprecation map
+status: complete
+completed:
+  - current paths inventoried and mapped to target owners
+  - coexistence, rollback, rollout stages and deletion gates documented
+  - downstream implementation issues linked
+  - documentation and workflow checks passed
+pending: []

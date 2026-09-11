@@ -1,0 +1,9 @@
+change: CHG-0014
+title: Threat-model personal deployment and future company boundary
+status: complete
+completed:
+  - trust boundaries and data flow documented
+  - abuse cases mapped to controls, audit evidence and regression owners
+  - Go ToolHub and ToolHive responsibility decision recorded in ADR-0013
+  - just check passed with 85.03 percent Go statement coverage
+pending: []

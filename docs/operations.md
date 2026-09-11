@@ -1,20 +1,26 @@
 ---
-description: Environment selection, data recovery and operating isolated user runtimes.
+description: Environment selection, migration, backup and recovery operations.
 last_verified: 2026-09-10
 ---
 # Operations
 
-Use hubctl with --user and --env dev|prod. The default environment is prod; --dir may
-point at an explicit user-space directory instead. up renders/builds, prepares volumes
-and waits for health. down stops containers and retains volumes. logs tails output.
-exec forwards explicit command arguments to the chosen container, for example:
-`hubctl exec --user artem --env dev -- sh -lc 'cd /src && go test ./...'`.
+Use `hubctl --user <id> --env dev|prod`; prod is the default. `--dir` remains an
+explicit legacy alias. `render` writes generated files under
+`spaces/<user>/generated/`, `up` builds and starts the selected runtime, `down` stops
+it without deleting data, and `logs` tails the selected Compose project.
 
 When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
 sender IDs from the configured allowlist to the selected user scope, writes durable jobs
 and replies under `/state/gateway`, and runs one fresh bounded Hermes process per job.
 The current deployment uses one configured user; adding another is a configuration and
 isolated-space operation, not a shared Hermes home.
+
+Treat `scope.yaml` IDs as immutable. Moving or renaming a home does not change its
+principal or context identity. Today Telegram links are provisioned only in trusted
+host configuration after the operator verifies the numeric account ID; there is no
+self-linking endpoint. A future Slack/OIDC flow must authenticate the existing
+principal and require fresh issuer proof. Never link from a username, email string or
+message request. Unlinking stops routing but does not transfer or delete the principal.
 
 Change settings, then run up. The runtime copies the generated Hermes config at startup;
 existing memory and installed skills/hooks persist. SOUL.md initializes a new runtime's
@@ -26,27 +32,34 @@ rewrite `spaces/<user>/secrets.*.env` or organization secrets. Remove/reset the 
 when changing back to host-managed credentials.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
-Settings and source code are shared between the user's dev/prod selections, but env
-files and runtime volumes are separate. Test changes in dev, review, then rebuild prod.
-For a deployment with stronger release isolation, use a tagged source checkout for prod.
-Do not copy production tokens into dev just to make a test pass. All automated tests
-are credential-free. Dev uses browser_port+1 and oauth_port+1; reserve both ports per user.
+The selected user home contains persistent Hermes, connection, workspace and archive
+data. An organization home is mounted read-only for members. Dev/prod selects separate
+generated env files and Docker targets but does not create another user namespace. Never
+copy production secrets or memories into dev.
 
-Back up all private user-space files, any host-owned organization directory, and both
-selected runtime volumes to encrypted storage while their containers are stopped.
-`docker volume ls` identifies project-scoped volumes; use Docker's volume backup
-procedure or docker cp from a stopped container.
-Do not use down --volumes unless intentionally deleting that user's persistent data.
-On restore use the same Compose project identity or explicitly restore into its new
-volumes. Never merge two people's memories, Telegram sessions or Google credentials.
-Keep organization secrets and documents separate from member spaces during restore.
+Existing installations are migrated only explicitly:
 
-Health checks measure supervisor/process liveness and Chromium CDP readiness. They do
-not prove OAuth or model access. If a connector fails, inspect its logs and verify its
-account login. Google login needs the exact redirect URI and SSH tunnel; personal
-Telegram sessions must be regenerated if revoked. Meet needs login, admission and captions.
+```text
+hubctl migrate-spaces --user artem --org acme       # dry-run
+hubctl migrate-spaces --user artem --org acme --apply
+```
 
-On a VPS keep OAuth/noVNC on loopback and forward the configured ports over SSH. Native
-bridges use a separate bearer token over VPN/SSH and never public plaintext ingress.
-A GitHub Runner is a separate CI machine; do not put untrusted pull-request jobs on your
-personal agent host. The manual runner workflow only accepts the trusted main branch.
+The command rejects symlinks, ID/kind collisions, unrelated destination data and an
+active runtime. It stages and verifies files, leaves source directories and volumes in
+place, and prints a JSON report with paths, counts and checksums but no secret values,
+message text, cookies or session contents. Rollback is restoring the untouched source
+into a new scope home; do not delete it until the new runtime is verified.
+
+Back up all `spaces/<id>` homes and the `communication-hub-data` volume to encrypted
+storage while services are stopped. Do not use `docker compose down --volumes` unless
+deleting that user's data intentionally. Restore organization and user homes separately;
+never merge memories, Telegram sessions or provider credentials.
+
+Health checks prove process liveness and, where enabled, Chromium CDP readiness. They do
+not prove OAuth, model, Telegram or provider access. Live acceptance requires the
+operator's separate login and provider instructions.
+
+Self-service `env_update` and `service_enable` persist only under the selected user
+connection state and request a supervisor restart. They cannot edit organization policy,
+host settings or runtime-control variables. Provider content cannot authorize any
+mutation.

@@ -27,6 +27,7 @@ var (
 	signalNotify = notifySignals
 	signalStop   = stopSignals
 	command      = exec.Command
+	chown        = chownPath
 )
 
 func env(name, fallback string) string {
@@ -48,7 +49,7 @@ func Run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("HUB_SHARED_GID: %w", err)
 		}
-		return Prepare([]string{state, workspace}, 10001, gid, chownPath)
+		return Prepare([]string{state, workspace}, 10001, gid, chown)
 	case "idle", "gateway", "serve":
 		if err := loadSelfEnv(); err != nil {
 			return err

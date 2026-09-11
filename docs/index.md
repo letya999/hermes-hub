@@ -12,6 +12,8 @@ last_verified: 2026-09-10
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-10 |
 | [operations.md](operations.md) | Deployment, backup and failure recovery | 2026-09-10 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-10 |
+| [threat-model.md](threat-model.md) | Personal and future-organization trust boundaries and abuse cases | 2026-09-11 |
+| [migration-map.md](migration-map.md) | Current-to-target ownership, rollout, rollback and deletion gates | 2026-09-11 |
 | [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-10 |
 
 <!-- КОНЕЦ СОДЕРЖИМОГО -->

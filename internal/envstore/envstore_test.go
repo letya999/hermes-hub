@@ -9,18 +9,18 @@ import (
 
 func TestUpdateLoadsOnlyAllowedUserKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
-	keys, err := Update(path, "GITHUB_TOKEN=secret=with-equals\n# comment\n", "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN")
+	keys, err := Update(path, "GITHUB_TOKEN=test=ok\n# comment\n", "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN")
 	if err != nil || len(keys) != 1 || keys[0] != "GITHUB_TOKEN" {
 		t.Fatal(keys, err)
 	}
 	values, err := Load(path, "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN")
-	if err != nil || values["GITHUB_TOKEN"] != "secret=with-equals" {
+	if err != nil || values["GITHUB_TOKEN"] != "test=ok" {
 		t.Fatal(values, err)
 	}
 	if strings.Contains(string(mustRead(t, path)), "SLACK") {
 		t.Fatal("unexpected key persisted")
 	}
-	if _, err := Update(path, "SLACK_MCP_XOXP_TOKEN=second", "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN"); err != nil {
+	if _, err := Update(path, "SLACK_MCP_XOXP_TOKEN=unused-slack-token", "GITHUB_TOKEN,SLACK_MCP_XOXP_TOKEN", "ORG_TOKEN"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -52,11 +52,11 @@ func TestParseRejectsMissingHumanEntryValue(t *testing.T) {
 
 func TestUpdateRejectsProtectedAndRuntimeKeysWithoutChangingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
-	if _, err := Update(path, "GITHUB_TOKEN=keep", "GITHUB_TOKEN", "ORG_TOKEN"); err != nil {
+	if _, err := Update(path, "GITHUB_TOKEN=test-github-token", "GITHUB_TOKEN", "ORG_TOKEN"); err != nil {
 		t.Fatal(err)
 	}
 	before := string(mustRead(t, path))
-	for _, text := range []string{"ORG_TOKEN=x", "HUB_ORG_ACTIONS=x", "PATH=x", "UNKNOWN=x"} {
+	for _, text := range []string{"ORG_TOKEN=blocked", "HUB_ORG_ACTIONS=blocked", "PATH=blocked", "UNKNOWN=blocked"} {
 		if _, err := Update(path, text, "GITHUB_TOKEN,OTHER", "ORG_TOKEN"); err == nil {
 			t.Fatalf("accepted %q", text)
 		}
@@ -83,15 +83,15 @@ func TestLoadRejectsSymlink(t *testing.T) {
 
 func TestEnvstoreRejectsMalformedPoliciesAndFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
-	for _, raw := range []string{"BAD KEY=x", "TOKEN=x\nTOKEN=y", ""} {
+	for _, raw := range []string{"BAD KEY=blocked", "TOKEN=first\nTOKEN=second", ""} {
 		if _, err := Parse(raw); raw != "" && err == nil {
 			t.Fatalf("accepted %q", raw)
 		}
 	}
-	if _, err := Update(path, "TOKEN=x", "BAD KEY", ""); err == nil {
+	if _, err := Update(path, "TOKEN=blocked", "BAD KEY", ""); err == nil {
 		t.Fatal("invalid allowlist accepted")
 	}
-	if _, err := Update(path, "TOKEN=x", "TOKEN", "BAD KEY"); err == nil {
+	if _, err := Update(path, "TOKEN=blocked", "TOKEN", "BAD KEY"); err == nil {
 		t.Fatal("invalid protected list accepted")
 	}
 	if got, err := Load(filepath.Join(t.TempDir(), FileName), "TOKEN", ""); err != nil || got != nil {
@@ -117,7 +117,7 @@ func TestEnvstoreWriteFailure(t *testing.T) {
 	if err := os.WriteFile(parent, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Update(filepath.Join(parent, FileName), "TOKEN=x", "TOKEN", ""); err == nil {
+	if _, err := Update(filepath.Join(parent, FileName), "TOKEN=blocked", "TOKEN", ""); err == nil {
 		t.Fatal("write through file accepted")
 	}
 }

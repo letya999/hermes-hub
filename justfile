@@ -30,6 +30,7 @@ security:
 build:
     go build -buildvcs=false -trimpath -o bin/hubctl ./cmd/hubctl
     go build -buildvcs=false -trimpath -o bin/hub-runtime ./cmd/runtime
+    go build -buildvcs=false -trimpath -o bin/communication-hub ./cmd/communication
 
 release version:
     go run ./cmd/package {{version}}
@@ -37,3 +38,4 @@ release version:
 docker-check target="prod":
     docker build --target {{target}} -t hermes-hub:test -f docker/Dockerfile .
     go run ./cmd/devcheck docker-smoke hermes-hub:test
+    go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
