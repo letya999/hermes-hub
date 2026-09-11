@@ -5,6 +5,8 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0015](in-progress/CHG-0015-migration-map/plan.md) | Current-to-target migration and deprecation map |
+| [CHG-0014](in-progress/CHG-0014-threat-model/plan.md) | Threat-model personal deployment and future company boundary |
 | [CHG-0013](in-progress/CHG-0013-dependency-refresh/plan.md) | Apply reviewed GitHub Actions and Docker dependency updates |
 | [CHG-0012](in-progress/CHG-0012-hermes-api-contract/plan.md) | Validate pinned Hermes API contract for persistent sessions and runs |
 | [CHG-0011](in-progress/CHG-0011-stable-identifiers/plan.md) | Stable identity and ownership identifier contract |

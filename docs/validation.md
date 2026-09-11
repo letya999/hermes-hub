@@ -95,3 +95,31 @@ trust-boundary limitation. TUI JSON-RPC session methods are not treated as an HT
 contract, and unsupported admin/memory-write/audio/realtime endpoints are not claimed.
 If the probe fails, Docker delivery is blocked; rollback is to the previous image and
 code revision, with no data migration.
+
+## CHG-0014 threat model
+
+The personal and future-organization threat model records the authenticated channel,
+Hermes, Go ToolHub, internal vMCP, ToolHive Runtime and provider boundaries. Every
+required abuse case maps to a fail-closed control, non-secret audit evidence and an
+implementation issue that owns the regression test. ADR-0013 makes Go authoritative
+for identity, current binding/policy and credential ownership; no ToolHive or provider
+integration success is claimed by this documentation change.
+
+On 2026-09-11, `just check` passed with 85.03% original Go statement coverage,
+including race tests, formatting, vet, staticcheck, documentation and workflow checks.
+No dependencies or runtime behavior changed, so security and Docker gates were not
+required for CHG-0014.
+
+## CHG-0015 migration and deprecation map
+
+The current-to-target map assigns the live execution, generated MCP, connector catalog,
+self-service, credential, state and ToolHive paths one `keep`, `adapt`, `replace` or
+`retire` decision. Each row records coexistence, rollback, an evidence-based deletion
+gate and its downstream implementation issue. Rollout is per runtime/connector and
+never performs startup-time data migration or dual tool execution.
+
+On 2026-09-11, the documentation and workflow gate passed after the map was added. Two
+subsequent full `just check` attempts did not complete because `go test -race` stalled
+without output and were stopped; they are not claimed as passing. The immediately prior
+CHG-0014 full gate passed in the same worktree with 85.03% coverage, and CHG-0015 changed
+documentation only. No dependency/runtime change required security or Docker gates.
