@@ -1,6 +1,7 @@
 name: CI
 on:
   push:
+    branches: [main, dev, feat/scoped-homes-communication-hub]
   pull_request:
 permissions:
   contents: read

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -19,14 +20,14 @@ func TestHTTPRunnerContract(t *testing.T) {
 			t.Error("runtime request was not authenticated")
 		}
 		var request hubruntime.ExecuteRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Text != "hello" {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Text != "hello" || request.PrincipalID != "alice" || request.RuntimeID != "alice" || request.PolicyVersion != "policy-1" {
 			t.Error("runtime request body was not forwarded")
 		}
 		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply"})
 	}))
 	defer server.Close()
 	runner := HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client(), Limit: time.Second}
-	text, err := runner.Run(context.Background(), Job{OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:1", Text: "hello"}, User{})
+	text, err := runner.Run(context.Background(), Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:1", Text: "hello"}, User{})
 	if err != nil || text != "reply" {
 		t.Fatal(text, err)
 	}

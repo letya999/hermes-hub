@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 type fakeAPI struct {
@@ -45,12 +47,14 @@ func (f *fakeAPI) DeleteMessage(_ context.Context, _ int64, id int) error {
 type fakeRunner struct {
 	mu   sync.Mutex
 	seen []string
+	jobs []Job
 }
 
 func (f *fakeRunner) Run(_ context.Context, job Job, user User) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seen = append(f.seen, user.ID+":"+job.Text)
+	f.jobs = append(f.jobs, job)
 	return "answer for " + user.ID, nil
 }
 
@@ -188,7 +192,7 @@ func TestSpoolDurabilityAndSecretIsolation(t *testing.T) {
 	if err := spool.CompleteJob(job.ID); err != nil {
 		t.Fatal(err)
 	}
-	crashed := Job{ID: "crashed", UserID: "alice", Text: "retry me", CreatedAt: time.Now()}
+	crashed := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "crashed", UserID: "alice", Text: "retry me", CreatedAt: time.Now()}
 	if _, err := spool.Enqueue(crashed); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +201,7 @@ func TestSpoolDurabilityAndSecretIsolation(t *testing.T) {
 	}
 	if recovered, err := NewSpool(spool.root); err != nil {
 		t.Fatal(err)
-	} else if retry, err := recovered.ClaimJob(); err != nil || retry.ID != crashed.ID {
+	} else if retry, err := recovered.ClaimJob(); err != nil || retry.ID != crashed.ID || retry.RuntimeID != crashed.RuntimeID || retry.PolicyVersion != crashed.PolicyVersion {
 		t.Fatal(retry, err)
 	} else if err := recovered.CompleteJob(crashed.ID); err != nil {
 		t.Fatal(err)
@@ -317,6 +321,11 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	if len(runner.seen) != 3 || len(fake.deleted) != 2 || len(fake.sent) != 7 {
 		t.Fatalf("seen=%v deleted=%v sent=%v", runner.seen, fake.deleted, fake.sent)
 	}
+	for _, job := range runner.jobs {
+		if job.PrincipalID != "alice" || job.ExternalIdentityID != "telegram-11" || job.ContextID != "alice" || job.RuntimeID != "alice" || job.ConversationID != "telegram-11" || job.DeliveryTargetID != "telegram-11" || job.PolicyVersion != "policy-1" {
+			t.Fatalf("bad identity envelope: %+v", job.Envelope)
+		}
+	}
 	if got := g.userByChatID(9999); got.ID != "" {
 		t.Fatal("unknown Telegram chat resolved to a user")
 	}
@@ -405,11 +414,14 @@ func TestSpoolAndTelegramErrorPaths(t *testing.T) {
 	if _, err := spool.LoadOffset(); err == nil {
 		t.Fatal("invalid offset accepted")
 	}
-	if err := spool.EnqueueDelivery(Delivery{ID: "bad:id", Text: "reply"}); err != nil {
+	if err := spool.EnqueueDelivery(Delivery{ID: "bad:id", ChatID: 11, Text: "reply"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := spool.EnqueueDelivery(Delivery{ID: "bad:id", Text: "duplicate"}); err != nil {
+	if err := spool.EnqueueDelivery(Delivery{ID: "bad:id", ChatID: 11, Text: "duplicate"}); err != nil {
 		t.Fatal(err)
+	}
+	if err := spool.EnqueueDelivery(Delivery{ID: "bad-delivery", ChatID: 11, DeliveryTargetID: "telegram-22", Text: "reply"}); err == nil {
+		t.Fatal("cross-audience delivery accepted")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -506,8 +518,8 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	runner := &fakeRunner{}
 	g.api, g.runner = fake, runner
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go g.worker(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); g.worker(ctx) }()
 	if _, err := g.spool.Enqueue(Job{ID: "worker-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", ChatID: 11, Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
@@ -527,17 +539,27 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	if len(seen) != 1 || !strings.HasPrefix(seen[0], "alice:") {
 		t.Fatal(seen)
 	}
+	cancel()
+	<-done
+
+	g.runner = errorRunner{}
+	ctx, cancel = context.WithCancel(context.Background())
+	done = make(chan struct{})
+	go func() { defer close(done); g.worker(ctx) }()
 	if _, err := g.spool.Enqueue(Job{ID: "error-job", UserID: "alice", ChatID: 11, Text: "again"}); err != nil {
 		t.Fatal(err)
 	}
-	g.runner = errorRunner{}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(filepath.Join(g.spool.root, "failed", "error-job.json")); err == nil {
+			cancel()
+			<-done
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	cancel()
+	<-done
 	t.Fatal("worker did not fail job")
 }
 

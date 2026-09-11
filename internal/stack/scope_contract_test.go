@@ -96,3 +96,20 @@ func TestScopeValidationAndSingleDocument(t *testing.T) {
 		t.Fatal("multiple YAML documents accepted")
 	}
 }
+
+func TestIdentityBindingIsSharedAndPolicyVersionChanges(t *testing.T) {
+	s := Settings{Schema: 1, User: "alice", Environment: "prod", Timezone: "UTC", Features: []string{"telegram"}}
+	compose := Compose(s, "/source", "/space")
+	services := compose["services"].(M)
+	runtime := services["hermes-runtime"].(M)["environment"].(M)
+	gateway := services["communication-hub"].(M)["environment"].(M)
+	for _, key := range []string{"HUB_RUNTIME_ID", "HUB_POLICY_VERSION"} {
+		if runtime[key] == "" || runtime[key] != gateway[key] {
+			t.Fatalf("identity binding %s is not shared", key)
+		}
+	}
+	s.Features = []string{"telegram", "workspace"}
+	if policyVersion(s) == runtime["HUB_POLICY_VERSION"] {
+		t.Fatal("policy change retained a stale policy version")
+	}
+}

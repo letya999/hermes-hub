@@ -11,11 +11,7 @@ import (
 func configureProcess(*exec.Cmd)       {}
 func setUmask()                        {}
 func chownPath(string, int, int) error { return nil }
-func stopProcess(cmd *exec.Cmd) {
-	if cmd.ProcessState == nil {
-		_ = cmd.Process.Kill()
-	}
-}
+func stopProcess(cmd *exec.Cmd)        { _ = cmd.Process.Kill() }
 func processAlive(pid int) bool {
 	if pid <= 0 || uint64(pid) > uint64(^uint32(0)) {
 		return false

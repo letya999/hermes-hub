@@ -9,6 +9,14 @@ organization and user homes are peers under `spaces/`, mutable Hermes data lives
 those homes, and `communication-hub` is a separate container. Existing deployments
 retain their old layout until an explicit migration succeeds.
 
+[ADR-0011](adr/ADR-0011-stable-identity-identifiers.md) separates the human principal
+from verified channel identities, execution contexts, runtimes, conversations,
+delivery audiences and provider connections. The private schema-1 envelope carries
+the canonical IDs alongside compatibility fields: `user_id`/`actor_id` identify the
+configured principal and `scope_id=user:<id>` references its personal context. Both
+services receive the same stable runtime ID and content-derived policy version;
+Telegram IDs are transport links, never filesystem or authorization keys.
+
 Hermes owns reasoning, chat, tool selection, memory, skills, hooks and cron. Go owns
 space initialization, strict configuration, organization policy resolution, Docker
 lifecycle, communication routing, bounded file/HH MCP and an optional native MCP bridge.

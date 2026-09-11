@@ -29,6 +29,7 @@ func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 		return "", errors.New("empty Hermes prompt")
 	}
 	body, err := json.Marshal(hubruntime.ExecuteRequest{
+		Envelope:       job.Envelope,
 		OrganizationID: job.OrganizationID,
 		UserID:         job.UserID,
 		ActorID:        job.ActorID,

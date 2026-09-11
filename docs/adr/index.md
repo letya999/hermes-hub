@@ -6,6 +6,7 @@ last_verified: 2026-09-10
 
 | Record | Decision |
 |---|---|
+| [ADR-0011](ADR-0011-stable-identity-identifiers.md) | Stable opaque IDs with a compatibility mapping for current spaces and jobs |
 | [ADR-0010](ADR-0010-direct-mcp-atlassian.md) | Install pinned direct `mcp-atlassian` stdio server instead of Atlassian Rovo |
 | [ADR-0009](ADR-0009-scoped-homes-and-communication-hub.md) | Peer organization/user homes and separate communication-hub |
 | [ADR-0008](ADR-0008-telegram-service-self-service.md) | Telegram connector catalog and self-service enablement |
