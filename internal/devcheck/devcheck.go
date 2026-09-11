@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"go/format"
 	"io/fs"
@@ -118,11 +119,13 @@ func Format(root string) error {
 			if err != nil {
 				return err
 			}
-			formatted, err := format.Source(body)
+			// Git checks out text with CRLF on Windows; gofmt's canonical output is LF.
+			normalized := bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+			formatted, err := format.Source(normalized)
 			if err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
-			if !bytes.Equal(body, formatted) {
+			if !bytes.Equal(normalized, formatted) {
 				rel, _ := filepath.Rel(root, name)
 				bad = append(bad, rel)
 			}
@@ -165,6 +168,9 @@ func DockerSmoke(ctx context.Context, image string) error {
 	}
 	for range 90 {
 		if exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").Run() == nil {
+			if err := runtimeContractSmoke(ctx, image, name+"-contract"); err != nil {
+				return err
+			}
 			fmt.Println("Standalone Docker runtime smoke passed; no live provider calls")
 			return nil
 		}
@@ -172,4 +178,20 @@ func DockerSmoke(ctx context.Context, image string) error {
 	}
 	_ = run("logs", name)
 	return fmt.Errorf("agent/browser failed health check")
+}
+
+func runtimeContractSmoke(ctx context.Context, image, name string) error {
+	defer exec.Command("docker", "rm", "-f", name).Run()
+	start := exec.CommandContext(ctx, "docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=false", "-e", "HUB_RUNTIME_AUTH=smoke-auth", "-e", "HUB_USER_ID=smoke", "-e", "HUB_ORGANIZATION_ID=personal", "-e", "HUB_RUNTIME_ID=smoke", "-e", "HUB_POLICY_VERSION=policy-smoke", image, "serve")
+	if err := start.Run(); err != nil {
+		return err
+	}
+	for range 30 {
+		output, err := exec.CommandContext(ctx, "docker", "exec", name, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "-H", "Authorization: Bearer smoke-auth", "--data", "{}", "http://127.0.0.1:8080/v1/execute").Output()
+		if err == nil && string(output) == "409" {
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return errors.New("runtime identity contract probe failed")
 }

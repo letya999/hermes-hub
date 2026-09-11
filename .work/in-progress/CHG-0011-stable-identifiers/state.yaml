@@ -1,0 +1,14 @@
+change: CHG-0011
+status: complete
+completed:
+  - stable identifier ADR and specification added
+  - current single-user layout and v1 job fields mapped without data migration
+  - linking, ownership, lifecycle and boundary rules documented
+  - canonical identity envelope implemented across Telegram gateway and runtime
+  - runtime rejects malformed, cross-principal, stale-runtime and stale-policy identities
+  - delivery audience and restart persistence regression tests added
+  - policy version is derived from effective configuration and shared by both services
+  - just check passed with 85.02 percent Go statement coverage
+  - just security and production Docker smoke passed
+  - real container runtime contract probe rejects a missing identity envelope with HTTP 409
+pending: []

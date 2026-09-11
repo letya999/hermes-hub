@@ -13,7 +13,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+func validExecuteRequest(user, organization, key, text string) ExecuteRequest {
+	return ExecuteRequest{Envelope: identity.TelegramEnvelope(user, 11, user, "policy-1"), OrganizationID: organization, UserID: user, ActorID: user, ScopeID: "user:" + user, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: key, Text: text}
+}
 
 func TestRuntimeHTTPContractBindsScopeAndDeduplicates(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
@@ -27,7 +33,7 @@ func TestRuntimeHTTPContractBindsScopeAndDeduplicates(t *testing.T) {
 		return "reply", nil
 	}
 	handler := runtimeHandler()
-	request := ExecuteRequest{OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:1", Text: "hello"}
+	request := validExecuteRequest("alice", "personal", "telegram:1", "hello")
 	call := func(auth string, body ExecuteRequest) *httptest.ResponseRecorder {
 		encoded := mustJSON(t, body)
 		req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(encoded))
@@ -49,7 +55,7 @@ func TestRuntimeHTTPContractBindsScopeAndDeduplicates(t *testing.T) {
 	if got := call("runtime-secret", request).Code; got != http.StatusConflict {
 		t.Fatalf("idempotency collision status %d", got)
 	}
-	request = ExecuteRequest{OrganizationID: "personal", UserID: "bob", ActorID: "bob", ScopeID: "user:bob", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:2", Text: "hello"}
+	request = validExecuteRequest("bob", "personal", "telegram:2", "hello")
 	if got := call("runtime-secret", request).Code; got != http.StatusConflict {
 		t.Fatalf("scope mismatch status %d", got)
 	}
@@ -93,7 +99,7 @@ func TestRuntimeHTTPValidationAndHealth(t *testing.T) {
 	oldExecute := executeHermes
 	executeHermes = func(context.Context, string) (string, error) { return "", errors.New("failed") }
 	defer func() { executeHermes = oldExecute }()
-	valid := ExecuteRequest{OrganizationID: "personal", UserID: "me", ActorID: "me", ScopeID: "user:me", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "one", Text: "hello"}
+	valid := validExecuteRequest("me", "personal", "one", "hello")
 	request = httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, valid)))
 	request.Header.Set("Authorization", "Bearer runtime-secret")
 	recorder = httptest.NewRecorder()
@@ -108,8 +114,14 @@ func TestRuntimeHTTPValidationAndHealth(t *testing.T) {
 func TestValidateExecuteRequestRejectsEachBoundary(t *testing.T) {
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_ORGANIZATION_ID", "acme")
-	base := ExecuteRequest{OrganizationID: "acme", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "one", Text: "hello"}
+	base := validExecuteRequest("alice", "acme", "one", "hello")
 	for name, request := range map[string]ExecuteRequest{
+		"schema":       func() ExecuteRequest { r := base; r.Envelope.Schema = 2; return r }(),
+		"principal_id": func() ExecuteRequest { r := base; r.PrincipalID = "bob"; return r }(),
+		"context_id":   func() ExecuteRequest { r := base; r.ContextID = "other"; return r }(),
+		"runtime_id":   func() ExecuteRequest { r := base; r.RuntimeID = "stale"; return r }(),
+		"policy":       func() ExecuteRequest { r := base; r.PolicyVersion = "policy-0"; return r }(),
+		"conversation": func() ExecuteRequest { r := base; r.ConversationID = "bad:id"; return r }(),
 		"user":         func() ExecuteRequest { r := base; r.UserID = "bob"; return r }(),
 		"actor":        func() ExecuteRequest { r := base; r.ActorID = "bob"; return r }(),
 		"organization": func() ExecuteRequest { r := base; r.OrganizationID = "other"; return r }(),

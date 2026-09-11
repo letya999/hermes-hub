@@ -1,0 +1,6 @@
+title = "hermes-hub gitleaks configuration"
+
+[[allowlists]]
+description = "Historical non-secret test fixture"
+regexTarget = "match"
+regexes = ['''GITHUB_TOKEN=value=with-equals''']

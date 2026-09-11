@@ -1,0 +1,11 @@
+change: CHG-0012
+title: Validate pinned Hermes API contract for persistent sessions and runs
+status: in-progress
+completed:
+  - exact pinned Hermes API endpoints and capability flags inspected in the image
+  - real probe implementation added for sessions, runs, idempotency, SSE, stop, approvals, cron and restart
+  - specification and ADR added
+  - just check passed with 85.03 percent Go statement coverage
+  - just security passed with no Go or browser dependency vulnerabilities
+  - just docker-check prod and dev passed, including the real Hermes contract probe
+pending: []

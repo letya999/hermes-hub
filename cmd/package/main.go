@@ -51,6 +51,11 @@ func pack(version string) error {
 			return err
 		}
 		outputs = append(outputs, name)
+		name = filepath.Join("dist", "communication-hub-linux-"+arch)
+		if err := buildBinary(name, "./cmd/communication", "linux", arch); err != nil {
+			return err
+		}
+		outputs = append(outputs, name)
 	}
 	archive := filepath.Join("dist", "hermes-hub-"+version+"-source.zip")
 	if err := zipSources(archive); err != nil {

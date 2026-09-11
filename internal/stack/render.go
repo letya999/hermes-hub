@@ -2,6 +2,7 @@ package stack
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -32,6 +33,10 @@ func remote(url, key string) M {
 	return m
 }
 func Config(s Settings) M {
+	organizationSkills := s.OrganizationSkillsDir
+	if organizationSkills == "" && s.OrganizationDir != "" {
+		organizationSkills = filepath.Join(s.OrganizationDir, "hermes", "skills")
+	}
 	servers := M{}
 	if s.Has("workspace") || s.Has("hh") {
 		e := env("HH_TOKEN", "HH_USER_AGENT")
@@ -111,7 +116,11 @@ func Config(s Settings) M {
 	if s.Has("meet") {
 		toolsets = append(toolsets, "google_meet")
 	}
-	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
+	skills := M{}
+	if organizationSkills != "" {
+		skills["external_dirs"] = []string{"/org/hermes/skills"}
+	}
+	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
 }
 func Compose(s Settings, projectRoot, dir string) M {
 	stateVolumes := []any{
@@ -142,7 +151,8 @@ func Compose(s Settings, projectRoot, dir string) M {
 	if host == "" {
 		host = "gitlab.com"
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache"}
+	policy := policyVersion(s)
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache"}
 	if s.OrgScoped() {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
@@ -169,13 +179,19 @@ func Compose(s Settings, projectRoot, dir string) M {
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gateway["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}}
-		gateway["environment"] = M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ",")}
+		gateway["environment"] = M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ",")}
 		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}}
 		gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
 		gateway["restart"] = "unless-stopped"
 		services["communication-hub"] = gateway
 	}
 	return M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": M{"communication-hub-data": M{}}}
+}
+
+func policyVersion(s Settings) string {
+	body, _ := yaml.Marshal(Config(s))
+	hash := sha256.Sum256(body)
+	return "policy-" + hex.EncodeToString(hash[:8])
 }
 
 func cloneMap(source M) M {
@@ -263,6 +279,10 @@ func RenderEnvironment(dir, root, environment string) error {
 		if err != nil {
 			return err
 		}
+		if err = atomic(filepath.Join(dir, "generated", name), b); err != nil {
+			return err
+		}
+		// One-release compatibility for callers that still look beside settings.yaml.
 		if err = atomic(filepath.Join(dir, name), b); err != nil {
 			return err
 		}
