@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-ru
 RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub ./cmd/communication
 RUN git init /slack && cd /slack && git remote add origin https://github.com/korotovsky/slack-mcp-server.git && git fetch --depth 1 origin b88c0de3f706f4f07337c9eda7133c736d1c9524 && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /slack-mcp-server ./cmd/slack-mcp-server
 
-FROM debian:13.4 AS sqlite_build
+FROM debian:13.6 AS sqlite_build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL --retry 3 https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz -o /tmp/sqlite.tgz && echo '0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c  /tmp/sqlite.tgz' | sha256sum -c - && tar xzf /tmp/sqlite.tgz -C /tmp && cd /tmp/sqlite-autoconf-3530400 && CFLAGS='-O2 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_THREADSAFE=1' ./configure --prefix=/opt/sqlite-fixed --disable-static && make -j2 && make install
 
