@@ -518,8 +518,8 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	runner := &fakeRunner{}
 	g.api, g.runner = fake, runner
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go g.worker(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); g.worker(ctx) }()
 	if _, err := g.spool.Enqueue(Job{ID: "worker-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", ChatID: 11, Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
@@ -539,17 +539,27 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	if len(seen) != 1 || !strings.HasPrefix(seen[0], "alice:") {
 		t.Fatal(seen)
 	}
+	cancel()
+	<-done
+
+	g.runner = errorRunner{}
+	ctx, cancel = context.WithCancel(context.Background())
+	done = make(chan struct{})
+	go func() { defer close(done); g.worker(ctx) }()
 	if _, err := g.spool.Enqueue(Job{ID: "error-job", UserID: "alice", ChatID: 11, Text: "again"}); err != nil {
 		t.Fatal(err)
 	}
-	g.runner = errorRunner{}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(filepath.Join(g.spool.root, "failed", "error-job.json")); err == nil {
+			cancel()
+			<-done
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	cancel()
+	<-done
 	t.Fatal("worker did not fail job")
 }
 

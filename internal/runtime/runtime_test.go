@@ -94,6 +94,7 @@ func TestPrepareKeepsGlabConfigPrivate(t *testing.T) {
 }
 
 func TestHealthAndRunValidation(t *testing.T) {
+	configureProcess(&exec.Cmd{})
 	if processAlive(-1) {
 		t.Fatal("invalid pid accepted")
 	}
@@ -327,11 +328,14 @@ func TestSupervisorCleansUpAfterStartFailure(t *testing.T) {
 	t.Setenv("HUB_BROWSER", "false")
 	t.Setenv("HUB_MEET", "false")
 	t.Cleanup(func() { state = oldState })
-	if err := supervise("gateway"); err == nil {
+	if err := Run([]string{"gateway"}); err == nil {
 		t.Fatal("missing Hermes executable accepted")
 	}
 	if _, err := os.Stat(filepath.Join(state, "runtime.json")); !os.IsNotExist(err) {
 		t.Fatal("runtime marker left behind")
+	}
+	if err := Run([]string{"serve"}); err == nil {
+		t.Fatal("runtime server started without authorization")
 	}
 }
 
@@ -351,7 +355,11 @@ func TestSupervisorBrowserAndMeetStartFailures(t *testing.T) {
 func TestSupervisorReportsChildExit(t *testing.T) {
 	oldState, oldCommand := state, command
 	state = t.TempDir()
-	command = func(string, ...string) *exec.Cmd { return exec.Command("cmd.exe", "/c", "exit", "3") }
+	command = func(string, ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeExitHelper")
+		cmd.Env = append(os.Environ(), "HUB_TEST_EXIT_HELPER=1")
+		return cmd
+	}
 	t.Cleanup(func() { state, command = oldState, oldCommand })
 	t.Setenv("HUB_BROWSER", "false")
 	t.Setenv("HUB_MEET", "false")
@@ -367,7 +375,9 @@ func TestSupervisorBrowserShutdown(t *testing.T) {
 	oldNotify, oldStop := signalNotify, signalStop
 	state, browserURL = t.TempDir(), server.URL
 	command = func(string, ...string) *exec.Cmd {
-		return exec.Command("powershell.exe", "-NoProfile", "-Command", "Start-Sleep -Seconds 10")
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
+		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
+		return cmd
 	}
 	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
 	signalStop = func(chan os.Signal) {}
@@ -382,19 +392,37 @@ func TestSupervisorBrowserShutdown(t *testing.T) {
 	}
 }
 
-func TestRunPrepareAndIdleShutdown(t *testing.T) {
+func TestRuntimeHelperProcess(t *testing.T) {
+	if os.Getenv("HUB_TEST_HELPER") != "1" {
+		return
+	}
+	time.Sleep(10 * time.Second)
+	os.Exit(0)
+}
+
+func TestRuntimeExitHelper(t *testing.T) {
+	if os.Getenv("HUB_TEST_EXIT_HELPER") == "1" {
+		os.Exit(3)
+	}
+}
+
+func TestRunIdleShutdown(t *testing.T) {
 	oldState, oldWorkspace := state, workspace
 	oldNotify, oldStop := signalNotify, signalStop
+	oldChown := chown
 	state, workspace = filepath.Join(t.TempDir(), "state"), filepath.Join(t.TempDir(), "workspace")
 	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
 	signalStop = func(chan os.Signal) {}
-	t.Cleanup(func() { state, workspace, signalNotify, signalStop = oldState, oldWorkspace, oldNotify, oldStop })
+	chown = func(string, int, int) error { return nil }
+	t.Cleanup(func() {
+		state, workspace, signalNotify, signalStop, chown = oldState, oldWorkspace, oldNotify, oldStop, oldChown
+	})
 	t.Setenv("HUB_SHARED_GID", "1000")
 	if err := Run([]string{"prepare"}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- supervise("idle") }()
+	go func() { done <- Run([]string{"idle"}) }()
 	markerPath := filepath.Join(state, "runtime.json")
 	for range 100 {
 		if _, err := os.Stat(markerPath); err == nil {
