@@ -1,0 +1,10 @@
+change: CHG-0013
+title: Apply reviewed GitHub Actions and Docker dependency updates
+status: complete
+completed:
+  - pull requests 1 through 7 reviewed and relevant patches applied locally
+  - just check passed with 85.03 percent Go statement coverage
+  - just security passed with no Go or browser dependency vulnerabilities
+  - just docker-check prod and dev passed with smoke and real Hermes contract probes
+  - superseded pull requests closed after local verification
+pending: []

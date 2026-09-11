@@ -51,6 +51,7 @@ func HermesContract(ctx context.Context, image string) error {
 		"--tmpfs", "/tmp:mode=1777", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700",
 		"-v", volume+":/state", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home",
 		"-e", "XDG_CONFIG_HOME=/state/config", "-e", "HERMES_GATEWAY_NO_TTY=true",
+		"-e", "HERMES_DISABLE_LAZY_INSTALLS=1",
 		"-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_KEY="+key,
 		"-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT="+hermesContractPort,
 		"-e", "OPENAI_API_KEY=probe-openai-key-0123456789",
