@@ -208,6 +208,9 @@ func hermesRestartProbe(ctx context.Context, out func(...string) ([]byte, error)
 			"http://127.0.0.1:"+hermesContractPort+"/v1/runs"); err != nil {
 			return err
 		}
+		if err := waitHermesRunAdmitted(ctx, out, name, key, idempotencyKey, body); err != nil {
+			return err
+		}
 		if err := run("kill", name); err != nil {
 			return err
 		}
@@ -226,6 +229,22 @@ func hermesRestartProbe(ctx context.Context, out func(...string) ([]byte, error)
 		}
 	}
 	return errors.New("hermes restart did not mark an admitted run interrupted")
+}
+
+func waitHermesRunAdmitted(ctx context.Context, out func(...string) ([]byte, error), name, key, idempotencyKey, body string) error {
+	for range 30 {
+		response, err := hermesHTTP(ctx, out, name, key, http.MethodPost, "/v1/runs", body, idempotencyKey)
+		if err == nil && response.status == http.StatusAccepted {
+			status, statusErr := jsonString(response.body, "status")
+			if statusErr == nil && status != "completed" && status != "failed" && status != "cancelled" && status != "interrupted" {
+				return nil
+			}
+		}
+		if err := contractSleep(ctx, 200*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return errors.New("hermes restart probe run was not admitted")
 }
 
 func hermesHTTP(ctx context.Context, out func(...string) ([]byte, error), name, key, method, path, body, idempotencyKey string) (contractHTTPResponse, error) {
