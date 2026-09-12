@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func validExecuteRequest(user, organization, key, text string) ExecuteRequest {
 	return ExecuteRequest{Envelope: identity.TelegramEnvelope(user, 11, user, "policy-1"), OrganizationID: organization, UserID: user, ActorID: user, ScopeID: "user:" + user, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: key, Text: text}
 }
 
-func TestRuntimeHTTPContractBindsScopeAndDeduplicates(t *testing.T) {
+func TestRuntimeHTTPContractBindsScope(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_ORGANIZATION_ID", "personal")
@@ -50,12 +51,12 @@ func TestRuntimeHTTPContractBindsScopeAndDeduplicates(t *testing.T) {
 	if got := call("runtime-secret", request).Code; got != http.StatusOK {
 		t.Fatalf("execute status %d", got)
 	}
-	if got := call("runtime-secret", request).Code; got != http.StatusOK || calls != 1 {
-		t.Fatalf("replay status=%d calls=%d", got, calls)
+	if got := call("runtime-secret", request).Code; got != http.StatusOK || calls != 2 {
+		t.Fatalf("second status=%d calls=%d", got, calls)
 	}
 	request.Text = "different"
-	if got := call("runtime-secret", request).Code; got != http.StatusConflict {
-		t.Fatalf("idempotency collision status %d", got)
+	if got := call("runtime-secret", request).Code; got != http.StatusOK || calls != 3 {
+		t.Fatalf("runtime should not own idempotency: status=%d calls=%d", got, calls)
 	}
 	request = validExecuteRequest("bob", "personal", "telegram:2", "hello")
 	if got := call("runtime-secret", request).Code; got != http.StatusConflict {
@@ -109,6 +110,173 @@ func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 	runtimeHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "persistent reply") || runCalls != 1 || statusCalls != 1 {
 		t.Fatalf("persistent status=%d body=%s runs=%d polls=%d", rec.Code, rec.Body.String(), runCalls, statusCalls)
+	}
+}
+
+func TestPersistentHermesCancellationStopsAdmittedRun(t *testing.T) {
+	var stopped atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/runs/stop-me/stop" {
+			stopped.Store(true)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := stopHermesRun(context.Background(), server.Client(), server.URL, "secret", "stop-me"); err != nil || !stopped.Load() {
+		t.Fatalf("stop err=%v stopped=%v", err, stopped.Load())
+	}
+}
+
+func TestPersistentHermesPreservesFailedOutcomeMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusConflict)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "failed-run"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/failed-run":
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "failed", "error": "provider failed"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	address := strings.TrimPrefix(server.URL, "http://")
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", Text: "hello"})
+	if err == nil || result.Status != "failed" || result.RunID != "failed-run" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestRuntimeHTTPIncludesPersistentFailureMetadata(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/sessions":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "failed-run"})
+		case "/v1/runs/failed-run":
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "failed", "error": "provider failed"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+	port := api.Listener.Addr().(*net.TCPAddr).Port
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_ORGANIZATION_ID", "personal")
+	t.Setenv("HUB_RUNTIME_ID", "alice")
+	t.Setenv("HUB_POLICY_VERSION", "policy-1")
+	t.Setenv("HUB_HERMES_API_HOST", "127.0.0.1")
+	t.Setenv("HUB_HERMES_API_PORT", fmt.Sprint(port))
+	t.Setenv("HUB_PERSISTENT_HERMES", "true")
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, validExecuteRequest("alice", "personal", "failed-key", "hello"))))
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	rec := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "failed-run") || !strings.Contains(rec.Body.String(), "\"status\":\"failed\"") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHermesRequestRejectsBadResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bad-json":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("not-json"))
+		case "/failure":
+			w.WriteHeader(http.StatusBadGateway)
+		case "/api/sessions":
+			w.WriteHeader(http.StatusConflict)
+		}
+	}))
+	defer server.Close()
+	var target map[string]any
+	if err := hermesRequest(context.Background(), server.Client(), http.MethodGet, server.URL+"/bad-json", "", nil, &target); err == nil {
+		t.Fatal("invalid Hermes JSON accepted")
+	}
+	if err := hermesRequest(context.Background(), server.Client(), http.MethodGet, server.URL+"/failure", "", nil, nil); err == nil {
+		t.Fatal("failed Hermes response accepted")
+	}
+	if err := hermesRequest(context.Background(), server.Client(), http.MethodPost, server.URL+"/api/sessions", "", nil, nil); !errors.Is(err, errSessionExists) {
+		t.Fatalf("session conflict=%v", err)
+	}
+}
+
+func TestPersistentHermesTerminalStatuses(t *testing.T) {
+	for _, want := range []string{"cancelled", "interrupted"} {
+		want := want
+		t.Run(want, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/sessions":
+					w.WriteHeader(http.StatusOK)
+				case "/v1/runs":
+					_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "terminal-run"})
+				case "/v1/runs/terminal-run":
+					_ = json.NewEncoder(w).Encode(map[string]string{"status": want})
+				}
+			}))
+			defer server.Close()
+			host, port, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+			t.Setenv("HUB_HERMES_API_HOST", host)
+			t.Setenv("HUB_HERMES_API_PORT", port)
+			result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", Text: "hello"})
+			if err == nil || result.Status != want || result.RunID != "terminal-run" {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestPersistentHermesAdmissionFailures(t *testing.T) {
+	for _, mode := range []string{"session", "run", "id"} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/sessions" {
+					if mode == "session" {
+						w.WriteHeader(http.StatusBadGateway)
+					} else {
+						w.WriteHeader(http.StatusOK)
+					}
+					return
+				}
+				if r.URL.Path == "/v1/runs" {
+					if mode == "run" {
+						w.WriteHeader(http.StatusBadGateway)
+					} else if mode == "id" {
+						_ = json.NewEncoder(w).Encode(map[string]string{})
+					}
+				}
+			}))
+			defer server.Close()
+			host, port, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+			t.Setenv("HUB_HERMES_API_HOST", host)
+			t.Setenv("HUB_HERMES_API_PORT", port)
+			if _, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", Text: "hello"}); err == nil {
+				t.Fatal("admission failure accepted")
+			}
+		})
+	}
+}
+
+func TestPersistentSessionReplyRequiresAssistantMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"role":"user","content":"hello"}]}`))
+	}))
+	defer server.Close()
+	if _, err := (&runtimeHTTP{}).persistentSessionReply(context.Background(), server.Client(), server.URL, "", "session"); err == nil {
+		t.Fatal("session without assistant message accepted")
 	}
 }
 

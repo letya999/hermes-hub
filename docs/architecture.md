@@ -51,6 +51,10 @@ the trusted `organization:<id>` scope and an approved organization action.
 | `spaces/<id>/generated/` | Ignored Compose, Hermes and filtered env files |
 | `communication-hub-data` | Gateway queue and delivery ledger; outside scope homes |
 
+Job and conversation lifecycle mappings are persisted beside the gateway queue. They
+contain immutable routing, idempotency and Hermes run metadata, while supervisor state
+contains runtime generations and leases; neither store receives provider credentials.
+
 Organization skills are configured through upstream Hermes `skills.external_dirs` and
 are mounted read-only. Hub tools expose organization material with explicit provenance;
 user writes remain in the user home. Duplicate organization/user secret keys are
@@ -68,8 +72,9 @@ The services use a small authenticated private HTTP contract: `POST /v1/jobs` ca
 version 1, immutable identity fields, scope and a bounded prompt; `DELETE
 /v1/jobs/<id>` requests cancellation. A Bearer runtime token is required. The runtime
 is bound to one user and optional organization, rejects identity mismatches before
-opening a path, and records idempotency outcomes as succeeded, failed or uncertain.
-An uncertain result is never silently retried.
+opening a path. The communication spool and host supervisor record idempotency
+outcomes as succeeded, failed or uncertain; the runtime only executes the already-
+authorized request. An uncertain result is never silently retried.
 
 Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
 channel sender (Telegram in v1) to the configured user scope, persist jobs and replies in

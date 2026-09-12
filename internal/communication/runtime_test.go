@@ -39,6 +39,16 @@ func TestHTTPRunnerContract(t *testing.T) {
 	if err == nil || errors.Is(err, ErrUncertain) {
 		t.Fatalf("deterministic runtime error classified incorrectly: %v", err)
 	}
+	terminal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Status: "cancelled", LastEvent: "run.cancelled"})
+	}))
+	terminalRunner := HTTPRunner{URL: terminal.URL, Auth: "secret", HTTP: terminal.Client(), Limit: time.Second}
+	outcome, err := terminalRunner.RunOutcome(context.Background(), Job{Text: "hello"})
+	terminal.Close()
+	if err == nil || outcome.Status != "cancelled" || outcome.LastEvent != "run.cancelled" {
+		t.Fatalf("terminal outcome=%+v err=%v", outcome, err)
+	}
 
 	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	url := closed.URL

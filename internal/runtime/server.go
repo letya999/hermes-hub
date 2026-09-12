@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -26,6 +25,7 @@ const maxPromptBytes = 2 * 1024 * 1024
 // ExecuteRequest is the private communication-hub to runtime contract.
 type ExecuteRequest struct {
 	identity.Envelope
+	JobID          string `json:"job_id"`
 	OrganizationID string `json:"organization_id"`
 	UserID         string `json:"user_id"`
 	ActorID        string `json:"actor_id"`
@@ -37,13 +37,16 @@ type ExecuteRequest struct {
 }
 
 type ExecuteResponse struct {
-	Text string `json:"text"`
+	Text              string `json:"text"`
+	JobID             string `json:"job_id,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
+	RunID             string `json:"run_id,omitempty"`
+	RuntimeGeneration string `json:"runtime_generation,omitempty"`
+	Status            string `json:"status,omitempty"`
+	LastEvent         string `json:"last_event,omitempty"`
 }
 
-type runtimeHTTP struct {
-	mu      sync.Mutex
-	results map[string]cachedResult
-}
+type runtimeHTTP struct{}
 
 var executeHermes = runHermes
 var hermesExecutable = "hermes"
@@ -53,13 +56,8 @@ var signalRuntimeProcess = func() {
 	}
 }
 
-type cachedResult struct {
-	fingerprint string
-	response    ExecuteResponse
-}
-
 func runtimeHandler() http.Handler {
-	return &runtimeHTTP{results: map[string]cachedResult{}}
+	return &runtimeHTTP{}
 }
 
 func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -127,60 +125,47 @@ func (s *runtimeHTTP) execute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ponytail: one runtime owns one Telegram worker; add per-scope workers only if throughput matters.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fingerprint := requestFingerprint(request)
-	if previous, ok := s.results[request.IdempotencyKey]; ok {
-		if previous.fingerprint != fingerprint {
-			writeRuntimeError(w, http.StatusConflict, "idempotency key already used")
-			return
-		}
-		writeRuntimeJSON(w, http.StatusOK, previous.response)
-		return
-	}
-
-	var text string
+	var response ExecuteResponse
+	response.RuntimeGeneration = os.Getenv("HUB_RUNTIME_GENERATION")
 	if os.Getenv("HUB_PERSISTENT_HERMES") == "true" {
-		text, err = s.executePersistent(r.Context(), request)
+		response, err = s.executePersistent(r.Context(), request)
 	} else {
-		text, err = executeHermes(r.Context(), request.Text)
+		response.Text, err = executeHermes(r.Context(), request.Text)
+		response.Status = "completed"
+		response.LastEvent = "run.completed"
 	}
 	if err != nil {
-		writeRuntimeError(w, http.StatusInternalServerError, "runtime execution failed")
+		if response.Status != "" {
+			response.JobID = request.JobID
+			writeRuntimeJSON(w, http.StatusInternalServerError, map[string]any{"error": "runtime execution failed", "job_id": response.JobID, "session_id": response.SessionID, "run_id": response.RunID, "runtime_generation": response.RuntimeGeneration, "status": response.Status, "last_event": response.LastEvent})
+		} else {
+			writeRuntimeError(w, http.StatusInternalServerError, "runtime execution failed")
+		}
 		return
 	}
-	response := ExecuteResponse{Text: text}
-	s.results[request.IdempotencyKey] = cachedResult{fingerprint: fingerprint, response: response}
-	if len(s.results) > 128 {
-		for key := range s.results {
-			delete(s.results, key)
-			break
-		}
-	}
+	response.JobID = request.JobID
 	writeRuntimeJSON(w, http.StatusOK, response)
 }
 
 // executePersistent uses the pinned Hermes Gateway API inside this runtime.
 // The one-shot hermes -z path remains available when the flag is unset for
 // rollback deployments; no provider or session state crosses the container.
-func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequest) (string, error) {
+func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequest) (ExecuteResponse, error) {
 	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
 	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
 	client := &http.Client{Timeout: 10 * time.Second}
-	sum := sha256.Sum256([]byte(request.ContextID + "\x00" + request.ConversationID))
-	sessionID := "hub-" + hex.EncodeToString(sum[:12])
+	sessionID := sessionIDFor(request)
 	if err := hermesRequest(ctx, client, http.MethodPost, base+"/api/sessions", auth, map[string]any{"id": sessionID, "title": "Hermes Hub"}, nil); err != nil && !errors.Is(err, errSessionExists) {
-		return "", err
+		return ExecuteResponse{}, err
 	}
 	var admission struct {
 		RunID string `json:"run_id"`
 	}
 	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, map[string]any{"input": request.Text, "session_id": sessionID}, &admission, request.IdempotencyKey); err != nil {
-		return "", err
+		return ExecuteResponse{}, err
 	}
 	if admission.RunID == "" {
-		return "", errors.New("hermes returned no run ID")
+		return ExecuteResponse{}, errors.New("hermes returned no run ID")
 	}
 	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
@@ -190,27 +175,49 @@ func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequ
 			Error  string `json:"error"`
 		}
 		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+admission.RunID, auth, nil, &status); err != nil {
-			return "", err
+			return ExecuteResponse{}, err
 		}
 		switch status.Status {
 		case "completed":
 			if strings.TrimSpace(status.Output) != "" {
-				return strings.TrimSpace(status.Output), nil
+				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: strings.TrimSpace(status.Output)}, nil
 			}
-			return s.persistentSessionReply(ctx, client, base, auth, sessionID)
+			text, err := s.persistentSessionReply(ctx, client, base, auth, sessionID)
+			return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: text}, err
 		case "failed", "cancelled", "interrupted":
 			if status.Error != "" {
-				return "", errors.New(status.Error)
+				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: status.Status, LastEvent: "run." + status.Status}, errors.New(status.Error)
 			}
-			return "", fmt.Errorf("hermes run %s", status.Status)
+			return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: status.Status, LastEvent: "run." + status.Status}, fmt.Errorf("hermes run %s", status.Status)
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			stopErr := stopHermesRun(stopCtx, client, base, auth, admission.RunID)
+			cancel()
+			if stopErr == nil {
+				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "cancelled", LastEvent: "run.cancelled"}, ctx.Err()
+			}
+			return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "uncertain", LastEvent: "run.unknown"}, ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return "", errors.New("hermes run timed out")
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	stopErr := stopHermesRun(stopCtx, client, base, auth, admission.RunID)
+	cancel()
+	if stopErr == nil {
+		return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "cancelled", LastEvent: "run.cancelled"}, errors.New("hermes run timed out")
+	}
+	return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "uncertain", LastEvent: "run.unknown"}, errors.New("hermes run timed out")
+}
+
+func stopHermesRun(ctx context.Context, client *http.Client, base, auth, runID string) error {
+	return hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs/"+runID+"/stop", auth, nil, nil)
+}
+
+func sessionIDFor(request ExecuteRequest) string {
+	sum := sha256.Sum256([]byte(request.ContextID + "\x00" + request.ConversationID))
+	return "hub-" + hex.EncodeToString(sum[:12])
 }
 
 var errSessionExists = errors.New("hermes session already exists")
@@ -313,12 +320,6 @@ func validateExecuteRequest(request ExecuteRequest) error {
 		return errors.New("invalid prompt")
 	}
 	return nil
-}
-
-func requestFingerprint(request ExecuteRequest) string {
-	body, _ := json.Marshal(request)
-	hash := sha256.Sum256(body)
-	return fmt.Sprintf("%x", hash[:])
 }
 
 func runHermes(ctx context.Context, prompt string) (string, error) {

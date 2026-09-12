@@ -51,7 +51,7 @@ title: Scale-to-zero Hermes runtime lifecycle
 3. A ready runtime uses the pinned upstream Hermes `/api/sessions` and `/v1/runs`
    APIs. The runtime adapter creates a deterministic context/conversation session,
    submits an idempotent run, polls the terminal status and falls back to the latest
-   assistant message when the status has no output. The durable hub mapping records
+   assistant message when the status has no output. The durable hub and supervisor mappings record
    job, idempotency, context, runtime, Hermes session, Hermes run, status, timestamps
    and runtime generation.
 4. Conversation-to-session mapping is stable across warm reuse and cold recreation.

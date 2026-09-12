@@ -1,0 +1,18 @@
+change: CHG-0015
+status: done
+updated: 2026-09-12
+steps:
+  - name: durable-contract
+    status: done
+  - name: job-and-conversation-mappings
+    status: done
+  - name: supervisor-state-and-generation-fencing
+    status: done
+  - name: restart-and-isolation-tests
+    status: done
+  - name: security-and-docker-evidence
+    status: done
+evidence:
+  - just check passed with 85.06% Go statement coverage
+  - just security passed govulncheck and browser npm audit
+  - just docker-check prod passed image 3248ea8a01bd, runtime smoke and Hermes contract

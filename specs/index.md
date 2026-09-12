@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0014](active/SPEC-0014-job-runtime-mappings.md) | Durable job, session, run and runtime mappings |
 | [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |
 | [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes |
 | [SPEC-0011](active/SPEC-0011-hermes-api-contract.md) | Pinned Hermes API contract for sessions and runs |

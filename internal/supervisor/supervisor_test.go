@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -89,6 +90,311 @@ func TestEnsureDeduplicatesAndReusesWarmRuntime(t *testing.T) {
 	cold, err := m.Ensure(context.Background(), b)
 	if err != nil || cold.RuntimeID != "alice" || cold.Generation == r.Generation {
 		t.Fatalf("cold start lost logical identity: before=%+v after=%+v err=%v", r, cold, err)
+	}
+}
+
+func TestSupervisorStateSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	ctxRoot := filepath.Join(root, "alice")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	commands := func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return []byte("running"), nil
+		}
+		return []byte("running"), nil
+	}
+	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: commands, Probe: func(context.Context, string, string) error { return nil }, Now: func() time.Time { return time.Unix(100, 0) }}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := binding(ctxRoot)
+	first, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, _, err := m.Acquire(context.Background(), b, LeaseJob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := restored.Ensure(context.Background(), b)
+	if err != nil || second.Generation != first.Generation {
+		t.Fatalf("restored=%+v first=%+v err=%v", second, first, err)
+	}
+	if err := restored.ReleaseLease(lease.ID); err != nil {
+		t.Fatalf("restored lease release: %v", err)
+	}
+}
+
+func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
+	root := t.TempDir()
+	ctxRoot := filepath.Join(root, "alice")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	commands := func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return []byte("running"), nil
+		}
+		return []byte("running"), nil
+	}
+	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: commands, Probe: func(context.Context, string, string) error { return nil }, Now: func() time.Time { return time.Unix(100, 0) }}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := binding(ctxRoot)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Release("alice", "gateway"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Reap(context.Background(), time.Unix(100, 0).Add(6*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	status, _, _ := restored.Status(b)
+	if status.State != Stopped {
+		t.Fatalf("restored status=%+v", status)
+	}
+}
+
+func TestSupervisorRejectsStaleLeaseAndCorruptState(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	lease, _, err := m.Acquire(context.Background(), b, LeaseJob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(b)].Generation = "replacement"
+	m.mu.Unlock()
+	if err := m.ReleaseLease(lease.ID); err == nil {
+		t.Fatal("stale lease released replacement")
+	}
+	bad := filepath.Join(t.TempDir(), "supervisor.json")
+	if err := os.WriteFile(bad, []byte("not-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{SpacesRoot: root, StateDir: filepath.Dir(bad), RuntimeAuth: "control", Image: "hermes:test"}); err == nil {
+		t.Fatal("corrupt supervisor state accepted")
+	}
+}
+
+func TestSupervisorRejectsInvalidPersistedRuntime(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "supervisor.json"), []byte(`{"items":[{"runtime":{"context_id":""}}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{SpacesRoot: root, StateDir: root, RuntimeAuth: "control", Image: "hermes:test"}); err == nil {
+		t.Fatal("invalid persisted runtime accepted")
+	}
+}
+
+func TestSupervisorJobOutcomeReplaysAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	ctxRoot := filepath.Join(root, "alice")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runs := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/execute" {
+			runs++
+			_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "answer", Status: "completed", RunID: "run-1"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer backend.Close()
+	command := func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}
+	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: command, Probe: func(context.Context, string, string) error { return nil }}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := binding(ctxRoot)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(b)].Address = backend.URL
+	m.mu.Unlock()
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: "job-1", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-1", Text: "hello"}
+	body, _ := json.Marshal(request)
+	call := func(manager *Manager) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(string(body)))
+		req.Header.Set("Authorization", "Bearer control")
+		rec := httptest.NewRecorder()
+		manager.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := call(m); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "answer") {
+		t.Fatalf("first response=%d %s", rec.Code, rec.Body.String())
+	}
+	if runs != 1 {
+		t.Fatalf("backend runs=%d", runs)
+	}
+	restored, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(restored); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "answer") {
+		t.Fatalf("replay response=%d %s", rec.Code, rec.Body.String())
+	}
+	if runs != 1 {
+		t.Fatalf("replay created another run: %d", runs)
+	}
+}
+
+func TestSupervisorMarksInFlightJobUncertainOnRestart(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
+	request := hubruntime.ExecuteRequest{JobID: "job-running", IdempotencyKey: "idem-running", Text: "hello"}
+	if _, replay, err := m.beginJob(request); err != nil || replay {
+		t.Fatalf("begin replay=%v err=%v", replay, err)
+	}
+	restarted, err := New(m.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, replay, err := restarted.beginJob(request)
+	if err != nil || !replay || response.Status != "uncertain" || response.LastEvent != "run.unknown" {
+		t.Fatalf("restart replay=%+v replay=%v err=%v", response, replay, err)
+	}
+}
+
+func TestSupervisorIgnoresStaleJobCompletion(t *testing.T) {
+	m, _ := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, os.ErrNotExist }, nil)
+	request := hubruntime.ExecuteRequest{JobID: "job-stale", IdempotencyKey: "idem-stale"}
+	if _, _, err := m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	record := m.jobs[request.JobID]
+	record.Generation = "old-generation"
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	m.finishJobGeneration(request, hubruntime.ExecuteResponse{Text: "wrong"}, "completed", "new-generation")
+	m.mu.Lock()
+	status := m.jobs[request.JobID].Status
+	m.mu.Unlock()
+	if status != "running" {
+		t.Fatalf("stale completion changed status to %q", status)
+	}
+	m.mu.Lock()
+	record = m.jobs[request.JobID]
+	record.Generation = ""
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	m.finishJobGeneration(request, hubruntime.ExecuteResponse{Text: "wrong"}, "completed", "new-generation")
+	m.mu.Lock()
+	status = m.jobs[request.JobID].Status
+	m.mu.Unlock()
+	if status != "running" {
+		t.Fatalf("unbound stale completion changed status to %q", status)
+	}
+}
+
+func TestSupervisorMarksTransportOutcomeUncertain(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	address := dead.URL
+	dead.Close()
+	m.mu.Lock()
+	m.items[runtimeKey(b)].Address = address
+	m.mu.Unlock()
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: "job-uncertain", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-uncertain", Text: "hello"}
+	body, _ := json.Marshal(request)
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), `"status":"uncertain"`) {
+		t.Fatalf("uncertain response=%d %s", rec.Code, rec.Body.String())
+	}
+	m.mu.Lock()
+	status := m.jobs[request.JobID].Status
+	m.mu.Unlock()
+	if status != "uncertain" {
+		t.Fatalf("job status=%q", status)
+	}
+}
+
+func TestSupervisorJobAdmissionFencesDuplicates(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
+	if _, _, err := m.beginJob(hubruntime.ExecuteRequest{}); err == nil {
+		t.Fatal("missing job identity accepted")
+	}
+	request := hubruntime.ExecuteRequest{JobID: "job-admission", IdempotencyKey: "idem-admission", Text: "hello"}
+	if _, replay, err := m.beginJob(request); err != nil || replay {
+		t.Fatalf("first admission replay=%v err=%v", replay, err)
+	}
+	if _, _, err := m.beginJob(request); !errors.Is(err, errJobInProgress) {
+		t.Fatalf("in-progress admission err=%v", err)
+	}
+	changed := request
+	changed.Text = "different"
+	if _, _, err := m.beginJob(changed); err == nil {
+		t.Fatal("payload collision accepted")
+	}
+	m.mu.Lock()
+	record := m.jobs[request.JobID]
+	record.Status, record.Response = "completed", hubruntime.ExecuteResponse{Text: "answer"}
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	if response, replay, err := m.beginJob(request); err != nil || !replay || response.Text != "answer" {
+		t.Fatalf("completed replay=%+v replay=%v err=%v", response, replay, err)
+	}
+	m.mu.Lock()
+	record.Status = "uncertain"
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	if response, replay, err := m.beginJob(request); err != nil || !replay || response.Text != "answer" {
+		t.Fatalf("uncertain replay=%+v replay=%v err=%v", response, replay, err)
 	}
 }
 
@@ -215,6 +521,18 @@ func TestSupervisorLeaseHTTPContract(t *testing.T) {
 	m.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("lease release=%d %s", rec.Code, rec.Body.String())
+	}
+	for _, tc := range []struct {
+		method, path, body string
+		status             int
+	}{{http.MethodGet, "/v1/leases", "", http.StatusMethodNotAllowed}, {http.MethodPost, "/v1/leases", "bad", http.StatusBadRequest}, {http.MethodGet, "/v1/leases/missing", "", http.StatusMethodNotAllowed}, {http.MethodDelete, "/v1/leases/missing", "", http.StatusNotFound}, {http.MethodPost, "/v1/runtimes", "", http.StatusMethodNotAllowed}} {
+		req = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec = httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("%s %s status=%d want=%d", tc.method, tc.path, rec.Code, tc.status)
+		}
 	}
 	_ = root
 }

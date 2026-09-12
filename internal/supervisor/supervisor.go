@@ -56,6 +56,9 @@ type Lease struct {
 	PrincipalID string    `json:"principal_id"`
 	ContextID   string    `json:"context_id"`
 	RuntimeMode string    `json:"runtime_mode"`
+	Generation  string    `json:"generation"`
+	Owner       string    `json:"owner,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
 type Config struct {
@@ -63,6 +66,7 @@ type Config struct {
 	Image         string
 	Network       string
 	SpacesRoot    string
+	StateDir      string
 	RuntimeAuth   string
 	WarmTTL       time.Duration
 	MaxConcurrent int
@@ -107,19 +111,42 @@ type Runtime struct {
 
 type runtimeEntry struct {
 	Runtime
-	auth   string
-	leases map[string]Lease
+	auth     string
+	leases   map[string]Lease
+	restored bool
 }
 
 type Manager struct {
-	cfg      Config
-	mu       sync.Mutex
-	items    map[string]*runtimeEntry
-	locks    map[string]*sync.Mutex
-	sem      chan struct{}
-	slots    map[string]struct{}
-	gen      uint64
-	leaseSeq uint64
+	cfg       Config
+	mu        sync.Mutex
+	items     map[string]*runtimeEntry
+	locks     map[string]*sync.Mutex
+	sem       chan struct{}
+	slots     map[string]struct{}
+	gen       uint64
+	leaseSeq  uint64
+	statePath string
+	jobs      map[string]jobRecord
+}
+
+type persistedManager struct {
+	Generation uint64               `json:"generation"`
+	LeaseSeq   uint64               `json:"lease_seq"`
+	Items      []persistedRuntime   `json:"items"`
+	Jobs       map[string]jobRecord `json:"jobs,omitempty"`
+}
+
+type persistedRuntime struct {
+	Runtime Runtime          `json:"runtime"`
+	Leases  map[string]Lease `json:"leases,omitempty"`
+}
+
+type jobRecord struct {
+	Fingerprint string                     `json:"fingerprint"`
+	Response    hubruntime.ExecuteResponse `json:"response"`
+	Status      string                     `json:"status"`
+	Generation  string                     `json:"generation,omitempty"`
+	UpdatedAt   time.Time                  `json:"updated_at"`
 }
 
 // Serve runs the always-on control-plane endpoint. It never mounts or exposes
@@ -166,6 +193,12 @@ func New(cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("spaces root: %w", err)
 	}
 	cfg.SpacesRoot = root
+	if cfg.StateDir == "" {
+		cfg.StateDir = filepath.Join(root, ".control")
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
+		return nil, fmt.Errorf("supervisor state: %w", err)
+	}
 	if cfg.Docker == "" {
 		cfg.Docker = "docker"
 	}
@@ -204,7 +237,80 @@ func New(cfg Config) (*Manager, error) {
 			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput()
 		}
 	}
-	return &Manager{cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}}, nil
+	m := &Manager{cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	if err := m.load(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (m *Manager) load() error {
+	b, err := os.ReadFile(m.statePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var state persistedManager
+	if err := json.Unmarshal(b, &state); err != nil {
+		return fmt.Errorf("invalid supervisor state: %w", err)
+	}
+	m.gen, m.leaseSeq = state.Generation, state.LeaseSeq
+	if state.Jobs != nil {
+		m.jobs = state.Jobs
+	}
+	dirty := false
+	for key, record := range m.jobs {
+		if record.Status == "running" {
+			record.Status = "uncertain"
+			record.Response.Status = "uncertain"
+			record.Response.LastEvent = "run.unknown"
+			record.UpdatedAt = m.cfg.Now().UTC()
+			m.jobs[key] = record
+			dirty = true
+		}
+	}
+	for _, item := range state.Items {
+		if !validID(item.Runtime.PrincipalID) || !validID(item.Runtime.ContextID) || !validID(item.Runtime.RuntimeID) || !validID(item.Runtime.RuntimeMode) || item.Runtime.Generation == "" {
+			return errors.New("invalid supervisor runtime state")
+		}
+		m.items[runtimeKey(Binding{PrincipalID: item.Runtime.PrincipalID, ContextID: item.Runtime.ContextID, RuntimeMode: item.Runtime.RuntimeMode})] = &runtimeEntry{Runtime: item.Runtime, leases: item.Leases, restored: true}
+	}
+	if dirty {
+		return m.persistLocked()
+	}
+	return nil
+}
+
+func (m *Manager) persistLocked() error {
+	state := persistedManager{Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs}
+	for _, item := range m.items {
+		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Leases: item.leases})
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(m.cfg.StateDir, ".supervisor-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err = tmp.Chmod(0600); err == nil {
+		_, err = tmp.Write(b)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(name, m.statePath)
+	}
+	return err
 }
 
 func (m *Manager) lockFor(key string) *sync.Mutex {
@@ -232,9 +338,45 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		m.mu.Unlock()
 		return Runtime{}, errors.New("runtime identity mismatch")
 	}
+	current := m.items[key]
+	if current != nil && current.restored && (current.State == Ready || current.State == Idle || current.State == Busy) {
+		container, address, auth := current.Container, current.Address, binding.runtimeAuth
+		m.mu.Unlock()
+		if out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container); inspectErr == nil && strings.TrimSpace(string(out)) == "running" && m.ready(ctx, address, auth) == nil {
+			select {
+			case m.sem <- struct{}{}:
+			case <-ctx.Done():
+				return Runtime{}, ctx.Err()
+			}
+			m.mu.Lock()
+			current = m.items[key]
+			if current == nil {
+				m.mu.Unlock()
+				<-m.sem
+				return Runtime{}, errors.New("runtime disappeared during restore")
+			}
+			current.restored, current.State, current.Leases, current.LastUsed, current.IdleDeadline = false, Busy, current.Leases+1, m.cfg.Now(), time.Time{}
+			m.slots[key] = struct{}{}
+			result := current.Runtime
+			_ = m.persistLocked()
+			m.mu.Unlock()
+			return result, nil
+		}
+		m.mu.Lock()
+		current = m.items[key]
+		if current != nil {
+			current.restored, current.State, current.Leases, current.leases = false, Stopped, 0, map[string]Lease{}
+			_ = m.persistLocked()
+		}
+		m.mu.Unlock()
+	} else {
+		m.mu.Unlock()
+	}
+	m.mu.Lock()
 	if current := m.items[key]; current != nil && (current.State == Ready || current.State == Idle || current.State == Busy) {
 		current.State, current.Leases, current.LastUsed, current.IdleDeadline = Busy, current.Leases+1, m.cfg.Now(), time.Time{}
 		result := current.Runtime
+		_ = m.persistLocked()
 		m.mu.Unlock()
 		return result, nil
 	}
@@ -259,18 +401,20 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	m.gen++
 	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now()}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	m.items[key] = logical
+	_ = m.persistLocked()
 	m.mu.Unlock()
 	if out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container); inspectErr == nil && strings.TrimSpace(string(out)) == "running" {
 		if err = m.ready(ctx, address, binding.runtimeAuth); err == nil {
 			m.mu.Lock()
 			logical.State = Busy
 			result := logical.Runtime
+			_ = m.persistLocked()
 			m.mu.Unlock()
 			return result, nil
 		}
 		_, _ = m.command(ctx, "rm", "-f", container)
 	}
-	args := m.runArgs(binding, container, port)
+	args := m.runArgsWithGeneration(binding, container, port, logical.Generation)
 	if _, err = m.command(ctx, args...); err != nil {
 		m.markDegraded(key)
 		m.releaseSlot(key)
@@ -285,6 +429,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	m.mu.Lock()
 	logical.State = Busy
 	result := logical.Runtime
+	_ = m.persistLocked()
 	m.mu.Unlock()
 	return result, nil
 }
@@ -326,6 +471,9 @@ func (m *Manager) releaseKey(key string) error {
 	if runtime.Leases == 0 {
 		runtime.State, runtime.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
 	}
+	if err := m.persistLocked(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -352,7 +500,7 @@ func (m *Manager) Acquire(ctx context.Context, binding Binding, kind LeaseKind) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.leaseSeq++
-	lease := Lease{ID: fmt.Sprintf("lease-%x", m.leaseSeq), Kind: kind, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeMode: binding.RuntimeMode}
+	lease := Lease{ID: fmt.Sprintf("lease-%x", m.leaseSeq), Kind: kind, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeMode: binding.RuntimeMode, Generation: entryGeneration(m.items[key]), Owner: "supervisor", ExpiresAt: m.cfg.Now().Add(5 * time.Minute)}
 	entry := m.items[key]
 	if entry == nil || entry.State == Stopped || entry.State == Degraded {
 		return Lease{}, Runtime{}, errors.New("runtime is not registered")
@@ -361,7 +509,17 @@ func (m *Manager) Acquire(ctx context.Context, binding Binding, kind LeaseKind) 
 		entry.leases = map[string]Lease{}
 	}
 	entry.leases[lease.ID] = lease
+	if err := m.persistLocked(); err != nil {
+		return Lease{}, Runtime{}, err
+	}
 	return lease, entry.Runtime, nil
+}
+
+func entryGeneration(entry *runtimeEntry) string {
+	if entry == nil {
+		return ""
+	}
+	return entry.Generation
 }
 
 func (m *Manager) ReleaseLease(leaseID string) error {
@@ -372,6 +530,10 @@ func (m *Manager) ReleaseLease(leaseID string) error {
 	var binding Binding
 	for _, entry := range m.items {
 		if lease, ok := entry.leases[leaseID]; ok {
+			if lease.Generation != entry.Generation {
+				m.mu.Unlock()
+				return errors.New("stale runtime lease")
+			}
 			delete(entry.leases, leaseID)
 			binding = Binding{PrincipalID: lease.PrincipalID, ContextID: lease.ContextID, RuntimeMode: lease.RuntimeMode}
 			break
@@ -418,13 +580,18 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 		m.mu.Lock()
 		if err != nil {
 			runtime.State = Degraded
-			delete(m.slots, key)
-			<-m.sem
+			if _, held := m.slots[key]; held {
+				delete(m.slots, key)
+				<-m.sem
+			}
 		} else {
 			runtime.State, runtime.IdleDeadline = Stopped, time.Time{}
-			delete(m.slots, key)
-			<-m.sem
+			if _, held := m.slots[key]; held {
+				delete(m.slots, key)
+				<-m.sem
+			}
 		}
+		_ = m.persistLocked()
 		m.mu.Unlock()
 		lock.Unlock()
 		if err != nil {
@@ -531,6 +698,77 @@ func (m *Manager) authorized(r *http.Request) bool {
 	return len(provided) == len(m.cfg.RuntimeAuth) && subtle.ConstantTimeCompare([]byte(provided), []byte(m.cfg.RuntimeAuth)) == 1
 }
 
+var errJobInProgress = errors.New("job is already in progress")
+
+func executeJobKey(request hubruntime.ExecuteRequest) string {
+	if request.JobID != "" {
+		return request.JobID
+	}
+	return request.IdempotencyKey
+}
+
+func executeFingerprint(request hubruntime.ExecuteRequest) string {
+	b, _ := json.Marshal(request)
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.ExecuteResponse, bool, error) {
+	key := executeJobKey(request)
+	if key == "" || request.IdempotencyKey == "" {
+		return hubruntime.ExecuteResponse{}, false, errors.New("job identity is required")
+	}
+	fingerprint := executeFingerprint(request)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if previous, ok := m.jobs[key]; ok {
+		if previous.Fingerprint != fingerprint {
+			return hubruntime.ExecuteResponse{}, false, errors.New("job identity already used with different payload")
+		}
+		if previous.Status == "completed" {
+			return previous.Response, true, nil
+		}
+		if previous.Status == "uncertain" {
+			return previous.Response, true, nil
+		}
+		return hubruntime.ExecuteResponse{}, false, errJobInProgress
+	}
+	m.jobs[key] = jobRecord{Fingerprint: fingerprint, Status: "running", UpdatedAt: time.Now().UTC()}
+	return hubruntime.ExecuteResponse{}, false, m.persistLocked()
+}
+
+func (m *Manager) finishJob(request hubruntime.ExecuteRequest, response hubruntime.ExecuteResponse, status string) {
+	m.finishJobGeneration(request, response, status, "")
+}
+
+func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generation string) {
+	key := executeJobKey(request)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if record, ok := m.jobs[key]; ok && record.Status == "running" {
+		record.Generation, record.UpdatedAt = generation, time.Now().UTC()
+		m.jobs[key] = record
+		_ = m.persistLocked()
+	}
+}
+
+func (m *Manager) finishJobGeneration(request hubruntime.ExecuteRequest, response hubruntime.ExecuteResponse, status, generation string) {
+	key := executeJobKey(request)
+	if key == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if record, ok := m.jobs[key]; ok {
+		if generation != "" && record.Generation != generation {
+			return
+		}
+		record.Response, record.Status, record.UpdatedAt = response, status, time.Now().UTC()
+		m.jobs[key] = record
+		_ = m.persistLocked()
+	}
+}
+
 func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -553,28 +791,67 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	known, replay, err := m.beginJob(request)
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, errJobInProgress) {
+			status = http.StatusTooEarly
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	if replay {
+		writeJSON(w, http.StatusOK, known)
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseJob)
 	if err != nil {
+		m.finishJob(request, hubruntime.ExecuteResponse{}, "uncertain")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}
+	m.bindJobGeneration(request, runtime.Generation)
 	defer func() { _ = m.ReleaseLease(lease.ID) }()
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/execute", bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "runtime request failed"})
+		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		writeJSON(w, http.StatusBadGateway, uncertain)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
 	response, err := m.cfg.HTTP.Do(req)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime request failed"})
+		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		writeJSON(w, http.StatusBadGateway, uncertain)
 		return
 	}
 	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
+	if readErr != nil || len(body) > 2*1024*1024 {
+		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		writeJSON(w, http.StatusBadGateway, uncertain)
+		return
+	}
+	var result hubruntime.ExecuteResponse
+	if json.Unmarshal(body, &result) == nil {
+		status := result.Status
+		if status == "" && response.StatusCode/100 == 2 {
+			status = "completed"
+		}
+		m.finishJobGeneration(request, result, status, runtime.Generation)
+	} else {
+		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		writeJSON(w, http.StatusBadGateway, uncertain)
+		return
+	}
 	w.Header().Set("Content-Type", response.Header.Get("Content-Type"))
 	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(response.Body, 2*1024*1024))
+	_, _ = w.Write(body)
 }
 
 func (m *Manager) list(w http.ResponseWriter, r *http.Request) {
@@ -693,6 +970,10 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 }
 
 func (m *Manager) runArgs(binding Binding, container string, port int) []string {
+	return m.runArgsWithGeneration(binding, container, port, "")
+}
+
+func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) []string {
 	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort), "--mount", "type=bind,src=" + binding.ContextRoot + ",dst=/scope"}
 	args = append(args, "--env-file", binding.EnvFile)
 	if binding.OrganizationRoot != "" {
@@ -703,7 +984,11 @@ func (m *Manager) runArgs(binding Binding, container string, port int) []string 
 			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
 		}
 	}
-	args = append(args, "-e", "HUB_PERSISTENT_HERMES=true", "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/scope/runtime", "-e", "HUB_WORKSPACE=/scope/workspace", "-e", "HERMES_HOME=/scope/hermes", "-e", "HOME=/scope/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642", m.cfg.Image, "serve")
+	args = append(args, "-e", "HUB_PERSISTENT_HERMES=true", "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/scope/runtime", "-e", "HUB_WORKSPACE=/scope/workspace", "-e", "HERMES_HOME=/scope/hermes", "-e", "HOME=/scope/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
+	if generation != "" {
+		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
+	}
+	args = append(args, m.cfg.Image, "serve")
 	return args
 }
 
@@ -748,6 +1033,7 @@ func (m *Manager) markDegraded(key string) {
 	if runtime := m.items[key]; runtime != nil {
 		runtime.State = Degraded
 		runtime.Leases = 0
+		_ = m.persistLocked()
 	}
 	m.mu.Unlock()
 }
