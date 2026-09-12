@@ -1,0 +1,279 @@
+change: CHG-0017
+status: done
+root_final_review: 'Complete: reviewed final acceptance matrix and gates56498/42032; user environment deployment was not performed.'
+updated: 2026-09-12
+issue18_delegate_checkpoint:
+  status: 'issue18 complete: all six original acceptance criteria and desired/health scope verified; root final review remains'
+  implementation: 'Durable absent-idle capacity handoff; lost Docker ACK cleanup/unknown hold; restored in-flight adoption; saved lifecycle binding and opaque release preservation; bounded named owner inventory and known-terminal orphan cleanup; conservative unknown/orphan capacity'
+  repository_gate: '56498 passed exit0: own Go85.18%, full race/shuffle, format/vet/staticcheck/docs/actionlint on final current source; earlier17407 exit0 own85.22% retained as historical evidence'
+  docker_gate: '42032 passed exit0: current production image32d074110c29, standalone smoke and real pinned Hermes0.21.0 all contracts; automatic once recovery, real reap/new-job race, actual native300s crashed-turn expiry/same-run resume, pin/idle no-wake, orphan isolation, due wake/final/handoff/sleep and canaries; native41003/candidate95147 also passed'
+  scope: 'Synthetic isolated native provider and fixture homes only; no live user environment switch, provider account, external sending, login, commit, push or publication'
+issue17_delegate_checkpoint:
+  status: 'issue17 complete: all five original acceptance criteria verified in preceding sequential delegation and preserved by final56498/42032'
+  implementation: 'Native ASK environment; expired pending duplicate fails closed; approve/cancel full binding negatives; expiry lost STOP response and supervisor restart; production dispatcher positive native approval/expiry and active approval generation replacement probe'
+  repository_gate: '69592 passed exit0: race/shuffle including warm-ready cancellation and lost expiry restart, own Go coverage85.15%, format/vet/staticcheck/docs/actionlint'
+  docker_gate: '46212 passed exit0: production image7504d0da928b; standalone smoke and pinned Hermes0.21.0 real approval/audience/once+duplicate/hold/expiry+late rejection and active-approval generation replacement without input replay'
+  scope: 'Real Hermes with isolated local model provider and durable delivery audience; no live Telegram send, provider account, organization permission grant, commit, push or publication. Final CHG review/closure is recorded in final_issue18_handoff.'
+issue16_delegate_checkpoint:
+  repository_gate: '45088 passed: race/shuffle tests, own Go coverage 85.13%, format, vet, staticcheck, docs and actionlint'
+  docker_gate: '31261 passed exit0: image9745e47b7c98, standalone smoke and pinned Hermes contract including supervisor tool stream, cached final restart, active disconnect and original-run replacement recovery'
+  status: 'issue16 complete: preceding sequential delegation verified it; final56498/42032 preserve its invariants'
+  delivery_scope: 'Exactly one internal durable final receipt/outbox delivery. Telegram acknowledgement loss remains uncertain and is not blindly retried; live Telegram delivery was not exercised.'
+  cleanup: 'Removed only old failed test-owned container by immutable ID after mount and owner/context/generation checks; empty test network removed. No spaces or volumes deleted.'
+steps:
+  - name: pinned-upstream-contract
+    status: done
+  - name: durable-stream-and-delivery
+    status: done
+  - name: cancellation-and-approval
+    status: done
+  - name: reconciliation-and-orphan-recovery
+    status: done
+  - name: real-probes-and-delivery-gates
+    status: done
+evidence:
+  - Inspected api_server_runs.py in local hermes-hub:test image; SSE uses process-local queues and restart marks unsettled runs interrupted.
+  - Atomic named-lease release rolls back on persistence failure; concurrent release regression passed in supervisor race tests.
+  - Unknown execution responses preserve an uncertain lease across supervisor restart and beyond idle TTL.
+  - Outcome updates now reject changed session, run and generation before writing mapping or conversation state.
+  - Pinned SSE handler removes transport state on disconnect and has no Last-Event-ID replay; terminal recovery must use durable run status.
+  - just check passed with 85.27% original Go statement coverage, race tests, staticcheck and documentation/workflow checks.
+  - just docker-check prod running for the earlier lease-fix snapshot in exec session 83977; revalidate that handle before any retry. It does not verify the new stream implementation.
+  - Implemented bounded SSE normalization and NDJSON runtime/supervisor relay with durable admission metadata.
+  - Implemented write-ahead event receipts, outbox repair, event deduplication and independent delivery while execution is active.
+  - Added explicit supervisor resume/runtime observe APIs; recovery observes the original run without resubmitting input.
+  - Added regression tests for private-field removal, limits, approval projection, outbox repair, stale-generation rejection and restart-to-interrupted recovery.
+  - Full gates 50567 and 51951 passed functional/race tests but failed coverage at 84.01% and 84.64%; neither is a repository pass.
+  - Added observe authorization, no-resubmission, delivery-audience corruption, terminal handoff recovery and stop-acknowledgement regression tests.
+  - Gate 54999 passed race tests and coverage at 85.01% but failed staticcheck on error-string capitalization and an identical-expression test; those findings are fixed. No full repository pass claimed.
+  - Latest wrong-run/session/approval-handoff race regression passed in exec session 4322.
+  - Terminal stream relay now waits for durable supervisor state; persistence failure rolls the record back and does not publish the result.
+  - Supervisor durable-relay/ownership race regressions passed in exec session 97543.
+  - Latest full gate including relay persistence and staticcheck fixes running in exec session 94231.
+  - Added durable approval request ID, supported native choices, persisted deadline and terminal closure to event handoff.
+  - Approval restart/receipt recovery race regressions passed in exec session 19017.
+  - Gate 94231 observed an in-progress stream.go edit before gofmt; format is fixed, but that gate cannot be counted as passed. Wait for its terminal result before a new full run.
+  - Gate 94231 finished with failure in the transient-format check; other package race tests passed.
+  - Pinned approval choice helper inspection running in exec session 56758; inspect its output before assuming the upstream choice wire shape.
+next:
+  - Root final review of acceptance-audit.md and gates56498/42032; no issue16-18 implementation remains.
+  - Root task-state closure and delivery; no commit/push/publication or user environment switch is implied.
+
+current_checkpoint:
+  repository_gate: '19850 completed successfully: coverage 85.21%, race, format, vet, staticcheck, docs, actionlint'
+  docker_gate: '83977 confirmed live; earlier snapshot only'
+  control: 'Added private runtime control endpoint with exact session/run/generation/request/choice/deadline checks; no supervisor or chat dispatch yet'
+  targeted_checks: 'runtime package 11329 and control race regression 60935; inspect terminal outputs'
+
+control_checkpoint:
+  implementation: 'Supervisor persists control intent before dispatch, validates original ownership and generation, uses its durable approval deadline, deduplicates applied decisions and rejects conflicting or uncertain retries'
+  package_check: '49621 passed supervisor package tests'
+  race_check: '46989 control regression; inspect terminal result'
+  remaining: 'Queued/starting cancellation, chat control worker, approval leases/expiry/reconciliation and real upstream probes remain required'
+
+queued_cancel_checkpoint:
+  implementation: 'Added durable RequestCancel serialized with ClaimJob and bound to principal/context/conversation/delivery/runtime/policy; unclaimed tasks close locally, claimed tasks retain nonterminal cancel intent'
+  fail_closed: 'ClaimJob refuses execution when durable mapped routing/cancellation metadata cannot be read'
+  checks: '91885 queued cancellation restart and claimed cancellation race regressions; inspect output'
+  next: 'Connect verified chat commands to durable controls worker; enforce cancellation at supervisor admission races and expiry'
+
+chat_controls_checkpoint:
+  implementation: 'Verified private cancel/approve commands persist intent; independent controls worker dispatches exact mapped run, marks uncertain before HTTP and avoids blind retry after restart; approval projection includes command and native choices'
+  package_check: '87466 passed communication package tests'
+  race_check: '64883 durable control restart/conflict/no-blind-retry regressions; inspect terminal output'
+  remaining: 'Uncertain-control reconciliation, queued/starting supervisor cancellation, actionable approval lease and expiry, comprehensive runtime reconciliation, real probes and full gates'
+
+approval_expiry_checkpoint:
+  implementation: 'Approval requests acquire a dedicated durable lease in the same supervisor write; persistence rollback restores lease counts; applied approvals clear deadline and hold; terminal controls settle job leases; periodic expiry uses durable cancellation and never frees unknown work on timeout alone'
+  regressions: '65505 supervisor package passed; 99187 and 70322 control/resume/terminal-relay race checks passed; 60713 approval lease and idempotent expiry regression passed; 79604 final fixture refinement running'
+  remaining: 'Uncertain controls need authoritative reconciliation; starting cancellation and comprehensive desired-state/crash/orphan/routine reconciliation plus pinned integration probes and all final gates remain required'
+
+control_atomicity_checkpoint:
+  implementation: 'Control response, job state and approval lease changes now share a single durable write via locked finish helper; concurrent terminal result wins over late running response; generation/deadline are rechecked immediately before intent dispatch; terminal native cancellation preserves output'
+  regressions: '22801 runtime/supervisor control and recovery race checks passed; 77642 concurrent terminal control and expiry race checks passed; 43304 final dispatch fence regression running'
+  docker: '83977 confirmed live again; earlier snapshot only'
+  remaining: 'Desired-state/crash/orphan/routine reconciliation, starting cancellation, uncertain-control resolution, current policy audit, real pinned probes and complete repository gates'
+
+health_reconciliation_checkpoint:
+  implementation: 'Periodic keyed health reconciliation persists container health, authenticated Hermes readiness, desired work and observation time separately; reaper checks current durable jobs/leases and preserves unknown container state'
+  checks: '30509 supervisor package tests passed; 84213 health/desired/unknown-reap race regression running'
+  remaining: 'Recovery/replacement, crash budget/backoff, owned orphan detection, routine and operator-pin desired sources, uncertain-control resolution, admission cancellation, real probes and final gates remain required'
+
+crash_budget_checkpoint:
+  implementation: 'Durable failed-start crash window and retry time survive generations and supervisor restart; max three failures per ten minutes with 2/4/8 second backoff; external launch requires persisted starting state and rolls back registration/slot on write failure'
+  checks: '32999 supervisor package passed; 80986 crash/backoff restart and health race regressions passed; 65487 adds durable-start/no-external-mutation regression'
+  remaining: 'Actual crash/replacement reconciliation, owned orphan detection, routine/pin sources, uncertain-control resolution, starting cancellation, pinned probes and all final gates'
+
+ownership_checkpoint:
+  implementation: 'New containers carry stable state-path owner, hashed context key and generation labels; bounded owner-filtered Docker inventory persists stale/orphan generations; foreign ownership excluded and failed scans preserve previous state'
+  checks: '41811 supervisor package tests passed; 98208 owned/stale/foreign/durable-inventory and crash/health race regressions running'
+  remaining: 'Ownership enforcement at adoption/removal, safe replacement/recovery, routine/pin desired sources, uncertain-control resolution, admission cancellation, real upstream probes and final gates'
+
+ownership_verifier_checkpoint:
+  implementation: 'Shared bounded label reader and exact owner/context/generation verifier; health observations persist ownership independently; observed unverified ownership prevents idle reaping; inventory validates context hash encoding'
+  checks: '71991 ownership inventory and health race checks passed; 99734 adds verifier mismatch regressions'
+  docker: '83977 built earlier-snapshot image 760c46e2771e and is running docker-smoke; not final integration evidence'
+  remaining: 'Verifier must still guard every adoption and removal, including unobserved/legacy runtimes; replacement/recovery, pins/routines, cancellation races and all final probes/gates remain required'
+
+reaper_ownership_checkpoint:
+  implementation: 'Idle reaper now verifies exact owner/context/generation before removal and rechecks durable desired work after inspection; ownership failure preserves runtime and slot'
+  regression_updates: 'Docker test double models labels only after successful run; restored-runtime fixture now supplies explicit matching metadata'
+  checks: '65303 direct ownership/new-job reaper race regressions passed; 30585 broader suite found one legacy fixture gap now fixed; 59783 supervisor race suite running'
+  docker: '83977 earlier-snapshot Docker smoke passed with no live provider calls; pinned hermes-contract probe now running'
+  remaining: 'ID-based deletion fence, ownership at adoption/failed-start cleanup, actual replacement/recovery, pins/routines, uncertain controls, admission cancellation, new-code integration and all final gates'
+
+restore_ownership_checkpoint:
+  implementation: 'Restored active runtime must pass exact owner/context/generation verification before adoption; rejection preserves original leases, generation and slot accounting'
+  checks: '30125 exposed legacy restored fixture without labels; fixed fixture; 50118 full supervisor race suite passed; 60432 replacement rejection and reaper regression running'
+  docker: '83977 completed successfully for earlier lease snapshot: standalone smoke, host supervisor smoke and pinned Hermes contract; does not prove current stream/control/reconciliation integrations'
+  remaining: 'Fresh-adoption and failed-start cleanup ownership fences, container-ID removal, actual missing runtime recovery, pins/routines, uncertain controls, starting cancellation, new-code pinned probes and final criterion audit'
+
+active_repository_gate:
+  session: 70930
+  status: 'just check running; revalidate this exact handle before any retry or Go edits'
+  regression: '60432 replacement rejection and reaper race regression passed'
+
+repository_gate_70930:
+  status: 'finished: race tests passed; coverage 84.54% failed 85% threshold; later lint/docs gates not run'
+  next: 'Added terminal/cancel/repeated-stop runtime regression in 50050; inspect result. Acceptance matrix in acceptance-audit.md identifies remaining original scope without claiming completion.'
+
+missing_runtime_checkpoint:
+  implementation: 'Exact-name successful Docker inventory distinguishes confirmed absence from inspection failure; restored verification permits only confirmed absence; periodic missing-work recovery starts infrastructure once and attaches an uncertain job hold without resubmitting original prompt/run'
+  checks: '77365 and 94466 supervisor race suites passed; 14313 active-vs-idle missing recovery/no-repeat infrastructure regression running'
+  limits: 'Original run still needs explicit observation recovery; failed replacement/crash accounting, ownership of fresh adoption and cleanup, routine/pin sources and final integration remain incomplete'
+
+recovery_concurrency_checkpoint:
+  implementation: 'Per-context recovery coordinator serializes replacement and lease registration across concurrent sweeps; owner attachment restores original in-memory lease on durable write failure; recovery can follow later missing infrastructure while original run generation awaits explicit observation'
+  checks: '57227 twenty-concurrent-sweep recovery race regression passed; 73754 concurrent recovery and ownership rollback race checks passed; final repeat of these checks launched this turn'
+  remaining: 'Count actual disappearances/crashes and pause repeated replacement; fresh adoption/cleanup and ID fence; original run observation handoff; pins/routines, uncertain controls, admission cancellation, real pinned tests and full gates'
+
+actual_missing_crash_checkpoint:
+  implementation: 'Confirmed missing infrastructure with current work consumes shared durable crash budget once per disappearance; Ensure applies backoff/circuit budget to missing state; recovery preserves counters across replacement generations'
+  checks: '59061 actual successive disappearances, no double counting, concurrent recovery, original run retention and failed-start budget race regressions passed; full supervisor race suite launched this turn'
+  remaining: 'Owned exited-container recovery, immutable container-ID removal, fresh adoption/failed cleanup fences, original-run result handoff, pins/routines, uncertain controls/admission cancel and final integration/gates'
+
+immutable_id_reaper_checkpoint:
+  implementation: 'Reaper resolves full Docker ID and verifies owner/context/generation through that ID; deletion uses verified immutable ID, not mutable name; malformed identity fails closed'
+  checks: '5921 broad suite found two old fixtures without ID response, fixed; 30055 reaper/restored/warm runtime race checks passed; 2299 full supervisor race suite including immutable-ID regression running'
+  remaining: 'Same ID fence for fresh adoption/failed-start cleanup and exited-container replacement; original observation/handoff, routine/pin desired sources, uncertain controls/admission cancellation and final pinned integration/coverage gates'
+
+failed_cleanup_checkpoint:
+  implementation: 'Fresh running-name adoption requires immutable ID and exact labels; failed readiness cleanup deletes verified ID only and preserves slot on unknown cleanup; restored live runtime with temporarily unavailable API retains original generation and leases rather than being discarded'
+  checks: '69024 exposed five old unlabelled adoption fixtures, updated to model creation or rejection; 46856 broad supervisor race suite passed; 22374 owned vs foreign failed-readiness cleanup race tests passed; 71439 broad suite passed; final readiness-preservation regression launched'
+  remaining: 'Owned exited-container recovery, complete original-run observation/outbox handoff, routine/pin sources, uncertain controls, admission cancellation, real pinned active approval probes and full gates'
+
+readiness_evidence_correction:
+  gate_71439: 'failed missing-runtime fixture retained synthetic labels after disappearance; corrected fixture to make every inspect fail for absent container; no pass claimed for 71439'
+  gate_19851: 'final restored-readiness and failed-cleanup regression; inspect result'
+  next: 'Revalidate full supervisor race session launched after missing fixture correction'
+
+latest_supervisor_gate:
+  session: 73717
+  regression_19851: 'passed restored live readiness preservation and verified/foreign failed cleanup race regressions'
+  status: 'inspect session 73717 terminal output for broad race result'
+
+exited_recovery_checkpoint:
+  implementation: 'Owned exited/dead runtime with current work uses keyed replacement after persisted backoff; verified old immutable ID removed before new generation; failure counted once per generation across missing/exited observations; restored-running path does not double-occupy an existing global slot'
+  checks: '59082 supervisor race suite passed; 88015 active/idle/foreign exited replacement and missing/crash-budget race regressions running'
+  remaining: 'Original-run observation and durable delivery recovery, routines/operator pins, uncertain controls and starting cancellation, connector health, real pinned active approval and final gates remain required'
+
+observation_rebind_checkpoint:
+  implementation: 'Resume rejects a concurrent observer before lease acquisition; trusted observation rebind revalidates original run/session and current runtime generation; durable write failure restores old job generation; concurrently terminal job returns saved result without observing again'
+  checks: '9833 resume/missing/exited recovery race regressions passed; 63775 concurrent observer rejection and durable generation-fence regressions running'
+  next: 'Restore known admitted observations while gateway remains alive, including sensitive inputs without resubmission; finish delivery handoff, routines/pins, uncertain controls/admission cancel and final integration gates'
+
+live_observation_checkpoint:
+  implementation: 'HTTP gateway worker requeues admitted uncertain runs for observation without restart; fingerprint/run/session/generation guard, durable capped backoff and terminal exclusion; ClaimJob and HTTPRunner strip original prompt for resume, including sensitive payloads already cleared from memory'
+  checks: '30529 communication race suite passed; 35922 ordinary/sensitive live recovery, original owner/run, terminal no-replay and bounded backoff race regressions passed; 69265 adds persisted early-retry rejection'
+  evidence_scope: 'HTTP fixtures are boundary regression evidence, not pinned Hermes integration success'
+  remaining: 'Complete control uncertainty and starting cancel, durable delivery feedback, routine/operator pins, connector health, real pinned active approval/replacement tests and all final gates'
+
+terminal_control_handoff_checkpoint:
+  implementation: 'Authoritative terminal run state durably closes uncertain decisions without claiming approval applied; communication terminal mapping cannot be downgraded; control terminal outcomes use original job audience and write-ahead event/outbox handoff; late control acknowledgement preserves terminal closure'
+  checks: '23940 supervisor/communication race suites passed; 41487 no-blind-retry control race check passed; 29849 terminal uncertain closure and cancellation completion/outbox audience race tests; supervisor closed-decision durability regression launched'
+  remaining: 'Resolve nonterminal uncertain decisions through authoritative status; starting cancellation, routines/pins, connector health, pinned positive integration and final repository gates'
+
+active_control_regression:
+  session: 87526
+  status: 'confirmed live; supervisor closed-decision durability race regression, re-poll same handle'
+  communication_29849: 'passed terminal control handoff and uncertainty closure race regressions'
+
+worker_outcome_checkpoint:
+  implementation: 'Worker consults durable terminal mapping before classifying late HTTP error; completed result wins; uncertain notices carry job ID and never suggest a fresh run; unknown-admission and known-observation notices separated from terminal failure/cancel notices'
+  evidence: '14525 broad communication race suite failed existing one-second HermesRunnerSuccess positive fixture under process load; no pass claimed. 68466 new worker fixture used bare 502 rather than explicit uncertain envelope, corrected to model current API contract; targeted repeat launched.'
+  remaining: 'Nonterminal control reconciliation, starting cancellation, pins/routines, connector health, real pinned positive probes and full gates remain required'
+
+active_worker_regression:
+  session: 66120
+  status: 'confirmed live; worker durable outcome/uncertain notification and existing HermesRunnerSuccess targeted race repeat'
+
+pre_admission_cancel_checkpoint:
+  implementation: 'Spool controls persist identity schema/external account; supervisor accepts durable cancellation before native run identity; dispatch intent persisted under same ledger mutex as pre-admission cancellation; terminal cancelled jobs replay without re-admission; gateway retries idempotent pre-admission cancellation until original run is known'
+  checks: '41127 communication full race suite passed after identity fix; 53551 targeted supervisor/communication cancellation/control race tests passed after pre-admission fence'
+  remaining: 'Integration race for cancellation while Acquire is blocked, uncertain controls, terminal handoff, pins/routines, connector health, current pinned Docker probes and final gates'
+
+startup_cancel_race_checkpoint:
+  implementation: 'Cancellation while readiness is blocked prevents native dispatch and releases named hold; cancelled pre-admission record binds current generation durably; admission and generation persistence failures roll back memory and stop dispatch'
+  checks: '60828 startup cancellation race passed; 26312 full supervisor race suite passed including write-failure regressions; 11596 previous full supervisor/communication race suite passed'
+  scope: 'Go boundary tests; real pinned Hermes/Docker proof remains required'
+
+read_only_control_checkpoint:
+  repository_gate: '33738 finished: all race tests passed; own coverage 84.63% below 85%; later lint/docs checks not run'
+  implementation: 'Runtime control reconcile flag performs authoritative native GET only; supervisor reconciles saved uncertain decision with original identity/run/session/generation; inactive approval closes without claiming choice applied and safely releases obsolete approval hold; missing uncertain intent rejected'
+  checks: '57695 targeted runtime/supervisor race checks passed; 25052 uncertain approval lost-response/read-only/no-repeat/idempotent closure regression passed'
+  remaining: 'Wire bounded background control reconciliation in gateway and expiry; cancellation read/confirmed stop recovery; routine/pin sources, connector health, terminal handoff, current real Docker integration and final gates'
+
+background_control_checkpoint:
+  implementation: 'Gateway uncertain controls use reconcile flag with durable five-second pacing; read-only approval recovery closes inactive decisions without applied claim; confirmed original live cancellation can safely reissue native stop; approval expiry uses reconcile for previously uncertain stop'
+  checks: '23421 gateway lost approval response, restart backoff, read-only recovery and no repeated mutation race tests passed; 91978 supervisor existing controls and uncertain approval reconciliation race tests passed'
+  remaining: 'Explicit lost-stop recovery regression, policy reauthorization, complete durable handoff, due routine/operator pins, connector health, current pinned real integration and final >=85% gates'
+
+lost_stop_and_identity_checkpoint:
+  implementation: 'Observed active original run permits idempotent stop retry after lost response; obsolete approval request lease removed when replacement request appears; shared supervisor binding validates complete identity before Docker/runtime auth access'
+  checks: '22787 lost-stop/read-before-retry and uncertain approval race regressions passed; 12619 supervisor full race passed after obsolete hold fix; 56436 identified legacy incomplete HTTP fixture, corrected; 65512 supervisor full race passed after identity guard; targeted malformed identity test 93804 revalidate result'
+  remaining: 'Current host policy/membership reauthorization, durable handoff, due routines/operator pins, connector health, current real pinned integration and full >=85% gate'
+
+current_policy_checkpoint:
+  implementation: 'New approvals re-read bounded regular host settings and explicit selected-spaces organization policy; effective policy hash must match original envelope, actor and organization; current membership enforced via existing ApplyOrganization; check repeated before native mutation; read-only uncertainty recovery remains non-mutating'
+  checks: '78625 supervisor/stack full race suites passed at initial personal policy snapshot; organization fixture gaps corrected (explicit root and docs directory); 28659 policy change/missing settings/forged actor or organization/removed member and existing approval controls targeted race tests passed'
+  remaining: 'Latest broad gate, real pinned positive approval; terminal durable handoff; due routine/operator pins; connector health; current Docker recovery canaries and final acceptance audit'
+
+operator_pin_checkpoint:
+  implementation: 'Generation-independent operator pins persisted in supervisor ledger; authenticated explicit-enabled API; exact original owner envelope for removal; pin desired state protects reaper; recovery coordinator serializes concurrent pin wakes and unpin; only infrastructure starts, no new Hermes task or data purge'
+  checks: '88681 pin restart/concurrent wake/idle protection/removal/home-preservation and durable write rollback race regressions passed; latest full supervisor race suite pending'
+  remaining: 'Due occurrence to durable ordinary job and wake; connector health; durable terminal delivery handoff; current real pinned Hermes/Docker probes and all final gates'
+
+due_occurrence_checkpoint:
+  implementation: 'Durable schedule-owner occurrence handoff, stable schedule/revision/time idempotency key, due-to-ordinary-cron-job admission, original private audience and live gateway owner/policy check, one-hour catch-up and sixteen-settlement tick cap; explicit private /runat creates a one-shot occurrence; polling independent of long execution worker'
+  checks: '96078 restart/concurrent tick/write-before-settlement replay/identity conflict/wrong owner/secrets/revocation/stale policy/expired catch-up race regressions passed; 90901 repeated those plus real gateway command parsing/duplicate update/no early execution boundary passed'
+  remaining: 'Overlap/coalescing and host current policy at scheduled execution; end-to-end wake/delivery/sleep pinned proof; connector health and durable handoff; final full gates'
+
+routine_overlap_checkpoint:
+  implementation: 'Occurrences ordered by due time; accepted/running/uncertain original mapping blocks another occurrence of same principal/context/schedule; terminal mapping releases next due occurrence; mapped fingerprint checked; serialized occurrence size bounded before durable write; scheduled supervisor execution uses current host user/org policy before job admission/runtime start'
+  checks: '82580 occurrence overlap/unknown hold/terminal release/serialized bound and scheduled host revocation targeted race checks passed; next full repository gate launched after final fingerprint guard'
+  remaining: 'Real due wake/final delivery/sleep probe; connector health; durable terminal handoff feedback and uncertain transport; latest Docker/pinned positive approval/gen replacement and full acceptance audit'
+
+active_final_snapshot_checks:
+  repository_session: 52152
+  docker_session: 75191
+  status: 'Both confirmed live by handle polling; revalidate exact sessions before retry. Docker daemon 29.4.3 available; current production image build in progress.'
+
+native_connection_health_checkpoint:
+  implementation: 'Authenticated bounded /v1/health reads pinned Hermes /health/detailed; normalizes readiness separately from native platform connection counts/status; strips all names/details; external lazy MCP/provider health explicitly not_probed; supervisor persists separate observation and validates enum/count/auth contract'
+  checks: '70148 runtime readiness and supervisor layered health targeted passed; 22425 native health privacy/status/bounds race regressions passed; 42764 current runtime/supervisor broad race suite revalidate'
+  docker: '75191 confirmed still live, building pinned Slack dependency; image source snapshot precedes newly added native health endpoint, so a later image is required for its integration evidence'
+  remaining: 'Hub transport observation and external connector explicit health scope; durable terminal handoff; restored global counts; real pinned positive approval/stream/recovery probes and full acceptance gates'
+
+issue18_native_turn_lease_checkpoint:
+  diagnosis: 'Native39137 failure stack: acquire_session_turn_lease532 via turn_facade_lease271; replacement Docker PID reuse conservatively holds native 300s TTL. Native61776 ruled out provider-history blocking as cause.'
+  correction: 'Test preserves admitted run and desired hold, reaps without shutdown, resumes original run across per-request uncertain timeouts until bounded6min native expiry; no upstream patch, native lock/state deletion or production timeout change.'
+  gate: 'Native41003 and final mandatory Docker42032 both passed authoritative TTL recovery exit0. Earlier82716/61776/39137 failed with too-short settling assumption; native stack established300s conservative policy.'
+
+final_issue18_handoff:
+  status: 'complete; overall CHG retained in_progress only for root final review/closure'
+  acceptance: 'All six original issue18 criteria verified; issue16 and17 invariants preserved by final current repository/Docker gates'
+  repository: '56498 exit0; ownGo85.18%; race/shuffle/format/vet/staticcheck/docs/actionlint'
+  docker: '42032 exit0; image32d074110c29; standalone and pinned real Hermes0.21.0 contracts plus all added lifecycle probes'
+  limitation: 'Native same-conversation turn lease may wait up to300s after DockerPIDreuse; admitted run is preserved/resumed, no native state/lock deletion or input replay'
+  other_scope: 'External ACK uncertainty inspection-only; no live Telegram/provider action; full routineCRUD/DST issue33; no dependency changes'
+  live_handles: 'none owned by delegate; all own builds/checks/probes are complete'

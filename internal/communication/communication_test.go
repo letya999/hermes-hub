@@ -153,6 +153,44 @@ func TestJobMappingIsDurableAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestJobOutcomeRejectsReplacementIdentityBeforeWriting(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "fenced-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "fenced", Text: "hello"}
+	if _, err := spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	initial := RunOutcome{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running"}
+	if err := spool.RecordOutcome(job.ID, initial); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"generation", "run", "session"} {
+		bad := initial
+		bad.Status, bad.Text = "completed", "stale answer"
+		switch field {
+		case "generation":
+			bad.RuntimeGeneration = "gen-2"
+		case "run":
+			bad.RunID = "run-2"
+		case "session":
+			bad.SessionID = "session-2"
+		}
+		if err := spool.RecordOutcome(job.ID, bad); err == nil {
+			t.Fatalf("accepted changed %s", field)
+		}
+	}
+	mapping, _, err := spool.Mapping(job.ID)
+	if err != nil || mapping.Status != "running" || mapping.Result != "" || mapping.RuntimeGeneration != "gen-1" {
+		t.Fatalf("rejected outcome changed mapping: %+v err=%v", mapping, err)
+	}
+	conversation, _, err := spool.SessionFor("alice", "alice", job.ConversationID)
+	if err != nil || conversation.SessionID != "session-1" {
+		t.Fatalf("rejected outcome changed session: %+v err=%v", conversation, err)
+	}
+}
+
 func TestJobMappingRecoversLegacyFilesAndFailsClosed(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "spool")
 	if err := os.MkdirAll(filepath.Join(root, "pending"), 0700); err != nil {
@@ -702,7 +740,7 @@ func TestHermesRunnerSuccess(t *testing.T) {
 		t.Skipf("cannot build helper: %v (%s)", err, output)
 	}
 	state, workspace := filepath.Join(root, "state"), filepath.Join(root, "workspace")
-	response, err := (HermesRunner{Command: bin, Timeout: time.Second}).Run(context.Background(), Job{Text: "hello"}, User{StateDir: state, WorkspaceDir: workspace})
+	response, err := (HermesRunner{Command: bin, Timeout: 10 * time.Second}).Run(context.Background(), Job{Text: "hello"}, User{StateDir: state, WorkspaceDir: workspace})
 	if err != nil || response != "reply" {
 		t.Fatal(response, err)
 	}

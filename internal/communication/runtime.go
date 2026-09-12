@@ -19,10 +19,13 @@ import (
 var ErrUncertain = errors.New("runtime result uncertain")
 
 type HTTPRunner struct {
-	URL   string
-	Auth  string
-	HTTP  *http.Client
-	Limit time.Duration
+	JobsAPI bool
+	URL     string
+	Auth    string
+	HTTP    *http.Client
+	Limit   time.Duration
+	Spool   *Spool
+	Resume  bool
 }
 
 func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
@@ -31,8 +34,20 @@ func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 }
 
 func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error) {
-	if strings.TrimSpace(job.Text) == "" {
+	if r.Spool != nil {
+		mapping, ok, err := r.Spool.Mapping(job.ID)
+		if err != nil {
+			return RunOutcome{}, err
+		}
+		if ok && mapping.RunID != "" && mapping.SessionID != "" {
+			r.Resume = true
+		}
+	}
+	if !r.Resume && strings.TrimSpace(job.Text) == "" {
 		return RunOutcome{}, errors.New("empty Hermes prompt")
+	}
+	if r.Resume {
+		job.Text = ""
 	}
 	body, err := json.Marshal(hubruntime.ExecuteRequest{
 		Envelope:       job.Envelope,
@@ -51,17 +66,55 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, r.timeout())
 	defer cancel()
-	req, err := http.NewRequestWithContext(jobCtx, http.MethodPost, strings.TrimRight(r.URL, "/")+"/v1/execute", bytes.NewReader(body))
+	path := "/v1/execute"
+	if r.JobsAPI {
+		path = "/v1/jobs"
+	}
+	if r.Resume {
+		path = "/v1/resume"
+	}
+	req, err := http.NewRequestWithContext(jobCtx, http.MethodPost, strings.TrimRight(r.URL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return RunOutcome{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+r.Auth)
+	if r.Spool != nil {
+		req.Header.Set("Accept", hubruntime.RunStreamContentType)
+	}
 	response, err := r.client().Do(req)
 	if err != nil {
 		return RunOutcome{}, fmt.Errorf("%w: %v", ErrUncertain, err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusOK && response.Header.Get("Content-Type") == hubruntime.RunStreamContentType {
+		var last hubruntime.ExecuteResponse
+		err := hubruntime.ReadRunStream(response.Body, func(event hubruntime.ExecuteResponse) error {
+			if event.JobID != job.ID {
+				return errors.New("stream job identity mismatch")
+			}
+			if r.Resume && event.LastEvent == "run.admitted" {
+				if err := r.Spool.RebindObservation(job, event); err != nil {
+					return err
+				}
+			}
+			if err := r.Spool.RecordStreamEvent(job, event); err != nil {
+				return err
+			}
+			last = event
+			return nil
+		})
+		outcome := outcomeFromEvent(last)
+		if !terminalStatus(last.Status) {
+			outcome.Status, outcome.LastEvent = "uncertain", "run.unknown"
+			return outcome, ErrUncertain
+		}
+		_ = err // The durable terminal receipt is authoritative even if the socket then breaks.
+		if last.Status != "completed" {
+			return outcome, errors.New("hermes run ended without completion")
+		}
+		return outcome, nil
+	}
 	if response.StatusCode/100 != 2 {
 		var failure struct {
 			JobID             string `json:"job_id"`
@@ -79,8 +132,40 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		return outcome, fmt.Errorf("runtime returned HTTP %d", response.StatusCode)
 	}
 	var result hubruntime.ExecuteResponse
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil || strings.TrimSpace(result.Text) == "" {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024+64*1024)).Decode(&result); err != nil || (strings.TrimSpace(result.Text) == "" && (result.Status == "completed" || !terminalStatus(result.Status))) {
 		return RunOutcome{}, errors.New("runtime returned an invalid response")
+	}
+	if r.Spool != nil {
+		if result.JobID != job.ID {
+			return RunOutcome{}, ErrUncertain
+		}
+		var persistErr error
+		if terminalStatus(result.Status) && result.RunID != "" && result.SessionID != "" && result.RuntimeGeneration != "" {
+			if r.Resume {
+				mapping, ok, err := r.Spool.Mapping(job.ID)
+				if err != nil || !ok {
+					return RunOutcome{}, ErrUncertain
+				}
+				if mapping.RuntimeGeneration != result.RuntimeGeneration {
+					if err := r.Spool.RebindObservation(job, result); err != nil {
+						return RunOutcome{}, ErrUncertain
+					}
+				}
+			}
+			// Cached supervisor results need the same write-ahead delivery receipt
+			// as streamed terminal events; the worker may crash before enqueueing.
+			result.EventID = "terminal:" + result.Status
+			result.LastEvent = "run." + result.Status
+			persistErr = r.Spool.RecordStreamEvent(job, result)
+		} else {
+			persistErr = r.Spool.RecordOutcome(job.ID, outcomeFromEvent(result))
+		}
+		if persistErr != nil {
+			return RunOutcome{}, ErrUncertain
+		}
+	}
+	if terminalStatus(result.Status) && result.Status != "completed" {
+		return outcomeFromEvent(result), errors.New("hermes run ended without completion")
 	}
 	return RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent}, nil
 }

@@ -269,14 +269,24 @@ func TestPersistentHermesAdmissionFailures(t *testing.T) {
 	}
 }
 
-func TestPersistentSessionReplyRequiresAssistantMessage(t *testing.T) {
+func TestEmptyRunOutputDoesNotReusePreviousAssistantMessage(t *testing.T) {
+	messageReads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"role":"user","content":"hello"}]}`))
+		if strings.HasSuffix(r.URL.Path, "/messages") {
+			messageReads++
+			_, _ = w.Write([]byte(`{"data":[{"role":"assistant","content":"previous answer"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"completed"}`))
 	}))
 	defer server.Close()
-	if _, err := (&runtimeHTTP{}).persistentSessionReply(context.Background(), server.Client(), server.URL, "", "session"); err == nil {
-		t.Fatal("session without assistant message accepted")
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	result, err := (&runtimeHTTP{}).observeHermesRun(context.Background(), ExecuteResponse{RunID: "original", SessionID: "session"}, nil)
+	if err == nil || result.Status != "uncertain" || result.RunID != "original" || result.Text != "" || messageReads != 0 {
+		t.Fatalf("old reply reused or recovery lost: %+v %v reads=%d", result, err, messageReads)
 	}
 }
 
@@ -336,8 +346,8 @@ func TestPersistentHermesHandlesSessionReplayRunFailuresAndMessageFallback(t *te
 		runtimeHandler().ServeHTTP(rec, req)
 		return rec.Code
 	}
-	if got := call("empty", "empty-key"); got != http.StatusOK {
-		t.Fatalf("message fallback status=%d", got)
+	if got := call("empty", "empty-key"); got != http.StatusInternalServerError {
+		t.Fatalf("empty final incorrectly completed: status=%d", got)
 	}
 	if got := call("failed", "failed-key"); got != http.StatusInternalServerError {
 		t.Fatalf("failed run status=%d", got)
@@ -521,7 +531,7 @@ func TestHermesGatewayEnvironmentPinsAuthenticatedAPI(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_HERMES_API_PORT", "9000")
 	env := hermesGatewayEnvironment()
-	if env["API_SERVER_ENABLED"] != "true" || env["API_SERVER_KEY"] != "runtime-secret" || env["API_SERVER_PORT"] != "9000" || env["API_SERVER_HOST"] != "127.0.0.1" {
+	if env["HERMES_EXEC_ASK"] != "true" || env["API_SERVER_ENABLED"] != "true" || env["API_SERVER_KEY"] != "runtime-secret" || env["API_SERVER_PORT"] != "9000" || env["API_SERVER_HOST"] != "127.0.0.1" {
 		t.Fatalf("unexpected gateway environment: %#v", env)
 	}
 }

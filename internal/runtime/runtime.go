@@ -181,18 +181,19 @@ func superviseOnce(mode string) (bool, error) {
 	if err := os.Remove(restartPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	for _, folder := range []string{"home", "hermes", "browser", "cache", "hermes/skills", "hermes/hooks", "hermes/plugins", "hermes/memories"} {
-		if err := os.MkdirAll(filepath.Join(state, folder), 0770); err != nil {
+	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
+	for _, folder := range []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "browser"), filepath.Join(state, "cache"), filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "hooks"), filepath.Join(hermesHome, "plugins"), filepath.Join(hermesHome, "memories")} {
+		if err := os.MkdirAll(folder, 0770); err != nil {
 			return false, err
 		}
 	}
-	if err := copyIfExists("/config/config.yaml", filepath.Join(state, "hermes/config.yaml"), true); err != nil {
+	if err := copyIfExists("/config/config.yaml", filepath.Join(hermesHome, "config.yaml"), true); err != nil {
 		return false, err
 	}
-	if err := applySelfServices(filepath.Join(state, "hermes/config.yaml")); err != nil {
+	if err := applySelfServices(filepath.Join(hermesHome, "config.yaml")); err != nil {
 		return false, err
 	}
-	if err := copyIfExists("/config/SOUL.md", filepath.Join(state, "hermes/SOUL.md"), false); err != nil {
+	if err := copyIfExists("/config/SOUL.md", filepath.Join(hermesHome, "SOUL.md"), false); err != nil {
 		return false, err
 	}
 
@@ -318,11 +319,13 @@ func superviseOnce(mode string) (bool, error) {
 
 func hermesGatewayEnvironment() map[string]string {
 	return map[string]string{
-		"API_SERVER_ENABLED":           "true",
-		"API_SERVER_KEY":               os.Getenv("HUB_RUNTIME_AUTH"),
-		"API_SERVER_HOST":              env("HUB_HERMES_API_HOST", "127.0.0.1"),
-		"API_SERVER_PORT":              env("HUB_HERMES_API_PORT", "8642"),
-		"HERMES_GATEWAY_NO_TTY":        "true",
+		"API_SERVER_ENABLED":    "true",
+		"API_SERVER_KEY":        os.Getenv("HUB_RUNTIME_AUTH"),
+		"API_SERVER_HOST":       env("HUB_HERMES_API_HOST", "127.0.0.1"),
+		"API_SERVER_PORT":       env("HUB_HERMES_API_PORT", "8642"),
+		"HERMES_GATEWAY_NO_TTY": "true",
+		// The Hub supplies the human response through the native run approval API.
+		"HERMES_EXEC_ASK":              "true",
 		"HERMES_DISABLE_LAZY_INSTALLS": "1",
 	}
 }

@@ -38,6 +38,14 @@ idempotency key. The pinned capabilities advertise no public CORS, audio/realtim
 voice, memory-write API or admin config writes. Provider authentication and model
 success are intentionally not claimed by this contract probe.
 
+The pinned SSE transport is a process-local queue, not a replayable event log. Its
+handler drops transport state when the subscriber disconnects and does not consume
+`Last-Event-ID`. Recovery therefore queries the admitted durable run status instead
+of assuming SSE replay. A gateway generation change can settle that same run as
+`interrupted`; it must not silently submit a replacement run or repeat provider work.
+Active approval status carries a `request_id`; responses must target that exact
+request rather than resolving every waiter for a session.
+
 ## Verification and rollback
 
 Run `just docker-check prod` (or `dev`) to build the pinned image, run the existing

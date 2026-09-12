@@ -5,6 +5,8 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0018](in-progress/CHG-0018-communication-runtime-migration/plan.md) | Issue19: per-context execution selection, migration audit and real five-minute gateway lifecycle |
+| [CHG-0017](in-progress/CHG-0017-stream-approval-reconciliation/plan.md) | Issues 16–18 complete: repository and pinned Hermes Docker gates passed; GitHub issues closed |
 | [CHG-0016](in-progress/CHG-0016-scale-to-zero-runtimes/plan.md) | Initial host supervisor, warm lifecycle and opt-in routing implemented; durable migration pending |
 | [CHG-0015](in-progress/CHG-0015-migration-map/plan.md) | Current-to-target migration and deprecation map |
 | [CHG-0014](in-progress/CHG-0014-threat-model/plan.md) | Threat-model personal deployment and future company boundary |

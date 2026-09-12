@@ -17,12 +17,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 type State string
@@ -96,27 +98,40 @@ type Binding struct {
 }
 
 type Runtime struct {
-	PrincipalID  string    `json:"principal_id"`
-	ContextID    string    `json:"context_id"`
-	RuntimeID    string    `json:"runtime_id"`
-	RuntimeMode  string    `json:"runtime_mode"`
-	Generation   string    `json:"generation"`
-	Container    string    `json:"container"`
-	Address      string    `json:"address"`
-	State        State     `json:"state"`
-	Leases       int       `json:"leases"`
-	LastUsed     time.Time `json:"last_used"`
-	IdleDeadline time.Time `json:"idle_deadline,omitempty"`
+	ConnectorHealth   string    `json:"connector_health,omitempty"`
+	FailureGeneration string    `json:"failure_generation,omitempty"`
+	Ownership         string    `json:"ownership,omitempty"`
+	CrashCount        int       `json:"crash_count,omitempty"`
+	CrashWindowStart  time.Time `json:"crash_window_start,omitempty"`
+	NextRetryAt       time.Time `json:"next_retry_at,omitempty"`
+	RuntimeHealth     string    `json:"runtime_health,omitempty"`
+	HermesReadiness   string    `json:"hermes_readiness,omitempty"`
+	HealthCheckedAt   time.Time `json:"health_checked_at,omitempty"`
+	Desired           bool      `json:"desired"`
+	PrincipalID       string    `json:"principal_id"`
+	ContextID         string    `json:"context_id"`
+	RuntimeID         string    `json:"runtime_id"`
+	RuntimeMode       string    `json:"runtime_mode"`
+	Generation        string    `json:"generation"`
+	Container         string    `json:"container"`
+	Address           string    `json:"address"`
+	State             State     `json:"state"`
+	Leases            int       `json:"leases"`
+	LastUsed          time.Time `json:"last_used"`
+	IdleDeadline      time.Time `json:"idle_deadline,omitempty"`
 }
 
 type runtimeEntry struct {
 	Runtime
+	binding  Binding
 	auth     string
 	leases   map[string]Lease
 	restored bool
 }
 
 type Manager struct {
+	pins      map[string]hubruntime.ExecuteRequest
+	orphans   []OrphanRuntime
 	cfg       Config
 	mu        sync.Mutex
 	items     map[string]*runtimeEntry
@@ -130,23 +145,31 @@ type Manager struct {
 }
 
 type persistedManager struct {
-	Generation uint64               `json:"generation"`
-	LeaseSeq   uint64               `json:"lease_seq"`
-	Items      []persistedRuntime   `json:"items"`
-	Jobs       map[string]jobRecord `json:"jobs,omitempty"`
+	Pins       map[string]hubruntime.ExecuteRequest `json:"pins,omitempty"`
+	Orphans    []OrphanRuntime                      `json:"orphans,omitempty"`
+	Generation uint64                               `json:"generation"`
+	LeaseSeq   uint64                               `json:"lease_seq"`
+	Items      []persistedRuntime                   `json:"items"`
+	Jobs       map[string]jobRecord                 `json:"jobs,omitempty"`
 }
 
 type persistedRuntime struct {
+	Binding Binding          `json:"binding,omitempty"`
 	Runtime Runtime          `json:"runtime"`
 	Leases  map[string]Lease `json:"leases,omitempty"`
 }
 
 type jobRecord struct {
-	Fingerprint string                     `json:"fingerprint"`
-	Response    hubruntime.ExecuteResponse `json:"response"`
-	Status      string                     `json:"status"`
-	Generation  string                     `json:"generation,omitempty"`
-	UpdatedAt   time.Time                  `json:"updated_at"`
+	Dispatching      bool                       `json:"dispatching,omitempty"`
+	CancelRequested  bool                       `json:"cancel_requested,omitempty"`
+	Controls         map[string]controlRecord   `json:"controls,omitempty"`
+	ApprovalDeadline time.Time                  `json:"approval_deadline,omitempty"`
+	Request          hubruntime.ExecuteRequest  `json:"request"`
+	Fingerprint      string                     `json:"fingerprint"`
+	Response         hubruntime.ExecuteResponse `json:"response"`
+	Status           string                     `json:"status"`
+	Generation       string                     `json:"generation,omitempty"`
+	UpdatedAt        time.Time                  `json:"updated_at"`
 }
 
 // Serve runs the always-on control-plane endpoint. It never mounts or exposes
@@ -157,7 +180,7 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 	}
 	server := &http.Server{Addr: listen, Handler: manager.Handler(), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 * 1024}
 	go func() {
-		interval := manager.cfg.WarmTTL / 2
+		interval := min(manager.cfg.WarmTTL/2, 5*time.Second)
 		if interval < time.Second {
 			interval = time.Second
 		}
@@ -168,7 +191,23 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
-				_ = manager.Reap(ctx, now)
+				sweepCtx, cancel := context.WithTimeout(ctx, 150*time.Second)
+				_ = manager.DetectOrphans(sweepCtx)
+				manager.ReapOrphans(sweepCtx)
+				manager.ReconcileHealth(sweepCtx, now)
+				if sweepCtx.Err() == nil {
+					manager.RecoverMissingWork(sweepCtx)
+				}
+				if sweepCtx.Err() == nil {
+					manager.ReconcilePins(sweepCtx)
+				}
+				if sweepCtx.Err() == nil {
+					manager.ExpireApprovals(sweepCtx, now)
+				}
+				if sweepCtx.Err() == nil {
+					_ = manager.Reap(sweepCtx, now)
+				}
+				cancel()
 			}
 		}
 	}()
@@ -230,14 +269,14 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Now = time.Now
 	}
 	if cfg.HTTP == nil {
-		cfg.HTTP = &http.Client{Timeout: 2 * time.Second}
+		cfg.HTTP = &http.Client{Timeout: 130 * time.Second}
 	}
 	if cfg.Command == nil {
 		cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput()
 		}
 	}
-	m := &Manager{cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	m := &Manager{pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
 	if err := m.load(); err != nil {
 		return nil, err
 	}
@@ -256,7 +295,13 @@ func (m *Manager) load() error {
 	if err := json.Unmarshal(b, &state); err != nil {
 		return fmt.Errorf("invalid supervisor state: %w", err)
 	}
-	m.gen, m.leaseSeq = state.Generation, state.LeaseSeq
+	m.gen, m.leaseSeq, m.orphans = state.Generation, state.LeaseSeq, state.Orphans
+	for key, request := range state.Pins {
+		if request.Text != "" || request.Envelope.Validate(request.PrincipalID, request.ContextID, request.RuntimeID, request.PolicyVersion) != nil || key != pinKey(request) {
+			return errors.New("invalid persisted operator pin")
+		}
+		m.pins[key] = request
+	}
 	if state.Jobs != nil {
 		m.jobs = state.Jobs
 	}
@@ -275,7 +320,22 @@ func (m *Manager) load() error {
 		if !validID(item.Runtime.PrincipalID) || !validID(item.Runtime.ContextID) || !validID(item.Runtime.RuntimeID) || !validID(item.Runtime.RuntimeMode) || item.Runtime.Generation == "" {
 			return errors.New("invalid supervisor runtime state")
 		}
-		m.items[runtimeKey(Binding{PrincipalID: item.Runtime.PrincipalID, ContextID: item.Runtime.ContextID, RuntimeMode: item.Runtime.RuntimeMode})] = &runtimeEntry{Runtime: item.Runtime, leases: item.Leases, restored: true}
+		key := runtimeKey(Binding{PrincipalID: item.Runtime.PrincipalID, ContextID: item.Runtime.ContextID, RuntimeMode: item.Runtime.RuntimeMode})
+		if _, exists := m.items[key]; exists {
+			return errors.New("duplicate persisted runtime context")
+		}
+		if item.Runtime.State != Stopped {
+			select {
+			case m.sem <- struct{}{}:
+			default:
+				return errors.New("persisted active runtimes exceed configured concurrency limit")
+			}
+			m.slots[key] = struct{}{}
+		}
+		if item.Binding.PrincipalID != "" && runtimeKey(item.Binding) != key {
+			return errors.New("persisted binding mismatch")
+		}
+		m.items[key] = &runtimeEntry{Runtime: item.Runtime, binding: item.Binding, leases: item.Leases, restored: true}
 	}
 	if dirty {
 		return m.persistLocked()
@@ -284,9 +344,9 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) persistLocked() error {
-	state := persistedManager{Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs}
+	state := persistedManager{Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
-		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Leases: item.leases})
+		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases})
 	}
 	b, err := json.Marshal(state)
 	if err != nil {
@@ -333,40 +393,100 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
+	selection, selected, selectionErr := stack.ReadExecution(binding.ContextRoot, envOr("HUB_ENV", "prod"), binding.UserID)
+	if selectionErr != nil {
+		return Runtime{}, selectionErr
+	}
+	if selected && selection.Mode != "supervisor" {
+		return Runtime{}, errors.New("context selected the legacy executor")
+	}
 	m.mu.Lock()
 	if current := m.items[key]; current != nil && current.RuntimeID != binding.RuntimeID {
 		m.mu.Unlock()
 		return Runtime{}, errors.New("runtime identity mismatch")
 	}
 	current := m.items[key]
-	if current != nil && current.restored && (current.State == Ready || current.State == Idle || current.State == Busy) {
+	lifecycle := map[string]Lease{}
+	if current != nil {
+		for id, lease := range current.leases {
+			if lease.Kind == LeaseLifecycle {
+				lifecycle[id] = lease
+			}
+		}
+	}
+	if current != nil && (current.State == Degraded || current.State == Stopped || recoverableRuntime(current.Runtime)) && !current.CrashWindowStart.IsZero() && m.cfg.Now().Sub(current.CrashWindowStart) < 10*time.Minute {
+		if current.CrashCount >= 3 || m.cfg.Now().Before(current.NextRetryAt) {
+			result := current.Runtime
+			m.mu.Unlock()
+			return result, errors.New("runtime recovery backoff or crash budget exhausted")
+		}
+	}
+	if current != nil && current.restored && current.State != Stopped {
 		container, address, auth := current.Container, current.Address, binding.runtimeAuth
+		snapshot := current.Runtime
+		_, slotHeld := m.slots[key]
 		m.mu.Unlock()
-		if out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container); inspectErr == nil && strings.TrimSpace(string(out)) == "running" && m.ready(ctx, address, auth) == nil {
-			select {
-			case m.sem <- struct{}{}:
-			case <-ctx.Done():
-				return Runtime{}, ctx.Err()
+		ownershipErr := m.VerifyOwnership(ctx, snapshot)
+		if ownershipErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
+			return snapshot, ownershipErr
+		}
+		out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container)
+		if inspectErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
+			return snapshot, errors.New("restored runtime health unavailable")
+		}
+		if inspectErr == nil && strings.TrimSpace(string(out)) == "running" {
+			if readinessErr := m.ready(ctx, address, auth); readinessErr != nil {
+				return snapshot, readinessErr
+			}
+			if !slotHeld {
+				select {
+				case m.sem <- struct{}{}:
+				case <-ctx.Done():
+					return Runtime{}, ctx.Err()
+				}
 			}
 			m.mu.Lock()
 			current = m.items[key]
 			if current == nil {
 				m.mu.Unlock()
-				<-m.sem
+				if !slotHeld {
+					<-m.sem
+				}
 				return Runtime{}, errors.New("runtime disappeared during restore")
 			}
-			current.restored, current.State, current.Leases, current.LastUsed, current.IdleDeadline = false, Busy, current.Leases+1, m.cfg.Now(), time.Time{}
+			previous := current.Runtime
+			current.State, current.Leases, current.LastUsed, current.IdleDeadline = Busy, current.Leases+1, m.cfg.Now(), time.Time{}
 			m.slots[key] = struct{}{}
 			result := current.Runtime
-			_ = m.persistLocked()
+			if err := m.persistLocked(); err != nil {
+				current.Runtime = previous
+				m.mu.Unlock()
+				return snapshot, err
+			}
+			current.restored, current.auth = false, auth
 			m.mu.Unlock()
 			return result, nil
+		}
+		if !errors.Is(ownershipErr, ErrRuntimeMissing) {
+			status := strings.TrimSpace(string(out))
+			if status != "exited" && status != "dead" {
+				return snapshot, errors.New("runtime state is not safely replaceable")
+			}
+			if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
+				return snapshot, err
+			}
 		}
 		m.mu.Lock()
 		current = m.items[key]
 		if current != nil {
-			current.restored, current.State, current.Leases, current.leases = false, Stopped, 0, map[string]Lease{}
-			_ = m.persistLocked()
+			previous, previousLeases := current.Runtime, current.leases
+			current.State, current.Leases, current.leases = Stopped, 0, map[string]Lease{}
+			if err := m.persistLocked(); err != nil {
+				current.Runtime, current.leases = previous, previousLeases
+				m.mu.Unlock()
+				return snapshot, err
+			}
+			current.restored = false
 		}
 		m.mu.Unlock()
 	} else {
@@ -374,15 +494,24 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	m.mu.Lock()
 	if current := m.items[key]; current != nil && (current.State == Ready || current.State == Idle || current.State == Busy) {
+		previous := current.Runtime
 		current.State, current.Leases, current.LastUsed, current.IdleDeadline = Busy, current.Leases+1, m.cfg.Now(), time.Time{}
 		result := current.Runtime
-		_ = m.persistLocked()
+		if err := m.persistLocked(); err != nil {
+			current.Runtime = previous
+			m.mu.Unlock()
+			return previous, err
+		}
 		m.mu.Unlock()
 		return result, nil
 	}
 	m.mu.Unlock()
 	m.mu.Lock()
 	_, slotHeld := m.slots[key]
+	if !slotHeld && len(m.orphans) != 0 {
+		m.mu.Unlock()
+		return Runtime{}, errors.New("owned orphan runtimes require inspection before new capacity")
+	}
 	m.mu.Unlock()
 	if !slotHeld {
 		select {
@@ -400,10 +529,43 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	m.mu.Lock()
 	m.gen++
 	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now()}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical.binding = binding
+	for id, lease := range lifecycle {
+		lease.Generation = logical.Generation
+		logical.leases[id] = lease
+		logical.Leases++
+	}
+	previousEntry := m.items[key]
+	if previousEntry != nil && !previousEntry.CrashWindowStart.IsZero() && m.cfg.Now().Sub(previousEntry.CrashWindowStart) < 10*time.Minute {
+		logical.CrashCount, logical.CrashWindowStart, logical.NextRetryAt = previousEntry.CrashCount, previousEntry.CrashWindowStart, previousEntry.NextRetryAt
+	}
 	m.items[key] = logical
-	_ = m.persistLocked()
+	if err = m.persistLocked(); err != nil {
+		if previousEntry == nil {
+			delete(m.items, key)
+		} else {
+			m.items[key] = previousEntry
+		}
+		m.mu.Unlock()
+		if !slotHeld {
+			m.releaseSlot(key)
+		}
+		return Runtime{}, errors.New("runtime start state unavailable")
+	}
 	m.mu.Unlock()
 	if out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container); inspectErr == nil && strings.TrimSpace(string(out)) == "running" {
+		if _, ownershipErr := m.ownedContainerID(ctx, logical.Runtime); ownershipErr != nil {
+			m.mu.Lock()
+			if previousEntry == nil {
+				delete(m.items, key)
+			} else {
+				m.items[key] = previousEntry
+			}
+			_ = m.persistLocked()
+			m.mu.Unlock()
+			m.releaseSlot(key)
+			return Runtime{}, ownershipErr
+		}
 		if err = m.ready(ctx, address, binding.runtimeAuth); err == nil {
 			m.mu.Lock()
 			logical.State = Busy
@@ -412,24 +574,39 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			m.mu.Unlock()
 			return result, nil
 		}
-		_, _ = m.command(ctx, "rm", "-f", container)
+		if cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime); cleanupErr != nil {
+			m.markDegraded(key)
+			return Runtime{}, cleanupErr
+		}
 	}
 	args := m.runArgsWithGeneration(binding, container, port, logical.Generation)
 	if _, err = m.command(ctx, args...); err != nil {
 		m.markDegraded(key)
-		m.releaseSlot(key)
+		// Docker may have created the container before its acknowledgement was lost.
+		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+		if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+			m.releaseSlot(key)
+		}
 		return Runtime{}, fmt.Errorf("start runtime: %w", err)
 	}
 	if err = m.ready(ctx, address, binding.runtimeAuth); err != nil {
-		_, _ = m.command(ctx, "rm", "-f", container)
+		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 		m.markDegraded(key)
-		m.releaseSlot(key)
+		if cleanupErr == nil {
+			m.releaseSlot(key)
+		} else {
+			return Runtime{}, cleanupErr
+		}
 		return Runtime{}, fmt.Errorf("runtime readiness: %w", err)
 	}
 	m.mu.Lock()
 	logical.State = Busy
 	result := logical.Runtime
-	_ = m.persistLocked()
+	if err := m.persistLocked(); err != nil {
+		logical.restored = true
+		m.mu.Unlock()
+		return Runtime{}, err
+	}
 	m.mu.Unlock()
 	return result, nil
 }
@@ -527,23 +704,46 @@ func (m *Manager) ReleaseLease(leaseID string) error {
 		return errors.New("lease ID is required")
 	}
 	m.mu.Lock()
-	var binding Binding
-	for _, entry := range m.items {
-		if lease, ok := entry.leases[leaseID]; ok {
-			if lease.Generation != entry.Generation {
-				m.mu.Unlock()
-				return errors.New("stale runtime lease")
-			}
-			delete(entry.leases, leaseID)
-			binding = Binding{PrincipalID: lease.PrincipalID, ContextID: lease.ContextID, RuntimeMode: lease.RuntimeMode}
+	var key string
+	for candidate, entry := range m.items {
+		if _, ok := entry.leases[leaseID]; ok {
+			key = candidate
 			break
 		}
 	}
 	m.mu.Unlock()
-	if binding.ContextID == "" {
+	if key == "" {
 		return errors.New("lease is not registered")
 	}
-	return m.releaseKey(runtimeKey(binding))
+	lock := m.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry := m.items[key]
+	lease, ok := entry.leases[leaseID]
+	if !ok {
+		return errors.New("lease is not registered")
+	}
+	if lease.Generation != entry.Generation {
+		return errors.New("stale runtime lease")
+	}
+	if entry.Leases == 0 {
+		return errors.New("runtime lease underflow")
+	}
+	before := entry.Runtime
+	delete(entry.leases, leaseID)
+	entry.Leases--
+	entry.LastUsed = m.cfg.Now()
+	if entry.Leases == 0 {
+		entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
+	}
+	if err := m.persistLocked(); err != nil {
+		entry.Runtime = before
+		entry.leases[leaseID] = lease
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) ReleaseBinding(binding Binding) error {
@@ -558,7 +758,7 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 	m.mu.Lock()
 	keys := []string{}
 	for key, runtime := range m.items {
-		if runtime.State == Idle && runtime.Leases == 0 && !runtime.IdleDeadline.After(now) {
+		if runtime.State == Idle && !m.runtimeDesiredLocked(runtime) && runtime.RuntimeHealth != "unknown" && runtime.Ownership != "unverified" && !runtime.IdleDeadline.After(now) {
 			keys = append(keys, key)
 		}
 	}
@@ -568,31 +768,69 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 		lock.Lock()
 		m.mu.Lock()
 		runtime := m.items[key]
-		if runtime == nil || runtime.State != Idle || runtime.Leases != 0 || runtime.IdleDeadline.After(now) {
+		if runtime == nil || runtime.State != Idle || m.runtimeDesiredLocked(runtime) || runtime.RuntimeHealth == "unknown" || runtime.Ownership == "unverified" || runtime.IdleDeadline.After(now) {
+			m.mu.Unlock()
+			lock.Unlock()
+			continue
+		}
+		snapshot := runtime.Runtime
+		m.mu.Unlock()
+		containerID, ownershipErr := m.ownedContainerID(ctx, snapshot)
+		if errors.Is(ownershipErr, ErrRuntimeMissing) {
+			m.mu.Lock()
+			if !m.runtimeDesiredLocked(runtime) && runtime.Generation == snapshot.Generation {
+				runtime.State, runtime.IdleDeadline, runtime.Ownership = Stopped, time.Time{}, "absent"
+				if err := m.persistLocked(); err != nil {
+					runtime.Runtime = snapshot
+					m.mu.Unlock()
+					lock.Unlock()
+					return err
+				}
+				m.releaseSlotLocked(key)
+			}
+			m.mu.Unlock()
+			lock.Unlock()
+			continue
+		}
+		if ownershipErr != nil {
+			m.mu.Lock()
+			runtime.Ownership = "unverified"
+			_ = m.persistLocked()
+			m.mu.Unlock()
+			lock.Unlock()
+			return ownershipErr
+		}
+		m.mu.Lock()
+		if m.runtimeDesiredLocked(runtime) || runtime.Generation != snapshot.Generation {
 			m.mu.Unlock()
 			lock.Unlock()
 			continue
 		}
 		runtime.State = Stopping
-		container := runtime.Container
+		container := containerID
 		m.mu.Unlock()
-		_, err := m.command(ctx, "rm", "-f", container)
+		_, err := m.command(ctx, "stop", "--time", "30", container)
+		if err == nil {
+			_, err = m.command(ctx, "rm", "-f", container)
+		}
 		m.mu.Lock()
+		previous := snapshot
 		if err != nil {
 			runtime.State = Degraded
-			if _, held := m.slots[key]; held {
-				delete(m.slots, key)
-				<-m.sem
-			}
 		} else {
 			runtime.State, runtime.IdleDeadline = Stopped, time.Time{}
-			if _, held := m.slots[key]; held {
-				delete(m.slots, key)
-				<-m.sem
-			}
 		}
-		_ = m.persistLocked()
+		persistErr := m.persistLocked()
+		if persistErr != nil {
+			runtime.Runtime = previous
+		} else if err == nil {
+			m.releaseSlotLocked(key)
+		}
 		m.mu.Unlock()
+		if persistErr != nil {
+			lock.Unlock()
+			return persistErr
+		}
 		lock.Unlock()
 		if err != nil {
 			return fmt.Errorf("stop runtime %s: %w", container, err)
@@ -630,13 +868,23 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	case "/v1/execute":
+	case "/v1/execute", "/v1/jobs":
 		m.execute(w, r)
+	case "/v1/resume":
+		m.resume(w, r)
+	case "/v1/control":
+		m.control(w, r)
+	case "/v1/pins":
+		m.pinHTTP(w, r)
 	case "/v1/runtimes":
 		m.list(w, r)
 	case "/v1/leases":
 		m.lease(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
+			m.jobStatus(w, r, strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/v1/leases/") {
 			m.releaseLeaseHTTP(w, r, strings.TrimPrefix(r.URL.Path, "/v1/leases/"))
 			return
@@ -725,7 +973,7 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 		if previous.Fingerprint != fingerprint {
 			return hubruntime.ExecuteResponse{}, false, errors.New("job identity already used with different payload")
 		}
-		if previous.Status == "completed" {
+		if terminalRunStatus(previous.Status) {
 			return previous.Response, true, nil
 		}
 		if previous.Status == "uncertain" {
@@ -733,40 +981,150 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 		}
 		return hubruntime.ExecuteResponse{}, false, errJobInProgress
 	}
-	m.jobs[key] = jobRecord{Fingerprint: fingerprint, Status: "running", UpdatedAt: time.Now().UTC()}
-	return hubruntime.ExecuteResponse{}, false, m.persistLocked()
+	metadata := request
+	metadata.Text = ""
+	m.jobs[key] = jobRecord{Request: metadata, Fingerprint: fingerprint, Status: "running", UpdatedAt: time.Now().UTC()}
+	if err := m.persistLocked(); err != nil {
+		delete(m.jobs, key)
+		return hubruntime.ExecuteResponse{}, false, err
+	}
+	return hubruntime.ExecuteResponse{}, false, nil
 }
 
 func (m *Manager) finishJob(request hubruntime.ExecuteRequest, response hubruntime.ExecuteResponse, status string) {
 	m.finishJobGeneration(request, response, status, "")
 }
 
-func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generation string) {
+func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generation string) error {
 	key := executeJobKey(request)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if record, ok := m.jobs[key]; ok && record.Status == "running" {
-		record.Generation, record.UpdatedAt = generation, time.Now().UTC()
-		m.jobs[key] = record
-		_ = m.persistLocked()
+	record, ok := m.jobs[key]
+	if !ok {
+		return errors.New("job is not registered")
 	}
+	if record.Status != "running" && !(record.Status == "cancelled" && !record.Dispatching && record.Response.RunID == "") {
+		return errors.New("job cannot bind generation")
+	}
+	previous := record
+	record.Generation, record.UpdatedAt = generation, time.Now().UTC()
+	if record.Status == "cancelled" {
+		record.Response.RuntimeGeneration = generation
+	}
+	m.jobs[key] = record
+	if err := m.persistLocked(); err != nil {
+		m.jobs[key] = previous
+		return err
+	}
+	return nil
 }
 
-func (m *Manager) finishJobGeneration(request hubruntime.ExecuteRequest, response hubruntime.ExecuteResponse, status, generation string) {
-	key := executeJobKey(request)
-	if key == "" {
-		return
-	}
+func (m *Manager) finishJobGeneration(request hubruntime.ExecuteRequest, response hubruntime.ExecuteResponse, status, generation string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.finishJobGenerationLocked(request, response, status, generation)
+}
+
+func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, response hubruntime.ExecuteResponse, status, generation string) error {
+	key := executeJobKey(request)
+	if key == "" {
+		return errors.New("job identity is required")
+	}
 	if record, ok := m.jobs[key]; ok {
+		if terminalRunStatus(record.Status) && status != record.Status {
+			return errors.New("job already terminal")
+		}
 		if generation != "" && record.Generation != generation {
-			return
+			return errors.New("stale job generation")
+		}
+		current := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: "gateway"})]
+		if current != nil && current.Generation != record.Generation && (record.Response.RunID != "" || response.RunID != "") {
+			return errors.New("obsolete runtime producer")
+		}
+		if (response.JobID != "" && response.JobID != request.JobID) || (response.RuntimeGeneration != "" && response.RuntimeGeneration != record.Generation) || (record.Response.RunID != "" && response.RunID != "" && record.Response.RunID != response.RunID) || (record.Response.SessionID != "" && response.SessionID != "" && record.Response.SessionID != response.SessionID) {
+			return errors.New("job response binding mismatch")
+		}
+		if terminalRunStatus(record.Status) {
+			if response.Text != "" && response.Text != record.Response.Text {
+				return errors.New("terminal result cannot change")
+			}
+			return nil
+		}
+		if response.RunID == "" {
+			response.RunID = record.Response.RunID
+		}
+		if response.SessionID == "" {
+			response.SessionID = record.Response.SessionID
+		}
+		previous := record
+		if terminalRunStatus(status) {
+			controls := make(map[string]controlRecord, len(record.Controls))
+			for id, control := range record.Controls {
+				if control.State == "uncertain" {
+					control.State = "closed"
+					control.Response = response
+				}
+				controls[id] = control
+			}
+			record.Controls = controls
+		}
+		var approvalEntry *runtimeEntry
+		var previousRuntime Runtime
+		var previousLeases map[string]Lease
+		for _, entry := range m.items {
+			if entry.Generation != record.Generation {
+				continue
+			}
+			approvalEntry = entry
+			previousRuntime = entry.Runtime
+			previousLeases = entry.leases
+			entry.leases = make(map[string]Lease, len(previousLeases)+1)
+			for id, lease := range previousLeases {
+				entry.leases[id] = lease
+			}
+			if response.ApprovalID != "" {
+				id := "approval:" + key + ":" + response.ApprovalID
+				if _, exists := entry.leases[id]; !exists {
+					deadline := record.ApprovalDeadline
+					if response.ApprovalID != record.Response.ApprovalID {
+						deadline = time.Now().UTC().Add(2 * time.Minute)
+					}
+					entry.leases[id] = Lease{ID: id, Kind: LeaseApproval, PrincipalID: entry.PrincipalID, ContextID: entry.ContextID, RuntimeMode: entry.RuntimeMode, Generation: entry.Generation, Owner: "job:" + key, ExpiresAt: deadline}
+					entry.Leases++
+					entry.State, entry.IdleDeadline = Busy, time.Time{}
+				}
+			}
+			{
+				for id, lease := range entry.leases {
+					obsolete := response.ApprovalID != "" && id != "approval:"+key+":"+response.ApprovalID
+					release := terminalRunStatus(status) || (status == "running" && record.ApprovalDeadline.IsZero()) || obsolete
+					if release && lease.Kind == LeaseApproval && lease.Owner == "job:"+key {
+						delete(entry.leases, id)
+						entry.Leases--
+					}
+				}
+				if entry.Leases == 0 {
+					entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
+				}
+			}
+			break
+		}
+		if response.ApprovalID != "" && response.ApprovalID != record.Response.ApprovalID {
+			record.ApprovalDeadline = time.Now().UTC().Add(2 * time.Minute)
 		}
 		record.Response, record.Status, record.UpdatedAt = response, status, time.Now().UTC()
 		m.jobs[key] = record
-		_ = m.persistLocked()
+		if err := m.persistLocked(); err != nil {
+			m.jobs[key] = previous
+			if approvalEntry != nil {
+				approvalEntry.Runtime = previousRuntime
+				approvalEntry.leases = previousLeases
+			}
+			return err
+		}
+		return nil
 	}
+	return errors.New("job is not registered")
 }
 
 func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
@@ -791,6 +1149,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	if request.Trigger == "cron" {
+		if err := m.authorizeCurrentPolicy(request); err != nil {
+			writeJSON(w, 409, map[string]string{"error": "scheduled job current policy rejected"})
+			return
+		}
+	}
 	known, replay, err := m.beginJob(request)
 	if err != nil {
 		status := http.StatusConflict
@@ -804,14 +1168,45 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, known)
 		return
 	}
-	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseJob)
+	kind := LeaseJob
+	if r.Header.Get("Accept") == hubruntime.RunStreamContentType {
+		kind = LeaseStream
+	}
+	lease, runtime, err := m.Acquire(r.Context(), binding, kind)
 	if err != nil {
 		m.finishJob(request, hubruntime.ExecuteResponse{}, "uncertain")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}
-	m.bindJobGeneration(request, runtime.Generation)
-	defer func() { _ = m.ReleaseLease(lease.ID) }()
+	if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
+		_ = m.ReleaseLease(lease.ID)
+		writeJSON(w, 500, map[string]string{"error": "job generation state unavailable"})
+		return
+	}
+	if err := m.attachJobLease(lease.ID, executeJobKey(request)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lease state unavailable"})
+		return
+	}
+	defer m.settleJobLeases(request, lease)
+	m.mu.Lock()
+	latest := m.jobs[executeJobKey(request)]
+	if terminalRunStatus(latest.Status) {
+		m.mu.Unlock()
+		writeJSON(w, 200, latest.Response)
+		return
+	}
+	previous := latest
+	latest.Dispatching = true
+	m.jobs[executeJobKey(request)] = latest
+	err = m.persistLocked()
+	if err != nil {
+		m.jobs[executeJobKey(request)] = previous
+	}
+	m.mu.Unlock()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "dispatch state unavailable"})
+		return
+	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/execute", bytes.NewReader(body))
 	if err != nil {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
@@ -821,6 +1216,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
+	req.Header.Set("Accept", r.Header.Get("Accept"))
 	response, err := m.cfg.HTTP.Do(req)
 	if err != nil {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
@@ -829,6 +1225,10 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusOK && response.Header.Get("Content-Type") == hubruntime.RunStreamContentType {
+		m.relayRunStream(w, request, runtime, response.Body)
+		return
+	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
 	if readErr != nil || len(body) > 2*1024*1024 {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
@@ -854,6 +1254,40 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+func terminalRunStatus(status string) bool {
+	return status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted"
+}
+
+func (m *Manager) relayRunStream(w http.ResponseWriter, request hubruntime.ExecuteRequest, runtime Runtime, reader io.Reader) {
+	w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
+	known := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+	err := hubruntime.ReadRunStream(reader, func(event hubruntime.ExecuteResponse) error {
+		if event.JobID != request.JobID || event.RuntimeGeneration != runtime.Generation || (known.RunID != "" && event.RunID != known.RunID) || (known.SessionID != "" && event.SessionID != known.SessionID) {
+			return errors.New("stream identity mismatch")
+		}
+		m.mu.Lock()
+		current := m.items[runtimeKey(Binding{PrincipalID: runtime.PrincipalID, ContextID: runtime.ContextID, RuntimeMode: runtime.RuntimeMode})]
+		valid := current != nil && current.Generation == runtime.Generation
+		m.mu.Unlock()
+		if !valid {
+			return errors.New("stale stream generation")
+		}
+		if err := m.finishJobGeneration(request, event, event.Status, runtime.Generation); err != nil {
+			return err
+		}
+		known = event
+		if err := json.NewEncoder(w).Encode(event); err != nil {
+			return err
+		}
+		return http.NewResponseController(w).Flush()
+	})
+	if !terminalRunStatus(known.Status) {
+		known.Status, known.LastEvent, known.Text = "uncertain", "run.unknown", ""
+		m.finishJobGeneration(request, known, "uncertain", runtime.Generation)
+	}
+	_ = err // A durably recorded terminal event remains authoritative after a later transport error.
+}
+
 func (m *Manager) list(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -869,6 +1303,10 @@ func (m *Manager) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error) {
+	if err := request.Envelope.Validate(request.PrincipalID, request.ContextID, request.RuntimeID, request.PolicyVersion); err != nil {
+		return Binding{}, err
+	}
+
 	contextID := request.ContextID
 	if strings.HasPrefix(request.ScopeID, "user:") {
 		contextID = strings.TrimPrefix(request.ScopeID, "user:")
@@ -947,9 +1385,28 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
+	for _, file := range []string{"runtime." + envOr("HUB_ENV", "prod") + ".env", "hermes." + envOr("HUB_ENV", "prod") + ".yaml", "SOUL.md"} {
+		info, err := os.Lstat(filepath.Join(abs, file))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Binding{}, errors.New("runtime input file unavailable")
+		}
+		if err == nil && !info.Mode().IsRegular() {
+			return Binding{}, errors.New("runtime input file is not an owned regular file")
+		}
+	}
 	binding.runtimeAuth, err = envFileAuth(envFile)
 	if err != nil {
 		return Binding{}, err
+	}
+	// Match static Compose data paths without allowing a symlink to another home.
+	for _, name := range []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"} {
+		path := filepath.Join(abs, filepath.FromSlash(name))
+		if err := os.MkdirAll(path, 0770); err != nil {
+			return Binding{}, errors.New("context data directory unavailable")
+		}
+		if info, err := os.Lstat(path); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return Binding{}, errors.New("context data directory is not an owned directory")
+		}
 	}
 	if binding.OrganizationRoot != "" {
 		org, err := filepath.Abs(filepath.Clean(binding.OrganizationRoot))
@@ -974,8 +1431,31 @@ func (m *Manager) runArgs(binding Binding, container string, port int) []string 
 }
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) []string {
-	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort), "--mount", "type=bind,src=" + binding.ContextRoot + ",dst=/scope"}
+	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
+	if info, err := os.Lstat(filepath.Join(binding.ContextRoot, "runtime."+envOr("HUB_ENV", "prod")+".env")); err == nil && info.Mode().IsRegular() {
+		args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+envOr("HUB_ENV", "prod")+".env"))
+	}
 	args = append(args, "--env-file", binding.EnvFile)
+	args = append(args, "--mount", "type=bind,src="+binding.ContextRoot+",dst=/scope,readonly")
+	if settings, err := stack.ReadEnvironment(binding.ContextRoot, envOr("HUB_ENV", "prod")); err == nil {
+		service := stack.RuntimeService(settings, "", binding.ContextRoot)
+		keys := make([]string, 0)
+		for key := range service["environment"].(stack.M) {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			args = append(args, "-e", key+"="+fmt.Sprint(service["environment"].(stack.M)[key]))
+		}
+	}
+	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"connections/browser", "/state/browser"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}, {"archive", "/archive"}} {
+		value := "type=bind,src=" + filepath.Join(binding.ContextRoot, filepath.FromSlash(mount.source)) + ",dst=" + mount.target
+		if mount.target == "/archive" {
+			value += ",readonly"
+		}
+		args = append(args, "--mount", value)
+	}
+	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
 	if binding.OrganizationRoot != "" {
 		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
 	}
@@ -984,7 +1464,8 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
 		}
 	}
-	args = append(args, "-e", "HUB_PERSISTENT_HERMES=true", "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/scope/runtime", "-e", "HUB_WORKSPACE=/scope/workspace", "-e", "HERMES_HOME=/scope/hermes", "-e", "HOME=/scope/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
+	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
+	args = append(args, "-e", "HUB_PERSISTENT_HERMES=true", "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
 	if generation != "" {
 		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
 	}
@@ -998,15 +1479,19 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, address+"/readyz", nil)
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, address+"/readyz", nil)
 		req.Header.Set("Authorization", "Bearer "+auth)
 		response, err := m.cfg.HTTP.Do(req)
 		if err == nil {
-			_, _ = io.Copy(io.Discard, response.Body)
+			n, copyErr := io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024+1))
 			_ = response.Body.Close()
-			if response.StatusCode == http.StatusOK {
+			cancel()
+			if response.StatusCode == http.StatusOK && copyErr == nil && n <= 64*1024 {
 				return nil
 			}
+		} else {
+			cancel()
 		}
 		select {
 		case <-ctx.Done():
@@ -1018,24 +1503,46 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 }
 
 func (m *Manager) command(ctx context.Context, args ...string) ([]byte, error) {
-	return m.cfg.Command(ctx, args...)
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return m.cfg.Command(callCtx, args...)
 }
 func (m *Manager) releaseSlot(key string) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.releaseSlotLocked(key)
+}
+func (m *Manager) releaseSlotLocked(key string) {
 	if _, ok := m.slots[key]; ok {
 		delete(m.slots, key)
 		<-m.sem
 	}
-	m.mu.Unlock()
 }
+
 func (m *Manager) markDegraded(key string) {
 	m.mu.Lock()
 	if runtime := m.items[key]; runtime != nil {
+		runtime.restored = true
 		runtime.State = Degraded
-		runtime.Leases = 0
+		runtime.Leases = len(runtime.leases)
+		m.recordRuntimeFailureLocked(&runtime.Runtime)
 		_ = m.persistLocked()
 	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) recordRuntimeFailureLocked(runtime *Runtime) {
+	runtime.FailureGeneration = runtime.Generation
+	if runtime.CrashWindowStart.IsZero() || m.cfg.Now().Sub(runtime.CrashWindowStart) >= 10*time.Minute {
+		runtime.CrashWindowStart = m.cfg.Now()
+		runtime.CrashCount = 0
+	}
+	runtime.CrashCount++
+	shift := runtime.CrashCount
+	if shift > 3 {
+		shift = 3
+	}
+	runtime.NextRetryAt = m.cfg.Now().Add(time.Duration(1<<shift) * time.Second)
 }
 func containerName(key string) string {
 	return "hermes-context-" + hex.EncodeToString(hashBytes(key)[:8])

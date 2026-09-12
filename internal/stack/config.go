@@ -17,6 +17,9 @@ import (
 )
 
 type Settings struct {
+	ExecutionMode         string               `yaml:"-"`
+	SupervisorURL         string               `yaml:"-"`
+	NativeCron            string               `yaml:"-"`
 	Environment           string               `yaml:"-"`
 	MCP                   map[string]MCPServer `yaml:"mcp_servers,omitempty"`
 	Hooks                 map[string]any       `yaml:"hooks,omitempty"`
@@ -219,6 +222,13 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 		}
 	}
 	s.Environment = environment
+	selection, found, err := ReadExecution(dir, environment, s.User)
+	if err != nil {
+		return s, err
+	}
+	if found {
+		s.ExecutionMode, s.SupervisorURL, s.NativeCron = selection.Mode, selection.SupervisorURL, selection.NativeCron
+	}
 	if environment == "dev" {
 		s.BrowserPort++
 		s.OAuthPort++

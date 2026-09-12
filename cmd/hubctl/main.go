@@ -31,7 +31,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.2.0: init | org-init | migrate-spaces | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.2.0: init | org-init | migrate-spaces | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -57,6 +57,11 @@ func run(ctx context.Context, args []string) error {
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
 	warmTTL := f.Duration("warm-ttl", 5*time.Minute, "idle runtime retention")
 	maxRuntimes := f.Int("max-runtimes", 8, "maximum running context runtimes")
+	spoolDir := f.String("spool", "", "mounted stopped gateway spool for execution migration")
+	executionMode := f.String("execution-mode", "", "supervisor or legacy")
+	supervisorURL := f.String("supervisor-url", "", "private reachable host supervisor origin")
+	nativeCron := f.String("native-cron", "", "disabled, migrated or unmigrated; explicit operator disposition")
+	compatibilityRelease := f.String("compatibility-release", "", "release retaining the legacy fallback")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -67,6 +72,14 @@ func run(ctx context.Context, args []string) error {
 		*dir = filepath.Join("spaces", *profile)
 	}
 	switch op {
+	case "execution-audit":
+		report, err := migration.AuditExecutionSpool(*spoolDir, *profile)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
+	case "select-execution":
+		return selectExecution(ctx, *dir, *root, *spoolDir, stack.ExecutionSelection{Schema: 1, User: *profile, Environment: *environment, Mode: *executionMode, SupervisorURL: *supervisorURL, NativeCron: *nativeCron, CompatibilityRelease: *compatibilityRelease}, *supervisorAuth, *supervisorImage, *apply)
 	case "supervisor":
 		if *supervisorAuth == "" {
 			return fmt.Errorf("HUB_SUPERVISOR_AUTH or --supervisor-auth is required")
