@@ -996,7 +996,7 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 	if m.cfg.Probe != nil {
 		return m.cfg.Probe(ctx, address, auth)
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, address+"/readyz", nil)
 		req.Header.Set("Authorization", "Bearer "+auth)
