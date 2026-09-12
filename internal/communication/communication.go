@@ -176,8 +176,8 @@ func ConfigFromEnv() (Config, error) {
 		if config.SpoolDir == "" {
 			config.SpoolDir = envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway")
 		}
-		config.RuntimeURL = os.Getenv("HUB_RUNTIME_URL")
-		config.RuntimeAuth = os.Getenv("HUB_RUNTIME_AUTH")
+		config.RuntimeURL = runtimeURLFromEnv()
+		config.RuntimeAuth = runtimeAuthFromEnv()
 		for i := range config.Users {
 			if config.Users[i].Env == nil {
 				config.Users[i].Env = runtimeEnv(config.Users[i].Features)
@@ -216,7 +216,21 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, Enabled: true, TelegramIDs: ids, StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	return Config{OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: os.Getenv("HUB_RUNTIME_URL"), RuntimeAuth: os.Getenv("HUB_RUNTIME_AUTH"), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes")}, nil
+	return Config{OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes")}, nil
+}
+
+func runtimeURLFromEnv() string {
+	if value := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")); value != "" {
+		return value
+	}
+	return os.Getenv("HUB_RUNTIME_URL")
+}
+
+func runtimeAuthFromEnv() string {
+	if strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "" {
+		return os.Getenv("HUB_SUPERVISOR_AUTH")
+	}
+	return os.Getenv("HUB_RUNTIME_AUTH")
 }
 
 func parseTelegramIDs(raw string) ([]int64, error) {

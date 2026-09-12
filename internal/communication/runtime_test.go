@@ -90,3 +90,15 @@ func TestRemoteGatewayConfigDoesNotNeedUserMounts(t *testing.T) {
 		}
 	}
 }
+
+func TestSupervisorURLOverridesStaticRuntime(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_URL", "http://static:8080")
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
+	t.Setenv("HUB_SUPERVISOR_AUTH", "supervisor-secret")
+	if got := runtimeURLFromEnv(); got != "http://host.docker.internal:8765" {
+		t.Fatalf("runtime URL=%q", got)
+	}
+	if got := runtimeAuthFromEnv(); got != "supervisor-secret" {
+		t.Fatalf("runtime auth=%q", got)
+	}
+}

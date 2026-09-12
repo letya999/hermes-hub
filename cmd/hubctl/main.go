@@ -9,6 +9,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/supervisor"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -29,7 +31,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.2.0: init | org-init | migrate-spaces | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.2.0: init | org-init | migrate-spaces | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -49,6 +51,12 @@ func run(ctx context.Context, args []string) error {
 	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
+	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
+	supervisorImage := f.String("runtime-image", "hermes-hub:0.2.0-prod", "pinned runtime image for the host supervisor")
+	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8765", "private host supervisor address")
+	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
+	warmTTL := f.Duration("warm-ttl", 5*time.Minute, "idle runtime retention")
+	maxRuntimes := f.Int("max-runtimes", 8, "maximum running context runtimes")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -59,6 +67,15 @@ func run(ctx context.Context, args []string) error {
 		*dir = filepath.Join("spaces", *profile)
 	}
 	switch op {
+	case "supervisor":
+		if *supervisorAuth == "" {
+			return fmt.Errorf("HUB_SUPERVISOR_AUTH or --supervisor-auth is required")
+		}
+		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
+		if err != nil {
+			return err
+		}
+		return supervisor.Serve(ctx, manager, *supervisorListen)
 	case "init":
 		if *organization != "" {
 			return stack.InitEnvironmentWithOrganization(*dir, *profile, *environment, *organization)
@@ -172,4 +189,11 @@ func run(ctx context.Context, args []string) error {
 		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
 	}
 	return nil
+}
+
+func supervisorAuthFromEnv() string {
+	if value := os.Getenv("HUB_SUPERVISOR_AUTH"); value != "" {
+		return value
+	}
+	return os.Getenv("HUB_RUNTIME_AUTH")
 }

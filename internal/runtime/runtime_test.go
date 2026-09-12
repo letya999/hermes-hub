@@ -440,6 +440,29 @@ func TestRunIdleShutdown(t *testing.T) {
 	}
 }
 
+func TestServeStartsPinnedGatewayChild(t *testing.T) {
+	oldState, oldCommand, oldNotify, oldStop := state, command, signalNotify, signalStop
+	state = t.TempDir()
+	command = func(string, ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
+		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
+		return cmd
+	}
+	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
+	signalStop = func(chan os.Signal) {}
+	t.Cleanup(func() { state, command, signalNotify, signalStop = oldState, oldCommand, oldNotify, oldStop })
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_PERSISTENT_HERMES", "true")
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	if err := supervise("serve"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "runtime.json")); !os.IsNotExist(err) {
+		t.Fatal("runtime marker was not cleaned")
+	}
+}
+
 func TestSupervisorRestartsInPlaceAfterEnvUpdate(t *testing.T) {
 	oldState, oldNotify, oldStop := state, signalNotify, signalStop
 	state = t.TempDir()

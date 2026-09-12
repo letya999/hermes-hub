@@ -1,6 +1,6 @@
 ---
-description: Environment selection, migration, backup and recovery operations.
-last_verified: 2026-09-10
+description: Current operations and planned scale-to-zero runtime lifecycle.
+last_verified: 2026-09-12
 ---
 # Operations
 
@@ -63,3 +63,29 @@ Self-service `env_update` and `service_enable` persist only under the selected u
 connection state and request a supervisor restart. They cannot edit organization policy,
 host settings or runtime-control variables. Provider content cannot authorize any
 mutation.
+
+## Scale-to-zero operation (initial implementation)
+
+ADR-0014 and SPEC-0012 define the runtime mode. The trusted host-side `hubctl supervisor`
+now starts the selected context runtime for an accepted job, reuses it for a five-minute
+default warm window and stops only its compute after all leases end. The supervisor
+proxies the authenticated private execution endpoint, applies resource limits and
+mounts only the selected context. The communication and Hermes containers do not receive
+the Docker socket. Enable it explicitly with `HUB_RUNTIME_SUPERVISOR_URL` while keeping
+static per-user Compose and `hermes -z` as rollback paths during migration.
+
+Example from the repository root:
+
+```text
+HUB_SUPERVISOR_AUTH=<host-control-token> hubctl supervisor --spaces spaces
+HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8765 hubctl render --dir spaces/alice
+```
+
+The runtime now uses pinned Hermes `/api/sessions` and `/v1/runs` for each accepted job;
+the hub-side durable mapping, cancellation/event/approval forwarding and routine migration
+remain issues #15-#19 and #33. Do not claim the full migration until their real Docker and
+pinned-Hermes gates pass.
+
+Routine schedules will be stored by the hub and create ordinary idempotent jobs that
+wake sleeping contexts. A context with active unmigrated native Hermes cron must remain
+explicitly pinned on; operators must never enable both schedule owners for one routine.

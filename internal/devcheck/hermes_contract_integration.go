@@ -142,6 +142,9 @@ func HermesContract(ctx context.Context, image string) error {
 	if err := expectHermesHTTP(ctx, out, name, key, http.MethodGet, "/api/sessions/"+sessionID, http.StatusOK); err != nil {
 		return fmt.Errorf("session resume after restart failed: %w", err)
 	}
+	if err := supervisorSmoke(ctx, image); err != nil {
+		return err
+	}
 	fmt.Printf("Pinned Hermes %s API contract passed: sessions, idempotency, SSE, stop, approvals, cron coexistence, restart\n", hermesContractVersion)
 	return nil
 }

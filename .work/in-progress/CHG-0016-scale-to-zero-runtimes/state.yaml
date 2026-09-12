@@ -1,0 +1,26 @@
+change: CHG-0016
+status: in_progress
+updated: 2026-09-12
+evidence:
+  - ADR-0014, SPEC-0012 and SPEC-0013 accepted and indexed
+  - GitHub issues 14-19, 33, 46 and 55 rewritten; shared open-issue context aligned
+  - just check passed with 85.06% Go statement coverage, race tests and static analysis
+  - just security passed: no Go or browser dependency vulnerabilities
+  - just docker-check passed runtime smoke and real pinned Hermes 0.21.0 API contract
+  - integration contract passed host supervisor Docker smoke: warm reuse, idle reap, cold restore and logical runtime ID
+  - persistent runtime image smoke passed authenticated `/readyz` and `/healthz` with no live provider
+steps:
+  - name: contracts-and-issue-alignment
+    status: done
+  - name: host-runtime-supervisor
+    status: done
+  - name: persistent-hermes-api-adapter
+    status: done
+  - name: leases-idle-reaping-and-reconciliation
+    status: done
+  - name: multi-user-routing
+    status: done
+  - name: durable-routines-and-wake
+    status: pending
+  - name: migration-and-real-gates
+    status: pending

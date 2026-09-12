@@ -1,6 +1,6 @@
 ---
-description: Reversible current-to-target migration and legacy deletion gates.
-last_verified: 2026-09-11
+description: Reversible current-to-target migration and scale-to-zero deletion gates.
+last_verified: 2026-09-12
 ---
 # Current-to-target migration map
 
@@ -11,7 +11,7 @@ until an explicit stage is enabled and its rollback/deletion gate passes.
 Target request flow:
 
 ```text
-channel -> communication hub -> persistent Hermes runtime
+channel -> communication hub -> host runtime supervisor -> warm context runtime
                                   |
                                   v
                          stable Go ToolHub gateway
@@ -36,9 +36,11 @@ transport adaptation and egress isolation.
 | Current path | Decision and target owner | Coexistence / migration | Rollback and deletion gate | Destination |
 |---|---|---|---|---|
 | `communication-hub` channel identity, durable job/reply spool and delivery | **Keep** in Go | Envelope continues to carry stable principal/context/runtime IDs | Roll back service image; preserve `communication-hub-data`. Never delete while queued or uncertain deliveries exist | #21 and existing gateway work |
-| Private `POST /v1/execute` runtime endpoint | **Adapt**, then **retire** as the normal execution path; persistent Hermes adapter becomes target | Keep callable during persistent-runtime rollout; route one configured user at a time to the new adapter | Fall back to `/v1/execute` without moving the Hermes home. Delete only after restart, cancellation, idempotency and queued-delivery recovery pass against real Hermes | persistent-runtime implementation following #10 |
-| One-shot `hermes -z` process per job | **Replace** with pinned persistent Hermes `/api/sessions` and `/v1/runs` adapter | Preserve one-shot mode as a release-scoped fallback selected by host config, never by model input | Re-enable one-shot adapter. Delete only after real pinned-Hermes session/run/restart evidence and at least one release of successful migration | persistent-runtime implementation following #10 |
-| Hermes-owned sessions, memory, profile, cron, skills, hooks and voice | **Keep** upstream and in the scoped Hermes home | Mount the same home into the persistent runtime; no reimplementation or implicit copy | Stop the new runtime and remount the same home read-write to the previous pinned image | #10; ADR-0012 |
+| Private `POST /v1/execute` runtime endpoint | **Adapt** into the communication-hub to supervisor job contract; the supervisor locates or starts the bound context runtime | Keep callable during per-context rollout and route one configured context at a time | Fall back to `/v1/execute` without moving the Hermes home. Delete only after cold start, warm reuse, cancellation, idempotency, idle reaping and queued-delivery recovery pass against real Hermes | #14-#19 |
+| One-shot `hermes -z` process per job | **Replace** with a warm scale-to-zero Hermes `/api/sessions` and `/v1/runs` adapter | Preserve one-shot mode as a release-scoped host-selected fallback; a new job reuses the context runtime within its idle TTL | Re-enable one-shot adapter. Delete only after real pinned-Hermes session/run/restart/sleep evidence and at least one compatibility release | #14-#19 |
+| Static per-user `hermes-runtime` Compose service | **Replace** in multi-user mode with a trusted host-side Go supervisor and dynamically created per-context containers | Keep the static personal deployment as rollback while contexts migrate independently | Restore the static service without changing `spaces/<context>`; never expose Docker control to the communication or Hermes container | #14, #18, #19 |
+| Native Hermes cron as a resident clock owner | **Adapt** through an explicit migration to hub-owned durable routines; Hermes remains the agent-job executor | A context with unmigrated active native cron is pinned on; dual execution is forbidden | Re-enable the pinned-on context and native schedule from the recorded migration state | #33 |
+| Hermes-owned sessions, memory, profile, skills, hooks and voice | **Keep** upstream and in the scoped Hermes home | Mount the same home into each warm runtime generation; no reimplementation or implicit copy | Stop the new runtime and remount the same home read-write to the previous pinned image | #10, #14; ADR-0012, ADR-0014 |
 | Generated direct MCP configuration under `spaces/<user>/generated/` | **Replace** as the primary connector registry with one stable authenticated ToolHub URL | Initially render both paths but enable exactly one per runtime. Direct config remains rollback-only and must not duplicate tools | Switch runtime config back to the previous generated file. Retire after add/remove/revoke/reconnect and conflict-name tests pass with real vMCP | #20, #21, #25, #26 |
 | User/organization `mcp_servers` definitions in settings/scope | **Adapt** into immutable catalog manifests and effective bindings | Import definitions as disabled or with their previous explicit enabled state; preserve immutable source/version, allowlist and ownership | Keep source files unchanged until import report is accepted. Delete old interpretation only after round-trip comparison and deny tests | #20, #24 |
 | Embedded/pinned connector packages and presets | **Adapt** into catalog definitions; **replace** in-process supervision with ToolHive workloads where supported | Existing packages remain available per connector until its real provider/runtime validation passes | Re-select the old pinned connector path. Remove package only after replacement pin, health, state, egress and provider contract gates pass | #20, #22, #25 and provider issue |
@@ -65,9 +67,12 @@ transport adaptation and egress isolation.
    (#48/#51) with dry-run reports, explicit apply and exact-owner verification.
 5. **Enable dynamic projection:** add/disable/remove plus controlled reconnect (#26).
    A stale session must fail at Go before backend execution.
-6. **Adopt persistent Hermes:** move selected runtimes from `/v1/execute` and `hermes
-   -z` to the pinned session/run API while preserving the same scoped home and rollback.
-7. **Retire legacy:** remove a legacy reader/path only after its row's deletion gate,
+6. **Adopt scale-to-zero Hermes:** move selected contexts from `/v1/execute` and
+   `hermes -z` to the pinned session/run API behind the host supervisor. Prove cold
+   start, warm reuse, idle stop and restoration from the same scoped home.
+7. **Move routines:** migrate native cron explicitly to hub-owned schedules, or keep
+   the affected context pinned on until its migration is accepted.
+8. **Retire legacy:** remove a legacy reader/path only after its row's deletion gate,
    one compatibility release and deployment acceptance have all passed.
 
 Stages are monotonic per user runtime, not global. Failure rolls back only that runtime

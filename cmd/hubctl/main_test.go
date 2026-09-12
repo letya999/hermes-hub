@@ -46,3 +46,17 @@ func TestCLIOrganizationWorkflow(t *testing.T) {
 		t.Fatal("org-init without organization accepted")
 	}
 }
+
+func TestCLISupervisorLifecycle(t *testing.T) {
+	t.Setenv("HUB_SUPERVISOR_AUTH", "")
+	t.Setenv("HUB_RUNTIME_AUTH", "")
+	if err := run(context.Background(), []string{"supervisor", "--spaces", t.TempDir()}); err == nil {
+		t.Fatal("supervisor started without control auth")
+	}
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := run(ctx, []string{"supervisor", "--spaces", root, "--supervisor-auth", "secret", "--supervisor-listen", "127.0.0.1:0"}); err != nil {
+		t.Fatal(err)
+	}
+}

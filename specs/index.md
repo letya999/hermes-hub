@@ -2,6 +2,8 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |
+| [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes |
 | [SPEC-0011](active/SPEC-0011-hermes-api-contract.md) | Pinned Hermes API contract for sessions and runs |
 | [SPEC-0010](active/SPEC-0010-stable-identifiers.md) | Stable identity, context, runtime, conversation and connection identifiers |
 | [SPEC-0009](active/SPEC-0009-scoped-homes-and-service-boundaries.md) | Implemented scoped homes and communication-hub boundary; migration remains explicit |

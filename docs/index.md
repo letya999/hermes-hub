@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-09-10
+last_verified: 2026-09-12
 ---
 # Documentation
 
@@ -8,13 +8,13 @@ last_verified: 2026-09-10
 
 | Document | Purpose | Verified |
 |---|---|---|
-| [architecture.md](architecture.md) | Current components, files and trust boundaries | 2026-09-10 |
+| [architecture.md](architecture.md) | Current components and target scale-to-zero runtime boundary | 2026-09-12 |
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-10 |
-| [operations.md](operations.md) | Deployment, backup and failure recovery | 2026-09-10 |
-| [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-10 |
-| [threat-model.md](threat-model.md) | Personal and future-organization trust boundaries and abuse cases | 2026-09-11 |
-| [migration-map.md](migration-map.md) | Current-to-target ownership, rollout, rollback and deletion gates | 2026-09-11 |
-| [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-10 |
+| [operations.md](operations.md) | Deployment, runtime lifecycle, backup and recovery | 2026-09-12 |
+| [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-12 |
+| [threat-model.md](threat-model.md) | Scale-to-zero and future-organization trust boundaries | 2026-09-12 |
+| [migration-map.md](migration-map.md) | Current-to-scale-to-zero rollout, rollback and deletion gates | 2026-09-12 |
+| [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-12 |
 
 <!-- КОНЕЦ СОДЕРЖИМОГО -->
 
