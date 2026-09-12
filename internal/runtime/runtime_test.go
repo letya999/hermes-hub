@@ -368,6 +368,34 @@ func TestSupervisorReportsChildExit(t *testing.T) {
 	}
 }
 
+func TestSupervisorUsesConfiguredHermesAndHomeDirectories(t *testing.T) {
+	oldState, oldCommand := state, command
+	state = t.TempDir()
+	root := t.TempDir()
+	hermesHome, home := filepath.Join(root, "hermes"), filepath.Join(root, "home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	t.Setenv("HOME", home)
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	command = func(string, ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeExitHelper")
+		cmd.Env = append(os.Environ(), "HUB_TEST_EXIT_HELPER=1")
+		return cmd
+	}
+	t.Cleanup(func() { state, command = oldState, oldCommand })
+	if err := supervise("gateway"); err == nil {
+		t.Fatal("child exit accepted")
+	}
+	for _, path := range []string{home, hermesHome, filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "memories")} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("configured runtime directory missing: %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(state, "hermes")); !os.IsNotExist(err) {
+		t.Fatal("created a second Hermes home under runtime state")
+	}
+}
+
 func TestSupervisorBrowserShutdown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer server.Close()

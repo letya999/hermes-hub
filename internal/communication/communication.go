@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -39,6 +41,8 @@ var gatewayOwnedEnv = map[string]bool{"TELEGRAM_BOT_TOKEN": true, "TELEGRAM_ALLO
 
 // User is the stable internal user plus its channel bindings and runtime roots.
 type User struct {
+	RuntimeID      string            `yaml:"runtime_id,omitempty" json:"runtime_id,omitempty"`
+	PolicyVersion  string            `yaml:"policy_version,omitempty" json:"policy_version,omitempty"`
 	ID             string            `yaml:"id" json:"id"`
 	Enabled        bool              `yaml:"enabled" json:"enabled"`
 	TelegramIDs    []int64           `yaml:"telegram_ids" json:"telegram_ids"`
@@ -50,8 +54,21 @@ type User struct {
 	Env            map[string]string `yaml:"-" json:"-"`
 }
 
+// envelope binds each verified channel user independently of process-wide env.
+func (user User) envelope(externalID int64) identity.Envelope {
+	runtimeID, policy := user.RuntimeID, user.PolicyVersion
+	if runtimeID == "" {
+		runtimeID = user.ID
+	}
+	if policy == "" {
+		policy = envOr("HUB_POLICY_VERSION", "policy-1")
+	}
+	return identity.TelegramEnvelope(user.ID, externalID, runtimeID, policy)
+}
+
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
+	Supervised     bool          `yaml:"-"`
 	OrganizationID string        `yaml:"organization_id"`
 	Users          []User        `yaml:"users"`
 	TelegramToken  string        `yaml:"-"`
@@ -64,6 +81,9 @@ type Config struct {
 }
 
 func (c Config) Validate() error {
+	if c.Supervised && c.RuntimeURL == "" {
+		return errors.New("supervised gateway requires the host runtime URL")
+	}
 	if !idPattern.MatchString(c.OrganizationID) {
 		return errors.New("organization_id must be a lowercase identifier")
 	}
@@ -86,6 +106,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("invalid or duplicate user %q", user.ID)
 		}
 		seenUsers[user.ID] = true
+		if user.RuntimeID != "" && !idPattern.MatchString(user.RuntimeID) {
+			return fmt.Errorf("user %q has an invalid runtime_id", user.ID)
+		}
 		if !user.Enabled || user.StateDir == "" || user.WorkspaceDir == "" {
 			continue
 		}
@@ -177,6 +200,7 @@ func ConfigFromEnv() (Config, error) {
 			config.SpoolDir = envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway")
 		}
 		config.RuntimeURL = runtimeURLFromEnv()
+		config.Supervised = strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != ""
 		config.RuntimeAuth = runtimeAuthFromEnv()
 		for i := range config.Users {
 			if config.Users[i].Env == nil {
@@ -215,8 +239,8 @@ func ConfigFromEnv() (Config, error) {
 			}
 		}
 	}
-	user := User{ID: userID, Enabled: true, TelegramIDs: ids, StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	return Config{OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes")}, nil
+	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
+	return Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes")}, nil
 }
 
 func runtimeURLFromEnv() string {
@@ -347,7 +371,7 @@ type Spool struct {
 
 func NewSpool(root string) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -361,6 +385,9 @@ func NewSpool(root string) (*Spool, error) {
 		return nil, err
 	}
 	if err := s.rebuildMappings(); err != nil {
+		return nil, err
+	}
+	if err := s.recoverStreamEvents(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -378,12 +405,30 @@ func (s *Spool) recoverJobs() error {
 		}
 		name := entry.Name()
 		jobID := strings.TrimSuffix(name, ".json")
-		if mapping, loadErr := s.loadMappingLocked(jobID); loadErr == nil {
+		mapping, loadErr := s.loadMappingLocked(jobID)
+		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+			return loadErr // Corrupt admission metadata must never make a claimed job retryable.
+		}
+		if loadErr == nil {
+			if terminalStatus(mapping.Status) {
+				dir := "failed"
+				if mapping.Status == "completed" {
+					dir = "done"
+				}
+				if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, dir, name)); err != nil {
+					return err
+				}
+				continue
+			}
 			mapping.Status, mapping.LastKnownEvent, mapping.UpdatedAt = "uncertain", "run.unknown", time.Now().UTC()
 			if err := s.writeMappingLocked(mapping); err != nil {
 				return err
 			}
-			if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, "failed", name)); err != nil {
+			destination := "failed"
+			if mapping.RunID != "" && mapping.SessionID != "" {
+				destination = "pending"
+			} // Observe the admitted run; never resubmit its prompt.
+			if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, destination, name)); err != nil {
 				return err
 			}
 			continue
@@ -445,6 +490,9 @@ func recoverFiles(from, to string) error {
 func (s *Spool) Enqueue(job Job) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.enqueueLocked(job)
+}
+func (s *Spool) enqueueLocked(job Job) (bool, error) {
 	fingerprint := jobFingerprint(job)
 	if strings.TrimSpace(job.IdempotencyKey) != "" {
 		if mapping, found, err := s.findIdempotencyLocked(job.IdempotencyKey); err != nil {
@@ -526,7 +574,24 @@ func (s *Spool) ClaimJob() (*Job, error) {
 	if err := json.Unmarshal(b, &job); err != nil {
 		return nil, err
 	}
-	if job.Sensitive {
+	mapping, mappingErr := s.loadMappingLocked(job.ID)
+	if mappingErr != nil && job.IdempotencyKey != "" {
+		// Routing and cancellation state must be readable before executing work.
+		return nil, mappingErr
+	}
+	if mappingErr == nil && terminalStatus(mapping.Status) {
+		dir := "failed"
+		if mapping.Status == "completed" {
+			dir = "done"
+		}
+		if err := os.Rename(to, filepath.Join(s.root, dir, name)); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if mappingErr == nil && mapping.RunID != "" && mapping.SessionID != "" {
+		job.Text = ""
+	} else if job.Sensitive {
 		job.Text = s.secret[job.ID]
 		if job.Text == "" {
 			_ = os.Rename(to, filepath.Join(s.root, "failed", name))
@@ -761,6 +826,10 @@ func (t *telegramAPI) call(ctx context.Context, method string, payload any, resu
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return t.callRequest(req, result)
+}
+
+func (t *telegramAPI) callRequest(req *http.Request, result any) error {
 	response, err := t.client.Do(req)
 	if err != nil {
 		return err
@@ -796,6 +865,34 @@ func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int)
 	return result, err
 }
 func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text string) error {
+	if !utf8.ValidString(text) || text == "" || len(text) > 2*1024*1024 {
+		return errors.New("invalid Telegram output")
+	}
+	if utf8.RuneCountInString(text) > 4096 {
+		// Preserve the complete bounded result in one delivery, without a
+		// partially sent multi-message sequence that cannot safely be retried.
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+			return err
+		}
+		part, err := form.CreateFormFile("document", "response.txt")
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(part, text); err != nil {
+			return err
+		}
+		if err := form.Close(); err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendDocument", &body)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		return t.callRequest(req, nil)
+	}
 	return t.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text}, nil)
 }
 func (t *telegramAPI) DeleteMessage(ctx context.Context, chatID int64, messageID int) error {
@@ -934,9 +1031,13 @@ func New(config Config) (*Gateway, error) {
 	}
 	runner := Runner(HermesRunner{Command: config.HermesCommand})
 	if config.RuntimeURL != "" {
-		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth}
+		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised}
 	}
-	return &Gateway{config: config, users: users, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: runtimeRestart(config.RuntimeURL, config.RuntimeAuth), now: time.Now}, nil
+	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth)
+	if config.Supervised {
+		restart = nil
+	}
+	return &Gateway{config: config, users: users, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now}, nil
 }
 
 func (g *Gateway) Run(ctx context.Context) error {
@@ -946,9 +1047,40 @@ func (g *Gateway) Run(ctx context.Context) error {
 		defer close(workerDone)
 		g.worker(workerCtx)
 	}()
+	deliveryDone := make(chan struct{})
+	controlDone := make(chan struct{})
+	go func() {
+		defer close(controlDone)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			_ = g.spool.DispatchDueOccurrences(g.now().UTC(), g.authorizeOccurrence)
+			g.controlOne(workerCtx)
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	go func() {
+		defer close(deliveryDone)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			g.deliverOne(workerCtx)
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 	defer func() {
 		cancel()
 		<-workerDone
+		<-deliveryDone
+		<-controlDone
 	}()
 	offset, err := g.spool.LoadOffset()
 	if err != nil {
@@ -993,6 +1125,40 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			command = command[:at]
 		}
 		switch command {
+		case "runat":
+			fields := strings.Fields(text)
+			answer := "Используйте /runat <дата RFC3339 с часовым поясом> <задание>."
+			if len(fields) >= 3 {
+				due, err := time.Parse(time.RFC3339, fields[1])
+				if err == nil && due.After(g.now()) {
+					input := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, fields[0])), fields[1]))
+					caller := user.envelope(message.From.ID)
+					job := Job{Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: message.Chat.ID, Text: input}
+					err = g.spool.PutOccurrence(RoutineOccurrence{ScheduleID: "telegram-" + strconv.Itoa(update.UpdateID), Revision: 1, DueAt: due, Job: job}, caller)
+					if err == nil {
+						answer = "Задание по расписанию сохранено."
+					} else {
+						answer = "Задание отклонено: проверьте текст и время."
+					}
+				}
+			}
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, answer)
+		case "cancel", "approve":
+			fields := strings.Fields(text)
+			caller := user.envelope(message.From.ID)
+			answer := "Используйте /cancel <job-id> или /approve <job-id> <request-id> <choice>."
+			var err error
+			if command == "cancel" && len(fields) == 2 {
+				_, err = g.spool.RequestCancel(fields[1], caller)
+				answer = "Запрос отмены сохранен."
+			} else if command == "approve" && len(fields) == 4 {
+				err = g.spool.RequestApproval(fields[1], caller, fields[2], fields[3])
+				answer = "Ответ на подтверждение сохранен."
+			}
+			if err != nil {
+				answer = "Запрос отклонен: задача или подтверждение недоступны в этом разговоре."
+			}
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, answer)
 		case "start":
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Готово. Вы подключены к своему Hermes-пространству.")
 		case "status":
@@ -1006,7 +1172,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		}
 	}
 	sensitive := envstore.LooksLikeEnv(text)
-	job := Job{Envelope: identity.TelegramEnvelope(user.ID, message.From.ID, envOr("HUB_RUNTIME_ID", user.ID), envOr("HUB_POLICY_VERSION", "policy-1")), ID: "telegram-" + strconv.Itoa(update.UpdateID), OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:" + strconv.Itoa(update.UpdateID), ChatID: message.Chat.ID, MessageID: message.MessageID, Text: text, Sensitive: sensitive, CreatedAt: g.now().UTC()}
+	job := Job{Envelope: user.envelope(message.From.ID), ID: "telegram-" + strconv.Itoa(update.UpdateID), OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:" + strconv.Itoa(update.UpdateID), ChatID: message.Chat.ID, MessageID: message.MessageID, Text: text, Sensitive: sensitive, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}
@@ -1026,6 +1192,9 @@ func (g *Gateway) worker(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		g.deliverOne(ctx)
+		if g.config.RuntimeURL != "" {
+			_ = g.spool.RequeueObservations(g.now().UTC())
+		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
 			g.busy.Store(true)
 			var response string
@@ -1040,6 +1209,17 @@ func (g *Gateway) worker(ctx context.Context) {
 			}
 			g.busy.Store(false)
 			if runErr != nil || outcome.Status == "uncertain" {
+				if mapping, found, err := g.spool.Mapping(job.ID); err == nil && found && terminalStatus(mapping.Status) {
+					outcome = RunOutcome{Text: mapping.Result, JobID: mapping.JobID, RunID: mapping.RunID, SessionID: mapping.SessionID, RuntimeGeneration: mapping.RuntimeGeneration, Status: mapping.Status, LastEvent: mapping.LastKnownEvent}
+					response = outcome.Text
+					if mapping.Status == "completed" {
+						runErr = nil
+					} else {
+						runErr = errors.New("run ended without completion")
+					}
+				}
+			}
+			if runErr != nil || outcome.Status == "uncertain" {
 				if runErr == nil {
 					runErr = ErrUncertain
 				}
@@ -1050,7 +1230,17 @@ func (g *Gateway) worker(ctx context.Context) {
 					_ = g.spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: outcome.SessionID, RunID: outcome.RunID, RuntimeGeneration: outcome.RuntimeGeneration, Status: "uncertain", LastEvent: "run.unknown"})
 				}
 				_ = g.spool.FailJob(job.ID)
-				_ = g.queueDelivery(ctx, "job-"+job.ID+"-error", job.ChatID, "Не удалось выполнить запрос. Попробуйте ещё раз.")
+				key, message := "job-"+job.ID+"-error", "Не удалось завершить задачу."
+				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
+					key = "job-" + job.ID + "-uncertain"
+					message = "Исход задачи пока неизвестен. Повторный запуск может продублировать действие. ID: " + job.ID
+					if outcome.RunID != "" && g.config.RuntimeURL != "" {
+						message = "Проверяю исходную задачу после потери соединения. ID: " + job.ID
+					}
+				} else if outcome.Status == "cancelled" {
+					message = "Задача отменена. ID: " + job.ID
+				}
+				_ = g.queueDelivery(ctx, key, job.ChatID, message)
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
 				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, ChatID: job.ChatID, Text: response, CreatedAt: g.now().UTC()})

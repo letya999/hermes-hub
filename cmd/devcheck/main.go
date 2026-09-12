@@ -36,8 +36,10 @@ func run(args []string) error {
 		err = devcheck.DockerSmoke(context.Background(), args[1])
 	case len(args) == 2 && args[0] == "hermes-contract":
 		err = devcheck.HermesContract(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "gateway-lifecycle":
+		err = devcheck.GatewayLifecycle(context.Background(), args[1])
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-smoke IMAGE|hermes-contract IMAGE")
+		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-smoke IMAGE|hermes-contract IMAGE|gateway-lifecycle IMAGE")
 	}
 	return err
 }

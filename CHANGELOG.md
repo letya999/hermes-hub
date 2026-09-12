@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.1 — M1 compatibility release — 2026-09-12
+
+- Added host-selected per-context supervisor rollout and rollback without moving
+  Hermes homes, queued jobs, session/run mappings or delivery state.
+- Added authenticated job admission/resume, cancellation, streamed events and
+  approval fencing with durable uncertainty and automatic infrastructure recovery.
+- Verified two-user isolation, idempotency, leases, automatic five-minute idle stop,
+  cold session restoration, orphan ownership and due routine wake/sleep against
+  pinned Hermes 0.21.0 in real Docker containers.
+- Retained static/one-shot rollback for this compatibility release. Legacy removal
+  follows acceptance of this released artifact; enabled native cron blocks migration.
+
 - Added the channel-neutral `hub-communication` gateway with Telegram sender mapping,
   durable job/reply spool, scoped Hermes subprocesses, commands and best-effort secret
   message deletion.

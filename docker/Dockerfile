@@ -3,12 +3,12 @@ FROM golang:1.27.1-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+RUN git init /slack && cd /slack && git remote add origin https://github.com/korotovsky/slack-mcp-server.git && git fetch --depth 1 origin b88c0de3f706f4f07337c9eda7133c736d1c9524 && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /slack-mcp-server ./cmd/slack-mcp-server
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hubctl ./cmd/hubctl
 RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-runtime ./cmd/runtime
 RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub ./cmd/communication
-RUN git init /slack && cd /slack && git remote add origin https://github.com/korotovsky/slack-mcp-server.git && git fetch --depth 1 origin b88c0de3f706f4f07337c9eda7133c736d1c9524 && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /slack-mcp-server ./cmd/slack-mcp-server
 
 FROM debian:13.6 AS sqlite_build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*

@@ -113,6 +113,9 @@ func Config(s Settings) M {
 		servers[name] = server.Config()
 	}
 	toolsets := []string{"terminal", "file", "web", "vision", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	if s.ExecutionMode == "supervisor" {
+		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "cronjob" })
+	}
 	if s.Has("meet") {
 		toolsets = append(toolsets, "google_meet")
 	}
@@ -123,6 +126,15 @@ func Config(s Settings) M {
 	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
 }
 func Compose(s Settings, projectRoot, dir string) M {
+	return compose(s, projectRoot, dir, true)
+}
+
+// RuntimeService keeps supervised and static containers on the same data/env contract.
+func RuntimeService(s Settings, projectRoot, dir string) M {
+	return compose(s, projectRoot, dir, false)["services"].(M)["hermes-runtime"].(M)
+}
+
+func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	stateVolumes := []any{
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "runtime")), "target": "/state"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes")), "target": "/state/hermes"},
@@ -160,6 +172,9 @@ func Compose(s Settings, projectRoot, dir string) M {
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
 	runtimeService["environment"] = runtimeEnv
+	if s.NativeCron == "unmigrated" {
+		runtimeEnv["HUB_PERSISTENT_HERMES"] = "true"
+	}
 	runtimeService["volumes"] = stateVolumes
 	runtimeService["ports"] = ports
 	runtimeService["command"] = []string{"serve"}
@@ -175,12 +190,18 @@ func Compose(s Settings, projectRoot, dir string) M {
 		runtimeService["environment"].(M)["GOMODCACHE"] = "/state/go-mod"
 	}
 	services := M{"hermes-runtime": runtimeService}
-	if s.Has("telegram") {
+	if includeGateway && s.Has("telegram") {
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
+		if s.ExecutionMode != "" {
+			supervisorURL = s.SupervisorURL
+		}
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
 		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ",")}
+		if s.ExecutionMode != "" {
+			gatewayEnvironment["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
+		}
 		if supervisorURL == "" {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"})
 		} else {
@@ -201,7 +222,12 @@ func Compose(s Settings, projectRoot, dir string) M {
 	return M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": M{"communication-hub-data": M{}}}
 }
 
+// PolicyVersion identifies the effective runtime policy used by transport and supervisor.
+func PolicyVersion(s Settings) string { return policyVersion(s) }
+
 func policyVersion(s Settings) string {
+	// Executor rollout is transport state, not a grant of additional tool rights.
+	s.ExecutionMode = ""
 	body, _ := yaml.Marshal(Config(s))
 	hash := sha256.Sum256(body)
 	return "policy-" + hex.EncodeToString(hash[:8])
