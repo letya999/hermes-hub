@@ -138,7 +138,7 @@ func HermesContract(ctx context.Context, image string) error {
 	}
 	name := fmt.Sprintf("hermes-contract-%x", suffix)
 	volume := name + "-state"
-	key := "probe-api-key-0123456789"
+	key := fmt.Sprintf("fixture-auth-%x", suffix)
 	run := func(args ...string) error { return dockerContract(ctx, args...) }
 	out := func(args ...string) ([]byte, error) { return dockerContractOutput(ctx, args...) }
 	// Remove the container before its mounted state volume (defer runs LIFO).
