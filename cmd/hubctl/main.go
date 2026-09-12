@@ -31,7 +31,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.2.0: init | org-init | migrate-spaces | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -52,13 +52,13 @@ func run(ctx context.Context, args []string) error {
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
-	supervisorImage := f.String("runtime-image", "hermes-hub:0.2.0-prod", "pinned runtime image for the host supervisor")
+	supervisorImage := f.String("runtime-image", "hermes-hub:0.3.0-prod", "pinned runtime image for the host supervisor")
 	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8765", "private host supervisor address")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
 	warmTTL := f.Duration("warm-ttl", 5*time.Minute, "idle runtime retention")
 	maxRuntimes := f.Int("max-runtimes", 8, "maximum running context runtimes")
 	spoolDir := f.String("spool", "", "mounted stopped gateway spool for execution migration")
-	executionMode := f.String("execution-mode", "", "supervisor or legacy")
+	executionMode := f.String("execution-mode", "", "supervisor or static")
 	supervisorURL := f.String("supervisor-url", "", "private reachable host supervisor origin")
 	nativeCron := f.String("native-cron", "", "disabled, migrated or unmigrated; explicit operator disposition")
 	compatibilityRelease := f.String("compatibility-release", "", "release retaining the legacy fallback")

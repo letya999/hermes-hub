@@ -480,7 +480,7 @@ func TestServeStartsPinnedGatewayChild(t *testing.T) {
 	signalStop = func(chan os.Signal) {}
 	t.Cleanup(func() { state, command, signalNotify, signalStop = oldState, oldCommand, oldNotify, oldStop })
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
-	t.Setenv("HUB_PERSISTENT_HERMES", "true")
+	t.Setenv("HUB_PERSISTENT_HERMES", "false")
 	t.Setenv("HUB_BROWSER", "false")
 	t.Setenv("HUB_MEET", "false")
 	if err := supervise("serve"); err != nil {

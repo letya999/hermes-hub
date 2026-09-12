@@ -22,7 +22,7 @@ type ExecutionSelection struct {
 }
 
 func (s ExecutionSelection) Validate() error {
-	if s.Schema != 1 || !idPattern.MatchString(s.User) || (s.Environment != "prod" && s.Environment != "dev") || (s.Mode != "legacy" && s.Mode != "supervisor") || s.CompatibilityRelease == "" {
+	if s.Schema != 1 || !idPattern.MatchString(s.User) || (s.Environment != "prod" && s.Environment != "dev") || (s.Mode != "static" && s.Mode != "supervisor") || s.CompatibilityRelease == "" {
 		return errors.New("invalid execution selection identity, mode or compatibility release")
 	}
 	if s.NativeCron != "disabled" && s.NativeCron != "migrated" && s.NativeCron != "unmigrated" {
@@ -30,14 +30,14 @@ func (s ExecutionSelection) Validate() error {
 	}
 	if s.Mode == "supervisor" {
 		if s.NativeCron == "unmigrated" {
-			return errors.New("unmigrated native cron requires legacy pinned-on deployment")
+			return errors.New("unmigrated native cron requires static pinned-on deployment")
 		}
 		u, err := url.Parse(s.SupervisorURL)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 			return errors.New("supervisor URL must be an HTTP(S) origin without credentials")
 		}
 	} else if s.SupervisorURL != "" {
-		return errors.New("legacy selection cannot route to supervisor")
+		return errors.New("static selection cannot route to supervisor")
 	}
 	return nil
 }
@@ -63,6 +63,10 @@ func ReadExecution(dir, environment, user string) (ExecutionSelection, bool, err
 	}
 	if err = json.Unmarshal(body, &selection); err != nil {
 		return selection, false, err
+	}
+	// Compatibility records select topology, never the retired one-shot executor.
+	if selection.Mode == "legacy" {
+		selection.Mode = "static"
 	}
 	if err = selection.Validate(); err != nil {
 		return selection, false, err
