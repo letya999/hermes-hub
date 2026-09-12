@@ -75,6 +75,14 @@ func TestExecutionSelectionDoesNotBroadenPolicyAndKeepsUnmigratedClock(t *testin
 	if service["command"].([]string)[0] != "serve" {
 		t.Fatal("unmigrated native clock not resident")
 	}
+	s.Features, s.NativeCron = []string{"workspace"}, "disabled"
+	if RuntimeService(s, "", t.TempDir())["command"].([]string)[0] != "idle" {
+		t.Fatal("CLI-only context started resident Hermes")
+	}
+	s.Features = append(s.Features, "telegram")
+	if RuntimeService(s, "", t.TempDir())["command"].([]string)[0] != "serve" {
+		t.Fatal("static communication lost native Gateway")
+	}
 	selection.SupervisorURL = "http://localhost:8765"
 	if err := selection.Validate(); err == nil {
 		t.Fatal("legacy selection could route to supervisor")
