@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -51,8 +50,6 @@ type ExecuteResponse struct {
 
 type runtimeHTTP struct{}
 
-var executeHermes = runHermes
-var hermesExecutable = "hermes"
 var signalRuntimeProcess = func() {
 	if process, err := os.FindProcess(os.Getpid()); err == nil {
 		_ = process.Signal(os.Interrupt)
@@ -134,19 +131,11 @@ func (s *runtimeHTTP) execute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var response ExecuteResponse
-	response.RuntimeGeneration = os.Getenv("HUB_RUNTIME_GENERATION")
-	if os.Getenv("HUB_PERSISTENT_HERMES") == "true" {
-		if r.Header.Get("Accept") == RunStreamContentType {
-			s.executeStream(w, r, request)
-			return
-		}
-		response, err = s.executePersistent(r.Context(), request)
-	} else {
-		response.Text, err = executeHermes(r.Context(), request.Text)
-		response.Status = "completed"
-		response.LastEvent = "run.completed"
+	if r.Header.Get("Accept") == RunStreamContentType {
+		s.executeStream(w, r, request)
+		return
 	}
+	response, err := s.executePersistent(r.Context(), request)
 	response.RuntimeGeneration = os.Getenv("HUB_RUNTIME_GENERATION")
 	if err != nil {
 		if response.Status != "" {
@@ -162,8 +151,7 @@ func (s *runtimeHTTP) execute(w http.ResponseWriter, r *http.Request) {
 }
 
 // executePersistent uses the pinned Hermes Gateway API inside this runtime.
-// The one-shot hermes -z path remains available when the flag is unset for
-// rollback deployments; no provider or session state crosses the container.
+// No provider or session state crosses the owning container.
 func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequest) (ExecuteResponse, error) {
 	return s.executePersistentEvents(ctx, request, nil)
 }
@@ -430,39 +418,6 @@ func validateExecuteRequest(request ExecuteRequest) error {
 		return errors.New("invalid prompt")
 	}
 	return nil
-}
-
-func runHermes(ctx context.Context, prompt string) (string, error) {
-	jobCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(jobCtx, hermesExecutable, "-z", prompt)
-	cmd.Dir = workspace
-	cmd.Env = hermesEnvironment()
-	output, err := cmd.Output()
-	if err != nil {
-		if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
-			return "", errors.New("hermes timed out")
-		}
-		return "", err
-	}
-	text := strings.TrimSpace(string(output))
-	if text == "" {
-		return "", errors.New("hermes returned an empty response")
-	}
-	return text, nil
-}
-
-func hermesEnvironment() []string {
-	result := make([]string, 0)
-	for _, entry := range os.Environ() {
-		key, value, ok := strings.Cut(entry, "=")
-		if !ok || key == "TELEGRAM_BOT_TOKEN" || key == "TELEGRAM_ALLOWED_USERS" || key == "HUB_RUNTIME_AUTH" || key == "HUB_RUNTIME_LISTEN" {
-			continue
-		}
-		result = append(result, key+"="+value)
-	}
-	result = append(result, "HUB_DEFER_RUNTIME_RESTART=true")
-	return result
 }
 
 func (s *runtimeHTTP) restart(w http.ResponseWriter, r *http.Request) {

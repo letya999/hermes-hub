@@ -156,6 +156,7 @@ func HermesContract(ctx context.Context, image string) error {
 		return err
 	}
 	if err := run("run", "-d", "--name", name, "--entrypoint", "hermes", "--read-only", "--cap-drop", "ALL",
+		"--add-host", "host.docker.internal:host-gateway",
 		"--security-opt", "no-new-privileges:true", "--shm-size", "256m",
 		"--tmpfs", "/tmp:mode=1777", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700",
 		"-v", volume+":/state", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home",

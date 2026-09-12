@@ -72,9 +72,10 @@ title: Scale-to-zero Hermes runtime lifecycle
 1. Docker is the initial single-host backend. A host daemon or service runs the Go
    supervisor; neither the communication nor Hermes container mounts the Docker
    socket.
-2. Migration is enabled per context. The current one-shot `hermes -z` path remains a
-   release-scoped rollback until real restart, isolation, cancellation, idempotency
-   and data-preservation checks pass.
+2. Migration is enabled per context. The one-shot `hermes -z` path was retained in
+   published v0.2.1, accepted against identical real Docker binaries, and retired
+   in v0.3.0. Artifact rollback uses v0.2.1 after drain/stop/audit; current static
+   selection uses native APIs. See SPEC-0016 and CHG-0018 for evidence.
 3. Runtime removal is distinct from context-data deletion. Automated lifecycle code
    may stop and remove compute but may never purge a home, credentials, queued
    delivery or schedule.

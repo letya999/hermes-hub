@@ -72,7 +72,8 @@ default warm window and stops only its compute after all leases end. The supervi
 proxies the authenticated private execution endpoint, applies resource limits and
 mounts only the selected context. The communication and Hermes containers do not receive
 the Docker socket. Enable it explicitly with `HUB_RUNTIME_SUPERVISOR_URL` while keeping
-static per-user Compose and `hermes -z` as rollback paths during migration.
+native static per-user Compose as an explicit alternative. The published v0.2.1
+artifact provides the retired one-shot rollback after drain/stop/audit.
 
 Example from the repository root:
 
@@ -174,7 +175,7 @@ shorten that wait, and never submits a second copy of the input.
 
 `hubctl select-execution` persists a host-owned execution selection and renders
 only that context's Compose configuration. The selected user and environment must
-match its settings. A saved legacy selection overrides a global supervisor env.
+match its settings. A saved static selection overrides a global supervisor env.
 The scope root is read-only inside supervised Hermes; writable mounts preserve the
 same `/state`, Hermes, connection, home, workspace and archive layout as static Compose.
 The provider env is injected only into its owning runtime, never the communication hub.
@@ -194,8 +195,8 @@ Example with a spool mounted on the Linux deployment host:
 
 ```text
 hubctl execution-audit --spool /mnt/alice-gateway --user alice
-hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.0
-hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.0 --apply
+hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.1
+hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.1 --apply
 hubctl up --dir spaces/alice --user alice --env prod
 ```
 
@@ -206,11 +207,11 @@ alone is not reachable from a Docker container through `host.docker.internal`.
 The supervisor creates its runtime network on demand; runtime ports stay loopback-only.
 
 For rollback, drain and stop the selected context again and select
-`--execution-mode legacy` without `--supervisor-url`, retaining the same spool/home.
+`--execution-mode static` without `--supervisor-url`, retaining the same spool/home.
 An unmigrated native scheduler additionally requires `--native-cron unmigrated`; this
 selects a static native Gateway and forbids scale-to-zero, preserving its clock.
 A stopped supervisor runtime for the rollback context cannot be awakened by the
-supervisor while the host selection remains legacy. Another user's routing is unchanged.
+supervisor while the host selection remains static. Another user's routing is unchanged.
 Do not reactivate native definitions already migrated to hub occurrences.
 
 The automatic supervisor sweep checks idle deadlines at most five seconds apart.
@@ -224,6 +225,10 @@ Supervised self-environment changes reload on the next cold start, rather than s
 an unscoped restart after a final reply. Private `GET /v1/jobs/<id>` exposes durable
 status and saved audience to the authenticated host operator/gateway.
 
-Legacy paths remain until one compatibility release and accepted real-runtime evidence.
-A selection's release name is a planned rollback boundary, not proof of publication.
+The published v0.2.1 compatibility release remains the artifact rollback boundary.
+v0.3.0 removes the one-shot executor: static selection also uses native Hermes APIs.
+Existing `legacy` selections are read as `static`; CLI-only containers idle without
+a resident Gateway. To restore the old executor, deploy the accepted v0.2.1 artifact
+after the same drain/stop/audit sequence. Its release binaries match the real Docker
+acceptance image; a selection's release name alone is not publication evidence.
 See SPEC-0016 and CHG-0018 for acceptance and current evidence.

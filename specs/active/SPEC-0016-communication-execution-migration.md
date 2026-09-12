@@ -6,12 +6,12 @@ title: Per-context communication execution rollout and rollback
 # Host selection
 
 1. `spaces/<user>/execution.<env>.json` records schema 1, exact user and dev/prod
-   environment, `legacy` or `supervisor` mode, supervisor origin, native cron
+   environment, `static` or `supervisor` mode, supervisor origin, native cron
    disposition and the compatibility release retaining fallback. It contains no token.
 2. The selection is host-owned. Hermes receives the scope root read-only and only
    data directories writable. Model/provider text cannot select execution mode.
 3. Absence keeps the previous release's environment-selected behavior. A saved
-   selection overrides the global supervisor env, including explicit rollback to legacy.
+   selection overrides the global supervisor env, including explicit selection of static native execution.
    A corrupt, wrong-user, wrong-environment or unsupported selection fails closed.
 4. Selection does not move the Hermes home, workspace, stateful connections, archive,
    spool, sessions, jobs, receipts or deliveries. Executor routing does not grant tool
@@ -35,7 +35,7 @@ title: Per-context communication execution rollout and rollback
    Supervisor apply also uses the pinned upstream SDK in a disposable snapshot of the
    selected home, requiring zero enabled jobs without modifying the source home.
    `unmigrated` refuses scale-to-zero selection and keeps static native Gateway compute
-   pinned on in legacy mode. `migrated` means the separate verified schedule-owner
+   pinned on in static mode. `migrated` means the separate verified schedule-owner
    migration record exists. Selecting an executor never reactivates a native schedule.
    The native `cronjob` toolset is omitted from migrated runtime configurations.
 5. Rollback repeats the same stop, drain, audit, select, render and up sequence for
@@ -45,8 +45,8 @@ title: Per-context communication execution rollout and rollback
 # Execution and idle lifecycle
 
 1. The production supervised gateway sends `POST /v1/jobs` and observes admitted runs
-   through `/v1/resume`, without input replay. `/v1/execute` remains a compatibility
-   alias until the fallback deletion gate passes. Private authenticated
+   through `/v1/resume`, without input replay. `/v1/execute` remains an HTTP alias to native execution; it cannot invoke a
+   one-shot process. Private authenticated
    `GET /v1/jobs/<id>` returns stored identity, status and outcome, never the input.
 2. Each configured channel user has its own runtime ID and policy version. A process
    env runtime ID must not redirect another user's tasks or controls.
@@ -74,9 +74,14 @@ title: Per-context communication execution rollout and rollback
 - Migration/rollback, queued-work preservation, claimed/uncertain refusal, ownership
   and concurrent selectors have regression coverage.
 - `just check` must pass with own Go statement coverage >=85%; Docker gate must pass.
-- Legacy deletion remains blocked until one compatibility release and accepted real
-  runtime evidence, as required by issue19 and the migration map. Recording a release
-  name in selection is not publication or proof that its acceptance window passed.
+- v0.2.1 is the published compatibility rollback artifact. Its three Linux runtime
+  binaries exactly match the real Docker acceptance image. v0.3.0 removes the
+  one-shot executor and the persistent-mode toggle after that acceptance.
+- Existing schema-1 `legacy` selections read as `static`, preserving native static
+  routing and data without enabling the deleted executor. CLI-only contexts idle;
+  enabled unmigrated native cron retains its always-on native Gateway clock.
+- Artifact rollback requires the published v0.2.1 binaries/image and the same
+  stop/drain/audit procedure. A release name alone is never publication evidence.
 
 Related: SPEC-0012, SPEC-0014, SPEC-0015 and issue19. Full recurring routines,
 timezone/DST and native schedule import remain issue33.

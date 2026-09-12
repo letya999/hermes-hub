@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.3.0 — M1 native execution — 2026-09-12
+
+- Removed the `hermes -z` executor and persistent-mode toggle after publication
+  and real-runtime acceptance of the v0.2.1 compatibility artifacts.
+- Kept native static execution for explicit selection and unmigrated cron;
+  existing legacy selections read as static, and CLI-only contexts remain idle.
+- Enforced supervisor drain for environment-selected migration and fixed Linux
+  fixture host resolution. Homes, sessions, spool and uncertainty remain preserved.
+
 ## 0.2.1 â€” M1 compatibility release â€” 2026-09-12
 
 - Added host-selected per-context supervisor rollout and rollback without moving

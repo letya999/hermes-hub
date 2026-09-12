@@ -24,7 +24,7 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 	}
 	args := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--env-file " + filepath.Join(root, "runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/scope,readonly", "dst=/state/hermes", "dst=/state/google", "dst=/state/telegram", "dst=/state/browser", "dst=/state/home", "dst=/workspace", "dst=/archive,readonly", "HUB_BROWSER=true", "HUB_FEATURES=workspace,browser", "HUB_PERSISTENT_HERMES=true", "HUB_STATE=/state", "--tmpfs /tmp:", "--add-host host.docker.internal:host-gateway"} {
+	for _, want := range []string{"--env-file " + filepath.Join(root, "runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/scope,readonly", "dst=/state/hermes", "dst=/state/google", "dst=/state/telegram", "dst=/state/browser", "dst=/state/home", "dst=/workspace", "dst=/archive,readonly", "HUB_BROWSER=true", "HUB_FEATURES=workspace,browser", "HUB_STATE=/state", "--tmpfs /tmp:", "--add-host host.docker.internal:host-gateway"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %s", want)
 		}
@@ -56,7 +56,7 @@ func TestLegacySelectionPreventsSupervisorFromStartingContext(t *testing.T) {
 		}
 		return nil, os.ErrNotExist
 	}, func(context.Context, string, string) error { return nil })
-	selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "legacy", NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
+	selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "static", NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
 	body, _ := json.Marshal(selection)
 	if err := os.WriteFile(filepath.Join(root, stack.ExecutionPath("prod")), body, 0600); err != nil {
 		t.Fatal(err)

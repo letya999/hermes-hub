@@ -272,10 +272,8 @@ func superviseOnce(mode string) (bool, error) {
 		if os.Getenv("HUB_RUNTIME_AUTH") == "" {
 			return false, errors.New("HUB_RUNTIME_AUTH is required")
 		}
-		if os.Getenv("HUB_PERSISTENT_HERMES") == "true" {
-			if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
-				return false, err
-			}
+		if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
+			return false, err
 		}
 		server = &http.Server{Addr: env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), Handler: runtimeHandler()}
 		go func() {
