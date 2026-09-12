@@ -183,6 +183,28 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	}
 }
 
+func TestComposeSupervisorModeOmitsResidentRuntime(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	if _, ok := services["hermes-runtime"]; ok {
+		t.Fatal("supervisor mode still starts resident Hermes runtime")
+	}
+	gateway, ok := services["communication-hub"].(M)
+	if !ok {
+		t.Fatal("communication hub missing")
+	}
+	if _, ok := gateway["depends_on"]; ok {
+		t.Fatal("supervisor mode still depends on static runtime")
+	}
+	if files := gateway["env_file"].([]any); len(files) != 1 {
+		t.Fatalf("supervisor gateway received per-runtime auth file: %#v", files)
+	}
+	if gateway["environment"].(M)["HUB_SUPERVISOR_AUTH"] != "${HUB_SUPERVISOR_AUTH}" {
+		t.Fatal("supervisor auth placeholder missing")
+	}
+}
+
 func saveSettings(path string, settings Settings) error {
 	b, err := yaml.Marshal(settings)
 	if err != nil {

@@ -5,6 +5,7 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0016](in-progress/CHG-0016-scale-to-zero-runtimes/plan.md) | Initial host supervisor, warm lifecycle and opt-in routing implemented; durable migration pending |
 | [CHG-0015](in-progress/CHG-0015-migration-map/plan.md) | Current-to-target migration and deprecation map |
 | [CHG-0014](in-progress/CHG-0014-threat-model/plan.md) | Threat-model personal deployment and future company boundary |
 | [CHG-0013](in-progress/CHG-0013-dependency-refresh/plan.md) | Apply reviewed GitHub Actions and Docker dependency updates |

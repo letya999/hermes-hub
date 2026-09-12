@@ -39,6 +39,16 @@ func TestHTTPRunnerContract(t *testing.T) {
 	if err == nil || errors.Is(err, ErrUncertain) {
 		t.Fatalf("deterministic runtime error classified incorrectly: %v", err)
 	}
+	terminal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Status: "cancelled", LastEvent: "run.cancelled"})
+	}))
+	terminalRunner := HTTPRunner{URL: terminal.URL, Auth: "secret", HTTP: terminal.Client(), Limit: time.Second}
+	outcome, err := terminalRunner.RunOutcome(context.Background(), Job{Text: "hello"})
+	terminal.Close()
+	if err == nil || outcome.Status != "cancelled" || outcome.LastEvent != "run.cancelled" {
+		t.Fatalf("terminal outcome=%+v err=%v", outcome, err)
+	}
 
 	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	url := closed.URL
@@ -88,5 +98,17 @@ func TestRemoteGatewayConfigDoesNotNeedUserMounts(t *testing.T) {
 		if invalid.Validate() == nil {
 			t.Fatal("invalid runtime contract accepted")
 		}
+	}
+}
+
+func TestSupervisorURLOverridesStaticRuntime(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_URL", "http://static:8080")
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
+	t.Setenv("HUB_SUPERVISOR_AUTH", "supervisor-secret")
+	if got := runtimeURLFromEnv(); got != "http://host.docker.internal:8765" {
+		t.Fatalf("runtime URL=%q", got)
+	}
+	if got := runtimeAuthFromEnv(); got != "supervisor-secret" {
+		t.Fatalf("runtime auth=%q", got)
 	}
 }

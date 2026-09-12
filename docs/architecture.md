@@ -1,6 +1,6 @@
 ---
-description: Peer organization/user homes and the private runtime boundary.
-last_verified: 2026-09-11
+description: Current scoped runtime boundary and target scale-to-zero lifecycle.
+last_verified: 2026-09-12
 ---
 # Architecture
 
@@ -17,9 +17,9 @@ configured principal and `scope_id=user:<id>` references its personal context. B
 services receive the same stable runtime ID and content-derived policy version;
 Telegram IDs are transport links, never filesystem or authorization keys.
 
-Hermes owns reasoning, chat, tool selection, memory, skills, hooks and cron. Go owns
+Hermes owns reasoning, chat, tool selection, memory, skills and hooks. Go owns
 space initialization, strict configuration, organization policy resolution, Docker
-lifecycle, communication routing, bounded file/HH MCP and an optional native MCP bridge.
+lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
 using files and tools.
@@ -51,6 +51,10 @@ the trusted `organization:<id>` scope and an approved organization action.
 | `spaces/<id>/generated/` | Ignored Compose, Hermes and filtered env files |
 | `communication-hub-data` | Gateway queue and delivery ledger; outside scope homes |
 
+Job and conversation lifecycle mappings are persisted beside the gateway queue. They
+contain immutable routing, idempotency and Hermes run metadata, while supervisor state
+contains runtime generations and leases; neither store receives provider credentials.
+
 Organization skills are configured through upstream Hermes `skills.external_dirs` and
 are mounted read-only. Hub tools expose organization material with explicit provenance;
 user writes remain in the user home. Duplicate organization/user secret keys are
@@ -60,21 +64,45 @@ rejected rather than overridden.
 
 `communication-hub` owns Telegram transport, external identity mapping, the bounded
 file queue and reply delivery. It mounts only `communication-hub-data` and receives
-the bot token. `hermes-runtime` owns the selected scope homes, provider credentials,
-configuration and one Hermes process per job. It is not published on a host port.
+the bot token. `hermes-runtime` owns the selected scope homes, provider credentials
+and configuration. Rollback mode runs one Hermes process per job; target mode keeps
+one pinned Gateway warm per active context. It is not published on a public host port.
 
 The services use a small authenticated private HTTP contract: `POST /v1/jobs` carries
 version 1, immutable identity fields, scope and a bounded prompt; `DELETE
 /v1/jobs/<id>` requests cancellation. A Bearer runtime token is required. The runtime
 is bound to one user and optional organization, rejects identity mismatches before
-opening a path, and records idempotency outcomes as succeeded, failed or uncertain.
-An uncertain result is never silently retried.
+opening a path. The communication spool and host supervisor record idempotency
+outcomes as succeeded, failed or uncertain; the runtime only executes the already-
+authorized request. An uncertain result is never silently retried.
 
 Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
 channel sender (Telegram in v1) to the configured user scope, persist jobs and replies in
-`/state/gateway`, and run one bounded Hermes invocation at a time. The initial deployment
+`/state/gateway`, and run one bounded invocation at a time. The initial deployment
 has one configured user; the job envelope and per-user paths keep the expansion point for
 multiple users, organizations and channels explicit without adding external IAM today.
+
+## Target scale-to-zero lifecycle
+
+[ADR-0014](adr/ADR-0014-scale-to-zero-context-runtimes.md) replaces the proposed
+permanently resident per-user compute with one warm runtime per active execution
+context. A host-side Go supervisor receives the trusted job envelope, deduplicates
+starts by `(principal_id, context_id, runtime mode)`, launches the pinned runtime with
+only that context's mounts and waits for authenticated Hermes readiness. The runtime
+is reused while busy and for five minutes after its final lease by default, then its
+compute is stopped while the context home remains intact.
+
+The communication hub and supervisor remain small always-on control-plane services.
+The communication hub has no Docker authority or scope mounts; the supervisor has no
+channel credential or authority to derive identity from message content. Registered
+users do not create resident runtimes. Reconciliation restores only contexts with
+runnable work, due routines, pending approvals or explicit always-on leases.
+
+Routine definitions and delivery targets are durable hub records. A due occurrence
+becomes the same authenticated, idempotent job used for interactive work and wakes the
+owning context. Hermes performs the agent run but does not remain alive merely to own
+a clock. Existing native Hermes cron is migrated explicitly or pins that context on
+until migration; dual scheduling is forbidden.
 
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's

@@ -1,6 +1,6 @@
 ---
-description: Threat model for personal deployment and future organization isolation.
-last_verified: 2026-09-11
+description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
+last_verified: 2026-09-12
 ---
 # Threat model
 
@@ -43,6 +43,12 @@ Go after authorization and injected only into the selected connector. A future
 organization policy intersects with, and can only narrow, personal policy. It never
 changes the meaning or ownership of stable identifiers.
 
+In the scale-to-zero target, the communication hub sends the authenticated job to a
+separate host-side Go supervisor, which alone controls Docker and resolves exact
+context mounts. The communication and Hermes containers never receive the Docker
+socket or a parent directory containing other users' homes. A runtime generation is
+leased only for current work and is not an authorization source.
+
 ## Assets and invariants
 
 - Hermes homes, sessions, memory, workspace and browser/session state belong to one
@@ -69,6 +75,10 @@ changes the meaning or ownership of stable identifiers.
 | SSRF or unauthorized egress | Manifest allowlist plus ToolHive egress policy deny destinations by default; management networks are excluded | Destination class and deny/allow outcome | #20, #25 |
 | Mutable or compromised workload/sidecar supply chain | ToolHive CLI and every workload, ingress, egress and DNS image are pinned; unknown digest blocks rollout | Version/digest and provenance | #20, #25 |
 | CPU, memory, PID or restart-loop exhaustion | Go/Docker controller applies finite budgets, timeouts, bounded retries and circuit behavior | Budget, usage, termination/recovery reason | #25, #46 |
+| Forged scope starts a container with another user's mounts or environment | Host supervisor derives names, mounts and environment from the validated binding; job fields cannot supply paths; mismatch denies before Docker | Principal/context/runtime, generation and denial reason | #14, #18 |
+| Idle reaper races a new job, approval or active stream | Per-context lifecycle lock and leases make start/stop atomic; unknown state preserves compute and queues work | Lease, activity and lifecycle transition without content | #14-#18 |
+| Reconciliation turns all registered users into resident runtimes | Only runnable jobs, due routines, approvals or explicit pins create desired runtime state | Desired-state reason and active-runtime count | #18, #46 |
+| Duplicate or spoofed scheduled occurrence targets another audience | Hub owns schedule identity and audience; occurrence key is durable and execution rechecks current owner/context/policy | Schedule/occurrence/job/delivery IDs | #28, #33 |
 | Browser profile, Telegram session or personal terminal bypass | Treat profiles/sessions as credentials; managed mode stays outside Hermes; personal-terminal exposure is explicit, reversible and owner-scoped | Exposure mode and lifecycle, no values | #51 and connector issue |
 | Group/reply audience disclosure or replayed delivery | Group use stays disabled; delivery binds normalized conversation to verified audience and idempotency record | Conversation/audience IDs and delivery state | communication gateway; future group issue |
 | OAuth account mis-linking | Callback state binds authenticated principal, context and intended connector; account identity is displayed and explicitly accepted | Link event, provider account identifier and owner | provider OAuth issue |
