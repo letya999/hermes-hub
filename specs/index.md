@@ -2,6 +2,8 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0016](active/SPEC-0016-communication-execution-migration.md) | Per-context communication execution rollout, rollback and five-minute lifecycle |
+| [SPEC-0015](active/SPEC-0015-run-controls.md) | Durable cancellation and approval ownership, dispatch and expiry |
 | [SPEC-0014](active/SPEC-0014-job-runtime-mappings.md) | Durable job, session, run and runtime mappings |
 | [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |
 | [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes |

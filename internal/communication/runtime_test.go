@@ -59,6 +59,19 @@ func TestHTTPRunnerContract(t *testing.T) {
 	}
 }
 
+func TestSupervisedRunnerUsesJobsEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/jobs" || r.Header.Get("Authorization") != "Bearer synthetic" {
+			t.Error("supervised job used legacy endpoint")
+		}
+		json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply", Status: "completed"})
+	}))
+	defer server.Close()
+	if text, err := (HTTPRunner{JobsAPI: true, URL: server.URL, Auth: "synthetic"}).Run(context.Background(), Job{Text: "task"}, User{}); err != nil || text != "reply" {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeRestartClient(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

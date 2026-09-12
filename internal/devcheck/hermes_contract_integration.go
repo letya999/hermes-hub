@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -28,8 +30,108 @@ type contractHTTPResponse struct {
 	body    []byte
 }
 
+func nativeContractProvider() (*httptest.Server, string, error) {
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		return nil, "", err
+	}
+	provider := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+		if err != nil {
+			http.Error(w, "unreadable provider request", http.StatusBadRequest)
+			return
+		}
+		var request struct {
+			Stream   bool   `json:"stream"`
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if json.Unmarshal(body, &request) != nil {
+			http.Error(w, "invalid bounded provider request", http.StatusBadRequest)
+			return
+		}
+		input := ""
+		for _, message := range request.Messages {
+			if message.Role == "user" {
+				if scenario := nativeFixtureScenario(message.Content); scenario != "" {
+					input = scenario
+				}
+			}
+		}
+		// Blocking is an explicit current-request fixture model, never inherited history.
+		if request.Stream && request.Model == "hub-contract-block" {
+			fmt.Println("Native provider fixture: explicit cancellation/restart block")
+			<-r.Context().Done()
+			return
+		}
+		hasToolResult, canaryReturned := false, false
+		for _, message := range request.Messages {
+			if message.Role == "user" && nativeFixtureScenario(message.Content) != "" {
+				hasToolResult, canaryReturned = false, false
+			}
+			hasToolResult = hasToolResult || message.Role == "tool"
+			canaryReturned = canaryReturned || (message.Role == "tool" && strings.Contains(string(message.Content), "HUB_TOOL_SECRET_CANARY"))
+		}
+		if hasToolResult && !canaryReturned {
+			reason := "real terminal probe did not return its canary"
+			detail := ""
+			for _, message := range request.Messages {
+				if message.Role == "user" {
+					detail = ""
+				}
+				if message.Role == "tool" {
+					detail = string(message.Content)
+					if len(detail) > 1024 {
+						detail = detail[:1024]
+					}
+				}
+			}
+			reason += ": " + detail
+			http.Error(w, reason, http.StatusBadRequest)
+			return
+		}
+		fmt.Printf("Native provider fixture: contract=%t approval=%t tool_result=%t stream=%t\n", strings.TrimSpace(input) == "contract probe", strings.TrimSpace(input) == "approval probe", hasToolResult, request.Stream)
+		if request.Stream && !hasToolResult && (input == "contract probe" || input == "approval probe") {
+			command := "printf HUB_TOOL_SECRET_CANARY"
+			if strings.TrimSpace(input) == "approval probe" {
+				command = "mkdir -p /workspace/hub-approval-probe && chmod -R 777 /workspace/hub-approval-probe && printf HUB_TOOL_SECRET_CANARY"
+			}
+			arguments, _ := json.Marshal(map[string]string{"command": command})
+			message := map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"index": 0, "id": "probe-terminal", "type": "function", "function": map[string]any{"name": "terminal", "arguments": string(arguments)}}}}
+			w.Header().Set("Content-Type", "application/json")
+			if request.Stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				chunk, _ := json.Marshal(map[string]any{"id": "probe", "object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": message, "finish_reason": "tool_calls"}}})
+				_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "probe", "object": "chat.completion", "model": "gpt-4o-mini", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": "tool_calls"}}})
+			}
+			return
+		}
+		if request.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"probe\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"contract final answer\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"probe\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"probe","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"contract final answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	provider.Listener = listener
+	provider.Start()
+	providerURL := "http://host.docker.internal:" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) + "/v1"
+	return provider, providerURL, nil
+}
+
 // HermesContract runs against the pinned upstream API server, not a mock or the Go runtime.
 func HermesContract(ctx context.Context, image string) error {
+	provider, providerURL, err := nativeContractProvider()
+	if err != nil {
+		return err
+	}
+	defer func() { provider.CloseClientConnections(); provider.Close() }()
 	suffix := make([]byte, 5)
 	if _, err := rand.Read(suffix); err != nil {
 		return err
@@ -46,6 +148,13 @@ func HermesContract(ctx context.Context, image string) error {
 	if err := run("volume", "create", volume); err != nil {
 		return err
 	}
+	// The pinned resolver reads model.base_url from config, not OPENAI_BASE_URL
+	// for explicit custom-provider requests. Configure only this isolated volume.
+	if err := run("run", "--rm", "--entrypoint", "python", "-v", volume+":/state",
+		"-e", "HERMES_PROBE_BASE_URL="+providerURL, image, "-c",
+		"from pathlib import Path; import os; Path('/state/home').mkdir(parents=True,exist_ok=True); p=Path('/state/hermes'); p.mkdir(parents=True,exist_ok=True); (p/'config.yaml').write_text(chr(10).join(['model:', '  provider: custom', '  default: gpt-4o-mini', '  base_url: '+os.environ['HERMES_PROBE_BASE_URL'], '']))"); err != nil {
+		return err
+	}
 	if err := run("run", "-d", "--name", name, "--entrypoint", "hermes", "--read-only", "--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges:true", "--shm-size", "256m",
 		"--tmpfs", "/tmp:mode=1777", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700",
@@ -55,7 +164,7 @@ func HermesContract(ctx context.Context, image string) error {
 		"-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_KEY="+key,
 		"-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT="+hermesContractPort,
 		"-e", "OPENAI_API_KEY=probe-openai-key-0123456789",
-		"-e", "OPENAI_BASE_URL=http://192.0.2.1:81/v1", image, "gateway", "run", "--no-supervise", "--force"); err != nil {
+		"-e", "OPENAI_BASE_URL="+providerURL, image, "gateway", "run", "--no-supervise", "--force"); err != nil {
 		return err
 	}
 	if err := waitHermesHealth(ctx, out, name, key); err != nil {
@@ -91,7 +200,7 @@ func HermesContract(ctx context.Context, image string) error {
 		return err
 	}
 
-	runBody := `{"input":"contract probe","session_id":"contract-session"}`
+	runBody := `{"input":"contract probe","session_id":"contract-session","provider":"custom","model":"gpt-4o-mini"}`
 	first, err := hermesHTTP(ctx, out, name, key, http.MethodPost, "/v1/runs", runBody, "contract-run-1")
 	if err != nil || first.status != http.StatusAccepted {
 		return fmt.Errorf("run admission failed: HTTP %d", first.status)
@@ -107,12 +216,21 @@ func HermesContract(ctx context.Context, image string) error {
 	if replayID, _ := jsonString(replay.body, "run_id"); replayID != runID {
 		return fmt.Errorf("run replay returned a different run_id")
 	}
-	conflict, err := hermesHTTP(ctx, out, name, key, http.MethodPost, "/v1/runs", `{"input":"different payload","session_id":"contract-session"}`, "contract-run-1")
+	conflict, err := hermesHTTP(ctx, out, name, key, http.MethodPost, "/v1/runs", `{"input":"different payload","session_id":"contract-session","provider":"custom","model":"gpt-4o-mini"}`, "contract-run-1")
 	if err != nil || conflict.status != http.StatusConflict || !strings.Contains(string(conflict.body), "idempotency_key_conflict") {
 		return fmt.Errorf("idempotency conflict contract failed")
 	}
+	if err := waitHermesRunTerminal(ctx, out, name, key, runID); err != nil {
+		return err
+	}
+	completed, err := hermesHTTP(ctx, out, name, key, http.MethodGet, "/v1/runs/"+runID, "", "")
+	status, _ := jsonString(completed.body, "status")
+	if err != nil || status != "completed" || !strings.Contains(string(completed.body), "contract final answer") {
+		reason, _ := jsonString(completed.body, "error")
+		return fmt.Errorf("real Hermes positive execution failed: status=%s error=%s", status, reason)
+	}
 
-	cancel, err := hermesHTTP(ctx, out, name, key, http.MethodPost, "/v1/runs", `{"input":"cancel probe","session_id":"contract-session"}`, "contract-cancel-1")
+	cancel, err := hermesHTTP(ctx, out, name, key, http.MethodPost, "/v1/runs", `{"input":"cancel probe","session_id":"contract-session","provider":"custom","model":"hub-contract-block"}`, "contract-cancel-1")
 	if err != nil || cancel.status != http.StatusAccepted {
 		return fmt.Errorf("cancellation run admission failed")
 	}
@@ -142,7 +260,10 @@ func HermesContract(ctx context.Context, image string) error {
 	if err := expectHermesHTTP(ctx, out, name, key, http.MethodGet, "/api/sessions/"+sessionID, http.StatusOK); err != nil {
 		return fmt.Errorf("session resume after restart failed: %w", err)
 	}
-	if err := supervisorSmoke(ctx, image); err != nil {
+	if err := supervisorSmoke(ctx, image, providerURL); err != nil {
+		return err
+	}
+	if err := gatewayLifecycleSmoke(ctx, image, providerURL); err != nil {
 		return err
 	}
 	fmt.Printf("Pinned Hermes %s API contract passed: sessions, idempotency, SSE, stop, approvals, cron coexistence, restart\n", hermesContractVersion)
@@ -202,7 +323,7 @@ func contractSleep(ctx context.Context, duration time.Duration) error {
 }
 
 func hermesRestartProbe(ctx context.Context, out func(...string) ([]byte, error), run func(...string) error, name, key string) error {
-	body := `{"input":"restart probe","session_id":"contract-session"}`
+	body := `{"input":"restart probe","session_id":"contract-session","provider":"custom","model":"hub-contract-block"}`
 	for attempt := 1; attempt <= 3; attempt++ {
 		idempotencyKey := "contract-restart-" + strconv.Itoa(attempt)
 		if err := run("exec", "-d", name, "curl", "-sS", "-o", "/tmp/hermes-contract-restart.json",
@@ -265,6 +386,18 @@ func hermesHTTP(ctx context.Context, out func(...string) ([]byte, error), name, 
 		return contractHTTPResponse{}, err
 	}
 	return parseContractHTTP(raw)
+}
+
+// Native inserts continuation user notes and makes non-streaming housekeeping
+// calls. Only the latest explicit fixture task drives a streaming run scenario.
+func nativeFixtureScenario(content json.RawMessage) string {
+	latest, scenario := -1, ""
+	for _, candidate := range []string{"contract probe", "approval probe", "restart probe", "cancel probe"} {
+		if at := strings.LastIndex(string(content), candidate); at > latest {
+			latest, scenario = at, candidate
+		}
+	}
+	return scenario
 }
 
 func parseContractHTTP(raw []byte) (contractHTTPResponse, error) {

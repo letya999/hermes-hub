@@ -168,3 +168,24 @@ An additional real-image probe on 2026-09-12 started `hub-runtime serve` with
 `HUB_PERSISTENT_HERMES=true`, waited for authenticated `/readyz` backed by the
 upstream API, checked `/healthz`, and removed the container; it passed with no live
 provider call.
+
+On 2026-09-12, communication rollout verification (CHG-0018) passed `just check`
+with 85.06% own Go statement coverage and the final `just docker-check`
+(image `7a3f67d90dba`, pinned Hermes 0.21.0). The complete production Telegram-adapter
+gateway/worker/spool/HTTP supervisor path executed pre-rollout queued input once,
+kept two verified users on separate exact homes/workspaces and sessions/runs,
+reused a warm session/generation, settled terminal leases and automatically stopped
+both contexts after five real minutes. Neither context stopped before its own idle
+deadline. A later Alice task cold-started a replacement with the original session;
+Bob stayed stopped. Telegram and model endpoints were local fixtures, while actual
+upstream Hermes execution and Docker lifecycle were real. No live account or
+external provider/send success is claimed.
+
+The final combined gate also passed native approval/cancellation/restart, automatic
+recovery, admission/reaper race, operator pin, idle no-wake, orphan ownership,
+due routine wake/final/handoff/sleep and preservation checks. Native crashed turns
+retained their original run while the upstream lease expired; input was not replayed
+and upstream locks were not removed. Migration preflight uses the pinned native cron
+SDK against a disposable snapshot and verifies the selected gateway's actual spool.
+`just security` passed with no Go/browser vulnerabilities. Issues 16–18 are closed;
+issue 19 retains its compatibility-release/legacy-deletion gate. Changes remain local.

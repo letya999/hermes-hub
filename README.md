@@ -107,3 +107,10 @@ agent VPS as a public pull-request runner. See [CONTRIBUTING](CONTRIBUTING.md).
 
 This is source plus compiled Go control/runtime tools. Docker execution and real account access
 must be validated on the deployment host; see the delivery evidence before rollout.
+
+
+Persistent communication rollout uses `hubctl execution-audit` and
+`hubctl select-execution` per context. The supervised gateway sends durable jobs to
+the host supervisor, which starts the exact user's Hermes home, holds active leases,
+and gracefully shuts compute down after the default five-minute idle window.
+See [operations](docs/operations.md) for drain, rollout, rollback and native cron prerequisites.

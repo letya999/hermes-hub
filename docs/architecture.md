@@ -55,6 +55,14 @@ Job and conversation lifecycle mappings are persisted beside the gateway queue. 
 contain immutable routing, idempotency and Hermes run metadata, while supervisor state
 contains runtime generations and leases; neither store receives provider credentials.
 
+The opt-in persistent path can stream normalized NDJSON events through the private
+runtime boundary. The supervisor records admission and run status; the communication
+spool records event receipts and repairs outbox handoff on restart. SSE disconnects
+fall back to the pinned durable run-status API because upstream SSE has no replay
+cursor. Recovery observes an admitted run through `/v1/resume` and `/v1/observe`
+instead of resubmitting its prompt. Approval response routing and periodic lifecycle
+reconciliation remain tracked in CHG-0017 until their delivery evidence is complete.
+
 Organization skills are configured through upstream Hermes `skills.external_dirs` and
 are mounted read-only. Hub tools expose organization material with explicit provenance;
 user writes remain in the user home. Duplicate organization/user secret keys are

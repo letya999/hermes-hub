@@ -1,0 +1,25 @@
+change: CHG-0018
+status: in_progress
+updated: 2026-09-12
+steps:
+  - name: original-gates
+    status: done
+  - name: per-context-routing-and-migration
+    status: done
+  - name: real-gateway-five-minute-proof
+    status: done
+  - name: compatibility-and-delivery
+    status: pending
+evidence:
+  - "Issues 16, 17 and 18 closed after original real Docker gate (session 78075). Changes remain local."
+  - "Latest just check passed (session 38613): own Go statement coverage 85.06%, race/shuffle, vet, staticcheck, docs and actionlint."
+  - "just security passed (session 52630): govulncheck and browser npm audit reported no vulnerabilities."
+  - "New Docker run initially failed: invalid --extra-host Docker CLI flag; fixed common launch to --add-host and regression assertion."
+  - "Gateway probe session 73296 passed: two users/exact homes/duplicate updates/warm reuse/released leases, actual five-minute automatic graceful stop and original-session cold restore. Earlier probes exposed fixture ports and terminal-settlement race, now corrected."
+  - "Combined session 91958 exposed fixture idle-removal before stream teardown; shared bounded Idle/zero-lease wait now protects race/recovery/routine handoff test boundaries."
+  - "Final just docker-check passed (session 50105, exit 0, image 7a3f67d90dba): standalone smoke, pinned native sessions/runs/SSE/stop/approval/restart, host supervisor recovery/race/pin/orphans/routines/preservation and complete two-user production-adapter gateway with real five-minute idle stop and original-session cold restore."
+next:
+  - "Implementation and isolated runtime verification complete. Retain legacy rollback for an accepted compatibility release before deletion and issue19/milestone closure."
+limits:
+  - "No external Telegram/model account call, login or publication authorized or claimed."
+  - "Issue 19 legacy deletion requires one accepted compatibility release; recording its name is not evidence of that release."

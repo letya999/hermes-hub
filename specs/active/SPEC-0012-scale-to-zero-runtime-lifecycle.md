@@ -50,8 +50,9 @@ title: Scale-to-zero Hermes runtime lifecycle
    binding before resolving mounts, environment or credentials.
 3. A ready runtime uses the pinned upstream Hermes `/api/sessions` and `/v1/runs`
    APIs. The runtime adapter creates a deterministic context/conversation session,
-   submits an idempotent run, polls the terminal status and falls back to the latest
-   assistant message when the status has no output. The durable hub and supervisor mappings record
+   submits an idempotent run and consumes bounded normalized events. Terminal
+   observation recovers only that original run, never a previous session answer.
+   The durable hub and supervisor mappings record
    job, idempotency, context, runtime, Hermes session, Hermes run, status, timestamps
    and runtime generation.
 4. Conversation-to-session mapping is stable across warm reuse and cold recreation.
@@ -97,3 +98,41 @@ title: Scale-to-zero Hermes runtime lifecycle
 This specification supersedes SPEC-0007 requirement 6 and its always-on/per-user
 container deferral, plus SPEC-0009 Hermes-resolution requirement 6 and the static
 per-user runtime placement. Other requirements remain active.
+
+# Reconciliation implementation
+
+- Sweeps inspect owner-filtered Docker process state separately from desired jobs,
+  holds and pins. Authenticated Hermes readiness and native platform connection
+  health are separate observations; lazy external connectors are `not_probed`.
+- Authoritative absence permits an idle registration to become stopped after TTL
+  and durable state handoff, without starting compute. Missing current work is
+  replaced under a per-context recovery coordinator and observed by original run.
+  Lifecycle holds retain opaque release IDs across replacement; older ledgers
+  without a saved binding remain available for explicit inspection.
+- Restored in-flight generations are verified and adopted when running. Lost
+  Docker start acknowledgements retain capacity until absence or verified cleanup
+  is known. Restored non-stopped entries reserve global capacity.
+- Each failed generation is counted once. Recovery waits 2/4/8 seconds and allows
+  at most three failures in a ten-minute window; counts and deadlines persist.
+  Docker operations have a thirty-second ceiling and a background sweep has a
+  150-second ceiling; no new mutations begin after the sweep deadline.
+- Ownership requires matching owner/context/generation labels and an actual
+  `/scope` bind from the selected context directory, checked by immutable ID.
+  Copied labels cannot authorize another context mount.
+- Inventory is bounded to 256 owner-labelled containers. Container name, context
+  and generation identify current compute. Old generations with a known terminal
+  ledger may be removed by verified immutable ID. Unknown or uncertain generations
+  remain visible and block additional cold-start capacity. Removal never passes a
+  volume-purge option or deletes context paths.
+- Pins persist independently of generations and prevent idle shutdown. Pin removal
+  neither cancels jobs nor releases their holds. Due routines enter the ordinary
+  durable authorized job queue and sleep after final handoff. Unmigrated native
+  cron requires an explicit pin; full routine CRUD/timezone migration remains
+  SPEC-0013 work.
+
+Pinned Hermes keeps a durable session-turn lease for up to 300 seconds after an
+unclean exit when Docker reuses the former gateway PID. A new task in that same
+conversation can therefore remain admitted while waiting for the native lease.
+Request timeout keeps the task uncertain and held; recovery observes the same
+run until it settles. The hub never deletes native locks, sessions or history to
+shorten that wait, and never submits a second copy of the input.

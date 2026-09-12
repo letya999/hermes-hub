@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -19,6 +20,68 @@ import (
 
 func testManager(t *testing.T, command func(context.Context, ...string) ([]byte, error), probe func(context.Context, string, string) error) (*Manager, string) {
 	t.Helper()
+	// Model labels created by docker run rather than pretending every named
+	// container belongs to this manager.
+	var labelsMu sync.Mutex
+	labels := make(map[string]map[string]string)
+	sources := make(map[string]string)
+	wrappedCommand := func(ctx context.Context, args ...string) ([]byte, error) {
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
+			labelsMu.Lock()
+			source, ok := sources[args[3]]
+			labelsMu.Unlock()
+			if ok {
+				return json.Marshal([]map[string]string{{"Type": "bind", "Source": source, "Destination": "/scope"}})
+			}
+		}
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
+			labelsMu.Lock()
+			metadata, ok := labels[args[3]]
+			labelsMu.Unlock()
+			if ok {
+				return []byte(hex.EncodeToString(hashBytes(args[3] + metadata["hermes-hub.generation"]))), nil
+			}
+		}
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Config.Labels}}" {
+			labelsMu.Lock()
+			metadata, ok := labels[args[3]]
+			b, _ := json.Marshal(metadata)
+			labelsMu.Unlock()
+			if ok {
+				return b, nil
+			}
+		}
+		out, err := command(ctx, args...)
+		if err == nil && len(args) > 0 && args[0] == "run" {
+			container := ""
+			source := ""
+			metadata := make(map[string]string)
+			for i := 1; i+1 < len(args); i++ {
+				if args[i] == "--name" {
+					container = args[i+1]
+				}
+				if args[i] == "--label" {
+					parts := strings.SplitN(args[i+1], "=", 2)
+					if len(parts) == 2 {
+						metadata[parts[0]] = parts[1]
+					}
+				}
+				if args[i] == "--mount" && strings.HasPrefix(args[i+1], "type=bind,src=") {
+					path, destination, _ := strings.Cut(strings.TrimPrefix(args[i+1], "type=bind,src="), ",dst=")
+					if strings.Split(destination, ",")[0] == "/scope" {
+						source = path
+					}
+				}
+			}
+			labelsMu.Lock()
+			labels[container] = metadata
+			sources[container] = source
+			labels[hex.EncodeToString(hashBytes(container+metadata["hermes-hub.generation"]))] = metadata
+			sources[hex.EncodeToString(hashBytes(container+metadata["hermes-hub.generation"]))] = source
+			labelsMu.Unlock()
+		}
+		return out, err
+	}
 	root := t.TempDir()
 	ctxRoot := filepath.Join(root, "alice")
 	for _, name := range []string{"runtime", "hermes", "workspace"} {
@@ -29,7 +92,7 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	m, err := New(Config{SpacesRoot: root, RuntimeAuth: "secret", Image: "hermes:test", WarmTTL: time.Minute, Command: command, Probe: probe, Now: func() time.Time { return time.Unix(100, 0) }})
+	m, err := New(Config{SpacesRoot: root, RuntimeAuth: "secret", Image: "hermes:test", WarmTTL: time.Minute, Command: wrappedCommand, Probe: probe, Now: func() time.Time { return time.Unix(100, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +167,14 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	started := false
 	commands := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			started = true
+		}
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
 		if len(args) > 0 && args[0] == "inspect" {
 			return []byte("running"), nil
 		}
@@ -123,6 +193,15 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 	lease, _, err := m.Acquire(context.Background(), b, LeaseJob)
 	if err != nil {
 		t.Fatal(err)
+	}
+	cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Config.Labels}}" {
+			return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": first.Generation})
+		}
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
+			return json.Marshal([]map[string]string{{"Type": "bind", "Source": ctxRoot, "Destination": "/scope"}})
+		}
+		return commands(ctx, args...)
 	}
 	restored, err := New(cfg)
 	if err != nil {
@@ -148,7 +227,14 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	started := false
 	commands := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			started = true
+		}
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
 		if len(args) > 0 && args[0] == "inspect" {
 			return []byte("running"), nil
 		}
@@ -165,6 +251,19 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 	}
 	if err := m.Release("alice", "gateway"); err != nil {
 		t.Fatal(err)
+	}
+	actual, _, _ := m.Status(b)
+	cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
+			return []byte(strings.Repeat("a", 64)), nil
+		}
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Config.Labels}}" {
+			return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": actual.Generation})
+		}
+		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
+			return json.Marshal([]map[string]string{{"Type": "bind", "Source": ctxRoot, "Destination": "/scope"}})
+		}
+		return commands(ctx, args...)
 	}
 	restored, err := New(cfg)
 	if err != nil {
@@ -361,6 +460,83 @@ func TestSupervisorMarksTransportOutcomeUncertain(t *testing.T) {
 	m.mu.Unlock()
 	if status != "uncertain" {
 		t.Fatalf("job status=%q", status)
+	}
+	// Release the setup hold: only the uncertain execution must now prevent reap.
+	if err := m.ReleaseBinding(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	runtime, _, _ := m.Status(b)
+	if runtime.State != Busy || runtime.Leases != 1 {
+		t.Fatalf("uncertain execution was reaped: %+v", runtime)
+	}
+	restored, err := New(m.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	runtime, _, _ = restored.Status(b)
+	if runtime.State != Busy || runtime.Leases != 1 {
+		t.Fatalf("restart lost uncertain hold: %+v", runtime)
+	}
+}
+
+func TestConcurrentNamedLeaseReleaseIsAtomic(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	lease, _, err := m.Acquire(context.Background(), b, LeaseStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for range 2 {
+		go func() { results <- m.ReleaseLease(lease.ID) }()
+	}
+	success := 0
+	for range 2 {
+		if <-results == nil {
+			success++
+		}
+	}
+	runtime, _, _ := m.Status(b)
+	if success != 1 || runtime.Leases != 0 || runtime.State != Idle {
+		t.Fatalf("success=%d runtime=%+v", success, runtime)
+	}
+}
+
+func TestNamedLeaseReleaseRollsBackOnPersistenceFailure(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	lease, _, err := m.Acquire(context.Background(), b, LeaseApproval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := m.statePath
+	m.statePath = filepath.Join(t.TempDir(), "missing", "state.json")
+	if err := m.ReleaseLease(lease.ID); err == nil {
+		t.Fatal("persistence failure ignored")
+	}
+	runtime, _, _ := m.Status(b)
+	if runtime.Leases != 1 || runtime.State != Busy {
+		t.Fatalf("failed release changed hold: %+v", runtime)
+	}
+	m.statePath = path
+	if err := m.ReleaseLease(lease.ID); err != nil {
+		t.Fatalf("retry release: %v", err)
 	}
 }
 
@@ -639,11 +815,8 @@ func TestEnsureExistingAndFailurePaths(t *testing.T) {
 		}
 		return nil
 	})
-	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
-		t.Fatal(err)
+	if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
+		t.Fatal("unverified existing container adopted")
 	}
 	bad, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) > 0 && args[0] == "inspect" {
@@ -811,7 +984,7 @@ func TestSupervisorServeAndHTTPErrorBranches(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatal("runtime list failed")
 	}
-	req = httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"identity_schema":1,"principal_id":"alice","context_id":"alice","runtime_id":"alice","policy_version":"policy-1","organization_id":"personal","user_id":"alice","actor_id":"alice","scope_id":"user:alice","channel":"telegram_bot","trigger":"message","idempotency_key":"one","text":"hello"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(`{"identity_schema":1,"principal_id":"alice","external_identity_id":"telegram-1","conversation_id":"telegram-1","delivery_target_id":"telegram-1","context_id":"alice","runtime_id":"alice","policy_version":"policy-1","organization_id":"personal","user_id":"alice","actor_id":"alice","scope_id":"user:alice","channel":"telegram_bot","trigger":"message","idempotency_key":"one","text":"hello"}`))
 	req.Header.Set("Authorization", "Bearer secret")
 	rec = httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, req)

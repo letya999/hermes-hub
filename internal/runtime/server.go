@@ -37,13 +37,16 @@ type ExecuteRequest struct {
 }
 
 type ExecuteResponse struct {
-	Text              string `json:"text"`
-	JobID             string `json:"job_id,omitempty"`
-	SessionID         string `json:"session_id,omitempty"`
-	RunID             string `json:"run_id,omitempty"`
-	RuntimeGeneration string `json:"runtime_generation,omitempty"`
-	Status            string `json:"status,omitempty"`
-	LastEvent         string `json:"last_event,omitempty"`
+	Text              string   `json:"text"`
+	JobID             string   `json:"job_id,omitempty"`
+	SessionID         string   `json:"session_id,omitempty"`
+	RunID             string   `json:"run_id,omitempty"`
+	RuntimeGeneration string   `json:"runtime_generation,omitempty"`
+	Status            string   `json:"status,omitempty"`
+	LastEvent         string   `json:"last_event,omitempty"`
+	EventID           string   `json:"event_id,omitempty"`
+	ApprovalID        string   `json:"approval_id,omitempty"`
+	ApprovalChoices   []string `json:"approval_choices,omitempty"`
 }
 
 type runtimeHTTP struct{}
@@ -68,10 +71,16 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+	case "/v1/health":
+		s.health(w, r)
 	case "/readyz":
 		s.ready(w, r)
 	case "/v1/execute":
 		s.execute(w, r)
+	case "/v1/observe":
+		s.observe(w, r)
+	case "/v1/control":
+		s.control(w, r)
 	case "/v1/restart":
 		s.restart(w, r)
 	default:
@@ -128,12 +137,17 @@ func (s *runtimeHTTP) execute(w http.ResponseWriter, r *http.Request) {
 	var response ExecuteResponse
 	response.RuntimeGeneration = os.Getenv("HUB_RUNTIME_GENERATION")
 	if os.Getenv("HUB_PERSISTENT_HERMES") == "true" {
+		if r.Header.Get("Accept") == RunStreamContentType {
+			s.executeStream(w, r, request)
+			return
+		}
 		response, err = s.executePersistent(r.Context(), request)
 	} else {
 		response.Text, err = executeHermes(r.Context(), request.Text)
 		response.Status = "completed"
 		response.LastEvent = "run.completed"
 	}
+	response.RuntimeGeneration = os.Getenv("HUB_RUNTIME_GENERATION")
 	if err != nil {
 		if response.Status != "" {
 			response.JobID = request.JobID
@@ -151,6 +165,10 @@ func (s *runtimeHTTP) execute(w http.ResponseWriter, r *http.Request) {
 // The one-shot hermes -z path remains available when the flag is unset for
 // rollback deployments; no provider or session state crosses the container.
 func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequest) (ExecuteResponse, error) {
+	return s.executePersistentEvents(ctx, request, nil)
+}
+
+func (s *runtimeHTTP) executePersistentEvents(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
 	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
 	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -167,23 +185,68 @@ func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequ
 	if admission.RunID == "" {
 		return ExecuteResponse{}, errors.New("hermes returned no run ID")
 	}
+	known := ExecuteResponse{JobID: request.JobID, SessionID: sessionID, RunID: admission.RunID, RuntimeGeneration: os.Getenv("HUB_RUNTIME_GENERATION"), Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
+	return s.observeHermesRun(ctx, known, emit)
+}
+
+func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
+	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
+	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
+	client := &http.Client{Timeout: 10 * time.Second}
+	sessionID := known.SessionID
+	admission := struct{ RunID string }{known.RunID}
+	var events <-chan nativeRunEvent
+	if emit != nil {
+		if err := emit(known); err != nil {
+			known.Status, known.LastEvent = "uncertain", "run.unknown"
+			return known, err
+		}
+		streamCtx, closeStream := context.WithCancel(ctx)
+		defer closeStream()
+		events = nativeRunEvents(streamCtx, base, auth, admission.RunID)
+	}
+	progress := 0
+	lastApproval := ""
 	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
 		var status struct {
-			Status string `json:"status"`
-			Output string `json:"output"`
-			Error  string `json:"error"`
+			Status    string         `json:"status"`
+			Output    string         `json:"output"`
+			Error     string         `json:"error"`
+			Approval  nativeRunEvent `json:"approval"`
+			SessionID string         `json:"session_id"`
 		}
 		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+admission.RunID, auth, nil, &status); err != nil {
-			return ExecuteResponse{}, err
+			known.Status, known.LastEvent = "uncertain", "run.unknown"
+			return known, err
+		}
+		if status.SessionID != "" && status.SessionID != sessionID {
+			known.Status = "uncertain"
+			return known, errors.New("run session mismatch")
 		}
 		switch status.Status {
+		case "waiting_for_approval":
+			if emit != nil && status.Approval.RequestID != "" && status.Approval.RequestID != lastApproval {
+				update := known
+				update.Status, update.LastEvent, update.EventID = "waiting_for_approval", "approval.request", "approval:"+status.Approval.RequestID
+				update.ApprovalID, update.ApprovalChoices = status.Approval.RequestID, status.Approval.Choices
+				if len(update.ApprovalID) > 256 {
+					return known, errors.New("invalid approval identity")
+				}
+				if err := emit(update); err != nil {
+					known.Status = "uncertain"
+					return known, err
+				}
+				lastApproval = update.ApprovalID
+			}
 		case "completed":
 			if strings.TrimSpace(status.Output) != "" {
 				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: strings.TrimSpace(status.Output)}, nil
 			}
-			text, err := s.persistentSessionReply(ctx, client, base, auth, sessionID)
-			return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: text}, err
+			// Session history can contain a reply from an earlier run. Without
+			// run-correlated output it cannot safely stand in for this final.
+			known.Status, known.LastEvent = "uncertain", "run.unknown"
+			return known, errors.New("completed run returned no final output")
 		case "failed", "cancelled", "interrupted":
 			if status.Error != "" {
 				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: status.Status, LastEvent: "run." + status.Status}, errors.New(status.Error)
@@ -191,28 +254,90 @@ func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequ
 			return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: status.Status, LastEvent: "run." + status.Status}, fmt.Errorf("hermes run %s", status.Status)
 		}
 		select {
-		case <-ctx.Done():
-			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			stopErr := stopHermesRun(stopCtx, client, base, auth, admission.RunID)
-			cancel()
-			if stopErr == nil {
-				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "cancelled", LastEvent: "run.cancelled"}, ctx.Err()
+		case event, ok := <-events:
+			if !ok {
+				events = nil // Pinned Hermes destroys SSE transport on disconnect; poll durable status.
+				continue
 			}
-			return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "uncertain", LastEvent: "run.unknown"}, ctx.Err()
+			if event.RunID != admission.RunID {
+				known.Status, known.LastEvent = "uncertain", "run.unknown"
+				return known, errors.New("hermes stream returned another run")
+			}
+			update := known
+			update.LastEvent, update.EventID = event.Event, eventID(event)
+			switch event.Event {
+			case "approval.request":
+				if event.RequestID == "" || len(event.RequestID) > 256 {
+					return known, errors.New("invalid approval identity")
+				}
+				update.Status, update.ApprovalID, update.ApprovalChoices = "waiting_for_approval", event.RequestID, event.Choices
+				if lastApproval == event.RequestID {
+					continue
+				}
+				update.EventID, lastApproval = "approval:"+event.RequestID, event.RequestID
+			case "tool.start", "tool.end", "run.started":
+				if progress >= 10 {
+					continue
+				}
+				progress++
+				update.Text = "Выполняю запрос."
+			default:
+				continue // Never project deltas, arguments, prompts or traces into chat.
+			}
+			if err := emit(update); err != nil {
+				known.Status, known.LastEvent = "uncertain", "run.unknown"
+				return known, err
+			}
+		case <-ctx.Done():
+			if emit != nil {
+				known.Status, known.LastEvent = "uncertain", "run.unknown"
+				return known, ctx.Err()
+			}
+			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
+			cancel()
+			return result, ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	stopErr := stopHermesRun(stopCtx, client, base, auth, admission.RunID)
+	result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
 	cancel()
-	if stopErr == nil {
-		return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "cancelled", LastEvent: "run.cancelled"}, errors.New("hermes run timed out")
-	}
-	return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "uncertain", LastEvent: "run.unknown"}, errors.New("hermes run timed out")
+	return result, errors.New("hermes run timed out")
 }
 
 func stopHermesRun(ctx context.Context, client *http.Client, base, auth, runID string) error {
-	return hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs/"+runID+"/stop", auth, nil, nil)
+	return hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs/"+runID+"/stop", auth, map[string]any{}, nil)
+}
+
+func stopAndConfirmHermesRun(ctx context.Context, client *http.Client, base, auth string, known ExecuteResponse) (ExecuteResponse, error) {
+	known.Status, known.LastEvent = "uncertain", "run.unknown"
+	if err := stopHermesRun(ctx, client, base, auth, known.RunID); err != nil {
+		return known, err
+	}
+	for {
+		var status struct {
+			Status    string `json:"status"`
+			Output    string `json:"output"`
+			SessionID string `json:"session_id"`
+		}
+		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+known.RunID, auth, nil, &status); err != nil {
+			return known, err
+		}
+		if status.SessionID != "" && status.SessionID != known.SessionID {
+			return known, errors.New("run session mismatch")
+		}
+		switch status.Status {
+		case "completed", "failed", "cancelled", "interrupted":
+			known.Status, known.LastEvent, known.Text = status.Status, "run."+status.Status, status.Output
+			return known, nil
+		}
+		select {
+		case <-ctx.Done():
+			return known, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func sessionIDFor(request ExecuteRequest) string {
@@ -221,21 +346,6 @@ func sessionIDFor(request ExecuteRequest) string {
 }
 
 var errSessionExists = errors.New("hermes session already exists")
-
-func (s *runtimeHTTP) persistentSessionReply(ctx context.Context, client *http.Client, base, auth, sessionID string) (string, error) {
-	var payload struct {
-		Data []struct{ Role, Content string } `json:"data"`
-	}
-	if err := hermesRequest(ctx, client, http.MethodGet, base+"/api/sessions/"+sessionID+"/messages", auth, nil, &payload); err != nil {
-		return "", err
-	}
-	for i := len(payload.Data) - 1; i >= 0; i-- {
-		if payload.Data[i].Role == "assistant" && strings.TrimSpace(payload.Data[i].Content) != "" {
-			return strings.TrimSpace(payload.Data[i].Content), nil
-		}
-	}
-	return "", errors.New("hermes returned an empty response")
-}
 
 func hermesRequest(ctx context.Context, client *http.Client, method, endpoint, auth string, body any, target any, idempotency ...string) error {
 	var reader io.Reader
