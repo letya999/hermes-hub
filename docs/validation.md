@@ -1,6 +1,6 @@
 ---
-description: Measured CHG-0009 and CHG-0012 validation evidence and unverified boundaries.
-last_verified: 2026-09-11
+description: Measured delivery evidence and explicit unverified boundaries.
+last_verified: 2026-09-12
 ---
 # Delivery evidence — CHG-0009 and CHG-0012
 
@@ -73,6 +73,24 @@ No GitHub repository or release was published. Actions and a trusted self-hosted
 workflow are prepared for the owner's repository. Treat image and account checks as
 required deployment acceptance, not as implicitly passed by the unit tests.
 
+## CHG-0015 durable job/runtime mappings
+
+The communication spool now persists job and conversation mappings with immutable
+fingerprints, Hermes session/run metadata and explicit terminal/uncertain states. The
+host supervisor persists runtime generations and leases and rejects stale lease
+release after a generation change. Unit and race tests cover duplicate keys, legacy
+mapping recovery, corrupt state, restart restoration, stale leases, terminal status
+metadata and Hermes stop requests. These tests do not claim a second-host or live
+provider integration; the Docker contract gate remains required for that evidence.
+
+On 2026-09-12, `just check` passed with 85.06% Go statement coverage, including race
+tests, formatting, vet, staticcheck, documentation and workflow checks. `just security`
+passed the Go vulnerability scan and browser npm audit. `just docker-check prod` built
+image `3248ea8a01bd`, passed the standalone runtime smoke and passed the real pinned
+Hermes 0.21.0 sessions/idempotency/SSE/stop/approval/cron/restart contract plus the
+host-supervisor warm/reap/cold-restore smoke. No live provider call or external message
+was made.
+
 ## CHG-0012 pinned Hermes API contract
 
 The pinned image contains Hermes Agent `0.21.0` at commit
@@ -123,3 +141,30 @@ subsequent full `just check` attempts did not complete because `go test -race` s
 without output and were stopped; they are not claimed as passing. The immediately prior
 CHG-0014 full gate passed in the same worktree with 85.03% coverage, and CHG-0015 changed
 documentation only. No dependency/runtime change required security or Docker gates.
+
+## CHG-0016 scale-to-zero runtime contracts
+
+ADR-0014, SPEC-0012 and SPEC-0013 replace the proposed permanently resident
+per-user compute with a warm scale-to-zero runtime per active context. The contracts
+define host-side Docker authority, per-context leases, a five-minute default idle TTL,
+safe reaping, durable hub-owned routines and explicit native-cron migration. Issues
+#14-#19, #33, #46 and #55 plus the shared context in the remaining open implementation
+issues were aligned to this decision.
+
+On 2026-09-12, the initial implementation added the host-side Go supervisor, authenticated
+context proxy, pinned Hermes Gateway startup/readiness contract, persistent `/v1/runs`
+execution, typed leases, scoped mounts, resource limits and lease/TTL reaping. Unit and
+race tests cover concurrent start deduplication, path/symlink isolation, authorization,
+resource arguments, warm reuse and safe reaping.
+`just check` passed with 85.06% Go statement coverage. `just security` passed with no Go
+or browser dependency vulnerabilities. `just docker-check` passed the standalone runtime
+smoke and the real pinned Hermes 0.21.0 sessions/idempotency/SSE/stop/approval/cron/restart
+contract probe. The integration contract also runs a real host-supervisor Docker smoke
+covering warm reuse, idle reap, cold restore and logical runtime identity. Durable hub
+job/session mappings, external event/approval forwarding, routines and migration remain
+tracked in #15-#19 and #33.
+
+An additional real-image probe on 2026-09-12 started `hub-runtime serve` with
+`HUB_PERSISTENT_HERMES=true`, waited for authenticated `/readyz` backed by the
+upstream API, checked `/healthz`, and removed the container; it passed with no live
+provider call.

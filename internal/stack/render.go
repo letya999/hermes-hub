@@ -176,14 +176,27 @@ func Compose(s Settings, projectRoot, dir string) M {
 	}
 	services := M{"hermes-runtime": runtimeService}
 	if s.Has("telegram") {
+		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
-		gateway["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}}
-		gateway["environment"] = M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ",")}
+		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ",")}
+		if supervisorURL == "" {
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"})
+		} else {
+			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH}"
+		}
+		gateway["env_file"] = gatewayEnvFiles
+		gateway["environment"] = gatewayEnvironment
 		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}}
-		gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
+		if supervisorURL == "" {
+			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
+		}
 		gateway["restart"] = "unless-stopped"
 		services["communication-hub"] = gateway
+		if supervisorURL != "" {
+			delete(services, "hermes-runtime")
+		}
 	}
 	return M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": M{"communication-hub-data": M{}}}
 }

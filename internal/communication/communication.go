@@ -176,8 +176,8 @@ func ConfigFromEnv() (Config, error) {
 		if config.SpoolDir == "" {
 			config.SpoolDir = envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway")
 		}
-		config.RuntimeURL = os.Getenv("HUB_RUNTIME_URL")
-		config.RuntimeAuth = os.Getenv("HUB_RUNTIME_AUTH")
+		config.RuntimeURL = runtimeURLFromEnv()
+		config.RuntimeAuth = runtimeAuthFromEnv()
 		for i := range config.Users {
 			if config.Users[i].Env == nil {
 				config.Users[i].Env = runtimeEnv(config.Users[i].Features)
@@ -216,7 +216,21 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, Enabled: true, TelegramIDs: ids, StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	return Config{OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: os.Getenv("HUB_RUNTIME_URL"), RuntimeAuth: os.Getenv("HUB_RUNTIME_AUTH"), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes")}, nil
+	return Config{OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes")}, nil
+}
+
+func runtimeURLFromEnv() string {
+	if value := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")); value != "" {
+		return value
+	}
+	return os.Getenv("HUB_RUNTIME_URL")
+}
+
+func runtimeAuthFromEnv() string {
+	if strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "" {
+		return os.Getenv("HUB_SUPERVISOR_AUTH")
+	}
+	return os.Getenv("HUB_RUNTIME_AUTH")
 }
 
 func parseTelegramIDs(raw string) ([]int64, error) {
@@ -333,20 +347,83 @@ type Spool struct {
 
 func NewSpool(root string) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
 	}
-	// A process can die after claiming work. Jobs are safe to retry by ID;
-	// uncertain sends stay failed so a restart never duplicates a Telegram reply.
-	if err := recoverFiles(filepath.Join(root, "running"), filepath.Join(root, "pending")); err != nil {
+	// A process can die after claiming work. Mapped jobs stay failed/uncertain so
+	// a restart never silently replays an external run; legacy jobs remain retryable.
+	if err := s.recoverJobs(); err != nil {
 		return nil, err
 	}
 	if err := recoverFiles(filepath.Join(root, "outbox", "sending"), filepath.Join(root, "outbox", "failed")); err != nil {
 		return nil, err
 	}
+	if err := s.rebuildMappings(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+func (s *Spool) recoverJobs() error {
+	from, to := filepath.Join(s.root, "running"), filepath.Join(s.root, "pending")
+	entries, err := os.ReadDir(from)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		name := entry.Name()
+		jobID := strings.TrimSuffix(name, ".json")
+		if mapping, loadErr := s.loadMappingLocked(jobID); loadErr == nil {
+			mapping.Status, mapping.LastKnownEvent, mapping.UpdatedAt = "uncertain", "run.unknown", time.Now().UTC()
+			if err := s.writeMappingLocked(mapping); err != nil {
+				return err
+			}
+			if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, "failed", name)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.Rename(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Spool) rebuildMappings() error {
+	for _, dir := range []string{"pending", "running", "done", "failed"} {
+		entries, err := os.ReadDir(filepath.Join(s.root, dir))
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(s.root, dir, entry.Name()))
+			if err != nil {
+				return err
+			}
+			var job Job
+			if json.Unmarshal(body, &job) != nil || job.IdempotencyKey == "" {
+				continue
+			}
+			if _, err := os.Stat(s.mappingPath(job.ID)); errors.Is(err, os.ErrNotExist) {
+				mapping := mappingFromJob(job, job.CreatedAt.UTC())
+				mapping.JobID = job.ID
+				mapping.Status = map[string]string{"pending": "accepted", "running": "running", "done": "completed", "failed": "failed"}[dir]
+				if err := s.writeMappingLocked(mapping); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func recoverFiles(from, to string) error {
@@ -368,6 +445,17 @@ func recoverFiles(from, to string) error {
 func (s *Spool) Enqueue(job Job) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	fingerprint := jobFingerprint(job)
+	if strings.TrimSpace(job.IdempotencyKey) != "" {
+		if mapping, found, err := s.findIdempotencyLocked(job.IdempotencyKey); err != nil {
+			return false, err
+		} else if found {
+			if mapping.Fingerprint != jobFingerprint(job) {
+				return false, errors.New("idempotency key already used with different payload")
+			}
+			return false, nil
+		}
+	}
 	for _, dir := range []string{"pending", "running", "done", "failed"} {
 		if _, err := os.Stat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); err == nil {
 			return false, nil
@@ -381,7 +469,42 @@ func (s *Spool) Enqueue(job Job) (bool, error) {
 		job.TextSHA256 = hex.EncodeToString(h[:])
 		job.Text = ""
 	}
-	return true, atomicJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job)
+	if err := atomicJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(job.IdempotencyKey) != "" {
+		mapping := mappingFromJob(job, job.CreatedAt.UTC())
+		mapping.Fingerprint = fingerprint
+		if err := s.writeMappingLocked(mapping); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func (s *Spool) findIdempotencyLocked(key string) (JobMapping, bool, error) {
+	// ponytail: linear scan is bounded by the single-host spool; add an index if job volume makes it measurable.
+	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	if err != nil {
+		return JobMapping{}, false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+		if err != nil {
+			return JobMapping{}, false, err
+		}
+		var mapping JobMapping
+		if err := json.Unmarshal(b, &mapping); err != nil || mapping.JobID == "" {
+			return JobMapping{}, false, errors.New("invalid job mapping")
+		}
+		if mapping.IdempotencyKey == key {
+			return mapping, true, nil
+		}
+	}
+	return JobMapping{}, false, nil
 }
 
 func (s *Spool) ClaimJob() (*Job, error) {
@@ -410,11 +533,24 @@ func (s *Spool) ClaimJob() (*Job, error) {
 			return nil, errors.New("sensitive job payload unavailable after restart")
 		}
 	}
+	if strings.TrimSpace(job.IdempotencyKey) != "" {
+		if err := s.updateMappingLocked(job.ID, RunOutcome{JobID: job.ID, Status: "running", LastEvent: "job.claimed"}, "running", false); err != nil {
+			return nil, err
+		}
+	}
 	return &job, nil
 }
 
 func (s *Spool) CompleteJob(id string) error {
-	return s.move("running", "done", id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Rename(filepath.Join(s.root, "running", spoolFileID(id)+".json"), filepath.Join(s.root, "done", spoolFileID(id)+".json")); err != nil {
+		return err
+	}
+	if _, err := s.loadMappingLocked(id); err == nil {
+		return s.updateMappingLocked(id, RunOutcome{Status: "completed", LastEvent: "job.completed"}, "completed", true)
+	}
+	return nil
 }
 
 func (s *Spool) FailJob(id string) error {
@@ -422,7 +558,20 @@ func (s *Spool) FailJob(id string) error {
 	defer s.mu.Unlock()
 	delete(s.secret, id)
 	fileID := spoolFileID(id)
-	return os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
+	err := os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
+	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil {
+		status := "failed"
+		if mapping.Status == "uncertain" || mapping.Status == "cancelled" || mapping.Status == "interrupted" {
+			status = "uncertain"
+			if mapping.Status != "uncertain" {
+				status = mapping.Status
+			}
+		}
+		if updateErr := s.updateMappingLocked(id, RunOutcome{Status: status, LastEvent: "job." + status}, status, status != "uncertain"); err == nil {
+			err = updateErr
+		}
+	}
+	return err
 }
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
@@ -657,6 +806,10 @@ type Runner interface {
 	Run(context.Context, Job, User) (string, error)
 }
 
+type outcomeRunner interface {
+	RunOutcome(context.Context, Job) (RunOutcome, error)
+}
+
 type HermesRunner struct {
 	Command string
 	Timeout time.Duration
@@ -875,12 +1028,31 @@ func (g *Gateway) worker(ctx context.Context) {
 		g.deliverOne(ctx)
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
 			g.busy.Store(true)
-			response, runErr := g.runner.Run(ctx, *job, g.user(job.UserID))
+			var response string
+			var outcome RunOutcome
+			var runErr error
+			if detailed, ok := g.runner.(outcomeRunner); ok {
+				outcome, runErr = detailed.RunOutcome(ctx, *job)
+				response = outcome.Text
+			} else {
+				response, runErr = g.runner.Run(ctx, *job, g.user(job.UserID))
+				outcome = RunOutcome{Text: response, Status: "completed", LastEvent: "run.completed"}
+			}
 			g.busy.Store(false)
-			if runErr != nil {
+			if runErr != nil || outcome.Status == "uncertain" {
+				if runErr == nil {
+					runErr = ErrUncertain
+				}
+				if outcome.Status != "" && outcome.Status != "uncertain" {
+					_ = g.spool.RecordOutcome(job.ID, outcome)
+				}
+				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
+					_ = g.spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: outcome.SessionID, RunID: outcome.RunID, RuntimeGeneration: outcome.RuntimeGeneration, Status: "uncertain", LastEvent: "run.unknown"})
+				}
 				_ = g.spool.FailJob(job.ID)
 				_ = g.queueDelivery(ctx, "job-"+job.ID+"-error", job.ChatID, "Не удалось выполнить запрос. Попробуйте ещё раз.")
 			} else {
+				_ = g.spool.RecordOutcome(job.ID, outcome)
 				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, ChatID: job.ChatID, Text: response, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}

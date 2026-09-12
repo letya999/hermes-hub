@@ -112,6 +112,127 @@ func TestConfigAndYAML(t *testing.T) {
 	}
 }
 
+func TestJobMappingIsDurableAndIdempotent(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "job-one", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-one", Text: "hello", CreatedAt: time.Now().UTC()}
+	if accepted, err := spool.Enqueue(job); err != nil || !accepted {
+		t.Fatalf("enqueue=%v err=%v", accepted, err)
+	}
+	if accepted, err := spool.Enqueue(job); err != nil || accepted {
+		t.Fatalf("duplicate enqueue=%v err=%v", accepted, err)
+	}
+	collision := job
+	collision.ID, collision.Text = "job-two", "different"
+	if _, err := spool.Enqueue(collision); err == nil {
+		t.Fatal("idempotency collision accepted")
+	}
+	claimed, err := spool.ClaimJob()
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%v err=%v", claimed, err)
+	}
+	if err := spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "completed", LastEvent: "run.completed", Text: "answer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.CompleteJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	spool, err = NewSpool(spool.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping, found, err := spool.Mapping(job.ID)
+	if err != nil || !found || mapping.Status != "completed" || mapping.RunID != "run-1" || mapping.Result != "answer" {
+		t.Fatalf("mapping=%+v found=%v err=%v", mapping, found, err)
+	}
+	conversation, found, err := spool.SessionFor("alice", "alice", "telegram-11")
+	if err != nil || !found || conversation.SessionID != "session-1" {
+		t.Fatalf("conversation=%+v found=%v err=%v", conversation, found, err)
+	}
+}
+
+func TestJobMappingRecoversLegacyFilesAndFailsClosed(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	if err := os.MkdirAll(filepath.Join(root, "pending"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "legacy-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "legacy-idem", Text: "hello", CreatedAt: time.Now().UTC()}
+	body, _ := json.Marshal(job)
+	if err := os.WriteFile(filepath.Join(root, "pending", "legacy-job.json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	spool, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := spool.Mapping(job.ID); err != nil || !found {
+		t.Fatalf("legacy mapping found=%v err=%v", found, err)
+	}
+	if _, found, err := spool.Mapping("missing"); err != nil || found {
+		t.Fatalf("missing mapping found=%v err=%v", found, err)
+	}
+	if err := os.WriteFile(spool.mappingPath("bad"), []byte("bad"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := spool.Mapping("bad"); err == nil {
+		t.Fatal("corrupt mapping accepted")
+	}
+	if _, found, err := spool.SessionFor("alice", "alice", "missing"); err != nil || found {
+		t.Fatalf("missing conversation found=%v err=%v", found, err)
+	}
+}
+
+func TestMappedRunningJobBecomesUncertainOnRestart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	spool, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "running-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "running-idem", Text: "hello", CreatedAt: time.Now().UTC()}
+	if _, err := spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spool.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping, found, err := restarted.Mapping(job.ID)
+	if err != nil || !found || mapping.Status != "uncertain" || mapping.LastKnownEvent != "run.unknown" {
+		t.Fatalf("mapping=%+v found=%v err=%v", mapping, found, err)
+	}
+	if retry, err := restarted.ClaimJob(); err != nil || retry != nil {
+		t.Fatalf("uncertain job retried: job=%+v err=%v", retry, err)
+	}
+}
+
+func TestJobMappingRejectsMismatchedOutcomeAndCorruptConversation(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "mapping-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "mapping-idem", Text: "hello", CreatedAt: time.Now().UTC()}
+	if _, err := spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.RecordOutcome(job.ID, RunOutcome{JobID: "other-job"}); err == nil {
+		t.Fatal("mismatched runtime job accepted")
+	}
+	if err := spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: "session-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(spool.conversationPath("alice", "alice", "telegram-11"), []byte("bad"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := spool.SessionFor("alice", "alice", "telegram-11"); err == nil {
+		t.Fatal("corrupt conversation mapping accepted")
+	}
+}
+
 func TestConfigFromEnvAndIDs(t *testing.T) {
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_ORGANIZATION_ID", "acme")

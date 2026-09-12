@@ -201,9 +201,15 @@ func superviseOnce(mode string) (bool, error) {
 	remaining := 0
 	var server *http.Server
 	serverErr := make(chan error, 1)
-	start := func(name string, args ...string) error {
+	startWithEnv := func(extra map[string]string, name string, args ...string) error {
 		cmd := command(name, args...)
 		configureProcess(cmd)
+		if extra != nil {
+			cmd.Env = append([]string{}, os.Environ()...)
+			for key, value := range extra {
+				cmd.Env = append(cmd.Env, key+"="+value)
+			}
+		}
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {
 			return err
@@ -212,6 +218,9 @@ func superviseOnce(mode string) (bool, error) {
 		remaining++
 		go func() { exits <- cmd.Wait() }()
 		return nil
+	}
+	start := func(name string, args ...string) error {
+		return startWithEnv(nil, name, args...)
 	}
 	defer func() {
 		if server != nil {
@@ -262,6 +271,11 @@ func superviseOnce(mode string) (bool, error) {
 		if os.Getenv("HUB_RUNTIME_AUTH") == "" {
 			return false, errors.New("HUB_RUNTIME_AUTH is required")
 		}
+		if os.Getenv("HUB_PERSISTENT_HERMES") == "true" {
+			if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
+				return false, err
+			}
+		}
 		server = &http.Server{Addr: env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), Handler: runtimeHandler()}
 		go func() {
 			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -299,6 +313,17 @@ func superviseOnce(mode string) (bool, error) {
 			remaining--
 			return false, fmt.Errorf("supervised process exited: %w", err)
 		}
+	}
+}
+
+func hermesGatewayEnvironment() map[string]string {
+	return map[string]string{
+		"API_SERVER_ENABLED":           "true",
+		"API_SERVER_KEY":               os.Getenv("HUB_RUNTIME_AUTH"),
+		"API_SERVER_HOST":              env("HUB_HERMES_API_HOST", "127.0.0.1"),
+		"API_SERVER_PORT":              env("HUB_HERMES_API_PORT", "8642"),
+		"HERMES_GATEWAY_NO_TTY":        "true",
+		"HERMES_DISABLE_LAZY_INSTALLS": "1",
 	}
 }
 
