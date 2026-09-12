@@ -90,3 +90,14 @@ Release: https://github.com/letya999/hermes-hub/releases/tag/v0.3.0
 Issue19 closed after release acceptance. Milestone2 closed with 6/6 issues, zero open.
 v0.2.1 remains published for artifact rollback; current native static selection
 cannot restore the deleted one-shot executor. Full schedule import remains #33.
+
+## Local fixture settlement correction
+
+Retirement local combined gate 55151 passed standalone/native approval/restart,
+recovery/race/orphan/routine contracts, then failed the immediate Alice mapping
+assertion. The worker enqueues delivery before CompleteJob saves terminal mapping;
+a final transport response is not proof of durable spool settlement. The shared
+fixture reader now waits up to ten seconds for completed mappings, retaining all
+identity assertions. Production execution binaries are unchanged. Local `just check`
+36387 passed (85.03% own coverage); standalone real gateway repeat 21011 passed (exit 0): automatic graceful
+shutdown after five actual minutes, no idle compute, original-session cold restore.

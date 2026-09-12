@@ -227,11 +227,12 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		return fmt.Errorf("gateway lifecycle: %s timed out", description)
 	}
 	readMapping := func(updateID int) (communication.JobMapping, error) {
-		body, err := os.ReadFile(filepath.Join(spoolDir, "mappings", "telegram-"+strconv.Itoa(updateID)+".json"))
 		var mapping communication.JobMapping
-		if err == nil {
-			err = json.Unmarshal(body, &mapping)
-		}
+		// A delivered reply can precede durable terminal settlement in the worker.
+		err := wait("durable terminal mapping", 10*time.Second, func() bool {
+			body, err := os.ReadFile(filepath.Join(spoolDir, "mappings", "telegram-"+strconv.Itoa(updateID)+".json"))
+			return err == nil && json.Unmarshal(body, &mapping) == nil && mapping.Status == "completed"
+		})
 		return mapping, err
 	}
 	appendTask(71001, 21)

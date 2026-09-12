@@ -205,3 +205,9 @@ SHA256SUMS and real Docker image c74d6046795a. Both Linux production-adapter gat
 scenarios passed actual five-minute automatic compute removal and original-session
 cold restore. Linux own coverage was 85.06%; local `just check` passed at 85.03%.
 Issue19 and milestone2 are closed (6/6). v0.2.1 remains the accepted rollback artifact.
+
+The local retirement combined gate exposed a fixture reading terminal mapping
+before CompleteJob settled it. The shared bounded mapping wait corrected that
+assertion boundary; `just check` 36387 and full real gateway lifecycle 21011 then
+passed, including actual five-minute automatic shutdown and cold session restore.
+Production execution binaries were unchanged.

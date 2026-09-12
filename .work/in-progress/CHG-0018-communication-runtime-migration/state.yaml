@@ -21,6 +21,7 @@ evidence:
   - "Retirement just check passed (sessions 92643 and 5751): local own coverage 85.03%."
   - "Linux CI 34715743182 passed code (85.06%), security and real Docker dev/prod contracts including two-user actual five-minute idle stop and cold session restore."
   - "v0.3.0 published at main 1b1fe3413ba525309c0cc186079d6489d549e6f4 through PRs 68/69; downloaded execution assets verified. Issue19 and milestone2 closed: 6/6 issues, zero open."
+  - "Local combined retirement gate 55151 exposed delivery-before-durable-mapping fixture race. Shared bounded terminal mapping wait fixed the test; just check 36387 and full real gateway repeat 21011 passed, including actual five-minute shutdown/cold restore. Production binaries unchanged."
 next: []
 limits:
   - "No real Telegram/model account call or login claimed. User authorized release completion on 2026-09-12."
