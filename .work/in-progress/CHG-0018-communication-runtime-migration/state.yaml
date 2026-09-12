@@ -1,5 +1,5 @@
 change: CHG-0018
-status: in_progress
+status: done
 updated: 2026-09-12
 steps:
   - name: original-gates
@@ -9,7 +9,7 @@ steps:
   - name: real-gateway-five-minute-proof
     status: done
   - name: compatibility-and-delivery
-    status: pending
+    status: done
 evidence:
   - "Issues 16, 17 and 18 closed after original real Docker gate (session 78075). Published in v0.2.1."
   - "Latest just check passed (session 38613): own Go statement coverage 85.06%, race/shuffle, vet, staticcheck, docs and actionlint."
@@ -18,8 +18,10 @@ evidence:
   - "Gateway probe session 73296 passed: two users/exact homes/duplicate updates/warm reuse/released leases, actual five-minute automatic graceful stop and original-session cold restore. Earlier probes exposed fixture ports and terminal-settlement race, now corrected."
   - "Combined session 91958 exposed fixture idle-removal before stream teardown; shared bounded Idle/zero-lease wait now protects race/recovery/routine handoff test boundaries."
   - "Final just docker-check passed (session 50105, exit 0, image 7a3f67d90dba): standalone smoke, pinned native sessions/runs/SSE/stop/approval/restart, host supervisor recovery/race/pin/orphans/routines/preservation and complete two-user production-adapter gateway with real five-minute idle stop and original-session cold restore."
-next:
-  - "v0.2.1 published and downloaded binaries match accepted real Docker image. Complete v0.3.0 retirement gates/publication, then close issue19 and milestone."
+  - "Retirement just check passed (sessions 92643 and 5751): local own coverage 85.03%."
+  - "Linux CI 34715743182 passed code (85.06%), security and real Docker dev/prod contracts including two-user actual five-minute idle stop and cold session restore."
+  - "v0.3.0 published at main 1b1fe3413ba525309c0cc186079d6489d549e6f4 through PRs 68/69; downloaded execution assets verified. Issue19 and milestone2 closed: 6/6 issues, zero open."
+next: []
 limits:
   - "No real Telegram/model account call or login claimed. User authorized release completion on 2026-09-12."
-  - "Compatibility release v0.2.1 published and accepted by binary attestation; final retirement gates pending."
+  - "Full recurring CRUD/DST/native import remains issue33 outside M1; enabled native cron blocks supervised migration."

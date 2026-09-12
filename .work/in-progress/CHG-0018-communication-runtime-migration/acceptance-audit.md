@@ -60,7 +60,33 @@ is recorded separately from the accepted real local Docker evidence.
 
 v0.3.0 retirement removes one-shot execution and the native-mode toggle. Saved
 legacy selections normalize to static native routing; published v0.2.1 artifacts
-remain available for rollback. Final retirement gates and publication are pending.
+remain available for rollback. Final retirement gates and publication completed.
 Full recurring routine CRUD/DST/native import remains issue 33; enabled native cron
 refuses supervised migration and retains its static native clock. Verification uses
 synthetic local Telegram/model fixtures; no real account login or send is claimed.
+
+## Final retirement acceptance
+
+Linux CI https://github.com/letya999/hermes-hub/actions/runs/34715743182
+passed `just check` (85.06% own coverage), `just security` (zero findings), and
+real `just docker-check` for dev and prod. Both contracts accepted native
+sessions/runs/events/cancellation/approval/restart, supervisor recovery/races,
+operator pin, orphan ownership and routine wake/sleep/preservation. Both full
+production gateway paths accepted exact two-user homes, duplicate updates once,
+warm session reuse and released terminal leases. Actual five-minute automatic
+graceful removal and original-session cold restore passed at 20:14:46 UTC (prod)
+and 20:14:56 UTC (dev). No integration acceptance relies solely on mocks.
+
+Local retirement `just check` passed twice (92643/5751), own coverage 85.03%.
+v0.3.0 published at main 1b1fe3413ba525309c0cc186079d6489d549e6f4 after
+PRs 68/69. Source/archive scans and all candidate SHA256SUMS verified. Downloaded
+published runtime/communication assets match sums and image c74d6046795a:
+
+- hub-runtime: c07e72970accdf1dc0265134c6a53ebb9a5f4c448830d245b2429b5adb4eb8e1
+- communication-hub: 8ba614bbaae08e34e07ba1e939532cf25a7dbb8dc9751b3148593d0e2553afc5
+- hubctl: 6fe318f1ecbd2a2bc85a28f1e117a1afc94ed3d7b5e5364237759dc9d41cf126
+
+Release: https://github.com/letya999/hermes-hub/releases/tag/v0.3.0
+Issue19 closed after release acceptance. Milestone2 closed with 6/6 issues, zero open.
+v0.2.1 remains published for artifact rollback; current native static selection
+cannot restore the deleted one-shot executor. Full schedule import remains #33.
