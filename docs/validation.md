@@ -189,3 +189,13 @@ and upstream locks were not removed. Migration preflight uses the pinned native 
 SDK against a disposable snapshot and verifies the selected gateway's actual spool.
 `just security` passed with no Go/browser vulnerabilities. Issues 16–18 are closed;
 issue 19 retains its compatibility-release/legacy-deletion gate. Changes remain local.
+
+## Published M1 compatibility acceptance
+
+v0.2.1 was published on 2026-09-12 through PRs 66 and 67. Downloaded Linux
+hubctl/runtime/communication assets and published SHA256SUMS match the binaries
+in the real Docker acceptance image 7a3f67d90dba. See CHG-0018 acceptance audit
+for hashes, actual five-minute deadlines and cold restoration evidence. Linux CI
+container fixtures exposed missing host-gateway DNS mapping; production already
+provided it, and the standalone fixture now does too. Final v0.3.0 retirement
+verification is recorded separately; no real Telegram/model account send is claimed.

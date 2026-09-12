@@ -24,7 +24,7 @@ func main() {
 func run() error {
 	flags := flag.NewFlagSet("hub-supervisor", flag.ContinueOnError)
 	spaces := flags.String("spaces", "spaces", "root containing isolated context homes")
-	image := flags.String("image", "hermes-hub:0.2.0-prod", "pinned Hermes runtime image")
+	image := flags.String("image", "hermes-hub:0.3.0-prod", "pinned Hermes runtime image")
 	listen := flags.String("listen", envOr("HUB_SUPERVISOR_LISTEN", "127.0.0.1:8765"), "private supervisor listen address")
 	auth := flags.String("auth", supervisorAuthFromEnv(), "shared private supervisor token")
 	ttl := flags.Duration("warm-ttl", 5*time.Minute, "idle runtime retention")

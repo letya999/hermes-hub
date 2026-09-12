@@ -63,7 +63,7 @@ func TestExecutionSelectionPreservesQueueAndRollsBackOnlyOneContext(t *testing.T
 	if err != nil || bobSettings.ExecutionMode != "" {
 		t.Fatal("Bob selection changed")
 	}
-	selection.Mode, selection.SupervisorURL = "legacy", ""
+	selection.Mode, selection.SupervisorURL = "static", ""
 	if report, err := SelectExecution(alice, selection, audit, true); err != nil || report.Previous == nil || report.Previous.Mode != "supervisor" {
 		t.Fatal(err)
 	}

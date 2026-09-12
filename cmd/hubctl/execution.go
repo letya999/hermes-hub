@@ -50,6 +50,9 @@ func selectExecution(ctx context.Context, dir, sourceRoot, spool string, selecti
 		if endpoint == "" {
 			endpoint = settings.SupervisorURL
 		}
+		if endpoint == "" {
+			endpoint = strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
+		}
 		if endpoint != "" {
 			if err := checkSupervisorStopped(ctx, endpoint, auth, selection.User); err != nil {
 				return err

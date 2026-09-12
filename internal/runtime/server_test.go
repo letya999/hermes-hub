@@ -9,9 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,13 +26,6 @@ func TestRuntimeHTTPContractBindsScope(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_ORGANIZATION_ID", "personal")
-	oldExecute := executeHermes
-	defer func() { executeHermes = oldExecute }()
-	calls := 0
-	executeHermes = func(context.Context, string) (string, error) {
-		calls++
-		return "reply", nil
-	}
 	handler := runtimeHandler()
 	request := validExecuteRequest("alice", "personal", "telegram:1", "hello")
 	call := func(auth string, body ExecuteRequest) *httptest.ResponseRecorder {
@@ -48,16 +39,6 @@ func TestRuntimeHTTPContractBindsScope(t *testing.T) {
 	if got := call("wrong", request).Code; got != http.StatusUnauthorized {
 		t.Fatalf("bad auth status %d", got)
 	}
-	if got := call("runtime-secret", request).Code; got != http.StatusOK {
-		t.Fatalf("execute status %d", got)
-	}
-	if got := call("runtime-secret", request).Code; got != http.StatusOK || calls != 2 {
-		t.Fatalf("second status=%d calls=%d", got, calls)
-	}
-	request.Text = "different"
-	if got := call("runtime-secret", request).Code; got != http.StatusOK || calls != 3 {
-		t.Fatalf("runtime should not own idempotency: status=%d calls=%d", got, calls)
-	}
 	request = validExecuteRequest("bob", "personal", "telegram:2", "hello")
 	if got := call("runtime-secret", request).Code; got != http.StatusConflict {
 		t.Fatalf("scope mismatch status %d", got)
@@ -68,7 +49,7 @@ func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_ORGANIZATION_ID", "personal")
-	t.Setenv("HUB_PERSISTENT_HERMES", "true")
+	t.Setenv("HUB_PERSISTENT_HERMES", "false")
 	runCalls, statusCalls := 0, 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer runtime-secret" {
@@ -101,9 +82,6 @@ func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 	port := api.Listener.Addr().(*net.TCPAddr).Port
 	t.Setenv("HUB_HERMES_API_HOST", "127.0.0.1")
 	t.Setenv("HUB_HERMES_API_PORT", fmt.Sprint(port))
-	oldExecute := executeHermes
-	executeHermes = func(context.Context, string) (string, error) { t.Fatal("one-shot Hermes path used"); return "", nil }
-	defer func() { executeHermes = oldExecute }()
 	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, validExecuteRequest("alice", "personal", "run-key", "hello"))))
 	req.Header.Set("Authorization", "Bearer runtime-secret")
 	rec := httptest.NewRecorder()
@@ -413,9 +391,7 @@ func TestRuntimeHTTPValidationAndHealth(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid JSON status %d", recorder.Code)
 	}
-	oldExecute := executeHermes
-	executeHermes = func(context.Context, string) (string, error) { return "", errors.New("failed") }
-	defer func() { executeHermes = oldExecute }()
+	t.Setenv("HUB_HERMES_API_HOST", "invalid host")
 	valid := validExecuteRequest("me", "personal", "one", "hello")
 	request = httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, valid)))
 	request.Header.Set("Authorization", "Bearer runtime-secret")
@@ -516,69 +492,12 @@ func TestRuntimeRestartOnlySchedulesWithPendingRequest(t *testing.T) {
 	}
 }
 
-func TestHermesEnvironmentFiltersGatewayCredentials(t *testing.T) {
-	t.Setenv("TELEGRAM_BOT_TOKEN", "bot")
-	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
-	t.Setenv("HUB_RUNTIME_AUTH", "runtime")
-	t.Setenv("OPENAI_API_KEY", "model")
-	env := strings.Join(hermesEnvironment(), "\n")
-	if !strings.Contains(env, "OPENAI_API_KEY=model") || strings.Contains(env, "TELEGRAM_BOT_TOKEN") || strings.Contains(env, "TELEGRAM_ALLOWED_USERS") || strings.Contains(env, "HUB_RUNTIME_AUTH") {
-		t.Fatalf("filtered environment is unsafe: %s", env)
-	}
-}
-
 func TestHermesGatewayEnvironmentPinsAuthenticatedAPI(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_HERMES_API_PORT", "9000")
 	env := hermesGatewayEnvironment()
 	if env["HERMES_EXEC_ASK"] != "true" || env["API_SERVER_ENABLED"] != "true" || env["API_SERVER_KEY"] != "runtime-secret" || env["API_SERVER_PORT"] != "9000" || env["API_SERVER_HOST"] != "127.0.0.1" {
 		t.Fatalf("unexpected gateway environment: %#v", env)
-	}
-}
-
-func TestRunHermesReportsMissingCommand(t *testing.T) {
-	oldWorkspace := workspace
-	workspace = t.TempDir()
-	defer func() { workspace = oldWorkspace }()
-	t.Setenv("PATH", t.TempDir())
-	if _, err := runHermes(context.Background(), "hello"); err == nil {
-		t.Fatal("missing Hermes command accepted")
-	}
-}
-
-func TestRunHermesSuccess(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "helper.go")
-	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main(){fmt.Print(\"reply\")}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(dir, "helper")
-	if goruntime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	if output, err := exec.Command("go", "build", "-o", bin, source).CombinedOutput(); err != nil {
-		t.Skipf("cannot build helper: %v (%s)", err, output)
-	}
-	oldCommand, oldWorkspace := hermesExecutable, workspace
-	hermesExecutable, workspace = bin, dir
-	defer func() { hermesExecutable, workspace = oldCommand, oldWorkspace }()
-	if text, err := runHermes(context.Background(), "hello"); err != nil || text != "reply" {
-		t.Fatal(text, err)
-	}
-	emptySource := filepath.Join(dir, "empty.go")
-	if err := os.WriteFile(emptySource, []byte("package main\nfunc main() {}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	emptyBin := filepath.Join(dir, "empty")
-	if goruntime.GOOS == "windows" {
-		emptyBin += ".exe"
-	}
-	if output, err := exec.Command("go", "build", "-o", emptyBin, emptySource).CombinedOutput(); err != nil {
-		t.Skipf("cannot build empty helper: %v (%s)", err, output)
-	}
-	hermesExecutable = emptyBin
-	if _, err := runHermes(context.Background(), "hello"); err == nil {
-		t.Fatal("empty Hermes response accepted")
 	}
 }
 

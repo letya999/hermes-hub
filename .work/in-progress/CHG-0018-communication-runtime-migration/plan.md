@@ -7,4 +7,4 @@
 5. Verify the complete gateway-to-real-Hermes path for two users, duplicate input, warm reuse, restart and automatic five-minute idle shutdown.
 6. Document compatibility rollout/rollback and deletion gates; run just check and Docker gates.
 
-Legacy deletion remains gated on one compatibility release and accepted real runtime evidence. No live accounts or external sending are needed for isolated Docker verification.
+Compatibility release v0.2.1 is published and accepted against identical real Docker runtime binaries. Retire the executor in v0.3.0 after final gates. No live accounts or external sending are needed for isolated Docker verification.

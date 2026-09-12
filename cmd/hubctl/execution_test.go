@@ -39,7 +39,7 @@ func TestExecutionSupervisorDrainUsesExactContextAndAuth(t *testing.T) {
 func TestSelectExecutionApplyRefusesActiveComputeAndPreservesPartialRender(t *testing.T) {
 	original := executionDockerOutput
 	defer func() { executionDockerOutput = original }()
-	for _, scenario := range []string{"running", "docker-error", "busy-supervisor", "success", "render-failure", "wrong-user"} {
+	for _, scenario := range []string{"running", "docker-error", "busy-supervisor", "static-env-busy", "success", "render-failure", "wrong-user"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			dir := filepath.Join(root, "alice")
@@ -52,7 +52,7 @@ func TestSelectExecutionApplyRefusesActiveComputeAndPreservesPartialRender(t *te
 			}
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				state := supervisor.Stopped
-				if scenario == "busy-supervisor" {
+				if scenario == "busy-supervisor" || scenario == "static-env-busy" {
 					state = supervisor.Busy
 				}
 				json.NewEncoder(w).Encode([]supervisor.Runtime{{ContextID: "alice", State: state}})
@@ -80,6 +80,10 @@ func TestSelectExecutionApplyRefusesActiveComputeAndPreservesPartialRender(t *te
 				return nil, nil
 			}
 			selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "supervisor", SupervisorURL: api.URL, NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
+			if scenario == "static-env-busy" {
+				selection.Mode, selection.SupervisorURL = "static", ""
+				t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", api.URL)
+			}
 			if scenario == "wrong-user" {
 				selection.User = "bob"
 			}
