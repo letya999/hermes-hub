@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -66,7 +68,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		Token:  token,
 		Auth:   auth,
 		Backend: RoutingBackend{
-			MCP: MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission},
+			MCP: MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, Root: envOr("HUB_STATE", "/state")},
 			CLI: CLIRunner{Root: envOr("HUB_STATE", "/state")},
 		},
 	}, nil
@@ -88,6 +90,11 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	gateway := &Gateway{
 		Store: store, Backend: config.Backend, Tokens: map[string]identity.Envelope{config.Token: config.Auth},
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
+	}
+	if injector, err := credentialInjectorFromEnv(); err != nil {
+		return nil, err
+	} else if injector != nil {
+		gateway.Injector = injector
 	}
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)
@@ -135,4 +142,22 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func credentialInjectorFromEnv() (func(context.Context, EffectiveBinding) (map[string]string, func() error, error), error) {
+	path := strings.TrimSpace(os.Getenv("HUB_CREDENTIAL_STORE"))
+	if path == "" {
+		return nil, nil
+	}
+	backend, err := credstore.Open(credstore.Options{Path: path, KeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE")})
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, effective EffectiveBinding) (map[string]string, func() error, error) {
+		env, err := DecryptAuthorized(backend, effective)
+		if err != nil {
+			return nil, nil, err
+		}
+		return env, func() error { return nil }, nil
+	}, nil
 }

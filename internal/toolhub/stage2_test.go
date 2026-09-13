@@ -159,11 +159,19 @@ func TestGatewayCallBoundsBackendResult(t *testing.T) {
 type testBearerTransport struct {
 	base  http.RoundTripper
 	token string
+	jobID string
+	runID string
 }
 
 func (t testBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	copyRequest := request.Clone(request.Context())
 	copyRequest.Header.Set("Authorization", "Bearer "+t.token)
+	if t.jobID != "" {
+		copyRequest.Header.Set(HeaderJobID, t.jobID)
+	}
+	if t.runID != "" {
+		copyRequest.Header.Set(HeaderRunID, t.runID)
+	}
 	return t.base.RoundTrip(copyRequest)
 }
 
@@ -345,7 +353,12 @@ func TestCLIArgumentSchemaAndRunnerDenyPaths(t *testing.T) {
 	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, nil, filepath.Join(root, "..")); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("outside cwd accepted: %v", err)
 	}
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"NOT_ALLOWED": "x"}, root); !errors.Is(err, ErrUnauthorized) {
+	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"not-allowed": "x"}, root); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("invalid environment key accepted: %v", err)
+	}
+	listed := runner
+	listed.AllowedEnvironment = map[string]bool{"GITLAB_TOKEN": true}
+	if _, err := listed.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"NOT_ALLOWED": "x"}, root); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unallowlisted environment accepted: %v", err)
 	}
 	definition.Execution.OutputBytes = 1
@@ -496,6 +509,46 @@ func TestRoutingBackendDispatchesCLIAndMCP(t *testing.T) {
 	}
 	if _, err := (RoutingBackend{CLI: backend.CLI}).Call(context.Background(), effective, effective.Definition.Tools[0], nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing MCP backend error=%v", err)
+	}
+}
+
+type envCaptureBackend struct {
+	env map[string]string
+}
+
+func (e *envCaptureBackend) Call(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any) (BackendResult, error) {
+	return e.CallEnv(ctx, effective, tool, arguments, nil)
+}
+
+func (e *envCaptureBackend) CallEnv(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any, environment map[string]string) (BackendResult, error) {
+	e.env = environment
+	return BackendResult{Text: "mcp-env"}, nil
+}
+
+func TestRoutingBackendPassesEnvToMCP(t *testing.T) {
+	capture := &envCaptureBackend{}
+	backend := RoutingBackend{MCP: capture}
+	store, auth, binding := seededStore(t)
+	effective, err := store.Resolve(auth, binding.ToolBindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"GOOGLE_TOKEN": "from-admit"}
+	result, err := backend.CallEnv(context.Background(), effective, effective.Definition.Tools[0], nil, env)
+	if err != nil || result.Text != "mcp-env" || capture.env["GOOGLE_TOKEN"] != "from-admit" {
+		t.Fatalf("mcp env not forwarded: result=%+v env=%v err=%v", result, capture.env, err)
+	}
+}
+
+func TestCLIRunnerNilAllowlistAcceptsCredentialKeys(t *testing.T) {
+	root := t.TempDir()
+	runner := CLIRunner{Root: root, AllowedExecutables: map[string]bool{os.Args[0]: true}, Isolation: func(ExecutionPolicy, string, string) error { return nil }}
+	definition := testCLIDefinition(os.Args[0], []string{"-test.run=^$"})
+	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"not-valid": "x"}, root); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("invalid env key accepted: %v", err)
+	}
+	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"GOOGLE_TOKEN": "from-admit"}, root); errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("nil allowlist denied credential key: %v", err)
 	}
 }
 

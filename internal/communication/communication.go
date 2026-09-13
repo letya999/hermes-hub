@@ -27,10 +27,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
 )
 
@@ -81,6 +83,8 @@ type Config struct {
 	HermesCommand     string        `yaml:"-"`
 	CredentialStore   string        `yaml:"-"`
 	CredentialKeyFile string        `yaml:"-"`
+	ToolHubStore      string        `yaml:"-"`
+	AuditLedger       string        `yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -214,6 +218,8 @@ func ConfigFromEnv() (Config, error) {
 		config.HermesCommand = envOr("HUB_HERMES_COMMAND", "hermes")
 		config.CredentialStore = os.Getenv("HUB_CREDENTIAL_STORE")
 		config.CredentialKeyFile = os.Getenv("HUB_CREDENTIAL_KEY_FILE")
+		config.ToolHubStore = os.Getenv("HUB_TOOLHUB_STORE")
+		config.AuditLedger = os.Getenv("HUB_AUDIT_LEDGER")
 		return config, nil
 	}
 	userID := os.Getenv("HUB_USER_ID")
@@ -245,7 +251,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	return Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE")}, nil
+	return Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER")}, nil
 }
 
 func runtimeURLFromEnv() string {
@@ -993,6 +999,7 @@ type Gateway struct {
 	busy    atomic.Bool
 	now     func() time.Time
 	secrets *secrets.Service
+	audit   *audit.Ledger
 }
 
 func New(config Config) (*Gateway, error) {
@@ -1043,15 +1050,49 @@ func New(config Config) (*Gateway, error) {
 	if config.Supervised {
 		restart = nil
 	}
-	var secretService *secrets.Service
-	if config.CredentialStore != "" {
-		opened, err := secrets.Open(config.CredentialStore, config.CredentialKeyFile, nil, "")
-		if err != nil {
-			return nil, err
-		}
-		secretService = opened
+	secretService, ledger, err := openCredentialSurface(config)
+	if err != nil {
+		return nil, err
 	}
-	return &Gateway{config: config, users: users, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService}, nil
+	return &Gateway{config: config, users: users, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger}, nil
+}
+
+func openCredentialSurface(config Config) (*secrets.Service, *audit.Ledger, error) {
+	if config.CredentialStore == "" {
+		return nil, nil, nil
+	}
+	opened, err := secrets.Open(config.CredentialStore, config.CredentialKeyFile, nil, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	auditPath := config.AuditLedger
+	if auditPath == "" {
+		auditPath = filepath.Join(filepath.Dir(config.CredentialStore), "audit.jsonl")
+	}
+	ledger, err := audit.Open(auditPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened.Audit = ledger
+	storePath := config.ToolHubStore
+	if storePath == "" && len(config.Users) > 0 && config.Users[0].StateDir != "" {
+		candidate := filepath.Join(config.Users[0].StateDir, "runtime", "toolhub", "store.json")
+		if _, err := os.Lstat(candidate); err == nil {
+			storePath = candidate
+		}
+	}
+	if storePath != "" {
+		if _, err := os.Lstat(storePath); err == nil {
+			registry, err := toolhub.Load(storePath)
+			if err != nil {
+				return nil, nil, err
+			}
+			opened.Registry = registry
+		} else if !os.IsNotExist(err) {
+			return nil, nil, err
+		}
+	}
+	return opened, ledger, nil
 }
 
 func (g *Gateway) Run(ctx context.Context) error {
@@ -1287,6 +1328,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, ChatID: job.ChatID, Text: response, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}
+			g.recordJob(*job, outcome)
 			if job.Sensitive {
 				_ = g.api.DeleteMessage(ctx, job.ChatID, job.MessageID)
 			}
@@ -1322,6 +1364,30 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (g *Gateway) recordJob(job Job, outcome RunOutcome) {
+	if g == nil || g.audit == nil {
+		return
+	}
+	principal := job.PrincipalID
+	if principal == "" {
+		principal = job.UserID
+	}
+	if principal == "" {
+		return
+	}
+	status := outcome.Status
+	if status == "" {
+		status = "completed"
+	}
+	event := audit.NewEvent("job", principal, status)
+	event.JobID = job.ID
+	event.HermesRunID = outcome.RunID
+	event.RuntimeID = job.RuntimeID
+	event.ContextID = job.ContextID
+	event.PolicyRevision = job.PolicyVersion
+	_ = g.audit.Append(event)
 }
 
 func (g *Gateway) user(id string) User {

@@ -45,10 +45,16 @@ hubctl secret activity --user <id>
 
 An explicit owner `KEY=value` chat message is intercepted before Hermes, persisted
 through that store, and best-effort deleted. Replies contain names and status only.
-Groups reject credential entry. Personal-terminal exposure copies selected names into
-that owner's `self-env.json` overlay and is reversible. The legacy `env_update` path
-is not used for managed secrets. Failed rotates leave the connection `degraded`
-until a successful rotate or an explicit revoke.
+Groups reject credential entry. Set and delete also load the ToolHub registry
+(`HUB_TOOLHUB_STORE` or `spaces/<user>/runtime/toolhub/store.json`) so rotate and
+revoke cut an already-open MCP session and stop affected workloads. Personal-terminal
+exposure copies selected names into that owner's `self-env.json` overlay and is
+reversible. The legacy `env_update` path is not used for managed secrets. Failed
+rotates leave the connection `degraded` until a successful rotate or an explicit
+revoke. ToolHub records `X-Hub-Job-ID` and `X-Hub-Run-ID` on MCP requests into the
+audit ledger together with a generated tool-call id. The communication worker
+appends matching job events when `HUB_AUDIT_LEDGER` or a credential store is
+configured. `HUB_CREDENTIAL_STORE` must be set on `hub-toolhub` for decrypt-and-inject.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
 The selected user home contains persistent Hermes, connection, workspace and archive

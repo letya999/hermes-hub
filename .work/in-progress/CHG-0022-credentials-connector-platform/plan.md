@@ -35,10 +35,29 @@ M4/M5/M6, live Google/Slack/Jira login, live ToolHive/VPS (#73), Hermes
 transport reconnect (#74), default runtime switch to ToolHub, ZITADEL, Vault
 product deployment and Kubernetes.
 
+## Shipped-path successor (verification gaps)
+
+The first M3 merge left four real-path gaps. This change set wires them without
+re-entering `AuthorizeProjected` from the injector:
+
+- `NewEndpointHandler` opens `HUB_CREDENTIAL_STORE` and decrypts the authorized
+  locator inside admit
+- `RoutingBackend` forwards env to MCP; `MCPBackend.CallEnv` writes
+  `credentials.env` and never puts secrets on vMCP HTTP
+- ToolHub audit fields include `job_id` / `hermes_run_id` / `tool_call_id` from
+  MCP headers plus a generated call id; the communication worker appends job
+  events
+- `hubctl secret` set/delete and chat `ApplyChat` load the ToolHub registry and
+  rotate/revoke so an open MCP session is cut before backend execution
+
 ## Verification
 
 - In-repo Go tests for store, inject, rotate/revoke, intercept, OAuth fixture
   and audit
+- `NewEndpointHandler` inject test against a real credstore (not a stub Injector)
+- MCP env/file inject without HTTP secret leakage
+- Ledger correlation from communication worker and ToolHub headers
+- Open-session cut from `hubctl secret set` and chat intercept
 - `hubctl secret` set/list/delete twice on a throwaway space
 - Local OAuth fixtures for authorization-code+PKCE and device flow
 - `just check` with own Go statement coverage >=85%
