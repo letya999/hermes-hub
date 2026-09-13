@@ -45,7 +45,7 @@ type Gateway struct {
 	DisableLocalhostProtection bool
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
-	Injector                   func(EffectiveBinding) (map[string]string, func() error, error)
+	Injector                   func(context.Context, EffectiveBinding) (map[string]string, func() error, error)
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -79,7 +79,9 @@ func (g *Gateway) protect(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), identityKey{}, auth))
+		corr := headerCorrelation(r.Header.Get(HeaderJobID), r.Header.Get(HeaderRunID))
+		ctx := context.WithValue(r.Context(), identityKey{}, auth)
+		r = r.WithContext(withCallCorrelation(ctx, corr))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -132,23 +134,28 @@ func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
 }
 
 func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedName string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	corr := callCorrelationFrom(ctx)
+	if corr.ToolCallID == "" {
+		corr.ToolCallID = newToolCallID()
+	}
+	ctx = withCallCorrelation(ctx, corr)
 	if err := rejectAuthorityArguments(arguments); err != nil {
-		_ = g.audit("deny", map[string]string{
+		_ = g.audit("deny", mergeAudit(map[string]string{
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
 			"policy_version": auth.PolicyVersion, "outcome": "deny", "reason": "authority-argument",
-		})
+		}, corr))
 		return nil, err
 	}
 	var out *mcp.CallToolResult
 	err := g.Store.AuthorizeProjected(auth, projectedName, func(projected ProjectedTool, effective EffectiveBinding) error {
-		if err := g.audit("admit", auditFields(auth, projected, effective, "admit")); err != nil {
+		if err := g.audit("admit", mergeAudit(auditFields(auth, projected, effective, "admit"), corr)); err != nil {
 			return err
 		}
 		env := map[string]string{}
 		var wipe func() error
 		if g.Injector != nil {
 			var injErr error
-			env, wipe, injErr = g.Injector(effective)
+			env, wipe, injErr = g.Injector(ctx, effective)
 			if injErr != nil {
 				return injErr
 			}
@@ -166,7 +173,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			result, callErr = g.Backend.Call(callCtx, effective, projected.Tool, arguments)
 		}
 		if callErr != nil {
-			_ = g.audit("deny", auditFields(auth, projected, effective, "backend-error"))
+			_ = g.audit("deny", mergeAudit(auditFields(auth, projected, effective, "backend-error"), corr))
 			return callErr
 		}
 		if result.Structured != nil {
@@ -185,13 +192,13 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		if result.Text != "" {
 			out.Content = []mcp.Content{&mcp.TextContent{Text: result.Text}}
 		}
-		return g.audit("allow", auditFields(auth, projected, effective, "allow"))
+		return g.audit("allow", mergeAudit(auditFields(auth, projected, effective, "allow"), corr))
 	})
 	if err != nil && out == nil {
-		_ = g.audit("deny", map[string]string{
+		_ = g.audit("deny", mergeAudit(map[string]string{
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
 			"policy_version": auth.PolicyVersion, "outcome": "deny",
-		})
+		}, corr))
 	}
 	return out, err
 }
@@ -213,6 +220,22 @@ func auditFields(auth identity.Envelope, projected ProjectedTool, effective Effe
 	}
 	if effective.Credential != nil {
 		fields["credential_revision"] = fmt.Sprint(effective.Credential.Revision)
+	}
+	return fields
+}
+
+func mergeAudit(fields map[string]string, corr callCorrelation) map[string]string {
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	if corr.JobID != "" {
+		fields["job_id"] = corr.JobID
+	}
+	if corr.HermesRunID != "" {
+		fields["hermes_run_id"] = corr.HermesRunID
+	}
+	if corr.ToolCallID != "" {
+		fields["tool_call_id"] = corr.ToolCallID
 	}
 	return fields
 }
@@ -257,6 +280,9 @@ func (b RoutingBackend) CallEnv(ctx context.Context, effective EffectiveBinding,
 	default:
 		if b.MCP == nil {
 			return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)
+		}
+		if caller, ok := b.MCP.(envBackend); ok {
+			return caller.CallEnv(ctx, effective, tool, arguments, environment)
 		}
 		return b.MCP.Call(ctx, effective, tool, arguments)
 	}
@@ -314,6 +340,7 @@ func ValidateBackendEndpoint(raw string) error {
 type MCPBackend struct {
 	HTTPClient        *http.Client
 	Token             string
+	Root              string
 	Admission         WorkloadAdmission
 	AdmissionVerifier func(context.Context, EffectiveBinding) (AdmissionReceipt, error)
 }
@@ -331,8 +358,23 @@ func validateToolHivePolicy(definition ToolDefinition) error {
 }
 
 func (b MCPBackend) Call(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any) (BackendResult, error) {
+	return b.CallEnv(ctx, effective, tool, arguments, nil)
+}
+
+func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
 	if effective.Connection == nil {
 		return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)
+	}
+	var wipe func() error
+	if len(environment) > 0 {
+		var err error
+		wipe, err = writeAuthorizedFiles(ctx, b.Root, effective, environment)
+		if err != nil {
+			return BackendResult{}, err
+		}
+		if wipe != nil {
+			defer wipe()
+		}
 	}
 	if effective.Definition.Transport == ContainerMCP {
 		if err := validateToolHivePolicy(effective.Definition); err != nil {

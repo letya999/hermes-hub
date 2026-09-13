@@ -1,19 +1,25 @@
 package secrets
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func newService(t *testing.T) *Service {
@@ -489,4 +495,86 @@ func TestRotateAuditFailureMarksDegraded(t *testing.T) {
 	if err := svc.Rotate("alice", "GOOGLE_TOKEN", randomValue(t), "google-work"); err == nil {
 		t.Fatal("rotate succeeded with unwritable ledger")
 	}
+}
+
+type secretStopRecorder struct{ ids []string }
+
+func (s *secretStopRecorder) Stop(id string) error {
+	s.ids = append(s.ids, id)
+	return nil
+}
+
+type secretBearerTransport struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (t secretBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	copyRequest := request.Clone(request.Context())
+	copyRequest.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(copyRequest)
+}
+
+func TestApplyChatCutsOpenSession(t *testing.T) {
+	svc := newService(t)
+	secret := randomValue(t)
+	infos, err := svc.Set("alice", map[string]string{"GOOGLE_TOKEN": secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, auth, binding := seededRegistry(t, infos[0].Locator)
+	workload, err := toolhub.NewWorkloadInstance(binding, &toolhub.OwnerRef{Type: toolhub.ContextOwner, ID: "alice"}, "", 1, time.Now().UTC(), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workload.Status = toolhub.RunningStatus
+	if err := registry.PutWorkloadInstance(workload); err != nil {
+		t.Fatal(err)
+	}
+	stops := &secretStopRecorder{}
+	registry.Stopper = stops
+	svc.Registry = registry
+	var calls atomic.Int32
+	handler, err := (&toolhub.Gateway{
+		Store:   registry,
+		Tokens:  map[string]identity.Envelope{"01234567890123456789012345678901": auth},
+		Backend: toolhubCallCounter{n: &calls},
+	}).Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "chat-cut", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL + toolhub.DefaultEndpointPath, HTTPClient: &http.Client{Transport: secretBearerTransport{base: http.DefaultTransport, token: "01234567890123456789012345678901"}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	name := toolhub.ProjectedToolName("google-work", "1.0.0", "search")
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+	if _, _, err := svc.ApplyChat("alice", "GOOGLE_TOKEN="+randomValue(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "after"}}); err == nil {
+		t.Fatal("chat mutation did not cut open session")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("backend ran after chat rotate: %d", calls.Load())
+	}
+	if len(stops.ids) == 0 {
+		t.Fatal("affected workload was not stopped")
+	}
+}
+
+type toolhubCallCounter struct{ n *atomic.Int32 }
+
+func (c toolhubCallCounter) Call(context.Context, toolhub.EffectiveBinding, toolhub.ToolSpec, map[string]any) (toolhub.BackendResult, error) {
+	c.n.Add(1)
+	return toolhub.BackendResult{Text: "ok"}, nil
 }

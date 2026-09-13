@@ -14,6 +14,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/secrets"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 func runSecret(_ context.Context, args []string) error {
@@ -30,6 +31,7 @@ func runSecret(_ context.Context, args []string) error {
 	in := f.String("in", "", "restore source")
 	keyFile := f.String("key-file", os.Getenv("HUB_CREDENTIAL_KEY_FILE"), "encryption key file outside the store")
 	storePath := f.String("store", os.Getenv("HUB_CREDENTIAL_STORE"), "ciphertext store path")
+	toolHubStore := f.String("toolhub-store", os.Getenv("HUB_TOOLHUB_STORE"), "ToolHub registry path")
 	terminal := f.Bool("terminal", false, "enable personal-terminal exposure")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
@@ -72,6 +74,24 @@ func runSecret(_ context.Context, args []string) error {
 		return err
 	}
 	svc.Audit = ledger
+	if *toolHubStore == "" {
+		*toolHubStore = filepath.Join(absDir, "runtime", "toolhub", "store.json")
+	}
+	if !filepath.IsAbs(*toolHubStore) {
+		*toolHubStore, err = filepath.Abs(*toolHubStore)
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(*toolHubStore); err == nil {
+		registry, err := toolhub.Load(*toolHubStore)
+		if err != nil {
+			return err
+		}
+		svc.Registry = registry
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	owner := *profile
 	switch sub {
 	case "set":
