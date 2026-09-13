@@ -75,6 +75,9 @@ func (s *Service) Set(owner string, values map[string]string) ([]Info, error) {
 		}
 		infos = append(infos, Info{Name: name, Status: info.Status, Locator: locator, Revision: info.Revision, TerminalExposure: info.TerminalExposure})
 		names = append(names, name)
+		if err := s.publishRegistry(owner, locator, []string{name}, false); err != nil {
+			return nil, err
+		}
 	}
 	slices.Sort(names)
 	return infos, nil
@@ -114,7 +117,10 @@ func (s *Service) Delete(owner, name string) error {
 	}
 	event := audit.NewEvent("credential-change", owner, "delete")
 	event.Name = name
-	return s.audit(event)
+	if err := s.audit(event); err != nil {
+		return err
+	}
+	return s.publishRegistry(owner, locator, []string{name}, true)
 }
 
 func (s *Service) Rotate(owner, name, value, connectionID string) error {
@@ -240,7 +246,7 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 			return err
 		}
 		if workspace.Path != "" && len(injected.Env) > 0 {
-			if err := writeWorkloadEnv(workspace.Path, injected.Env); err != nil {
+			if err := toolhub.WriteWorkloadEnvFile(workspace.Path, injected.Env); err != nil {
 				_ = workspace.Cleanup()
 				return err
 			}
@@ -330,29 +336,30 @@ func (s *Service) audit(event audit.Event) error {
 	return s.Audit.Append(event)
 }
 
-func writeWorkloadEnv(dir string, values map[string]string) error {
-	lines := make([]string, 0, len(values))
-	for key, value := range values {
-		lines = append(lines, key+"="+value)
+func (s *Service) publishRegistry(owner, locator string, names []string, revoke bool) error {
+	if s == nil || s.Registry == nil {
+		return nil
 	}
-	slices.Sort(lines)
-	path := filepath.Join(dir, "credentials.env")
-	tmp, err := os.CreateTemp(dir, ".cred-*")
-	if err != nil {
-		return err
+	refs := s.Registry.ConnectionsForSecret(locator, owner, names)
+	for _, ref := range refs {
+		if revoke {
+			if err := s.Registry.SetConnectionStatus(ref.ConnectionID, toolhub.RevokedStatus); err != nil {
+				_ = s.Registry.MarkDegraded(ref.ConnectionID)
+				return err
+			}
+			continue
+		}
+		keys := ref.Keys
+		if len(keys) == 0 {
+			keys = names
+		}
+		if _, err := s.Registry.RotateCredential(ref.ConnectionID, s.Backend.Name(), locator, keys); err != nil {
+			_ = s.Registry.MarkDegraded(ref.ConnectionID)
+			_ = s.Backend.SetStatus(locator, owner, credstore.StatusDegraded)
+			return err
+		}
 	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err = tmp.Chmod(0600); err == nil {
-		_, err = tmp.WriteString(strings.Join(lines, "\n"))
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return nil
 }
 
 func statusText(enabled bool) string {

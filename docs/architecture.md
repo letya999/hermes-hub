@@ -198,12 +198,14 @@ ownership registry and store secret values only as ciphertext behind opaque
 locators. The encryption key is supplied by `HUB_CREDENTIAL_KEY` or
 `HUB_CREDENTIAL_KEY_FILE` and is never written to the ToolHub snapshot, the
 ciphertext file or a ciphertext backup. `AuthorizeProjected` is the only
-decrypt/inject path; values enter only the selected workload and are wiped on
-stop. Chat `KEY=value` is intercepted before Hermes. `hubctl secret` set/list/delete
-reads values from stdin or `--from-file`. Personal-terminal exposure is an
-explicit reversible connection flag. Failed rotates become `degraded`. One OAuth
-broker implements authorization-code+PKCE and device flow against official
-Google, Slack and Atlassian URLs, with remote MCP discovery via RFC 8414/9728.
-The audit ledger records who, runtime, connection, revision and job/run/call
-correlation without prompts or tokens. Generated MCP remains the default;
-ToolHub stays opt-in through `HUB_TOOLHUB_*`.
+decrypt/inject path; the shipped ToolHub endpoint decrypts inside that admit
+and passes environment to CLI `CallEnv` and MCP workload files, never to vMCP
+HTTP. Chat `KEY=value` is intercepted before Hermes and rotates matching
+ToolHub connections. `hubctl secret` set/list/delete reads values from stdin or
+`--from-file` and binds those mutations to the registry. Personal-terminal
+exposure is an explicit reversible connection flag. Failed rotates become
+`degraded`. One OAuth broker implements authorization-code+PKCE and device flow
+against official Google, Slack and Atlassian URLs, with remote MCP discovery via
+RFC 8414/9728. The audit ledger records who, runtime, connection, revision and
+job/run/call correlation without prompts or tokens. Generated MCP remains the
+default; ToolHub stays opt-in through `HUB_TOOLHUB_*`.

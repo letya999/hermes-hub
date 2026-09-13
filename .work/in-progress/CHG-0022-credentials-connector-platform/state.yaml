@@ -24,5 +24,7 @@ notes:
   - Generated MCP remains the default runtime; ToolHub stays opt-in via HUB_TOOLHUB_*.
   - Live Google/Slack/Jira login is M5 and does not close #50.
   - #73 and #74 stay open.
-  - just check 2026-09-13: 85.32% Go statement coverage.
-  - just docker-check prod 2026-09-13: image 6cd141393171, Hermes Agent 0.21.0.
+  - Successor wires NewEndpointHandler credstore inject, MCP file inject, ledger
+    correlation from communication/ToolHub paths, and hubctl/chat registry binding.
+  - just check 2026-09-13 successor: 85.07% Go statement coverage.
+  - just docker-check prod 2026-09-13 successor: image a61ce4879a1d, Hermes Agent 0.21.0.

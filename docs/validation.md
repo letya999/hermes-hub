@@ -16,17 +16,23 @@ Effective configuration produces one policy digest shared by gateway and runtime
 
 M3 stores secret values as AES-256-GCM ciphertext behind ToolHub locators. In-repo
 tests drive encrypt/decrypt, cross-user/stale/removed/restart/restore/key-rotation
-fail-closed behavior, inject after `AuthorizeProjected`, open-session rotate/revoke
-before backend execution, workload stop, degraded rotate, chat intercept, group
-rejection, `hubctl secret` set/list/delete, a local OAuth PKCE and device-flow
-fixture with official Google/Slack/Atlassian URL constants, and a privacy-preserving
-audit ledger. Live Google/Slack/Jira login is not claimed. Live ToolHive/VPS
-isolation remains #73. Hermes reconnect remains #74.
+fail-closed behavior, inject after `AuthorizeProjected` through the shipped
+`NewEndpointHandler` against a real ciphertext store, MCP workload-file inject
+without vMCP HTTP leakage, open-session rotate/revoke from `hubctl secret` and
+chat intercept before backend execution, workload stop, degraded rotate, group
+rejection, a local OAuth PKCE and device-flow fixture with official
+Google/Slack/Atlassian URL constants, and a privacy-preserving audit ledger that
+records job/Hermes-run/tool-call correlation from the communication worker and
+ToolHub request headers. Live Google/Slack/Jira login is not claimed. Live
+ToolHive/VPS isolation remains #73. Hermes reconnect remains #74.
 
-On 2026-09-13, `just check` passed for CHG-0022, including race tests, formatting,
-vet, staticcheck, documentation/workflow checks and 85.32% original Go statement
-coverage. `go.mod` and `go.sum` were not changed, so `just security` was not
-required. `just docker-check prod` built image `6cd141393171` and passed the
+On 2026-09-13, `just check` passed for the shipped-path successor of CHG-0022,
+including race tests, formatting, vet, staticcheck, documentation/workflow
+checks and 85.07% original Go statement coverage. The successor tests drive
+`NewEndpointHandler` against a real ciphertext store, MCP file inject without
+HTTP leakage, communication/ToolHub ledger correlation, and open-session cut
+from `hubctl secret` and chat intercept. `go.mod` and `go.sum` were not changed, so `just security` was not
+required. `just docker-check prod` built image `a61ce4879a1d` and passed the
 standalone runtime smoke with Hermes Agent 0.21.0, the pinned Hermes API contract,
 and the five-minute gateway lifecycle. No live provider login or ToolHive/VPS
 isolation is claimed.
@@ -47,7 +53,7 @@ symlink/unrelated-data/active-runtime refusal, and existing MCP/self-service beh
 
 | Coverage scope | Measured | Required |
 |---|---|---|
-| All original Go statements, including runtime and packaging | 85.32% | >=85% |
+| All original Go statements, including runtime and packaging | 85.07% | >=85% |
 
 Upstream Hermes/connector source and test code do not inflate the coverage denominator.
 The Go coverage parser accepts valid zero-statement profile rows emitted on Windows.

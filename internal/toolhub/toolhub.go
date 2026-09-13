@@ -1246,13 +1246,24 @@ func (s *Store) Reload() error {
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	stopped := make([]string, 0)
+	for id, old := range s.workloads {
+		if old.Status != RunningStatus && old.Status != StartingStatus {
+			continue
+		}
+		next, ok := fresh.workloads[id]
+		if !ok || (next.Status != RunningStatus && next.Status != StartingStatus) {
+			stopped = append(stopped, id)
+		}
+	}
 	s.definitions = fresh.definitions
 	s.connections = fresh.connections
 	s.credentials = fresh.credentials
 	s.bindings = fresh.bindings
 	s.workloads = fresh.workloads
 	s.projectionRevisions = fresh.projectionRevisions
+	s.mu.Unlock()
+	s.stopWorkloads(stopped)
 	return nil
 }
 

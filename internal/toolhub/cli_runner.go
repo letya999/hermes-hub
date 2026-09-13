@@ -75,7 +75,7 @@ func (r CLIRunner) Run(ctx context.Context, definition ToolDefinition, tool Tool
 	}
 	for key := range environment {
 		value := environment[key]
-		if !credentialPattern.MatchString(key) || !r.AllowedEnvironment[key] || len(value) > 16384 || strings.ContainsAny(value, "\x00\r\n") {
+		if !credentialPattern.MatchString(key) || !cliEnvAllowed(r.AllowedEnvironment, key) || len(value) > 16384 || strings.ContainsAny(value, "\x00\r\n") {
 			return BackendResult{}, fmt.Errorf("%w: environment key %q", ErrUnauthorized, key)
 		}
 	}
@@ -204,6 +204,13 @@ func scalarArgument(argument CLIArgument, value any) (string, error) {
 		return "", fmt.Errorf("%w: CLI argument %q is unsafe", ErrInvalid, argument.Name)
 	}
 	return encoded, nil
+}
+
+func cliEnvAllowed(allowlist map[string]bool, key string) bool {
+	if allowlist == nil {
+		return true
+	}
+	return allowlist[key]
 }
 
 func sortedEnvironment(values map[string]string) []string {
