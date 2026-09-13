@@ -1,11 +1,12 @@
 ---
 description: Accepted architectural decisions; append new decisions when changing direction.
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0016](ADR-0016-encrypted-credentials-and-oauth.md) | Ciphertext store behind ToolHub locators, OAuth broker and audit |
 | [ADR-0015](ADR-0015-durable-job-runtime-mappings.md) | Durable job, session, run and generation mappings in local stores |
 | [ADR-0014](ADR-0014-scale-to-zero-context-runtimes.md) | Scale-to-zero warm Hermes runtime per active context; Hub owns routine schedules |
 | [ADR-0013](ADR-0013-toolhub-security-boundary.md) | Go ToolHub authorizes; ToolHive executes and aggregates internally |

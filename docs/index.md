@@ -9,12 +9,12 @@ last_verified: 2026-09-13
 | Document | Purpose | Verified |
 |---|---|---|
 | [architecture.md](architecture.md) | Current components and target scale-to-zero runtime boundary | 2026-09-13 |
-| [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-10 |
+| [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-13 |
 | [operations.md](operations.md) | Deployment, runtime lifecycle, backup and recovery | 2026-09-13 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-13 |
-| [threat-model.md](threat-model.md) | Scale-to-zero and future-organization trust boundaries | 2026-09-12 |
+| [threat-model.md](threat-model.md) | Scale-to-zero and future-organization trust boundaries | 2026-09-13 |
 | [migration-map.md](migration-map.md) | Current-to-scale-to-zero rollout, rollback and deletion gates | 2026-09-13 |
-| [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-12 |
+| [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-13 |
 
 <!-- КОНЕЦ СОДЕРЖИМОГО -->
 

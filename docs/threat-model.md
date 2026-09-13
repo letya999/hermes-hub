@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 ---
 # Threat model
 
@@ -102,5 +102,7 @@ replace bearer authentication later; it cannot replace per-call binding and owne
 checks.
 
 Related: [ADR-0013](adr/ADR-0013-toolhub-security-boundary.md),
-[SPEC-0010](../specs/active/SPEC-0010-stable-identifiers.md), and issues #11, #12,
-#20-#26, #46-#48 and #51.
+[ADR-0016](adr/ADR-0016-encrypted-credentials-and-oauth.md),
+[SPEC-0010](../specs/active/SPEC-0010-stable-identifiers.md),
+[SPEC-0020](../specs/active/SPEC-0020-credentials-and-connectors.md),
+and issues #11, #12, #20-#28, #46-#51.

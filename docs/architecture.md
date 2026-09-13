@@ -189,3 +189,21 @@ ToolHub MCP entry into the copied Hermes config; unset variables leave the gener
 runtime unchanged. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
 against the existing store and never creates a second ownership registry. ToolHive v0.48.0 remains an
 external conditional backend at the pin recorded in ADR-0013 and issue #11.
+
+## M3 credentials and connectors
+
+[SPEC-0020](../specs/active/SPEC-0020-credentials-and-connectors.md) and
+[ADR-0016](adr/ADR-0016-encrypted-credentials-and-oauth.md) keep ToolHub as the
+ownership registry and store secret values only as ciphertext behind opaque
+locators. The encryption key is supplied by `HUB_CREDENTIAL_KEY` or
+`HUB_CREDENTIAL_KEY_FILE` and is never written to the ToolHub snapshot, the
+ciphertext file or a ciphertext backup. `AuthorizeProjected` is the only
+decrypt/inject path; values enter only the selected workload and are wiped on
+stop. Chat `KEY=value` is intercepted before Hermes. `hubctl secret` set/list/delete
+reads values from stdin or `--from-file`. Personal-terminal exposure is an
+explicit reversible connection flag. Failed rotates become `degraded`. One OAuth
+broker implements authorization-code+PKCE and device flow against official
+Google, Slack and Atlassian URLs, with remote MCP discovery via RFC 8414/9728.
+The audit ledger records who, runtime, connection, revision and job/run/call
+correlation without prompts or tokens. Generated MCP remains the default;
+ToolHub stays opt-in through `HUB_TOOLHUB_*`.

@@ -118,7 +118,7 @@ func (s *Store) ListProjectedTools(auth identity.Envelope) ([]ProjectedTool, err
 	for _, binding := range s.bindings {
 		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
 		if err != nil {
-			if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStale) || errors.Is(err, ErrRevoked) {
+			if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStale) || errors.Is(err, ErrRevoked) || errors.Is(err, ErrDegraded) {
 				continue
 			}
 			return nil, err
