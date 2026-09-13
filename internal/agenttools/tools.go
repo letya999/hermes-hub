@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"io"
 	"io/fs"
@@ -49,6 +51,8 @@ type Tools struct {
 	HHEnabled, OrgScoped             bool
 	OrgActions                       map[string]bool
 	StateDir                         string
+	ToolHub                          *toolhub.Store
+	ToolHubAuth                      identity.Envelope
 	Restart                          func() error
 	mu                               sync.Mutex
 	lock, envLock                    *flock.Flock
@@ -87,7 +91,54 @@ func Open(workspace, archive string, organization ...string) (*Tools, error) {
 	if stateDir == "" {
 		stateDir = "/state"
 	}
-	return &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, Restart: func() error { return restartRuntime(stateDir) }, lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	toolHubStore, toolHubAuth, err := loadToolHub(stateDir)
+	if err != nil {
+		_ = w.Close()
+		_ = a.Close()
+		if o != nil {
+			_ = o.Close()
+		}
+		return nil, err
+	}
+	return &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {
+	path := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_STORE"))
+	if path == "" {
+		return nil, identity.Envelope{}, nil
+	}
+	store, err := toolhub.Load(path)
+	if err != nil {
+		return nil, identity.Envelope{}, fmt.Errorf("load ToolHub catalog: %w", err)
+	}
+	principal := os.Getenv("HUB_PRINCIPAL_ID")
+	if principal == "" {
+		principal = os.Getenv("HUB_USER_ID")
+	}
+	contextID := os.Getenv("HUB_CONTEXT_ID")
+	if contextID == "" {
+		contextID = principal
+	}
+	runtimeID := os.Getenv("HUB_RUNTIME_ID")
+	if runtimeID == "" {
+		runtimeID = principal
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: toolHubEnvOr("HUB_EXTERNAL_ID", principal), ContextID: contextID, RuntimeID: runtimeID, ConversationID: toolHubEnvOr("HUB_CONVERSATION_ID", "toolhub"), DeliveryTargetID: toolHubEnvOr("HUB_DELIVERY_TARGET_ID", "toolhub"), PolicyVersion: toolHubEnvOr("HUB_POLICY_VERSION", "policy-1")}
+	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+		return nil, identity.Envelope{}, fmt.Errorf("ToolHub identity: %w", err)
+	}
+	store.Reconnect = &toolhub.ReconnectController{Store: store, Auth: auth, OnChange: func(change toolhub.ProjectionChange) error {
+		return toolhub.WriteReconnectMarker(stateDir, change)
+	}}
+	return store, auth, nil
+}
+
+func toolHubEnvOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 func (t *Tools) Close() {
 	_ = t.Workspace.Close()
@@ -167,6 +218,17 @@ func envUpdateNextStep(path string) string {
 }
 
 func (t *Tools) ServiceCatalog() (map[string]any, error) {
+	if t.ToolHub != nil {
+		entries, err := t.ToolHub.Catalog(t.ToolHubAuth)
+		if err != nil {
+			return nil, err
+		}
+		services := make([]any, len(entries))
+		for i, entry := range entries {
+			services[i] = entry
+		}
+		return map[string]any{"services": services, "source": "toolhub-manifest", "secret_values_included": false}, nil
+	}
 	self, err := t.selfServices()
 	if err != nil {
 		return nil, err
@@ -198,6 +260,9 @@ func (t *Tools) ServiceCatalog() (map[string]any, error) {
 }
 
 func (t *Tools) ServiceEnable(r Input) (map[string]any, error) {
+	if t.ToolHub != nil {
+		return t.toolHubServiceEnable(r)
+	}
 	name := strings.TrimSpace(r.Service)
 	info, ok := stack.ServiceInfoByName(name)
 	if !ok {
@@ -263,6 +328,60 @@ func (t *Tools) ServiceEnable(r Input) (map[string]any, error) {
 	}
 	out["restart_scheduled"] = true
 	return out, nil
+}
+
+func (t *Tools) ServiceDisable(r Input) (map[string]any, error) {
+	if t.ToolHub == nil {
+		return nil, errors.New("service_disable requires the ToolHub manifest catalog")
+	}
+	name, version, err := t.toolHubManifest(r.Service)
+	if err != nil {
+		return nil, err
+	}
+	if err := t.ToolHub.Disable(t.ToolHubAuth, name, version); err != nil {
+		return nil, err
+	}
+	return map[string]any{"service": name, "version": version, "enabled": false, "restart_required": true, "restart_scheduled": false, "secret_values_included": false}, nil
+}
+
+func (t *Tools) toolHubServiceEnable(r Input) (map[string]any, error) {
+	if t.OrgScoped {
+		return nil, fmt.Errorf("service changes are host-managed in organization scope")
+	}
+	name, version, err := t.toolHubManifest(r.Service)
+	if err != nil {
+		return nil, err
+	}
+	binding, err := t.ToolHub.Enable(t.ToolHubAuth, name, version)
+	if err != nil {
+		entries, _ := t.ToolHub.Catalog(t.ToolHubAuth)
+		for _, entry := range entries {
+			if entry.Name == name && entry.Version == version && len(entry.MissingCredentials) > 0 {
+				return map[string]any{"service": name, "version": version, "enabled": false, "missing_credentials": entry.MissingCredentials, "secret_values_included": false}, nil
+			}
+		}
+		return nil, err
+	}
+	return map[string]any{"service": name, "version": version, "binding_id": binding.ToolBindingID, "projection_revision": binding.ProjectionRevision, "enabled": true, "restart_required": true, "restart_scheduled": false, "secret_values_included": false}, nil
+}
+
+func (t *Tools) toolHubManifest(raw string) (string, string, error) {
+	name, version, hasVersion := strings.Cut(strings.TrimSpace(raw), "@")
+	entries, err := t.ToolHub.Catalog(t.ToolHubAuth)
+	if err != nil {
+		return "", "", err
+	}
+	found := []toolhub.CatalogEntry{}
+	for _, entry := range entries {
+		if entry.Name == name && (!hasVersion || entry.Version == version) {
+			found = append(found, entry)
+		}
+	}
+	if len(found) == 0 {
+		return "", "", fmt.Errorf("unknown ToolHub manifest %q; call service_catalog first", raw)
+	}
+	slices.SortFunc(found, func(a, b toolhub.CatalogEntry) int { return strings.Compare(a.Version, b.Version) })
+	return found[len(found)-1].Name, found[len(found)-1].Version, nil
 }
 
 func missingEnv(keys []string) []string {
@@ -641,6 +760,10 @@ func (t *Tools) Server() *mcp.Server {
 	})
 	mcp.AddTool(s, &mcp.Tool{Name: "service_enable", Description: "After a direct owner request, enable one self-service connector. If credentials are missing, returns only the required KEY names and does not change configuration."}, func(_ context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
 		out, err := t.ServiceEnable(r)
+		return nil, out, err
+	})
+	mcp.AddTool(s, &mcp.Tool{Name: "service_disable", Description: "After a direct owner request, disable one ToolHub binding without deleting its historical owner or credential metadata."}, func(_ context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+		out, err := t.ServiceDisable(r)
 		return nil, out, err
 	})
 	for _, op := range []string{"hh_search", "hh_vacancy", "hh_resumes", "hh_apply"} {

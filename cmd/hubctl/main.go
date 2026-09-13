@@ -31,7 +31,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -48,6 +48,7 @@ func run(ctx context.Context, args []string) error {
 	config := f.String("config", "companion.yaml", "native bridge config")
 	apply := f.Bool("apply", false, "apply migration; default is dry-run")
 	stateSource := f.String("state-volume", "", "legacy runtime state directory")
+	toolHubStore := f.String("toolhub-store", "", "absolute ToolHub registry path")
 	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
@@ -104,6 +105,28 @@ func run(ctx context.Context, args []string) error {
 		return stack.InitOrganization(*organizationDir, *organization, *profile)
 	case "migrate-spaces":
 		report, err := migration.Run(migration.Options{Root: *root, User: *profile, Organization: *organization, Environment: *environment, Apply: *apply, UserSource: *userSource, OrganizationSource: *orgSource, StateSource: *stateSource, WorkspaceSource: *workspaceSource})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
+	case "migrate-toolhub":
+		absoluteDir, err := filepath.Abs(*dir)
+		if err != nil {
+			return err
+		}
+		stateDir := *stateSource
+		if stateDir == "" {
+			stateDir = filepath.Join(absoluteDir, "runtime")
+		}
+		storePath := *toolHubStore
+		if storePath == "" {
+			storePath = filepath.Join(stateDir, "toolhub", "store.json")
+		}
+		storePath, err = filepath.Abs(storePath)
+		if err != nil {
+			return err
+		}
+		report, err := migration.MigrateToolHub(migration.ToolHubMigrationOptions{Directory: absoluteDir, StateDir: stateDir, StorePath: storePath, User: *profile, Apply: *apply})
 		if err != nil {
 			return err
 		}

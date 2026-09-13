@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 ---
 # Architecture
 
@@ -143,3 +143,49 @@ GitLab uses the runtime's `glab` CLI rather than MCP; `GITLAB_TOKEN` and
 File writes use cross-process locks, hash preconditions and atomic rename. Search/read
 are bounded UTF-8 operations. HeadHunter applications use an existing applicant resume,
 explicit task authorization and actual HTTP receipts; unknown outcomes are not retried.
+
+## M2 ToolHub foundation
+
+The contract-only foundation is recorded in [SPEC-0017](../specs/active/SPEC-0017-toolhub-foundation.md)
+and implemented in `internal/toolhub`. It separates immutable versioned definitions,
+owner-scoped connections, opaque credential references, effective bindings and workload
+instances. Exact `principal_id`, `context_id`, `runtime_id` and `policy_version`
+checks reuse `internal/identity`; ToolHub does not create a second ownership registry.
+
+Definitions classify execution as shared, per-user or per-job and carry finite resource
+limits, explicit egress, logical mounts and immutable source pins. The registry can
+save/load a permissioned atomic JSON snapshot. Container definitions also require an
+exact ToolHive version and digest-pinned sidecars; actual resource and egress enforcement
+is admitted only by the private `HUB_TOOLHIVE_ADMISSION_ENDPOINT` controller contract
+and fails closed when absent.
+
+The stage-2 opt-in surface is recorded in [SPEC-0018](../specs/active/SPEC-0018-toolhub-stage2.md).
+When `HUB_TOOLHUB_STORE` is explicitly configured, `service_catalog`,
+`service_enable` and `service_disable` use the manifest-backed catalog and exact
+owner-scoped bindings. Catalog mutations are written back to that store; list and
+call reload the snapshot so a tools process and `hub-toolhub` see the same current
+bindings. Ambiguous owner connections fail closed. Organization scope may disable a
+binding (narrow) but cannot enable one (expand). The legacy `stack`/`self-services.json`
+path remains the compatibility fallback when the store is unset; no runtime route is
+switched by this stage. Each projection has a persisted monotonic revision and an
+observable, at-most-once reconnect hook that writes `toolhub-reconnect.request`.
+The hook is transport-only: current binding state is rechecked under the registry
+read fence before backend execution and Hermes session/home ownership stays outside
+this package. Bounded CLI calls go to the CLI runner and fail closed without an
+isolation check; MCP transports go to the private adapter.
+
+Container admission requires a controller receipt proving the exact running workload,
+digest-pinned images and requested execution policy. HTTP reachability alone is not
+enforcement evidence; missing or mismatched receipts fail closed.
+
+`internal/toolhub` also contains a stateless streamable-HTTP gateway, a private
+ToolHive/vMCP MCP client adapter and a bounded direct-exec runner. The runtime
+image enables the MCP SDK's legacy-session compatibility flag so Hermes clients
+may send session headers while authorization remains per request. The backend
+adapter disables standalone SSE because ToolHub calls are request/response only.
+Both list and call use the same current projection resolver. Setting `HUB_TOOLHUB_ENDPOINT` (or
+`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store) injects one authenticated
+ToolHub MCP entry into the copied Hermes config; unset variables leave the generated
+runtime unchanged. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
+against the existing store and never creates a second ownership registry. ToolHive v0.48.0 remains an
+external conditional backend at the pin recorded in ADR-0013 and issue #11.
