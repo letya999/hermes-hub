@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -477,8 +478,11 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	for range 10 {
 		g.deliverOne(context.Background())
 	}
-	if len(runner.seen) != 3 || len(fake.deleted) != 2 || len(fake.sent) != 7 {
+	if len(runner.seen) != 1 || len(fake.deleted) != 2 || len(fake.sent) != 7 {
 		t.Fatalf("seen=%v deleted=%v sent=%v", runner.seen, fake.deleted, fake.sent)
+	}
+	if strings.Contains(strings.Join(runner.seen, "\n"), "GITHUB_TOKEN=") || strings.Contains(strings.Join(fake.sent, "\n"), "super-secret") || strings.Contains(strings.Join(fake.sent, "\n"), "secret-token") {
+		t.Fatal("chat secret reached Hermes or replies")
 	}
 	for _, job := range runner.jobs {
 		if job.PrincipalID != "alice" || job.ExternalIdentityID != "telegram-11" || job.ContextID != "alice" || job.RuntimeID != "alice" || job.ConversationID != "telegram-11" || job.DeliveryTargetID != "telegram-11" || job.PolicyVersion != "policy-1" {
@@ -600,6 +604,51 @@ func TestSpoolAndTelegramErrorPaths(t *testing.T) {
 	config.Users[0].StateDir = filepath.Join(root, "missing")
 	if _, err := New(config); err == nil {
 		t.Fatal("missing user root accepted")
+	}
+}
+
+func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
+	c := testConfig(t)
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := credstore.WriteKeyFile(keyFile, key); err != nil {
+		t.Fatal(err)
+	}
+	c.CredentialStore = filepath.Join(t.TempDir(), "store.enc")
+	c.CredentialKeyFile = keyFile
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	runner := &fakeRunner{}
+	g.api, g.runner = fake, runner
+	secret := "group-or-chat-secret-value"
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 1, Message: &Message{MessageID: 9, From: &TGUser{ID: 11}, Chat: TGChat{ID: 99, Type: "group"}, Text: "GOOGLE_TOKEN=" + secret}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 2, Message: &Message{MessageID: 10, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "GOOGLE_TOKEN=" + secret}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		g.deliverOne(context.Background())
+	}
+	if job, _ := g.spool.ClaimJob(); job != nil {
+		t.Fatalf("secret job enqueued: %+v", job)
+	}
+	if len(runner.seen) != 0 {
+		t.Fatalf("hermes saw %v", runner.seen)
+	}
+	joined := strings.Join(fake.sent, "\n")
+	if strings.Contains(joined, secret) || !strings.Contains(joined, "Группы не принимают секреты") || !strings.Contains(joined, "GOOGLE_TOKEN") {
+		t.Fatalf("sent=%v", fake.sent)
+	}
+	listed, err := g.secrets.List("alice")
+	if err != nil || len(listed) != 1 || listed[0].Name != "GOOGLE_TOKEN" {
+		t.Fatalf("stored=%+v err=%v", listed, err)
 	}
 }
 

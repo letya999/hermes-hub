@@ -5,8 +5,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -83,10 +85,37 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	if config.Backend == nil {
 		return nil, fmt.Errorf("%w: nil ToolHub backend", ErrInvalid)
 	}
-	return (&Gateway{
+	gateway := &Gateway{
 		Store: store, Backend: config.Backend, Tokens: map[string]identity.Envelope{config.Token: config.Auth},
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
-	}).Handler()
+	}
+	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
+		ledger, err := audit.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		gateway.AuditWrite = func(event string, fields map[string]string) error {
+			record := audit.NewEvent("tool-call", fields["principal_id"], fields["outcome"])
+			record.ContextID = fields["context_id"]
+			record.RuntimeID = fields["runtime_id"]
+			record.ConnectionID = fields["connection_id"]
+			record.PolicyRevision = fields["policy_version"]
+			record.JobID = fields["job_id"]
+			record.HermesRunID = fields["hermes_run_id"]
+			record.ToolCallID = fields["tool_call_id"]
+			record.CorrelationID = fields["correlation_id"]
+			if fields["credential_revision"] != "" {
+				n, _ := strconv.ParseUint(fields["credential_revision"], 10, 64)
+				record.CredentialRevision = n
+			}
+			if fields["projection_rev"] != "" {
+				n, _ := strconv.ParseUint(fields["projection_rev"], 10, 64)
+				record.ProjectionRevision = n
+			}
+			return ledger.Append(record)
+		}
+	}
+	return gateway.Handler()
 }
 
 func nonLoopbackListen(address string) bool {

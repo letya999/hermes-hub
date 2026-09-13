@@ -48,6 +48,7 @@ var (
 	ErrUnauthorized = errors.New("toolhub authorization denied")
 	ErrStale        = errors.New("toolhub record is stale")
 	ErrRevoked      = errors.New("toolhub record is revoked")
+	ErrDegraded     = errors.New("toolhub connection is degraded")
 )
 
 type WorkloadClass string
@@ -79,6 +80,7 @@ const (
 	ActiveStatus   Status = "active"
 	DisabledStatus Status = "disabled"
 	RevokedStatus  Status = "revoked"
+	DegradedStatus Status = "degraded"
 	StartingStatus Status = "starting"
 	RunningStatus  Status = "running"
 	StoppedStatus  Status = "stopped"
@@ -449,18 +451,19 @@ func CredentialReferenceID(connectionID string, revision uint64) string {
 }
 
 type Connection struct {
-	Schema          int               `json:"schema"`
-	ConnectionID    string            `json:"connection_id"`
-	Owner           OwnerRef          `json:"owner"`
-	DefinitionID    string            `json:"definition_id"`
-	CredentialRefID string            `json:"credential_ref,omitempty"`
-	Revision        uint64            `json:"revision"`
-	Status          Status            `json:"status"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	Schema           int               `json:"schema"`
+	ConnectionID     string            `json:"connection_id"`
+	Owner            OwnerRef          `json:"owner"`
+	DefinitionID     string            `json:"definition_id"`
+	CredentialRefID  string            `json:"credential_ref,omitempty"`
+	Revision         uint64            `json:"revision"`
+	Status           Status            `json:"status"`
+	TerminalExposure bool              `json:"terminal_exposure,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 func (c Connection) Validate() error {
-	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus) {
+	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus && c.Status != DegradedStatus) {
 		return fmt.Errorf("%w: connection metadata", ErrInvalid)
 	}
 	if err := c.Owner.Validate(); err != nil {
@@ -602,10 +605,15 @@ type EffectiveBinding struct {
 	WorkloadID string
 }
 
+type WorkloadStopper interface {
+	Stop(workloadID string) error
+}
+
 type Store struct {
 	mu                  sync.RWMutex
 	path                string
 	Reconnect           *ReconnectController
+	Stopper             WorkloadStopper
 	definitions         map[string]ToolDefinition
 	connections         map[string]Connection
 	credentials         map[string]CredentialReference
@@ -810,8 +818,11 @@ func (s *Store) RotateCredential(connectionID, backend, locator string, keys []s
 			s.bindings[id] = binding
 		}
 	}
+	stopped := s.stopAffectedLocked(connectionID)
 	s.mu.Unlock()
+	s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
+		_ = s.MarkDegraded(connectionID)
 		return CredentialReference{}, err
 	}
 	return reference, nil
@@ -840,6 +851,44 @@ func (s *Store) SetConnectionStatus(connectionID string, status Status) error {
 			s.bindings[id] = binding
 		}
 	}
+	stopped := s.stopAffectedLocked(connectionID)
+	s.mu.Unlock()
+	s.stopWorkloads(stopped)
+	return s.persistAndNotify()
+}
+
+func (s *Store) MarkDegraded(connectionID string) error {
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection", ErrNotFound)
+	}
+	connection.Status = DegradedStatus
+	connection.Revision++
+	s.connections[connectionID] = connection
+	for id, binding := range s.bindings {
+		if binding.ConnectionID == connectionID {
+			s.touchProjectionLocked(&binding)
+			s.bindings[id] = binding
+		}
+	}
+	stopped := s.stopAffectedLocked(connectionID)
+	s.mu.Unlock()
+	s.stopWorkloads(stopped)
+	return s.persistAndNotify()
+}
+
+func (s *Store) SetTerminalExposure(connectionID string, enabled bool) error {
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection", ErrNotFound)
+	}
+	connection.TerminalExposure = enabled
+	connection.Revision++
+	s.connections[connectionID] = connection
 	s.mu.Unlock()
 	return s.persistAndNotify()
 }
@@ -862,7 +911,9 @@ func (s *Store) SetBindingStatus(bindingID string, status Status) error {
 	binding.Revision++
 	s.touchProjectionLocked(&binding)
 	s.bindings[bindingID] = binding
+	stopped := s.stopBindingLocked(bindingID)
 	s.mu.Unlock()
+	s.stopWorkloads(stopped)
 	return s.persistAndNotify()
 }
 
@@ -940,6 +991,9 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (Effecti
 	}
 	if connection.Status == RevokedStatus {
 		return EffectiveBinding{}, fmt.Errorf("%w: connection", ErrRevoked)
+	}
+	if connection.Status == DegradedStatus {
+		return EffectiveBinding{}, fmt.Errorf("%w: connection", ErrDegraded)
 	}
 	if connection.Status != ActiveStatus || connection.Revision != binding.ConnectionRevision || connection.DefinitionID != definition.DefinitionID {
 		return EffectiveBinding{}, fmt.Errorf("%w: current connection revision", ErrStale)
@@ -1128,6 +1182,46 @@ func (s *Store) persist() error {
 		return nil
 	}
 	return s.Save(s.path)
+}
+
+func (s *Store) stopAffectedLocked(connectionID string) []string {
+	ids := make([]string, 0)
+	for id, workload := range s.workloads {
+		binding, ok := s.bindings[workload.BindingID]
+		if !ok || binding.ConnectionID != connectionID {
+			continue
+		}
+		if workload.Status == RunningStatus || workload.Status == StartingStatus {
+			workload.Status = StoppedStatus
+			s.workloads[id] = workload
+			ids = append(ids, workload.WorkloadID)
+		}
+	}
+	return ids
+}
+
+func (s *Store) stopBindingLocked(bindingID string) []string {
+	ids := make([]string, 0)
+	for id, workload := range s.workloads {
+		if workload.BindingID != bindingID {
+			continue
+		}
+		if workload.Status == RunningStatus || workload.Status == StartingStatus {
+			workload.Status = StoppedStatus
+			s.workloads[id] = workload
+			ids = append(ids, workload.WorkloadID)
+		}
+	}
+	return ids
+}
+
+func (s *Store) stopWorkloads(ids []string) {
+	if s == nil || s.Stopper == nil {
+		return
+	}
+	for _, id := range ids {
+		_ = s.Stopper.Stop(id)
+	}
 }
 
 func (s *Store) persistAndNotify() error {

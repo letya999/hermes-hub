@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-11
+last_verified: 2026-09-13
 ---
 # Integration contracts
 
@@ -64,9 +64,16 @@ Native memory, skills and hooks are described in SETUP.md; user configuration pa
 through to Hermes without replacing its extension system. Organization skills use the
 upstream `skills.external_dirs` setting and are mounted read-only from the organization
 home; same-named user skills take precedence in a user-scoped job.
-Connector credentials can also be supplied by an explicit owner `KEY=value` message to
-the hub `env_update` tool. It persists a constrained user-runtime overlay and restarts
-the supervisor; it is not a host `.env` editor and cannot alter organization-owned keys.
+Connector credentials are supplied by `hubctl secret set` or an explicit owner
+`KEY=value` chat message intercepted before Hermes. Values are encrypted at rest
+and never returned in catalog, audit or replies. The hub `env_update` tool remains
+only for the explicit personal-terminal overlay; it is not a host `.env` editor and
+cannot alter organization-owned keys.
+
+OAuth for Google, Slack and Atlassian uses the official authorization and token
+URLs recorded in SPEC-0020. Remote MCP discovers `authorization_endpoint` and
+`token_endpoint` via RFC 9728 and RFC 8414. Tokens persist only in the encrypted
+store. Live provider login is a later milestone.
 
 `communication-hub` never mounts scope homes or receives provider credentials. It sends
 the immutable job envelope to `hermes-runtime` over a private Bearer-authenticated HTTP
