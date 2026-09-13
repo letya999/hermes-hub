@@ -35,6 +35,10 @@ func (r CLIRunner) Call(ctx context.Context, effective EffectiveBinding, tool To
 	return r.Run(ctx, effective.Definition, tool, arguments, nil, "")
 }
 
+func (r CLIRunner) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
+	return r.Run(ctx, effective.Definition, tool, arguments, environment, "")
+}
+
 func (r CLIRunner) Run(ctx context.Context, definition ToolDefinition, tool ToolSpec, arguments map[string]any, environment map[string]string, cwd string) (BackendResult, error) {
 	if definition.Transport != BoundedCLI {
 		return BackendResult{}, fmt.Errorf("%w: CLI transport required", ErrInvalid)

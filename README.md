@@ -86,9 +86,9 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 Default features are workspace, browser and hh. All account integrations are opt-in.
 Hermes works without CareerGo and JobFetch. If you run an external MCP service, add
 its URL and token reference under mcp_servers; see [connections](docs/integrations.md).
-An explicit owner message containing connector `KEY=value` lines can use the hub
-`env_update` tool. It changes only this user's runtime overlay and reports key names,
-never values; organization-owned and runtime-control keys are rejected.
+An explicit owner message containing connector `KEY=value` lines is intercepted
+before Hermes. `hubctl secret set|list|delete` is the host path. Replies contain
+key names and status, never values; groups reject credential entry.
 
 ## Engineering
 

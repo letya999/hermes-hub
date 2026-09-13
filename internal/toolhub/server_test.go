@@ -2,10 +2,17 @@ package toolhub
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
@@ -66,6 +73,71 @@ func TestEndpointConfigFromEnvUsesRuntimeIdentityDefaults(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_TOKEN_ENV", "bad-name")
 	if _, err := EndpointConfigFromEnv(); err == nil {
 		t.Fatal("invalid token environment name accepted")
+	}
+}
+
+func TestEndpointHandlerAuditLedgerFailClosed(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	ledger := filepath.Join(t.TempDir(), "audit.jsonl")
+	t.Setenv("HUB_AUDIT_LEDGER", ledger)
+	token := strings.Repeat("t", 32)
+	config := EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any) (BackendResult, error) {
+		return BackendResult{Text: "ok"}, nil
+	})}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil || handler == nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "audit-ledger", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL + DefaultEndpointPath, HTTPClient: &http.Client{Transport: testBearerTransport{base: http.DefaultTransport, token: token}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	name := ProjectedToolName("google-work", "1.0.0", "search")
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(ledger)
+	if err != nil || !strings.Contains(string(body), `"kind":"tool-call"`) || !strings.Contains(string(body), `"credential_revision":1`) {
+		t.Fatalf("ledger=%s err=%v", body, err)
+	}
+	t.Setenv("HUB_AUDIT_LEDGER", "relative.jsonl")
+	if _, err := NewEndpointHandler(config, store); err == nil {
+		t.Fatal("relative ledger accepted")
+	}
+	t.Setenv("HUB_AUDIT_LEDGER", filepath.Join(t.TempDir(), "missing", "nested", "audit.jsonl"))
+	if _, err := NewEndpointHandler(config, store); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGatewayInjectorAndCallEnv(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	name := ProjectedToolName("google-work", "1.0.0", "search")
+	var injected atomic.Bool
+	var wiped atomic.Bool
+	gateway := Gateway{
+		Store: store,
+		Backend: backendFunc(func(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any) (BackendResult, error) {
+			return BackendResult{Text: "ok"}, nil
+		}),
+		Injector: func(EffectiveBinding) (map[string]string, func() error, error) {
+			injected.Store(true)
+			return map[string]string{"GOOGLE_TOKEN": "injected"}, func() error { wiped.Store(true); return nil }, nil
+		},
+	}
+	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if !injected.Load() || !wiped.Load() {
+		t.Fatal("injector did not run")
+	}
+	cli := RoutingBackend{CLI: CLIRunner{}}
+	if _, err := cli.CallEnv(context.Background(), EffectiveBinding{Definition: boundedCLIDefinition()}, ToolSpec{Name: "list"}, nil, nil); !errors.Is(err, ErrIsolation) && err == nil {
+		t.Fatal("CLI without isolation accepted")
 	}
 }
 

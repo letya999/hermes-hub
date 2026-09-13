@@ -1,0 +1,28 @@
+change: CHG-0022
+title: Credentials and Connector Platform (M3)
+status: in-progress
+issues: [47, 48, 51, 27, 49, 50, 28]
+follow_ups: [73, 74]
+started: 2026-09-13
+updated: 2026-09-13
+implementation:
+  ciphertext_store: done
+  vault_locator_seam: done
+  inject_after_authorize: done
+  terminal_exposure: done
+  rotate_revoke_open_session: done
+  hubctl_secret: done
+  chat_intercept: done
+  oauth_broker: done
+  audit_ledger: done
+checks:
+  targeted_tests: done
+  just_check: done
+  just_security: skipped-no-lockfile-change
+  just_docker_check: done
+notes:
+  - Generated MCP remains the default runtime; ToolHub stays opt-in via HUB_TOOLHUB_*.
+  - Live Google/Slack/Jira login is M5 and does not close #50.
+  - #73 and #74 stay open.
+  - just check 2026-09-13: 85.32% Go statement coverage.
+  - just docker-check prod 2026-09-13: image 6cd141393171, Hermes Agent 0.21.0.

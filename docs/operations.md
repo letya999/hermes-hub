@@ -26,10 +26,29 @@ Change settings, then run up. The runtime copies the generated Hermes config at 
 existing memory and installed skills/hooks persist. SOUL.md initializes a new runtime's
 instructions; edits made inside an established Hermes home remain there. To replace it,
 explicitly copy the owner's new SOUL into that selected container and restart.
-An explicit owner `KEY=value` message can use the hub `env_update` tool. It persists a
-user-only `/state/self-env.json` overlay and asks the supervisor to restart; it does not
-rewrite `spaces/<user>/secrets.*.env` or organization secrets. Remove/reset the overlay
-when changing back to host-managed credentials.
+Managed connector secrets are stored as ciphertext under
+`spaces/<user>/runtime/credentials/store.enc`. The encryption key lives in
+`HUB_CREDENTIAL_KEY` or `HUB_CREDENTIAL_KEY_FILE` (default
+`%APPDATA%/hermes-hub/credential.key` on Windows, `~/.config/hermes-hub/credential.key`
+elsewhere) and must stay outside the store directory and ciphertext backups.
+
+```text
+hubctl secret set --user <id> --name GOOGLE_TOKEN          # value on stdin or --from-file
+hubctl secret list --user <id>
+hubctl secret delete --user <id> --name GOOGLE_TOKEN
+hubctl secret expose --user <id> --name GOOGLE_TOKEN --terminal
+hubctl secret backup --user <id> --out credentials.backup
+hubctl secret restore --user <id> --in credentials.backup
+hubctl secret rotate-key --user <id> --from-file new.key
+hubctl secret activity --user <id>
+```
+
+An explicit owner `KEY=value` chat message is intercepted before Hermes, persisted
+through that store, and best-effort deleted. Replies contain names and status only.
+Groups reject credential entry. Personal-terminal exposure copies selected names into
+that owner's `self-env.json` overlay and is reversible. The legacy `env_update` path
+is not used for managed secrets. Failed rotates leave the connection `degraded`
+until a successful rotate or an explicit revoke.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
 The selected user home contains persistent Hermes, connection, workspace and archive
@@ -51,7 +70,8 @@ message text, cookies or session contents. Rollback is restoring the untouched s
 into a new scope home; do not delete it until the new runtime is verified.
 
 Back up all `spaces/<id>` homes and the `communication-hub-data` volume to encrypted
-storage while services are stopped. Do not use `docker compose down --volumes` unless
+storage while services are stopped. Ciphertext backups use `hubctl secret backup` and
+must not include the encryption key. Do not use `docker compose down --volumes` unless
 deleting that user's data intentionally. Restore organization and user homes separately;
 never merge memories, Telegram sessions or provider credentials.
 

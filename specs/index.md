@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0020](active/SPEC-0020-credentials-and-connectors.md) | Encrypted credentials, inject-after-authorize, OAuth broker and audit ledger |
 | [SPEC-0019](active/SPEC-0019-toolhub-stage3.md) | Dynamic ToolHub catalog, projection revision, enforcement receipt and explicit migration |
 | [SPEC-0018](active/SPEC-0018-toolhub-stage2.md) | Dynamic ToolHub endpoint, private MCP backend adapter, bounded CLI and workload lifecycle |
 | [SPEC-0016](active/SPEC-0016-communication-execution-migration.md) | Per-context communication execution rollout, rollback and five-minute lifecycle |

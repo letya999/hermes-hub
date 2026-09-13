@@ -29,6 +29,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"gopkg.in/yaml.v3"
 )
@@ -68,16 +69,18 @@ func (user User) envelope(externalID int64) identity.Envelope {
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
-	Supervised     bool          `yaml:"-"`
-	OrganizationID string        `yaml:"organization_id"`
-	Users          []User        `yaml:"users"`
-	TelegramToken  string        `yaml:"-"`
-	APIBaseURL     string        `yaml:"api_base_url,omitempty"`
-	SpoolDir       string        `yaml:"spool_dir"`
-	RuntimeURL     string        `yaml:"-"`
-	RuntimeAuth    string        `yaml:"-"`
-	PollTimeout    time.Duration `yaml:"-"`
-	HermesCommand  string        `yaml:"-"`
+	Supervised        bool          `yaml:"-"`
+	OrganizationID    string        `yaml:"organization_id"`
+	Users             []User        `yaml:"users"`
+	TelegramToken     string        `yaml:"-"`
+	APIBaseURL        string        `yaml:"api_base_url,omitempty"`
+	SpoolDir          string        `yaml:"spool_dir"`
+	RuntimeURL        string        `yaml:"-"`
+	RuntimeAuth       string        `yaml:"-"`
+	PollTimeout       time.Duration `yaml:"-"`
+	HermesCommand     string        `yaml:"-"`
+	CredentialStore   string        `yaml:"-"`
+	CredentialKeyFile string        `yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -209,6 +212,8 @@ func ConfigFromEnv() (Config, error) {
 		}
 		config.PollTimeout = 25 * time.Second
 		config.HermesCommand = envOr("HUB_HERMES_COMMAND", "hermes")
+		config.CredentialStore = os.Getenv("HUB_CREDENTIAL_STORE")
+		config.CredentialKeyFile = os.Getenv("HUB_CREDENTIAL_KEY_FILE")
 		return config, nil
 	}
 	userID := os.Getenv("HUB_USER_ID")
@@ -240,7 +245,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	return Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes")}, nil
+	return Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE")}, nil
 }
 
 func runtimeURLFromEnv() string {
@@ -987,6 +992,7 @@ type Gateway struct {
 	restart func(context.Context) error
 	busy    atomic.Bool
 	now     func() time.Time
+	secrets *secrets.Service
 }
 
 func New(config Config) (*Gateway, error) {
@@ -1037,7 +1043,15 @@ func New(config Config) (*Gateway, error) {
 	if config.Supervised {
 		restart = nil
 	}
-	return &Gateway{config: config, users: users, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now}, nil
+	var secretService *secrets.Service
+	if config.CredentialStore != "" {
+		opened, err := secrets.Open(config.CredentialStore, config.CredentialKeyFile, nil, "")
+		if err != nil {
+			return nil, err
+		}
+		secretService = opened
+	}
+	return &Gateway{config: config, users: users, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService}, nil
 }
 
 func (g *Gateway) Run(ctx context.Context) error {
@@ -1111,14 +1125,23 @@ func (g *Gateway) Run(ctx context.Context) error {
 
 func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	message := update.Message
-	if message == nil || message.From == nil || message.Chat.Type != "private" || strings.TrimSpace(message.Text) == "" {
+	if message == nil || message.From == nil || strings.TrimSpace(message.Text) == "" {
+		return nil
+	}
+	text := strings.TrimSpace(message.Text)
+	if message.Chat.Type != "private" {
+		if envstore.LooksLikeEnv(text) {
+			if _, ok := g.users[message.From.ID]; ok {
+				_ = g.api.DeleteMessage(ctx, message.Chat.ID, message.MessageID)
+				return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, "Группы не принимают секреты.")
+			}
+		}
 		return nil
 	}
 	user, ok := g.users[message.From.ID]
 	if !ok {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Доступ к этому боту не настроен.")
 	}
-	text := strings.TrimSpace(message.Text)
 	if strings.HasPrefix(text, "/") {
 		command := strings.ToLower(strings.TrimPrefix(strings.Fields(text)[0], "/"))
 		if at := strings.IndexByte(command, '@'); at >= 0 {
@@ -1171,12 +1194,30 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, connectionList(user))
 		}
 	}
-	sensitive := envstore.LooksLikeEnv(text)
-	job := Job{Envelope: user.envelope(message.From.ID), ID: "telegram-" + strconv.Itoa(update.UpdateID), OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:" + strconv.Itoa(update.UpdateID), ChatID: message.Chat.ID, MessageID: message.MessageID, Text: text, Sensitive: sensitive, CreatedAt: g.now().UTC()}
+	if envstore.LooksLikeEnv(text) {
+		return g.interceptSecret(ctx, user, update.UpdateID, message.Chat.ID, message.MessageID, text)
+	}
+	job := Job{Envelope: user.envelope(message.From.ID), ID: "telegram-" + strconv.Itoa(update.UpdateID), OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:" + strconv.Itoa(update.UpdateID), ChatID: message.Chat.ID, MessageID: message.MessageID, Text: text, Sensitive: false, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID int64, messageID int, text string) error {
+	_ = g.api.DeleteMessage(ctx, chatID, messageID)
+	reply := "Статус: rejected"
+	if g.secrets != nil {
+		names, message, err := g.secrets.ApplyChat(user.ID, text)
+		if err == nil {
+			reply = message
+		}
+		_ = names
+	}
+	if envstore.LooksLikeEnv(reply) {
+		reply = "Статус: rejected"
+	}
+	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, reply)
 }
 
 func (g *Gateway) queueDelivery(_ context.Context, key string, chatID int64, text string) error {
