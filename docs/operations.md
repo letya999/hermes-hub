@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 ---
 # Operations
 
@@ -60,9 +60,15 @@ not prove OAuth, model, Telegram or provider access. Live acceptance requires th
 operator's separate login and provider instructions.
 
 Self-service `env_update` and `service_enable` persist only under the selected user
-connection state and request a supervisor restart. They cannot edit organization policy,
-host settings or runtime-control variables. Provider content cannot authorize any
-mutation.
+connection state and request a supervisor restart. When `HUB_TOOLHUB_STORE` is
+explicitly set, `service_catalog`, `service_enable` and `service_disable` operate on
+manifest-backed exact-owner bindings and persist those bindings to the store;
+`hub-toolhub` reloads the snapshot on list/call. Organization scope may disable a
+binding and cannot enable one. Otherwise the legacy self-service path remains
+active. They cannot edit host settings or runtime-control variables. Provider content
+cannot authorize any mutation. Projection changes write `toolhub-reconnect.request`
+without restarting Hermes. `HUB_TOOLHUB_AUTOSTART=true` starts the shipped
+`hub-toolhub` binary.
 
 ## Scale-to-zero operation (initial implementation)
 

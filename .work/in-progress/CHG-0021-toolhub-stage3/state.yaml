@@ -1,0 +1,33 @@
+change: CHG-0021
+title: ToolHub stage 3 migration and enforcement foundation
+status: done-control-plane
+issues: [20, 21, 22, 23, 24, 25, 26, 47]
+follow_ups: [73, 74]
+started: 2026-09-13
+updated: 2026-09-13
+implementation:
+  criteria_audit: recorded
+  admission_attestation: implemented
+  projection_revision: implemented
+  manifest_catalog: implemented-opt-in-persisted
+  dry_run_apply_migration: implemented
+  reconnect_hook: implemented-marker-file
+  authorize_projected_fence: implemented
+  routing_backend: implemented
+  autostart_binary: hub-toolhub-symlink
+  runtime_route_switch: deferred
+checks:
+  targeted_tests: passed-toolhub-agenttools-migration-runtime
+  just_check: passed-coverage-85.03
+  just_security: not-required-until-dependency-change
+  just_docker_check: passed-image-dd669637042e
+  linux_vps_measurement: unavailable-on-current-host
+  real_toolhive_remote_stateful_calls: blocked-by-upstream-fixture-health
+  real_hermes_reconnect_preserving_state: unavailable-follow-up
+notes:
+  - CHG-0019 and CHG-0020 changes remain in the worktree and are preserved.
+  - Current runtime keeps generated MCP as the default; ToolHub store loading is explicit via HUB_TOOLHUB_STORE.
+  - Catalog enable/disable persist to the store file; list/call reload current bindings.
+  - The vMCP log records session termination after backend capability aggregation found no healthy backends; this is an external fixture lifecycle/health gate, not evidence of a successful call.
+  - No secret value is imported into a ToolHub manifest, connection metadata, migration report, reconnect marker or controller plan.
+  - GitHub #20–#26 closed with evidence comments. #47 remains open for M3 secrets. Live ToolHive/VPS is #73; real Hermes reconnect is #74.

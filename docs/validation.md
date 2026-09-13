@@ -1,6 +1,6 @@
 ---
 description: Measured delivery evidence and explicit unverified boundaries.
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 ---
 # Delivery evidence — CHG-0009 and CHG-0012
 
@@ -211,3 +211,131 @@ before CompleteJob settled it. The shared bounded mapping wait corrected that
 assertion boundary; `just check` 36387 and full real gateway lifecycle 21011 then
 passed, including actual five-minute automatic shutdown and cold session restore.
 Production execution binaries were unchanged.
+
+## CHG-0019 M2 ToolHub foundation
+
+`internal/toolhub` now validates immutable versioned definitions for remote MCP,
+stateful container MCP and bounded CLI workloads. It keeps connections and credential
+references separate, derives deterministic binding/tool/workload names, and rechecks
+exact identity, owner, current revision and status before admission. The registry
+snapshot contains only metadata and opaque credential locators; no secret value is
+returned or persisted by this contract.
+
+Targeted `go test -race ./internal/toolhub` passed with 85.7% package coverage. The
+tests are control-plane regressions for strict schema/budget/source/mount validation,
+cross-owner and stale-policy denial, disabled/revoked bindings, concurrent admission
+versus revocation, concurrent rotation, file round-trip and workload lifecycle
+metadata. `just check` passed with 85.07% total Go statement coverage. With Docker
+29.4.3, `just docker-check` passed on image `3a011b97f1c2`, including standalone
+smoke and the pinned Hermes 0.21.0 contract/lifecycle probe; those fixtures made no
+live Telegram or external-provider call. The safety scan passed secret scanning and
+govulncheck but remains non-zero on 91 pre-existing gosec findings and unavailable
+host npm/eslint; no dependency changed in CHG-0019, so `just security` was not
+required. The tests and Docker probe do not claim ToolHub gateway, ToolHive/vMCP,
+MCP backend or provider integration success.
+
+## CHG-0020 M2 ToolHub stage 2
+
+The stage-2 implementation adds an opt-in stateless streamable-HTTP ToolHub
+gateway, a shared projected-tool resolver for list/call, private MCP HTTP
+backend adapter, bounded direct-exec CLI runner and per-user/per-job workspace
+lifecycle. Runtime wiring is opt-in: `HUB_TOOLHUB_ENDPOINT` injects the stable
+authenticated endpoint, while `HUB_TOOLHUB_AUTOSTART=true` starts `hub-toolhub`
+against `HUB_TOOLHUB_STORE`; unset variables preserve generated direct MCP.
+
+Evidence completed locally:
+
+- `go test -race ./internal/toolhub` and `go test -race ./internal/devcheck` passed;
+  the final full run records the exact repository coverage below.
+- `just check` passed with 85.03% total Go statement coverage, race/shuffle,
+  format, vet, pinned staticcheck, docs and actionlint.
+- `gosec ./internal/toolhub` passed with 0 issues and 6 narrow, justified
+  `#nosec` annotations covering validated command/process and secret-boundary
+  operations.
+- `just docker-check` passed with Docker 29.4.3 and image
+  `4257481689e2`: standalone smoke and pinned Hermes 0.21.0 contract/lifecycle
+  passed, including actual five-minute idle removal and original-session cold
+  restore. The probe used fixtures and made no live Telegram/provider call.
+- `go run ./cmd/devcheck toolhub-contract` failed closed as expected because
+  `TOOLHIVE_VMCP_ENDPOINT`, `TOOLHIVE_REMOTE_TOOL` and
+  `TOOLHIVE_STATEFUL_TOOL` were not configured. The command therefore fails
+  closed instead of treating a fixture or unset endpoint as integration proof.
+- With the local vMCP inputs configured, the same probe reached initialize but
+  failed at the external `404 Session terminated` continuity boundary described
+  below; no ToolHive call success is claimed from that run.
+- In an isolated local Docker run, the official ToolHive v0.48.0 source commit
+  `c25e508592bc3bcfa10dea99af04daaf341db95a` was built outside the repository.
+  `thv` created the remote and digest-pinned stateful fixtures and vMCP
+  discovered their namespaced tools. The current vMCP process then returned
+  `404 Session terminated` when the MCP session header was reused after
+  initialize, so the live vMCP call and gateway contract are recorded as
+  unavailable rather than claimed as passed.
+- The stateful fixture used a bind-mounted state directory; its marker survived
+  the ToolHive stop/start check. This proves only the local fixture persistence
+  boundary. vMCP used anonymous auth and local fixtures, so no live provider or
+  secret integration is claimed.
+- Container MCP definitions now require an exact ToolHive version and
+  digest-pinned sidecar references. The Go adapter fails closed unless the
+  private `HUB_TOOLHIVE_ADMISSION_ENDPOINT` controller accepts the plan; this
+  keeps CPU, memory, PID, filesystem and egress enforcement outside the Go
+  gateway.
+- `toolhub-hermes-contract` is an integration-only real-Hermes probe. It keeps
+  the Hermes container/session volume alive while restarting only the Go
+  ToolHub endpoint and requires explicit real vMCP inputs.
+
+Unavailable acceptance evidence remains explicit: target Linux VPS resource and
+egress measurements, production-pinned ToolHive sidecar/resource enforcement,
+external remote-provider auth, the current vMCP session continuity gate, and
+the real-Hermes reconnect probe (blocked by that external vMCP session failure).
+`just security` was not required
+because no repository dependency or pin changed.
+
+## CHG-0021 M2 ToolHub stage 3
+
+Stage 3 adds the manifest-backed opt-in catalog, exact-owner enable/disable,
+persisted projection revisions, a bounded reconnect hook, controller enforcement
+attestation and explicit dry-run/apply migration. The current generated MCP runtime
+remains the default when `HUB_TOOLHUB_STORE` is unset.
+
+Control-plane wiring now matches SPEC-0017/0018/0019:
+
+- Enable/disable persist to `HUB_TOOLHUB_STORE`; list/call/catalog reload the file
+  so a tools process and `hub-toolhub` share current bindings.
+- `tools/call` holds `AuthorizeProjected` through backend admission.
+- Ambiguous owner connections are denied. Organization scope may disable and cannot
+  enable. Bounded CLI is dispatched to the CLI runner and fails closed without isolation.
+- Autostart prefers `hub-toolhub` (image symlink to `toolhub`).
+- Projection changes write secret-free `toolhub-reconnect.request`. Gateway audit
+  records principal/context/runtime/binding/policy/backend/outcome without secrets.
+- `hubctl migrate-toolhub` uses the user as context_id, reports generated MCP under
+  the space `generated/` directory, and sets `rollback_on_failure` when apply restores
+  the previous store.
+
+Local evidence:
+
+- Targeted ToolHub, migration, agent-tools and runtime tests pass after the wiring
+  patch. `just check` passed: race/shuffle, Go statement coverage 85.03%, format,
+  vet, staticcheck, docs and actionlint.
+- `just docker-check` passed on image `dd669637042e` (Hermes Agent v0.21.0):
+  standalone smoke and pinned Hermes contract/lifecycle, including the actual
+  five-minute idle shutdown and original-session cold restore. No live Telegram
+  or external-provider call. The image contains `/usr/local/bin/hub-toolhub` as a
+  symlink to `toolhub`.
+- Container admission now requires a JSON receipt proving `running`, enforcement,
+  exact workload ID, digest-pinned images and CPU/memory/PID/mount/egress policy.
+  Empty 200/204 responses fail closed, so controller reachability is not reported as
+  enforcement success.
+- `hubctl migrate-toolhub` defaults to dry-run, imports only explicit tool lists,
+  preserves disabled state, writes symbolic credential references without values and
+  keeps a rollback copy on apply. Generated/discovery-only services are reported as
+  unmatched instead of guessed.
+- The vMCP run remains unavailable: its log records `no backends returned
+  capabilities` followed by `Manager.Terminate: session terminated`; the subsequent
+  404 is therefore an upstream fixture/backend-health failure. No real remote or
+  stateful MCP call, gateway integration, or reconnect success is claimed.
+
+Remaining gates are follow-up issues, not mock-closed: [#73](https://github.com/letya999/hermes-hub/issues/73)
+live ToolHive/vMCP on Linux VPS, and [#74](https://github.com/letya999/hermes-hub/issues/74) real-Hermes
+transport reconnect while preserving session/home/memory/run state. `just security`
+is not required because this change adds no dependency or pin. GitHub #20–#26 are
+closed against this control-plane evidence; #47 stays open for M3 secret storage.

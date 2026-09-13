@@ -38,8 +38,14 @@ func run(args []string) error {
 		err = devcheck.HermesContract(context.Background(), args[1])
 	case len(args) == 2 && args[0] == "gateway-lifecycle":
 		err = devcheck.GatewayLifecycle(context.Background(), args[1])
+	case len(args) == 1 && args[0] == "toolhub-contract":
+		err = devcheck.ToolHubContract(context.Background())
+	case len(args) == 1 && args[0] == "toolhub-gateway-contract":
+		err = devcheck.ToolHubGatewayContract(context.Background())
+	case len(args) == 1 && args[0] == "toolhub-hermes-contract":
+		err = devcheck.ToolHubHermesContract(context.Background())
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-smoke IMAGE|hermes-contract IMAGE|gateway-lifecycle IMAGE")
+		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-smoke IMAGE|hermes-contract IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract")
 	}
 	return err
 }
