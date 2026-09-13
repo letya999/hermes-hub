@@ -15,3 +15,7 @@ func HermesContract(context.Context, string) error {
 func GatewayLifecycle(context.Context, string) error {
 	return errors.New("gateway lifecycle probe requires: go run -tags integration ./cmd/devcheck gateway-lifecycle IMAGE")
 }
+
+func ToolHubHermesContract(context.Context) error {
+	return errors.New("ToolHub Hermes probe requires: go run -tags integration ./cmd/devcheck toolhub-hermes-contract")
+}

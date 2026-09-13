@@ -8,6 +8,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hubctl ./cmd/hubctl
 RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-runtime ./cmd/runtime
+RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /toolhub ./cmd/toolhub
 RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub ./cmd/communication
 
 FROM debian:13.6 AS sqlite_build
@@ -36,10 +37,10 @@ WORKDIR /opt/mcp-atlassian
 RUN git init && git remote add origin https://github.com/sooperset/mcp-atlassian.git && git fetch --depth 1 origin 74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76 && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev
 COPY docker/browser/package*.json /opt/browser/
 RUN cd /opt/browser && npm ci --ignore-scripts && npm cache clean --force
-COPY --from=go_build /hubctl /hub-runtime /communication-hub /slack-mcp-server /usr/local/bin/
-RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication
+COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /slack-mcp-server /usr/local/bin/
+RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub
 COPY --from=go_build /slack/LICENSE /usr/share/licenses/slack-mcp-server/LICENSE
-ENV PATH="/opt/hermes/.venv/bin:${PATH}" DISPLAY=:99 HERMES_HOME=/state/hermes HOME=/state/home
+ENV PATH="/opt/hermes/.venv/bin:${PATH}" DISPLAY=:99 HERMES_HOME=/state/hermes HOME=/state/home MCPGODEBUG=allowsessionsinstateless=1
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace /archive && chown 10001:10001 /state /workspace /archive
 WORKDIR /workspace
 USER 10001:10001

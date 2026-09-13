@@ -1,0 +1,31 @@
+status: done
+title: M2 Dynamic ToolHub foundation
+updated: 2026-09-13
+issues:
+  - 20
+  - 22
+  - 47
+implementation:
+  package: internal/toolhub
+  status: complete
+  runtime_switched: false
+  ownership_registry: existing internal/identity only
+checks:
+  targeted: 'go test -race ./internal/toolhub: passed; package coverage 86.5%'
+  just_check: 'passed; race/shuffle, total Go statement coverage 85.03%, format, vet, staticcheck, docs and actionlint'
+  security: not-required-no-dependency-change
+  docker_check: 'passed; image 4257481689e2, standalone smoke and pinned Hermes 0.21.0 contract/lifecycle probe'
+safety_scan:
+  status: failed-on-preexisting-findings
+  passed: gitleaks, trufflehog, ruff, govulncheck
+  unavailable: npm/eslint on host
+  findings: 'full-repository gosec reported 91 existing findings across repository paths; direct gosec ./internal/toolhub is clean with one justified G304 annotation'
+evidence_limits:
+  - 'Docker/provider fixtures were synthetic; no live Telegram or external provider account call was made.'
+  - 'ToolHub gateway, ToolHive/vMCP, CLI runner, reconnect and full secret infrastructure remain deferred to CHG-0020 and later rollout; current runtime route remains unchanged.'
+deferred:
+  - ToolHub gateway and stable MCP endpoint wiring
+  - ToolHive/vMCP backend and workload runner
+  - CLI runner and reconnect
+  - OAuth and full secret storage/injection
+  - real Hermes/provider integration evidence

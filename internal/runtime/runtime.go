@@ -27,8 +27,16 @@ var (
 	signalNotify = notifySignals
 	signalStop   = stopSignals
 	command      = exec.Command
+	lookPath     = exec.LookPath
 	chown        = chownPath
 )
+
+func toolHubAutostartBinary() string {
+	if _, err := lookPath("hub-toolhub"); err == nil {
+		return "hub-toolhub"
+	}
+	return "toolhub"
+}
 
 func env(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
@@ -193,6 +201,9 @@ func superviseOnce(mode string) (bool, error) {
 	if err := applySelfServices(filepath.Join(hermesHome, "config.yaml")); err != nil {
 		return false, err
 	}
+	if err := applyToolHubConfig(filepath.Join(hermesHome, "config.yaml")); err != nil {
+		return false, err
+	}
 	if err := copyIfExists("/config/SOUL.md", filepath.Join(hermesHome, "SOUL.md"), false); err != nil {
 		return false, err
 	}
@@ -271,6 +282,14 @@ func superviseOnce(mode string) (bool, error) {
 	if mode == "serve" {
 		if os.Getenv("HUB_RUNTIME_AUTH") == "" {
 			return false, errors.New("HUB_RUNTIME_AUTH is required")
+		}
+		if os.Getenv("HUB_TOOLHUB_AUTOSTART") == "true" {
+			if os.Getenv("HUB_TOOLHUB_STORE") == "" {
+				return false, errors.New("HUB_TOOLHUB_STORE is required when ToolHub autostart is enabled")
+			}
+			if err := start(toolHubAutostartBinary()); err != nil {
+				return false, err
+			}
 		}
 		if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
 			return false, err

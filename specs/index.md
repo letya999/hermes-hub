@@ -2,7 +2,10 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0019](active/SPEC-0019-toolhub-stage3.md) | Dynamic ToolHub catalog, projection revision, enforcement receipt and explicit migration |
+| [SPEC-0018](active/SPEC-0018-toolhub-stage2.md) | Dynamic ToolHub endpoint, private MCP backend adapter, bounded CLI and workload lifecycle |
 | [SPEC-0016](active/SPEC-0016-communication-execution-migration.md) | Per-context communication execution rollout, rollback and five-minute lifecycle |
+| [SPEC-0017](active/SPEC-0017-toolhub-foundation.md) | Versioned ToolHub definitions, workload classes, scoped connections and effective bindings |
 | [SPEC-0015](active/SPEC-0015-run-controls.md) | Durable cancellation and approval ownership, dispatch and expiry |
 | [SPEC-0014](active/SPEC-0014-job-runtime-mappings.md) | Durable job, session, run and runtime mappings |
 | [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |

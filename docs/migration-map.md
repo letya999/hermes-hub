@@ -1,6 +1,6 @@
 ---
 description: Reversible current-to-target migration and scale-to-zero deletion gates.
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 ---
 # Current-to-target migration map
 
@@ -57,14 +57,22 @@ transport adaptation and egress isolation.
 
 ## Rollout stages
 
-1. **Freeze contracts:** complete manifests (#20), scoped connections/bindings (#47),
-   workload classes (#22) and this map. No runtime routing changes.
-2. **Introduce the boundary:** add the stable Go ToolHub endpoint (#21) with the same
-   effective tools and deny behavior as today. ToolHive stays private.
-3. **Add the backend:** integrate pinned ToolHive/vMCP (#25) one connector at a time,
-   proving remote MCP, Linux stateful persistence, egress, health and resource limits.
-4. **Move control data:** migrate catalog/enablement (#24) and managed credentials
-   (#48/#51) with dry-run reports, explicit apply and exact-owner verification.
+1. **Freeze contracts:** SPEC-0017 and `internal/toolhub` complete the manifest (#20),
+   scoped connection/binding (#47) and workload-class (#22) foundation. No runtime
+   routing changes; current generated MCP remains active.
+2. **Introduce the boundary:** the opt-in stage-2 endpoint in SPEC-0018 exposes
+   current projected tools over private Bearer-authenticated streamable HTTP (#21).
+   `HUB_TOOLHUB_ENDPOINT` can wire that endpoint into one runtime; unset variables
+   preserve the current generated direct-MCP path. `HUB_TOOLHUB_AUTOSTART=true`
+   additionally starts the shipped `hub-toolhub` binary against the existing metadata store.
+3. **Add the backend:** connect the endpoint to the pinned ToolHive/vMCP (#25)
+   through its stable MCP HTTP contract one connector at a time, proving remote
+   MCP, Linux stateful persistence, egress, health and resource limits. The local
+   adapter does not embed ToolHive internals or become an ownership registry.
+4. **Move control data:** `hubctl migrate-toolhub` provides a dry-run/apply catalog
+   migration (#24) with exact-owner verification, disabled-state preservation,
+   secret-free credential references and rollback. Managed secret infrastructure
+   (#48/#51) remains deferred.
 5. **Enable dynamic projection:** add/disable/remove plus controlled reconnect (#26).
    A stale session must fail at Go before backend execution.
 6. **Adopt scale-to-zero Hermes:** move selected contexts from `/v1/execute` and
