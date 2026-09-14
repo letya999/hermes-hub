@@ -18,14 +18,18 @@ title: Personal assistant channels, voice, routines and context lifecycle
 4. Slack Events API signatures use the official `v0:` HMAC over the raw body
    and timestamp. Communication permission `slack_app` does not create Slack
    read/write data tools. Events never select a personal Slack connection by
-   email or display name.
+   email or display name. Identity IDs stay `SlackIdentity`; `chat.postMessage`
+   uses the event IM channel id and optional `thread_ts`. Compose publishes
+   loopback `slack_events_port` (default 8081) to communication-hub `:8081`.
 5. Voice and audio updates with empty text are not dropped. Media uses a
    bounded envelope (file id, MIME, size, duration, timeout, temp path,
    transcript status, conversation identity). STT failure yields a safe
    user-visible reply; the canonical result remains text. Temporary files are
    deleted. Local faster-whisper on the pinned image is the supported STT
-   path. TTS is opt-in per conversation or explicit request and falls back to
-   text. Third-party voice upload does not occur unless explicitly configured.
+   path. Feature `transcription` sets communication-hub `HUB_STT_COMMAND` to
+   `/usr/local/bin/hub-stt` on the same image. TTS is opt-in per conversation
+   or explicit request and falls back to text. Third-party voice upload does
+   not occur unless explicitly configured.
 6. Hub-owned schedules follow SPEC-0013. `routine_create`/`list`/`update`/
    `pause`/`delete` enforce server-side ownership. Occurrences are ordinary
    idempotent jobs keyed by schedule id, time and revision. Native Hermes cron
@@ -43,8 +47,10 @@ title: Personal assistant channels, voice, routines and context lifecycle
    connection metadata, ToolHub bindings, schedules and delivery ledger.
    Plaintext secrets stay on `hubctl secret backup`. Restore refuses another
    user, does not reactivate revoked credentials and does not duplicate cron
-   deliveries. Purge requires an explicit matching target and reports paths
-   without secret values. Backups are verified before success.
+   deliveries. Restore writes schedules and mappings into `--spool` and skips
+   `spool/occurrences` and `spool/outbox`. Purge requires an explicit matching
+   target and reports paths without secret values. Backups are verified before
+   success.
 
 # Acceptance
 

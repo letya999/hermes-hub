@@ -401,6 +401,12 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 	if settings.Environment == "dev" {
 		settings.BrowserPort++
 		settings.OAuthPort++
+		if settings.Has("slack_app") {
+			if settings.SlackEventsPort == 0 {
+				settings.SlackEventsPort = 8081
+			}
+			settings.SlackEventsPort++
+		}
 	}
 	if err := settings.Validate(); err != nil {
 		return err

@@ -191,13 +191,23 @@ func Verify(archive, user string) error {
 	return nil
 }
 
-func Restore(home, user, archive string) error {
+func Restore(home, user, archive, spoolDir string) error {
 	if err := Verify(archive, user); err != nil {
 		return err
 	}
 	absHome, err := filepath.Abs(home)
 	if err != nil {
 		return err
+	}
+	absSpool := ""
+	if strings.TrimSpace(spoolDir) != "" {
+		absSpool, err = filepath.Abs(spoolDir)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(absSpool, 0700); err != nil {
+			return err
+		}
 	}
 	r, err := zip.OpenReader(archive)
 	if err != nil {
@@ -211,39 +221,29 @@ func Restore(home, user, archive string) error {
 	}
 	defer os.RemoveAll(staging)
 	for _, f := range r.File {
-		if f.Name == "manifest.json" || strings.HasPrefix(f.Name, "spool/") {
+		if f.Name == "manifest.json" || excludedNames[filepath.Base(f.Name)] || strings.Contains(f.Name, "..") {
 			continue
 		}
-		if excludedNames[filepath.Base(f.Name)] || strings.Contains(f.Name, "..") {
+		if strings.HasPrefix(f.Name, "spool/") {
+			rel, ok := restoreSpoolRel(f.Name)
+			if !ok || absSpool == "" || f.FileInfo().IsDir() {
+				continue
+			}
+			target := filepath.Join(absSpool, filepath.FromSlash(rel))
+			if !strings.HasPrefix(target, absSpool) {
+				return errors.New("unsafe backup path")
+			}
+			if err := writeZipFile(f, target); err != nil {
+				return err
+			}
 			continue
 		}
 		target := filepath.Join(staging, filepath.FromSlash(f.Name))
 		if !strings.HasPrefix(target, staging) {
 			return errors.New("unsafe backup path")
 		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0700); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		if err := writeZipFile(f, target); err != nil {
 			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
-			_ = rc.Close()
-			return err
-		}
-		_, copyErr := io.Copy(out, io.LimitReader(rc, 64<<20))
-		_ = out.Close()
-		_ = rc.Close()
-		if copyErr != nil {
-			return copyErr
 		}
 	}
 	for _, rel := range []string{"hermes", "workspace", "connections", "skills"} {
@@ -320,6 +320,38 @@ func DeleteMemory(home, name string) error {
 		return errors.New("invalid memory name")
 	}
 	return os.Remove(filepath.Join(home, "hermes", "memories", name))
+}
+
+func restoreSpoolRel(name string) (string, bool) {
+	rel := strings.TrimPrefix(name, "spool/")
+	if strings.HasPrefix(rel, "schedules/") || strings.HasPrefix(rel, "mappings/") {
+		return rel, true
+	}
+	return "", false
+}
+
+func writeZipFile(f *zip.File, target string) error {
+	if f.FileInfo().IsDir() {
+		return os.MkdirAll(target, 0700)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		return err
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, io.LimitReader(rc, 64<<20))
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func addFile(zipw *zip.Writer, hashes map[string]string, name, path string) error {

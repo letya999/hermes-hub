@@ -30,6 +30,14 @@ Groups stay disabled until a disclosure policy. Live Telegram/Slack/Honcho
 account login or sending still needs an explicit later owner command. Fixture
 evidence must not be reported as live provider success.
 
+## Amendment 2026-09-14
+
+Slack App delivery posts `event.channel` (IM id) via `chat.postMessage`; identity
+IDs stay SlackIdentity. communication-hub publishes loopback `slack_events_port`
+to container 8081. Restore writes schedules and mappings into `--spool` and
+skips occurrences/outbox. `transcription` sets `HUB_STT_COMMAND` to the image
+faster-whisper worker `/usr/local/bin/hub-stt`.
+
 ## Related records
 
 SPEC-0021, SPEC-0013, ADR-0014, ADR-0007, ADR-0009 and issues #29-#36.

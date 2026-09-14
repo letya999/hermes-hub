@@ -38,6 +38,8 @@ RUN git init && git remote add origin https://github.com/sooperset/mcp-atlassian
 COPY docker/browser/package*.json /opt/browser/
 RUN cd /opt/browser && npm ci --ignore-scripts && npm cache clean --force
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /slack-mcp-server /usr/local/bin/
+COPY docker/hub-stt /usr/local/bin/hub-stt
+RUN chmod 0755 /usr/local/bin/hub-stt
 RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub
 COPY --from=go_build /slack/LICENSE /usr/share/licenses/slack-mcp-server/LICENSE
 ENV PATH="/opt/hermes/.venv/bin:${PATH}" DISPLAY=:99 HERMES_HOME=/state/hermes HOME=/state/home MCPGODEBUG=allowsessionsinstateless=1
