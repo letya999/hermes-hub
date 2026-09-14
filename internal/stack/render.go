@@ -217,6 +217,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron}
 		if s.Has("slack_app") {
 			gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
+			gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", slackEventsHostPort(s))}
+		}
+		if s.Has("transcription") {
+			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
+			gatewayEnvironment["HF_HOME"] = "/data/hf"
+			gatewayEnvironment["XDG_CACHE_HOME"] = "/data/cache"
 		}
 		if s.ExecutionMode != "" {
 			gatewayEnvironment["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL

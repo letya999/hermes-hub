@@ -41,6 +41,7 @@ type Settings struct {
 	DraftsURL             string               `yaml:"drafts_url"`
 	OAuthPort             int                  `yaml:"oauth_port"`
 	BrowserPort           int                  `yaml:"browser_port"`
+	SlackEventsPort       int                  `yaml:"slack_events_port,omitempty"`
 	OrganizationDir       string               `yaml:"-"`
 	OrganizationDocsDir   string               `yaml:"-"`
 	OrganizationSkillsDir string               `yaml:"-"`
@@ -192,7 +193,20 @@ func (s Settings) Validate() error {
 	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {
 		return fmt.Errorf("invalid or colliding host ports")
 	}
+	if s.Has("slack_app") {
+		port := slackEventsHostPort(s)
+		if port < 1024 || port > 65535 || port == s.BrowserPort || port == s.OAuthPort {
+			return fmt.Errorf("invalid or colliding host ports")
+		}
+	}
 	return nil
+}
+
+func slackEventsHostPort(s Settings) int {
+	if s.SlackEventsPort > 0 {
+		return s.SlackEventsPort
+	}
+	return 8081
 }
 func Read(path string) (Settings, error) {
 	var s Settings
@@ -249,6 +263,9 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 	if environment == "dev" {
 		s.BrowserPort++
 		s.OAuthPort++
+		if s.Has("slack_app") {
+			s.SlackEventsPort = slackEventsHostPort(s) + 1
+		}
 	}
 	return s, s.Validate()
 }

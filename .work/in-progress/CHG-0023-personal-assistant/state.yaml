@@ -35,3 +35,7 @@ notes:
   - Spoken fixture hello.wav on the shipped image produced TRANSCRIPT=Хилло. twice.
     Synthetic 440Hz tone is not treated as a transcript. Live Telegram voice send
     is not claimed.
+  - Skeptic follow-up: Slack chat.postMessage uses event.channel; slack_app
+    publishes 127.0.0.1:<slack_events_port>:8081; restore writes schedules/
+    mappings into --spool and skips occurrences/outbox; transcription sets
+    HUB_STT_COMMAND=/usr/local/bin/hub-stt.

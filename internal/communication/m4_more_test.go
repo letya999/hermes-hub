@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,21 +18,32 @@ import (
 )
 
 func TestSlackPostMessageAndGatewayDelivery(t *testing.T) {
+	var posted []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat.postMessage" || r.Header.Get("Authorization") != "Bearer xoxb-test" {
 			http.Error(w, "bad", http.StatusUnauthorized)
 			return
 		}
+		posted, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer server.Close()
 	api := &slackAPI{token: "xoxb-test", client: server.Client(), baseURL: server.URL}
-	if err := api.PostMessage(context.Background(), "D1", "hello"); err != nil {
+	if err := api.PostMessage(context.Background(), "D1", "1405894322.002768", "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if err := api.PostMessage(context.Background(), "", "hello"); err == nil {
+	if !strings.Contains(string(posted), `"channel":"D1"`) || !strings.Contains(string(posted), `"thread_ts":"1405894322.002768"`) {
+		t.Fatalf("post body=%s", posted)
+	}
+	if err := api.PostMessage(context.Background(), "", "", "hello"); err == nil {
 		t.Fatal("empty channel accepted")
+	}
+	if err := api.PostMessage(context.Background(), "slack-tteam-uuser", "", "hello"); err == nil {
+		t.Fatal("identity string accepted as slack channel")
+	}
+	if err := api.PostMessage(context.Background(), "D1", "not-a-thread", "hello"); err == nil {
+		t.Fatal("invalid thread accepted")
 	}
 	c := testConfig(t)
 	g, err := New(c)
@@ -39,10 +51,17 @@ func TestSlackPostMessageAndGatewayDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.slack = api
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "slack-out", Channel: "slack_app", ConversationID: "slack-tteam-uuser", DeliveryTargetID: "slack-tteam-uuser", Text: "reply"}); err != nil {
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "bad-slack", Channel: "slack_app", ConversationID: "slack-tteam-uuser", DeliveryTargetID: "slack-tteam-uuser", Text: "reply"}); err == nil {
+		t.Fatal("slack delivery without IM channel accepted")
+	}
+	posted = nil
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "slack-out", Channel: "slack_app", ConversationID: "slack-tteam-uuser", DeliveryTargetID: "slack-tteam-uuser", SlackChannel: "D1", SlackThread: "1405894322.002768", Text: "reply"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
+	if !strings.Contains(string(posted), `"channel":"D1"`) || strings.Contains(string(posted), "slack-tteam") {
+		t.Fatalf("gateway posted identity instead of IM channel: %s", posted)
+	}
 }
 
 func TestRoutineHTTPCreateUpdateDeleteAndCommands(t *testing.T) {
@@ -293,7 +312,7 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 		http.Error(w, "no", http.StatusInternalServerError)
 	}))
 	defer fail.Close()
-	if err := (&slackAPI{token: "x", client: fail.Client(), baseURL: fail.URL}).PostMessage(context.Background(), "D1", "x"); err == nil {
+	if err := (&slackAPI{token: "x", client: fail.Client(), baseURL: fail.URL}).PostMessage(context.Background(), "D1", "", "x"); err == nil {
 		t.Fatal("failed slack delivery accepted")
 	}
 	gw.api = &fakeAPI{fileSize: mediaSizeLimit + 1}

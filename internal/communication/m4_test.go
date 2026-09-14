@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -274,11 +275,26 @@ func TestSlackEventsSignatureMappingDedupAndAudience(t *testing.T) {
 		t.Fatal("duplicate event rejected instead of deduped")
 	}
 	job, err := g.spool.ClaimJob()
-	if err != nil || job == nil || job.Channel != "slack_app" || job.PrincipalID != "alice" || job.ExternalIdentityID != identity.SlackIdentity("TTEAM", "UUSER") {
+	if err != nil || job == nil || job.Channel != "slack_app" || job.PrincipalID != "alice" || job.ExternalIdentityID != identity.SlackIdentity("TTEAM", "UUSER") || job.SlackChannel != "D1" || job.DeliveryTargetID == "D1" {
 		t.Fatalf("slack job: %+v %v", job, err)
 	}
 	if extra, _ := g.spool.ClaimJob(); extra != nil {
 		t.Fatal("duplicate slack event created a second job")
+	}
+	var posted []byte
+	slackHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posted, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer slackHTTP.Close()
+	g.slack = &slackAPI{token: "xoxb-test", client: slackHTTP.Client(), baseURL: slackHTTP.URL}
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "reply"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if !strings.Contains(string(posted), `"channel":"D1"`) || strings.Contains(string(posted), "slack-tteam") {
+		t.Fatalf("chat.postMessage body used identity instead of event.channel: %s", posted)
 	}
 	channel := []byte(`{"type":"event_callback","team_id":"TTEAM","event_id":"Ev2","event":{"type":"message","user":"UUSER","text":"hello","channel":"C1","channel_type":"channel"}}`)
 	if rec := post(channel, slackSig(c.SlackSigningSecret, ts, channel), ts); rec.Code != http.StatusForbidden {

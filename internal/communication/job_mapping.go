@@ -90,8 +90,10 @@ func jobFingerprint(job Job) string {
 		ScopeID        string
 		Channel        string
 		Trigger        string
+		SlackChannel   string
+		SlackThread    string
 		TextHash       string
-	}{job.Envelope, job.OrganizationID, job.UserID, job.ActorID, job.ScopeID, job.Channel, job.Trigger, textHash}
+	}{job.Envelope, job.OrganizationID, job.UserID, job.ActorID, job.ScopeID, job.Channel, job.Trigger, job.SlackChannel, job.SlackThread, textHash}
 	b, _ := json.Marshal(value)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])

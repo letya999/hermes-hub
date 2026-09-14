@@ -429,6 +429,8 @@ type Job struct {
 	IdempotencyKey string    `json:"idempotency_key"`
 	ChatID         int64     `json:"chat_id"`
 	MessageID      int       `json:"message_id"`
+	SlackChannel   string    `json:"slack_channel,omitempty"`
+	SlackThread    string    `json:"slack_thread,omitempty"`
 	Text           string    `json:"text,omitempty"`
 	Sensitive      bool      `json:"sensitive"`
 	TextSHA256     string    `json:"text_sha256,omitempty"`
@@ -443,6 +445,8 @@ type Delivery struct {
 	DeliveryTargetID string    `json:"delivery_target_id"`
 	Channel          string    `json:"channel,omitempty"`
 	ChatID           int64     `json:"chat_id"`
+	SlackChannel     string    `json:"slack_channel,omitempty"`
+	SlackThread      string    `json:"slack_thread,omitempty"`
 	Text             string    `json:"text"`
 	Attempts         int       `json:"attempts"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -742,7 +746,7 @@ func (s *Spool) EnqueueDelivery(d Delivery) error {
 			return errors.New("invalid delivery identity")
 		}
 	case "slack_app":
-		if !identity.ValidID(d.ConversationID) || !identity.ValidID(d.DeliveryTargetID) || d.DeliveryTargetID != d.ConversationID {
+		if !identity.ValidID(d.ConversationID) || !identity.ValidID(d.DeliveryTargetID) || d.DeliveryTargetID != d.ConversationID || !validSlackIMChannel(d.SlackChannel) || !validSlackThread(d.SlackThread) {
 			return errors.New("invalid delivery identity")
 		}
 	default:
@@ -1571,10 +1575,10 @@ func (g *Gateway) worker(ctx context.Context) {
 				} else if outcome.Status == "cancelled" {
 					message = "Задача отменена. ID: " + job.ID
 				}
-				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: message, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: response, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}
 			g.recordJob(*job, outcome)
@@ -1603,7 +1607,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			sendErr = errors.New("slack delivery is not configured")
 			break
 		}
-		sendErr = g.slack.PostMessage(ctx, delivery.DeliveryTargetID, delivery.Text)
+		sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
 	default:
 		sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text))
 		if sendErr == nil {

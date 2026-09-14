@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,10 +20,18 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 )
 
+// Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a
+// chat.postMessage target and never fill Envelope.DeliveryTargetID.
+var slackIMChannel = regexp.MustCompile(`^[CDG][A-Za-z0-9]{1,32}$`)
+var slackThreadTS = regexp.MustCompile(`^[0-9]{10,16}\.[0-9]{1,6}$`)
+
+func validSlackIMChannel(id string) bool { return slackIMChannel.MatchString(id) }
+func validSlackThread(ts string) bool    { return ts == "" || slackThreadTS.MatchString(ts) }
+
 const slackTimestampSkew = 5 * time.Minute
 
 type SlackAPI interface {
-	PostMessage(ctx context.Context, channel, text string) error
+	PostMessage(ctx context.Context, channel, thread, text string) error
 }
 
 type slackAPI struct {
@@ -35,11 +44,15 @@ func newSlackAPI(token string) SlackAPI {
 	return &slackAPI{token: token, client: &http.Client{Timeout: 15 * time.Second}, baseURL: "https://slack.com/api"}
 }
 
-func (s *slackAPI) PostMessage(ctx context.Context, channel, text string) error {
-	if channel == "" || strings.TrimSpace(text) == "" {
+func (s *slackAPI) PostMessage(ctx context.Context, channel, thread, text string) error {
+	if !validSlackIMChannel(channel) || strings.TrimSpace(text) == "" || !validSlackThread(thread) {
 		return errors.New("invalid slack delivery")
 	}
-	body, err := json.Marshal(map[string]string{"channel": channel, "text": limitTelegramText(text)})
+	payload := map[string]string{"channel": channel, "text": limitTelegramText(text)}
+	if thread != "" {
+		payload["thread_ts"] = thread
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -148,21 +161,25 @@ func (g *Gateway) HandleSlackEvents(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if err := g.ingestSlackEvent(r.Context(), envelope.TeamID, envelope.EventID, envelope.Event.Type, envelope.Event.Subtype, envelope.Event.User, envelope.Event.Text, envelope.Event.Channel, envelope.Event.ChannelType, envelope.Event.BotID, envelope.Event.UserProfile.Email, envelope.Event.UserProfile.DisplayName); err != nil {
+	if err := g.ingestSlackEvent(r.Context(), envelope.TeamID, envelope.EventID, envelope.Event.Type, envelope.Event.Subtype, envelope.Event.User, envelope.Event.Text, envelope.Event.Channel, envelope.Event.ChannelType, envelope.Event.BotID, envelope.Event.UserProfile.Email, envelope.Event.UserProfile.DisplayName, envelope.Event.ThreadTS); err != nil {
 		http.Error(w, "rejected", http.StatusForbidden)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventType, subtype, slackUser, text, channel, channelType, botID, email, displayName string) error {
+func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventType, subtype, slackUser, text, channel, channelType, botID, email, displayName, threadTS string) error {
+	_ = ctx
 	_ = email
 	_ = displayName
 	if eventType != "message" || botID != "" || subtype == "bot_message" {
 		return nil
 	}
-	if channelType != "im" {
+	if channelType != "im" || !validSlackIMChannel(channel) {
 		return errors.New("slack audience denied")
+	}
+	if !validSlackThread(threadTS) {
+		threadTS = ""
 	}
 	user, ok := g.slackUsers[strings.ToLower(teamID)+"/"+strings.ToLower(slackUser)]
 	if !ok {
@@ -172,12 +189,13 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	if text == "" {
 		return nil
 	}
-	if envstore.LooksLikeEnv(text) {
-		target := user.slackEnvelope(teamID, slackUser).DeliveryTargetID
-		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: target, DeliveryTargetID: target, Text: "Секреты в Slack App канале отклонены.", CreatedAt: g.now().UTC()})
-	}
 	envelope := user.slackEnvelope(teamID, slackUser)
-	return g.enqueueChannelJob(ctx, user, "slack_app", "slack-"+eventID, "slack:"+eventID, 0, 0, text, envelope)
+	if envstore.LooksLikeEnv(text) {
+		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: "Секреты в Slack App канале отклонены.", CreatedAt: g.now().UTC()})
+	}
+	job := Job{Envelope: envelope, ID: "slack-" + eventID, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "slack_app", Trigger: "message", IdempotencyKey: "slack:" + eventID, Text: text, SlackChannel: channel, SlackThread: threadTS, CreatedAt: g.now().UTC()}
+	_, err := g.spool.Enqueue(job)
+	return err
 }
 
 func (s *Spool) RememberEvent(provider, eventID string) (bool, error) {

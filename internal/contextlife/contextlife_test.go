@@ -47,10 +47,21 @@ func TestBackupRestorePurgeIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	spool := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(spool, "schedules"), 0700); err != nil {
-		t.Fatal(err)
+	for _, rel := range []string{"schedules", "mappings", "occurrences", "outbox/pending"} {
+		if err := os.MkdirAll(filepath.Join(spool, rel), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(spool, "schedules", "morning.json"), []byte(`{"schedule_id":"morning"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spool, "mappings", "job-1.json"), []byte(`{"job_id":"job-1"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spool, "occurrences", "once.json"), []byte(`{"schedule_id":"morning"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spool, "outbox", "pending", "d.json"), []byte(`{"id":"d"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "alice.zip")
@@ -64,11 +75,11 @@ func TestBackupRestorePurgeIsolation(t *testing.T) {
 	if strings.Contains(string(raw), "super-secret") {
 		t.Fatal("plaintext secret in general archive")
 	}
-	if err := Restore(t.TempDir(), "bob", out); err == nil {
+	if err := Restore(t.TempDir(), "bob", out, ""); err == nil {
 		t.Fatal("restore overwrote another user")
 	}
 	dest := t.TempDir()
-	if err := Restore(dest, "alice", out); err != nil {
+	if err := Restore(dest, "alice", out, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "hermes", "memories", "USER.md"))
@@ -80,6 +91,22 @@ func TestBackupRestorePurgeIsolation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "spool", "schedules", "morning.json")); err == nil {
 		t.Fatal("restore duplicated cron deliveries")
+	}
+	spoolDest := t.TempDir()
+	if err := Restore(t.TempDir(), "alice", out, spoolDest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(spoolDest, "schedules", "morning.json")); err != nil {
+		t.Fatal("schedules not restored into spool")
+	}
+	if _, err := os.Stat(filepath.Join(spoolDest, "mappings", "job-1.json")); err != nil {
+		t.Fatal("mappings not restored into spool")
+	}
+	if _, err := os.Stat(filepath.Join(spoolDest, "occurrences", "once.json")); err == nil {
+		t.Fatal("occurrences restored")
+	}
+	if _, err := os.Stat(filepath.Join(spoolDest, "outbox", "pending", "d.json")); err == nil {
+		t.Fatal("outbox restored")
 	}
 	if _, err := os.Stat(filepath.Join(dest, "runtime", "toolhub", "store.json")); err != nil {
 		t.Fatal("toolhub bindings missing from restore")
@@ -150,6 +177,11 @@ func TestRestoreSkipsUnsafeAndDirectoryEntries(t *testing.T) {
 	if _, err := zw.CreateHeader(dh); err != nil {
 		t.Fatal(err)
 	}
+	sh := &zip.FileHeader{Name: "spool/schedules/"}
+	sh.SetMode(os.ModeDir | 0755)
+	if _, err := zw.CreateHeader(sh); err != nil {
+		t.Fatal(err)
+	}
 	w, err := zw.Create("hermes/memories/USER.md")
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +217,7 @@ func TestRestoreSkipsUnsafeAndDirectoryEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := t.TempDir()
-	if err := Restore(dest, "alice", out); err != nil {
+	if err := Restore(dest, "alice", out, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "hermes", "memories", "USER.md"))

@@ -124,7 +124,7 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			text = "Выполняю запрос."
 		}
 		if text != "" {
-			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, Text: text, CreatedAt: time.Now().UTC()}
+			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, CreatedAt: time.Now().UTC()}
 			if event.Status != "completed" {
 				receipt.Delivery.JobID = ""
 			} // Only final handoff may trigger a requested runtime restart.

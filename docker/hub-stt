@@ -1,0 +1,25 @@
+#!/opt/hermes/.venv/bin/python
+"""Hub-owned STT worker for communication-hub CommandTranscriber (path, mime)."""
+import os
+import sys
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        return 1
+    path = sys.argv[1]
+    os.environ.setdefault("HF_HOME", "/data/hf")
+    os.environ.setdefault("XDG_CACHE_HOME", "/data/cache")
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel(os.environ.get("HUB_STT_MODEL", "tiny"), device="cpu", compute_type="int8")
+    segments, _ = model.transcribe(path, beam_size=1)
+    text = "".join(segment.text for segment in segments).strip()
+    if not text:
+        return 1
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

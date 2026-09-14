@@ -79,7 +79,9 @@ Context data uses `hubctl context backup|restore|export|purge`. A verified snaps
 covers Hermes home, workspace, connection metadata, ToolHub bindings, schedules and
 the communication delivery ledger. Plaintext secrets stay on `hubctl secret backup`
 and are never placed in the general archive. Restore refuses another user and does
-not reactivate revoked credentials. `hubctl down` stops compute without deleting
+not reactivate revoked credentials. Pass `--spool` so schedules and mappings return
+to the gateway spool; occurrences and outbox are skipped so cron deliveries are not
+duplicated. `hubctl down` stops compute without deleting
 homes; purge requires `--confirm` matching the user and reports removed paths
 without secret values. Sensitive native memory lives in `spaces/<id>/hermes/memories`
 (`MEMORY.md`, `USER.md`); inspect with `hubctl memory list` and delete with
