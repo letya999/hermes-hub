@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-13
+last_verified: 2026-09-14
 ---
 # Architecture
 
@@ -85,8 +85,12 @@ outcomes as succeeded, failed or uncertain; the runtime only executes the alread
 authorized request. An uncertain result is never silently retried.
 
 Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
-channel sender (Telegram in v1) to the configured user scope, persist jobs and replies in
-`/state/gateway`, and run one bounded invocation at a time. The initial deployment
+channel sender (Telegram Bot API or Slack App Events API) to the configured user scope, persist jobs and replies in
+`/state/gateway`, and run one bounded invocation at a time. Slack App credentials stay
+in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
+media envelope, transcribe through the replaceable STT worker, and submit text to the
+same Hermes session. Spoken replies are opt-in. Native Hermes memory, profile and
+skills remain in the owning home; Honcho is an official opt-in config file. The initial deployment
 has one configured user; the job envelope and per-user paths keep the expansion point for
 multiple users, organizations and channels explicit without adding external IAM today.
 

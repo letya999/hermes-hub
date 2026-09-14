@@ -283,3 +283,42 @@ func TestSecretParsing(t *testing.T) {
 		t.Fatal(s, err)
 	}
 }
+
+func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"workspace", "slack_app"}, Memory: true}
+	cfg := Config(s)
+	if _, ok := cfg["mcp_servers"].(M)["slack"]; ok {
+		t.Fatal("slack_app created Slack read/write tools")
+	}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	if _, ok := services["communication-hub"]; !ok {
+		t.Fatal("slack_app did not start communication-hub")
+	}
+	s.Honcho = true
+	if s.Validate() == nil {
+		t.Fatal("honcho without official URL accepted")
+	}
+	s.HonchoURL = "http://127.0.0.1:8000"
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	d := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(d, "hermes"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeHonchoConfig(d, s); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(d, "hermes", "honcho.json"))
+	if err != nil || !strings.Contains(string(body), "http://127.0.0.1:8000") {
+		t.Fatalf("honcho.json=%s err=%v", body, err)
+	}
+	cfg = Config(s)
+	memory := cfg["memory"].(M)
+	if memory["provider"] == "honcho" {
+		t.Fatal("honcho provider forced into native Hermes config")
+	}
+	if GatewayOwnedSecret("SLACK_SIGNING_SECRET") == false || GatewayOwnedSecret("OPENAI_API_KEY") {
+		t.Fatal("gateway secret classification")
+	}
+}

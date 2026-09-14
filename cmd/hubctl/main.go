@@ -31,12 +31,24 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
+	}
+	if op == "context" {
+		return runContext(ctx, args[1:])
+	}
+	if op == "memory" {
+		return runMemory(ctx, args[1:])
+	}
+	if op == "skill" {
+		return runSkill(ctx, args[1:])
+	}
+	if op == "routine" {
+		return runRoutine(ctx, args[1:])
 	}
 	f := flag.NewFlagSet(op, flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
