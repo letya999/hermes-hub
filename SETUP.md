@@ -39,9 +39,11 @@ Telegram chats.
 
 For `slack_app`, create a Slack App with Events API. Fill `SLACK_SIGNING_SECRET`,
 `SLACK_BOT_TOKEN` and `SLACK_ALLOWED_USERS` as `TEAMID/USERID` pairs (never email or
-display name). Point the app Request URL at communication-hub `/v1/slack/events`.
-This is ingress/delivery only and does not enable Slack search/read/write tools; those
-stay on the separate `slack` feature.
+display name). Compose publishes loopback `slack_events_port` (default 8081, set in
+`settings.yaml`) to communication-hub `:8081`. Point the app Request URL at
+`http://127.0.0.1:<slack_events_port>/v1/slack/events` (tunnel if Slack Cloud must
+reach this host). This is ingress/delivery only and does not enable Slack
+search/read/write tools; those stay on the separate `slack` feature.
 
 For `telegram_user`, obtain your API ID/hash at [my.telegram.org](https://my.telegram.org).
 Fill TELEGRAM_API_ID and TELEGRAM_API_HASH, build, then run:
@@ -121,7 +123,9 @@ consent. Captions are the supported transcript source; attendance/admission and 
 must work in that meeting. `hermes meet setup` inside the agent reports readiness.
 
 Add `transcription` to transcribe supported audio through local faster-whisper. The
-small model downloads on first use. Telegram MCP's own cloud transcription is disabled.
+small model downloads on first use. Telegram bot voice uses the same image via
+`HUB_STT_COMMAND=/usr/local/bin/hub-stt` on communication-hub. Telegram MCP's own
+cloud transcription is disabled.
 Live Meet audio routing, speaker separation and guaranteed verbatim transcripts are
 not configured; these differ from caption capture and file transcription.
 

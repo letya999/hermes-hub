@@ -47,7 +47,7 @@ func runContext(_ context.Context, args []string) error {
 		if *in == "" {
 			return fmt.Errorf("restore requires --in")
 		}
-		return contextlife.Restore(abs, *profile, *in)
+		return contextlife.Restore(abs, *profile, *in, *spool)
 	case "purge":
 		report, err := contextlife.Purge(abs, *profile, *confirm)
 		if err != nil {

@@ -25,6 +25,8 @@ type Schedule struct {
 	ScopeID        string            `json:"scope_id"`
 	Channel        string            `json:"channel"`
 	ChatID         int64             `json:"chat_id,omitempty"`
+	SlackChannel   string            `json:"slack_channel,omitempty"`
+	SlackThread    string            `json:"slack_thread,omitempty"`
 	Timezone       string            `json:"timezone"`
 	Expression     string            `json:"expression"`
 	JobKind        string            `json:"job_kind"`
@@ -215,7 +217,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			}
 			continue
 		}
-		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, Text: item.Input, Trigger: "cron"}
+		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
 		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, Job: job}
 		if err := validateOccurrence(occ, item.Envelope); err != nil {
 			continue
@@ -298,6 +300,9 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		return errors.New("invalid routine input")
 	}
 	if in.Channel != "telegram_bot" && in.Channel != "slack_app" {
+		return errors.New("invalid schedule channel")
+	}
+	if in.Channel == "slack_app" && in.SlackChannel != "" && (!validSlackIMChannel(in.SlackChannel) || !validSlackThread(in.SlackThread)) {
 		return errors.New("invalid schedule channel")
 	}
 	if in.Timezone == "" {

@@ -522,18 +522,19 @@ func fasterWhisperFixtureSmoke(ctx context.Context, image string) error {
 	if err := os.WriteFile(filepath.Join(dir, "hello.wav"), data, 0600); err != nil {
 		return err
 	}
-	script := "from faster_whisper import WhisperModel; import sys; m=WhisperModel('tiny', device='cpu', compute_type='int8'); segs,_=m.transcribe(sys.argv[1], beam_size=1); print('TRANSCRIPT=' + ''.join(s.text for s in segs).strip())"
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", "-v", dir+":/fixture:ro", image, "-c", script, "/fixture/hello.wav")
-	out, err := cmd.CombinedOutput()
-	fmt.Printf("faster-whisper image=%s output=%s\n", strings.TrimSpace(string(id)), strings.TrimSpace(string(out)))
+	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "/usr/local/bin/hub-stt", "-v", dir+":/fixture:ro", image, "/fixture/hello.wav", "audio/wav")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	fmt.Printf("faster-whisper image=%s hub-stt stdout=%s stderr=%s\n", strings.TrimSpace(string(id)), strings.TrimSpace(string(out)), strings.TrimSpace(stderr.String()))
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, out)
+		return fmt.Errorf("hub-stt adapter: %w: stdout=%s stderr=%s", err, out, stderr.String())
 	}
-	transcript := whisperTranscript(string(out))
+	transcript := strings.TrimSpace(string(out))
 	if transcript == "" {
-		return errors.New("empty TRANSCRIPT= for spoken fixture audio")
+		return errors.New("empty hub-stt transcript for spoken fixture audio")
 	}
-	fmt.Printf("faster-whisper fixture on shipped image produced a transcript %q\n", transcript)
+	fmt.Printf("faster-whisper hub-stt on shipped image produced a transcript %q\n", transcript)
 	return nil
 }
 

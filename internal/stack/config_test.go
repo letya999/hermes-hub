@@ -1,12 +1,14 @@
 package stack
 
 import (
-	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestInitNeverOverwrites(t *testing.T) {
@@ -294,6 +296,14 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 	if _, ok := services["communication-hub"]; !ok {
 		t.Fatal("slack_app did not start communication-hub")
 	}
+	gw := services["communication-hub"].(M)
+	ports, _ := gw["ports"].([]string)
+	if len(ports) != 1 || ports[0] != "127.0.0.1:8081:8081" {
+		t.Fatalf("slack events port not published: %#v", gw["ports"])
+	}
+	if gw["environment"].(M)["HUB_COMMUNICATION_LISTEN"] != "0.0.0.0:8081" {
+		t.Fatal("slack events listen address missing")
+	}
 	s.Honcho = true
 	if s.Validate() == nil {
 		t.Fatal("honcho without official URL accepted")
@@ -320,5 +330,61 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 	}
 	if GatewayOwnedSecret("SLACK_SIGNING_SECRET") == false || GatewayOwnedSecret("OPENAI_API_KEY") {
 		t.Fatal("gateway secret classification")
+	}
+}
+
+func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SlackEventsPort: 9091, Features: []string{"slack_app"}}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	gw := Compose(s, "/source", "/space")["services"].(M)["communication-hub"].(M)
+	ports, _ := gw["ports"].([]string)
+	if len(ports) != 1 || ports[0] != "127.0.0.1:9091:8081" {
+		t.Fatalf("custom slack events port: %#v", gw["ports"])
+	}
+	s.SlackEventsPort = 6080
+	if s.Validate() == nil {
+		t.Fatal("colliding slack events port accepted")
+	}
+	dir := t.TempDir()
+	if err := Init(dir, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := yaml.Marshal(Settings{Schema: 1, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"workspace", "slack_app"}, Memory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	dev, err := ReadEnvironment(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev.SlackEventsPort != 8082 {
+		t.Fatalf("dev slack events port=%d", dev.SlackEventsPort)
+	}
+}
+
+func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram", "transcription"}}
+	gw := Compose(s, "/source", "/space")["services"].(M)["communication-hub"].(M)
+	env := gw["environment"].(M)
+	if env["HUB_STT_COMMAND"] != "/usr/local/bin/hub-stt" {
+		t.Fatalf("HUB_STT_COMMAND=%v", env["HUB_STT_COMMAND"])
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	root := filepath.Join(filepath.Dir(file), "..", "..")
+	df, err := os.ReadFile(filepath.Join(root, "docker", "Dockerfile"))
+	if err != nil || !strings.Contains(string(df), "docker/hub-stt") {
+		t.Fatalf("Dockerfile missing hub-stt copy: %v", err)
+	}
+	stt, err := os.ReadFile(filepath.Join(root, "docker", "hub-stt"))
+	if err != nil || !strings.Contains(string(stt), "faster_whisper") {
+		t.Fatalf("hub-stt worker missing faster_whisper: %v", err)
 	}
 }
