@@ -314,6 +314,7 @@ func TestEnvKeyCorruptFileAndDegradedGet(t *testing.T) {
 
 func TestParseRawKeyAndOwnerMismatch(t *testing.T) {
 	key := testKey(t)
+	key[0], key[len(key)-1] = ' ', '\n'
 	keyFile := filepath.Join(t.TempDir(), "raw.key")
 	if err := os.MkdirAll(filepath.Dir(keyFile), 0700); err != nil {
 		t.Fatal(err)

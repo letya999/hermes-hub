@@ -369,6 +369,9 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	}
 	_ = m.ReleaseBinding(binding)
 	_ = m.Reap(ctx, time.Now().Add(2*time.Second))
+	if _, err := smokeWaitIdle(ctx, m, binding); err != nil {
+		return err
+	}
 	if err := supervisorDesiredSourcesSmoke(ctx, m, binding, runner, job, root, image, auth, &starts); err != nil {
 		return err
 	}
@@ -389,7 +392,7 @@ func smokeWaitIdle(ctx context.Context, m *supervisor.Manager, binding superviso
 		if err != nil {
 			return runtime, err
 		}
-		if runtime.State == supervisor.Idle && runtime.Leases == 0 {
+		if runtime.Leases == 0 && (runtime.State == supervisor.Idle || runtime.State == supervisor.Stopped) {
 			return runtime, nil
 		}
 		if time.Now().After(deadline) {

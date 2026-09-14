@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // RunOutcome is the small result envelope shared by the gateway and supervisor.
@@ -70,6 +72,7 @@ type ConversationMapping struct {
 	ContextID      string    `json:"context_id"`
 	ConversationID string    `json:"conversation_id"`
 	SessionID      string    `json:"session_id"`
+	VoiceReplies   bool      `json:"voice_replies,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -165,6 +168,12 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 	if outcome.SessionID != "" {
 		mapping.SessionID = outcome.SessionID
 		conversation := ConversationMapping{PrincipalID: mapping.PrincipalID, ContextID: mapping.ContextID, ConversationID: mapping.ConversationID, SessionID: outcome.SessionID, UpdatedAt: time.Now().UTC()}
+		if existing, err := os.ReadFile(s.conversationPath(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID)); err == nil {
+			var prior ConversationMapping
+			if json.Unmarshal(existing, &prior) == nil {
+				conversation.VoiceReplies = prior.VoiceReplies
+			}
+		}
 		if err := atomicJSON(s.conversationPath(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID), conversation); err != nil {
 			return err
 		}
@@ -211,6 +220,32 @@ func (s *Spool) SessionFor(principal, context, conversation string) (Conversatio
 		return ConversationMapping{}, false, errors.New("invalid conversation mapping")
 	}
 	return mapping, true, nil
+}
+
+func (s *Spool) SetConversationVoice(principal, contextID, conversation string, enabled bool) error {
+	if !identity.ValidID(principal) || !identity.ValidID(contextID) || !identity.ValidID(conversation) {
+		return errors.New("invalid conversation identity")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mapping := ConversationMapping{PrincipalID: principal, ContextID: contextID, ConversationID: conversation, VoiceReplies: enabled, UpdatedAt: time.Now().UTC()}
+	if b, err := os.ReadFile(s.conversationPath(principal, contextID, conversation)); err == nil {
+		var existing ConversationMapping
+		if json.Unmarshal(b, &existing) == nil {
+			mapping.SessionID = existing.SessionID
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return atomicJSON(s.conversationPath(principal, contextID, conversation), mapping)
+}
+
+func (s *Spool) ConversationVoice(principal, contextID, conversation string) (bool, error) {
+	mapping, found, err := s.SessionFor(principal, contextID, conversation)
+	if err != nil || !found {
+		return false, err
+	}
+	return mapping.VoiceReplies, nil
 }
 
 func (s *Spool) RecordOutcome(jobID string, outcome RunOutcome) error {

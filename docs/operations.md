@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-13
+last_verified: 2026-09-14
 ---
 # Operations
 
@@ -74,6 +74,22 @@ active runtime. It stages and verifies files, leaves source directories and volu
 place, and prints a JSON report with paths, counts and checksums but no secret values,
 message text, cookies or session contents. Rollback is restoring the untouched source
 into a new scope home; do not delete it until the new runtime is verified.
+
+Context data uses `hubctl context backup|restore|export|purge`. A verified snapshot
+covers Hermes home, workspace, connection metadata, ToolHub bindings, schedules and
+the communication delivery ledger. Plaintext secrets stay on `hubctl secret backup`
+and are never placed in the general archive. Restore refuses another user and does
+not reactivate revoked credentials. `hubctl down` stops compute without deleting
+homes; purge requires `--confirm` matching the user and reports removed paths
+without secret values. Sensitive native memory lives in `spaces/<id>/hermes/memories`
+(`MEMORY.md`, `USER.md`); inspect with `hubctl memory list` and delete with
+`hubctl memory delete --name`. Honcho is optional: set `honcho` and `honcho_url` to
+the official local or hosted base URL so the hub writes `$HERMES_HOME/honcho.json`.
+Honcho failure must not be required for ordinary Hermes memory.
+
+User skills install into `spaces/<id>/hermes/skills` without rebuilding the image.
+Organization and global skills are read-only `skills.external_dirs` mounts.
+`hubctl skill install --consent` scans SKILL.md and refuses provider-mutation text.
 
 Back up all `spaces/<id>` homes and the `communication-hub-data` volume to encrypted
 storage while services are stopped. Ciphertext backups use `hubctl secret backup` and

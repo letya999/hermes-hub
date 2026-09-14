@@ -24,6 +24,9 @@ type Settings struct {
 	MCP                   map[string]MCPServer `yaml:"mcp_servers,omitempty"`
 	Hooks                 map[string]any       `yaml:"hooks,omitempty"`
 	Memory                bool                 `yaml:"memory"`
+	Honcho                bool                 `yaml:"honcho,omitempty"`
+	HonchoURL             string               `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir       string               `yaml:"global_skills_dir,omitempty"`
 	Schema                int                  `yaml:"schema"`
 	User                  string               `yaml:"user"`
 	Organization          string               `yaml:"organization,omitempty"`
@@ -56,6 +59,7 @@ var Features = []Feature{
 	{"browser", nil, "Persistent Chromium via Playwright MCP; manual login through private noVNC"},
 	{"hh", nil, "Public vacancy API; applicant OAuth for resumes and explicitly requested applications"},
 	{"telegram", []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}, "Telegram bot transport into Hermes; does not grant personal Telegram access"},
+	{"slack_app", []string{"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN"}, "Slack App Events API transport into Hermes; does not grant workspace data tools"},
 	{"telegram_user", []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING"}, "Personal Telegram account MCP; does not receive bot messages"},
 	{"telegram_write", nil, "Adds send/reply/save_draft to Telegram MCP; requires telegram_user"},
 	{"google", []string{"GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"}, "Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth"},
@@ -71,6 +75,16 @@ var Features = []Feature{
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
+
+// GatewaySecretKeys stay in communication-hub. They are never injected into
+// Hermes runtime env or ToolHub connectors.
+func GatewaySecretKeys() []string {
+	return []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"}
+}
+
+func GatewayOwnedSecret(key string) bool {
+	return slices.Contains(GatewaySecretKeys(), key)
+}
 
 func selfEnvKeys(s Settings) []string {
 	keys := map[string]bool{"OPENAI_API_KEY": true, "FIRECRAWL_API_KEY": true, "TAVILY_API_KEY": true}
@@ -105,7 +119,7 @@ func selfEnvKeys(s Settings) []string {
 	}
 	result := make([]string, 0, len(keys))
 	for key := range keys {
-		if key == "TELEGRAM_BOT_TOKEN" || key == "TELEGRAM_ALLOWED_USERS" {
+		if GatewayOwnedSecret(key) {
 			continue
 		}
 		result = append(result, key)
@@ -132,7 +146,7 @@ func (s Settings) Validate() error {
 	if _, err := time.LoadLocation(s.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone")
 	}
-	for _, address := range []string{s.ModelURL, s.DesktopURL, s.DraftsURL} {
+	for _, address := range []string{s.ModelURL, s.DesktopURL, s.DraftsURL, s.HonchoURL} {
 		if address == "" {
 			continue
 		}
@@ -140,6 +154,9 @@ func (s Settings) Validate() error {
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("URLs must be HTTP(S), without embedded credentials, query or fragment")
 		}
+	}
+	if s.Honcho && strings.TrimSpace(s.HonchoURL) == "" {
+		return fmt.Errorf("honcho requires honcho_url from the official Honcho contract")
 	}
 	if s.Environment != "dev" && s.Environment != "prod" {
 		return fmt.Errorf("environment must be dev or prod")
@@ -280,7 +297,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
 		return err
 	}
-	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
+	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
 	for _, env := range []string{"dev", "prod"} {
 		if err := os.WriteFile(filepath.Join(dir, "secrets."+env+".env"), []byte(content), 0600); err != nil {
 			return err
