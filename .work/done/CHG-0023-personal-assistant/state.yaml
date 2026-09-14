@@ -1,9 +1,9 @@
 change: CHG-0023
 title: Personal Assistant Experience (M4)
-status: in-progress
+status: done
 issues: [29, 30, 31, 32, 33, 34, 35, 36]
 started: 2026-09-14
-updated: 2026-09-14
+updated: 2026-09-15
 implementation:
   telegram_adapter: shipped
   slack_channel: shipped
@@ -39,3 +39,5 @@ notes:
     publishes 127.0.0.1:<slack_events_port>:8081; restore writes schedules/
     mappings into --spool and skips occurrences/outbox; transcription sets
     HUB_STT_COMMAND=/usr/local/bin/hub-stt.
+  - GitHub #29–#36 and milestone 5 closed. PRs #94 and #95 merged to main
+    (4c83e74). Live Telegram/Slack/Honcho remain unclaimed.

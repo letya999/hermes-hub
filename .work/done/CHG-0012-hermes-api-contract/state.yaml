@@ -1,6 +1,6 @@
 change: CHG-0012
 title: Validate pinned Hermes API contract for persistent sessions and runs
-status: in-progress
+status: done
 completed:
   - exact pinned Hermes API endpoints and capability flags inspected in the image
   - real probe implementation added for sessions, runs, idempotency, SSE, stop, approvals, cron and restart
