@@ -92,6 +92,9 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.prod.env"), []byte("OPENAI_API_KEY=test-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	m, err := New(Config{SpacesRoot: root, RuntimeAuth: "secret", Image: "hermes:test", WarmTTL: time.Minute, Command: wrappedCommand, Probe: probe, Now: func() time.Time { return time.Unix(100, 0) }})
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +170,9 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.prod.env"), []byte("OPENAI_API_KEY=test-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	started := false
 	commands := func(_ context.Context, args ...string) ([]byte, error) {
 		if args[0] == "run" {
@@ -225,6 +231,9 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.prod.env"), []byte("OPENAI_API_KEY=test-key\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	started := false
@@ -324,6 +333,9 @@ func TestSupervisorJobOutcomeReplaysAfterRestart(t *testing.T) {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.prod.env"), []byte("OPENAI_API_KEY=test-key\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	runs := 0
@@ -763,6 +775,9 @@ func TestTypedLeasesProtectStreamsApprovalsAndPrincipalIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(otherRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherRoot, "runtime.prod.env"), []byte("OPENAI_API_KEY=test-key\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	other := b

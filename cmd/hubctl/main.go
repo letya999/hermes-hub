@@ -100,7 +100,7 @@ func run(ctx context.Context, args []string) error {
 		if *supervisorAuth == "" {
 			return fmt.Errorf("HUB_SUPERVISOR_AUTH or --supervisor-auth is required")
 		}
-		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
+		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: *environment, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
 		if err != nil {
 			return err
 		}

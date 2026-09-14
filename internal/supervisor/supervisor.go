@@ -70,6 +70,7 @@ type Config struct {
 	SpacesRoot    string
 	StateDir      string
 	RuntimeAuth   string
+	Environment   string
 	WarmTTL       time.Duration
 	MaxConcurrent int
 	CPU           string
@@ -393,7 +394,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
-	selection, selected, selectionErr := stack.ReadExecution(binding.ContextRoot, envOr("HUB_ENV", "prod"), binding.UserID)
+	selection, selected, selectionErr := stack.ReadExecution(binding.ContextRoot, m.environment(), binding.UserID)
 	if selectionErr != nil {
 		return Runtime{}, selectionErr
 	}
@@ -1385,7 +1386,11 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	for _, file := range []string{"runtime." + envOr("HUB_ENV", "prod") + ".env", "hermes." + envOr("HUB_ENV", "prod") + ".yaml", "SOUL.md"} {
+	runtimeEnv := "runtime." + m.environment() + ".env"
+	if info, err := os.Lstat(filepath.Join(abs, runtimeEnv)); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return Binding{}, errors.New("runtime env file is unavailable")
+	}
+	for _, file := range []string{"hermes." + m.environment() + ".yaml", "SOUL.md"} {
 		info, err := os.Lstat(filepath.Join(abs, file))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Binding{}, errors.New("runtime input file unavailable")
@@ -1432,12 +1437,10 @@ func (m *Manager) runArgs(binding Binding, container string, port int) []string 
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) []string {
 	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
-	if info, err := os.Lstat(filepath.Join(binding.ContextRoot, "runtime."+envOr("HUB_ENV", "prod")+".env")); err == nil && info.Mode().IsRegular() {
-		args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+envOr("HUB_ENV", "prod")+".env"))
-	}
+	args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+m.environment()+".env"))
 	args = append(args, "--env-file", binding.EnvFile)
 	args = append(args, "--mount", "type=bind,src="+binding.ContextRoot+",dst=/scope,readonly")
-	if settings, err := stack.ReadEnvironment(binding.ContextRoot, envOr("HUB_ENV", "prod")); err == nil {
+	if settings, err := stack.ReadEnvironment(binding.ContextRoot, m.environment()); err == nil {
 		service := stack.RuntimeService(settings, "", binding.ContextRoot)
 		keys := make([]string, 0)
 		for key := range service["environment"].(stack.M) {
@@ -1459,7 +1462,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if binding.OrganizationRoot != "" {
 		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
 	}
-	for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+envOr("HUB_ENV", "prod")+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
+	for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+m.environment()+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
 		if _, err := os.Stat(file.source); err == nil {
 			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
 		}
@@ -1563,6 +1566,16 @@ func validID(value string) bool {
 	}
 	return true
 }
+func (m *Manager) environment() string {
+	if m != nil {
+		switch m.cfg.Environment {
+		case "dev", "prod":
+			return m.cfg.Environment
+		}
+	}
+	return envOr("HUB_ENV", "prod")
+}
+
 func envOr(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
