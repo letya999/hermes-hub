@@ -553,8 +553,12 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 8 {
+	if err != nil || len(list.Tools) != 13 {
 		t.Fatal(list, err)
+	}
+	listed, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "routine_list", Arguments: map[string]any{}})
+	if err == nil && listed != nil && !listed.IsError {
+		t.Fatal("routine_list without communication hub succeeded")
 	}
 	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "file_write", Arguments: map[string]any{"path": "drafts/test.md", "text": "real MCP call"}})
 	if err != nil || result.IsError {

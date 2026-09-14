@@ -7,6 +7,16 @@ func TestEnvelopeValidation(t *testing.T) {
 	if err := valid.Validate("alice", "alice", "alice", "policy-1"); err != nil {
 		t.Fatal(err)
 	}
+	slack := SlackEnvelope("alice", "T08ARHT9KFH", "U08ARHT9KFH", "alice", "policy-1")
+	if err := slack.Validate("alice", "alice", "alice", "policy-1"); err != nil {
+		t.Fatal(err)
+	}
+	if slack.ExternalIdentityID != "slack-t08arht9kfh-u08arht9kfh" || slack.ConversationID != slack.DeliveryTargetID {
+		t.Fatalf("slack identity: %+v", slack)
+	}
+	if SlackIdentity("T1", "U1") == SlackIdentity("T2", "U1") {
+		t.Fatal("slack identities collided across workspaces")
+	}
 	for name, envelope := range map[string]Envelope{
 		"malformed": func() Envelope { e := valid; e.ConversationID = "bad:id"; return e }(),
 		"principal": func() Envelope { e := valid; e.PrincipalID = "bob"; return e }(),

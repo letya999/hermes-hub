@@ -43,6 +43,8 @@ type Input struct {
 	Authorized bool   `json:"authorized,omitempty"`
 	Service    string `json:"service,omitempty"`
 	Page       int    `json:"page,omitempty"`
+	Timezone   string `json:"timezone,omitempty"`
+	Expression string `json:"expression,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -54,6 +56,8 @@ type Tools struct {
 	ToolHub                          *toolhub.Store
 	ToolHubAuth                      identity.Envelope
 	Restart                          func() error
+	CommunicationURL                 string
+	CommunicationAuth                string
 	mu                               sync.Mutex
 	lock, envLock                    *flock.Flock
 }
@@ -100,7 +104,7 @@ func Open(workspace, archive string, organization ...string) (*Tools, error) {
 		}
 		return nil, err
 	}
-	return &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: os.Getenv("HUB_COMMUNICATION_AUTH"), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
 func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {
@@ -766,6 +770,13 @@ func (t *Tools) Server() *mcp.Server {
 		out, err := t.ServiceDisable(r)
 		return nil, out, err
 	})
+	for _, op := range []string{"routine_create", "routine_list", "routine_update", "routine_pause", "routine_delete"} {
+		name := op
+		mcp.AddTool(s, &mcp.Tool{Name: name, Description: "Hub-owned routine " + strings.TrimPrefix(name, "routine_") + "; ownership is enforced by the communication hub"}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+			out, err := t.Routine(ctx, name, r)
+			return nil, out, err
+		})
+	}
 	for _, op := range []string{"hh_search", "hh_vacancy", "hh_resumes", "hh_apply"} {
 		if strings.HasPrefix(op, "hh_") && !t.HHEnabled {
 			continue

@@ -12,7 +12,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -264,6 +267,9 @@ func HermesContract(ctx context.Context, image string) error {
 	if err := supervisorSmoke(ctx, image, providerURL); err != nil {
 		return err
 	}
+	if err := fasterWhisperFixtureSmoke(ctx, image); err != nil {
+		fmt.Printf("faster-whisper fixture on shipped image unavailable: %v\n", err)
+	}
 	if err := gatewayLifecycleSmoke(ctx, image, providerURL); err != nil {
 		return err
 	}
@@ -493,4 +499,62 @@ func validateHermesCapabilities(response contractHTTPResponse) error {
 		}
 	}
 	return nil
+}
+
+func fasterWhisperFixtureSmoke(ctx context.Context, image string) error {
+	id, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Output()
+	if err != nil {
+		return err
+	}
+	src, err := spokenFixtureWAV()
+	if err != nil {
+		return err
+	}
+	dir, err := os.MkdirTemp("", "whisper-fixture-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hello.wav"), data, 0600); err != nil {
+		return err
+	}
+	script := "from faster_whisper import WhisperModel; import sys; m=WhisperModel('tiny', device='cpu', compute_type='int8'); segs,_=m.transcribe(sys.argv[1], beam_size=1); print('TRANSCRIPT=' + ''.join(s.text for s in segs).strip())"
+	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", "-v", dir+":/fixture:ro", image, "-c", script, "/fixture/hello.wav")
+	out, err := cmd.CombinedOutput()
+	fmt.Printf("faster-whisper image=%s output=%s\n", strings.TrimSpace(string(id)), strings.TrimSpace(string(out)))
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, out)
+	}
+	transcript := whisperTranscript(string(out))
+	if transcript == "" {
+		return errors.New("empty TRANSCRIPT= for spoken fixture audio")
+	}
+	fmt.Printf("faster-whisper fixture on shipped image produced a transcript %q\n", transcript)
+	return nil
+}
+
+func spokenFixtureWAV() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", errors.New("runtime caller for spoken fixture")
+	}
+	path := filepath.Join(filepath.Dir(file), "testdata", "hello.wav")
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func whisperTranscript(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "TRANSCRIPT=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "TRANSCRIPT="))
+		}
+	}
+	return ""
 }

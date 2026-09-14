@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,10 +121,18 @@ func Config(s Settings) M {
 		toolsets = append(toolsets, "google_meet")
 	}
 	skills := M{}
+	external := []string{}
 	if organizationSkills != "" {
-		skills["external_dirs"] = []string{"/org/hermes/skills"}
+		external = append(external, "/org/hermes/skills")
 	}
-	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}}
+	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
+		external = append(external, "/opt/hub/skills")
+	}
+	if len(external) > 0 {
+		skills["external_dirs"] = external
+	}
+	memory := M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}
+	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 }
 func Compose(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, true)
@@ -172,6 +181,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
+	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.GlobalSkillsDir), "target": "/opt/hub/skills", "read_only": true})
+	}
 	common := M{"build": M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}, "image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}}
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
@@ -194,7 +206,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeService["environment"].(M)["GOMODCACHE"] = "/state/go-mod"
 	}
 	services := M{"hermes-runtime": runtimeService}
-	if includeGateway && s.Has("telegram") {
+	if includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 		if s.ExecutionMode != "" {
 			supervisorURL = s.SupervisorURL
@@ -202,7 +214,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ",")}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron}
+		if s.Has("slack_app") {
+			gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
+		}
 		if s.ExecutionMode != "" {
 			gatewayEnvironment["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
 		}
@@ -248,7 +263,7 @@ func cloneMap(source M) M {
 func runtimeSelfEnvKeys(s Settings) []string {
 	keys := []string{}
 	for _, key := range selfEnvKeys(s) {
-		if key != "TELEGRAM_BOT_TOKEN" && key != "TELEGRAM_ALLOWED_USERS" {
+		if !GatewayOwnedSecret(key) {
 			keys = append(keys, key)
 		}
 	}
@@ -256,7 +271,7 @@ func runtimeSelfEnvKeys(s Settings) []string {
 }
 
 func runtimeProtectedEnvKeys(s Settings) []string {
-	keys := []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}
+	keys := append([]string{}, GatewaySecretKeys()...)
 	for _, key := range strings.Split(organizationSecretKeys(s), ",") {
 		if key != "" && !slices.Contains(keys, key) {
 			keys = append(keys, key)
@@ -304,10 +319,13 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace"} {
+	for _, name := range []string{"archive", "runtime", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
+	}
+	if err = writeHonchoConfig(dir, s); err != nil {
+		return err
 	}
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
@@ -400,12 +418,12 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 	}
 	runtime := map[string]string{}
 	for key, value := range merged {
-		if key != "TELEGRAM_BOT_TOKEN" && key != "TELEGRAM_ALLOWED_USERS" {
+		if !GatewayOwnedSecret(key) {
 			runtime[key] = value
 		}
 	}
 	gateway := map[string]string{}
-	for _, key := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"} {
+	for _, key := range GatewaySecretKeys() {
 		if value := user[key]; value != "" {
 			gateway[key] = value
 		}
@@ -414,6 +432,20 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 		return err
 	}
 	return writeEnvFile(filepath.Join(dir, "communication."+environment+".env"), gateway)
+}
+
+func writeHonchoConfig(dir string, s Settings) error {
+	if !s.Honcho || strings.TrimSpace(s.HonchoURL) == "" {
+		return nil
+	}
+	body, err := json.Marshal(M{
+		"baseUrl": s.HonchoURL,
+		"hosts":   M{"hermes": M{"enabled": true, "aiPeer": "hermes", "peerName": s.User, "workspace": "hermes"}},
+	})
+	if err != nil {
+		return err
+	}
+	return atomic(filepath.Join(dir, "hermes", "honcho.json"), append(body, '\n'))
 }
 
 func writeEnvFile(path string, values map[string]string) error {

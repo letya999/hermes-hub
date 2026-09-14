@@ -1,0 +1,73 @@
+package agenttools
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestRoutineToolsCallCommunicationHub(t *testing.T) {
+	v := fixture(t)
+	if _, err := v.Routine(context.Background(), "routine_list", Input{}); err == nil {
+		t.Fatal("routine without hub url succeeded")
+	}
+	seen := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer control-token" || r.Header.Get("X-Hub-Principal") != "alice" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+		seen[r.Method+" "+r.URL.Path]++
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/routines":
+			_ = json.NewEncoder(w).Encode([]map[string]string{})
+		case "POST /v1/routines":
+			if !json.Valid(body) {
+				http.Error(w, "bad", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"schedule_id":"morning"}`))
+		case "POST /v1/routines/morning":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"schedule_id":"morning"}`))
+		case "POST /v1/routines/morning/pause", "DELETE /v1/routines/morning":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "missing", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	v.CommunicationAuth = "control-token"
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	ctx := context.Background()
+	if _, err := v.Routine(ctx, "routine_list", Input{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "morning", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "brief"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Routine(ctx, "routine_update", Input{ID: "morning", Expression: "* * * * *", Text: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Routine(ctx, "routine_pause", Input{ID: "morning"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Routine(ctx, "routine_delete", Input{ID: "morning"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Routine(ctx, "routine_delete", Input{ID: "bad/id"}); err == nil {
+		t.Fatal("slash id accepted")
+	}
+	if _, err := v.Routine(ctx, "unknown", Input{}); err == nil {
+		t.Fatal("unknown op accepted")
+	}
+	if seen["GET /v1/routines"] != 1 || seen["POST /v1/routines"] != 1 || seen["DELETE /v1/routines/morning"] != 1 {
+		t.Fatalf("hub calls: %v", seen)
+	}
+}

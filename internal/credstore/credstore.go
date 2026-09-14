@@ -544,6 +544,10 @@ func loadKey(opts Options) ([]byte, error) {
 }
 
 func parseKey(body []byte) ([]byte, error) {
+	if len(body) == KeySize {
+		key := append([]byte(nil), body...)
+		return key, validateKey(key)
+	}
 	raw := strings.TrimSpace(string(body))
 	if len(raw) == hex.EncodedLen(KeySize) {
 		key, err := hex.DecodeString(raw)

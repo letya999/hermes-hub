@@ -2,9 +2,12 @@
 package identity
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 const Schema = 1
@@ -26,6 +29,24 @@ func ValidID(id string) bool { return idPattern.MatchString(id) }
 
 func TelegramEnvelope(principal string, sender int64, runtime, policy string) Envelope {
 	transportID := "telegram-" + strconv.FormatInt(sender, 10)
+	return Envelope{Schema: Schema, PrincipalID: principal, ExternalIdentityID: transportID, ContextID: principal, RuntimeID: runtime, ConversationID: transportID, DeliveryTargetID: transportID, PolicyVersion: policy}
+}
+
+// SlackIdentity is the opaque verified Slack transport ID. Team and user
+// values are lowercased; they are never derived from email or display name.
+func SlackIdentity(teamID, userID string) string {
+	team := strings.ToLower(strings.TrimSpace(teamID))
+	user := strings.ToLower(strings.TrimSpace(userID))
+	id := "slack-" + team + "-" + user
+	if idPattern.MatchString(id) {
+		return id
+	}
+	sum := sha256.Sum256([]byte(team + "/" + user))
+	return "slack-" + hex.EncodeToString(sum[:8])
+}
+
+func SlackEnvelope(principal, teamID, userID, runtime, policy string) Envelope {
+	transportID := SlackIdentity(teamID, userID)
 	return Envelope{Schema: Schema, PrincipalID: principal, ExternalIdentityID: transportID, ContextID: principal, RuntimeID: runtime, ConversationID: transportID, DeliveryTargetID: transportID, PolicyVersion: policy}
 }
 

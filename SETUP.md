@@ -37,6 +37,12 @@ no wildcard). Send the bot `/start`, then your task. Bot polling needs no public
 This is only the Hermes input transport; it does not let Hermes read your personal
 Telegram chats.
 
+For `slack_app`, create a Slack App with Events API. Fill `SLACK_SIGNING_SECRET`,
+`SLACK_BOT_TOKEN` and `SLACK_ALLOWED_USERS` as `TEAMID/USERID` pairs (never email or
+display name). Point the app Request URL at communication-hub `/v1/slack/events`.
+This is ingress/delivery only and does not enable Slack search/read/write tools; those
+stay on the separate `slack` feature.
+
 For `telegram_user`, obtain your API ID/hash at [my.telegram.org](https://my.telegram.org).
 Fill TELEGRAM_API_ID and TELEGRAM_API_HASH, build, then run:
 
@@ -237,10 +243,16 @@ hosting platform. On Windows use the .exe binary and Docker Desktop's Linux cont
 These are upstream Hermes features, not parallel implementations. Their paths inside
 each runtime are `<space>/hermes/skills`, `<space>/hermes/hooks`,
 `<space>/hermes/plugins` and `<space>/hermes/memories`. MEMORY.md and USER.md are
-enabled by default (memory: true).
+enabled by default (memory: true). Sensitive facts belong in those memory files and
+are never copied into another user's home or an organization runtime. Inspect with
+`hubctl memory list --user me` and delete a file with `hubctl memory delete --name USER.md`.
+Honcho is optional and uses the official `$HERMES_HOME/honcho.json` contract; leave it
+unset so native memory keeps working if Honcho is absent.
 Use `hubctl exec --user me -- hermes skills list`, `hermes hooks list`,
 `hermes plugins list` or `hermes memory --help` through the same exec command.
-Install skills with Hermes's own skill installer; review their code and permissions.
+Install skills with Hermes's own skill installer or `hubctl skill install --consent`;
+review their code and permissions. User skills stay writable only in the user home.
+Organization and global skills are curated read-only mounts.
 
 Gateway hooks use a directory containing HOOK.yaml and handler.py. Plugin hooks run
 in CLI and gateway. Shell hooks are passed from settings.yaml's hooks block unchanged.

@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/communication"
 )
@@ -18,6 +21,15 @@ func main() {
 		var gateway *communication.Gateway
 		gateway, err = communication.New(config)
 		if err == nil {
+			if addr := strings.TrimSpace(config.ListenAddr); addr != "" {
+				server := &http.Server{Addr: addr, Handler: gateway.Handler(), ReadHeaderTimeout: 10 * time.Second}
+				go func() { _ = server.ListenAndServe() }()
+				defer func() {
+					shutdownCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+					defer stop()
+					_ = server.Shutdown(shutdownCtx)
+				}()
+			}
 			err = gateway.Run(ctx)
 		}
 	}

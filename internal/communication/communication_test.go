@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,11 +25,13 @@ import (
 )
 
 type fakeAPI struct {
-	mu      sync.Mutex
-	updates []Update
-	sent    []string
-	deleted []int
-	err     error
+	mu       sync.Mutex
+	updates  []Update
+	sent     []string
+	voices   []string
+	deleted  []int
+	fileSize int64
+	err      error
 }
 
 func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
@@ -46,6 +49,27 @@ func (f *fakeAPI) DeleteMessage(_ context.Context, _ int64, id int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, id)
+	return f.err
+}
+func (f *fakeAPI) SendChatAction(context.Context, int64, string) error { return f.err }
+func (f *fakeAPI) GetFile(_ context.Context, fileID string) (TelegramFile, error) {
+	size := f.fileSize
+	if size == 0 {
+		size = 12
+	}
+	return TelegramFile{FileID: fileID, FilePath: "voice/" + fileID, FileSize: size}, f.err
+}
+func (f *fakeAPI) DownloadFile(_ context.Context, _ string, w io.Writer) error {
+	_, err := w.Write([]byte("voice-bytes"))
+	if f.err != nil {
+		return f.err
+	}
+	return err
+}
+func (f *fakeAPI) SendVoice(_ context.Context, _ int64, audio []byte, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.voices = append(f.voices, string(audio))
 	return f.err
 }
 
@@ -546,6 +570,41 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	if err := api.DeleteMessage(context.Background(), 1, 2); err != nil {
 		t.Fatal(err)
 	}
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/bottoken/getFile":
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_id":"Aw1","file_path":"voice/file.ogg","file_size":12}}`))
+		case r.URL.Path == "/file/bottoken/voice/file.ogg":
+			_, _ = w.Write([]byte("audio-bytes"))
+		case r.URL.Path == "/bottoken/sendVoice", r.URL.Path == "/bottoken/sendChatAction":
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false}`))
+		}
+	}))
+	defer media.Close()
+	files := newTelegramAPI(media.URL, "token", time.Second)
+	got, err := files.GetFile(context.Background(), "Aw1")
+	if err != nil || got.FilePath != "voice/file.ogg" {
+		t.Fatal(got, err)
+	}
+	var buf strings.Builder
+	if err := files.DownloadFile(context.Background(), got.FilePath, &buf); err != nil || buf.String() != "audio-bytes" {
+		t.Fatal(buf.String(), err)
+	}
+	if err := files.DownloadFile(context.Background(), "../escape", io.Discard); err == nil {
+		t.Fatal("escaped telegram file path")
+	}
+	if err := files.SendVoice(context.Background(), 11, []byte("ogg"), "caption"); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.SendVoice(context.Background(), 11, nil, ""); err == nil {
+		t.Fatal("empty voice accepted")
+	}
+	if err := files.SendChatAction(context.Background(), 11, "typing"); err != nil {
+		t.Fatal(err)
+	}
 	config := testConfig(t)
 	runner := HermesRunner{Command: filepath.Join(t.TempDir(), "missing")}
 	if _, err := runner.Run(context.Background(), Job{}, config.Users[0]); err == nil {
@@ -912,6 +971,14 @@ func (r *runAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, erro
 }
 func (r *runAPI) SendMessage(context.Context, int64, string) error { return nil }
 func (r *runAPI) DeleteMessage(context.Context, int64, int) error  { return nil }
+func (r *runAPI) SendChatAction(context.Context, int64, string) error {
+	return nil
+}
+func (r *runAPI) GetFile(context.Context, string) (TelegramFile, error) {
+	return TelegramFile{}, nil
+}
+func (r *runAPI) DownloadFile(context.Context, string, io.Writer) error  { return nil }
+func (r *runAPI) SendVoice(context.Context, int64, []byte, string) error { return nil }
 
 func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	c := testConfig(t)

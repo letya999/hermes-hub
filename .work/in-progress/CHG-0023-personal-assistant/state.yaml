@@ -1,0 +1,37 @@
+change: CHG-0023
+title: Personal Assistant Experience (M4)
+status: in-progress
+issues: [29, 30, 31, 32, 33, 34, 35, 36]
+started: 2026-09-14
+updated: 2026-09-14
+implementation:
+  telegram_adapter: shipped
+  slack_channel: shipped
+  voice_stt_tts: shipped
+  routines: shipped
+  memory_skills_backup: shipped
+checks:
+  targeted_tests: passed
+  just_check: passed
+  just_security: skipped-no-lockfile-change
+  just_docker_check: passed-existing-image-rebuild-unavailable
+notes:
+  - Generated MCP remains the default; ToolHub stays opt-in via HUB_TOOLHUB_*.
+  - Telegram Bot API and Slack App are ingress/delivery only.
+  - Personal Telegram MCP and Slack OAuth-as-data stay M5.
+  - Native Hermes audio_api is not advertised on the pinned image; STT uses
+    faster-whisper on the image, TTS is opt-in command worker.
+  - Honcho extra is not in the pinned image; hub writes official honcho.json
+    only when explicitly enabled.
+  - just check: Go statement coverage 85.02%; format/vet/staticcheck/docs/actionlint green.
+  - just security skipped: go.mod and go.sum unchanged.
+  - docker rebuild unavailable: github.com:443 timeout fetching
+    korotovsky/slack-mcp-server. Used existing hermes-hub:0.3.0-runtime
+    sha256:c74d6046795a9b158bd89030ae25ba4f7f86a8cee07573bb1307120539eb884b.
+  - docker-smoke passed on that image (no live provider calls).
+  - hermes-contract on that image passed twice: due-routine wake/final/handoff/sleep,
+    gateway five-minute lifecycle, pinned Hermes 0.21.0 API contract.
+    Live Telegram/Slack/Honcho are not claimed.
+  - Spoken fixture hello.wav on the shipped image produced TRANSCRIPT=Хилло. twice.
+    Synthetic 440Hz tone is not treated as a transcript. Live Telegram voice send
+    is not claimed.
