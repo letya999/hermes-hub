@@ -1,0 +1,178 @@
+package toolhub
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func TestApplyPreflightToolListRestampAndRegisters(t *testing.T) {
+	artifact := importedReviewPacket(t)
+	claimedDigest := artifact.Definition.Source.ReviewDigest
+	listed := []ToolSpec{{Name: "get_current_config", Effect: ReadEffect}, {Name: "list_dir", Effect: ReadEffect}}
+	contract, err := ApplyPreflightToolList(&artifact, listed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contract.Source != ToolContractPreflight || len(contract.Tools) != 2 {
+		t.Fatalf("preflight contract: %+v", contract)
+	}
+	if artifact.Definition.Source.ReviewDigest == "" || artifact.Definition.Source.ReviewDigest == claimedDigest {
+		t.Fatal("review digest was not recomputed from the confirmed tools")
+	}
+	if artifact.Definition.Source.ToolContractSource != ToolContractPreflight || artifact.Definition.Source.ToolContractDigest == "" {
+		t.Fatal("preflight contract was not stamped")
+	}
+	store := NewStore()
+	if err := store.RegisterTrustedArtifact(artifact, artifact.Definition.Source.ReviewDigest); err != nil {
+		t.Fatalf("preflighted packet rejected: %v", err)
+	}
+	if err := store.RegisterTrustedArtifact(artifact, claimedDigest); err == nil {
+		t.Fatal("stale claimed-tool review digest accepted")
+	}
+}
+
+func TestApplyPreflightToolListRejectsInvalidTools(t *testing.T) {
+	artifact := importedReviewPacket(t)
+	if _, err := ApplyPreflightToolList(nil, []ToolSpec{{Name: "read", Effect: ReadEffect}}); err == nil {
+		t.Fatal("nil packet accepted")
+	}
+	if _, err := ApplyPreflightToolList(&artifact, nil); err == nil {
+		t.Fatal("empty tools/list accepted")
+	}
+	if _, err := ApplyPreflightToolList(&artifact, []ToolSpec{{Name: "Not a tool", Effect: ReadEffect}}); err == nil {
+		t.Fatal("invalid MCP tool name accepted")
+	}
+}
+
+func TestDecodeMCPToolListReadsID2Payload(t *testing.T) {
+	body := `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_text_file"},{"name":"list_directory"}]}}
+`
+	tools, err := decodeMCPToolList(strings.NewReader(body))
+	if err != nil || len(tools) != 2 || tools[0].Name != "read_text_file" || tools[1].Effect != ReadEffect {
+		t.Fatalf("decode: %+v %v", tools, err)
+	}
+}
+
+func TestPreflightDockerRunArgsPinMCPRuntimeNotBuilder(t *testing.T) {
+	imported := importedReviewPacket(t)
+	imported.Definition.Source.Image = "hermes-artifact/serena"
+	imported.Definition.Execution.Mounts = nil
+	args := preflightDockerRunArgs(imported, "hermes-preflight-x")
+	joined := strings.Join(args, "\x00")
+	for _, required := range []string{"--read-only", "--cap-drop\x00ALL", "no-new-privileges", "--network\x00none", "--user\x0010001:10001", "HOME=/tmp"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("missing MCP runtime flag %q in %q", required, args)
+		}
+	}
+	for _, forbidden := range []string{"--privileged", "seccomp=unconfined", "SETUID", "/var/run/docker.sock"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("builder/host flag %q leaked into preflight: %q", forbidden, args)
+		}
+	}
+	imported.Definition.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
+	imported.Recipe.Entrypoint = []string{"/app/mcp-server"}
+	args = preflightDockerRunArgs(imported, "hermes-preflight-x")
+	joined = strings.Join(args, "\x00")
+	if !strings.Contains(joined, "/state:rw") || args[len(args)-1] != "/state" {
+		t.Fatalf("stateful preflight must pass allowed dir: %q", args)
+	}
+	imported.Recipe.Entrypoint = []string{"/app/mcp-server", "/state"}
+	args = preflightDockerRunArgs(imported, "hermes-preflight-x")
+	if args[len(args)-1] != imported.Definition.Source.Image {
+		t.Fatalf("duplicate allowed dir appended: %q", args)
+	}
+}
+
+func TestRestampFromMCPListIgnoresClaimedImportTools(t *testing.T) {
+	artifact := importedReviewPacket(t)
+	claimed := artifact.Definition.Tools[0].Name
+	listed := []ToolSpec{{Name: "resolve-library-id", Effect: ReadEffect}}
+	packet, contract, err := restampFromMCPList(context.Background(), artifact, func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return listed, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contract.Tools[0].Name != "resolve-library-id" || packet.Definition.Tools[0].Name == claimed {
+		t.Fatalf("claimed import tools survived preflight: %+v", packet.Definition.Tools)
+	}
+}
+
+func TestAttachConfirmedToolContractIsRequiredForTrust(t *testing.T) {
+	artifact := importedReviewPacket(t)
+	store := NewStore()
+	if err := store.RegisterTrustedArtifact(artifact, artifact.Definition.Source.ReviewDigest); err == nil {
+		t.Fatal("claimed ArtifactImportConfig tools registered without a confirmed contract")
+	}
+	claimed := ConfirmedToolContract{Source: ToolContractPreflight, Tools: artifact.Definition.Tools}
+	if err := AttachConfirmedToolContract(&artifact, claimed); err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Definition.Source.ToolContractDigest == "" || artifact.Definition.Source.ToolContractSource != ToolContractPreflight {
+		t.Fatal("contract digest was not recorded")
+	}
+	if err := store.RegisterTrustedArtifact(artifact, artifact.Definition.Source.ReviewDigest); err != nil {
+		t.Fatalf("matching confirmed contract rejected: %v", err)
+	}
+}
+
+func TestAttachConfirmedToolContractRejectsMismatches(t *testing.T) {
+	artifact := importedReviewPacket(t)
+	for name, contract := range map[string]ConfirmedToolContract{
+		"empty-source": {Tools: artifact.Definition.Tools},
+		"claimed-list": {Source: "artifact-import-config", Tools: artifact.Definition.Tools},
+		"extra-tool": {Source: ToolContractPreflight, Tools: []ToolSpec{
+			artifact.Definition.Tools[0],
+			{Name: "other", Effect: ReadEffect},
+		}},
+		"effect-drift": {Source: ToolContractReviewManifest, Tools: []ToolSpec{{Name: artifact.Definition.Tools[0].Name, Effect: WriteEffect}}},
+		"empty-tools":  {Source: ToolContractPreflight},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := artifact
+			if err := AttachConfirmedToolContract(&candidate, contract); err == nil {
+				t.Fatal("unsafe tool contract accepted")
+			}
+		})
+	}
+	if err := AttachConfirmedToolContract(nil, ConfirmedToolContract{Source: ToolContractPreflight, Tools: artifact.Definition.Tools}); err == nil {
+		t.Fatal("nil packet accepted")
+	}
+}
+
+func TestConfirmedToolContractDigestIsStableAndCanonical(t *testing.T) {
+	tools := []ToolSpec{{Name: "b-tool", Effect: WriteEffect}, {Name: "a-tool", Effect: ReadEffect}}
+	left, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractPreflight, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractPreflight, Tools: []ToolSpec{tools[1], tools[0]}})
+	if err != nil || left != right || !strings.HasPrefix(left, "sha256:") {
+		t.Fatalf("canonical digest drifted: %q %q %v", left, right, err)
+	}
+	other, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractReviewManifest, Tools: []ToolSpec{tools[1], tools[0]}})
+	if err != nil || other == left {
+		t.Fatal("preflight and review-manifest contracts must not share a digest")
+	}
+}
+
+func importedReviewPacket(t *testing.T) ImportedArtifact {
+	t.Helper()
+	definition := statefulContainerDefinition()
+	definition.Source.Repository = "https://github.com/example/mcp"
+	definition.Source.CommitSHA = "0123456789012345678901234567890123456789"
+	definition.Source.ArchiveDigest = "sha256:" + repeatHex('a')
+	definition.Source.ProvenanceDigest = "sha256:" + repeatHex('b')
+	definition.Source.SBOMDigest = "sha256:" + repeatHex('c')
+	definition.Source.RecipeDigest = "sha256:" + repeatHex('d')
+	artifact := ImportedArtifact{Definition: definition, Recipe: ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}}, Artifact: StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}}}
+	config := ArtifactImportConfig{DefinitionID: definition.DefinitionID, Version: definition.Version, Image: definition.Source.Image, Tools: definition.Tools, Credentials: definition.Credentials, Environment: definition.Environment, Workload: definition.Workload, Execution: definition.Execution, Health: definition.Health}
+	digest, err := reviewDigest(ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA}, artifact.Recipe, artifact.Artifact, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.Definition.Source.ReviewDigest = digest
+	return artifact
+}

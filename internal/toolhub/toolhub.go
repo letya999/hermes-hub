@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -65,6 +67,10 @@ const (
 	RemoteMCP    Transport = "remote-mcp"
 	ContainerMCP Transport = "container-mcp"
 	BoundedCLI   Transport = "bounded-cli"
+	// ProviderAPI is an in-process official HTTPS REST data plane. It starts no
+	// child process and owns no filesystem state, so its enforcement is the
+	// declared egress allowlist, the authorization fence and bounded output.
+	ProviderAPI Transport = "provider-api"
 )
 
 type Effect string
@@ -126,25 +132,36 @@ type ToolDefinition struct {
 	Source       DefinitionSource  `json:"source"`
 	Tools        []ToolSpec        `json:"tools"`
 	Credentials  []CredentialInput `json:"credentials,omitempty"`
+	Environment  []string          `json:"environment,omitempty"`
 	Workload     WorkloadPolicy    `json:"workload"`
 	Execution    ExecutionPolicy   `json:"execution"`
 	Health       HealthProbe       `json:"health"`
 }
 
 type DefinitionSource struct {
-	URL     string   `json:"url,omitempty"`
-	TLSMode string   `json:"tls_mode,omitempty"`
-	Image   string   `json:"image,omitempty"`
-	Digest  string   `json:"digest,omitempty"`
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
+	URL                string   `json:"url,omitempty"`
+	TLSMode            string   `json:"tls_mode,omitempty"`
+	Image              string   `json:"image,omitempty"`
+	Digest             string   `json:"digest,omitempty"`
+	Command            string   `json:"command,omitempty"`
+	Args               []string `json:"args,omitempty"`
+	Repository         string   `json:"repository,omitempty"`
+	CommitSHA          string   `json:"commit_sha,omitempty"`
+	ArchiveDigest      string   `json:"archive_digest,omitempty"`
+	ProvenanceDigest   string   `json:"provenance_digest,omitempty"`
+	SBOMDigest         string   `json:"sbom_digest,omitempty"`
+	RecipeDigest       string   `json:"recipe_digest,omitempty"`
+	ReviewDigest       string   `json:"review_digest,omitempty"`
+	ToolContractDigest string   `json:"tool_contract_digest,omitempty"`
+	ToolContractSource string   `json:"tool_contract_source,omitempty"`
 }
 
 type ToolSpec struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description,omitempty"`
-	Effect      Effect        `json:"effect"`
-	Arguments   []CLIArgument `json:"arguments,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Effect      Effect          `json:"effect"`
+	Arguments   []CLIArgument   `json:"arguments,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
 // CLIArgument is the only model-controlled input accepted by a bounded CLI
@@ -211,6 +228,9 @@ func (d ToolDefinition) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, tool := range d.Tools {
+		if len(tool.InputSchema) > 65536 || (len(tool.InputSchema) > 0 && (!json.Valid(tool.InputSchema) || (d.Transport != RemoteMCP && d.Transport != ContainerMCP))) {
+			return fmt.Errorf("%w: MCP input schema", ErrInvalid)
+		}
 		if !toolNamePattern.MatchString(tool.Name) || (tool.Effect != ReadEffect && tool.Effect != WriteEffect) || seen[tool.Name] {
 			return fmt.Errorf("%w: invalid or duplicate tool %q", ErrInvalid, tool.Name)
 		}
@@ -219,21 +239,32 @@ func (d ToolDefinition) Validate() error {
 		}
 		argumentNames := map[string]bool{}
 		for _, argument := range tool.Arguments {
-			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validCLIFlag(argument.Flag) || !validCLIType(argument.Type) {
-				return fmt.Errorf("%w: invalid CLI argument %q", ErrInvalid, argument.Name)
+			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validCLIType(argument.Type) {
+				return fmt.Errorf("%w: invalid tool argument %q", ErrInvalid, argument.Name)
+			}
+			switch d.Transport {
+			case BoundedCLI:
+				if !validCLIFlag(argument.Flag) {
+					return fmt.Errorf("%w: invalid CLI argument %q", ErrInvalid, argument.Name)
+				}
+			case ProviderAPI:
+				if argument.Flag != "" {
+					return fmt.Errorf("%w: provider argument %q cannot carry a CLI flag", ErrInvalid, argument.Name)
+				}
+			default:
+				return fmt.Errorf("%w: transport %s cannot declare tool arguments", ErrInvalid, d.Transport)
 			}
 			argumentNames[argument.Name] = true
 		}
 		seen[tool.Name] = true
 	}
-	if d.Transport != BoundedCLI {
-		for _, tool := range d.Tools {
-			if len(tool.Arguments) > 0 {
-				return fmt.Errorf("%w: structured CLI arguments require bounded-cli", ErrInvalid)
-			}
-		}
-	}
 	seen = map[string]bool{}
+	for _, name := range d.Environment {
+		if !credentialPattern.MatchString(name) || seen[name] {
+			return fmt.Errorf("%w: invalid or duplicate environment parameter %q", ErrInvalid, name)
+		}
+		seen[name] = true
+	}
 	for _, input := range d.Credentials {
 		if !credentialPattern.MatchString(input.Name) || seen[input.Name] {
 			return fmt.Errorf("%w: invalid or duplicate credential input %q", ErrInvalid, input.Name)
@@ -248,6 +279,17 @@ func (d ToolDefinition) Validate() error {
 	}
 	if d.Workload.Class == PerJob && d.Workload.Stateful && !hasMountSource(d.Execution.Mounts, "job-state") {
 		return fmt.Errorf("%w: stateful per-job workload needs job-state", ErrInvalid)
+	}
+	if d.Transport == ProviderAPI {
+		if d.Workload.Class != PerUser || d.Workload.Stateful || len(d.Execution.Mounts) > 0 {
+			return fmt.Errorf("%w: provider API is a stateless per-user data plane", ErrInvalid)
+		}
+		if !slices.ContainsFunc(d.Credentials, func(input CredentialInput) bool { return input.Required && !input.PerRequest }) {
+			return fmt.Errorf("%w: provider API needs a required owner credential", ErrInvalid)
+		}
+		if !slices.ContainsFunc(d.Execution.Egress, func(host string) bool { return strings.EqualFold(strings.TrimSpace(host), hostOfURL(d.Source.URL)) }) {
+			return fmt.Errorf("%w: provider API egress must include its declared host", ErrInvalid)
+		}
 	}
 	if d.Transport == ContainerMCP {
 		if !toolHiveVersionPattern.MatchString(d.Workload.ToolHiveVersion) || len(d.Workload.SidecarImages) == 0 || len(d.Workload.SidecarImages) > 8 {
@@ -265,6 +307,11 @@ func (d ToolDefinition) Validate() error {
 	if err := d.Execution.validate(d.Workload.Class); err != nil {
 		return err
 	}
+	for _, host := range d.Execution.Egress {
+		if strings.Contains(host, "/") && d.Transport != ContainerMCP {
+			return fmt.Errorf("%w: CIDR egress requires a container network controller", ErrInvalid)
+		}
+	}
 	if err := d.Health.Validate(d.Transport); err != nil {
 		return err
 	}
@@ -272,6 +319,22 @@ func (d ToolDefinition) Validate() error {
 }
 
 func (s DefinitionSource) validate(transport Transport) error {
+	if s.CommitSHA != "" && !gitSHAPattern.MatchString(s.CommitSHA) {
+		return fmt.Errorf("%w: source commit must be an exact lowercase SHA", ErrInvalid)
+	}
+	for name, value := range map[string]string{"archive_digest": s.ArchiveDigest, "provenance_digest": s.ProvenanceDigest, "sbom_digest": s.SBOMDigest, "recipe_digest": s.RecipeDigest, "review_digest": s.ReviewDigest, "tool_contract_digest": s.ToolContractDigest} {
+		if value != "" && !digestPattern.MatchString(value) {
+			return fmt.Errorf("%w: source %s must be a sha256 digest", ErrInvalid, name)
+		}
+	}
+	if s.ToolContractSource != "" && s.ToolContractSource != ToolContractPreflight && s.ToolContractSource != ToolContractReviewManifest {
+		return fmt.Errorf("%w: unknown tool contract source", ErrInvalid)
+	}
+	if s.Repository != "" {
+		if _, err := (ArtifactSource{Repository: s.Repository, CommitSHA: "0000000000000000000000000000000000000000"}).ArchiveURL(); err != nil {
+			return fmt.Errorf("%w: canonical artifact repository required", ErrInvalid)
+		}
+	}
 	values := 0
 	if s.URL != "" {
 		values++
@@ -283,13 +346,13 @@ func (s DefinitionSource) validate(transport Transport) error {
 		values++
 	}
 	switch transport {
-	case RemoteMCP:
-		if s.URL == "" || values != 1 || s.TLSMode != "required" || s.Digest != "" || len(s.Args) != 0 {
-			return fmt.Errorf("%w: remote MCP needs an HTTPS URL and required TLS", ErrInvalid)
+	case RemoteMCP, ProviderAPI:
+		if s.URL == "" || values != 1 || s.TLSMode != "required" || s.Digest != "" || len(s.Args) != 0 || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" {
+			return fmt.Errorf("%w: %s needs an HTTPS URL and required TLS", ErrInvalid, transport)
 		}
 		u, err := url.Parse(s.URL)
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return fmt.Errorf("%w: remote MCP URL must be HTTPS without credentials, query or fragment", ErrInvalid)
+			return fmt.Errorf("%w: %s URL must be HTTPS without credentials, query or fragment", ErrInvalid, transport)
 		}
 	case ContainerMCP:
 		if s.Image == "" || s.URL != "" || !digestPattern.MatchString(s.Digest) || s.TLSMode != "" || strings.Contains(s.Image, "@") || strings.ContainsAny(s.Image, " \t\r\n") || strings.Contains(s.Image, "..") {
@@ -302,7 +365,7 @@ func (s DefinitionSource) validate(transport Transport) error {
 			return fmt.Errorf("%w: invalid container command", ErrInvalid)
 		}
 	case BoundedCLI:
-		if s.Command == "" || values != 1 || s.Image != "" || s.URL != "" || s.Digest != "" || s.TLSMode != "" || !validCommand(s.Command) {
+		if s.Command == "" || values != 1 || s.Image != "" || s.URL != "" || s.Digest != "" || s.TLSMode != "" || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" || !validCommand(s.Command) {
 			return fmt.Errorf("%w: bounded CLI needs a command and no mutable source", ErrInvalid)
 		}
 	default:
@@ -323,7 +386,9 @@ func (e ExecutionPolicy) validate(class WorkloadClass) error {
 	seen := map[string]bool{}
 	for _, host := range e.Egress {
 		host = strings.ToLower(strings.TrimSpace(host))
-		if !hostPattern.MatchString(host) || seen[host] {
+		prefix, prefixErr := netip.ParsePrefix(host)
+		validPrefix := prefixErr == nil && prefix.Addr().Is4() && prefix.Bits() >= 8 && prefix == prefix.Masked()
+		if (!hostPattern.MatchString(host) && !validPrefix) || seen[host] {
 			return fmt.Errorf("%w: invalid or duplicate egress host", ErrInvalid)
 		}
 		seen[host] = true
@@ -361,13 +426,22 @@ func (h HealthProbe) Validate(transport Transport) error {
 	if h.TimeoutSeconds < 1 || h.TimeoutSeconds > 30 || h.Value == "" || strings.ContainsAny(h.Value, "\r\n") {
 		return fmt.Errorf("%w: bounded health probe is required", ErrInvalid)
 	}
-	if transport == RemoteMCP && (h.Kind != "http" || !strings.HasPrefix(h.Value, "/")) {
-		return fmt.Errorf("%w: remote MCP health probe must be an HTTP path", ErrInvalid)
+	if (transport == RemoteMCP || transport == ProviderAPI) && (h.Kind != "http" || !strings.HasPrefix(h.Value, "/")) {
+		return fmt.Errorf("%w: %s health probe must be an HTTP path", ErrInvalid, transport)
 	}
-	if transport != RemoteMCP && h.Kind != "exec" {
+	if transport != RemoteMCP && transport != ProviderAPI && h.Kind != "exec" {
 		return fmt.Errorf("%w: container and CLI health probes must be exec", ErrInvalid)
 	}
 	return nil
+}
+
+// hostOfURL returns the lowercase host of an already validated HTTPS URL.
+func hostOfURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
 }
 
 func hasMountSource(mounts []Mount, source string) bool {
@@ -379,6 +453,10 @@ func validCommand(command string) bool {
 		return false
 	}
 	base := strings.ToLower(filepath.Base(command))
+	if strings.HasSuffix(base, ".bat") || strings.HasSuffix(base, ".cmd") {
+		return false
+	}
+	base = strings.TrimSuffix(base, ".exe")
 	if base == "sh" || base == "bash" || base == "zsh" || base == "cmd" || base == "powershell" || base == "pwsh" {
 		return false
 	}
@@ -593,6 +671,12 @@ func NewWorkloadInstance(binding ToolBinding, owner *OwnerRef, jobID string, gen
 	if owner != nil {
 		ownerID = owner.ID
 	}
+	if w.Class == PerUser && binding.ConnectionID != "" {
+		ownerID += ":" + binding.PrincipalID + ":" + binding.ConnectionID
+	}
+	if w.Class == PerUser && binding.ConnectionID == "" {
+		ownerID = binding.ToolBindingID
+	}
 	w.WorkloadID = WorkloadInstanceID(w.DefinitionID, w.Class, ownerID, jobID)
 	return w, w.Validate()
 }
@@ -612,6 +696,8 @@ type WorkloadStopper interface {
 type Store struct {
 	mu                  sync.RWMutex
 	path                string
+	savedPath           string
+	diskDigest          [32]byte
 	Reconnect           *ReconnectController
 	Stopper             WorkloadStopper
 	definitions         map[string]ToolDefinition
@@ -979,7 +1065,11 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (Effecti
 		if len(definition.Credentials) > 0 {
 			return EffectiveBinding{}, fmt.Errorf("%w: missing connection", ErrUnauthorized)
 		}
-		effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, "", "")
+		ownerID := ""
+		if definition.Workload.Class == PerUser {
+			ownerID = binding.ToolBindingID
+		}
+		effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
 		return effective, nil
 	}
 	connection, ok := s.connections[binding.ConnectionID]
@@ -1022,6 +1112,9 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (Effecti
 	if definition.Workload.Class == Shared {
 		ownerID = ""
 	}
+	if definition.Workload.Class == PerUser {
+		ownerID += ":" + auth.PrincipalID + ":" + connection.ConnectionID
+	}
 	effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
 	return effective, nil
 }
@@ -1040,8 +1133,26 @@ func (s *Store) Save(path string) error {
 	if err := safeStorePath(path); err != nil {
 		return err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	if err := safeStorePath(path + ".lock"); err != nil {
+		return err
+	}
+	lock := flock.New(path + ".lock")
+	if err := lock.Lock(); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	previous, err := os.ReadFile(path) // #nosec G304 -- trusted, symlink-checked registry path.
+	if err == nil && (s.savedPath != path || sha256.Sum256(previous) != s.diskDigest) {
+		return ErrConflict
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	state := snapshot{Schema: SchemaVersion, ProjectionRevisions: map[string]uint64{}}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
@@ -1093,7 +1204,11 @@ func (s *Store) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	s.savedPath, s.diskDigest = path, sha256.Sum256(body)
+	return nil
 }
 
 func Load(path string) (*Store, error) {
@@ -1174,6 +1289,7 @@ func Load(path string) (*Store, error) {
 		return nil, err
 	}
 	store.path = path
+	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
 	return store, nil
 }
 
@@ -1262,6 +1378,7 @@ func (s *Store) Reload() error {
 	s.bindings = fresh.bindings
 	s.workloads = fresh.workloads
 	s.projectionRevisions = fresh.projectionRevisions
+	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.mu.Unlock()
 	s.stopWorkloads(stopped)
 	return nil

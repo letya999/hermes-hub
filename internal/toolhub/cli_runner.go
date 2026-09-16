@@ -237,6 +237,10 @@ func containedPath(root, path string) bool {
 }
 
 func noSymlinkPath(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%w: absolute path required", ErrInvalid)
+	}
+	path = filepath.Clean(path)
 	volume := filepath.VolumeName(path)
 	current := volume + string(filepath.Separator)
 	for _, part := range strings.Split(strings.TrimPrefix(path, current), string(filepath.Separator)) {

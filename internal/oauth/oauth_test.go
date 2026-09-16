@@ -72,6 +72,83 @@ func TestOfficialProviderEndpoints(t *testing.T) {
 	}
 }
 
+func TestRefreshSelectsExactOwnerConnectionAndProvider(t *testing.T) {
+	fixture := NewFixture()
+	defer fixture.Close()
+	secrets := testSecrets(t)
+	broker := testBroker(t, fixture, secrets)
+	redirect := "http://127.0.0.1/callback"
+	locators := map[string]string{}
+	for _, connection := range []string{"first", "second"} {
+		start, err := broker.StartAuthCode("alice", "alice", connection, "fixture", redirect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, err := broker.HandleCallback("alice", "alice", connection, start.State, authorizeCode(t, start.AuthorizeURL), redirect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		locators[connection] = meta.Locator
+	}
+	before, _ := secrets.Get(locators["first"], "alice")
+	if _, err := broker.Refresh("alice", "second", "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := secrets.Get(locators["first"], "alice")
+	if before["ACCESS_TOKEN"] != after["ACCESS_TOKEN"] {
+		t.Fatal("other connection rotated")
+	}
+	if _, err := broker.Refresh("alice", "missing", "fixture"); !errors.Is(err, ErrDenied) {
+		t.Fatal(err)
+	}
+	if _, err := broker.Refresh("bob", "second", "fixture"); !errors.Is(err, ErrDenied) {
+		t.Fatal(err)
+	}
+	if _, err := broker.Refresh("alice", "second", "google"); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	if err := secrets.SetStatus(locators["second"], "alice", credstore.StatusRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Refresh("alice", "second", "fixture"); !errors.Is(err, ErrDenied) {
+		t.Fatal(err)
+	}
+}
+
+func TestSlackCaptureNeverStoresBotAndRequiresUserToken(t *testing.T) {
+	for _, payload := range []map[string]any{{"ok": false}, {"ok": true, "access_token": "fixture-bot", "token_type": "bot"}, {"ok": true, "authed_user": map[string]any{"token_type": "bot", "access_token": "fixture-bot"}}} {
+		if _, err := captureTokens("slack", payload); err == nil {
+			t.Fatal("bot captured")
+		}
+	}
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, secret, ok := r.BasicAuth()
+		if !ok || id != "fixture-client" || secret != "fixture-secret" {
+			t.Error("missing basic client")
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"access_token":"fixture-bot","team":{"id":"T1"},"authed_user":{"id":"U1","access_token":"fixture-user","refresh_token":"fixture-refresh","scope":"chat:write","token_type":"user"}}`))
+	}))
+	defer fixture.Close()
+	backend := testSecrets(t)
+	broker := NewBroker(backend, nil)
+	broker.Clients["slack"] = ClientCredential{ID: "fixture-client", Secret: "fixture-secret", BasicAuth: true}
+	tokens, err := broker.exchangeClient("slack", fixture.URL, url.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := broker.persist("alice", "slack1", "slack", tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := backend.Get(meta.Locator, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["ACCESS_TOKEN"] != "fixture-user" || values["OAUTH_TEAM"] != "T1" || values["OAUTH_USER"] != "U1" {
+		t.Fatal("wrong capture")
+	}
+}
+
 func TestAuthCodePKCEAndSingleUseState(t *testing.T) {
 	fixture := NewFixture()
 	defer fixture.Close()

@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0022](active/SPEC-0022-personal-data-connectors.md) | M5 stage 2 personal data connectors and independent capability contracts |
 | [SPEC-0021](active/SPEC-0021-personal-assistant.md) | Personal assistant channels, voice, hub routines and context lifecycle |
 | [SPEC-0020](active/SPEC-0020-credentials-and-connectors.md) | Encrypted credentials, inject-after-authorize, OAuth broker and audit ledger |
 | [SPEC-0019](active/SPEC-0019-toolhub-stage3.md) | Dynamic ToolHub catalog, projection revision, enforcement receipt and explicit migration |

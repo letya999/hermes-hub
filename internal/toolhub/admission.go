@@ -21,6 +21,7 @@ type controllerPlan struct {
 	ToolHiveVersion   string          `json:"toolhive_version"`
 	SidecarImages     []string        `json:"sidecar_images"`
 	Execution         ExecutionPolicy `json:"execution"`
+	WorkspacePath     string          `json:"workspace_path,omitempty"`
 }
 
 // AdmissionReceipt is the controller's proof that the workload was started
@@ -30,6 +31,7 @@ type AdmissionReceipt struct {
 	WorkloadID    string          `json:"workload_id"`
 	State         string          `json:"state"`
 	Enforced      bool            `json:"enforced"`
+	Endpoint      string          `json:"endpoint,omitempty"`
 	ImageDigest   string          `json:"image_digest"`
 	SidecarImages []string        `json:"sidecar_images"`
 	Execution     ExecutionPolicy `json:"execution"`
@@ -42,6 +44,11 @@ func (r AdmissionReceipt) validate(effective EffectiveBinding) error {
 	definition := effective.Definition
 	if r.ImageDigest != definition.Source.Digest || !reflect.DeepEqual(r.SidecarImages, definition.Workload.SidecarImages) || !reflect.DeepEqual(r.Execution, definition.Execution) {
 		return fmt.Errorf("workload controller proof does not match immutable execution plan")
+	}
+	if r.Endpoint != "" {
+		if err := ValidateBackendEndpoint(r.Endpoint); err != nil {
+			return fmt.Errorf("workload controller returned unsafe endpoint: %w", err)
+		}
 	}
 	return nil
 }
@@ -71,12 +78,18 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 		return nil, err
 	}
 	token := os.Getenv("HUB_TOOLHIVE_ADMISSION_TOKEN")
-	client := &http.Client{Timeout: 5 * time.Second}
+	// Cold admission may start ToolHive and its isolated proxy container.
+	client := &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return func(ctx context.Context, effective EffectiveBinding) (AdmissionReceipt, error) {
 		if effective.Definition.Transport != ContainerMCP {
 			return AdmissionReceipt{}, nil
 		}
+		workspace, err := OpenWorkloadWorkspace(envOr("HUB_STATE", "/state"), effective, injectJobID(ctx, effective))
+		if err != nil {
+			return AdmissionReceipt{}, err
+		}
 		body, err := json.Marshal(controllerPlan{
+			WorkspacePath:     workspace.Path,
 			WorkloadID:        effective.WorkloadID,
 			DefinitionID:      effective.Definition.DefinitionID,
 			DefinitionVersion: effective.Definition.Version,

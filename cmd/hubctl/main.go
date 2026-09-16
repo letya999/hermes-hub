@@ -31,10 +31,29 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
+	if op == "connector" {
+		return runConnector(ctx, args[1:])
+	}
+	if op == "artifact" {
+		return runArtifact(ctx, args[1:])
+	}
+	if op == "relay" {
+		f := flag.NewFlagSet("relay", flag.ContinueOnError)
+		listen := f.String("listen", "127.0.0.1:8765", "private relay address")
+		target := f.String("target", "", "fixed MCP target endpoint")
+		tokenEnv := f.String("token-env", "", "environment variable holding the relay bearer token")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *tokenEnv == "" {
+			return fmt.Errorf("relay requires --listen, --target and --token-env")
+		}
+		return companion.RunRelay(ctx, *listen, *target, os.Getenv(*tokenEnv))
+	}
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
 	}

@@ -40,7 +40,15 @@ func OpenWorkloadWorkspace(root string, effective EffectiveBinding, jobID string
 		if jobID != "" || !identity.ValidID(effective.Binding.ContextID) {
 			return WorkloadWorkspace{}, fmt.Errorf("%w: per-user context", ErrInvalid)
 		}
-		path := filepath.Join(root, "per-user", effective.Binding.ContextID, definitionID)
+		var path string
+		if effective.Connection != nil {
+			path = filepath.Join(root, "per-user", effective.Binding.PrincipalID, effective.Binding.ContextID, definitionID, CredentialReferenceID(effective.Connection.ConnectionID, 0))
+		} else {
+			if !identity.ValidID(effective.Binding.ToolBindingID) || !identity.ValidID(effective.Binding.PrincipalID) {
+				return WorkloadWorkspace{}, fmt.Errorf("%w: anonymous binding identity", ErrInvalid)
+			}
+			path = filepath.Join(root, "per-binding", effective.Binding.PrincipalID, effective.Binding.ContextID, definitionID, effective.Binding.ToolBindingID)
+		}
 		if err := createOwnedDirectory(root, path); err != nil {
 			return WorkloadWorkspace{}, err
 		}

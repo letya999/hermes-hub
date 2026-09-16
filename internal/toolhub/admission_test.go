@@ -14,6 +14,8 @@ func TestControllerAdmissionSendsOnlyExecutionPlan(t *testing.T) {
 	var received string
 	definition := statefulContainerDefinition()
 	effective := EffectiveBinding{Definition: definition, WorkloadID: "fixture-workload"}
+	effective.Binding = ToolBinding{ToolBindingID: "fixture-binding", PrincipalID: "alice", ContextID: "alice"}
+	t.Setenv("HUB_STATE", t.TempDir())
 	receipt, _ := json.Marshal(AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -55,6 +57,10 @@ func TestControllerAdmissionDeniesNonSuccess(t *testing.T) {
 		if err := receipt.validate(effective); err == nil {
 			t.Fatal("invalid controller receipt accepted")
 		}
+	}
+	unsafe := AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, Endpoint: "https://public.example/mcp", ImageDigest: effective.Definition.Source.Digest, SidecarImages: effective.Definition.Workload.SidecarImages, Execution: effective.Definition.Execution}
+	if err := unsafe.validate(effective); err == nil {
+		t.Fatal("public receipt endpoint accepted")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "denied", http.StatusForbidden) }))
 	defer server.Close()

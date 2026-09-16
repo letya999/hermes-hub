@@ -106,7 +106,7 @@ func TestInjectAfterAuthorizeAndIsolation(t *testing.T) {
 	if err != nil || injected.Env["GOOGLE_TOKEN"] != secret {
 		t.Fatalf("inject=%+v err=%v", injected, err)
 	}
-	body, err := os.ReadFile(filepath.Join(root, "per-user", "alice", "google-work", "credentials.env"))
+	body, err := os.ReadFile(filepath.Join(root, "per-user", "alice", "alice", "google-work", toolhub.CredentialReferenceID("google-work", 0), "credentials.env"))
 	if err != nil || !strings.Contains(string(body), secret) {
 		t.Fatalf("workload file=%s err=%v", body, err)
 	}
@@ -117,7 +117,7 @@ func TestInjectAfterAuthorizeAndIsolation(t *testing.T) {
 	if err := injected.Wipe(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "per-user", "alice", "google-work", "credentials.env")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "per-user", "alice", "alice", "google-work", toolhub.CredentialReferenceID("google-work", 0), "credentials.env")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("injected file survived wipe")
 	}
 	catalog, err := registry.Catalog(auth)

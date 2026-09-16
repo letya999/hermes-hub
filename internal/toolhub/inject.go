@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/gofrs/flock"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -153,13 +155,26 @@ func writeAuthorizedFiles(ctx context.Context, root string, effective EffectiveB
 	if workspace.Path == "" {
 		return nil, fmt.Errorf("%w: workload has no file inject path", ErrIsolation)
 	}
+	lockPath := filepath.Join(workspace.Path, "inject.lock")
+	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, ErrIsolation
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	lock := flock.New(lockPath)
+	locked, err := lock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil || !locked {
+		return nil, ErrIsolation
+	}
 	if err := WriteWorkloadEnvFile(workspace.Path, environment); err != nil {
+		_ = lock.Unlock()
 		if workspace.Cleanup != nil {
 			_ = workspace.Cleanup()
 		}
 		return nil, err
 	}
 	return func() error {
+		defer lock.Unlock()
 		_ = os.Remove(filepath.Join(workspace.Path, "credentials.env"))
 		if workspace.Cleanup != nil {
 			return workspace.Cleanup()

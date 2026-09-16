@@ -1,8 +1,20 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-14
+last_verified: 2026-09-16
 ---
 # Architecture
+
+M5 stage-2 Calendar and Slack data calls use opt-in stateless `provider-api`
+definitions behind the same ToolHub authorization/injection/audit gateway.
+The protected `hubctl connector` host CLI verifies provider identity before
+binding. Read/write definitions and scopes are independent; no bot/app credential
+is a data grant. Official HTTPS requests reject redirects and bound response
+sizes. Registry writes use an OS lock and loaded-content precondition so stale
+snapshots fail rather than overwriting another process's revoke. Generated MCP
+remains the default. See SPEC-0022 and ADR-0018. Personal Telegram has a pinned,
+locally prepared read-only ToolHive workload; real account login is still pending.
+Official Workspace MCP uses Google's remote endpoints, subject to Preview approval.
+See ADR-0020 and [the owner setup guide](local-accounts-manager.md).
 
 The current implementation follows [ADR-0009](adr/ADR-0009-scoped-homes-and-communication-hub.md):
 organization and user homes are peers under `spaces/`, mutable Hermes data lives in
@@ -156,6 +168,25 @@ owner-scoped connections, opaque credential references, effective bindings and w
 instances. Exact `principal_id`, `context_id`, `runtime_id` and `policy_version`
 checks reuse `internal/identity`; ToolHub does not create a second ownership registry.
 
+Credential-free per-user bindings use their deterministic binding ID for workload
+identity and a separate `per-binding/<principal>/<context>/<definition>/<binding>`
+state directory. Different runtimes or definition versions cannot reuse that
+identity/state; restart of the same binding retains its directory. Previously
+created anonymous per-user workload IDs and `per-user/<context>/<definition>`
+directories are not reused or automatically moved/deleted. The existing
+credential-bearing Telegram/controller path remains connection-scoped. The generic
+Docker fallback gives each binding its own workload ID, network, volumes and
+`credentials.env`; shared stateful or credential-bearing workloads stay denied.
+Live Docker 95-plus-5 used 100 sequential unique networks, volumes and
+containers (95 distinct owner env-files + 5 of one shared file). One hundred
+users means one hundred **registered** bindings and a bounded live set
+(`max_active` + FIFO); it does not mean one hundred concurrent MCP+ToolHive
+stacks. Same SHA reuses one image id with distinct processes, volumes and
+credentials. The MCP container does not receive the forwarding token; a
+process inside it cannot read that token from env, logs or `/proc`. A
+same-UID sibling inside the ToolHive process namespace is a rejected
+one-container layout, not the production fallback.
+
 Definitions classify execution as shared, per-user or per-job and carry finite resource
 limits, explicit egress, logical mounts and immutable source pins. The registry can
 save/load a permissioned atomic JSON snapshot. Container definitions also require an
@@ -187,6 +218,9 @@ ToolHive/vMCP MCP client adapter and a bounded direct-exec runner. The runtime
 image enables the MCP SDK's legacy-session compatibility flag so Hermes clients
 may send session headers while authorization remains per request. The backend
 adapter disables standalone SSE because ToolHub calls are request/response only.
+For upstream servers that implement the current legacy MCP wire version (for
+example Serena 1.5.x), the backend hop pins `MCP-Protocol-Version: 2025-11-25`
+so discovery and calls remain compatible with the SDK's newer default handshake.
 Both list and call use the same current projection resolver. Setting `HUB_TOOLHUB_ENDPOINT` (or
 `HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store) injects one authenticated
 ToolHub MCP entry into the copied Hermes config; unset variables leave the generated

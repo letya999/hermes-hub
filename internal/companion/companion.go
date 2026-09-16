@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"gopkg.in/yaml.v3"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -50,19 +51,26 @@ func Run(ctx context.Context, file string) error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8765"
 	}
-	token := os.Getenv(c.TokenEnv)
-	if len(token) < 32 || len(c.Command) == 0 {
+	if len(c.Command) == 0 {
 		return fmt.Errorf("command and token_env containing >=32 characters required")
+	}
+	token := ""
+	if c.TokenEnv != "" {
+		token = os.Getenv(c.TokenEnv)
+	}
+	if err := validateCompanionAuth(c, token); err != nil {
+		return err
 	}
 	cmd := exec.CommandContext(ctx, c.Command[0], c.Command[1:]...)
 	cmd.Stderr = os.Stderr
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, c.TokenEnv+"=") {
-			cmd.Env = append(cmd.Env, e)
+		if c.TokenEnv != "" && strings.HasPrefix(e, c.TokenEnv+"=") {
+			continue
 		}
+		cmd.Env = append(cmd.Env, e)
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "hub-companion", Version: "0.1.0"}, nil)
-	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	session, err := client.Connect(ctx, stdioMCPTransport(cmd), nil)
 	if err != nil {
 		return err
 	}
@@ -87,7 +95,11 @@ func Run(ctx context.Context, file string) error {
 	}
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true})
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", Protect(handler, token))
+	if c.TokenEnv == "" {
+		mux.Handle("/mcp", internalCompanion(handler))
+	} else {
+		mux.Handle("/mcp", Protect(handler, token))
+	}
 	srv := &http.Server{Addr: c.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -96,8 +108,40 @@ func Run(ctx context.Context, file string) error {
 		_ = srv.Shutdown(stop)
 	}()
 	fmt.Fprintf(os.Stderr, "companion listening on %s (%d tools); use a private tunnel\n", c.Listen, count)
-	if err = srv.ListenAndServe(); err != http.ErrServerClosed {
+	listener, err := net.Listen("tcp4", c.Listen)
+	if err != nil {
+		return err
+	}
+	if err = srv.Serve(listener); err != http.ErrServerClosed {
 		return err
 	}
 	return nil
+}
+
+func validateCompanionAuth(c Config, token string) error {
+	host, _, err := net.SplitHostPort(c.Listen)
+	if err != nil {
+		return err
+	}
+	if c.TokenEnv == "" {
+		if host != "0.0.0.0" {
+			return fmt.Errorf("unauthenticated companion requires an internal 0.0.0.0 listener")
+		}
+		return nil
+	}
+	if len(token) < 32 {
+		return fmt.Errorf("command and token_env containing >=32 characters required")
+	}
+	return nil
+}
+
+func internalCompanion(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "" {
+			http.Error(w, "browser origins forbidden", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+		next.ServeHTTP(w, r)
+	})
 }

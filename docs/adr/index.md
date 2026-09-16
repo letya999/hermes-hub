@@ -1,11 +1,14 @@
 ---
 description: Accepted architectural decisions; append new decisions when changing direction.
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0020](ADR-0020-local-account-preparation.md) | Owner-selected PC, fixed read-only ToolHive controller and protected local account setup |
+| [ADR-0019](ADR-0019-official-workspace-telegram-sdk.md) | Official Workspace MCP and owner-approved Python Telegram account workload |
+| [ADR-0018](ADR-0018-personal-provider-api.md) | Stateless official provider HTTPS calls behind ToolHub authorization |
 | [ADR-0017](ADR-0017-personal-assistant-channels.md) | Telegram/Slack communication channels, voice envelope and context lifecycle |
 | [ADR-0016](ADR-0016-encrypted-credentials-and-oauth.md) | Ciphertext store behind ToolHub locators, OAuth broker and audit |
 | [ADR-0015](ADR-0015-durable-job-runtime-mappings.md) | Durable job, session, run and generation mappings in local stores |

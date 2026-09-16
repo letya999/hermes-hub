@@ -68,8 +68,9 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		Token:  token,
 		Auth:   auth,
 		Backend: RoutingBackend{
-			MCP: MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, Root: envOr("HUB_STATE", "/state")},
-			CLI: CLIRunner{Root: envOr("HUB_STATE", "/state")},
+			Provider: PersonalProviderBackend{},
+			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, Root: envOr("HUB_STATE", "/state")},
+			CLI:      CLIRunner{Root: envOr("HUB_STATE", "/state")},
 		},
 	}, nil
 }
@@ -111,6 +112,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			record.HermesRunID = fields["hermes_run_id"]
 			record.ToolCallID = fields["tool_call_id"]
 			record.CorrelationID = fields["correlation_id"]
+			record.Receipt = fields["receipt"]
 			if fields["credential_revision"] != "" {
 				n, _ := strconv.ParseUint(fields["credential_revision"], 10, 64)
 				record.CredentialRevision = n

@@ -181,7 +181,7 @@ func TestEndpointHandlerInjectsFromCredstore(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		capturedBody = append(capturedBody, body...)
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		path := filepath.Join(root, "per-user", "alice", "google-work", "credentials.env")
+		path := filepath.Join(root, "per-user", "alice", "alice", "google-work", CredentialReferenceID("google-work", 0), "credentials.env")
 		if data, err := os.ReadFile(path); err == nil {
 			envFile = string(data)
 		}

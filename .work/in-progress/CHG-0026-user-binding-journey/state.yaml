@@ -1,0 +1,6 @@
+change: CHG-0026
+status: in-progress
+phase: not-started
+notes:
+  - Opened after CHG-0025 M5.1 closeout 2026-09-16.
+  - Prerequisite: trusted SHA catalog and docker_fallback runtime already proven.
