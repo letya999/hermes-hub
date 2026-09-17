@@ -12,6 +12,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/oauth"
 )
 
 type EndpointConfig struct {
@@ -92,11 +93,19 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		Store: store, Backend: config.Backend, Tokens: map[string]identity.Envelope{config.Token: config.Auth},
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
 	}
-	if injector, err := credentialInjectorFromEnv(); err != nil {
+	secrets, injector, err := credentialServicesFromEnv()
+	if err != nil {
 		return nil, err
-	} else if injector != nil {
+	}
+	if injector != nil {
 		gateway.Injector = injector
 	}
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", "")}
+	control.FormOrigin = control.origin()
+	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
+	control.Reviewer = DefaultSourceReviewer(artifacts, seccomp)
+	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
+	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)
 		if err != nil {
@@ -146,16 +155,16 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-func credentialInjectorFromEnv() (func(context.Context, EffectiveBinding) (map[string]string, func() error, error), error) {
+func credentialServicesFromEnv() (credstore.Backend, func(context.Context, EffectiveBinding) (map[string]string, func() error, error), error) {
 	path := strings.TrimSpace(os.Getenv("HUB_CREDENTIAL_STORE"))
 	if path == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	backend, err := credstore.Open(credstore.Options{Path: path, KeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE")})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return func(ctx context.Context, effective EffectiveBinding) (map[string]string, func() error, error) {
+	return backend, func(ctx context.Context, effective EffectiveBinding) (map[string]string, func() error, error) {
 		env, err := DecryptAuthorized(backend, effective)
 		if err != nil {
 			return nil, nil, err

@@ -83,6 +83,9 @@ func DecryptAuthorized(backend credstore.Backend, effective EffectiveBinding) (m
 	owner := effective.Binding.PrincipalID
 	if effective.Connection != nil {
 		owner = effective.Connection.Owner.ID
+		if shared := effective.Connection.Metadata["credential_owner"]; shared != "" {
+			owner = shared
+		}
 	}
 	values, err := backend.Get(effective.Credential.Locator, owner)
 	if err != nil {

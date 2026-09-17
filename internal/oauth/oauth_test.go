@@ -178,6 +178,17 @@ func TestAuthCodePKCEAndSingleUseState(t *testing.T) {
 	if _, err := broker.StartAuthCode("alice", "alice", "google-work", "fixture", "https://evil.example/cb"); !errors.Is(err, ErrDenied) {
 		t.Fatalf("non-allowlisted redirect: %v", err)
 	}
+	onboard := redirect + "?onboarding_id=onboard-alice"
+	startOnboard, err := broker.StartAuthCode("alice", "alice", "google-work", "fixture", onboard)
+	if err != nil {
+		t.Fatalf("onboarding callback query: %v", err)
+	}
+	if _, err := broker.HandleCallback("alice", "alice", "google-work", startOnboard.State, authorizeCode(t, startOnboard.AuthorizeURL), onboard); err != nil {
+		t.Fatalf("onboarding callback: %v", err)
+	}
+	if _, err := broker.StartAuthCode("alice", "alice", "google-work", "fixture", redirect+"?next=https://evil.example"); !errors.Is(err, ErrDenied) {
+		t.Fatal("extra redirect query accepted")
+	}
 	start2, err := broker.StartAuthCode("alice", "alice", "google-work", "fixture", redirect)
 	if err != nil {
 		t.Fatal(err)

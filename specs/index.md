@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0023](active/SPEC-0023-toolhub-control-plane.md) | M5.2 multi-tenant ToolHub control plane: grants, control MCP, elicitation and lifecycle |
 | [SPEC-0022](active/SPEC-0022-personal-data-connectors.md) | M5 stage 2 personal data connectors and independent capability contracts |
 | [SPEC-0021](active/SPEC-0021-personal-assistant.md) | Personal assistant channels, voice, hub routines and context lifecycle |
 | [SPEC-0020](active/SPEC-0020-credentials-and-connectors.md) | Encrypted credentials, inject-after-authorize, OAuth broker and audit ledger |

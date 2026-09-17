@@ -52,7 +52,16 @@ func (f *Fixture) authorize(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.codes[code] = challenge
 	f.mu.Unlock()
-	http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code="+code+"&state="+state, http.StatusFound)
+	target, err := url.Parse(r.URL.Query().Get("redirect_uri"))
+	if err != nil || target.Scheme == "" {
+		http.Error(w, "redirect", http.StatusBadRequest)
+		return
+	}
+	q := target.Query()
+	q.Set("code", code)
+	q.Set("state", state)
+	target.RawQuery = q.Encode()
+	http.Redirect(w, r, target.String(), http.StatusFound)
 }
 
 func (f *Fixture) token(w http.ResponseWriter, r *http.Request) {

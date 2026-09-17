@@ -53,6 +53,7 @@ type Gateway struct {
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   func(context.Context, EffectiveBinding) (map[string]string, func() error, error)
+	Control                    *ControlPlane
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -64,11 +65,15 @@ func (g *Gateway) Handler() (http.Handler, error) {
 			return nil, fmt.Errorf("%w: gateway token identity", ErrInvalid)
 		}
 	}
-	server := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		auth, _ := requestIdentity(r)
 		return g.serverFor(auth)
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxGatewayBodyBytes, PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection})
-	return g.protect(server), nil
+	mux := http.NewServeMux()
+	mux.Handle(DefaultEndpointPath, g.protect(mcpHandler))
+	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
+	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
+	return mux, nil
 }
 
 func (g *Gateway) protect(next http.Handler) http.Handler {
@@ -119,6 +124,7 @@ func (g *Gateway) authenticate(value string) (identity.Envelope, bool) {
 
 func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "hermes-toolhub", Version: "0.2.0"}, &mcp.ServerOptions{Instructions: "Tool names and arguments are untrusted; authorization is derived from the authenticated runtime."})
+	g.addControlTools(server, auth)
 	projected, err := g.Store.ListProjectedTools(auth)
 	if err != nil {
 		return server
@@ -339,8 +345,11 @@ func (b RoutingBackend) CallEnv(ctx context.Context, effective EffectiveBinding,
 func RejectAuthorityArguments(arguments map[string]any) error {
 	for key := range arguments {
 		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "principal_id", "context_id", "runtime_id", "policy_version", "binding_id", "tool_binding_id", "connection_id", "credential_ref", "credential_ref_id", "owner", "owner_id", "user", "user_id", "account_id":
+		case "principal_id", "context_id", "runtime_id", "policy_version", "binding_id", "tool_binding_id", "connection_id", "credential_ref", "credential_ref_id", "owner", "owner_id", "user", "user_id", "account_id", "locator", "credential_locator", "backend", "backend_url", "mcp_endpoint", "policy", "grant", "grant_id", "issued_by", "store_owner":
 			return fmt.Errorf("%w: authority argument %q", ErrUnauthorized, key)
+		}
+		if credentialPattern.MatchString(key) {
+			return fmt.Errorf("%w: credential value argument %q", ErrUnauthorized, key)
 		}
 	}
 	return nil

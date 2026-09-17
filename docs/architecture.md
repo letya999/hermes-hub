@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-16
+last_verified: 2026-09-17
 ---
 # Architecture
 
@@ -193,6 +193,17 @@ save/load a permissioned atomic JSON snapshot. Container definitions also requir
 exact ToolHive version and digest-pinned sidecars; actual resource and egress enforcement
 is admitted only by the private `HUB_TOOLHIVE_ADMISSION_ENDPOINT` controller contract
 and fails closed when absent.
+
+The M5.2 control plane is recorded in [SPEC-0023](../specs/active/SPEC-0023-toolhub-control-plane.md)
+and [ADR-0021](adr/ADR-0021-toolhub-control-plane.md). The same authenticated
+ToolHub MCP endpoint exposes `prepare_source`, `status`,
+`required_credentials`, `confirm`, `enable`, `disable`, `revoke` and
+`remove`. Identity is taken from the bearer mapping; model arguments cannot
+change owner, locator, backend or policy. Operator grants select
+catalog-default, assigned definition or self-install. Credentials enter a
+loopback form (or MCP URL elicitation pointing at it) and stay in
+ciphertext until inject-after-authorize. Promoting a user MCP to the
+catalog does not convert existing user bindings into shared workloads.
 
 The stage-2 opt-in surface is recorded in [SPEC-0018](../specs/active/SPEC-0018-toolhub-stage2.md).
 When `HUB_TOOLHUB_STORE` is explicitly configured, `service_catalog`,

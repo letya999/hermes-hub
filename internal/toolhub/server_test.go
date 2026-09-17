@@ -121,6 +121,164 @@ func TestEndpointHandlerAuditLedgerFailClosed(t *testing.T) {
 	if _, err := NewEndpointHandler(config, store); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("HUB_AUDIT_LEDGER", "")
+	t.Setenv("HUB_CREDENTIAL_STORE", "relative.enc")
+	if _, err := NewEndpointHandler(config, store); err == nil {
+		t.Fatal("relative credential store accepted")
+	}
+}
+
+func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
+	t.Setenv("HUB_STATE", "")
+	t.Setenv("HUB_ARTIFACT_DIR", "")
+	t.Setenv("HUB_BUILD_SECCOMP", "")
+	t.Setenv("HUB_CREDENTIAL_STORE", "")
+	t.Setenv("HUB_AUDIT_LEDGER", "")
+	store := NewStore()
+	if err := store.RegisterDefinition(remoteDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, "google-work", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(OperatorGrant(GrantSelfInstall, auth.PrincipalID, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Repeat("t", 32)
+	handler, err := NewEndpointHandler(EndpointConfig{
+		Token: token, Auth: auth, Listen: "127.0.0.1:8090",
+		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+			return BackendResult{Text: "ok"}, nil
+		}),
+	}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	callback, err := http.Get(server.URL + "/oauth/callback?onboarding_id=onboard-missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback.Body.Close()
+	if callback.StatusCode == http.StatusNotFound {
+		t.Fatal("production oauth callback 404; broker not wired")
+	}
+	var elicited atomic.Value
+	client := mcp.NewClient(&mcp.Implementation{Name: "prod-control", Version: "1"}, &mcp.ClientOptions{
+		Capabilities: &mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapabilities{URL: &mcp.URLElicitationCapabilities{}}},
+		ElicitationHandler: func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			if req != nil && req.Params != nil {
+				elicited.Store(req.Params.URL)
+			}
+			return &mcp.ElicitResult{Action: "accept"}, nil
+		},
+	})
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL + DefaultEndpointPath, HTTPClient: &http.Client{Transport: testBearerTransport{base: http.DefaultTransport, token: token}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	github, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "prepare_source", Arguments: map[string]any{"source": githubCommitURL()}})
+	text := toolCallText(github, err)
+	if err == nil && (github == nil || !github.IsError) {
+		t.Fatal("github prepare succeeded without import paths")
+	}
+	if strings.Contains(text, "source reviewer unavailable") {
+		t.Fatalf("production reviewer missing: %s", text)
+	}
+	prepared, err := callControl(t, session, "prepare_source", map[string]any{"definition_id": "google-work", "version": "1.0.0", "request_key": "prod-form"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	required, err := callControl(t, session, "required_credentials", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	formURL, _ := required["form_url"].(string)
+	onboardingID, _ := prepared["onboarding_id"].(string)
+	if formURL == "" || !strings.Contains(formURL, "/credentials/"+onboardingID) || !strings.Contains(formURL, "nonce=") || !strings.HasPrefix(formURL, "http://127.0.0.1:8090/") {
+		t.Fatalf("production form_url=%q onboarding=%s", formURL, onboardingID)
+	}
+	got, _ := elicited.Load().(string)
+	if got != formURL {
+		t.Fatalf("elicit=%q form_url=%q", got, formURL)
+	}
+	assertRequiredCredentialsElicitsFormURL(t, store, auth, prepared["onboarding_id"].(string), formURL)
+}
+
+func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth identity.Envelope, onboardingID, wantURL string) {
+	t.Helper()
+	control := &ControlPlane{Store: store, Listen: "127.0.0.1:8090"}
+	control.FormOrigin = control.origin()
+	gateway := &Gateway{
+		Store: store, Tokens: map[string]identity.Envelope{strings.Repeat("t", 32): auth},
+		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+			return BackendResult{Text: "ok"}, nil
+		}),
+		Control: control,
+	}
+	mcpServer := gateway.serverFor(auth)
+	ct, st := mcp.NewInMemoryTransports()
+	ss, err := mcpServer.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+	var elicited atomic.Value
+	client := mcp.NewClient(&mcp.Implementation{Name: "elicit", Version: "1"}, &mcp.ClientOptions{
+		Capabilities: &mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapabilities{URL: &mcp.URLElicitationCapabilities{}}},
+		ElicitationHandler: func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			if req != nil && req.Params != nil {
+				elicited.Store(req.Params.URL)
+			}
+			return &mcp.ElicitResult{Action: "accept"}, nil
+		},
+	})
+	session, err := client.Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	required, err := callControl(t, session, "required_credentials", map[string]any{"onboarding_id": onboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	formURL, _ := required["form_url"].(string)
+	got, _ := elicited.Load().(string)
+	if got == "" || got != formURL || got != wantURL {
+		t.Fatalf("elicit=%q form_url=%q want=%q", got, formURL, wantURL)
+	}
+}
+
+func TestPendingCredentialElicitRequiresFormURLAndURLCap(t *testing.T) {
+	if pendingCredentialElicit(context.Background(), nil, map[string]any{"form_url": "http://127.0.0.1/credentials/x?nonce=n"}) != nil {
+		t.Fatal("nil request elicited")
+	}
+	if pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, map[string]any{}) != nil {
+		t.Fatal("empty form_url elicited")
+	}
+	if clientSupportsURLElicitation(nil) {
+		t.Fatal("nil request advertised url elicitation")
+	}
+}
+
+func toolCallText(result *mcp.CallToolResult, err error) string {
+	var b strings.Builder
+	if err != nil {
+		b.WriteString(err.Error())
+	}
+	if result == nil {
+		return b.String()
+	}
+	for _, content := range result.Content {
+		text, ok := content.(*mcp.TextContent)
+		if ok {
+			b.WriteString(text.Text)
+		}
+	}
+	return b.String()
 }
 
 func TestGatewayInjectorAndCallEnv(t *testing.T) {

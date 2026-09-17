@@ -9,6 +9,10 @@ A person attaches an already-trusted GitHub MCP to *their* account, Hermes
 sees only their tools, the workload starts on demand from the shared image,
 and disable/rotate cuts the next `tools/call`.
 
+M5.2 also ships the control MCP (`prepare_source` … `remove`), operator
+grants (catalog-default / assigned definition / self-install), loopback
+credential elicitation, and lifecycle isolation specified in SPEC-0023.
+
 ## Slices
 
 1. Bind trusted definition → per-user connection + credential ref (or none

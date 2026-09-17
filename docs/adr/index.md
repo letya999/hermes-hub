@@ -1,11 +1,12 @@
 ---
 description: Accepted architectural decisions; append new decisions when changing direction.
-last_verified: 2026-09-15
+last_verified: 2026-09-17
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0021](ADR-0021-toolhub-control-plane.md) | Control MCP, operator grants and loopback credential elicitation |
 | [ADR-0020](ADR-0020-local-account-preparation.md) | Owner-selected PC, fixed read-only ToolHive controller and protected local account setup |
 | [ADR-0019](ADR-0019-official-workspace-telegram-sdk.md) | Official Workspace MCP and owner-approved Python Telegram account workload |
 | [ADR-0018](ADR-0018-personal-provider-api.md) | Stateless official provider HTTPS calls behind ToolHub authorization |

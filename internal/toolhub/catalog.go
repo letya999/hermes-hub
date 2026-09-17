@@ -36,6 +36,9 @@ func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 	defer s.mu.RUnlock()
 	entries := make([]CatalogEntry, 0, len(s.definitions))
 	for _, definition := range s.definitions {
+		if !s.visibleDefinitionLocked(auth, definition) {
+			continue
+		}
 		entry := CatalogEntry{Name: definition.DefinitionID, Version: definition.Version, Transport: definition.Transport, WorkloadClass: definition.Workload.Class, Status: "available"}
 		for _, tool := range definition.Tools {
 			entry.Tools = append(entry.Tools, tool.Name)
@@ -102,6 +105,11 @@ func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (To
 	if !ok {
 		s.mu.Unlock()
 		return ToolBinding{}, fmt.Errorf("%w: manifest", ErrNotFound)
+	}
+	pub := s.publicationLocked(definition)
+	if pub.Visibility == PublicationUser && pub.OwnerPrincipalID != auth.PrincipalID {
+		s.mu.Unlock()
+		return ToolBinding{}, fmt.Errorf("%w: user definition owner", ErrUnauthorized)
 	}
 	if existing := s.findBindingLocked(auth, definition); existing != nil {
 		if existing.Status == RevokedStatus {

@@ -706,10 +706,14 @@ type Store struct {
 	bindings            map[string]ToolBinding
 	workloads           map[string]WorkloadInstance
 	projectionRevisions map[string]uint64
+	grants              map[string]Grant
+	onboardings         map[string]Onboarding
+	publications        map[string]DefinitionPublication
+	sharedPolicies      map[string]SharedCredentialPolicy
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}}
+	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]Grant{}, onboardings: map[string]Onboarding{}, publications: map[string]DefinitionPublication{}, sharedPolicies: map[string]SharedCredentialPolicy{}}
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
@@ -1120,13 +1124,17 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (Effecti
 }
 
 type snapshot struct {
-	Schema              int                   `json:"schema"`
-	Definitions         []ToolDefinition      `json:"definitions"`
-	Connections         []Connection          `json:"connections"`
-	Credentials         []CredentialReference `json:"credential_references"`
-	Bindings            []ToolBinding         `json:"bindings"`
-	Workloads           []WorkloadInstance    `json:"workloads"`
-	ProjectionRevisions map[string]uint64     `json:"projection_revisions,omitempty"`
+	Schema              int                      `json:"schema"`
+	Definitions         []ToolDefinition         `json:"definitions"`
+	Connections         []Connection             `json:"connections"`
+	Credentials         []CredentialReference    `json:"credential_references"`
+	Bindings            []ToolBinding            `json:"bindings"`
+	Workloads           []WorkloadInstance       `json:"workloads"`
+	ProjectionRevisions map[string]uint64        `json:"projection_revisions,omitempty"`
+	Grants              []Grant                  `json:"grants,omitempty"`
+	Onboardings         []Onboarding             `json:"onboardings,omitempty"`
+	Publications        []DefinitionPublication  `json:"publications,omitempty"`
+	SharedPolicies      []SharedCredentialPolicy `json:"shared_credential_policies,omitempty"`
 }
 
 func (s *Store) Save(path string) error {
@@ -1172,6 +1180,18 @@ func (s *Store) Save(path string) error {
 	for key, revision := range s.projectionRevisions {
 		state.ProjectionRevisions[key] = revision
 	}
+	for _, grant := range s.grants {
+		state.Grants = append(state.Grants, grant)
+	}
+	for _, onboarding := range s.onboardings {
+		state.Onboardings = append(state.Onboardings, onboarding)
+	}
+	for _, pub := range s.publications {
+		state.Publications = append(state.Publications, pub)
+	}
+	for _, policy := range s.sharedPolicies {
+		state.SharedPolicies = append(state.SharedPolicies, policy)
+	}
 	slices.SortFunc(state.Definitions, func(a, b ToolDefinition) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
@@ -1179,6 +1199,12 @@ func (s *Store) Save(path string) error {
 	slices.SortFunc(state.Credentials, func(a, b CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
 	slices.SortFunc(state.Bindings, func(a, b ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
 	slices.SortFunc(state.Workloads, func(a, b WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
+	slices.SortFunc(state.Grants, func(a, b Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
+	slices.SortFunc(state.Onboardings, func(a, b Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
+	slices.SortFunc(state.Publications, func(a, b DefinitionPublication) int {
+		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
+	})
+	slices.SortFunc(state.SharedPolicies, func(a, b SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -1279,6 +1305,30 @@ func Load(path string) (*Store, error) {
 		}
 		store.projectionRevisions[key] = revision
 	}
+	for _, grant := range state.Grants {
+		if err := grant.Validate(); err != nil {
+			return nil, err
+		}
+		store.grants[grant.GrantID] = grant
+	}
+	for _, onboarding := range state.Onboardings {
+		if err := onboarding.Validate(); err != nil {
+			return nil, err
+		}
+		store.onboardings[onboarding.OnboardingID] = onboarding
+	}
+	for _, pub := range state.Publications {
+		if err := pub.Validate(); err != nil {
+			return nil, err
+		}
+		store.publications[definitionKey(pub.DefinitionID, pub.Version)] = pub
+	}
+	for _, policy := range state.SharedPolicies {
+		if err := policy.Validate(); err != nil {
+			return nil, err
+		}
+		store.sharedPolicies[policy.PolicyID] = policy
+	}
 	for _, binding := range store.bindings {
 		key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
 		if binding.ProjectionRevision > store.projectionRevisions[key] {
@@ -1378,6 +1428,10 @@ func (s *Store) Reload() error {
 	s.bindings = fresh.bindings
 	s.workloads = fresh.workloads
 	s.projectionRevisions = fresh.projectionRevisions
+	s.grants = fresh.grants
+	s.onboardings = fresh.onboardings
+	s.publications = fresh.publications
+	s.sharedPolicies = fresh.sharedPolicies
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.mu.Unlock()
 	s.stopWorkloads(stopped)

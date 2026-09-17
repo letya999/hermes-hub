@@ -582,6 +582,18 @@ func (b *Broker) allowRedirect(redirect string) bool {
 		if allowed == redirect {
 			return true
 		}
+		got, err := url.Parse(redirect)
+		want, wantErr := url.Parse(allowed)
+		if err != nil || wantErr != nil || want.RawQuery != "" {
+			continue
+		}
+		if got.Scheme != want.Scheme || got.Host != want.Host || got.Path != want.Path {
+			continue
+		}
+		query := got.Query()
+		if len(query) == 1 && strings.TrimSpace(query.Get("onboarding_id")) != "" {
+			return true
+		}
 	}
 	return false
 }

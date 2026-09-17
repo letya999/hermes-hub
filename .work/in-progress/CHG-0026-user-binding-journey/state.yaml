@@ -1,6 +1,9 @@
 change: CHG-0026
 status: in-progress
-phase: not-started
+phase: control-plane-verified
 notes:
   - Opened after CHG-0025 M5.1 closeout 2026-09-16.
   - Prerequisite: trusted SHA catalog and docker_fallback runtime already proven.
+  - SPEC-0023 / ADR-0021 freeze grants, control MCP, elicitation and lifecycle.
+  - M5.2 control MCP/grants/elicitation/lifecycle in-repo tests plus just check 85.17% and docker-check 68424bee6191 passed 2026-09-17.
+  - Hermes chat reconnect remains #74 / M5.3.

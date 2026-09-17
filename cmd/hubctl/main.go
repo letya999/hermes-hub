@@ -31,7 +31,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -56,6 +56,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
+	}
+	if op == "grant" {
+		return runGrant(ctx, args[1:])
 	}
 	if op == "context" {
 		return runContext(ctx, args[1:])

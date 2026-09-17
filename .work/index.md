@@ -5,7 +5,7 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
-| [CHG-0026](in-progress/CHG-0026-user-binding-journey/plan.md) | M5.2 bind/project/revoke for a trusted MCP on a user account |
+| [CHG-0026](in-progress/CHG-0026-user-binding-journey/plan.md) | M5.2 control MCP, grants, elicitation and bind/project/revoke |
 | [CHG-0025](in-progress/CHG-0025-trusted-artifacts/plan.md) | **done** M5.1 trusted artifacts + local ToolHive; [closeout.md](in-progress/CHG-0025-trusted-artifacts/closeout.md) |
 | [CHG-0024](in-progress/CHG-0024-personal-data-connectors/plan.md) | M5 stage 2: Google Workspace, Slack data and personal Telegram connectors behind ToolHub |
 | [CHG-0023](in-progress/CHG-0023-personal-assistant/plan.md) | M4 personal assistant: Telegram/Slack channels, voice, routines, memory/skills/backup |
