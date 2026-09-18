@@ -1,1 +1,1 @@
-{"name":"hermes-hub-browser","version":"0.1.0","private":true,"dependencies":{"@playwright/mcp":"0.0.80"}}
+{"name":"hermes-hub-browser","version":"0.1.0","private":true,"dependencies":{"@playwright/mcp":"0.0.81"}}
