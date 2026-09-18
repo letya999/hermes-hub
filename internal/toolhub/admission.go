@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -21,7 +22,13 @@ type controllerPlan struct {
 	ToolHiveVersion   string          `json:"toolhive_version"`
 	SidecarImages     []string        `json:"sidecar_images"`
 	Execution         ExecutionPolicy `json:"execution"`
+	CredentialMounts  []Mount         `json:"credential_mounts,omitempty"`
 	WorkspacePath     string          `json:"workspace_path,omitempty"`
+	Definition        ToolDefinition  `json:"definition,omitempty"`
+}
+
+type controllerRelease struct {
+	WorkloadID string `json:"workload_id"`
 }
 
 // AdmissionReceipt is the controller's proof that the workload was started
@@ -98,6 +105,8 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 			ToolHiveVersion:   effective.Definition.Workload.ToolHiveVersion,
 			SidecarImages:     effective.Definition.Workload.SidecarImages,
 			Execution:         effective.Definition.Execution,
+			CredentialMounts:  effective.CredentialMounts,
+			Definition:        effective.Definition,
 		})
 		if err != nil {
 			return AdmissionReceipt{}, err
@@ -138,5 +147,43 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 			return AdmissionReceipt{}, err
 		}
 		return receipt, nil
+	}, nil
+}
+
+func ControllerAdmissionReleaserFromEnv() (func(context.Context, string) error, error) {
+	endpoint := os.Getenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT")
+	if endpoint == "" {
+		return nil, nil
+	}
+	if err := ValidateBackendEndpoint(endpoint); err != nil {
+		return nil, err
+	}
+	token := os.Getenv("HUB_TOOLHIVE_ADMISSION_TOKEN")
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return func(ctx context.Context, workloadID string) error {
+		if workloadID == "" {
+			return fmt.Errorf("%w: empty workload release", ErrInvalid)
+		}
+		body, err := json.Marshal(controllerRelease{WorkloadID: workloadID})
+		if err != nil {
+			return err
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/release", bytes.NewReader(body)) // #nosec G704 -- endpoint was restricted to private ToolHive/controller hosts above.
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response, err := client.Do(request) // #nosec G704 -- endpoint was restricted to private ToolHive/controller hosts above.
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusOK {
+			return fmt.Errorf("controller release returned %s", response.Status)
+		}
+		return nil
 	}, nil
 }

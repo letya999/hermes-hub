@@ -3,9 +3,12 @@ module github.com/letya999/hermes-hub
 go 1.27.1
 
 require (
+	github.com/letya999/credential-broker v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/letya999/credential-broker => ./services/credential-broker
 
 require (
 	github.com/gofrs/flock v0.13.0 // indirect

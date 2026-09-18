@@ -72,8 +72,8 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err != nil || again["onboarding_id"] != prepared["onboarding_id"] {
 		t.Fatalf("idempotent prepare=%v err=%v", again, err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{}); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("status without id: %v", err)
+	if status, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{}); err != nil || status["onboarding_id"] != prepared["onboarding_id"] {
+		t.Fatalf("latest status selector: status=%v err=%v", status, err)
 	}
 	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"})
 	if err != nil || st["onboarding_id"] != prepared["onboarding_id"] {

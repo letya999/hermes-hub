@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -300,6 +301,11 @@ func superviseOnce(mode string) (bool, error) {
 				serverErr <- err
 			}
 		}()
+	}
+	reconnectContext, cancelReconnect := context.WithCancel(context.Background())
+	defer cancelReconnect()
+	if mode == "serve" {
+		startToolHubReconnectWatcher(reconnectContext, state)
 	}
 	status := marker{PIDs: []int{os.Getpid()}, Browser: browser}
 	for _, child := range children {

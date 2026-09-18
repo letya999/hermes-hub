@@ -65,6 +65,14 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 	if !supported {
 		return ArtifactRecipe{}, nil, fmt.Errorf("%w: supported language required", ErrInvalid)
 	}
+	if baseImage == "" {
+		baseImage = map[string]string{
+			"python": "python@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217",
+			"node":   "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+			"go":     "golang@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b",
+			"rust":   "rust@sha256:ebd900bae66fd508b466cef82d64a83a5fb34682e4c8b2797a42908bddc95a57",
+		}[language]
+	}
 	if files[manifest] == nil && !(language == "python" && files["requirements.txt"] != nil) {
 		return ArtifactRecipe{}, nil, fmt.Errorf("%w: language manifest missing", ErrInvalid)
 	}

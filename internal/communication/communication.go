@@ -28,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/secrets"
@@ -96,28 +97,29 @@ func (user User) slackEnvelope(teamID, slackUser string) identity.Envelope {
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
-	Supervised         bool          `yaml:"-"`
-	OrganizationID     string        `yaml:"organization_id"`
-	Users              []User        `yaml:"users"`
-	TelegramToken      string        `yaml:"-"`
-	APIBaseURL         string        `yaml:"api_base_url,omitempty"`
-	SlackSigningSecret string        `yaml:"-"`
-	SlackBotToken      string        `yaml:"-"`
-	ControlAuth        string        `yaml:"-"`
-	ListenAddr         string        `yaml:"-"`
-	NativeCron         string        `yaml:"-"`
-	STTCommand         string        `yaml:"-"`
-	TTSCommand         string        `yaml:"-"`
-	TTSUploadURL       string        `yaml:"-"`
-	SpoolDir           string        `yaml:"spool_dir"`
-	RuntimeURL         string        `yaml:"-"`
-	RuntimeAuth        string        `yaml:"-"`
-	PollTimeout        time.Duration `yaml:"-"`
-	HermesCommand      string        `yaml:"-"`
-	CredentialStore    string        `yaml:"-"`
-	CredentialKeyFile  string        `yaml:"-"`
-	ToolHubStore       string        `yaml:"-"`
-	AuditLedger        string        `yaml:"-"`
+	Supervised         bool                    `yaml:"-"`
+	OrganizationID     string                  `yaml:"organization_id"`
+	Users              []User                  `yaml:"users"`
+	TelegramToken      string                  `yaml:"-"`
+	APIBaseURL         string                  `yaml:"api_base_url,omitempty"`
+	SlackSigningSecret string                  `yaml:"-"`
+	SlackBotToken      string                  `yaml:"-"`
+	ControlAuth        string                  `yaml:"-"`
+	ListenAddr         string                  `yaml:"-"`
+	NativeCron         string                  `yaml:"-"`
+	STTCommand         string                  `yaml:"-"`
+	TTSCommand         string                  `yaml:"-"`
+	TTSUploadURL       string                  `yaml:"-"`
+	SpoolDir           string                  `yaml:"spool_dir"`
+	RuntimeURL         string                  `yaml:"-"`
+	RuntimeAuth        string                  `yaml:"-"`
+	PollTimeout        time.Duration           `yaml:"-"`
+	HermesCommand      string                  `yaml:"-"`
+	CredentialStore    string                  `yaml:"-"`
+	CredentialKeyFile  string                  `yaml:"-"`
+	ToolHubStore       string                  `yaml:"-"`
+	AuditLedger        string                  `yaml:"-"`
+	BrokerApprove      credentialbroker.Config `yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -260,6 +262,10 @@ func ConfigFromEnv() (Config, error) {
 		config.CredentialKeyFile = os.Getenv("HUB_CREDENTIAL_KEY_FILE")
 		config.ToolHubStore = os.Getenv("HUB_TOOLHUB_STORE")
 		config.AuditLedger = os.Getenv("HUB_AUDIT_LEDGER")
+		config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
+		if err != nil {
+			return Config{}, err
+		}
 		fillChannelSecrets(&config)
 		return config, nil
 	}
@@ -293,6 +299,10 @@ func ConfigFromEnv() (Config, error) {
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
 	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER")}
+	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
+	if err != nil {
+		return Config{}, err
+	}
 	fillChannelSecrets(&config)
 	return config, nil
 }
@@ -1241,6 +1251,9 @@ func New(config Config) (*Gateway, error) {
 }
 
 func openCredentialSurface(config Config) (*secrets.Service, *audit.Ledger, error) {
+	if config.BrokerApprove.Enabled() {
+		return nil, nil, nil
+	}
 	if config.CredentialStore == "" {
 		return nil, nil, nil
 	}
@@ -1419,6 +1432,22 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			}
 			if err != nil {
 				answer = "Запрос отклонен: задача или подтверждение недоступны в этом разговоре."
+			}
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, answer)
+		case "credentials", "broker-approve":
+			fields := strings.Fields(text)
+			answer := "Используйте /credentials <request-id> <код из формы Credential Broker>."
+			if len(fields) == 3 && g.config.BrokerApprove.Enabled() {
+				caller := user.envelope(message.From.ID)
+				client, err := g.config.BrokerApprove.New(caller, "broker:approve")
+				if err == nil {
+					err = client.Approve(ctx, fields[1], fields[2])
+				}
+				if err == nil {
+					answer = "Подтверждение Credential Broker сохранено. Вернитесь в Hermes и запросите статус подключения."
+				} else {
+					answer = "Подтверждение отклонено или истекло. Запросите новую ссылку подключения."
+				}
 			}
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, answer)
 		case "start":

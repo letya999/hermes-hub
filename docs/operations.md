@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-14
+last_verified: 2026-09-17
 ---
 # Operations
 
@@ -14,6 +14,17 @@ sender IDs from the configured allowlist to the selected user scope, writes dura
 and replies under `/state/gateway`, and runs one fresh bounded Hermes process per job.
 The current deployment uses one configured user; adding another is a configuration and
 isolated-space operation, not a shared Hermes home.
+The runtime includes the deployed `SOUL.md` digest in its deterministic conversation
+session ID, so changed system instructions start a fresh chat session on the next
+message while durable owner memory remains intact.
+
+Long Telegram turns (for example, ToolHub source review/build) use Hermes' FIFO
+`display.busy_input_mode: queue`; a new ordinary message is kept for the next turn
+instead of cancelling the active MCP call. `HERMES_AGENT_NOTIFY_INTERVAL` is rendered
+as 60 seconds, so the native Hermes gateway sends a periodic working heartbeat while
+the call is running. ToolHub's generated MCP timeout is 1800 seconds, matching the
+isolated builder's 25-minute safety ceiling plus startup margin. `/stop` and `/cancel`
+remain explicit cancellation controls.
 
 Treat `scope.yaml` IDs as immutable. Moving or renaming a home does not change its
 principal or context identity. Today Telegram links are provisioned only in trusted
@@ -57,6 +68,22 @@ appends matching job events when `HUB_AUDIT_LEDGER` or a credential store is
 configured. `HUB_CREDENTIAL_STORE` must be set on `hub-toolhub` for decrypt-and-inject.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
+To enable the Credential Broker path, configure the control, approval and
+runtime URL/key/ID/issuer variables documented in
+[integrations](integrations.md). All three audiences are required. Start the
+copied Broker with its own config and provider/contract directories; the Hub
+only receives the Broker origin and role-specific private signer files. For a
+pending onboarding, send `/credentials <request-id> <code>` through the
+authenticated Communication Hub chat. Existing local references are not
+auto-migrated when Broker mode is enabled.
+
+For a contract that delivers a file (for example a Google service-account JSON),
+the Broker materialization directory must be a dedicated shared tmpfs visible
+at the same absolute path to the Broker, ToolHub/controller and Docker daemon.
+Set that path as `credential_mount_root` in the generic controller config. The
+controller passes it as a read-only `--volume` and tears down the workload after
+the call; without this shared path the request is rejected.
+
 The selected user home contains persistent Hermes, connection, workspace and archive
 data. An organization home is mounted read-only for members. Dev/prod selects separate
 generated env files and Docker targets but does not create another user namespace. Never
@@ -91,6 +118,8 @@ Honcho failure must not be required for ordinary Hermes memory.
 
 User skills install into `spaces/<id>/hermes/skills` without rebuilding the image.
 Organization and global skills are read-only `skills.external_dirs` mounts.
+Every rendered runtime mounts the repository `config/skills` directory as the default
+global skill source; it includes the ToolHub-first MCP/connector onboarding skill.
 `hubctl skill install --consent` scans SKILL.md and refuses provider-mutation text.
 
 Back up all `spaces/<id>` homes and the `communication-hub-data` volume to encrypted

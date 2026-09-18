@@ -28,6 +28,8 @@ type HTTPRunner struct {
 	Resume  bool
 }
 
+const defaultHTTPRunTimeout = 30 * time.Minute
+
 func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 	outcome, err := r.RunOutcome(ctx, job)
 	return outcome.Text, err
@@ -174,7 +176,7 @@ func (r HTTPRunner) timeout() time.Duration {
 	if r.Limit > 0 {
 		return r.Limit
 	}
-	return 150 * time.Second
+	return defaultHTTPRunTimeout
 }
 
 func (r HTTPRunner) client() *http.Client {

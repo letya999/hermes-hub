@@ -26,15 +26,17 @@ import (
 )
 
 type GenericControllerConfig struct {
-	StateRoot      string          `json:"state_root"`
-	ToolHiveBinary string          `json:"toolhive_binary"`
-	SeccompProfile string          `json:"seccomp_profile"`
-	DockerFallback bool            `json:"docker_fallback,omitempty"`
-	BridgeBinary   string          `json:"bridge_binary,omitempty"`
-	Definition     ToolDefinition  `json:"definition"`
-	Budget         *WorkloadBudget `json:"-"`
-	MaxActive      int             `json:"max_active"`
-	IdleTTLSeconds int             `json:"idle_ttl_seconds"`
+	StateRoot           string          `json:"state_root"`
+	ToolHiveBinary      string          `json:"toolhive_binary"`
+	SeccompProfile      string          `json:"seccomp_profile"`
+	DockerFallback      bool            `json:"docker_fallback,omitempty"`
+	BridgeBinary        string          `json:"bridge_binary,omitempty"`
+	CredentialMountRoot string          `json:"credential_mount_root,omitempty"`
+	Definition          ToolDefinition  `json:"definition"`
+	DynamicDefinitions  bool            `json:"dynamic_definitions,omitempty"`
+	Budget              *WorkloadBudget `json:"-"`
+	MaxActive           int             `json:"max_active"`
+	IdleTTLSeconds      int             `json:"idle_ttl_seconds"`
 }
 
 type genericWorkload struct {
@@ -62,8 +64,11 @@ type genericController struct {
 }
 
 type genericContainer struct {
-	Image  string
-	State  struct{ Running bool }
+	Image string
+	State struct {
+		Running  bool
+		ExitCode int
+	}
 	Config struct {
 		User  string
 		Image string
@@ -115,17 +120,19 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	config.StateRoot = filepath.Clean(config.StateRoot)
 	config.ToolHiveBinary = filepath.Clean(config.ToolHiveBinary)
 	config.SeccompProfile = filepath.Clean(config.SeccompProfile)
+	if config.CredentialMountRoot != "" {
+		if !filepath.IsAbs(config.CredentialMountRoot) || noSymlinkPath(config.CredentialMountRoot) != nil {
+			return nil, ErrIsolation
+		}
+		config.CredentialMountRoot = filepath.Clean(config.CredentialMountRoot)
+	}
 	if config.BridgeBinary != "" {
 		config.BridgeBinary = filepath.Clean(config.BridgeBinary)
 	}
-	if err := ValidateTrustedArtifactDefinition(config.Definition); err != nil {
-		return nil, err
-	}
-	if config.Definition.Transport != ContainerMCP || len(config.Definition.Workload.SidecarImages) != 1 {
-		return nil, fmt.Errorf("%w: generic controller requires one ContainerMCP proxy image", ErrInvalid)
-	}
-	if config.Definition.Workload.Class == Shared && len(config.Definition.Credentials) != 0 {
-		return nil, fmt.Errorf("%w: shared generic MCP cannot retain credentials", ErrUnauthorized)
+	if !config.DynamicDefinitions {
+		if err := validateGenericDefinition(config.Definition); err != nil {
+			return nil, err
+		}
 	}
 	if noSymlinkPath(config.StateRoot) != nil || noSymlinkPath(config.SeccompProfile) != nil {
 		return nil, ErrIsolation
@@ -224,7 +231,14 @@ func readGenericSecrets(path string, definition ToolDefinition) (map[string]stri
 }
 
 func (c *genericController) validatePlan(plan controllerPlan) error {
-	if !identity.ValidID(plan.WorkloadID) || plan.DefinitionID != c.config.Definition.DefinitionID || plan.DefinitionVersion != c.config.Definition.Version || plan.Image != c.config.Definition.Source.Image || plan.Digest != c.config.Definition.Source.Digest || plan.ToolHiveVersion != c.config.Definition.Workload.ToolHiveVersion || !equalStrings(plan.SidecarImages, c.config.Definition.Workload.SidecarImages) || !reflectExecution(plan.Execution, c.config.Definition.Execution) {
+	definition := c.config.Definition
+	if c.config.DynamicDefinitions {
+		definition = plan.Definition
+	}
+	if err := validateGenericDefinition(definition); err != nil {
+		return err
+	}
+	if !identity.ValidID(plan.WorkloadID) || plan.DefinitionID != definition.DefinitionID || plan.DefinitionVersion != definition.Version || plan.Image != definition.Source.Image || plan.Digest != definition.Source.Digest || plan.ToolHiveVersion != definition.Workload.ToolHiveVersion || !equalStrings(plan.SidecarImages, definition.Workload.SidecarImages) || !reflectExecution(plan.Execution, definition.Execution) {
 		return fmt.Errorf("%w: generic plan drift", ErrStale)
 	}
 	if plan.WorkspacePath != "" {
@@ -243,17 +257,78 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 			}
 		}
 	}
+	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *genericController) validateCredentialMounts(mounts []Mount) error {
+	if len(mounts) == 0 {
+		return nil
+	}
+	if c.config.CredentialMountRoot == "" || len(mounts) > 16 {
+		return fmt.Errorf("%w: credential mount root is not configured", ErrIsolation)
+	}
+	for _, mount := range mounts {
+		if !filepath.IsAbs(mount.Source) || !validContainerMountTarget(mount.Target) || !mount.ReadOnly || !containedPath(c.config.CredentialMountRoot, mount.Source) || noSymlinkPath(mount.Source) != nil {
+			return fmt.Errorf("%w: unsafe credential mount", ErrIsolation)
+		}
+		info, err := os.Stat(mount.Source)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: credential mount source is not a regular file", ErrIsolation)
+		}
+	}
+	return nil
+}
+
+func validContainerMountTarget(target string) bool {
+	return strings.HasPrefix(target, "/") && target != "/" && !strings.ContainsAny(target, "\x00\r\n") && filepath.ToSlash(filepath.Clean(target)) == target
+}
+
+func validateGenericDefinition(definition ToolDefinition) error {
+	if err := ValidateTrustedArtifactDefinition(definition); err != nil {
+		return err
+	}
+	if definition.Transport != ContainerMCP || len(definition.Workload.SidecarImages) != 1 {
+		return fmt.Errorf("%w: generic controller requires one ContainerMCP proxy image", ErrInvalid)
+	}
+	if definition.Workload.Class == Shared && len(definition.Credentials) != 0 {
+		return fmt.Errorf("%w: shared generic MCP cannot retain credentials", ErrUnauthorized)
+	}
 	return nil
 }
 
 func (c *genericController) handler(token string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/admit" || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
+		if r.Method != http.MethodPost || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if r.URL.Path == "/release" {
+			var release controllerRelease
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&release) != nil || !identity.ValidID(release.WorkloadID) {
+				http.Error(w, "invalid release", http.StatusForbidden)
+				return
+			}
+			c.mu.Lock()
+			if workload, ok := c.workloads[release.WorkloadID]; ok {
+				c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful)
+				delete(c.workloads, release.WorkloadID)
+				c.config.Budget.Release(release.WorkloadID)
+			}
+			c.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.URL.Path != "/admit" {
+			http.NotFound(w, r)
+			return
+		}
 		var plan controllerPlan
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(&plan) != nil || decoder.Decode(new(any)) != io.EOF {
 			http.Error(w, "invalid plan", http.StatusForbidden)
@@ -262,6 +337,9 @@ func (c *genericController) handler(token string) http.Handler {
 		if err := c.validatePlan(plan); err != nil {
 			http.Error(w, "unapproved plan", http.StatusForbidden)
 			return
+		}
+		if !c.config.DynamicDefinitions {
+			plan.Definition = c.config.Definition
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -298,6 +376,9 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	if _, err := c.command(ctx, c.config.ToolHiveBinary, "version"); err != nil {
 		return genericWorkload{}, err
 	}
+	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
+		return genericWorkload{}, err
+	}
 	if len(plan.Execution.Mounts) != 0 && !c.config.DockerFallback {
 		return genericWorkload{}, fmt.Errorf("%w: generic host state mounts are not enabled", ErrIsolation)
 	}
@@ -311,8 +392,11 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		}
 		return c.startDockerRemoteFallback(ctx, plan)
 	}
-	if len(plan.Execution.Mounts) != 0 {
-		return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", ErrIsolation)
+	if len(plan.CredentialMounts) > 0 && !strings.Contains(string(help), "--volume") {
+		if !c.config.DockerFallback {
+			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express credential mounts", ErrIsolation)
+		}
+		return c.startDockerRemoteFallback(ctx, plan)
 	}
 	port, err := reserveLoopbackPort()
 	if err != nil {
@@ -378,7 +462,7 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	if plan.WorkspacePath != "" {
 		secretPath := filepath.Join(plan.WorkspacePath, "credentials.env")
 		if _, statErr := os.Lstat(secretPath); statErr == nil {
-			secretValues, err = readGenericSecrets(secretPath, c.config.Definition)
+			secretValues, err = readGenericSecrets(secretPath, plan.Definition)
 			if err != nil {
 				return genericWorkload{}, err
 			}
@@ -396,8 +480,11 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		commandEnv["TOOLHIVE_SECRET_"+ref] = value
 		toolArgs = append(toolArgs, "--secret", ref+",target="+key)
 	}
-	for _, tool := range c.config.Definition.Tools {
+	for _, tool := range plan.Definition.Tools {
 		toolArgs = append(toolArgs, "--tools", tool.Name)
+	}
+	for _, mount := range plan.CredentialMounts {
+		toolArgs = append(toolArgs, "--volume", mount.Source+":"+mount.Target+":ro")
 	}
 	imageRef, err := c.resolveArtifactImage(ctx, plan)
 	if err != nil {
@@ -475,14 +562,15 @@ func (c *genericController) inspect(ctx context.Context, workload genericWorkloa
 	}
 	network := "hermes-" + workload.plan.WorkloadID
 	for i, container := range containers {
-		if !container.State.Running || container.HostConfig.Privileged || !container.HostConfig.ReadonlyRootfs || container.HostConfig.NetworkMode != network || container.HostConfig.PidMode != "" || len(container.HostConfig.CapAdd) != 0 || len(container.HostConfig.CapDrop) != 1 || container.HostConfig.CapDrop[0] != "ALL" || !contains(container.HostConfig.SecurityOpt, "no-new-privileges=true") || !securityOptHasSeccomp(container.HostConfig.SecurityOpt, c.config.SeccompProfile) || container.HostConfig.NanoCpus != int64(workload.plan.Execution.CPUMillis)*1000000 || container.HostConfig.Memory != int64(workload.plan.Execution.MemoryMiB)*1048576 || container.HostConfig.PidsLimit != int64(workload.plan.Execution.MaxPIDs) {
-			return AdmissionReceipt{}, fmt.Errorf("%w: generic runtime profile container %d", ErrIsolation, i)
+		if problem := genericProfileProblem(container, network, c.config.SeccompProfile, workload.plan.Execution); problem != "" {
+			return AdmissionReceipt{}, fmt.Errorf("%w: generic runtime profile container %d: %s", ErrIsolation, i, problem)
 		}
-		bridgeMountOK := !workload.dockerFallback && len(container.Mounts) == 0
+		credentialMountOK := credentialMountsOK(container.Mounts, workload.plan.CredentialMounts)
+		bridgeMountOK := !workload.dockerFallback && credentialMountOK
 		if workload.dockerFallback {
 			bridgeMountOK = fallbackBridgeMountsOK(container.Mounts, workload)
 		}
-		if i == 0 && (!artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef) || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || (!workload.dockerFallback && len(container.Mounts) != 0) || (workload.dockerFallback && !bridgeMountOK) || len(container.NetworkSettings.Networks) != 1) {
+		if i == 0 && (!artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef) || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || (!workload.dockerFallback && !credentialMountOK) || (workload.dockerFallback && !bridgeMountOK) || len(container.NetworkSettings.Networks) != 1) {
 			return AdmissionReceipt{}, ErrIsolation
 		}
 		if i == 1 && (len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.proxyVol && container.Mounts[0].Source != workload.proxyVol) || container.Mounts[0].Destination != "/etc/squid" || len(container.NetworkSettings.Networks) != 2 || container.Image == "") {
@@ -498,15 +586,79 @@ func (c *genericController) inspect(ctx context.Context, workload genericWorkloa
 	return AdmissionReceipt{WorkloadID: workload.plan.WorkloadID, State: "running", Enforced: true, Endpoint: workload.endpoint, ImageDigest: workload.plan.Digest, SidecarImages: workload.plan.SidecarImages, Execution: workload.plan.Execution}, nil
 }
 
+func credentialMountsOK(actual []genericMount, declared []Mount) bool {
+	if len(actual) != len(declared) {
+		return false
+	}
+	for _, mount := range actual {
+		if mount.Type != "bind" || mount.RW {
+			return false
+		}
+		matched := false
+		for _, want := range declared {
+			if mount.Source == want.Source && mount.Destination == want.Target && want.ReadOnly {
+				if matched {
+					return false
+				}
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func genericProfileProblem(container genericContainer, network, seccomp string, execution ExecutionPolicy) string {
+	checks := []struct {
+		failed bool
+		name   string
+	}{
+		{!container.State.Running, fmt.Sprintf("not-running(exit=%d)", container.State.ExitCode)},
+		{container.HostConfig.Privileged, "privileged"},
+		{!container.HostConfig.ReadonlyRootfs, "writable-root"},
+		{container.HostConfig.NetworkMode != network, "network"},
+		{container.HostConfig.PidMode != "", "pid-mode"},
+		{len(container.HostConfig.CapAdd) != 0, "cap-add"},
+		{len(container.HostConfig.CapDrop) != 1 || container.HostConfig.CapDrop[0] != "ALL", "cap-drop"},
+		{!contains(container.HostConfig.SecurityOpt, "no-new-privileges=true"), "no-new-privileges"},
+		{!securityOptHasSeccomp(container.HostConfig.SecurityOpt, seccomp), "seccomp"},
+		{container.HostConfig.NanoCpus != int64(execution.CPUMillis)*1000000, "cpu"},
+		{container.HostConfig.Memory != int64(execution.MemoryMiB)*1048576, "memory"},
+		{container.HostConfig.PidsLimit != int64(execution.MaxPIDs), "pids"},
+	}
+	for _, check := range checks {
+		if check.failed {
+			return check.name
+		}
+	}
+	return ""
+}
+
 func fallbackBridgeMountsOK(mounts []genericMount, workload genericWorkload) bool {
-	if len(mounts) != len(workload.stateVols)+1 {
+	if len(mounts) != len(workload.stateVols)+len(workload.plan.CredentialMounts)+1 {
 		return false
 	}
 	bridge := false
 	states := make([]bool, len(workload.stateVols))
 	for _, mount := range mounts {
 		if mount.Type != "volume" {
-			return false
+			if mount.Type != "bind" || mount.RW {
+				return false
+			}
+			matched := false
+			for _, declared := range workload.plan.CredentialMounts {
+				if mount.Source == declared.Source && mount.Destination == declared.Target && declared.ReadOnly {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+			continue
 		}
 		if mount.Destination == "/hermes-bridge" {
 			if bridge || mount.RW || (mount.Name != workload.bridgeVol && mount.Source != workload.bridgeVol) {
@@ -549,7 +701,7 @@ func (c *genericController) CleanupIdle(ctx context.Context, now time.Time) []st
 		if !ok {
 			continue
 		}
-		c.removeWorkload(ctx, workload, c.config.Definition.Workload.Stateful)
+		c.removeWorkload(ctx, workload, workload.plan.Definition.Workload.Stateful)
 		delete(c.workloads, id)
 	}
 	return ids

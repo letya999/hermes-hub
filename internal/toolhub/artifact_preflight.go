@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -23,7 +24,65 @@ func PreflightImportedArtifact(ctx context.Context, imported ImportedArtifact, a
 	}
 	listCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	return restampFromMCPList(listCtx, imported, listMCPToolsFromLocalImage)
+	tools, err := listMCPToolsFromLocalImage(listCtx, imported)
+	if err != nil {
+		return ImportedArtifact{}, ConfirmedToolContract{}, err
+	}
+	if len(imported.Definition.Credentials) == 0 {
+		imported.Definition.Credentials = discoverMCPHelpCredentials(listCtx, imported)
+	}
+	return restampFromMCPList(listCtx, imported, func(context.Context, ImportedArtifact) ([]ToolSpec, error) { return tools, nil })
+}
+
+var helpEnvironmentLine = regexp.MustCompile(`^\s*([A-Z][A-Z0-9_]{0,63})\s+(.+)$`)
+
+func discoverMCPHelpCredentials(ctx context.Context, imported ImportedArtifact) []CredentialInput {
+	if validateLocalImageName(imported.Definition.Source.Image) != nil {
+		return nil
+	}
+	name, err := randomPreflightContainerName("hermes-help-")
+	if err != nil {
+		return nil
+	}
+	args := append(preflightDockerRunArgs(imported, name), "--help")
+	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- image and fixed isolation flags are validated above.
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	output := &boundedOutput{limit: 64 << 10, exceeded: make(chan struct{})}
+	cmd.Stdout, cmd.Stderr = output, output
+	if err := cmd.Run(); err != nil || output.overflow {
+		return nil
+	}
+	return parseMCPHelpCredentials(output.buffer.String())
+}
+
+func parseMCPHelpCredentials(help string) []CredentialInput {
+	var credentials []CredentialInput
+	inEnvironment := false
+	for _, line := range strings.Split(help, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.EqualFold(trimmed, "Environment Variables:") {
+			inEnvironment = true
+			continue
+		}
+		if !inEnvironment {
+			continue
+		}
+		if trimmed == "" {
+			if len(credentials) > 0 {
+				break
+			}
+			continue
+		}
+		match := helpEnvironmentLine.FindStringSubmatch(line)
+		if len(match) != 3 {
+			continue
+		}
+		description := strings.ToLower(match[2])
+		if strings.Contains(description, "required") || strings.Contains(description, "recommended") {
+			credentials = append(credentials, CredentialInput{Name: match[1], Required: true})
+		}
+	}
+	return credentials
 }
 
 func restampFromMCPList(ctx context.Context, imported ImportedArtifact, list func(context.Context, ImportedArtifact) ([]ToolSpec, error)) (ImportedArtifact, ConfirmedToolContract, error) {
@@ -50,11 +109,10 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 		return nil, err
 	}
 	defer os.RemoveAll(dockerConfig)
-	var nonce [4]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
+	name, err := randomPreflightContainerName("hermes-preflight-")
+	if err != nil {
 		return nil, err
 	}
-	name := "hermes-preflight-" + hex.EncodeToString(nonce[:])
 	args := preflightDockerRunArgs(imported, name)
 	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- image name is catalog-validated; flags are fixed.
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_CONFIG=" + dockerConfig}
@@ -95,6 +153,14 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 	return tools, nil
 }
 
+func randomPreflightContainerName(prefix string) (string, error) {
+	var nonce [4]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return prefix + hex.EncodeToString(nonce[:]), nil
+}
+
 func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
 	dec := json.NewDecoder(r)
 	for {
@@ -119,7 +185,11 @@ func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
 		}
 		var listed struct {
 			Tools []struct {
-				Name string `json:"name"`
+				Name        string `json:"name"`
+				Annotations struct {
+					ReadOnly    bool `json:"readOnlyHint"`
+					Destructive bool `json:"destructiveHint"`
+				} `json:"annotations"`
 			} `json:"tools"`
 		}
 		if err := json.Unmarshal(envelope.Result, &listed); err != nil || len(listed.Tools) == 0 {
@@ -128,10 +198,14 @@ func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
 		tools := make([]ToolSpec, 0, len(listed.Tools))
 		for _, tool := range listed.Tools {
 			name := strings.TrimSpace(tool.Name)
-			if !toolNamePattern.MatchString(name) {
+			if !mcpToolNamePattern.MatchString(name) {
 				return nil, fmt.Errorf("%w: MCP tool %q is not a catalog name", ErrInvalid, name)
 			}
-			tools = append(tools, ToolSpec{Name: name, Effect: ReadEffect})
+			effect := WriteEffect
+			if tool.Annotations.ReadOnly && !tool.Annotations.Destructive {
+				effect = ReadEffect
+			}
+			tools = append(tools, ToolSpec{Name: name, Effect: effect})
 		}
 		return tools, nil
 	}

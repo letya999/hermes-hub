@@ -194,9 +194,9 @@ func runConnector(ctx context.Context, args []string) error {
 			return err
 		}
 		gateway := &toolhub.Gateway{Store: registry, Backend: toolhub.RoutingBackend{Provider: toolhub.PersonalProviderBackend{}, MCP: toolhub.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}},
-			Injector: func(_ context.Context, e toolhub.EffectiveBinding) (map[string]string, func() error, error) {
+			Injector: func(_ context.Context, e toolhub.EffectiveBinding) (toolhub.CredentialInjection, error) {
 				env, err := toolhub.DecryptAuthorized(backend, e)
-				return env, nil, err
+				return toolhub.CredentialInjection{Environment: env}, err
 			},
 			AuditWrite: func(_ string, fields map[string]string) error {
 				event := audit.NewEvent("tool-call", auth.PrincipalID, fields["outcome"])

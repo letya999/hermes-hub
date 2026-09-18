@@ -81,9 +81,9 @@ func TestSlackShippedAuthorizeInjectReceiptAndDenials(t *testing.T) {
 		}
 	}
 	receipts := 0
-	gateway := &Gateway{Store: store, Backend: RoutingBackend{Provider: provider}, Injector: func(_ context.Context, e EffectiveBinding) (map[string]string, func() error, error) {
+	gateway := &Gateway{Store: store, Backend: RoutingBackend{Provider: provider}, Injector: func(_ context.Context, e EffectiveBinding) (CredentialInjection, error) {
 		env, err := DecryptAuthorized(secrets, e)
-		return env, nil, err
+		return CredentialInjection{Environment: env}, err
 	}, AuditWrite: func(_ string, fields map[string]string) error {
 		if fields["receipt"] != "" {
 			receipts++

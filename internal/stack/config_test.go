@@ -78,7 +78,19 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
 	}
+	generatedConfig, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
+	if err != nil || !strings.Contains(string(generatedConfig), "/opt/hub/skills") {
+		t.Fatalf("default global skills mount missing: %v %s", err, generatedConfig)
+	}
+	generatedCompose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
+	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(root, "config", "skills"))) {
+		t.Fatalf("default global skills source missing: %v %s", err, generatedCompose)
+	}
 	cfg := Config(s)
+	display, ok := cfg["display"].(M)
+	if !ok || display["busy_input_mode"] != "queue" || display["long_running_notifications"] != true {
+		t.Fatalf("long-running Telegram defaults missing: %#v", cfg["display"])
+	}
 	servers := cfg["mcp_servers"].(M)
 	if len(servers) != 9 {
 		t.Fatalf("servers: %v", servers)
@@ -104,9 +116,16 @@ func TestRenderAllFeatures(t *testing.T) {
 	}
 	s.Features = []string{"gitlab"}
 	s.GitLabHost = "gitlab.example.com"
+	s.Environment = "prod"
 	composeEnv := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	if composeEnv["HERMES_AGENT_NOTIFY_INTERVAL"] != "60" {
+		t.Fatalf("heartbeat interval missing: %#v", composeEnv["HERMES_AGENT_NOTIFY_INTERVAL"])
+	}
 	if composeEnv["GITLAB_HOST"] != "gitlab.example.com" {
 		t.Fatal("GitLab host missing")
+	}
+	if composeEnv["HUB_RUNTIME_GENERATION"] != "static-me-prod" {
+		t.Fatalf("static runtime generation missing: %#v", composeEnv["HUB_RUNTIME_GENERATION"])
 	}
 	s.Features = []string{"atlassian"}
 	atlassian := Config(s)["mcp_servers"].(M)["atlassian"].(M)
@@ -125,6 +144,9 @@ func TestRenderAllFeatures(t *testing.T) {
 	compose, _ := os.ReadFile(filepath.Join(d, "compose.prod.yaml"))
 	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") || strings.Contains(string(compose), "docker.sock") {
 		t.Fatal("network or mount boundary")
+	}
+	if !strings.Contains(string(compose), "target: /state/hermes/SOUL.md") || !strings.Contains(string(compose), "read_only: true") {
+		t.Fatal("managed SOUL is not mounted read-only")
 	}
 }
 

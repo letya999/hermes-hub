@@ -500,7 +500,7 @@ func TestGenericDockerFallbackFailureBoundaries(t *testing.T) {
 			return binary == "docker" && len(args) > 1 && args[0] == "start" && !strings.Contains(args[1], "-egress") && !strings.Contains(args[1], "-relay")
 		},
 		"relay-create": func(binary string, args []string) bool {
-			return binary == "docker" && len(args) > 2 && args[0] == "create" && strings.Contains(args[2], "-relay")
+			return binary == "docker" && len(args) > 2 && args[0] == "create" && strings.Contains(args[2], "-relay") && contains(args, "--no-healthcheck")
 		},
 		"relay-connect": func(binary string, args []string) bool {
 			return binary == "docker" && len(args) > 3 && args[0] == "network" && args[1] == "connect" && strings.Contains(args[3], "-relay")

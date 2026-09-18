@@ -145,40 +145,51 @@ func injectJobID(ctx context.Context, effective EffectiveBinding) string {
 }
 
 func writeAuthorizedFiles(ctx context.Context, root string, effective EffectiveBinding, environment map[string]string) (func() error, error) {
+	_, cleanup, err := writeAuthorizedFilesMode(ctx, root, effective, environment, true)
+	return cleanup, err
+}
+
+func writeAuthorizedFilesPersistent(ctx context.Context, root string, effective EffectiveBinding, environment map[string]string) (string, func() error, error) {
+	return writeAuthorizedFilesMode(ctx, root, effective, environment, false)
+}
+
+func writeAuthorizedFilesMode(ctx context.Context, root string, effective EffectiveBinding, environment map[string]string, removeOnCleanup bool) (string, func() error, error) {
 	if len(environment) == 0 {
-		return func() error { return nil }, nil
+		return "", func() error { return nil }, nil
 	}
 	if strings.TrimSpace(root) == "" {
-		return nil, fmt.Errorf("%w: workload root", ErrIsolation)
+		return "", nil, fmt.Errorf("%w: workload root", ErrIsolation)
 	}
 	workspace, err := OpenWorkloadWorkspace(root, effective, injectJobID(ctx, effective))
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if workspace.Path == "" {
-		return nil, fmt.Errorf("%w: workload has no file inject path", ErrIsolation)
+		return "", nil, fmt.Errorf("%w: workload has no file inject path", ErrIsolation)
 	}
 	lockPath := filepath.Join(workspace.Path, "inject.lock")
 	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil, ErrIsolation
+		return "", nil, ErrIsolation
 	} else if err != nil && !os.IsNotExist(err) {
-		return nil, err
+		return "", nil, err
 	}
 	lock := flock.New(lockPath)
 	locked, err := lock.TryLockContext(ctx, 100*time.Millisecond)
 	if err != nil || !locked {
-		return nil, ErrIsolation
+		return "", nil, ErrIsolation
 	}
 	if err := WriteWorkloadEnvFile(workspace.Path, environment); err != nil {
 		_ = lock.Unlock()
 		if workspace.Cleanup != nil {
 			_ = workspace.Cleanup()
 		}
-		return nil, err
+		return "", nil, err
 	}
-	return func() error {
+	return workspace.Path, func() error {
 		defer lock.Unlock()
-		_ = os.Remove(filepath.Join(workspace.Path, "credentials.env"))
+		if removeOnCleanup {
+			_ = os.Remove(filepath.Join(workspace.Path, "credentials.env"))
+		}
 		if workspace.Cleanup != nil {
 			return workspace.Cleanup()
 		}

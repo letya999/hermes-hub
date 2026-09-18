@@ -36,6 +36,25 @@ func TestArtifactSourcePinsGitSHA(t *testing.T) {
 	}
 }
 
+func TestResolveGitHubSourcePinsDefaultBranch(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://api.github.com/repos/makenotion/notion-mcp-server/commits/HEAD" || request.Header.Get("X-GitHub-Api-Version") == "" {
+			t.Fatalf("unexpected request: %s", request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"sha":"` + sha + `"}`)), Header: make(http.Header)}, nil
+	})}
+	source, err := resolveGitHubSource(context.Background(), "https://github.com/makenotion/notion-mcp-server", client)
+	if err != nil || source.Repository != "https://github.com/makenotion/notion-mcp-server" || source.CommitSHA != sha {
+		t.Fatalf("source=%+v err=%v", source, err)
+	}
+	for _, raw := range []string{"http://github.com/a/b", "https://github.com/a/b/tree/main", "https://token@github.com/a/b", "https://github.com/a/b?ref=main"} {
+		if _, err := resolveGitHubSource(context.Background(), raw, client); err == nil {
+			t.Fatalf("accepted mutable/unsafe repository %q", raw)
+		}
+	}
+}
+
 func TestArtifactAutomaticContextUsesVerifiedRawFiles(t *testing.T) {
 	sha, treeSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	content := "print('fixture')\n"

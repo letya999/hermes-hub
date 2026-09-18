@@ -3,6 +3,7 @@ package toolhub
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -63,6 +64,36 @@ func TestGenerateArtifactRecipeLanguages(t *testing.T) {
 				t.Fatalf("nondeterministic recipe: %v", err)
 			}
 		})
+	}
+}
+
+func TestGenerateArtifactRecipeSelectsPinnedBase(t *testing.T) {
+	recipe, _, err := GenerateArtifactRecipe(languageContext(t, map[string]string{
+		"package.json": `{"bin":"server.js"}`, "package-lock.json": "{}",
+	}), "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recipe.BaseImages[0]; got != "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae" {
+		t.Fatalf("base = %q", got)
+	}
+}
+
+func TestDiscoverOpenAPIEgress(t *testing.T) {
+	contextBytes := languageContext(t, map[string]string{
+		"api/openapi.json": `{"servers":[{"url":"https://API.Example.com/v1"},{"url":"http://unsafe.example"},{"url":"https://user@unsafe.example"},{"url":"https://unsafe.example:443"},{"url":"relative"}]}`,
+		"bad-openapi.json": `{`,
+		"other.json":       `{"servers":[{"url":"https://ignored.example"}]}`,
+	})
+	if got := discoverOpenAPIEgress(contextBytes); !slices.Equal(got, []string{"api.example.com"}) {
+		t.Fatalf("egress = %v", got)
+	}
+	many := map[string]string{}
+	for i := range 33 {
+		many[fmt.Sprintf("%d-openapi.json", i)] = fmt.Sprintf(`{"servers":[{"url":"https://api%d.example.com"}]}`, i)
+	}
+	if got := discoverOpenAPIEgress(languageContext(t, many)); got != nil {
+		t.Fatalf("oversized egress = %v", got)
 	}
 }
 

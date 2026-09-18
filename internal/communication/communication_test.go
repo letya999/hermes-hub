@@ -17,12 +17,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestOpenCredentialSurfaceSkipsLocalStoreWhenBrokerApprovalIsConfigured(t *testing.T) {
+	service, ledger, err := openCredentialSurface(Config{
+		CredentialStore: filepath.Join(t.TempDir(), "must-not-open"),
+		BrokerApprove:   credentialbroker.Config{URL: "https://broker.example"},
+	})
+	if err != nil || service != nil || ledger != nil {
+		t.Fatalf("credential surface was opened: service=%v ledger=%v err=%v", service != nil, ledger != nil, err)
+	}
+}
 
 type fakeAPI struct {
 	mu       sync.Mutex

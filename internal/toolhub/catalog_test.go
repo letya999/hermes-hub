@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -130,6 +131,63 @@ func TestEnableBuildsBindingFromExactOwnerConnection(t *testing.T) {
 	}
 	if err := store.SetConnectionStatus(binding.ConnectionID, Status("invalid")); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid connection status accepted: %v", err)
+	}
+}
+
+func TestEnableReadyAdmitsBeforePublishingProjection(t *testing.T) {
+	store := NewStore()
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	var admitted bool
+	binding, err := store.EnableReady(context.Background(), auth, definition.DefinitionID, definition.Version, func(_ context.Context, effective EffectiveBinding) error {
+		admitted = effective.Binding.Status == ActiveStatus && effective.WorkloadID != ""
+		return nil
+	})
+	if err != nil || !admitted || binding.ToolBindingID == "" {
+		t.Fatalf("ready binding=%+v admitted=%v err=%v", binding, admitted, err)
+	}
+	if revision, err := store.ProjectionRevision(auth); err != nil || revision == 0 {
+		t.Fatalf("projection revision=%d err=%v", revision, err)
+	}
+	failed := NewStore()
+	if err := failed.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := failed.EnableReady(context.Background(), auth, definition.DefinitionID, definition.Version, func(context.Context, EffectiveBinding) error { return errors.New("not ready") }); err == nil {
+		t.Fatal("failed readiness published")
+	}
+	if revision, _ := failed.ProjectionRevision(auth); revision != 0 {
+		t.Fatalf("failed readiness projection=%d", revision)
+	}
+	if _, err := failed.EnableReady(context.Background(), auth, definition.DefinitionID, definition.Version, nil); err != nil {
+		t.Fatalf("nil readiness fallback=%v", err)
+	}
+}
+
+func TestEnableReadyRechecksExistingBindingAndRollsBack(t *testing.T) {
+	store, auth, binding := seededStore(t)
+	called := false
+	if _, err := store.EnableReady(context.Background(), auth, binding.DefinitionID, binding.DefinitionVersion, func(_ context.Context, effective EffectiveBinding) error {
+		called = effective.Binding.Status == ActiveStatus
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("active readiness called=%v err=%v", called, err)
+	}
+	if err := store.Disable(auth, binding.DefinitionID, binding.DefinitionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnableReady(context.Background(), auth, binding.DefinitionID, binding.DefinitionVersion, func(context.Context, EffectiveBinding) error { return errors.New("not ready") }); err == nil {
+		t.Fatal("existing failed readiness accepted")
+	}
+	current, err := store.binding(binding.ToolBindingID)
+	if err != nil || current.Status != DisabledStatus {
+		t.Fatalf("failed readiness changed status=%+v err=%v", current, err)
 	}
 }
 

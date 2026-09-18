@@ -45,6 +45,16 @@ func TestRuntimeHTTPContractBindsScope(t *testing.T) {
 	}
 }
 
+func TestSessionIDChangesWithInstructionRevision(t *testing.T) {
+	request := validExecuteRequest("alice", "personal", "telegram:1", "hello")
+	t.Setenv("HUB_SESSION_REVISION", "instructions-v1")
+	first := sessionIDFor(request)
+	t.Setenv("HUB_SESSION_REVISION", "instructions-v2")
+	if second := sessionIDFor(request); second == first {
+		t.Fatal("session survived a system-instruction revision")
+	}
+}
+
 func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_USER_ID", "alice")
@@ -57,6 +67,10 @@ func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 		}
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["id"] == nil || body["title"] != nil {
+				t.Errorf("unexpected session body=%v", body)
+			}
 			w.WriteHeader(http.StatusCreated)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
 			runCalls++

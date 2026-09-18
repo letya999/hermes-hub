@@ -35,8 +35,12 @@ func TestSanitizeDefinitionID(t *testing.T) {
 	if got := sanitizeDefinitionID("***"); got != "user-mcp" {
 		t.Fatalf("empty: %q", got)
 	}
-	if got := defaultSelfInstallConfig(mustParseGitHub(t)).DefinitionID; got != "mcp" {
+	config := defaultSelfInstallConfig(mustParseGitHub(t))
+	if got := config.DefinitionID; got != "mcp" {
 		t.Fatalf("repo id=%q", got)
+	}
+	if config.Workload.Stateful || len(config.Execution.Mounts) != 0 {
+		t.Fatalf("generic self-install must default to stateless: %#v", config)
 	}
 }
 

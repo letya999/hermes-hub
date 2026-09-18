@@ -1,0 +1,48 @@
+{
+  "id": "github-app-files",
+  "revision": 1,
+  "title": "GitHub App: параметры и ключ",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "app_id",
+      "label": "App ID",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 128
+    },
+    {
+      "id": "installation_id",
+      "label": "Installation ID",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 128
+    },
+    {
+      "id": "private_key",
+      "label": "Закрытый PEM-ключ",
+      "kind": "pem",
+      "required": true,
+      "max_bytes": 16384
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "app_id",
+      "target": "GITHUB_APP_ID"
+    },
+    {
+      "type": "env",
+      "field": "installation_id",
+      "target": "GITHUB_INSTALLATION_ID"
+    },
+    {
+      "type": "file",
+      "field": "private_key",
+      "target": "/run/mcp-secrets/github-app.pem",
+      "env_name": "GITHUB_APP_PRIVATE_KEY_FILE"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -93,10 +94,41 @@ func (s *Store) findBindingLocked(auth identity.Envelope, definition ToolDefinit
 	return nil
 }
 
+// reusableSelfInstallDefinition returns the user's immutable definition for an
+// already reviewed source. Rebuilding the same commit can produce different
+// artifact metadata, so retries must reuse the approved record instead of
+// attempting to overwrite it.
+func (s *Store) reusableSelfInstallDefinition(auth identity.Envelope, source ArtifactSource, definitionID, version string) (ToolDefinition, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	definition, ok := s.definitions[definitionKey(definitionID, version)]
+	if !ok || definition.Source.Repository != source.Repository || !strings.EqualFold(definition.Source.CommitSHA, source.CommitSHA) {
+		return ToolDefinition{}, false
+	}
+	publication := s.publicationLocked(definition)
+	if publication.Visibility != PublicationUser || publication.OwnerPrincipalID != auth.PrincipalID {
+		return ToolDefinition{}, false
+	}
+	return definition, true
+}
+
 // Enable creates the smallest effective binding for an immutable manifest,
 // or re-enables an existing non-revoked binding. Connections and credentials
 // must already exist and match the authenticated owner.
 func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (ToolBinding, error) {
+	return s.enableWithReady(context.Background(), auth, definitionID, version, nil)
+}
+
+// EnableReady admits a newly materialized workload before its binding is
+// persisted and its projection revision is published.
+func (s *Store) EnableReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, EffectiveBinding) error) (ToolBinding, error) {
+	if ready == nil {
+		return s.Enable(auth, definitionID, version)
+	}
+	return s.enableWithReady(ctx, auth, definitionID, version, ready)
+}
+
+func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, EffectiveBinding) error) (ToolBinding, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return ToolBinding{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
@@ -116,11 +148,25 @@ func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (To
 			s.mu.Unlock()
 			return ToolBinding{}, ErrRevoked
 		}
+		previous := *existing
+		previousProjection := s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)]
 		if existing.Status != ActiveStatus {
 			existing.Status = ActiveStatus
 			existing.Revision++
 			s.touchProjectionLocked(existing)
 			s.bindings[existing.ToolBindingID] = *existing
+		}
+		if ready != nil && existing.Status == ActiveStatus {
+			effective, err := s.resolveLocked(auth, existing.ToolBindingID)
+			if err == nil {
+				err = ready(ctx, effective)
+			}
+			if err != nil {
+				s.bindings[existing.ToolBindingID] = previous
+				s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] = previousProjection
+				s.mu.Unlock()
+				return ToolBinding{}, err
+			}
 		}
 		result := *existing
 		s.mu.Unlock()
@@ -153,6 +199,18 @@ func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (To
 	if err := binding.Validate(); err != nil {
 		s.mu.Unlock()
 		return ToolBinding{}, err
+	}
+	if ready != nil {
+		s.bindings[binding.ToolBindingID] = binding
+		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+		if err == nil {
+			err = ready(ctx, effective)
+		}
+		if err != nil {
+			delete(s.bindings, binding.ToolBindingID)
+			s.mu.Unlock()
+			return ToolBinding{}, err
+		}
 	}
 	s.bindings[binding.ToolBindingID] = binding
 	key := projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)

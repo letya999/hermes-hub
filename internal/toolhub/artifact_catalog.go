@@ -1,11 +1,17 @@
 package toolhub
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/url"
+	"path"
+	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -15,18 +21,21 @@ import (
 // Source, recipe and OCI evidence are produced by the pipeline; the operator
 // supplies only the MCP's declared contract (tools, effects and env names).
 type ArtifactImportConfig struct {
-	DefinitionID string
-	Version      string
-	Language     string
-	BaseImage    string
-	Entrypoint   []string
-	Image        string
-	Tools        []ToolSpec
-	Credentials  []CredentialInput
-	Environment  []string
-	Workload     WorkloadPolicy
-	Execution    ExecutionPolicy
-	Health       HealthProbe
+	DefinitionID               string
+	Version                    string
+	Language                   string
+	BaseImage                  string
+	Entrypoint                 []string
+	Image                      string
+	Tools                      []ToolSpec
+	Credentials                []CredentialInput
+	CredentialContractID       string
+	CredentialContractRevision int
+	CredentialContractEnv      map[string]string
+	Environment                []string
+	Workload                   WorkloadPolicy
+	Execution                  ExecutionPolicy
+	Health                     HealthProbe
 }
 
 type ImportedArtifact struct {
@@ -36,15 +45,18 @@ type ImportedArtifact struct {
 }
 
 type artifactReviewContract struct {
-	DefinitionID string
-	Version      string
-	Image        string
-	Tools        []ToolSpec
-	Credentials  []CredentialInput
-	Environment  []string
-	Workload     WorkloadPolicy
-	Execution    ExecutionPolicy
-	Health       HealthProbe
+	DefinitionID               string
+	Version                    string
+	Image                      string
+	Tools                      []ToolSpec
+	Credentials                []CredentialInput
+	CredentialContractID       string
+	CredentialContractRevision int
+	CredentialContractEnv      map[string]string
+	Environment                []string
+	Workload                   WorkloadPolicy
+	Execution                  ExecutionPolicy
+	Health                     HealthProbe
 }
 
 // ImportGitHubArtifact performs the complete source→recipe→isolated OCI path.
@@ -61,6 +73,9 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	contextBytes, err := FetchRepositoryArtifactContext(ctx, source, 64<<20)
 	if err != nil {
 		return ImportedArtifact{}, err
+	}
+	if len(config.Execution.Egress) == 0 {
+		config.Execution.Egress = discoverOpenAPIEgress(contextBytes)
 	}
 	recipe, generated, err := GenerateArtifactRecipe(contextBytes, config.Language, config.BaseImage, config.Entrypoint)
 	if err != nil {
@@ -91,13 +106,51 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 			ArchiveDigest: artifact.ArchiveDigest, ProvenanceDigest: artifact.Evidence.ProvenanceDigest,
 			SBOMDigest: artifact.Evidence.SBOMDigest, RecipeDigest: recipeDigest, ReviewDigest: reviewDigest,
 		},
-		Tools: append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), Environment: append([]string(nil), config.Environment...),
+		Tools: append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...),
 		Workload: config.Workload, Execution: config.Execution, Health: config.Health,
 	}
 	if err := definition.Validate(); err != nil {
 		return ImportedArtifact{}, err
 	}
 	return ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}, nil
+}
+
+func discoverOpenAPIEgress(contextBytes []byte) []string {
+	reader := tar.NewReader(bytes.NewReader(contextBytes))
+	hosts := map[string]bool{}
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		name := strings.ToLower(path.Base(header.Name))
+		if err != nil || header.Typeflag != tar.TypeReg || !strings.Contains(name, "openapi") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		var document struct {
+			Servers []struct {
+				URL string `json:"url"`
+			} `json:"servers"`
+		}
+		if json.NewDecoder(io.LimitReader(reader, 8<<20)).Decode(&document) != nil {
+			continue
+		}
+		for _, server := range document.Servers {
+			parsed, err := url.Parse(server.URL)
+			if err == nil && parsed.Scheme == "https" && parsed.User == nil && parsed.Host == parsed.Hostname() && parsed.Hostname() != "" {
+				hosts[strings.ToLower(parsed.Hostname())] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(hosts))
+	for host := range hosts {
+		result = append(result, host)
+	}
+	slices.Sort(result)
+	if len(result) > 32 {
+		return nil
+	}
+	return result
 }
 
 // RegisterTrustedArtifact is the only publication step. The review digest is
@@ -174,7 +227,7 @@ func reviewDigest(source ArtifactSource, recipe ArtifactRecipe, artifact StoredO
 		Recipe   ArtifactRecipe
 		Artifact StoredOCIArtifact
 		Contract artifactReviewContract
-	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.Environment, config.Workload, config.Execution, config.Health}}
+	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.Workload, config.Execution, config.Health}}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -189,7 +242,7 @@ func reviewDigestForImported(imported ImportedArtifact) (string, error) {
 		DefinitionID: imported.Definition.DefinitionID, Version: imported.Definition.Version,
 		Image: imported.Definition.Source.Image, Tools: imported.Definition.Tools,
 		Entrypoint:  append([]string{imported.Definition.Source.Command}, imported.Definition.Source.Args...),
-		Credentials: imported.Definition.Credentials, Environment: imported.Definition.Environment,
+		Credentials: imported.Definition.Credentials, CredentialContractID: imported.Definition.CredentialContractID, CredentialContractRevision: imported.Definition.CredentialContractRevision, CredentialContractEnv: imported.Definition.CredentialContractEnv, Environment: imported.Definition.Environment,
 		Workload: imported.Definition.Workload, Execution: imported.Definition.Execution, Health: imported.Definition.Health,
 	}
 	return reviewDigest(source, imported.Recipe, imported.Artifact, config)

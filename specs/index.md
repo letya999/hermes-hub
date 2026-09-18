@@ -2,6 +2,8 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0025](active/SPEC-0025-credential-broker-boundary.md) | Credential Broker monorepo placement, opt-in process boundary and adapter gate |
+| [SPEC-0024](active/SPEC-0024-m53-hermes-onboarding.md) | M5.3 Hermes-mediated GitHub MCP onboarding and live acceptance contract |
 | [SPEC-0023](active/SPEC-0023-toolhub-control-plane.md) | M5.2 multi-tenant ToolHub control plane: grants, control MCP, elicitation and lifecycle |
 | [SPEC-0022](active/SPEC-0022-personal-data-connectors.md) | M5 stage 2 personal data connectors and independent capability contracts |
 | [SPEC-0021](active/SPEC-0021-personal-assistant.md) | Personal assistant channels, voice, hub routines and context lifecycle |

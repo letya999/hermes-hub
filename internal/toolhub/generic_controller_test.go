@@ -47,7 +47,119 @@ func genericDefinition(t *testing.T) (ToolDefinition, string, string) {
 }
 
 func genericPlan(d ToolDefinition) controllerPlan {
-	return controllerPlan{WorkloadID: "generic-workload", DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Image: d.Source.Image, Digest: d.Source.Digest, ToolHiveVersion: d.Workload.ToolHiveVersion, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution}
+	return controllerPlan{WorkloadID: "generic-workload", DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Image: d.Source.Image, Digest: d.Source.Digest, ToolHiveVersion: d.Workload.ToolHiveVersion, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution, Definition: d}
+}
+
+func TestGenericControllerAcceptsAuthenticatedDynamicDefinitions(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DynamicDefinitions: true, MaxActive: 2, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := genericPlan(d)
+	if err := c.validatePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Definition.Source.Digest = "sha256:" + strings.Repeat("f", 64)
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("dynamic definition drift accepted")
+	}
+	plan = genericPlan(d)
+	plan.Definition.Source.ProvenanceDigest = ""
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("untrusted dynamic definition accepted")
+	}
+}
+
+func TestGenericControllerCredentialMountBoundary(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	mountRoot := filepath.Join(root, "broker-materialized")
+	if err := os.Mkdir(mountRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(mountRoot, "file-00")
+	if err := os.WriteFile(secret, []byte("synthetic"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], CredentialMountRoot: mountRoot, Definition: d, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := genericPlan(d)
+	plan.CredentialMounts = []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}
+	if err := c.validatePlan(plan); err != nil {
+		t.Fatalf("reviewed broker mount rejected: %v", err)
+	}
+	plan.CredentialMounts[0].Source = filepath.Join(root, "outside")
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("credential mount outside broker root accepted")
+	}
+	plan = genericPlan(d)
+	plan.CredentialMounts = []Mount{{Source: mountRoot, Target: "/run/secrets/config.json", ReadOnly: true}}
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("credential mount directory accepted")
+	}
+	plan = genericPlan(d)
+	plan.CredentialMounts = []Mount{{Source: secret, Target: "relative", ReadOnly: true}}
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("relative credential mount target accepted")
+	}
+	withoutRoot, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := withoutRoot.validateCredentialMounts([]Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}); err == nil {
+		t.Fatal("credential mount without an approved root accepted")
+	}
+	plan = genericPlan(d)
+	plan.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state", ReadOnly: true}}
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("host state mount accepted without Docker fallback")
+	}
+	c.config.DockerFallback = true
+	plan.Execution.Mounts[0].Source = "host-path"
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("unreviewed host state mount accepted")
+	}
+	c.config.DockerFallback = false
+	c.command = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) == 1 && args[0] == "version" {
+			return nil, nil
+		}
+		return []byte("--read-only --security-opt --cpus --memory --pids-limit --cap-drop --user --timeout --output-limit"), nil
+	}
+	plan = genericPlan(d)
+	plan.CredentialMounts = []Mount{{Source: mountRoot, Target: "/run/secrets/config.json", ReadOnly: true}}
+	if _, err := c.start(context.Background(), plan); err == nil {
+		t.Fatal("directory credential mount reached workload startup")
+	}
+	plan.CredentialMounts[0].Source = secret
+	if _, err := c.start(context.Background(), plan); err == nil {
+		t.Fatal("ToolHive without volume support accepted credential mount")
+	}
+	if !credentialMountsOK([]genericMount{{Type: "bind", Source: secret, Destination: "/run/secrets/config.json", RW: false}}, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+		t.Fatal("valid read-only credential mount was not recognized")
+	}
+	if credentialMountsOK(nil, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+		t.Fatal("missing credential mount was accepted")
+	}
+	if credentialMountsOK([]genericMount{{Type: "bind", Source: secret, Destination: "/run/secrets/config.json", RW: true}}, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+		t.Fatal("writable credential mount was accepted")
+	}
+	if credentialMountsOK([]genericMount{{Type: "bind", Source: filepath.Join(mountRoot, "other"), Destination: "/run/secrets/config.json"}}, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+		t.Fatal("unmatched credential mount was accepted")
+	}
+	workload := genericWorkload{bridgeVol: "bridge-volume", plan: controllerPlan{CredentialMounts: []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}}}
+	validFallback := []genericMount{{Type: "volume", Name: "bridge-volume", Destination: "/hermes-bridge"}, {Type: "bind", Source: secret, Destination: "/run/secrets/config.json"}}
+	if !fallbackBridgeMountsOK(validFallback, workload) {
+		t.Fatal("valid fallback credential mount was not recognized")
+	}
+	validFallback[1].Source = filepath.Join(mountRoot, "other")
+	if fallbackBridgeMountsOK(validFallback, workload) {
+		t.Fatal("unmatched fallback credential mount was accepted")
+	}
 }
 
 func genericContainers(plan controllerPlan, seccomp, proxyVol string) []map[string]any {
@@ -447,6 +559,27 @@ func TestGenericControllerHandlerDenyPaths(t *testing.T) {
 	c.handler(token).ServeHTTP(w, r)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("workload conflict status: %d", w.Code)
+	}
+	for _, payload := range []string{`{}`, `{"workload_id":"../escape"}`, `{"workload_id":"release-workload","extra":true}`} {
+		r = httptest.NewRequest("POST", "/release", strings.NewReader(payload))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w = httptest.NewRecorder()
+		c.handler(token).ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("invalid release accepted: payload=%s status=%d", payload, w.Code)
+		}
+	}
+	c.command = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+	c.workloads["release-workload"] = genericWorkload{plan: genericPlan(d)}
+	r = httptest.NewRequest("POST", "/release", strings.NewReader(`{"workload_id":"release-workload"}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	c.handler(token).ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("valid release status: %d", w.Code)
+	}
+	if _, ok := c.workloads["release-workload"]; ok {
+		t.Fatal("released workload remained registered")
 	}
 }
 

@@ -1,0 +1,23 @@
+{
+  "id": "notion-token",
+  "revision": 1,
+  "title": "Notion: токен интеграции",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "token",
+      "label": "Токен интеграции Notion",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "token",
+      "target": "NOTION_TOKEN"
+    }
+  ]
+}

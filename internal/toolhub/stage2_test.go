@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -176,7 +177,7 @@ func (t testBearerTransport) RoundTrip(request *http.Request) (*http.Response, e
 }
 
 func TestPrivateBackendEndpointValidation(t *testing.T) {
-	for _, value := range []string{"http://127.0.0.1:4483/mcp", "http://vmcp/mcp"} {
+	for _, value := range []string{"http://127.0.0.1:4483/mcp", "http://host.docker.internal:8090/mcp", "http://vmcp/mcp"} {
 		if err := ValidateBackendEndpoint(value); err != nil {
 			t.Fatalf("private endpoint %q rejected: %v", value, err)
 		}
@@ -276,6 +277,65 @@ func TestContainerMCPUsesControllerEndpointWithoutConnection(t *testing.T) {
 	}}).Call(context.Background(), effective, definition.Tools[0], nil)
 	if err != nil || result.Text != "controller endpoint" {
 		t.Fatalf("controller endpoint result=%+v err=%v", result, err)
+	}
+}
+
+func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
+	definition := statefulContainerDefinition()
+	root := t.TempDir()
+	effective := EffectiveBinding{
+		Binding:    ToolBinding{ToolBindingID: "bind-ready", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
+		Definition: definition, Connection: &Connection{ConnectionID: "stateful", Metadata: map[string]string{}}, WorkloadID: "ready-workload",
+	}
+	backend := MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, got EffectiveBinding) (AdmissionReceipt, error) {
+		workspace, err := OpenWorkloadWorkspace(root, got, "")
+		if err != nil {
+			return AdmissionReceipt{}, err
+		}
+		data, err := os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
+		if err != nil || string(data) != "SERVICE_TOKEN=fixture-secret" {
+			return AdmissionReceipt{}, fmt.Errorf("credentials not ready: %q: %v", data, err)
+		}
+		return AdmissionReceipt{WorkloadID: got.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+	}}
+	if err := backend.EnsureReady(context.Background(), effective, map[string]string{"SERVICE_TOKEN": "fixture-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := OpenWorkloadWorkspace(root, effective, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); err != nil {
+		t.Fatalf("ready credentials were removed: %v", err)
+	}
+	denied := backend
+	denied.AdmissionVerifier = func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
+		return AdmissionReceipt{}, errors.New("denied")
+	}
+	if err := denied.EnsureReady(context.Background(), effective, map[string]string{"SERVICE_TOKEN": "new-secret"}); err == nil {
+		t.Fatal("denied readiness accepted")
+	}
+	data, _ := os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
+	if string(data) != "SERVICE_TOKEN=fixture-secret" {
+		t.Fatalf("failed readiness replaced active credentials: %q", data)
+	}
+	fresh := denied
+	fresh.Root = t.TempDir()
+	if err := fresh.EnsureReady(context.Background(), effective, map[string]string{"SERVICE_TOKEN": "first-secret"}); err == nil {
+		// The existing verifier is still the denial verifier; this path proves a
+		// failed first admission does not leave a new credentials file behind.
+		t.Fatal("fresh denied readiness accepted")
+	}
+	freshWorkspace, err := OpenWorkloadWorkspace(fresh.Root, effective, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(freshWorkspace.Path, "credentials.env")); !os.IsNotExist(err) {
+		t.Fatalf("failed fresh readiness left credentials: %v", err)
+	}
+	noProof := MCPBackend{Root: t.TempDir(), Admission: func(context.Context, EffectiveBinding) error { return nil }}
+	if err := noProof.EnsureReady(context.Background(), effective, nil); err == nil {
+		t.Fatal("admission without receipt accepted")
 	}
 }
 

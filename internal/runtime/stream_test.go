@@ -99,7 +99,7 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 				_, _ = w.Write([]byte("data: {\"event\":\"approval.request\",\"run_id\":\"original\",\"request_id\":\"request-1\",\"choices\":[\"once\",\"deny\"],\"args\":\"PRIVATE_CANARY\"}\n\n"))
 			}
 			for range 15 {
-				_, _ = w.Write([]byte("data: {\"event\":\"tool.start\",\"run_id\":\"original\",\"args\":\"PRIVATE_CANARY\"}\n\n"))
+				_, _ = w.Write([]byte("data: {\"event\":\"tool.started\",\"run_id\":\"original\",\"tool\":\"mcp__toolhub__prepare_source\",\"args\":\"PRIVATE_CANARY\"}\n\n"))
 			}
 			_, _ = w.Write([]byte("data: {\"event\":\"trace\",\"run_id\":\"original\",\"prompt\":\"PRIVATE_CANARY\"}\n\n"))
 			return
@@ -132,6 +132,34 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 	})
 	if err != nil || result.Status != "completed" || progress != 10 || approvals != 1 {
 		t.Fatalf("result=%+v progress=%d approvals=%d error=%v", result, progress, approvals, err)
+	}
+}
+
+func TestToolHubProgressMessages(t *testing.T) {
+	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp__toolhub__prepare_source"}); !strings.Contains(got, "шаг 1/4") || !strings.Contains(got, "2–15 минут") {
+		t.Fatalf("prepare progress=%q", got)
+	}
+	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp__toolhub__enable"}); !strings.Contains(got, "шаг 4/4") || !strings.Contains(got, "без рестарта") {
+		t.Fatalf("enable progress=%q", got)
+	}
+	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp_toolhub_prepare_source"}); !strings.Contains(got, "шаг 1/4") {
+		t.Fatalf("Hermes tool-name progress=%q", got)
+	}
+	if got := toolProgressText(nativeRunEvent{Event: "tool.completed", Error: true}); !strings.Contains(got, "ошибкой") {
+		t.Fatalf("error progress=%q", got)
+	}
+	for tool, want := range map[string]string{
+		"mcp__toolhub__required_credentials": "шаг 2/4",
+		"mcp__toolhub__confirm":              "шаг 3/4",
+		"mcp__toolhub__invoke":               "реальный вызов",
+		"other":                              "Выполняю запрос",
+	} {
+		if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: tool}); !strings.Contains(got, want) {
+			t.Fatalf("%s progress=%q", tool, got)
+		}
+	}
+	if got := toolProgressText(nativeRunEvent{Event: "tool.completed"}); !strings.Contains(got, "завершён") {
+		t.Fatalf("completed progress=%q", got)
 	}
 }
 

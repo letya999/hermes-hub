@@ -45,7 +45,7 @@ func validateConfirmedToolContract(contract ConfirmedToolContract) error {
 	}
 	seen := map[string]bool{}
 	for _, tool := range contract.Tools {
-		if !toolNamePattern.MatchString(tool.Name) || (tool.Effect != ReadEffect && tool.Effect != WriteEffect) || seen[tool.Name] {
+		if !mcpToolNamePattern.MatchString(tool.Name) || (tool.Effect != ReadEffect && tool.Effect != WriteEffect) || seen[tool.Name] {
 			return fmt.Errorf("%w: invalid confirmed tool %q", ErrInvalid, tool.Name)
 		}
 		seen[tool.Name] = true

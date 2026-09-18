@@ -37,6 +37,7 @@ var (
 	versionPattern         = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$`)
 	toolHiveVersionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 	toolNamePattern        = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+	mcpToolNamePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 	credentialPattern      = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 	hostPattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}(:[0-9]{1,5})?$`)
 	digestPattern          = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -125,17 +126,20 @@ func (o OwnerRef) Matches(e identity.Envelope) bool {
 }
 
 type ToolDefinition struct {
-	Schema       int               `json:"schema"`
-	DefinitionID string            `json:"definition_id"`
-	Version      string            `json:"version"`
-	Transport    Transport         `json:"transport"`
-	Source       DefinitionSource  `json:"source"`
-	Tools        []ToolSpec        `json:"tools"`
-	Credentials  []CredentialInput `json:"credentials,omitempty"`
-	Environment  []string          `json:"environment,omitempty"`
-	Workload     WorkloadPolicy    `json:"workload"`
-	Execution    ExecutionPolicy   `json:"execution"`
-	Health       HealthProbe       `json:"health"`
+	Schema                     int               `json:"schema"`
+	DefinitionID               string            `json:"definition_id"`
+	Version                    string            `json:"version"`
+	Transport                  Transport         `json:"transport"`
+	Source                     DefinitionSource  `json:"source"`
+	Tools                      []ToolSpec        `json:"tools"`
+	Credentials                []CredentialInput `json:"credentials,omitempty"`
+	CredentialContractID       string            `json:"credential_contract_id,omitempty"`
+	CredentialContractRevision int               `json:"credential_contract_revision,omitempty"`
+	CredentialContractEnv      map[string]string `json:"credential_contract_env,omitempty"`
+	Environment                []string          `json:"environment,omitempty"`
+	Workload                   WorkloadPolicy    `json:"workload"`
+	Execution                  ExecutionPolicy   `json:"execution"`
+	Health                     HealthProbe       `json:"health"`
 }
 
 type DefinitionSource struct {
@@ -231,7 +235,7 @@ func (d ToolDefinition) Validate() error {
 		if len(tool.InputSchema) > 65536 || (len(tool.InputSchema) > 0 && (!json.Valid(tool.InputSchema) || (d.Transport != RemoteMCP && d.Transport != ContainerMCP))) {
 			return fmt.Errorf("%w: MCP input schema", ErrInvalid)
 		}
-		if !toolNamePattern.MatchString(tool.Name) || (tool.Effect != ReadEffect && tool.Effect != WriteEffect) || seen[tool.Name] {
+		if !mcpToolNamePattern.MatchString(tool.Name) || (tool.Effect != ReadEffect && tool.Effect != WriteEffect) || seen[tool.Name] {
 			return fmt.Errorf("%w: invalid or duplicate tool %q", ErrInvalid, tool.Name)
 		}
 		if len(tool.Description) > 1024 || len(tool.Arguments) > 32 {
@@ -273,6 +277,23 @@ func (d ToolDefinition) Validate() error {
 			return fmt.Errorf("%w: shared workload requires per-request credentials", ErrInvalid)
 		}
 		seen[input.Name] = true
+	}
+	if d.CredentialContractID != "" {
+		if !identity.ValidID(d.CredentialContractID) || d.CredentialContractRevision < 1 || d.CredentialContractRevision > 100000 {
+			return fmt.Errorf("%w: invalid credential broker contract", ErrInvalid)
+		}
+		for name, target := range d.CredentialContractEnv {
+			if !credentialPattern.MatchString(name) || !credentialPattern.MatchString(target) || !slices.ContainsFunc(d.Credentials, func(input CredentialInput) bool { return input.Name == name }) {
+				return fmt.Errorf("%w: invalid credential broker delivery mapping", ErrInvalid)
+			}
+		}
+		for _, input := range d.Credentials {
+			if input.Required && d.CredentialContractEnv[input.Name] == "" {
+				return fmt.Errorf("%w: missing credential broker delivery for %s", ErrInvalid, input.Name)
+			}
+		}
+	} else if d.CredentialContractRevision != 0 || len(d.CredentialContractEnv) != 0 {
+		return fmt.Errorf("%w: credential broker mapping needs a contract", ErrInvalid)
 	}
 	if d.Workload.Class == Shared && (d.Workload.Stateful || len(d.Execution.Mounts) > 0) {
 		return fmt.Errorf("%w: shared workload cannot own state or mounts", ErrInvalid)
@@ -497,14 +518,18 @@ func DecodeDefinition(data []byte) (ToolDefinition, error) {
 }
 
 type CredentialReference struct {
-	Schema          int      `json:"schema"`
-	CredentialRefID string   `json:"credential_ref"`
-	ConnectionID    string   `json:"connection_id"`
-	Revision        uint64   `json:"revision"`
-	Backend         string   `json:"backend"`
-	Locator         string   `json:"locator"`
-	Keys            []string `json:"keys"`
-	Status          Status   `json:"status"`
+	Schema                 int               `json:"schema"`
+	CredentialRefID        string            `json:"credential_ref"`
+	ConnectionID           string            `json:"connection_id"`
+	Revision               uint64            `json:"revision"`
+	Backend                string            `json:"backend"`
+	Locator                string            `json:"locator"`
+	Keys                   []string          `json:"keys"`
+	BrokerGrantID          string            `json:"broker_grant_id,omitempty"`
+	BrokerContractID       string            `json:"broker_contract_id,omitempty"`
+	BrokerContractRevision int               `json:"broker_contract_revision,omitempty"`
+	BrokerEnv              map[string]string `json:"broker_env,omitempty"`
+	Status                 Status            `json:"status"`
 }
 
 func (r CredentialReference) Validate() error {
@@ -513,6 +538,16 @@ func (r CredentialReference) Validate() error {
 	}
 	if strings.ContainsAny(r.Locator, "\r\n=") || len(r.Locator) > 256 {
 		return fmt.Errorf("%w: credential locator must be opaque metadata", ErrInvalid)
+	}
+	if r.Backend == "credential-broker" {
+		if (r.BrokerGrantID != "" && !identity.ValidID(r.BrokerGrantID)) || !identity.ValidID(r.BrokerContractID) || r.BrokerContractRevision < 1 {
+			return fmt.Errorf("%w: credential broker reference", ErrInvalid)
+		}
+		for key, target := range r.BrokerEnv {
+			if !credentialPattern.MatchString(key) || !credentialPattern.MatchString(target) {
+				return fmt.Errorf("%w: credential broker environment mapping", ErrInvalid)
+			}
+		}
 	}
 	seen := map[string]bool{}
 	for _, key := range r.Keys {
@@ -687,6 +722,9 @@ type EffectiveBinding struct {
 	Connection *Connection
 	Credential *CredentialReference
 	WorkloadID string
+	// CredentialMounts are runtime-only paths returned by Credential Broker.
+	// They never enter the persisted projection or audit ledger.
+	CredentialMounts []Mount `json:"-"`
 }
 
 type WorkloadStopper interface {

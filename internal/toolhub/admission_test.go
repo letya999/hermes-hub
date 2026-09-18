@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestControllerAdmissionSendsOnlyExecutionPlan(t *testing.T) {
+func TestControllerAdmissionSendsReviewedDefinitionWithoutAuthorityOrSecretValues(t *testing.T) {
 	var received string
 	definition := statefulContainerDefinition()
 	effective := EffectiveBinding{Definition: definition, WorkloadID: "fixture-workload"}
@@ -42,7 +42,7 @@ func TestControllerAdmissionSendsOnlyExecutionPlan(t *testing.T) {
 	if err := legacyAdmit(context.Background(), effective); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(received, definition.DefinitionID) || strings.Contains(received, "principal_id") || strings.Contains(received, "credential") {
+	if !strings.Contains(received, definition.DefinitionID) || !strings.Contains(received, "SERVICE_TOKEN") || strings.Contains(received, "principal_id") || strings.Contains(received, "credential_locator") || strings.Contains(received, "private-value") {
 		t.Fatalf("controller plan leaked authority or credentials: %s", received)
 	}
 }
@@ -90,5 +90,56 @@ func TestControllerAdmissionDeniesNonSuccess(t *testing.T) {
 	admit, err = ControllerAdmissionVerifierFromEnv()
 	if err != nil || admit != nil {
 		t.Fatalf("unset controller endpoint did not disable admission: %v", err)
+	}
+}
+
+func TestControllerAdmissionReleaserUsesAuthenticatedReleaseEndpoint(t *testing.T) {
+	var gotPath, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", server.URL+"/admit")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_TOKEN", strings.Repeat("r", 32))
+	release, err := ControllerAdmissionReleaserFromEnv()
+	if err != nil || release == nil {
+		t.Fatalf("release endpoint was not configured: %v", err)
+	}
+	if err := release(context.Background(), "fixture-workload"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/admit/release" || gotAuth != "Bearer "+strings.Repeat("r", 32) {
+		t.Fatalf("unexpected release request path=%q auth=%q", gotPath, gotAuth)
+	}
+	if err := release(context.Background(), ""); err == nil {
+		t.Fatal("empty workload release accepted")
+	}
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "https://public.example/admit")
+	if _, err := ControllerAdmissionReleaserFromEnv(); err == nil {
+		t.Fatal("public release endpoint accepted")
+	}
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	disabled, err := ControllerAdmissionReleaserFromEnv()
+	if err != nil || disabled != nil {
+		t.Fatalf("unset release endpoint did not disable release: %v", err)
+	}
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "denied", http.StatusForbidden) }))
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", denied.URL)
+	release, err = ControllerAdmissionReleaserFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(context.Background(), "fixture-workload"); err == nil {
+		t.Fatal("failed release response accepted")
+	}
+	denied.Close()
+	server.Close()
+	failed, err := ControllerAdmissionReleaserFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failed(context.Background(), "fixture-workload"); err == nil {
+		t.Fatal("network release failure accepted")
 	}
 }

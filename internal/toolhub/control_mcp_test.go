@@ -25,6 +25,30 @@ func aliceAuth() identity.Envelope {
 	return identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
 }
 
+func TestControlToolContractDocumentsResumeSelector(t *testing.T) {
+	description, schema := controlToolContract("status")
+	if !strings.Contains(description, "definition_id") {
+		t.Fatalf("status description does not explain resume selector: %q", description)
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok || properties["onboarding_id"] == nil || properties["definition_id"] == nil {
+		t.Fatalf("status schema missing selectors: %#v", schema)
+	}
+}
+
+func TestControlToolContractRoutesInstallBeforeLifecycle(t *testing.T) {
+	prepare, _ := controlToolContract("prepare_source")
+	if !strings.Contains(prepare, "call this first") || !strings.Contains(prepare, "GitHub repository URL") {
+		t.Fatalf("prepare_source does not own explicit install routing: %q", prepare)
+	}
+	for _, op := range []string{"disable", "revoke", "remove"} {
+		description, _ := controlToolContract(op)
+		if !strings.Contains(description, "only when the user's current message explicitly requests") {
+			t.Fatalf("%s permits inferred lifecycle calls: %q", op, description)
+		}
+	}
+}
+
 func bobAuth() identity.Envelope {
 	return identity.TelegramEnvelope("bob", 8, "runtime-bob", "policy-1")
 }
@@ -51,6 +75,64 @@ func fixtureReviewer(definition ToolDefinition) SourceReviewer {
 
 func githubCommitURL() string {
 	return "https://github.com/example/mcp/commit/0123456789abcdef0123456789abcdef01234567"
+}
+
+func TestControlResolvesRepositoryURLBeforeReview(t *testing.T) {
+	definition := userMCPDefinition()
+	fix := newControlFixture(t, func(_ context.Context, source ArtifactSource) (SourceReview, error) {
+		if source.Repository != "https://github.com/example/mcp" || source.CommitSHA != "0123456789abcdef0123456789abcdef01234567" {
+			t.Fatalf("review received mutable source: %+v", source)
+		}
+		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review"}, nil
+	})
+	fix.control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+		if raw != "https://github.com/example/mcp" {
+			t.Fatalf("resolver input=%q", raw)
+		}
+		return ArtifactSource{Repository: raw, CommitSHA: "0123456789abcdef0123456789abcdef01234567"}, nil
+	}
+	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := callControl(t, fix.session(t, aliceToken), "prepare_source", map[string]any{"source": "https://github.com/example/mcp", "request_key": "repo-url"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
+	if onboarding.SourceURL != "https://github.com/example/mcp" || onboarding.CommitSHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("mutable source persisted: %+v", onboarding)
+	}
+}
+
+func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
+	definition := statefulContainerDefinition()
+	definition.DefinitionID = "mcp"
+	definition.Version = "0.0.1"
+	definition.Source.Repository = "https://github.com/example/mcp"
+	definition.Source.CommitSHA = "0123456789abcdef0123456789abcdef01234567"
+	fix := newControlFixture(t, func(context.Context, ArtifactSource) (SourceReview, error) {
+		t.Fatal("retry rebuilt an immutable source instead of reusing it")
+		return SourceReview{}, nil
+	})
+	if err := fix.store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := fix.store.PutPublication(DefinitionPublication{DefinitionID: "mcp", Version: "0.0.1", Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{
+		"source": githubCommitURL(), "request_key": "retry-reviewed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
+	if onboarding.DefinitionID != "mcp" || onboarding.CommitSHA != definition.Source.CommitSHA || onboarding.Phase != PhaseAwaitingCreds {
+		t.Fatalf("reused onboarding=%+v", onboarding)
+	}
 }
 
 type controlFixture struct {
@@ -156,6 +238,9 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 		if !have[op] {
 			t.Fatalf("missing control operation %s", op)
 		}
+	}
+	if !have["invoke"] {
+		t.Fatal("missing stable projected-tool invoke operation")
 	}
 	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "cat-1"})
 	if err != nil {
@@ -296,5 +381,38 @@ func TestControlResponsesAreNonSecret(t *testing.T) {
 	page, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if strings.Contains(string(page), "scan-secret-ORANGE-NINE-7721") {
 		t.Fatal("test secret appeared in HTTP body")
+	}
+}
+
+func TestControlMCPReportsProgress(t *testing.T) {
+	fix := newControlFixture(t, nil)
+	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	if err := fix.store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	messages := make(chan string, 4)
+	client := mcp.NewClient(&mcp.Implementation{Name: "progress-test", Version: "1"}, &mcp.ClientOptions{ProgressNotificationHandler: func(_ context.Context, request *mcp.ProgressNotificationClientRequest) {
+		messages <- request.Params.Message
+	}})
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: fix.server.URL + DefaultEndpointPath, HTTPClient: &http.Client{Transport: testBearerTransport{base: http.DefaultTransport, token: aliceToken}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	params := &mcp.CallToolParams{Name: "prepare_source", Meta: mcp.Meta{"progressToken": "install-1"}, Arguments: map[string]any{"definition_id": "catalog-read", "version": "1.0.0"}}
+	if _, err := session.CallTool(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Source is being verified and built", "Source review and build completed"} {
+		select {
+		case got := <-messages:
+			if got != want {
+				t.Fatalf("progress=%q want=%q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("missing progress %q", want)
+		}
 	}
 }

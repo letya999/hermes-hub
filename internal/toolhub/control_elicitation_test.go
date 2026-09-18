@@ -51,12 +51,12 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 			return BackendResult{Text: "ok"}, nil
 		}),
 		Control: control,
-		Injector: func(_ context.Context, effective EffectiveBinding) (map[string]string, func() error, error) {
+		Injector: func(_ context.Context, effective EffectiveBinding) (CredentialInjection, error) {
 			env, err := DecryptAuthorized(secrets, effective)
 			if err != nil {
-				return nil, nil, err
+				return CredentialInjection{}, err
 			}
-			return env, func() error { return nil }, nil
+			return CredentialInjection{Environment: env, Cleanup: func() error { return nil }}, nil
 		},
 	}
 	handler, err := gateway.Handler()
@@ -122,11 +122,33 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if status["phase"] != PhaseAwaitingConfirm {
+		t.Fatalf("credential form did not await confirmation: %v", status)
+	}
+	if err := control.SubmitCredentials(prepared["onboarding_id"].(string), nonceFromPath(formPath), map[string]string{"GOOGLE_TOKEN": testSecret}); err == nil {
+		t.Fatal("one-time credential form replay accepted")
+	}
 	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
+	}
+	status, err = callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil || status["phase"] != PhaseEnabled {
+		t.Fatalf("confirmed onboarding was not enabled: status=%v err=%v", status, err)
+	}
+	projected, _ := status["projected_tools"].([]any)
+	if len(projected) == 0 || projected[0] != ProjectedToolName("google-work", "1.0.0", "search") {
+		t.Fatalf("enabled status omitted exact projected tools: %v", status)
+	}
+	if err := control.finishAuthorization(context.Background(), "missing-onboarding"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing onboarding finalization error=%v", err)
+	}
+	badAuth := aliceAuth()
+	badAuth.PolicyVersion = ""
+	if _, err := control.Invoke(context.Background(), badAuth, "status", map[string]any{}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("invalid control identity accepted: %v", err)
 	}
 	name := ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
@@ -183,6 +205,44 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	}
 }
 
+func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
+	store := NewStore()
+	if err := store.RegisterDefinition(remoteDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(OperatorGrant(GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	control := &ControlPlane{Store: store, Now: func() time.Time { return now }, ConfirmationTTL: time.Minute}
+	auth := aliceAuth()
+	args := map[string]any{"definition_id": "google-work", "version": "1.0.0", "request_key": "expired-form"}
+	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := prepared["onboarding_id"].(string)
+	first := mustOnboarding(t, store, id)
+	oldNonce := first.FormNonce
+	now = now.Add(2 * time.Minute)
+	if _, err := control.Invoke(context.Background(), auth, "prepare_source", args); err != nil {
+		t.Fatal(err)
+	}
+	resumed := mustOnboarding(t, store, id)
+	if resumed.FormNonce == oldNonce || !now.Before(resumed.FormExpires) {
+		t.Fatalf("expired form was not renewed: old=%q new=%q expires=%s", oldNonce, resumed.FormNonce, resumed.FormExpires)
+	}
+	now = now.Add(2 * time.Minute)
+	required, err := control.Invoke(context.Background(), auth, "required_credentials", map[string]any{"onboarding_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	formURL, _ := required["form_url"].(string)
+	if formURL == "" || nonceFromPath(formURL) == resumed.FormNonce || !strings.Contains(formURL, id) {
+		t.Fatalf("expired required_credentials form was not renewed: %q", formURL)
+	}
+}
+
 func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	store := NewStore()
 	if err := store.RegisterDefinition(catalogReadDefinition()); err != nil {
@@ -217,6 +277,10 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	onboarding, err = store.onboarding(prepared["onboarding_id"].(string))
 	if err != nil || onboarding.ConfirmationUsed {
 		t.Fatalf("expiry marked nonce used: %+v err=%v", onboarding, err)
+	}
+	resumed, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil || resumed["nonce"] == "" || resumed["nonce"] == nonce {
+		t.Fatalf("expired confirmation was not renewed: status=%v err=%v", resumed, err)
 	}
 }
 

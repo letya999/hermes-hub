@@ -42,6 +42,61 @@ func (s ArtifactSource) ArchiveURL() (string, error) {
 	return "https://codeload.github.com/" + parts[0] + "/" + parts[1] + "/tar.gz/" + s.CommitSHA, nil
 }
 
+// ResolveGitHubSource turns a canonical public repository URL into the exact
+// commit currently referenced by its default branch. All later reads use only
+// the returned SHA; ambient credentials and proxies are deliberately ignored.
+func ResolveGitHubSource(ctx context.Context, raw string) (ArtifactSource, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return resolveGitHubSource(ctx, raw, client)
+}
+
+func resolveGitHubSource(ctx context.Context, raw string, client *http.Client) (ArtifactSource, error) {
+	repository, err := parseGitHubRepository(raw)
+	if err != nil {
+		return ArtifactSource{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+strings.TrimPrefix(repository, "https://github.com/")+"/commits/HEAD", nil)
+	if err != nil {
+		return ArtifactSource{}, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	response, err := client.Do(request)
+	if err != nil {
+		return ArtifactSource{}, fmt.Errorf("GitHub source resolution failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return ArtifactSource{}, fmt.Errorf("GitHub source resolution returned status %d", response.StatusCode)
+	}
+	var body struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&body); err != nil || !gitSHAPattern.MatchString(body.SHA) {
+		return ArtifactSource{}, fmt.Errorf("%w: GitHub returned an invalid commit", ErrInvalid)
+	}
+	source := ArtifactSource{Repository: repository, CommitSHA: body.SHA}
+	if _, err := source.ArchiveURL(); err != nil {
+		return ArtifactSource{}, err
+	}
+	return source, nil
+}
+
+func parseGitHubRepository(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" {
+		return "", fmt.Errorf("%w: canonical public GitHub repository URL required", ErrInvalid)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 2 || !repositoryPartPattern.MatchString(parts[0]) || !repositoryPartPattern.MatchString(parts[1]) || strings.Contains(parts[0]+parts[1], "..") || strings.HasSuffix(parts[1], ".git") {
+		return "", fmt.Errorf("%w: canonical public GitHub repository URL required", ErrInvalid)
+	}
+	return "https://github.com/" + parts[0] + "/" + parts[1], nil
+}
+
 // FetchArtifactContext reads selected Git blobs from a verified public commit.
 // It deliberately ignores ambient Git credentials, cookies and proxy settings.
 // No archive is downloaded: unrelated repository file contents stay unread.

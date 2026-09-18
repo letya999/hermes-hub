@@ -37,6 +37,7 @@ jobs:
           node-version: '22'
           cache-dependency-path: docker/browser/package-lock.json
       - run: just check
+      - run: just credential-broker-check
       - run: just security
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -59,3 +60,5 @@ jobs:
         with:
           just-version: '1.57.0'
       - run: just docker-check "${{ matrix.target }}"
+      - if: matrix.target == 'prod'
+        run: just credential-broker-docker-check

@@ -6,6 +6,7 @@ last_verified: 2026-09-17
 
 | Record | Decision |
 |---|---|
+| [ADR-0022](ADR-0022-credential-broker-boundary.md) | Keep Credential Broker as a separate opt-in Go module/process with explicit Hub adapters |
 | [ADR-0021](ADR-0021-toolhub-control-plane.md) | Control MCP, operator grants and loopback credential elicitation |
 | [ADR-0020](ADR-0020-local-account-preparation.md) | Owner-selected PC, fixed read-only ToolHive controller and protected local account setup |
 | [ADR-0019](ADR-0019-official-workspace-telegram-sdk.md) | Official Workspace MCP and owner-approved Python Telegram account workload |

@@ -42,7 +42,11 @@ and validated against the real image by the Docker gate. This is a future adapte
 surface: the capability response explicitly reports `split_runtime=false`, so tools
 would execute on the API-server host. The current Go `/v1/execute` runtime remains the
 private identity and filesystem trust boundary until a split-runtime adapter is
-implemented.
+implemented. When ToolHub writes a durable `toolhub-reconnect.request` projection
+marker, the serve runtime consumes it and submits Hermes' native `/reload-mcp`
+command through this API. That reconnects MCP transports and refreshes the cached
+tool surface without restarting Hermes; the watcher is opt-out with
+`HUB_TOOLHUB_RECONNECT=false`.
 
 ## Scope homes
 
@@ -205,6 +209,29 @@ loopback form (or MCP URL elicitation pointing at it) and stay in
 ciphertext until inject-after-authorize. Promoting a user MCP to the
 catalog does not convert existing user bindings into shared workloads.
 
+M5.3 is tracked by [SPEC-0024](../specs/active/SPEC-0024-m53-hermes-onboarding.md).
+For self-install, a canonical public GitHub repository URL is resolved once to
+the default branch's exact commit SHA; review and build receive only that immutable
+source. Control calls use standard MCP progress notifications over the existing
+authenticated stateless streamable-HTTP endpoint.
+
+Credential Broker now lives at `services/credential-broker` as a separate Go
+module and process. Its reviewed-contract forms, approval pairing, provider
+references, grants, leases and runtime materialization stay behind its own HTTP
+and identity-audience boundary. The root image includes `credential-broker` and
+`hub-credential-broker`; the root `go.work` and CI expose the module without
+flattening it into Hermes. ToolHub remains the owner of source review, workload
+admission, projection and reconnect. When the Broker audience/key environment
+is configured, onboarding uses Broker requests and grants, Communication Hub
+approves the pairing code, and the runtime materializer handles the lease. With
+that environment unset, the existing encrypted store and loopback form remain
+the compatibility path. Broker file deliveries use a dynamic read-only ToolHive
+mount hand-off: the generic controller accepts only regular files below its
+operator-configured `credential_mount_root`, starts a one-call workload, and
+exposes `/release` to remove it before the Broker runtime lease is released.
+A separate Broker container therefore needs an explicitly shared runtime
+directory; with no shared root, file delivery remains fail closed.
+
 The stage-2 opt-in surface is recorded in [SPEC-0018](../specs/active/SPEC-0018-toolhub-stage2.md).
 When `HUB_TOOLHUB_STORE` is explicitly configured, `service_catalog`,
 `service_enable` and `service_disable` use the manifest-backed catalog and exact
@@ -215,6 +242,10 @@ binding (narrow) but cannot enable one (expand). The legacy `stack`/`self-servic
 path remains the compatibility fallback when the store is unset; no runtime route is
 switched by this stage. Each projection has a persisted monotonic revision and an
 observable, at-most-once reconnect hook that writes `toolhub-reconnect.request`.
+Credential-bearing onboarding can use the generic MCP readiness hook: ToolHive
+admission and its validated running receipt complete before a new binding is
+persisted and its projection is published; failed admission restores any previous
+credentials file.
 The hook is transport-only: current binding state is rechecked under the registry
 read fence before backend execution and Hermes session/home ownership stays outside
 this package. Bounded CLI calls go to the CLI runner and fail closed without an

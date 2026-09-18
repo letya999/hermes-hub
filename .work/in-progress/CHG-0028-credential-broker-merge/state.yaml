@@ -1,0 +1,27 @@
+schema: 1
+id: CHG-0028-credential-broker-merge
+title: "Перенос Credential Broker и opt-in интеграция с Hermes Hub"
+status: in_progress
+phase: validated-live-broker-and-mount-path
+started_at: "2026-09-18"
+updated_at: "2026-09-19"
+completed:
+  - "Скопированы исходники, tests, docs, specs и MIT license в services/credential-broker"
+  - "Добавлены go.work, root recipes, Docker build и dev source mount"
+  - "Добавлены root CI gates, ADR-0022 и SPEC-0025"
+  - "Root just check, security, Hermes docker smoke и contract probe прошли"
+  - "Broker Linux race/vet/gofmt/build и standalone Docker image прошли"
+  - "Добавлены ToolHub control/grant и runtime lease/materialize/release adapters"
+  - "Добавлено Communication Hub Broker approval command и role-specific stack env wiring"
+  - "Добавлены contract mapping validation и end-to-end adapter regression tests"
+  - "Docker prod image собирает root-модули и отдельный Credential Broker; hub-credential-broker version, smoke и Hermes contract probe прошли"
+  - "Broker/local fallback закрыт для rotate и Communication local credential surface отключается при Broker approval"
+  - "Реальный Linux production Broker поднят на localhost:8787 с TLS, local provider и reviewed contracts"
+  - "Живой control/approval/runtime smoke прошёл: pairing, CSRF file form, submit, grant, lease, read-only mount и release"
+  - "ToolHive dynamic read-only credential mounts и authenticated controller release hand-off добавлены с fail-closed path checks"
+next:
+  - "Подключить реальный Hermes deployment к Broker signer keys и shared tmpfs mount root; пока оставлено opt-in"
+  - "Провести отдельный GitHub CI/provider smoke после выдачи deployment secrets; в локальную проверку реальные provider tokens не добавлять"
+risks:
+  - "Broker Linux-only; Windows checks должны выполняться в Linux Docker"
+  - "Сканер безопасности имеет baseline findings в существующем Hermes Hub"

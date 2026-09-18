@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -45,6 +47,14 @@ type envBackend interface {
 	CallEnv(context.Context, EffectiveBinding, ToolSpec, map[string]any, map[string]string) (BackendResult, error)
 }
 
+type CredentialInjection struct {
+	Environment map[string]string
+	Mounts      []Mount
+	Cleanup     func() error
+}
+
+type CredentialInjector func(context.Context, EffectiveBinding) (CredentialInjection, error)
+
 type Gateway struct {
 	Store                      *Store
 	Backend                    ToolBackend
@@ -52,7 +62,7 @@ type Gateway struct {
 	DisableLocalhostProtection bool
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
-	Injector                   func(context.Context, EffectiveBinding) (map[string]string, func() error, error)
+	Injector                   CredentialInjector
 	Control                    *ControlPlane
 }
 
@@ -68,7 +78,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		auth, _ := requestIdentity(r)
 		return g.serverFor(auth)
-	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxGatewayBodyBytes, PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection})
+	}, &mcp.StreamableHTTPOptions{Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes, PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection})
 	mux := http.NewServeMux()
 	mux.Handle(DefaultEndpointPath, g.protect(mcpHandler))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
@@ -178,24 +188,24 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		if err := g.audit("admit", mergeAudit(auditFields(auth, projected, effective, "admit"), corr)); err != nil {
 			return err
 		}
-		env := map[string]string{}
-		var wipe func() error
+		injection := CredentialInjection{Environment: map[string]string{}}
 		if g.Injector != nil {
 			var injErr error
-			env, wipe, injErr = g.Injector(ctx, effective)
+			injection, injErr = g.Injector(ctx, effective)
 			if injErr != nil {
 				return injErr
 			}
-			if wipe != nil {
-				defer wipe()
+			if injection.Cleanup != nil {
+				defer injection.Cleanup()
 			}
 		}
+		effective.CredentialMounts = append([]Mount(nil), injection.Mounts...)
 		callCtx, cancel := context.WithTimeout(ctx, time.Duration(effective.Definition.Execution.TimeoutSeconds)*time.Second)
 		defer cancel()
 		var result BackendResult
 		var callErr error
 		if caller, ok := g.Backend.(envBackend); ok {
-			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, env)
+			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, injection.Environment)
 		} else {
 			result, callErr = g.Backend.Call(callCtx, effective, projected.Tool, arguments)
 		}
@@ -383,7 +393,7 @@ func ValidateBackendEndpoint(raw string) error {
 		return fmt.Errorf("%w: private MCP backend URL", ErrInvalid)
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || host == "toolhive" || host == "vmcp" {
+	if host == "localhost" || host == "host.docker.internal" || host == "toolhive" || host == "vmcp" {
 		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
@@ -400,12 +410,89 @@ type MCPBackend struct {
 	Root              string
 	Admission         WorkloadAdmission
 	AdmissionVerifier func(context.Context, EffectiveBinding) (AdmissionReceipt, error)
+	AdmissionRelease  func(context.Context, string) error
 }
 
 // WorkloadAdmission is the narrow hand-off to the external ToolHive/Docker
 // controller. The gateway owns identity and current catalog state; the
 // controller owns actual CPU, memory, PID, filesystem and egress enforcement.
 type WorkloadAdmission func(context.Context, EffectiveBinding) error
+
+func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding, environment map[string]string) error {
+	if effective.Definition.Transport != ContainerMCP {
+		return nil
+	}
+	if len(effective.CredentialMounts) > 0 {
+		return fmt.Errorf("%w: file credentials are admitted per call", ErrIsolation)
+	}
+	var previous []byte
+	var hadPrevious bool
+	if len(environment) > 0 && strings.TrimSpace(b.Root) != "" {
+		workspace, workspaceErr := OpenWorkloadWorkspace(b.Root, effective, injectJobID(ctx, effective))
+		if workspaceErr == nil && workspace.Path != "" {
+			previous, workspaceErr = os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
+			hadPrevious = workspaceErr == nil
+		}
+	}
+	path, unlock, err := writeAuthorizedFilesPersistent(ctx, b.Root, effective, environment)
+	if err != nil {
+		return err
+	}
+	receipt, err := b.admit(ctx, effective)
+	if err != nil {
+		restoreAuthorizedFile(path, previous, hadPrevious)
+		if unlock != nil {
+			_ = unlock()
+		}
+		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
+	}
+	if err := receipt.validate(effective); err != nil {
+		restoreAuthorizedFile(path, previous, hadPrevious)
+		if unlock != nil {
+			_ = unlock()
+		}
+		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
+	}
+	if unlock != nil {
+		_ = unlock()
+	}
+	return nil
+}
+
+func restoreAuthorizedFile(workspacePath string, previous []byte, hadPrevious bool) {
+	if workspacePath == "" {
+		return
+	}
+	path := filepath.Join(workspacePath, "credentials.env")
+	if hadPrevious {
+		_ = os.WriteFile(path, previous, 0600)
+	} else {
+		_ = os.Remove(path)
+	}
+}
+
+func (b MCPBackend) admit(ctx context.Context, effective EffectiveBinding) (AdmissionReceipt, error) {
+	if err := validateToolHivePolicy(effective.Definition); err != nil {
+		return AdmissionReceipt{}, err
+	}
+	if b.AdmissionVerifier == nil && b.Admission == nil {
+		return AdmissionReceipt{}, ErrIsolation
+	}
+	var receipt AdmissionReceipt
+	if b.AdmissionVerifier != nil {
+		var err error
+		receipt, err = b.AdmissionVerifier(ctx, effective)
+		if err != nil {
+			return AdmissionReceipt{}, err
+		}
+	} else {
+		if err := b.Admission(ctx, effective); err != nil {
+			return AdmissionReceipt{}, err
+		}
+		return AdmissionReceipt{}, fmt.Errorf("%w: workload controller returned no enforcement proof", ErrIsolation)
+	}
+	return receipt, nil
+}
 
 func validateToolHivePolicy(definition ToolDefinition) error {
 	if definition.Transport != ContainerMCP {
@@ -429,6 +516,9 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	if telegram && (effective.Definition.Transport != ContainerMCP || environment["TELEGRAM_ACCOUNT_ID"] == "" || environment["TELEGRAM_ACCOUNT_ID"] != effective.Connection.Metadata["telegram_account"] || !telegramTool(tool.Name, tool.Effect) || (tool.Effect == WriteEffect && environment["TELEGRAM_WRITE"] != "true")) {
 		return BackendResult{}, ErrUnauthorized
 	}
+	if len(effective.CredentialMounts) > 0 && b.AdmissionRelease == nil {
+		return BackendResult{}, fmt.Errorf("%w: file credential admission release is not configured", ErrIsolation)
+	}
 	var wipe func() error
 	if len(environment) > 0 {
 		var err error
@@ -442,24 +532,21 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	}
 	var receipt AdmissionReceipt
 	if effective.Definition.Transport == ContainerMCP {
-		if err := validateToolHivePolicy(effective.Definition); err != nil {
-			return BackendResult{}, err
-		}
-		if b.AdmissionVerifier == nil && b.Admission == nil {
-			return BackendResult{}, ErrIsolation
-		}
-		if b.AdmissionVerifier != nil {
-			var err error
-			receipt, err = b.AdmissionVerifier(ctx, effective)
-			if err != nil {
-				return BackendResult{}, fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
-			}
-		} else if err := b.Admission(ctx, effective); err != nil {
+		var err error
+		receipt, err = b.admit(ctx, effective)
+		if err != nil {
 			return BackendResult{}, fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
-		} else {
-			return BackendResult{}, fmt.Errorf("%w: workload controller returned no enforcement proof", ErrIsolation)
 		}
 	}
+	released := false
+	release := func() error {
+		if released || len(effective.CredentialMounts) == 0 {
+			return nil
+		}
+		released = true
+		return b.AdmissionRelease(context.Background(), receipt.WorkloadID)
+	}
+	defer func() { _ = release() }()
 	endpoint := ""
 	if effective.Connection != nil {
 		endpoint = effective.Connection.Metadata["mcp_endpoint"]
@@ -491,10 +578,16 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	if err != nil {
 		return BackendResult{}, err
 	}
-	defer session.Close()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: arguments})
+	closeErr := session.Close()
 	if err != nil {
 		return BackendResult{}, err
+	}
+	if closeErr != nil {
+		return BackendResult{}, closeErr
+	}
+	if err := release(); err != nil {
+		return BackendResult{}, fmt.Errorf("%w: file credential workload release", ErrIsolation)
 	}
 	var text strings.Builder
 	for _, content := range result.Content {

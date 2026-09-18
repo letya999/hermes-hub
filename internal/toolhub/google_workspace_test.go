@@ -59,8 +59,8 @@ func TestOfficialWorkspaceDiscoveryAndShippedGateway(t *testing.T) {
 				t.Fatal(err)
 			}
 			scopes, _ := GoogleWorkspaceScopes(product)
-			gateway := &Gateway{Store: store, Backend: RoutingBackend{MCP: MCPBackend{HTTPClient: httpClient}}, Injector: func(context.Context, EffectiveBinding) (map[string]string, func() error, error) {
-				return map[string]string{"ACCESS_TOKEN": "owner-token", "OAUTH_SCOPE": strings.Join(scopes, " ")}, nil, nil
+			gateway := &Gateway{Store: store, Backend: RoutingBackend{MCP: MCPBackend{HTTPClient: httpClient}}, Injector: func(context.Context, EffectiveBinding) (CredentialInjection, error) {
+				return CredentialInjection{Environment: map[string]string{"ACCESS_TOKEN": "owner-token", "OAUTH_SCOPE": strings.Join(scopes, " ")}}, nil
 			}}
 			name := ProjectedToolName(d.DefinitionID, d.Version, d.Tools[0].Name)
 			if _, err := gateway.CallAuthorized(context.Background(), auth, name, map[string]any{"resource": "one"}); err != nil {

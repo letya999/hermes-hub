@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
@@ -24,17 +26,21 @@ type SourceReview struct {
 }
 
 type SourceReviewer func(context.Context, ArtifactSource) (SourceReview, error)
+type SourceResolver func(context.Context, string) (ArtifactSource, error)
 
 type ControlPlane struct {
 	Store           *Store
 	Secrets         credstore.Backend
 	Reviewer        SourceReviewer
+	SourceResolver  SourceResolver
 	OAuth           *oauth.Broker
 	Now             func() time.Time
 	Listen          string
 	FormOrigin      string
 	WorkloadRoot    string
 	ConfirmationTTL time.Duration
+	Ready           func(context.Context, EffectiveBinding) error
+	Broker          *credentialbroker.Config
 }
 
 func (c *ControlPlane) now() time.Time {
@@ -82,9 +88,9 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "required_credentials":
 		return c.requiredCredentials(auth, args)
 	case "confirm":
-		return c.confirm(auth, args)
+		return c.confirm(ctx, auth, args)
 	case "enable":
-		return c.enable(auth, args)
+		return c.enable(ctx, auth, args)
 	case "disable":
 		return c.setPhase(auth, args, DisabledStatus, PhaseDisabled)
 	case "revoke":
@@ -100,6 +106,15 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	requestKey := argString(args, "request_key")
 	if requestKey != "" {
 		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok {
+			if err := c.refreshBrokerRequest(ctx, auth, &existing); err != nil {
+				return nil, err
+			}
+			if err := c.refreshCredentialForm(&existing); err != nil {
+				return nil, err
+			}
+			if err := c.refreshConfirmation(&existing); err != nil {
+				return nil, err
+			}
 			return c.statusBody(existing, false), nil
 		}
 	}
@@ -110,12 +125,12 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 		return c.prepareSelfInstall(ctx, auth, source, requestKey)
 	}
 	if definitionID != "" && version != "" {
-		return c.prepareCatalog(auth, definitionID, version, requestKey)
+		return c.prepareCatalog(ctx, auth, definitionID, version, requestKey)
 	}
 	return nil, fmt.Errorf("%w: source or definition required", ErrInvalid)
 }
 
-func (c *ControlPlane) prepareCatalog(auth identity.Envelope, definitionID, version, requestKey string) (map[string]any, error) {
+func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelope, definitionID, version, requestKey string) (map[string]any, error) {
 	definition, err := c.Store.Definition(definitionID, version)
 	if err != nil {
 		return nil, err
@@ -127,6 +142,9 @@ func (c *ControlPlane) prepareCatalog(auth identity.Envelope, definitionID, vers
 	if err != nil {
 		return nil, err
 	}
+	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, definition); err != nil {
+		return nil, err
+	}
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -135,15 +153,24 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		return nil, err
 	}
 	source, err := ParseGitHubSource(sourceURL)
+	if err != nil && c.SourceResolver != nil {
+		source, err = c.SourceResolver(ctx, sourceURL)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if c.Reviewer == nil {
-		return nil, fmt.Errorf("%w: source reviewer unavailable", ErrInvalid)
-	}
-	review, err := c.Reviewer(ctx, source)
-	if err != nil {
-		return nil, err
+	config := defaultSelfInstallConfig(source)
+	review := SourceReview{}
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); ok {
+		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
+	} else {
+		if c.Reviewer == nil {
+			return nil, fmt.Errorf("%w: source reviewer unavailable", ErrInvalid)
+		}
+		review, err = c.Reviewer(ctx, source)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := review.Definition.Validate(); err != nil {
 		return nil, err
@@ -166,6 +193,9 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
 	}
+	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, review.Definition); err != nil {
+		return nil, err
+	}
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -184,6 +214,7 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 	if len(onboarding.Required) > 0 {
 		onboarding.Phase = PhaseAwaitingCreds
 		onboarding.FormNonce = randomNonce()
+		onboarding.FormExpires = c.now().Add(c.ttl())
 	} else {
 		onboarding.Phase = PhaseAwaitingConfirm
 		onboarding.ConfirmationNonce = randomNonce()
@@ -195,9 +226,104 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 	return onboarding, nil
 }
 
+func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding, definition ToolDefinition) error {
+	if c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 {
+		return nil
+	}
+	if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 || len(definition.CredentialContractEnv) == 0 {
+		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", ErrUnauthorized, definition.DefinitionID)
+	}
+	if onboarding.BrokerRequestID == "" {
+		control, err := c.Broker.New(auth, "broker:control")
+		if err != nil {
+			return err
+		}
+		ownerKind := "user"
+		if definition.Workload.Class == Shared {
+			ownerKind = "context"
+		}
+		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
+			ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
+			ConnectionID: deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID),
+			OnboardingID: onboarding.OnboardingID, IdempotencyKey: onboarding.OnboardingID,
+			OwnerKind: ownerKind,
+		})
+		if err != nil {
+			return err
+		}
+		onboarding.BrokerRequestID = request.ID
+		onboarding.BrokerAuthorizationURL = request.AuthorizationURL
+		onboarding.BrokerContractID = request.ContractID
+		onboarding.BrokerContractRevision = request.ContractRevision
+		onboarding.FormNonce = ""
+		onboarding.FormExpires = time.Time{}
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(*onboarding); err != nil {
+			return err
+		}
+	}
+	return c.refreshBrokerRequest(ctx, auth, onboarding)
+}
+
+func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding) error {
+	if c == nil || c.Broker == nil || !c.Broker.Enabled() || onboarding == nil || onboarding.BrokerRequestID == "" {
+		return nil
+	}
+	control, err := c.Broker.New(auth, "broker:control")
+	if err != nil {
+		return err
+	}
+	request, err := control.Request(ctx, onboarding.BrokerRequestID)
+	if err != nil {
+		return err
+	}
+	onboarding.BrokerAuthorizationURL = request.AuthorizationURL
+	onboarding.BrokerContractID = request.ContractID
+	onboarding.BrokerContractRevision = request.ContractRevision
+	changed := false
+	if request.Status == "ready" && request.CredentialID != "" {
+		if onboarding.BrokerCredentialID != request.CredentialID || onboarding.Locator != request.CredentialID || onboarding.Phase == PhaseAwaitingCreds {
+			onboarding.BrokerCredentialID = request.CredentialID
+			onboarding.Locator = request.CredentialID
+			onboarding.Phase = PhaseAwaitingConfirm
+			onboarding.FormNonce = ""
+			onboarding.FormExpires = time.Time{}
+			onboarding.ConfirmationNonce = randomNonce()
+			onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+			onboarding.ConfirmationUsed = false
+			changed = true
+		}
+	}
+	if changed {
+		onboarding.Revision++
+		return c.Store.PutOnboarding(*onboarding)
+	}
+	return nil
+}
+
 func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+	if argString(args, "onboarding_id") == "" && argString(args, "definition_id") == "" {
+		c.Store.mu.RLock()
+		var latest Onboarding
+		for _, candidate := range c.Store.onboardings {
+			if candidate.PrincipalID == auth.PrincipalID && candidate.ContextID == auth.ContextID && candidate.RuntimeID == auth.RuntimeID && candidate.PolicyVersion == auth.PolicyVersion && candidate.Phase != PhaseRemoved && (latest.OnboardingID == "" || candidate.CreatedAt.After(latest.CreatedAt)) {
+				latest = candidate
+			}
+		}
+		c.Store.mu.RUnlock()
+		if latest.OnboardingID == "" {
+			return nil, fmt.Errorf("%w: onboarding", ErrNotFound)
+		}
+		args = map[string]any{"onboarding_id": latest.OnboardingID}
+	}
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
+		return nil, err
+	}
+	if err := c.refreshConfirmation(&onboarding); err != nil {
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil
@@ -208,16 +334,59 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 	if err != nil {
 		return nil, err
 	}
+	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
+		return nil, err
+	}
+	if err := c.refreshCredentialForm(&onboarding); err != nil {
+		return nil, err
+	}
 	body := c.statusBody(onboarding, true)
-	body["input"] = "localhost-form"
-	body["form_url"] = c.origin() + "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
+	if onboarding.Phase == PhaseAwaitingCreds && onboarding.FormNonce != "" && c.now().Before(onboarding.FormExpires) {
+		body["input"] = "localhost-form"
+		body["form_url"] = c.origin() + "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
+	}
+	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == PhaseAwaitingCreds {
+		body["input"] = "credential-broker"
+		body["broker_request_id"] = onboarding.BrokerRequestID
+		body["authorization_url"] = onboarding.BrokerAuthorizationURL
+		delete(body, "form_url")
+		delete(body, "form_path")
+	}
 	if c.OAuth != nil {
 		body["oauth"] = "pkce"
 	}
 	return body, nil
 }
 
-func (c *ControlPlane) confirm(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+// refreshCredentialForm makes an idempotent resume useful after the original
+// loopback link expires. The old nonce is replaced, so an old URL cannot be
+// replayed while the same request key still identifies the onboarding.
+func (c *ControlPlane) refreshCredentialForm(onboarding *Onboarding) error {
+	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds {
+		return nil
+	}
+	now := c.now()
+	if onboarding.FormNonce != "" && now.Before(onboarding.FormExpires) {
+		return nil
+	}
+	onboarding.FormNonce = randomNonce()
+	onboarding.FormExpires = now.Add(c.ttl())
+	onboarding.Revision++
+	return c.Store.PutOnboarding(*onboarding)
+}
+
+func (c *ControlPlane) refreshConfirmation(onboarding *Onboarding) error {
+	if onboarding == nil || onboarding.Phase != PhaseAwaitingConfirm || (onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
+		return nil
+	}
+	onboarding.ConfirmationNonce = randomNonce()
+	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.ConfirmationUsed = false
+	onboarding.Revision++
+	return c.Store.PutOnboarding(*onboarding)
+}
+
+func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
@@ -227,6 +396,9 @@ func (c *ControlPlane) confirm(auth identity.Envelope, args map[string]any) (map
 		return nil, err
 	}
 	if err := rejectEscalation(definition, args); err != nil {
+		return nil, err
+	}
+	if err := c.refreshBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	nonce := argString(args, "nonce")
@@ -242,7 +414,7 @@ func (c *ControlPlane) confirm(auth identity.Envelope, args map[string]any) (map
 	if len(onboarding.Required) > 0 && onboarding.Locator == "" {
 		return nil, fmt.Errorf("%w: credentials required", ErrUnauthorized)
 	}
-	binding, err := c.materializeBinding(auth, onboarding, definition)
+	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +430,7 @@ func (c *ControlPlane) confirm(auth identity.Envelope, args map[string]any) (map
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) enable(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		definitionID := argString(args, "definition_id")
@@ -295,7 +467,7 @@ func (c *ControlPlane) enable(auth identity.Envelope, args map[string]any) (map[
 		if onboarding.Phase != PhaseConfirmed && onboarding.Phase != PhaseEnabled && onboarding.Phase != PhaseDisabled {
 			return nil, fmt.Errorf("%w: confirm required", ErrUnauthorized)
 		}
-		binding, err := c.materializeBinding(auth, onboarding, definition)
+		binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 		if err != nil {
 			return nil, err
 		}
@@ -311,9 +483,18 @@ func (c *ControlPlane) enable(auth identity.Envelope, args map[string]any) (map[
 		return nil, ErrRevoked
 	}
 	if existing.Status != ActiveStatus {
-		if err := c.Store.SetBindingStatus(onboarding.BindingID, ActiveStatus); err != nil {
+		var binding ToolBinding
+		if c.Ready != nil {
+			binding, err = c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+		} else {
+			binding, err = c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+		}
+		if err != nil {
 			return nil, err
 		}
+		onboarding.BindingID = binding.ToolBindingID
+		onboarding.ConnectionID = binding.ConnectionID
+		onboarding.CredentialRefID = binding.CredentialRefID
 	}
 	onboarding.Phase = PhaseEnabled
 	onboarding.Revision++
@@ -390,6 +571,9 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 	if err := RejectAuthorityArguments(args); err != nil {
 		return nil, err
 	}
+	if c.Broker != nil && c.Broker.Enabled() {
+		return nil, fmt.Errorf("%w: rotate requires a new Credential Broker approval request", ErrUnauthorized)
+	}
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
@@ -428,6 +612,14 @@ func (c *ControlPlane) cutAuthorization(onboarding Onboarding) error {
 	if onboarding.ConnectionID != "" {
 		_ = c.Store.SetConnectionStatus(onboarding.ConnectionID, RevokedStatus)
 	}
+	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
+		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
+		if control, err := c.Broker.New(auth, "broker:control"); err == nil {
+			if err := control.Revoke(context.Background(), onboarding.BrokerCredentialID); err != nil {
+				return err
+			}
+		}
+	}
 	if c.Secrets != nil && onboarding.Locator != "" {
 		owner := onboarding.PrincipalID
 		if onboarding.CredentialOwner != "" {
@@ -438,19 +630,39 @@ func (c *ControlPlane) cutAuthorization(onboarding Onboarding) error {
 	return nil
 }
 
-func (c *ControlPlane) materializeBinding(auth identity.Envelope, onboarding Onboarding, definition ToolDefinition) (ToolBinding, error) {
+func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Envelope, onboarding Onboarding, definition ToolDefinition) (ToolBinding, error) {
 	if existing := c.Store.findBinding(auth, definition); existing != nil && existing.Status != RevokedStatus {
 		return *existing, nil
 	}
-	binding, err := c.Store.Enable(auth, definition.DefinitionID, definition.Version)
-	if err == nil {
-		return binding, nil
+	if c.Ready == nil {
+		binding, err := c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+		if err == nil {
+			return binding, nil
+		}
 	}
 	if len(definition.Credentials) == 0 || onboarding.Locator == "" {
-		return ToolBinding{}, err
+		if c.Ready != nil && len(definition.Credentials) == 0 {
+			return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+		}
+		return ToolBinding{}, fmt.Errorf("%w: active owner connection and credential are required", ErrUnauthorized)
 	}
 	connectionID := deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
 	reference := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: credstore.BackendLocal, Locator: onboarding.Locator, Keys: credentialNames(onboarding), Status: ActiveStatus}
+	if c.Broker != nil && c.Broker.Enabled() {
+		reference.Backend = "credential-broker"
+		reference.BrokerContractID = definition.CredentialContractID
+		reference.BrokerContractRevision = definition.CredentialContractRevision
+		reference.BrokerEnv = cloneMap(definition.CredentialContractEnv)
+	}
+	if reference.Backend == "credential-broker" {
+		candidate := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connectionID, ConnectionRevision: 1, CredentialRefID: reference.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+		candidate.ToolBindingID = DeterministicBindingID(candidate.PrincipalID, candidate.ContextID, candidate.RuntimeID, candidate.DefinitionID, candidate.DefinitionVersion, candidate.ConnectionID, candidate.CredentialRefID)
+		grantID, err := c.ensureBrokerGrant(ctx, auth, definition, onboarding, candidate)
+		if err != nil {
+			return ToolBinding{}, err
+		}
+		reference.BrokerGrantID = grantID
+	}
 	if err := c.Store.PutCredentialReference(reference); err != nil {
 		return ToolBinding{}, err
 	}
@@ -461,7 +673,60 @@ func (c *ControlPlane) materializeBinding(auth identity.Envelope, onboarding Onb
 	if err := c.Store.PutConnection(connection); err != nil {
 		return ToolBinding{}, err
 	}
-	return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+	binding, err := c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+	if err != nil {
+		return ToolBinding{}, err
+	}
+	if c.Ready != nil {
+		return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+	}
+	return binding, nil
+}
+
+func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Envelope, definition ToolDefinition, onboarding Onboarding, binding ToolBinding) (string, error) {
+	if c.Broker == nil || !c.Broker.Enabled() || onboarding.BrokerCredentialID == "" {
+		return "", fmt.Errorf("%w: credential broker credential", ErrUnauthorized)
+	}
+	if binding.WorkloadClass == PerJob {
+		return "", fmt.Errorf("%w: credential broker per-job grants are not supported yet", ErrUnauthorized)
+	}
+	owner := (*OwnerRef)(nil)
+	if binding.WorkloadClass != Shared {
+		owner = &OwnerRef{Type: ContextOwner, ID: auth.ContextID}
+	}
+	workload, err := NewWorkloadInstance(binding, owner, "", 1, c.now(), time.Time{})
+	if err != nil {
+		return "", err
+	}
+	control, err := c.Broker.New(auth, "broker:control")
+	if err != nil {
+		return "", err
+	}
+	execution := "dedicated"
+	if binding.WorkloadClass == Shared {
+		execution = "shared"
+	}
+	grant, err := control.Grant(ctx, onboarding.BrokerCredentialID, brokerv1.GrantRequest{
+		ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
+		BindingID: binding.ToolBindingID, WorkloadID: workload.WorkloadID, Execution: execution,
+		IdempotencyKey: deterministicID("grant", onboarding.OnboardingID, binding.ToolBindingID),
+	})
+	if err != nil {
+		return "", err
+	}
+	return grant.ID, nil
+}
+
+func cloneMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	copy := make(map[string]string, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
 }
 
 func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[string]string) error {
@@ -474,6 +739,9 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	}
 	if onboarding.FormNonce == "" || nonce != onboarding.FormNonce {
 		return fmt.Errorf("%w: form nonce", ErrUnauthorized)
+	}
+	if onboarding.FormExpires.IsZero() || c.now().After(onboarding.FormExpires) {
+		return fmt.Errorf("%w: expired form", ErrUnauthorized)
 	}
 	if onboarding.Phase != PhaseAwaitingCreds && onboarding.Phase != PhaseAwaitingConfirm {
 		return fmt.Errorf("%w: credentials not expected", ErrUnauthorized)
@@ -513,12 +781,36 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	}
 	onboarding.Locator = locator
 	onboarding.CredentialOwner = owner
+	onboarding.FormNonce = ""
+	onboarding.FormExpires = time.Time{}
 	onboarding.Phase = PhaseAwaitingConfirm
 	onboarding.ConfirmationNonce = randomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	return c.Store.PutOnboarding(onboarding)
+}
+
+// AuthorizeCredentials treats the protected form submission as the user's
+// confirmation and completes the binding without another model round-trip.
+func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, nonce string, values map[string]string) error {
+	if err := c.SubmitCredentials(onboardingID, nonce, values); err != nil {
+		return err
+	}
+	return c.finishAuthorization(ctx, onboardingID)
+}
+
+func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID string) error {
+	onboarding, err := c.Store.onboarding(onboardingID)
+	if err != nil {
+		return err
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
+	if _, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
+		return err
+	}
+	_, err = c.enable(ctx, auth, map[string]any{"onboarding_id": onboardingID})
+	return err
 }
 
 func (c *ControlPlane) StartOAuth(auth identity.Envelope, onboardingID, redirect string) (oauth.StartResult, error) {
@@ -550,7 +842,10 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 	onboarding.ConfirmationNonce = randomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.Revision++
-	return c.Store.PutOnboarding(onboarding)
+	if err := c.Store.PutOnboarding(onboarding); err != nil {
+		return err
+	}
+	return c.finishAuthorization(context.Background(), onboardingID)
 }
 
 func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string]any) (Onboarding, error) {
@@ -600,6 +895,12 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 		"effects":        onboarding.Effects,
 		"principal_from": "request",
 	}
+	if onboarding.BrokerRequestID != "" {
+		body["broker_request_id"] = onboarding.BrokerRequestID
+		if onboarding.BrokerAuthorizationURL != "" {
+			body["authorization_url"] = onboarding.BrokerAuthorizationURL
+		}
+	}
 	if withHints {
 		hints := make([]map[string]string, 0, len(onboarding.Required))
 		for _, hint := range onboarding.Required {
@@ -613,6 +914,15 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 	}
 	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
 		body["nonce"] = onboarding.ConfirmationNonce
+	}
+	if onboarding.Phase == PhaseEnabled {
+		if definition, err := c.definitionOf(onboarding); err == nil {
+			tools := make([]string, 0, len(definition.Tools))
+			for _, tool := range definition.Tools {
+				tools = append(tools, ProjectedToolName(definition.DefinitionID, definition.Version, tool.Name))
+			}
+			body["projected_tools"] = tools
+		}
 	}
 	return body
 }

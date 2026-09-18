@@ -50,10 +50,9 @@ func defaultSelfInstallConfig(source ArtifactSource) ArtifactImportConfig {
 	return ArtifactImportConfig{
 		DefinitionID: id, Version: "0.0.1", Image: "hermes-artifact/" + id,
 		Tools:    []ToolSpec{{Name: "mcp", Effect: ReadEffect}},
-		Workload: WorkloadPolicy{Class: PerUser, Stateful: true, Rationale: "user self-install MCP is principal-owned", ToolHiveVersion: "v0.48.0"},
+		Workload: WorkloadPolicy{Class: PerUser, Stateful: false, Rationale: "user self-install MCP credentials are principal-owned", ToolHiveVersion: "v0.48.0"},
 		Execution: ExecutionPolicy{
 			TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64,
-			Egress: []string{"github.com"},
 		},
 		Health: HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
 	}

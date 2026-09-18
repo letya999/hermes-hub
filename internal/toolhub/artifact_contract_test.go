@@ -47,11 +47,42 @@ func TestApplyPreflightToolListRejectsInvalidTools(t *testing.T) {
 
 func TestDecodeMCPToolListReadsID2Payload(t *testing.T) {
 	body := `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}
-{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_text_file"},{"name":"list_directory"}]}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"API-get-self","annotations":{"readOnlyHint":true}},{"name":"delete_file","annotations":{"destructiveHint":true}},{"name":"unknown_effect"}]}}
 `
 	tools, err := decodeMCPToolList(strings.NewReader(body))
-	if err != nil || len(tools) != 2 || tools[0].Name != "read_text_file" || tools[1].Effect != ReadEffect {
+	if err != nil || len(tools) != 3 || tools[0].Name != "API-get-self" || tools[0].Effect != ReadEffect || tools[1].Effect != WriteEffect || tools[2].Effect != WriteEffect {
 		t.Fatalf("decode: %+v %v", tools, err)
+	}
+}
+
+func TestParseMCPHelpCredentialsUsesServerDeclaration(t *testing.T) {
+	help := `Environment Variables:
+  SERVICE_TOKEN          Provider token (recommended)
+  OPENAPI_HEADERS        JSON headers (alternative)
+  AUTH_TOKEN             Transport authentication (alternative)
+  REQUIRED_SECRET        Account secret (required)
+
+Examples:`
+	got := parseMCPHelpCredentials(help)
+	if len(got) != 2 || got[0].Name != "SERVICE_TOKEN" || got[1].Name != "REQUIRED_SECRET" || !got[0].Required || !got[1].Required {
+		t.Fatalf("credentials=%+v", got)
+	}
+	if got := parseMCPHelpCredentials("Environment Variables:\n  TOKEN optional\n"); len(got) != 0 {
+		t.Fatalf("optional credential guessed: %+v", got)
+	}
+}
+
+func TestRandomPreflightContainerName(t *testing.T) {
+	first, err := randomPreflightContainerName("preflight-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := randomPreflightContainerName("preflight-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != len("preflight-")+8 || first == second {
+		t.Fatalf("unsafe names %q %q", first, second)
 	}
 }
 

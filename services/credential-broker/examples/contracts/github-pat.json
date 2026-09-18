@@ -1,0 +1,23 @@
+{
+  "id": "github-pat",
+  "revision": 1,
+  "title": "GitHub PAT",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "token",
+      "label": "GitHub personal access token",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "token",
+      "target": "GITHUB_PERSONAL_ACCESS_TOKEN"
+    }
+  ]
+}

@@ -47,6 +47,81 @@ func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
 	}
 }
 
+func TestReadinessBackendRouting(t *testing.T) {
+	backend := MCPBackend{}
+	for _, candidate := range []ToolBackend{
+		backend, &backend,
+		RoutingBackend{MCP: backend}, &RoutingBackend{MCP: backend},
+	} {
+		if readinessBackend(candidate) == nil {
+			t.Fatalf("readiness hook missing for %T", candidate)
+		}
+	}
+	var nilMCP *MCPBackend
+	var nilRouting *RoutingBackend
+	if readinessBackend(nilMCP) != nil || readinessBackend(nilRouting) != nil || readinessBackend(nil) != nil {
+		t.Fatal("nil readiness backend accepted")
+	}
+}
+
+func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
+	store := NewStore()
+	definition := statefulContainerDefinition()
+	definition.DefinitionID = "ready-container"
+	definition.Credentials = nil
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, auth.PrincipalID, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	var admissions atomic.Int32
+	root := t.TempDir()
+	t.Setenv("HUB_STATE", root)
+	t.Setenv("HUB_CREDENTIAL_STORE", "")
+	config := EndpointConfig{
+		Token: strings.Repeat("r", 32), Auth: auth, Listen: "127.0.0.1:8090",
+		Backend: MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, effective EffectiveBinding) (AdmissionReceipt, error) {
+			admissions.Add(1)
+			return AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+		}},
+	}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	session := mcpConnect(t, server.URL, config.Token)
+	prepared, err := callControl(t, session, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "ready-handler"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := callControl(t, session, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callControl(t, session, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+		t.Fatal(err)
+	}
+	if got := admissions.Load(); got != 1 {
+		t.Fatalf("readiness admissions=%d", got)
+	}
+	tools, err := session.ListTools(context.Background(), nil)
+	projected := ProjectedToolName(definition.DefinitionID, definition.Version, "read")
+	found := false
+	for _, tool := range tools.Tools {
+		if tool.Name == projected {
+			found = true
+			break
+		}
+	}
+	if err != nil || !found {
+		t.Fatalf("projection tools=%v err=%v", tools, err)
+	}
+}
+
 func TestEndpointConfigFromEnvUsesRuntimeIdentityDefaults(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
 	t.Setenv("HUB_USER_ID", "alice")
@@ -82,6 +157,18 @@ func TestEndpointConfigFromEnvUsesRuntimeIdentityDefaults(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_TOKEN_ENV", "bad-name")
 	if _, err := EndpointConfigFromEnv(); err == nil {
 		t.Fatal("invalid token environment name accepted")
+	}
+}
+
+func TestFormOriginUsesLoopbackForWildcardListener(t *testing.T) {
+	for listen, want := range map[string]string{
+		"0.0.0.0:8090":   "http://127.0.0.1:8090",
+		"[::]:8090":      "http://127.0.0.1:8090",
+		"127.0.0.1:8090": "http://127.0.0.1:8090",
+	} {
+		if got := formOriginForListen(listen); got != want {
+			t.Fatalf("form origin for %q = %q, want %q", listen, got, want)
+		}
 	}
 }
 
@@ -291,9 +378,9 @@ func TestGatewayInjectorAndCallEnv(t *testing.T) {
 		Backend: backendFunc(func(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any) (BackendResult, error) {
 			return BackendResult{Text: "ok"}, nil
 		}),
-		Injector: func(context.Context, EffectiveBinding) (map[string]string, func() error, error) {
+		Injector: func(context.Context, EffectiveBinding) (CredentialInjection, error) {
 			injected.Store(true)
-			return map[string]string{"GOOGLE_TOKEN": "injected"}, func() error { wiped.Store(true); return nil }, nil
+			return CredentialInjection{Environment: map[string]string{"GOOGLE_TOKEN": "injected"}, Cleanup: func() error { wiped.Store(true); return nil }}, nil
 		},
 	}
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "x"}); err != nil {

@@ -21,6 +21,11 @@ import (
 
 const maxPromptBytes = 2 * 1024 * 1024
 
+// Connector installation is an isolated build, not an ordinary chat turn.
+// Keep the supervisor observing long enough for the ToolHub build ceiling;
+// Hermes itself sends the user periodic heartbeats while it waits.
+const hermesRunTimeout = 30 * time.Minute
+
 // ExecuteRequest is the private communication-hub to runtime contract.
 type ExecuteRequest struct {
 	identity.Envelope
@@ -161,7 +166,7 @@ func (s *runtimeHTTP) executePersistentEvents(ctx context.Context, request Execu
 	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
 	client := &http.Client{Timeout: 10 * time.Second}
 	sessionID := sessionIDFor(request)
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/api/sessions", auth, map[string]any{"id": sessionID, "title": "Hermes Hub"}, nil); err != nil && !errors.Is(err, errSessionExists) {
+	if err := hermesRequest(ctx, client, http.MethodPost, base+"/api/sessions", auth, map[string]any{"id": sessionID}, nil); err != nil && !errors.Is(err, errSessionExists) {
 		return ExecuteResponse{}, err
 	}
 	var admission struct {
@@ -195,7 +200,7 @@ func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteRespons
 	}
 	progress := 0
 	lastApproval := ""
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(hermesRunTimeout)
 	for time.Now().Before(deadline) {
 		var status struct {
 			Status    string         `json:"status"`
@@ -263,12 +268,17 @@ func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteRespons
 					continue
 				}
 				update.EventID, lastApproval = "approval:"+event.RequestID, event.RequestID
-			case "tool.start", "tool.end", "run.started":
+			case "tool.start", "tool.started", "tool.end", "tool.completed", "run.started":
 				if progress >= 10 {
 					continue
 				}
 				progress++
-				update.Text = "Выполняю запрос."
+				if event.Event == "tool.started" {
+					update.LastEvent = "tool.start"
+				} else if event.Event == "tool.completed" {
+					update.LastEvent = "tool.end"
+				}
+				update.Text = toolProgressText(event)
 			default:
 				continue // Never project deltas, arguments, prompts or traces into chat.
 			}
@@ -292,6 +302,42 @@ func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteRespons
 	result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
 	cancel()
 	return result, errors.New("hermes run timed out")
+}
+
+func toolProgressText(event nativeRunEvent) string {
+	if event.Error {
+		return "Шаг завершился ошибкой; проверяю причину."
+	}
+	tool := strings.ReplaceAll(event.Tool, "__", "_")
+	completed := event.Event == "tool.end" || event.Event == "tool.completed"
+	switch {
+	case strings.HasSuffix(tool, "toolhub_prepare_source"):
+		if completed {
+			return "MCP: шаг 1/4 завершён — исходники проверены и образ собран."
+		}
+		return "MCP: шаг 1/4 — проверяю репозиторий и собираю изолированный образ. Обычно 2–15 минут."
+	case strings.HasSuffix(tool, "toolhub_required_credentials"):
+		if completed {
+			return "MCP: шаг 2/4 завершён — безопасная ссылка авторизации готова."
+		}
+		return "MCP: шаг 2/4 — готовлю безопасную авторизацию."
+	case strings.HasSuffix(tool, "toolhub_confirm"):
+		if completed {
+			return "MCP: шаг 3/4 завершён — учётные данные подтверждены."
+		}
+		return "MCP: шаг 3/4 — подтверждаю сохранённые учётные данные."
+	case strings.HasSuffix(tool, "toolhub_enable"):
+		if completed {
+			return "MCP: шаг 4/4 завершён — инструменты подключены без рестарта."
+		}
+		return "MCP: шаг 4/4 — запускаю workload и подключаю инструменты без рестарта."
+	case strings.HasSuffix(tool, "toolhub_invoke"):
+		return "MCP подключён — проверяю реальный вызов провайдера."
+	case completed:
+		return "Шаг завершён, продолжаю."
+	default:
+		return "Выполняю запрос."
+	}
 }
 
 func stopHermesRun(ctx context.Context, client *http.Client, base, auth, runID string) error {
@@ -329,8 +375,17 @@ func stopAndConfirmHermesRun(ctx context.Context, client *http.Client, base, aut
 }
 
 func sessionIDFor(request ExecuteRequest) string {
-	sum := sha256.Sum256([]byte(request.ContextID + "\x00" + request.ConversationID))
+	sum := sha256.Sum256([]byte(request.ContextID + "\x00" + request.ConversationID + "\x00" + sessionRevision()))
 	return "hub-" + hex.EncodeToString(sum[:12])
+}
+
+func sessionRevision() string {
+	if revision := strings.TrimSpace(os.Getenv("HUB_SESSION_REVISION")); revision != "" {
+		return revision
+	}
+	body, _ := os.ReadFile("/config/SOUL.md")
+	hash := sha256.Sum256(body)
+	return hex.EncodeToString(hash[:])
 }
 
 var errSessionExists = errors.New("hermes session already exists")

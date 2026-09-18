@@ -82,9 +82,9 @@ func TestCalendarShippedAuthorizeInjectAndHTTP(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gateway := &Gateway{Store: store, Backend: RoutingBackend{Provider: provider}, Injector: func(_ context.Context, e EffectiveBinding) (map[string]string, func() error, error) {
+	gateway := &Gateway{Store: store, Backend: RoutingBackend{Provider: provider}, Injector: func(_ context.Context, e EffectiveBinding) (CredentialInjection, error) {
 		env, err := DecryptAuthorized(secrets, e)
-		return env, nil, err
+		return CredentialInjection{Environment: env}, err
 	}}
 	for _, name := range []string{"list", "get", "create", "update", "delete"} {
 		write := name == "create" || name == "update" || name == "delete"

@@ -103,10 +103,16 @@ use batches of at most eight requests while retaining deterministic tar order
 and the total byte/time budgets. Filename filtering
 does not replace the still-required content secret scan.
 `GenerateArtifactRecipe` generates a pinned-base Dockerfile for conventional
-Python, Node, Go and Rust manifests; an upstream Dockerfile is not required.
+Python, Node, Go and Rust manifests; when no reviewed base is supplied it selects
+the repository-pinned digest for the detected language. An upstream Dockerfile
+is not required.
 Node requires `package-lock.json` or `pnpm-lock.yaml`; pnpm recipes use pinned
 pnpm 10.32.1 and frozen installation. Conventional pnpm monorepositories can
 select a unique `*-mcp` package with a declared bin; other layouts remain explicit.
+When runtime egress was not explicitly reviewed, import proposes HTTPS hosts
+from standard `servers` entries in bundled `*openapi*.json` files. The hosts are
+included in the immutable review digest; missing, malformed, credentialed,
+port-qualified or oversized declarations fail closed.
 Rust requires `Cargo.lock`; ambiguous servers
 require literal entrypoint selection.
 Python packages with several console commands select the command matching the
@@ -170,7 +176,17 @@ immutable and rejects review-packet or tool-contract drift. `LoadStoredOCIArtifa
 verified archive into the local Linux Docker image store without ambient Docker
 credentials. `WorkloadBudget` provides a FIFO active-process cap and idle
 reclaim hook, while `RuntimeSecurityProfile` is the pre-start fail-closed
-contract for any ToolHive adapter.
+contract for any ToolHive adapter. Credential-bearing onboarding uses the same
+generic admission path before publishing a new projection and restores the
+previous workload credential file if admission fails.
+
+After a projection change, ToolHub writes `toolhub-reconnect.request` under the
+absolute `HUB_STATE` directory. The serve runtime watches that marker and sends
+Hermes' authenticated `/reload-mcp` command through the pinned API, so tool
+discovery refreshes in place without a Hermes process restart. This path is enabled
+by default when ToolHub is configured; set `HUB_TOOLHUB_RECONNECT=false` to retain
+manual reconnect behavior. The marker and request carry only a monotonic revision
+and generic identity metadata, never credential values.
 
 The stdio companion speaks newline JSON-RPC. Go SDK v1.7 first sends
 `server/discover`; servers that neither implement it nor return JSON-RPC
@@ -208,6 +224,14 @@ before any MCP starts. Stock ToolHive v0.48.0 does not expose all required
 create-time security flags, so the controller fails closed rather than applying
 an unsafe post-start update. The gateway may use the controller receipt's
 private endpoint for credential-free bindings.
+
+For user-authorized self-install deployments, set `dynamic_definitions: true`
+once on the authenticated loopback controller. Each admission then carries the
+complete immutable ToolHub definition; the controller reruns trusted-artifact,
+transport, proxy-image, credential-class and execution-policy validation. This
+removes per-MCP controller rewrites or restarts without accepting an arbitrary
+command, mutable image or unauthenticated plan. Omit the option to retain the
+single operator-pinned definition mode.
 
 For a local MVP with stock ToolHive, set `docker_fallback: true` explicitly in
 that controller config. If `thv run` lacks the create-time profile flags, the
@@ -262,6 +286,40 @@ Calendar API v3 and Google OIDC/OAuth contracts are documented at
 [OAuth](https://developers.google.com/identity/protocols/oauth2/web-server) and
 [OIDC](https://developers.google.com/identity/openid-connect/openid-connect).
 Current verification uses official-shaped local HTTP fixtures, not live Google.
+
+## Credential Broker
+
+The copied Broker source is a standalone module under
+`services/credential-broker`. Use `just credential-broker-check` for its full
+unit/race/coverage/build gate and `just credential-broker-docker-check` for its
+minimal image build. The Hermes runtime image contains the binary, but no Broker
+service is enabled by default: its config, private signer keys, provider data,
+contracts and runtime materialization paths must be provisioned explicitly.
+
+The Broker's public Go SDK signs exact method, URI, body and canonical identity.
+The adapters are ToolHub (`broker:control`), Communication Hub
+(`broker:approve`) and the runtime materializer (`broker:runtime`). Do not pass
+`api/v1.Materialized` through Hermes messages, MCP projections or job/audit
+ledgers. Set `HUB_CREDENTIAL_BROKER_CONTROL_*`,
+`HUB_CREDENTIAL_BROKER_APPROVE_*` and `HUB_CREDENTIAL_BROKER_RUNTIME_*` URL,
+key-file, key-ID and issuer variables to enable Broker-only credentials. The
+signing key files must be private files visible in the corresponding Hub
+containers; no key is committed to the repository.
+
+For every credential-bearing MCP definition, add the reviewed contract fields
+`credential_contract_id`, `credential_contract_revision` and an explicit
+`credential_contract_env` mapping. ToolHub creates the Broker request and
+grant, Communication Hub accepts `/credentials <request-id> <code>`, and the
+runtime acquires/materializes/releases a lease. Existing local credential
+records are intentionally rejected once Broker mode is enabled, so migration
+is explicit and cannot silently mix ownership systems. ENV deliveries are
+supported. File deliveries use a reviewed read-only runtime mount and a
+per-call ToolHive/Docker workload; the controller removes that workload before
+the Broker lease is released. Enable them only when the Broker materialization
+directory is an explicitly shared, non-symlinked runtime path visible to the
+ToolHub/controller and Docker daemon. Without that mount root, file delivery
+fails closed. The copied source and its MIT license remain separate from Hermes'
+AGPL-3.0-only code.
 
 ## ToolHub Slack data (M5 stage 2)
 

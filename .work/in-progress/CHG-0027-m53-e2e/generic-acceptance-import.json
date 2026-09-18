@@ -1,0 +1,23 @@
+{
+  "DefinitionID": "m53-acceptance",
+  "Version": "0.0.1",
+  "Language": "node",
+  "BaseImage": "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+  "Image": "hermes-artifact/m53-acceptance",
+  "Tools": [{"name": "mcp", "effect": "read"}],
+  "Workload": {
+    "class": "per-user",
+    "stateful": true,
+    "rationale": "user self-install MCP is principal-owned",
+    "toolhive_version": "v0.48.0"
+  },
+  "Execution": {
+    "timeout_seconds": 60,
+    "output_bytes": 2097152,
+    "cpu_millis": 1000,
+    "memory_mib": 512,
+    "max_pids": 64,
+    "egress": ["github.com"]
+  },
+  "Health": {"kind": "exec", "value": "/app/health", "timeout_seconds": 5}
+}

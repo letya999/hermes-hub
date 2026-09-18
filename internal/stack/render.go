@@ -132,7 +132,11 @@ func Config(s Settings) M {
 		skills["external_dirs"] = external
 	}
 	memory := M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}
-	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
+	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
+	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
+	// turns and lets the existing heartbeat notify the user while a build runs.
+	display := M{"busy_input_mode": "queue", "long_running_notifications": true}
+	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 }
 func Compose(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, true)
@@ -156,6 +160,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "archive")), "target": "/archive", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+s.Environment+".yaml")), "target": "/config/config.yaml", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 	}
 	ports := []string{}
 	if s.Has("browser") || s.Has("meet") {
@@ -177,7 +182,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "HUB_CREDENTIAL_BROKER_CONTROL_URL": "${HUB_CREDENTIAL_BROKER_URL}", "HUB_CREDENTIAL_BROKER_CONTROL_KEY_FILE": "${HUB_CREDENTIAL_BROKER_CONTROL_KEY_FILE}", "HUB_CREDENTIAL_BROKER_CONTROL_KEY_ID": "${HUB_CREDENTIAL_BROKER_CONTROL_KEY_ID}", "HUB_CREDENTIAL_BROKER_CONTROL_ISSUER": "${HUB_CREDENTIAL_BROKER_CONTROL_ISSUER}", "HUB_CREDENTIAL_BROKER_RUNTIME_URL": "${HUB_CREDENTIAL_BROKER_URL}", "HUB_CREDENTIAL_BROKER_RUNTIME_KEY_FILE": "${HUB_CREDENTIAL_BROKER_RUNTIME_KEY_FILE}", "HUB_CREDENTIAL_BROKER_RUNTIME_KEY_ID": "${HUB_CREDENTIAL_BROKER_RUNTIME_KEY_ID}", "HUB_CREDENTIAL_BROKER_RUNTIME_ISSUER": "${HUB_CREDENTIAL_BROKER_RUNTIME_ISSUER}", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60"}
+	if s.ExecutionMode != "supervisor" {
+		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
+	}
 	if s.OrgScoped() {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
@@ -198,7 +206,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.Environment == "dev" {
 		runtimeService["restart"] = "no"
 		runtimeService["read_only"] = false
-		for _, name := range []string{"cmd", "internal", "docker", "config", "docs", "specs", ".work", ".github", "go.mod", "go.sum", "justfile", "AGENTS.md", "README.md", "SETUP.md", "START_HERE.ru.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md"} {
+		for _, name := range []string{"cmd", "internal", "services", "docker", "config", "docs", "specs", ".work", ".github", "go.mod", "go.sum", "justfile", "AGENTS.md", "README.md", "SETUP.md", "START_HERE.ru.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md"} {
 			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, name)), "target": "/src/" + name})
 		}
 		runtimeService["volumes"] = stateVolumes
@@ -214,7 +222,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_CREDENTIAL_BROKER_APPROVE_URL": "${HUB_CREDENTIAL_BROKER_URL}", "HUB_CREDENTIAL_BROKER_APPROVE_KEY_FILE": "${HUB_CREDENTIAL_BROKER_APPROVE_KEY_FILE}", "HUB_CREDENTIAL_BROKER_APPROVE_KEY_ID": "${HUB_CREDENTIAL_BROKER_APPROVE_KEY_ID}", "HUB_CREDENTIAL_BROKER_APPROVE_ISSUER": "${HUB_CREDENTIAL_BROKER_APPROVE_ISSUER}"}
 		if s.Has("slack_app") {
 			gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
 			gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", slackEventsHostPort(s))}
@@ -314,6 +322,12 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
+		s.GlobalSkillsDir = filepath.Join(root, "config", "skills")
+		if err := os.MkdirAll(s.GlobalSkillsDir, 0755); err != nil {
+			return err
+		}
+	}
 	secrets, err := ReadSecrets(filepath.Join(dir, "secrets."+s.Environment+".env"))
 	if err != nil {
 		return err
@@ -325,7 +339,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "skills"} {
+	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}

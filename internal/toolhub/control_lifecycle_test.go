@@ -135,6 +135,48 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	}
 }
 
+func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
+	store := NewStore()
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	var admissions int
+	control := &ControlPlane{Store: store, Ready: func(context.Context, EffectiveBinding) error {
+		admissions++
+		return nil
+	}, Now: time.Now}
+	auth := aliceAuth()
+	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{
+		"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "ready-reenable",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+		t.Fatal(err)
+	}
+	if admissions != 1 {
+		t.Fatalf("initial confirm admissions=%d", admissions)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "disable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	if admissions != 2 {
+		t.Fatalf("reenable admissions=%d", admissions)
+	}
+}
+
 func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 	key, err := credstore.GenerateKey()
 	if err != nil {

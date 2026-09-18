@@ -1,0 +1,15 @@
+.build/
+.tools/
+.env
+.env.*
+*.private
+*.key
+*.p12
+*.pfx
+credentials.env
+ledger.bin
+runtime_session.json
+__pycache__/
+*.pyc
+*.zip
+coverage.out

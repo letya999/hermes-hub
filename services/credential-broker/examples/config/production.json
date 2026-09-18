@@ -1,0 +1,45 @@
+{
+  "listen": "0.0.0.0:8443",
+  "public_origin": "https://credentials.example.com:8443",
+  "data_dir": "/var/lib/credential-broker/ledger",
+  "runtime_dir": "/run/credential-broker/materialized",
+  "master_key_file": "/var/lib/credential-broker/keys/master.key",
+  "contracts_dir": "/var/lib/credential-broker/contracts",
+  "tls_cert_file": "/var/lib/credential-broker/tls/server.crt",
+  "tls_key_file": "/var/lib/credential-broker/tls/server.key",
+  "dev_http": false,
+  "max_ledger_bytes": 67108864,
+  "trusted_keys": [
+    {
+      "id": "toolhub",
+      "issuer": "hermes-toolhub",
+      "public_key_file": "/var/lib/credential-broker/keys/toolhub.public",
+      "audiences": [
+        "broker:control"
+      ]
+    },
+    {
+      "id": "communication",
+      "issuer": "hermes-communication",
+      "public_key_file": "/var/lib/credential-broker/keys/communication.public",
+      "audiences": [
+        "broker:approve"
+      ]
+    },
+    {
+      "id": "runtime",
+      "issuer": "hermes-runtime-adapter",
+      "public_key_file": "/var/lib/credential-broker/keys/runtime.public",
+      "audiences": [
+        "broker:runtime"
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "local",
+      "type": "local",
+      "directory": "/var/lib/credential-broker/secrets"
+    }
+  ]
+}

@@ -228,6 +228,9 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		}
 		bridgeArgs = append(bridgeArgs, "--mount", mountSpec)
 	}
+	for _, mount := range plan.CredentialMounts {
+		bridgeArgs = append(bridgeArgs, "--mount", "type=bind,source="+mount.Source+",target="+mount.Target+",readonly")
+	}
 	bridgeArgs = append(bridgeArgs, "--mount", "type=volume,source="+bridgeVol+",target=/hermes-bridge,readonly", imageRef, "companion", "--config", "/hermes-bridge/config.json")
 	if _, err := c.command(ctx, "docker", bridgeArgs...); err != nil {
 		return genericWorkload{}, err
@@ -237,7 +240,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		return genericWorkload{}, err
 	}
 	step = "relay-create"
-	relayArgs := append([]string{"create", "--name", relayName, "--network", network, "--publish", "127.0.0.1::8765/tcp", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--env", "HERMES_BRIDGE_TOKEN=" + bridgeToken, "--entrypoint", "/hermes-relay/hubctl"}, limits...)
+	relayArgs := append([]string{"create", "--name", relayName, "--network", network, "--publish", "127.0.0.1::8765/tcp", "--no-healthcheck", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--env", "HERMES_BRIDGE_TOKEN=" + bridgeToken, "--entrypoint", "/hermes-relay/hubctl"}, limits...)
 	relayArgs = append(relayArgs, "--mount", "type=volume,source="+relayVol+",target=/hermes-relay,readonly", c.config.Definition.Workload.SidecarImages[0], "relay", "--listen", genericBridgeListen, "--target", "http://"+plan.WorkloadID+":8765/mcp", "--token-env", "HERMES_BRIDGE_TOKEN")
 	if _, err := c.command(ctx, "docker", relayArgs...); err != nil {
 		return genericWorkload{}, err

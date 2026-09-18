@@ -41,3 +41,14 @@ docker-check target="prod":
     docker build --target {{target}} -t hermes-hub:test -f docker/Dockerfile .
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
+
+# Credential Broker is a separate Go module and process. Keep its own gates
+# intact while making the monorepo entrypoint explicit.
+credential-broker-check:
+    just --working-directory services/credential-broker check
+
+credential-broker-build:
+    just --working-directory services/credential-broker build
+
+credential-broker-docker-check:
+    docker build --file services/credential-broker/deploy/Dockerfile --tag hermes-credential-broker:test services/credential-broker
