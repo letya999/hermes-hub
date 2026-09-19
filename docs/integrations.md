@@ -180,6 +180,51 @@ contract for any ToolHive adapter. Credential-bearing onboarding uses the same
 generic admission path before publishing a new projection and restores the
 previous workload credential file if admission fails.
 
+M5.3 also exposes a secret-free `RecipeResolver` before source review. It pins
+the repository, optional subfolder and commit, reads only bounded declarations,
+and returns Launch/Connection Recipes with file-digest evidence. Matching
+catalog adapters are queried concurrently, but repository owner/name and the
+selected commit must match; a name-only hit is ignored. Docker/Compose are
+parsed as declarations: one MCP service may be selected, sidecars are recorded
+for review, and host mounts, privileged mode, host namespaces and shell
+healthchecks fail closed. Upstream Dockerfile `RUN` options are parsed as
+instruction tokens after continuations are folded; `type=cache` mounts are
+inert metadata while secret, bind, ssh, tmpfs, typeless or unknown mounts,
+host/insecure/privileged options and Docker socket references mark the recipe
+`review` and force the generated `.hub` build fallback. Recipes are status
+metadata, not authorization or
+execution; the existing preflight `tools/list`, Credential Broker, ToolHive and
+`/reload-mcp` gates remain authoritative.
+
+`.mcp.json` and `.env.example` are read only for names and launch metadata;
+their values are never returned and those files are not passed to BuildKit.
+External recipe adapters are opt-in through `HUB_RECIPE_CATALOGS`, a
+comma-separated allowlist of `mcp-registry`, `toolhive`, `docker-mcp`,
+`smithery`, `docker-hub` and `ghcr`; `HUB_RECIPE_CATALOGS=all` enables all six.
+The adapters use fixed public endpoints. Smithery additionally requires the
+operator-selected environment variable named by `HUB_SMITHERY_TOKEN_ENV`
+(default `SMITHERY_API_KEY`); its bearer value is request-only. GHCR package
+listing may require an operator-selected `HUB_GHCR_TOKEN_ENV`; that token is
+sent only to `api.github.com` and never enters a recipe. Docker Hub namespace
+and tag search uses the official Hub API, while image metadata is verified
+through the OCI distribution API.
+
+Catalog hits must correlate to the pinned repository/subfolder/commit.
+Container hits are accepted only after the OCI registry returns an immutable
+manifest, a GitHub source/repository label, the exact revision, and both
+provenance and SBOM evidence (OCI referrers or embedded Docker attestation
+manifests). The published image path pulls and preflights that exact digest
+before the review packet is stored; if it cannot pass, the existing restricted
+GitHub BuildKit fallback remains. Connection recipes contain only field names,
+types, required/secret flags and delivery targets; Smithery camelCase JSON
+fields are normalized to safe env names while retaining their JSON target.
+
+Live acceptance also exercised the Docker MCP Catalog
+`mcp/sequentialthinking@sha256:cd3174b2ecf37738654cf7671fb1b719a225c40a78274817da00c4241f465e5f`
+from `modelcontextprotocol/servers` at commit
+`82064568802e542c3924560aef2cb421b4ce436c`, through ToolHive 0.49.0:
+`initialize` and `tools/list` returned the real sequential-thinking tool.
+
 After a projection change, ToolHub writes `toolhub-reconnect.request` under the
 absolute `HUB_STATE` directory. The serve runtime watches that marker and sends
 Hermes' authenticated `/reload-mcp` command through the pinned API, so tool
@@ -353,11 +398,16 @@ Official contracts: [OAuth](https://docs.slack.dev/authentication/using-pkce),
 | Google | [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp), `54b1c56f7f9912ce32681460d7ca38f9c2a37564` | stdio single-user, selected extended tools, read-only default, persisted OAuth |
 | Slack | [korotovsky/slack-mcp-server](https://github.com/korotovsky/slack-mcp-server), `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
 | Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | stdio, persistent Chromium over local CDP |
-| GitHub | [official MCP](https://github.com/github/github-mcp-server) | https://api.githubcopilot.com/mcp/ + bearer |
+| GitHub | [official MCP](https://github.com/github/github-mcp-server) | https://api.githubcopilot.com/mcp/ + bearer (`GITHUB_TOKEN`) |
 | Atlassian | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian), `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | Local stdio MCP; Jira Cloud API token via `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
 | GitLab | Debian `glab` package from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT and optional `GITLAB_HOST` |
 | HH | [official API](https://api.hh.ru/openapi/redoc) | GET /vacancies, /vacancies/{id}, /resumes/mine; POST /negotiations |
 | Memory Bank | [letya999/memory_bank_setup](https://github.com/letya999/memory_bank_setup), `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | Documentation separation and change-folder conventions |
+
+The GitHub row is the opt-in remote MCP only (`https://api.githubcopilot.com/mcp/`
+with a `GITHUB_TOKEN` bearer); it is independent of `prepare_source`
+self-install, which only inspects the pinned repository as metadata and builds
+from the generated `.hub` recipe, never the upstream Dockerfile.
 
 Telegram has two independent paths: `hub-communication` is the Bot API channel adapter,
 while `telegram_user` is the personal-account MCP data/action connector. Enabling one does
