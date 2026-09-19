@@ -449,3 +449,81 @@ func TestRecipeResolverMetadataHelpersDoNotGuessValues(t *testing.T) {
 		t.Fatal("credential metadata classification failed")
 	}
 }
+
+func TestRecipeResolverParserBranches(t *testing.T) {
+	if _, _, err := parseMCPJSON([]byte("{"), ".mcp.json"); err == nil {
+		t.Fatal("malformed .mcp.json accepted")
+	}
+	for name, document := range map[string]string{
+		"http endpoint":  `{"mcpServers":{"a":{"url":"http://mcp.example/sse"}}}`,
+		"query endpoint": `{"mcpServers":{"a":{"url":"https://mcp.example/sse?x=1"}}}`,
+		"unsafe command": `{"mcpServers":{"a":{"command":"rm -rf /"}}}`,
+	} {
+		if _, _, err := parseMCPJSON([]byte(document), ".mcp.json"); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	multi, _, err := parseMCPJSON([]byte(`{"mcpServers":{"a":{"command":"node"},"b":{"url":"https://mcp.example/sse"}}}`), ".mcp.json")
+	if err != nil || hasLaunch(multi) {
+		t.Fatalf("multi-server .mcp.json guessed a launch: %+v err=%v", multi, err)
+	}
+	if _, _, err := parseMCPBManifest([]byte("{"), "manifest.json"); err == nil {
+		t.Fatal("malformed MCPB manifest accepted")
+	}
+	if _, _, err := parseMCPBManifest([]byte(`{"entry_point":"a;b"}`), "manifest.json"); err == nil {
+		t.Fatal("unsafe MCPB entrypoint accepted")
+	}
+	launch := manifestPackageLaunch(map[string]any{
+		"identifier": "ghcr.io/acme/weather", "digest": "sha256:" + strings.Repeat("b", 64),
+		"transportType": "stdio", "runtimeHint": "node",
+		"runtimeArguments": []any{map[string]any{"value": "--flag"}, map[string]any{"value": "bad\narg"}, "junk"},
+		"command":          "node",
+	})
+	if launch.Digest == "" || len(launch.Args) != 1 || launch.Entrypoint[0] != "node" {
+		t.Fatalf("manifest package launch=%+v", launch)
+	}
+	remote := manifestPackageLaunch(map[string]any{"transport": map[string]any{"type": "http", "url": "https://mcp.example/sse"}})
+	if remote.Transport != RemoteMCP || remote.Endpoint == "" {
+		t.Fatalf("remote manifest launch=%+v", remote)
+	}
+	fields := connectionFromOfficialPackage(map[string]any{"environmentVariables": []any{
+		map[string]any{"name": "API_TOKEN", "isRequired": true, "isSecret": true},
+		map[string]any{"name": "not a key"},
+		"skip",
+	}})
+	if len(fields.Fields) != 1 || !fields.Fields[0].Required || !fields.Fields[0].Secret {
+		t.Fatalf("official package fields=%+v", fields)
+	}
+}
+
+func TestComposeLaunchBranches(t *testing.T) {
+	const digest = "sha256:" + "ab"
+	document := map[string]any{"services": map[string]any{
+		"mcp-a": map[string]any{"image": "a@mcp"},
+		"mcp-b": map[string]any{"image": "b@mcp"},
+	}}
+	if _, _, _, err := parseComposeDocument(document, "compose.yaml"); err == nil {
+		t.Fatal("ambiguous MCP services accepted")
+	}
+	host := map[string]any{"services": map[string]any{"mcp": map[string]any{
+		"image":   "ghcr.io/acme/weather@" + digest + strings.Repeat("c", 62),
+		"volumes": []any{"/host:/state"},
+	}}}
+	if _, _, _, err := parseComposeDocument(host, "compose.yaml"); err == nil {
+		t.Fatal("compose host mount accepted")
+	}
+	shell := map[string]any{"services": map[string]any{"mcp": map[string]any{
+		"image":       "ghcr.io/acme/weather@" + digest + strings.Repeat("c", 62),
+		"build":       true,
+		"healthcheck": map[string]any{"test": []any{"CMD-SHELL", "curl localhost"}},
+		"secrets":     []any{"API_TOKEN"},
+	}}}
+	launch, connection, warnings, err := parseComposeDocument(shell, "compose.yaml")
+	if err != nil || len(warnings) == 0 || len(connection.Fields) != 1 || !connection.Fields[0].Secret || launch.Health.Kind != "" {
+		t.Fatalf("shell health/build branches: %+v %+v %v %v", launch, connection, warnings, err)
+	}
+	list := composeEnvironmentFields([]any{"API_TOKEN=example", "OTHER_KEY"})
+	if len(list) != 2 {
+		t.Fatalf("env list form=%+v", list)
+	}
+}
