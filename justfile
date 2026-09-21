@@ -1,11 +1,12 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
-# Force BuildKit for every docker invocation through just: the classic builder
-# materializes each stage as cache images and duplicates the full image size on
-# every rebuild, filling the Docker Desktop disk.
+# Force BuildKit/Bake for every docker invocation through just: the classic
+# builder materializes each stage as cache images and duplicates the full image
+# size on every rebuild, filling the Docker Desktop disk.
 export DOCKER_BUILDKIT := "1"
 export COMPOSE_DOCKER_CLI_BUILD := "1"
+export COMPOSE_BAKE := "true"
 
 default:
     @just --list

@@ -60,8 +60,8 @@ Existing installations stay on the old layout until an explicit, verified migrat
 ./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme --apply
 ```
 
-Dev adds the Go toolchain and selected source mounts under /src for development. Prod has no project
-source mount or Go compiler. Both use an unprivileged runtime and persistent data; the runtime
+Dev mounts selected source under /src for development. Prod has no project
+source mount. The Go toolchain stays on the host. Both use an unprivileged runtime and persistent data; the runtime
 HTTP service is reachable only on the private Compose network.
 Prod has a read-only root; dev has a writable disposable layer for tests/build outputs. Choose different base browser/OAuth ports for
 another user; dev uses the next port. Docker Compose rejects accidental host-port collisions.

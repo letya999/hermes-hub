@@ -156,7 +156,7 @@ func DockerSmoke(ctx context.Context, image string) error {
 	checks := [][]string{
 		{"run", "--rm", "--entrypoint", "hermes", image, "--version"},
 		{"run", "--rm", "--entrypoint", "glab", image, "--version"},
-		{"run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-c", "import sqlite3, playwright, faster_whisper; assert sqlite3.sqlite_version_info >= (3,53,4)"},
+		{"run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-c", "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"},
 		{"run", "--rm", "--entrypoint", "/opt/google/.venv/bin/python", image, "-c", "import fastmcp, google.auth"},
 		{"run", "--rm", "--entrypoint", "/opt/telegram/.venv/bin/python", image, "-c", "import telethon, mcp"},
 		{"run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", image, "idle"},

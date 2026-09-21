@@ -250,23 +250,24 @@ func run(ctx context.Context, args []string) error {
 	prefix := []string{"compose", "-f", composePath}
 	docker := func(a ...string) error {
 		cmd := exec.CommandContext(ctx, "docker", append(append([]string{}, prefix...), a...)...)
-		// Force BuildKit for compose builds: the classic builder materializes
-		// every stage as separate cache images, so each rebuild duplicated the
-		// full image size on disk.
-		cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1")
+		cmd.Env = dockerCLIEnv()
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
 	if op == "build" || op == "up" {
+		if os.Getenv("DOCKER_BUILDKIT") == "0" {
+			fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
+		}
 		if err = docker("build"); err != nil {
 			return err
 		}
+		pruneDanglingImages(ctx)
 		if op == "build" {
 			return nil
 		}
-		return docker("up", "-d", "--wait", "--wait-timeout", "180", "--remove-orphans")
+		return docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans")
 	}
 	switch op {
 	case "down":
@@ -300,4 +301,16 @@ func supervisorAuthFromEnv() string {
 		return value
 	}
 	return os.Getenv("HUB_RUNTIME_AUTH")
+}
+
+func dockerCLIEnv() []string {
+	return append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
+}
+
+func pruneDanglingImages(ctx context.Context) {
+	cmd := exec.CommandContext(ctx, "docker", "image", "prune", "-f")
+	cmd.Env = dockerCLIEnv()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
 }

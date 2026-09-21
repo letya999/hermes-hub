@@ -130,9 +130,26 @@ must not include the encryption key. Do not use `docker compose down --volumes` 
 deleting that user's data intentionally. Restore organization and user homes separately;
 never merge memories, Telegram sessions or provider credentials.
 
-Rebuilds of the multi-gigabyte hub image do not share storage with the superseded
-tag, so each `docker compose build`/`just docker-check` used to leave the previous
-generation dangling at full size. `just docker-clean` (also the last step of
+The hub image is one multi-gigabyte runtime (apt Chromium, Hermes with the
+`mcp` extra, and the bundled Python MCP trees) shared by every compose
+service. Playwright browsers, Hermes `messaging`/`google`/`voice` extras and
+the Go toolchain stay out of the default image. Repeating `build:` on each service made `docker compose build` run that
+Dockerfile once per service. Combined with the classic builder
+(`DOCKER_BUILDKIT=0`) this materialized every stage as a separate image and
+added roughly one full copy of the image per command.
+
+Generated compose files carry a `build:` section on exactly one service
+(`toolhub`); the rest reference the shared `image:` tag. `just` recipes and
+`hubctl build`/`up` export `DOCKER_BUILDKIT=1`, `COMPOSE_DOCKER_CLI_BUILD=1`
+and `COMPOSE_BAKE=true`, so a stale `DOCKER_BUILDKIT=0` cannot silently
+downgrade those entry points. After a successful compose build, `hubctl`
+prunes dangling images left by retagging. Intermediate BuildKit stages never
+materialize as extra images. Setting `DOCKER_BUILDKIT=0` globally is still
+discouraged because raw `docker compose` outside hubctl/just would use the
+classic builder.
+
+Rebuilds of the tagged hub image used to leave the superseded generation
+dangling at full unique-layer size. `just docker-clean` (also the last step of
 `just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
 `spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
 dangling image layers, orphan `hermes-build-*` containers/networks/volumes and the
@@ -140,17 +157,6 @@ local BuildKit cache. `just docker-clean --deep` additionally drops
 `hermes-build-state-shared`, the opt-in persistent builder cache that
 `HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
 artifact build is in flight.
-
-Generated compose files carry a `build:` section on exactly one service
-(`toolhub`); the rest reference the shared `image:` tag. `docker compose build`
-therefore runs the multi-stage build once instead of once per service — under
-the classic builder each repeated section materialized a separate copy of every
-layer. Both `just` recipes and `hubctl build`/`up` export
-`DOCKER_BUILDKIT=1`/`COMPOSE_DOCKER_CLI_BUILD=1` for their docker invocations,
-so a stale `DOCKER_BUILDKIT=0` in the operator environment cannot silently
-downgrade builds to the classic builder; setting that variable globally is still
-discouraged because it affects docker commands run outside this project.
-Intermediate BuildKit stages never materialize as extra dangling images.
 
 Health checks prove process liveness and, where enabled, Chromium CDP readiness. They do
 not prove OAuth, model, Telegram or provider access. Live acceptance requires the

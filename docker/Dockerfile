@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Pinned upstream code, isolated Python environments (Hermes MCP 2, Telegram MCP 1).
 FROM golang:1.27.1-bookworm AS go_build
 WORKDIR /src
@@ -22,18 +23,19 @@ FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1
 FROM docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS dockercli
 FROM ghcr.io/stacklok/toolhive:v0.48.0@sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d AS toolhive
 FROM ghcr.io/astral-sh/uv:0.12.13-python3.13-trixie@sha256:8add4f333ff97df36c18f42e8082301a2829ccf0cef995538a7d9af0ed0b4183 AS runtime
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_LINK_MODE=copy PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_LINK_MODE=copy
 RUN apt-get update && apt-get install -y --no-install-recommends glab
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep ffmpeg chromium xvfb fluxbox x11vnc novnc websockify libportaudio2 build-essential libffi-dev libolm-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep ffmpeg chromium xvfb fluxbox x11vnc novnc websockify && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlite_build /opt/sqlite-fixed/lib/ /usr/local/lib/
 RUN ldconfig && python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 WORKDIR /opt/hermes
-RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp --extra messaging --extra google --extra voice
-COPY docker/meet-requirements.txt /opt/hub/meet-requirements.txt
-RUN uv pip install --python /opt/hermes/.venv/bin/python --no-config --no-deps --require-hashes -r /opt/hub/meet-requirements.txt && .venv/bin/python -m playwright install --with-deps chromium && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
+# mcp extra only: messaging/google/voice pull Discord, a second Google client,
+# faster-whisper and a second Chromium that the hub does not use. Browser CDP
+# uses apt Chromium; Meet/STT stay out of the default image.
+RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 WORKDIR /opt/telegram
 RUN git init && git remote add origin https://github.com/chigwell/telegram-mcp.git && git fetch --depth 1 origin c9460f8ded6e2457bd70ebabfad840b58d23645d && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev
 WORKDIR /opt/google
@@ -61,10 +63,10 @@ CMD ["idle"]
 FROM runtime AS prod
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 
-# Developer target: same agent runtime plus Go and a mounted /src working tree.
+# Developer target: same agent runtime plus a mounted /src working tree.
+# The Go toolchain stays on the host; copying it into every service image
+# duplicated ~280MB on each rebuild.
 FROM runtime AS dev
 USER 0:0
 RUN mkdir /src && chown 10001:10001 /src
-COPY --from=go_build /usr/local/go /usr/local/go
-ENV PATH="/usr/local/go/bin:${PATH}" GOCACHE=/state/go-build GOMODCACHE=/state/go-mod
 USER 10001:10001

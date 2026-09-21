@@ -12,7 +12,9 @@ Run `init`, set model/model_url/timezone in settings, then fill OPENAI_API_KEY.
 Use `--env dev` for the dev Docker target and secrets.dev.env; prod is the default.
 The initial features are `workspace`, `browser`, `hh`. For Telegram operation
 add `telegram`; otherwise the container waits for `hubctl chat` sessions. `hubctl build`
-builds/prepares without requiring every credential, useful before Telegram login.
+forces BuildKit/Bake, builds the shared image once, and prunes dangling layers
+left by the previous tag. It does not require every credential, so it is useful
+before Telegram login. Do not set `DOCKER_BUILDKIT=0` in the operator environment.
 
 For the prepared work-service bundle, add these settings once:
 
@@ -115,11 +117,15 @@ the newly opened Google browser, then press Enter in the terminal. This saves th
 Meet plugin's separate auth state. Ask Hermes to join an exact meeting with participant
 consent. Captions are the supported transcript source; attendance/admission and captions
 must work in that meeting. `hermes meet setup` inside the agent reports readiness.
+The default image no longer ships Playwright browsers; enabling Meet needs those
+layers restored in `docker/Dockerfile` before `hubctl build`.
 
 Add `transcription` to transcribe supported audio through local faster-whisper. The
 small model downloads on first use. Telegram bot voice uses the same image via
 `HUB_STT_COMMAND=/usr/local/bin/hub-stt` on communication-hub. Telegram MCP's own
 cloud transcription is disabled.
+The default image omits the Hermes `voice` extra; restore it in the Dockerfile
+before relying on local STT.
 Live Meet audio routing, speaker separation and guaranteed verbatim transcripts are
 not configured; these differ from caption capture and file transcription.
 

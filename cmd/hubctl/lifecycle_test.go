@@ -32,10 +32,10 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(bin, "args")
 	name := "docker"
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$HUB_TEST_LOG\"\nif [ -n \"$HUB_FAIL_MATCH\" ]; then for arg do if [ \"$arg\" = \"$HUB_FAIL_MATCH\" ]; then exit 7; fi; done; fi\n"
+	script := "#!/bin/sh\nprintf 'ENV DOCKER_BUILDKIT=%s COMPOSE_BAKE=%s COMPOSE_DOCKER_CLI_BUILD=%s\\n' \"$DOCKER_BUILDKIT\" \"$COMPOSE_BAKE\" \"$COMPOSE_DOCKER_CLI_BUILD\" >> \"$HUB_TEST_LOG\"\nprintf '%s\\n' \"$@\" >> \"$HUB_TEST_LOG\"\nif [ -n \"$HUB_FAIL_MATCH\" ]; then for arg do if [ \"$arg\" = \"$HUB_FAIL_MATCH\" ]; then exit 7; fi; done; fi\n"
 	if runtime.GOOS == "windows" {
 		name = "docker.cmd"
-		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif \"%HUB_FAIL_MATCH%\"==\"\" exit /b 0\r\necho %* | findstr /C:\"%HUB_FAIL_MATCH%\" >nul\r\nif not errorlevel 1 exit /b 7\r\n"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif \"%HUB_FAIL_MATCH%\"==\"\" exit /b 0\r\necho %* | findstr /C:\"%HUB_FAIL_MATCH%\" >nul\r\nif not errorlevel 1 exit /b 7\r\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
-	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
 	for _, fail := range []string{"build", "up"} {
