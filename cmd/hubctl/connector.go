@@ -302,6 +302,12 @@ func runConnector(ctx context.Context, args []string) error {
 					_, _ = io.WriteString(w, "Connected. Close this window.")
 				}
 			}
+			// Flush before signalling completion: the deferred server.Close
+			// would otherwise drop the buffered response and the browser sees
+			// a closed connection instead of the confirmation page.
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
 			select {
 			case completed <- err:
 			default:
