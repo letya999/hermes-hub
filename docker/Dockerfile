@@ -41,7 +41,11 @@ WORKDIR /opt/hermes
 # Google Workspace, Atlassian and Telegram-account Python trees are dedicated
 # images (docker/telegram-account.Dockerfile, docker/mcp-atlassian.Dockerfile)
 # and ToolHub artifacts, not copies inside every hub service.
-RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
+# aiohttp is pinned separately: upstream ships it only inside the messaging /
+# slack / matrix extras, but the gateway api_server adapter (the hub's session
+# API on :8642) needs it even when messaging platforms stay in the Go
+# communication hub.
+RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp && uv pip install --python .venv/bin/python aiohttp==3.14.3 && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY docker/browser/package*.json /opt/browser/
 RUN cd /opt/browser && npm ci --ignore-scripts && npm cache clean --force
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /slack-mcp-server /cli-proxy-api /usr/local/bin/
