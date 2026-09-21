@@ -80,8 +80,10 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 	// declared.  Keep these as ARGs (never ENV) so the proxy endpoint cannot
 	// persist in the resulting image config or runtime environment.
 	lines := []string{"FROM " + baseImage, "ARG HTTP_PROXY", "ARG HTTPS_PROXY", "ARG NO_PROXY", "WORKDIR /app", "COPY . /app"}
+	runPrefix := buildCacheRunPrefix(language)
 	locks := []string{manifest}
 	var automatic [][]string
+	goMainBase := ""
 	switch language {
 	case "node":
 		var pkg struct {
@@ -101,12 +103,12 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		if pnpm {
 			manager = "pnpm"
 			locks = []string{"pnpm-lock.yaml"}
-			lines = append(lines, "RUN npm install --global pnpm@10.32.1", "RUN pnpm install --frozen-lockfile")
+			lines = append(lines, "RUN "+runPrefix+"npm install --global pnpm@10.32.1", "RUN "+runPrefix+"pnpm install --frozen-lockfile")
 		} else {
-			lines = append(lines, "RUN npm ci")
+			lines = append(lines, "RUN "+runPrefix+"npm ci")
 		}
 		if pkg.Scripts["build"] != "" {
-			lines = append(lines, "RUN "+manager+" run build")
+			lines = append(lines, "RUN "+runPrefix+manager+" run build")
 		}
 		binDirectory := "/app/"
 		if pnpm && len(pkg.Bin) == 0 {
@@ -133,7 +135,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 				binDirectory += path.Dir(selected) + "/"
 				if !rootBuild && pkg.Scripts["build"] != "" {
 					command, _ := json.Marshal([]string{"pnpm", "--dir", path.Dir(selected), "run", "build"})
-					lines = append(lines, "RUN "+string(command))
+					lines = append(lines, "RUN "+runPrefix+string(command))
 				}
 			}
 		}
@@ -159,13 +161,13 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 			}
 		}
 	case "python":
-		lines = append(lines, "RUN python -m venv /opt/venv")
+		lines = append(lines, "RUN "+runPrefix+"python -m venv /opt/venv")
 		if files["requirements.txt"] != nil {
-			lines = append(lines, "RUN /opt/venv/bin/pip install -r requirements.txt")
+			lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install -r requirements.txt")
 			locks = []string{"requirements.txt"}
 		}
 		if files["pyproject.toml"] != nil {
-			lines = append(lines, "RUN /opt/venv/bin/pip install .")
+			lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install .")
 			scripts := artifactTOMLSection(files[manifest], "project.scripts")
 			primary := artifactTOMLSection(files[manifest], "project")["name"]
 			if scripts[primary] != "" {
@@ -186,6 +188,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		}
 	case "go":
 		lines = append(lines, "ENV CGO_ENABLED=0")
+		var mains []string
 		for name, data := range files {
 			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				continue
@@ -193,18 +196,21 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 			f, err := parser.ParseFile(token.NewFileSet(), name, data, parser.PackageClauseOnly)
 			if err == nil && f.Name.Name == "main" {
 				target := "./" + path.Dir(name)
-				candidate := []string{target}
-				if !slices.ContainsFunc(automatic, func(existing []string) bool { return slices.Equal(existing, candidate) }) {
-					automatic = append(automatic, candidate)
+				if !slices.Contains(mains, target) {
+					mains = append(mains, target)
 				}
 			}
 		}
-		if len(automatic) != 1 {
+		if len(mains) != 1 {
+			mains = disambiguateGoMain(mains, files)
+		}
+		if len(mains) != 1 {
 			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Go recipe requires one main package", ErrInvalid)
 		}
+		goMainBase = path.Base(mains[0])
 		// JSON exec form avoids interpolating even repository directory names.
-		command, _ := json.Marshal([]string{"go", "build", "-mod=readonly", "-buildvcs=false", "-trimpath", "-o", "/app/mcp-server", automatic[0][0]})
-		lines = append(lines, "RUN "+string(command))
+		command, _ := json.Marshal([]string{"go", "build", "-mod=readonly", "-buildvcs=false", "-trimpath", "-o", "/app/mcp-server", mains[0]})
+		lines = append(lines, "RUN "+runPrefix+string(command))
 		automatic = [][]string{{"/app/mcp-server"}}
 		if files["go.sum"] != nil {
 			locks = append(locks, "go.sum")
@@ -218,14 +224,15 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		if !toolNamePattern.MatchString(name) || files["src/main.rs"] == nil || strings.Contains(string(files[manifest]), "[[bin]]") || strings.Contains(string(files[manifest]), "[workspace]") {
 			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Rust recipe requires one package binary", ErrInvalid)
 		}
-		lines = append(lines, "RUN cargo build --release --locked")
+		lines = append(lines, "RUN "+runPrefix+"cargo build --release --locked")
 		automatic = [][]string{{"/app/target/release/" + name}}
 	}
 	if len(entrypoint) == 0 {
 		if len(automatic) != 1 {
 			return ArtifactRecipe{}, nil, fmt.Errorf("%w: ambiguous MCP entrypoint; select literal argv", ErrInvalid)
 		}
-		entrypoint = automatic[0]
+		entrypoint = append([]string(nil), automatic[0]...)
+		entrypoint = upstreamEntrypointArgs(files, entrypoint, goMainBase)
 	}
 	argv, _ := json.Marshal(entrypoint)
 	lines = append(lines, "USER 10001:10001", "CMD []", "ENTRYPOINT "+string(argv))
@@ -259,6 +266,27 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 	return recipe, output.Bytes(), recipe.VerifyContext(output.Bytes())
 }
 
+// buildCacheRunPrefix returns the BuildKit cache-mount prefix for package
+// downloads and compile caches when HUB_BUILD_CACHE=1. Only shared read-mostly
+// caches are mounted: build outputs stay inside image layers so the produced
+// OCI artifact is identical either way.
+func buildCacheRunPrefix(language string) string {
+	if !buildCacheEnabled() {
+		return ""
+	}
+	switch language {
+	case "go":
+		return "--mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build "
+	case "node":
+		return "--mount=type=cache,id=hermes-npm,target=/root/.npm "
+	case "python":
+		return "--mount=type=cache,id=hermes-pip,target=/root/.cache/pip "
+	case "rust":
+		return "--mount=type=cache,id=hermes-cargo-registry,target=/usr/local/cargo/registry --mount=type=cache,id=hermes-cargo-git,target=/usr/local/cargo/git "
+	}
+	return ""
+}
+
 // ponytail: only simple quoted TOML keys in relevant tables. A full TOML parser
 // is needed when richer manifests must be automatically disambiguated.
 func artifactTOMLSection(data []byte, wanted string) map[string]string {
@@ -280,4 +308,76 @@ func artifactTOMLSection(data []byte, wanted string) map[string]string {
 		}
 	}
 	return result
+}
+
+// disambiguateGoMain selects one main package only when independent upstream
+// metadata agrees on a single directory: the exec-form ENTRYPOINT basename of
+// a verified-context Dockerfile, or the go.mod module basename. Anything else
+// stays ambiguous and fails closed.
+func disambiguateGoMain(mains []string, files map[string][]byte) []string {
+	bases := map[string]bool{}
+	if entry, cmd := upstreamDockerfileEntrypoint(files); len(entry) > 0 {
+		bases[path.Base(entry[len(entry)-1])] = true
+	} else if len(cmd) > 0 {
+		bases[path.Base(cmd[0])] = true
+	}
+	for _, line := range strings.Split(string(files["go.mod"]), "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "module" {
+			bases[path.Base(fields[1])] = true
+		}
+	}
+	var selected []string
+	for _, dir := range mains {
+		if bases[path.Base(dir)] {
+			selected = append(selected, dir)
+		}
+	}
+	return selected
+}
+
+// upstreamDockerfileEntrypoint returns the last exec-form ENTRYPOINT and CMD
+// of a Dockerfile already inside the verified context. The file is metadata
+// only and never executed; a non-exec form clears the earlier value like a
+// real Docker build stage would.
+func upstreamDockerfileEntrypoint(files map[string][]byte) (entrypoint, cmd []string) {
+	data, _ := findFile(files, "Dockerfile")
+	for _, line := range dockerfileInstructions(data) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		argv := stringArray(json.RawMessage(strings.TrimSpace(line[len(fields[0]):])))
+		switch strings.ToUpper(fields[0]) {
+		case "ENTRYPOINT":
+			entrypoint = argv
+		case "CMD":
+			cmd = argv
+		}
+	}
+	return entrypoint, cmd
+}
+
+// upstreamEntrypointArgs appends the upstream CMD argv when the upstream
+// ENTRYPOINT demonstrably names the same binary the generated recipe just
+// selected (matching basename, or the selected Go main directory). Without an
+// upstream ENTRYPOINT the CMD is itself the command, so argv[0] is the binary
+// name and only the remainder becomes arguments.
+func upstreamEntrypointArgs(files map[string][]byte, entrypoint []string, goMainBase string) []string {
+	entry, cmd := upstreamDockerfileEntrypoint(files)
+	if len(entrypoint) == 0 || len(cmd) == 0 {
+		return entrypoint
+	}
+	matches := func(base string) bool {
+		return base != "" && (base == path.Base(entrypoint[len(entrypoint)-1]) || goMainBase != "" && base == goMainBase)
+	}
+	if len(entry) > 0 {
+		if matches(path.Base(entry[len(entry)-1])) {
+			return append(entrypoint, cmd...)
+		}
+		return entrypoint
+	}
+	if matches(path.Base(cmd[0])) {
+		return append(entrypoint, cmd[1:]...)
+	}
+	return entrypoint
 }

@@ -136,7 +136,7 @@ func Config(s Settings) M {
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
 	// turns and lets the existing heartbeat notify the user while a build runs.
 	display := M{"busy_input_mode": "queue", "long_running_notifications": true}
-	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
+	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 }
 func Compose(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, true)
@@ -182,7 +182,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "HUB_CREDENTIAL_BROKER_CONTROL_URL": "${HUB_CREDENTIAL_BROKER_URL}", "HUB_CREDENTIAL_BROKER_CONTROL_KEY_FILE": "${HUB_CREDENTIAL_BROKER_CONTROL_KEY_FILE}", "HUB_CREDENTIAL_BROKER_CONTROL_KEY_ID": "${HUB_CREDENTIAL_BROKER_CONTROL_KEY_ID}", "HUB_CREDENTIAL_BROKER_CONTROL_ISSUER": "${HUB_CREDENTIAL_BROKER_CONTROL_ISSUER}", "HUB_CREDENTIAL_BROKER_RUNTIME_URL": "${HUB_CREDENTIAL_BROKER_URL}", "HUB_CREDENTIAL_BROKER_RUNTIME_KEY_FILE": "${HUB_CREDENTIAL_BROKER_RUNTIME_KEY_FILE}", "HUB_CREDENTIAL_BROKER_RUNTIME_KEY_ID": "${HUB_CREDENTIAL_BROKER_RUNTIME_KEY_ID}", "HUB_CREDENTIAL_BROKER_RUNTIME_ISSUER": "${HUB_CREDENTIAL_BROKER_RUNTIME_ISSUER}", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60"}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
@@ -214,6 +214,68 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeService["environment"].(M)["GOMODCACHE"] = "/state/go-mod"
 	}
 	services := M{"hermes-runtime": runtimeService}
+	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
+	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
+	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}
+	dockerSock := M{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}
+	hostRoot := "/state=" + hostRuntimeDir
+	brokerURL := "https://credential-broker:8787"
+	brokerCA := "/run/broker-secrets/server.crt"
+	// Broker keys and the CA certificate live in per-service named volumes: the
+	// broker securefs checks and the client key check demand real Linux modes
+	// (0600, owned by the service uid), which Windows bind mounts cannot provide.
+	brokerSecrets := func(service string) M {
+		return M{"type": "volume", "source": "broker-secrets-" + service, "target": "/run/broker-secrets", "read_only": true}
+	}
+	brokerClientEnv := func(prefix, keyID, issuer string) M {
+		return M{prefix + "URL": brokerURL, prefix + "KEY_FILE": "/run/broker-secrets/" + keyID + ".private", prefix + "KEY_ID": keyID, prefix + "ISSUER": issuer, prefix + "CA_FILE": brokerCA}
+	}
+	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
+		runtimeEnv[key] = value
+	}
+	runtimeService["volumes"] = append(runtimeService["volumes"].([]any), brokerSecrets("runtime"))
+
+	cliproxy := cloneMap(common)
+	cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
+	cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
+	cliproxy["ports"] = []string{"127.0.0.1:8317:8317"}
+	services["cliproxy"] = cliproxy
+
+	toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HOME": "/tmp", "TZ": s.Timezone}
+	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
+		toolhubEnv[key] = value
+	}
+	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
+		toolhubEnv[key] = value
+	}
+	toolhub := cloneMap(common)
+	toolhub["entrypoint"] = []string{"toolhub"}
+	toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
+	toolhub["environment"] = toolhubEnv
+	toolhub["volumes"] = []any{stateBind, dockerSock, brokerSecrets("toolhub")}
+	toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
+	services["toolhub"] = toolhub
+
+	controller := cloneMap(common)
+	controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
+	controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_CONTROLLER_REMOTE": "1", "HOME": "/tmp", "TZ": s.Timezone}
+	controller["volumes"] = []any{stateBind, dockerSock}
+	controller["ports"] = []string{"127.0.0.1:8545:8545"}
+	services["workload-controller"] = controller
+
+	broker := cloneMap(common)
+	broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
+	// broker-state is the migrated production volume; materialized leases stay
+	// on a container-local tmpfs because the broker requires tmpfs for them.
+	broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}}
+	broker["tmpfs"] = append(broker["tmpfs"].([]string), "/run/broker-materialized:uid=10001,gid=10001,mode=0700")
+	broker["ports"] = []string{"127.0.0.1:8787:8787"}
+	// Personal loopback deployment: the connect link opens the credential form
+	// directly. Remove BROKER_DIRECT_FORM to restore the trusted-channel
+	// confirmation code required by the stricter spec flow.
+	broker["environment"] = M{"BROKER_DIRECT_FORM": "1"}
+	services["credential-broker"] = broker
+
 	if includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 		if s.ExecutionMode != "" {
@@ -222,11 +284,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_CREDENTIAL_BROKER_APPROVE_URL": "${HUB_CREDENTIAL_BROKER_URL}", "HUB_CREDENTIAL_BROKER_APPROVE_KEY_FILE": "${HUB_CREDENTIAL_BROKER_APPROVE_KEY_FILE}", "HUB_CREDENTIAL_BROKER_APPROVE_KEY_ID": "${HUB_CREDENTIAL_BROKER_APPROVE_KEY_ID}", "HUB_CREDENTIAL_BROKER_APPROVE_ISSUER": "${HUB_CREDENTIAL_BROKER_APPROVE_ISSUER}"}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_APPROVE_", "communication", "hermes-communication") {
+			gatewayEnvironment[key] = value
+		}
+		runtimeEnv["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
+		gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
+		communicationHostPort := 8081
 		if s.Has("slack_app") {
 			gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
-			gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", slackEventsHostPort(s))}
+			communicationHostPort = slackEventsHostPort(s)
 		}
+		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
+		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
 		if s.Has("transcription") {
 			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
 			gatewayEnvironment["HF_HOME"] = "/data/hf"
@@ -242,7 +312,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		gateway["env_file"] = gatewayEnvFiles
 		gateway["environment"] = gatewayEnvironment
-		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}}
+		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}, brokerSecrets("communication")}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
 		}
@@ -252,7 +322,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			delete(services, "hermes-runtime")
 		}
 	}
-	return M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": M{"communication-hub-data": M{}}}
+	volumes := M{"communication-hub-data": M{}, "broker-state": M{"external": true, "name": "hermes-credential-broker-real-prod-20260918"}, "broker-secrets-toolhub": M{}, "broker-secrets-runtime": M{}, "broker-secrets-communication": M{}}
+	return M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 }
 
 // PolicyVersion identifies the effective runtime policy used by transport and supervisor.
@@ -339,7 +410,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "skills"} {
+	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
@@ -351,6 +422,9 @@ func RenderEnvironment(dir, root, environment string) error {
 		return err
 	}
 	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets); err != nil {
+		return err
+	}
+	if err = writeToolHubFiles(dir); err != nil {
 		return err
 	}
 	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": Compose(s, root, dir)}
@@ -452,6 +526,65 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 		return err
 	}
 	return writeEnvFile(filepath.Join(dir, "communication."+environment+".env"), gateway)
+}
+
+// writeToolHubFiles provisions the controller config, its protected admission
+// token and the toolhub env file consumed by the generated compose stack.
+// The key is generated once and never overwritten.
+func writeToolHubFiles(dir string) error {
+	runtimeDir := filepath.Join(dir, "runtime")
+	keyPath := filepath.Join(runtimeDir, "generic-controller.key")
+	if err := ensureTokenFile(keyPath); err != nil {
+		return err
+	}
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		return err
+	}
+	token := strings.TrimSpace(string(key))
+	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/state/hubctl-linux-bridge", "credential_mount_root": "/state/materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800}
+	body, err := json.MarshalIndent(controller, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = atomic(filepath.Join(runtimeDir, "generic-controller.json"), append(body, '\n')); err != nil {
+		return err
+	}
+	return writeEnvFile(filepath.Join(dir, "toolhub.auth"), map[string]string{"HUB_TOOLHIVE_ADMISSION_TOKEN": token})
+}
+
+// ensureTokenFile creates a random 256-bit hex token file unless it exists.
+func ensureTokenFile(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("token file must be a regular file")
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	value := make([]byte, 32)
+	if _, err = rand.Read(value); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return ensureTokenFile(path)
+		}
+		return err
+	}
+	if _, err = f.Write([]byte(hex.EncodeToString(value) + "\n")); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func writeHonchoConfig(dir string, s Settings) error {

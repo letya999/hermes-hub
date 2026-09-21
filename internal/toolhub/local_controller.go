@@ -254,7 +254,7 @@ func (c *localController) start(ctx context.Context) error {
 		return err
 	}
 	limits := []string{"--cpus", strconv.FormatFloat(float64(c.plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(c.plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(c.plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(c.plan.Execution.MaxPIDs)}
-	args := append([]string{"create", "--name", c.plan.WorkloadID + "-proxy", "--network", network, "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--tmpfs", "/run:rw,nosuid,nodev,uid=31,gid=31,mode=0700,size=16m", "--mount", "type=bind,source=" + proxyFile + ",target=/etc/squid/squid.conf,readonly"}, limits...)
+	args := append([]string{"create", "--name", c.plan.WorkloadID + "-proxy", "--network", network, "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--tmpfs", "/run:rw,nosuid,nodev,uid=31,gid=31,mode=0700,size=16m", "--mount", "type=bind,source=" + dockerBindSource(proxyFile) + ",target=/etc/squid/squid.conf,readonly"}, limits...)
 	args = append(args, c.plan.SidecarImages[0])
 	if _, err := c.command(ctx, "docker", args...); err != nil {
 		return err
@@ -274,7 +274,7 @@ func (c *localController) start(ctx context.Context) error {
 	if err != nil || !ip.Is4() || !ip.IsPrivate() {
 		return fmt.Errorf("invalid proxy address")
 	}
-	if _, err := c.command(ctx, c.config.ToolHiveBinary, "run", "--name", c.plan.WorkloadID, "--host", "127.0.0.1", "--proxy-port", strconv.Itoa(c.config.MCPPort), "--transport", "stdio", "--proxy-mode", "streamable-http", "--permission-profile", "none", "--network", network, "--isolate-network=false", "--env", "HTTP_PROXY=http://"+ip.String()+":3128", "--volume", c.plan.WorkspacePath+":/run/connector", "--tools", "get_account", "--tools", "list_dialogs", "--tools", "get_messages", "--tools", "search_messages", "--tools", "get_chat_info", c.plan.Digest); err != nil {
+	if _, err := c.command(ctx, c.config.ToolHiveBinary, "run", "--name", c.plan.WorkloadID, "--host", "127.0.0.1", "--proxy-port", strconv.Itoa(c.config.MCPPort), "--transport", "stdio", "--proxy-mode", "streamable-http", "--permission-profile", "none", "--network", network, "--isolate-network=false", "--env", "HTTP_PROXY=http://"+ip.String()+":3128", "--volume", dockerBindSource(c.plan.WorkspacePath)+":/run/connector", "--tools", "get_account", "--tools", "list_dialogs", "--tools", "get_messages", "--tools", "search_messages", "--tools", "get_chat_info", c.plan.Digest); err != nil {
 		return err
 	}
 	// ToolHive run returns before its background runner creates the container.

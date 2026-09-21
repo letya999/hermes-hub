@@ -18,12 +18,14 @@ import (
 )
 
 type EndpointConfig struct {
-	Listen        string
-	Token         string
-	Auth          identity.Envelope
-	Backend       ToolBackend
-	BrokerControl *credentialbroker.Config
-	BrokerRuntime *credentialbroker.Config
+	Listen         string
+	Token          string
+	Auth           identity.Envelope
+	Backend        ToolBackend
+	RecipeCatalogs []RecipeCatalog
+	BrokerControl  *credentialbroker.Config
+	BrokerRuntime  *credentialbroker.Config
+	Release        func(context.Context, string) error
 }
 
 func EndpointConfigFromEnv() (EndpointConfig, error) {
@@ -83,6 +85,10 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("ToolHive release: %w", err)
 	}
+	catalogs, err := RecipeCatalogsFromEnv()
+	if err != nil {
+		return EndpointConfig{}, err
+	}
 	return EndpointConfig{
 		Listen: envOr("HUB_TOOLHUB_LISTEN", "127.0.0.1:8090"),
 		Token:  token,
@@ -92,12 +98,14 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: envOr("HUB_STATE", "/state")},
 			CLI:      CLIRunner{Root: envOr("HUB_STATE", "/state")},
 		},
+		RecipeCatalogs: catalogs,
 		BrokerControl: func() *credentialbroker.Config {
 			if controlBroker.Enabled() {
 				return &controlBroker
 			}
 			return nil
 		}(),
+		Release: release,
 		BrokerRuntime: func() *credentialbroker.Config {
 			if runtimeBroker.Enabled() {
 				return &runtimeBroker
@@ -137,7 +145,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
-	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), Broker: config.BrokerControl}
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), Broker: config.BrokerControl, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
 	if ready := readinessBackend(config.Backend); ready != nil {
 		control.Ready = func(ctx context.Context, effective EffectiveBinding) error {
 			if gateway.Injector == nil {
@@ -167,7 +175,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	control.SourceResolver = ResolveGitHubSource
 	control.FormOrigin = formOriginForListen(config.Listen)
 	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
-	control.Reviewer = DefaultSourceReviewer(artifacts, seccomp)
+	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
 	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {

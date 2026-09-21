@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-17
+last_verified: 2026-09-20
 ---
 # Operations
 
@@ -54,9 +54,11 @@ hubctl secret rotate-key --user <id> --from-file new.key
 hubctl secret activity --user <id>
 ```
 
-An explicit owner `KEY=value` chat message is intercepted before Hermes, persisted
-through that store, and best-effort deleted. Replies contain names and status only.
-Groups reject credential entry. Set and delete also load the ToolHub registry
+An explicit owner `KEY=value` chat message is intercepted before Hermes, rejected and
+best-effort deleted; it is never persisted. The gateway returns a one-time protected
+loopback form generated from the selected connector or MCP Connection Recipe; its fields,
+types, order, delivery metadata and OAuth alternatives are derived at request time.
+There is no static credential form. Groups reject credential entry. Set and delete also load the ToolHub registry
 (`HUB_TOOLHUB_STORE` or `spaces/<user>/runtime/toolhub/store.json`) so rotate and
 revoke cut an already-open MCP session and stop affected workloads. Personal-terminal
 exposure copies selected names into that owner's `self-env.json` overlay and is
@@ -127,6 +129,21 @@ storage while services are stopped. Ciphertext backups use `hubctl secret backup
 must not include the encryption key. Do not use `docker compose down --volumes` unless
 deleting that user's data intentionally. Restore organization and user homes separately;
 never merge memories, Telegram sessions or provider credentials.
+
+Rebuilds of the multi-gigabyte hub image do not share storage with the superseded
+tag, so each `docker compose build`/`just docker-check` used to leave the previous
+generation dangling at full size. `just docker-clean` (also the last step of
+`just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
+`spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
+dangling image layers, orphan `hermes-build-*` containers/networks/volumes and the
+local BuildKit cache. `just docker-clean --deep` additionally drops
+`hermes-build-state-shared`, the opt-in persistent builder cache that
+`HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
+artifact build is in flight. `devcheck docker-build` forces BuildKit for the hub
+image so intermediate stages never materialize as extra dangling images even when
+the shell exports `DOCKER_BUILDKIT=0`; setting that variable (or
+`COMPOSE_DOCKER_CLI_BUILD=0`) globally makes every Docker build on the host use the
+classic builder and re-duplicates layers.
 
 Health checks prove process liveness and, where enabled, Chromium CDP readiness. They do
 not prove OAuth, model, Telegram or provider access. Live acceptance requires the

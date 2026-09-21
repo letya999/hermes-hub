@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -503,6 +505,56 @@ func TestRuntimeRestartOnlySchedulesWithPendingRequest(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("runtime restart was not signaled")
+	}
+}
+
+func TestSelfEnvProtectedFormUpdatesBoundRuntimeOnly(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_ORGANIZATION_ID", "personal")
+	t.Setenv("HUB_RUNTIME_ID", "alice")
+	t.Setenv("HUB_POLICY_VERSION", "policy-1")
+	t.Setenv("HUB_SELF_ENV_KEYS", "GOOGLE_OAUTH_CLIENT_ID")
+	t.Setenv("HUB_PROTECTED_ENV_KEYS", "")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	oldSignal := signalRuntimeProcess
+	called := make(chan struct{}, 1)
+	signalRuntimeProcess = func() { called <- struct{}{} }
+	defer func() { signalRuntimeProcess = oldSignal }()
+	body, err := json.Marshal(SelfEnvRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Values: map[string]string{"GOOGLE_OAUTH_CLIENT_ID": "client-id"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/self-env", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	recorder := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "GOOGLE_OAUTH_CLIENT_ID") {
+		t.Fatalf("unexpected self-env response %d: %s", recorder.Code, recorder.Body.String())
+	}
+	values, err := envstore.Load(filepath.Join(dir, envstore.FileName), "GOOGLE_OAUTH_CLIENT_ID", "")
+	if err != nil || values["GOOGLE_OAUTH_CLIENT_ID"] != "client-id" {
+		t.Fatalf("self-env values=%v err=%v", values, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "restart.request")); err != nil {
+		t.Fatal("restart was not scheduled:", err)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("runtime restart was not signaled")
+	}
+	request := SelfEnvRequest{Envelope: identity.TelegramEnvelope("bob", 1, "bob", "policy-1"), OrganizationID: "personal", UserID: "bob", ActorID: "bob", ScopeID: "user:bob", Values: map[string]string{"GOOGLE_OAUTH_CLIENT_ID": "other"}}
+	body, _ = json.Marshal(request)
+	req = httptest.NewRequest(http.MethodPost, "/v1/self-env", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	recorder = httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(recorder, req)
+	if recorder.Code == http.StatusOK {
+		t.Fatal("foreign self-env identity accepted")
 	}
 }
 

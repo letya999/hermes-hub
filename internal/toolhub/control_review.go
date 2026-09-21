@@ -11,10 +11,18 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-// DefaultSourceReviewer is the production self-install reviewer: M5.1 GitHub
-// import plus MCP tools/list preflight. Missing absolute paths fail closed
-// before any network fetch.
+// DefaultSourceReviewer is the production self-install reviewer. A verified
+// catalog image is preferred and admitted by digest; the restricted GitHub
+// build remains the explicit safe fallback when no published image can pass
+// the local tools/list probe.
 func DefaultSourceReviewer(artifactsDir, seccompPath string) SourceReviewer {
+	return DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath, nil)
+}
+
+// DefaultSourceReviewerWithCatalogs keeps catalog integrations explicit. A
+// catalog must be supplied by a verified adapter; Resolver never guesses a
+// provider API or treats a name-only catalog hit as an artifact match.
+func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalogs []RecipeCatalog) SourceReviewer {
 	return func(ctx context.Context, source ArtifactSource) (SourceReview, error) {
 		if !filepath.IsAbs(artifactsDir) || !filepath.IsAbs(seccompPath) {
 			return SourceReview{}, fmt.Errorf("%w: absolute artifact and seccomp paths required", ErrInvalid)
@@ -22,11 +30,30 @@ func DefaultSourceReviewer(artifactsDir, seccompPath string) SourceReviewer {
 		if _, err := os.Stat(seccompPath); err != nil {
 			return SourceReview{}, fmt.Errorf("%w: seccomp: %v", ErrInvalid, err)
 		}
+		contextBytes, err := FetchRepositoryRecipeContext(ctx, source, 64<<20)
+		if err != nil {
+			return SourceReview{}, err
+		}
+		resolution, err := (RecipeResolver{Catalogs: catalogs}).Resolve(ctx, source, contextBytes)
+		if err != nil {
+			return SourceReview{}, err
+		}
+		if resolution.State == "ready" && resolution.Launch.Transport == ContainerMCP {
+			published, publishedErr := ImportPublishedArtifact(source, defaultSelfInstallConfig(source), resolution, discoverOpenAPIEgress(contextBytes))
+			if publishedErr == nil {
+				if published, _, publishedErr = PreflightPublishedArtifact(ctx, published); publishedErr == nil {
+					return SourceReview{Definition: published.Definition, Permissions: toolNames(published.Definition), Effects: effectNames(published.Definition), ReviewDigest: published.Definition.Source.ReviewDigest, Recipe: &resolution}, nil
+				}
+			}
+		}
 		imported, err := ImportGitHubArtifact(ctx, source, defaultSelfInstallConfig(source), RestrictedBuildConfig{
 			SeccompPath: seccompPath, ArtifactDirectory: artifactsDir, MaxArtifactBytes: 8 << 30,
 		})
 		if err != nil {
 			return SourceReview{}, err
+		}
+		if len(imported.Definition.Credentials) == 0 {
+			mergeConnectionForDefinition(resolution.Connection, &imported.Definition)
 		}
 		imported, _, err = PreflightImportedArtifact(ctx, imported, artifactsDir)
 		if err != nil {
@@ -34,7 +61,7 @@ func DefaultSourceReviewer(artifactsDir, seccompPath string) SourceReviewer {
 		}
 		return SourceReview{
 			Definition: imported.Definition, Permissions: toolNames(imported.Definition),
-			Effects: effectNames(imported.Definition), ReviewDigest: imported.Definition.Source.ReviewDigest,
+			Effects: effectNames(imported.Definition), ReviewDigest: imported.Definition.Source.ReviewDigest, Recipe: &resolution,
 		}, nil
 	}
 }
@@ -48,7 +75,7 @@ func defaultSelfInstallConfig(source ArtifactSource) ArtifactImportConfig {
 		}
 	}
 	return ArtifactImportConfig{
-		DefinitionID: id, Version: "0.0.1", Image: "hermes-artifact/" + id,
+		DefinitionID: id, Version: "0.0.2", Image: "hermes-artifact/" + id,
 		Tools:    []ToolSpec{{Name: "mcp", Effect: ReadEffect}},
 		Workload: WorkloadPolicy{Class: PerUser, Stateful: false, Rationale: "user self-install MCP credentials are principal-owned", ToolHiveVersion: "v0.48.0"},
 		Execution: ExecutionPolicy{

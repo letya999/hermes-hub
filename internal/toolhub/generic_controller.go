@@ -484,7 +484,7 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		toolArgs = append(toolArgs, "--tools", tool.Name)
 	}
 	for _, mount := range plan.CredentialMounts {
-		toolArgs = append(toolArgs, "--volume", mount.Source+":"+mount.Target+":ro")
+		toolArgs = append(toolArgs, "--volume", dockerBindSource(mount.Source)+":"+mount.Target+":ro")
 	}
 	imageRef, err := c.resolveArtifactImage(ctx, plan)
 	if err != nil {
@@ -570,14 +570,18 @@ func (c *genericController) inspect(ctx context.Context, workload genericWorkloa
 		if workload.dockerFallback {
 			bridgeMountOK = fallbackBridgeMountsOK(container.Mounts, workload)
 		}
-		if i == 0 && (!artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef) || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || (!workload.dockerFallback && !credentialMountOK) || (workload.dockerFallback && !bridgeMountOK) || len(container.NetworkSettings.Networks) != 1) {
-			return AdmissionReceipt{}, ErrIsolation
+		if i == 0 && (!artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef) || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || (!workload.dockerFallback && !credentialMountOK) || (workload.dockerFallback && !bridgeMountOK) || len(container.NetworkSettings.Networks) != 1) {
+			mounts := make([]string, 0, len(container.Mounts))
+			for _, mount := range container.Mounts {
+				mounts = append(mounts, mount.Type+":"+mount.Destination+":"+strconv.FormatBool(mount.RW))
+			}
+			return AdmissionReceipt{}, fmt.Errorf("%w: MCP container image=%t user=%t credentials=%t bridge=%t mounts=%v expected=%d networks=%d", ErrIsolation, artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef), container.Config.User != "" && container.Config.User != "0" && container.Config.User != "0:0", credentialMountOK, bridgeMountOK, mounts, len(workload.stateVols)+len(workload.plan.CredentialMounts)+1, len(container.NetworkSettings.Networks))
 		}
 		if i == 1 && (len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.proxyVol && container.Mounts[0].Source != workload.proxyVol) || container.Mounts[0].Destination != "/etc/squid" || len(container.NetworkSettings.Networks) != 2 || container.Image == "") {
-			return AdmissionReceipt{}, ErrIsolation
+			return AdmissionReceipt{}, fmt.Errorf("%w: egress proxy identity or mounts", ErrIsolation)
 		}
 		if i == 2 && workload.dockerFallback && (container.Config.Image != workload.plan.SidecarImages[0] || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.relayVol && container.Mounts[0].Source != workload.relayVol) || container.Mounts[0].Destination != "/hermes-relay" || container.Mounts[0].RW || len(container.NetworkSettings.Networks) != 2 || !envHasBridgeToken(container.Config.Env)) {
-			return AdmissionReceipt{}, ErrIsolation
+			return AdmissionReceipt{}, fmt.Errorf("%w: relay identity or mounts", ErrIsolation)
 		}
 		if workload.dockerFallback && i == 0 && envContainsForwardingSecret(container.Config.Env) {
 			return AdmissionReceipt{}, fmt.Errorf("%w: MCP container received a forwarding secret", ErrIsolation)
@@ -839,13 +843,17 @@ func securityOptHasSeccomp(values []string, profilePath string) bool {
 	return false
 }
 
-// RunGenericController starts the loopback admission endpoint. ToolHive and
-// Docker are selected explicitly by the operator; no daemon socket is exposed
-// to MCP workloads.
+// RunGenericController starts the admission endpoint. ToolHive and Docker are
+// selected explicitly by the operator; no daemon socket is exposed to MCP
+// workloads. The listener is loopback-only unless HUB_CONTROLLER_REMOTE=1
+// opts into a bearer-token protected network listener for compose topologies.
 func RunGenericController(ctx context.Context, config GenericControllerConfig, listen, token string) error {
 	host, _, err := net.SplitHostPort(listen)
-	if err != nil || host != "127.0.0.1" || len(token) < 32 || strings.ContainsAny(token, "\r\n") {
-		return fmt.Errorf("loopback address and private token required")
+	if err != nil || len(token) < 32 || strings.ContainsAny(token, "\r\n") {
+		return fmt.Errorf("private token required")
+	}
+	if host != "127.0.0.1" && os.Getenv("HUB_CONTROLLER_REMOTE") != "1" {
+		return fmt.Errorf("loopback address required unless HUB_CONTROLLER_REMOTE=1")
 	}
 	c, err := newGenericController(config)
 	if err != nil {

@@ -34,8 +34,11 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			compose := Compose(s, "/source", d)
 			configs = append(configs, compose)
 			services := compose["services"].(M)
-			if len(services) != 1 {
+			if len(services) != 5 {
 				t.Fatal("embedded service")
+			}
+			if _, ok := services["communication-hub"]; ok {
+				t.Fatal("gateway started without a messaging feature")
 			}
 			runtime := services["hermes-runtime"].(M)
 			if runtime["build"].(M)["target"] != environment {

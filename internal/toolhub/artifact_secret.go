@@ -18,6 +18,35 @@ var artifactSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`),
 }
 
+// artifactSecretPrefixLen is the fixed literal prefix length per detector.
+// Index 0 (PEM header) has no token body and is never fixture-exempt.
+var artifactSecretPrefixLen = map[int]int{1: 4, 2: 11, 3: 4, 4: 5, 5: 3, 6: 4}
+
+// fixtureSecretBody reports whether a matched token is a placeholder: its
+// secret body (after the fixed prefix, ignoring separators) is one repeated
+// character. Real credentials are never uniform, so this cannot mask a usable
+// secret; upstream test fixtures like ghp_xxxx... stay buildable.
+func fixtureSecretBody(match []byte, detector int) bool {
+	prefix, ok := artifactSecretPrefixLen[detector]
+	if !ok || len(match) <= prefix {
+		return false
+	}
+	var seen byte
+	count := 0
+	for _, b := range match[prefix:] {
+		if (b < '0' || b > '9') && (b < 'a' || b > 'z') && (b < 'A' || b > 'Z') {
+			continue
+		}
+		if count == 0 {
+			seen = b
+		} else if b != seen {
+			return false
+		}
+		count++
+	}
+	return count >= 8
+}
+
 // VerifyArtifactContextNoSecrets is a deliberately high-confidence content
 // gate. It complements filename exclusion and the empty Docker client/env; it
 // does not claim to recognize every provider's credential format.
@@ -36,7 +65,10 @@ func VerifyArtifactContextNoSecrets(contextBytes []byte) error {
 			return fmt.Errorf("%w: unreadable artifact context", ErrInvalid)
 		}
 		for i, pattern := range artifactSecretPatterns {
-			if pattern.Match(data) {
+			for _, match := range pattern.FindAllIndex(data, -1) {
+				if fixtureSecretBody(data[match[0]:match[1]], i) {
+					continue
+				}
 				// Report only the path and detector class; never include matched
 				// bytes in an error, log or receipt.
 				return fmt.Errorf("%w: secret-like content in artifact context file %q (detector %d)", ErrUnauthorized, h.Name, i)

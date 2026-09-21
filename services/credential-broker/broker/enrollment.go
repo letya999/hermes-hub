@@ -122,7 +122,9 @@ func (b *Broker) validSession(raw, id string, approved bool) (sessionRecord, req
 }
 
 // OpenSession never authenticates link possession. The browser must separately
-// prove its principal by an approval sent through the authenticated Hub channel.
+// prove its principal by an approval sent through the authenticated Hub
+// channel, unless Config.DirectForm pre-approves every session for personal
+// loopback deployments.
 func (b *Broker) OpenSession(id, raw string) (v1.SessionView, string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -151,7 +153,7 @@ func (b *Broker) OpenSession(id, raw string) (v1.SessionView, string, error) {
 			return v1.SessionView{}, "", ErrConflict
 		}
 		raw = seal.Random()
-		s = sessionRecord{Hash: seal.Digest(raw), CodeHash: seal.Digest(b.sessionCode(raw)), RequestID: id, ExpiresAt: r.View.ExpiresAt}
+		s = sessionRecord{Hash: seal.Digest(raw), CodeHash: seal.Digest(b.sessionCode(raw)), RequestID: id, ExpiresAt: r.View.ExpiresAt, Approved: b.cfg.DirectForm}
 		e := b.audit("session.opened", r.Actor)
 		e.RequestID = id
 		if _, err := b.commit(mutation{Audit: e, Session: &s}); err != nil {

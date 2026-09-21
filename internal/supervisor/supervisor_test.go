@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -101,6 +102,42 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 
 func binding(contextRoot string) Binding {
 	return Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", UserID: "alice", OrganizationID: "personal", PolicyVersion: "policy-1", ContextRoot: contextRoot}
+}
+
+func TestProtectedSelfEnvIsProxiedToOwnedRuntime(t *testing.T) {
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/self-env" || r.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var request hubruntime.SelfEnvRequest
+		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Values["GOOGLE_OAUTH_CLIENT_SECRET"] != "client-secret" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"updated": []string{"GOOGLE_OAUTH_CLIENT_SECRET"}, "restart_scheduled": true})
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	request := hubruntime.SelfEnvRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Values: map[string]string{"GOOGLE_OAUTH_CLIENT_SECRET": "client-secret"}}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/self-env", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "restart_scheduled") {
+		t.Fatalf("self-env proxy status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestEnsureDeduplicatesAndReusesWarmRuntime(t *testing.T) {

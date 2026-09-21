@@ -150,6 +150,7 @@ type DefinitionSource struct {
 	Command            string   `json:"command,omitempty"`
 	Args               []string `json:"args,omitempty"`
 	Repository         string   `json:"repository,omitempty"`
+	Subfolder          string   `json:"subfolder,omitempty"`
 	CommitSHA          string   `json:"commit_sha,omitempty"`
 	ArchiveDigest      string   `json:"archive_digest,omitempty"`
 	ProvenanceDigest   string   `json:"provenance_digest,omitempty"`
@@ -352,9 +353,11 @@ func (s DefinitionSource) validate(transport Transport) error {
 		return fmt.Errorf("%w: unknown tool contract source", ErrInvalid)
 	}
 	if s.Repository != "" {
-		if _, err := (ArtifactSource{Repository: s.Repository, CommitSHA: "0000000000000000000000000000000000000000"}).ArchiveURL(); err != nil {
+		if _, err := (ArtifactSource{Repository: s.Repository, Subfolder: s.Subfolder, CommitSHA: "0000000000000000000000000000000000000000"}).ArchiveURL(); err != nil {
 			return fmt.Errorf("%w: canonical artifact repository required", ErrInvalid)
 		}
+	} else if s.Subfolder != "" {
+		return fmt.Errorf("%w: source subfolder requires a repository", ErrInvalid)
 	}
 	values := 0
 	if s.URL != "" {

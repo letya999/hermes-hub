@@ -101,7 +101,10 @@ It uses two GitHub API requests and exact-SHA raw file URLs with Git blob-ID
 checks, instead of consuming an API request for every file. Automatic downloads
 use batches of at most eight requests while retaining deterministic tar order
 and the total byte/time budgets. Filename filtering
-does not replace the still-required content secret scan.
+does not replace the still-required content secret scan. The scan treats a
+token-shaped match whose secret body is one repeated character as a placeholder
+fixture (upstream tests commonly embed `ghp_xxxx...`-style strings) and does
+not block on it; any varied body still fails closed.
 `GenerateArtifactRecipe` generates a pinned-base Dockerfile for conventional
 Python, Node, Go and Rust manifests; when no reviewed base is supplied it selects
 the repository-pinned digest for the detected language. An upstream Dockerfile
@@ -191,7 +194,14 @@ healthchecks fail closed. Upstream Dockerfile `RUN` options are parsed as
 instruction tokens after continuations are folded; `type=cache` mounts are
 inert metadata while secret, bind, ssh, tmpfs, typeless or unknown mounts,
 host/insecure/privileged options and Docker socket references mark the recipe
-`review` and force the generated `.hub` build fallback. Recipes are status
+`review` and force the generated `.hub` build fallback. Inside that fallback
+the upstream Dockerfile remains inert metadata: its last exec-form
+`ENTRYPOINT`/`CMD` may only disambiguate Go trees with several `main`
+packages (basename match against the selected directory or the `go.mod`
+module basename) and supply the matched binary's default arguments.
+The isolated `tools/list` preflight retries once with declared-but-optional
+secrets as placeholders; a successful retry proves they gate server startup
+and promotes them to required onboarding inputs. Recipes are status
 metadata, not authorization or
 execution; the existing preflight `tools/list`, Credential Broker, ToolHive and
 `/reload-mcp` gates remain authoritative.
@@ -355,7 +365,14 @@ For every credential-bearing MCP definition, add the reviewed contract fields
 `credential_contract_id`, `credential_contract_revision` and an explicit
 `credential_contract_env` mapping. ToolHub creates the Broker request and
 grant, Communication Hub accepts `/credentials <request-id> <code>`, and the
-runtime acquires/materializes/releases a lease. Existing local credential
+runtime acquires/materializes/releases a lease. The generated Compose stack
+sets `BROKER_DIRECT_FORM=1` on the broker service, so the connect link opens
+the credential form directly and the `/credentials` approval step is skipped;
+remove the variable (or set `direct_form` back in the broker config) to
+restore the trusted-channel confirmation required by the broker spec. If a
+connect link expires before submission, ToolHub issues a fresh request on the
+next status poll, so the user simply follows the new link. Existing local
+credential
 records are intentionally rejected once Broker mode is enabled, so migration
 is explicit and cannot silently mix ownership systems. ENV deliveries are
 supported. File deliveries use a reviewed read-only runtime mount and a
@@ -407,7 +424,14 @@ Official contracts: [OAuth](https://docs.slack.dev/authentication/using-pkce),
 The GitHub row is the opt-in remote MCP only (`https://api.githubcopilot.com/mcp/`
 with a `GITHUB_TOKEN` bearer); it is independent of `prepare_source`
 self-install, which only inspects the pinned repository as metadata and builds
-from the generated `.hub` recipe, never the upstream Dockerfile.
+from the generated `.hub` recipe, never the upstream Dockerfile. The two paths
+also keep separate credentials: the remote connector takes `GITHUB_TOKEN`,
+while a source install declares its own env inputs (for github-mcp-server the
+`GITHUB_PERSONAL_ACCESS_TOKEN`). Interactive OAuth inside a workload is not
+supported; instead the isolated preflight promotes a declared secret to a
+required input when `tools/list` proves startup needs it, and onboarding
+satisfies it through the existing protected form or a Credential Broker
+contract — including a broker-provisioned OAuth grant where one is reviewed.
 
 Telegram has two independent paths: `hub-communication` is the Bot API channel adapter,
 while `telegram_user` is the personal-account MCP data/action connector. Enabling one does

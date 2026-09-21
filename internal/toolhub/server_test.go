@@ -346,6 +346,10 @@ func TestPendingCredentialElicitRequiresFormURLAndURLCap(t *testing.T) {
 	if pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, map[string]any{}) != nil {
 		t.Fatal("empty form_url elicited")
 	}
+	fallback := pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, map[string]any{"form_url": "http://127.0.0.1/credentials/x?nonce=n"})
+	if fallback == nil || !strings.Contains(toolCallText(fallback, nil), "http://127.0.0.1/credentials/x") {
+		t.Fatal("unsupported client did not receive a protected form URL")
+	}
 	if clientSupportsURLElicitation(nil) {
 		t.Fatal("nil request advertised url elicitation")
 	}

@@ -92,7 +92,12 @@ func buildRestrictedOCI(ctx context.Context, recipe ArtifactRecipe, contextBytes
 	suffix := hex.EncodeToString(nonce[:])
 	builder, proxy, seed := "hermes-builder-"+suffix, "hermes-build-proxy-"+suffix, "hermes-build-seed-"+suffix
 	network := "hermes-build-net-" + suffix
-	volumes := []string{"hermes-build-state-" + suffix, "hermes-build-proxy-config-" + suffix, "hermes-build-context-" + suffix, "hermes-build-output-" + suffix}
+	stateVolume := "hermes-build-state-" + suffix
+	persistentState := buildCacheEnabled()
+	if persistentState {
+		stateVolume = "hermes-build-state-shared"
+	}
+	volumes := []string{stateVolume, "hermes-build-proxy-config-" + suffix, "hermes-build-context-" + suffix, "hermes-build-output-" + suffix}
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 20*time.Second)
 		defer stop()
@@ -101,6 +106,9 @@ func buildRestrictedOCI(ctx context.Context, recipe ArtifactRecipe, contextBytes
 		}
 		_, _ = run(cleanup, nil, "network", "rm", network)
 		for _, volume := range volumes {
+			if persistentState && volume == stateVolume {
+				continue
+			}
 			_, _ = run(cleanup, nil, "volume", "rm", volume)
 		}
 	}()
@@ -113,7 +121,7 @@ func buildRestrictedOCI(ctx context.Context, recipe ArtifactRecipe, contextBytes
 			return StoredOCIArtifact{}, err
 		}
 	}
-	seedArgs := []string{"create", "--name", seed, "--user", "0:0", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--cpus", "0.1", "--memory", "32m", "--memory-swap", "32m", "--pids-limit", "16",
+	seedArgs := []string{"create", "--name", seed, "--label", "hermes-hub.role=artifact-build-seed", "--user", "0:0", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--cpus", "0.1", "--memory", "32m", "--memory-swap", "32m", "--pids-limit", "16",
 		"--mount", "type=volume,source=" + volumes[1] + ",target=/proxy-config", "--mount", "type=volume,source=" + volumes[2] + ",target=/context", "--mount", "type=volume,source=" + volumes[3] + ",target=/output",
 		"--entrypoint", "/bin/chmod", restrictedBuildProxyImage, "0777", "/output"}
 	if _, err := run(ctx, nil, seedArgs...); err != nil {
@@ -211,6 +219,13 @@ func buildRestrictedOCI(ctx context.Context, recipe ArtifactRecipe, contextBytes
 	}
 	defer artifact.Close()
 	return PersistOCIArtifact(ctx, config.ArtifactDirectory, artifact, config.MaxArtifactBytes)
+}
+
+// buildCacheEnabled opts into a persistent rootless BuildKit state volume and
+// package-manager cache mounts for local development iteration. Production
+// keeps one-shot builders: no data crosses between builds.
+func buildCacheEnabled() bool {
+	return os.Getenv("HUB_BUILD_CACHE") == "1"
 }
 
 func verifyRestrictedBuildEgress(ctx context.Context, run artifactDockerRun, builder, proxy string) error {

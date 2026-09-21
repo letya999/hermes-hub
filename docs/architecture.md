@@ -137,8 +137,10 @@ organization/user deployment boundary, not a public hostile-tenant service. A us
 OAuth and Hermes state stay in that user's named volumes. Organization documents are
 read-only. Organization actions are explicit strings in host policy and are passed to
 hub-owned tools, not exposed as free `tenant`, `org` or `user` tool arguments.
-The hub `env_update` tool writes only the user runtime's `self-env.json`; the supervisor
-loads it on startup and restarts after an explicit owner update. `service_catalog` reports
+The hub `env_update` tool is legacy-only and is disabled for connector credentials when
+Communication Hub control is configured. `service_enable` returns a one-time protected
+form; the authenticated runtime control endpoint writes only the user runtime's
+`self-env.json`, and the supervisor loads it on startup. `service_catalog` reports
 connector status, and `service_enable` writes only the user runtime's `self-services.json`;
 the supervisor merges selected upstream MCP definitions into the next Hermes config.
 The allowlist comes from connector references, and organization-owned keys plus

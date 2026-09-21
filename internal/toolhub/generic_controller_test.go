@@ -274,7 +274,10 @@ func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 		"seccomp": func(v []map[string]any) {
 			v[0]["HostConfig"].(map[string]any)["SecurityOpt"] = []string{"no-new-privileges=true"}
 		},
-		"bind":   func(v []map[string]any) { v[0]["HostConfig"].(map[string]any)["Binds"] = []string{"C:\\Users"} },
+		"bind": func(v []map[string]any) {
+			v[0]["HostConfig"].(map[string]any)["Binds"] = []string{"C:\\Users"}
+			v[0]["Mounts"] = append(v[0]["Mounts"].([]any), map[string]any{"Type": "bind", "Source": "C:\\Users", "Destination": "/host", "RW": false})
+		},
 		"volume": func(v []map[string]any) { v[1]["Mounts"] = []any{} },
 		"mcp-secret": func(v []map[string]any) {
 			v[0]["Config"].(map[string]any)["Env"] = []string{"HERMES_BRIDGE_TOKEN=" + strings.Repeat("s", 32)}
@@ -288,6 +291,17 @@ func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 		if _, err := c.inspect(context.Background(), workload); err == nil {
 			t.Fatalf("%s profile accepted", name)
 		}
+	}
+	var credentialContainers []map[string]any
+	_ = json.Unmarshal(valid, &credentialContainers)
+	secret := filepath.Join(root, "credential.json")
+	workload.plan.CredentialMounts = []Mount{{Source: secret, Target: "/run/credentials/google.json", ReadOnly: true}}
+	credentialContainers[0]["HostConfig"].(map[string]any)["Binds"] = []string{secret + ":/run/credentials/google.json:ro"}
+	credentialContainers[0]["Mounts"] = append(credentialContainers[0]["Mounts"].([]any), map[string]any{"Type": "bind", "Source": secret, "Destination": "/run/credentials/google.json", "RW": false})
+	body, _ := json.Marshal(credentialContainers)
+	c.command = func(context.Context, string, ...string) ([]byte, error) { return body, nil }
+	if _, err := c.inspect(context.Background(), workload); err != nil {
+		t.Fatalf("declared credential bind rejected: %v", err)
 	}
 	if _, err := genericProxyConfig([]string{"service.example.com:443", "10.0.0.0/8"}); err != nil {
 		t.Fatal(err)

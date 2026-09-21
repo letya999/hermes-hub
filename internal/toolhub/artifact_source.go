@@ -27,12 +27,13 @@ var repositoryPartPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}
 // Administrator-prepared sources use the same pinned archive/recipe contract.
 type ArtifactSource struct {
 	Repository string `json:"repository"`
+	Subfolder  string `json:"subfolder,omitempty"`
 	CommitSHA  string `json:"commit_sha"`
 }
 
 func (s ArtifactSource) ArchiveURL() (string, error) {
 	u, err := url.Parse(s.Repository)
-	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || !gitSHAPattern.MatchString(s.CommitSHA) {
+	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || !gitSHAPattern.MatchString(s.CommitSHA) || !validGitHubSubfolder(s.Subfolder) {
 		return "", fmt.Errorf("%w: public GitHub URL and exact lowercase 40-character commit SHA required", ErrInvalid)
 	}
 	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
@@ -40,6 +41,22 @@ func (s ArtifactSource) ArchiveURL() (string, error) {
 		return "", fmt.Errorf("%w: canonical GitHub owner/repository URL required", ErrInvalid)
 	}
 	return "https://codeload.github.com/" + parts[0] + "/" + parts[1] + "/tar.gz/" + s.CommitSHA, nil
+}
+
+func validGitHubSubfolder(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) > 512 || strings.ContainsAny(value, "\\:\x00\r\n") || strings.HasPrefix(value, "/") || path.Clean(value) != value || value == ".." || strings.HasPrefix(value, "../") {
+		return false
+	}
+	for _, part := range strings.Split(value, "/") {
+		lower := strings.ToLower(part)
+		if part == "" || part == ".git" || strings.Contains(lower, "secret") || strings.Contains(lower, "credential") {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveGitHubSource turns a canonical public repository URL into the exact
@@ -117,14 +134,25 @@ func FetchRepositoryArtifactContext(ctx context.Context, source ArtifactSource, 
 	transport.Proxy = nil
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true)
+	return fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, false)
+}
+
+// FetchRepositoryRecipeContext includes only the two additional metadata
+// filenames the resolver is explicitly allowed to inspect. They are never
+// used as a build context; the generated build path keeps the stricter filter.
+func FetchRepositoryRecipeContext(ctx context.Context, source ArtifactSource, maxBytes int64) ([]byte, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, true)
 }
 
 func fetchArtifactContext(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64) ([]byte, error) {
-	return fetchArtifactContextMode(ctx, client, source, files, maxBytes, false)
+	return fetchArtifactContextMode(ctx, client, source, files, maxBytes, false, false)
 }
 
-func fetchArtifactContextMode(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64, discover bool) ([]byte, error) {
+func fetchArtifactContextMode(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64, discover, recipeMetadata bool) ([]byte, error) {
 	if _, err := source.ArchiveURL(); err != nil {
 		return nil, err
 	}
@@ -133,7 +161,7 @@ func fetchArtifactContextMode(ctx context.Context, client *http.Client, source A
 	}
 	wanted := map[string]bool{}
 	for _, name := range files {
-		if !artifactContextPath(name) || wanted[name] {
+		if (!artifactContextPath(name) && !(recipeMetadata && recipeContextPath(name))) || wanted[name] {
 			return nil, fmt.Errorf("%w: unsafe or duplicate context path", ErrInvalid)
 		}
 		wanted[name] = true
@@ -188,15 +216,26 @@ func fetchArtifactContextMode(ctx context.Context, client *http.Client, source A
 	if tree.SHA != commit.Tree.SHA || tree.Truncated {
 		return nil, fmt.Errorf("%w: incomplete source tree", ErrInvalid)
 	}
+	outputNames := map[string]string{}
 	if discover {
 		for _, entry := range tree.Tree {
-			if entry.Type == "tree" || !artifactContextPath(entry.Path) || !artifactAutoBuildPath(entry.Path) {
+			outputName := entry.Path
+			if source.Subfolder != "" {
+				prefix := strings.TrimSuffix(source.Subfolder, "/") + "/"
+				var ok bool
+				outputName, ok = strings.CutPrefix(entry.Path, prefix)
+				if !ok {
+					continue
+				}
+			}
+			if entry.Type == "tree" || outputName == "" || (!artifactContextPath(outputName) && !(recipeMetadata && recipeContextPath(outputName))) || (!recipeMetadata && !artifactAutoBuildPath(outputName)) {
 				continue
 			}
 			if wanted[entry.Path] || len(files) >= 4096 {
 				return nil, fmt.Errorf("%w: duplicate or oversized source tree", ErrInvalid)
 			}
 			wanted[entry.Path] = true
+			outputNames[entry.Path] = outputName
 			files = append(files, entry.Path)
 		}
 		if len(files) == 0 {
@@ -289,7 +328,11 @@ func fetchArtifactContextMode(ctx context.Context, client *http.Client, source A
 			if errors[i] != nil {
 				return nil, errors[i]
 			}
-			if err := w.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: entries[name].size, Typeflag: tar.TypeReg}); err != nil {
+			outputName := name
+			if value := outputNames[name]; value != "" {
+				outputName = value
+			}
+			if err := w.WriteHeader(&tar.Header{Name: outputName, Mode: 0644, Size: entries[name].size, Typeflag: tar.TypeReg}); err != nil {
 				return nil, err
 			}
 			if _, err := w.Write(contents[i]); err != nil {
@@ -308,11 +351,25 @@ func artifactContextPath(name string) bool {
 		return false
 	}
 	for _, part := range strings.Split(strings.ToLower(name), "/") {
-		if part == ".git" || part == ".ssh" || part == "spaces" || part == "node_modules" || part == ".venv" || part == ".npmrc" || part == ".netrc" || part == ".pypirc" || part == ".mcp.json" || part == "claude_desktop_config.json" || part == ".env" || strings.HasPrefix(part, ".env.") || strings.Contains(part, "credential") || strings.Contains(part, "secret") || strings.HasPrefix(part, "id_rsa") || strings.HasPrefix(part, "id_ed25519") || strings.HasSuffix(part, ".pem") || strings.HasSuffix(part, ".key") || strings.HasSuffix(part, ".p12") || strings.HasSuffix(part, ".pfx") || part == "token.json" || part == "tokens.json" {
+		if part == ".git" || part == ".ssh" || part == "spaces" || part == "node_modules" || part == ".venv" || part == ".npmrc" || part == ".netrc" || part == ".pypirc" || part == ".mcp.json" || part == "claude_desktop_config.json" || part == ".env" || strings.HasPrefix(part, ".env.") || strings.HasPrefix(part, "id_rsa") || strings.HasPrefix(part, "id_ed25519") || strings.HasSuffix(part, ".pem") || strings.HasSuffix(part, ".key") || strings.HasSuffix(part, ".p12") || strings.HasSuffix(part, ".pfx") || part == "token.json" || part == "tokens.json" {
+			return false
+		}
+		// Source files like secret_scanning.go are legitimate build inputs; the
+		// substring ban targets credential-material files, which the content
+		// secret scanner also covers independently.
+		if !artifactSourceExtension(part) && (strings.Contains(part, "credential") || strings.Contains(part, "secret")) {
 			return false
 		}
 	}
 	return true
+}
+
+func artifactSourceExtension(part string) bool {
+	switch path.Ext(part) {
+	case ".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rs", ".java", ".kt", ".rb", ".php", ".cs", ".c", ".h", ".cpp", ".hpp", ".cc", ".swift", ".scala", ".sh", ".bash", ".ps1", ".sql", ".html", ".css", ".vue", ".svelte":
+		return true
+	}
+	return false
 }
 
 // artifactAutoBuildPath keeps generated language contexts focused on files

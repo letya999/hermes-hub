@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -683,6 +685,7 @@ func TestSpoolAndTelegramErrorPaths(t *testing.T) {
 
 func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
 	c := testConfig(t)
+	c.FormOrigin = "http://127.0.0.1:8081"
 	key, err := credstore.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -701,10 +704,10 @@ func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
 	runner := &fakeRunner{}
 	g.api, g.runner = fake, runner
 	secret := "group-or-chat-secret-value"
-	if err := g.handleUpdate(context.Background(), Update{UpdateID: 1, Message: &Message{MessageID: 9, From: &TGUser{ID: 11}, Chat: TGChat{ID: 99, Type: "group"}, Text: "GOOGLE_TOKEN=" + secret}}); err != nil {
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 1, Message: &Message{MessageID: 9, From: &TGUser{ID: 11}, Chat: TGChat{ID: 99, Type: "group"}, Text: "GITHUB_TOKEN=" + secret}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(context.Background(), Update{UpdateID: 2, Message: &Message{MessageID: 10, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "GOOGLE_TOKEN=" + secret}}); err != nil {
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 2, Message: &Message{MessageID: 10, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "GITHUB_TOKEN=" + secret}}); err != nil {
 		t.Fatal(err)
 	}
 	for range 4 {
@@ -717,12 +720,295 @@ func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
 		t.Fatalf("hermes saw %v", runner.seen)
 	}
 	joined := strings.Join(fake.sent, "\n")
-	if strings.Contains(joined, secret) || !strings.Contains(joined, "Группы не принимают секреты") || !strings.Contains(joined, "GOOGLE_TOKEN") {
+	if strings.Contains(joined, secret) || !strings.Contains(joined, "Группы не принимают секреты") || !strings.Contains(joined, "защищённой форме") {
 		t.Fatalf("sent=%v", fake.sent)
 	}
 	listed, err := g.secrets.List("alice")
-	if err != nil || len(listed) != 1 || listed[0].Name != "GOOGLE_TOKEN" {
+	if err != nil || len(listed) != 0 {
 		t.Fatalf("stored=%+v err=%v", listed, err)
+	}
+}
+
+func TestCredentialFormStoresOnlyAfterProtectedSubmit(t *testing.T) {
+	c := testConfig(t)
+	c.FormOrigin = "http://127.0.0.1:8081"
+	c.ControlAuth = "control-token"
+	c.Users[0].ConfiguredEnv = map[string]bool{"GOOGLE_OAUTH_CLIENT_ID": true, "GOOGLE_OAUTH_CLIENT_SECRET": true}
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/credential-forms", strings.NewReader(`{"service":"google","keys":["GOOGLE_OAUTH_CLIENT_ID","GOOGLE_OAUTH_CLIENT_SECRET"]}`))
+	request.Header.Set("Authorization", "Bearer control-token")
+	request.Header.Set("X-Hub-Principal", "alice")
+	request.Header.Set("Content-Type", "application/json")
+	created := httptest.NewRecorder()
+	g.Handler().ServeHTTP(created, request)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create form status=%d body=%s", created.Code, created.Body.String())
+	}
+	var response credentialFormResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil || response.FormURL == "" {
+		t.Fatalf("form response=%s err=%v", created.Body.String(), err)
+	}
+	parsed, err := url.Parse(response.FormURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := httptest.NewRequest(http.MethodGet, parsed.RequestURI(), nil)
+	get.Host = "127.0.0.1:8081"
+	page := httptest.NewRecorder()
+	g.Handler().ServeHTTP(page, get)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "GOOGLE_OAUTH_CLIENT_SECRET") {
+		t.Fatalf("form page status=%d body=%s", page.Code, page.Body.String())
+	}
+	post := httptest.NewRequest(http.MethodPost, parsed.Path+"?nonce="+parsed.Query().Get("nonce"), strings.NewReader("GOOGLE_OAUTH_CLIENT_ID=client-id&GOOGLE_OAUTH_CLIENT_SECRET=client-secret"))
+	post.Host = "127.0.0.1:8081"
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	saved := httptest.NewRecorder()
+	g.Handler().ServeHTTP(saved, post)
+	if saved.Code != http.StatusOK || strings.Contains(saved.Body.String(), "client-secret") {
+		t.Fatalf("submit status=%d body=%s", saved.Code, saved.Body.String())
+	}
+	values, err := envstore.Load(filepath.Join(c.Users[0].StateDir, envstore.FileName), "GOOGLE_OAUTH_CLIENT_ID,GOOGLE_OAUTH_CLIENT_SECRET", "")
+	if err != nil || values["GOOGLE_OAUTH_CLIENT_ID"] != "client-id" || values["GOOGLE_OAUTH_CLIENT_SECRET"] != "client-secret" {
+		t.Fatalf("stored values=%v err=%v", values, err)
+	}
+}
+
+func TestCredentialFormRejectsReplayAndNonLoopbackRequests(t *testing.T) {
+	c := testConfig(t)
+	c.FormOrigin = "http://127.0.0.1:8081"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(form.FormURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := httptest.NewRequest(http.MethodGet, parsed.RequestURI(), nil)
+	foreign.Host = "example.com"
+	blocked := httptest.NewRecorder()
+	g.Handler().ServeHTTP(blocked, foreign)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("non-loopback form status=%d", blocked.Code)
+	}
+	badNonce := httptest.NewRequest(http.MethodGet, parsed.Path+"?nonce=bad", nil)
+	badNonce.Host = "127.0.0.1:8081"
+	bad := httptest.NewRecorder()
+	g.Handler().ServeHTTP(bad, badNonce)
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("bad nonce status=%d", bad.Code)
+	}
+	wrongMethod := httptest.NewRequest(http.MethodPut, parsed.RequestURI(), nil)
+	wrongMethod.Host = "127.0.0.1:8081"
+	methodResult := httptest.NewRecorder()
+	g.Handler().ServeHTTP(methodResult, wrongMethod)
+	if methodResult.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("wrong method status=%d", methodResult.Code)
+	}
+	missing := httptest.NewRequest(http.MethodPost, parsed.RequestURI(), strings.NewReader(""))
+	missing.Host = "127.0.0.1:8081"
+	missing.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	missingResult := httptest.NewRecorder()
+	g.Handler().ServeHTTP(missingResult, missing)
+	if missingResult.Code != http.StatusBadRequest {
+		t.Fatalf("missing field status=%d", missingResult.Code)
+	}
+	saved := httptest.NewRequest(http.MethodPost, parsed.RequestURI(), strings.NewReader("GITHUB_TOKEN=secret"))
+	saved.Host = "127.0.0.1:8081"
+	saved.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	savedResult := httptest.NewRecorder()
+	g.Handler().ServeHTTP(savedResult, saved)
+	if savedResult.Code != http.StatusOK {
+		t.Fatalf("valid form status=%d", savedResult.Code)
+	}
+	savedAgain := httptest.NewRequest(http.MethodPost, parsed.RequestURI(), strings.NewReader("GITHUB_TOKEN=secret"))
+	savedAgain.Host = "127.0.0.1:8081"
+	savedAgain.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	replay := httptest.NewRecorder()
+	g.Handler().ServeHTTP(replay, savedAgain)
+	if replay.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed form status=%d", replay.Code)
+	}
+}
+
+func TestCredentialFormUsesAuthenticatedRuntimeControl(t *testing.T) {
+	var seen bool
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/self-env" || r.Header.Get("Authorization") != "Bearer runtime-secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		seen = strings.Contains(string(body), "client-secret")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"updated":["GOOGLE_OAUTH_CLIENT_SECRET"],"restart_scheduled":true}`))
+	}))
+	defer runtimeAPI.Close()
+	c := testConfig(t)
+	c.RuntimeURL = runtimeAPI.URL
+	c.RuntimeAuth = "runtime-secret"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := credentialForm{OwnerID: "alice", Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1")}
+	request := httptest.NewRequest(http.MethodPost, "/credentials/form", nil)
+	if err := g.persistCredentialForm(request, form, map[string]string{"GOOGLE_OAUTH_CLIENT_SECRET": "client-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Fatal("runtime did not receive the protected form update")
+	}
+}
+
+func TestCredentialFormValidationAndOrigins(t *testing.T) {
+	g := &Gateway{config: Config{ListenAddr: "0.0.0.0:8081"}, now: time.Now}
+	if origin, err := g.formOrigin(); err != nil || origin != "http://127.0.0.1:8081" {
+		t.Fatalf("wildcard origin=%q err=%v", origin, err)
+	}
+	for _, origin := range []string{"", "ftp://example.com", "http://example.com?token=bad"} {
+		g.config.FormOrigin = origin
+		if origin == "" {
+			g.config.ListenAddr = ""
+		}
+		if _, err := g.formOrigin(); err == nil {
+			t.Fatalf("invalid origin accepted: %q", origin)
+		}
+	}
+	g.config.FormOrigin = "https://example.com"
+	if origin, err := g.formOrigin(); err != nil || origin != g.config.FormOrigin {
+		t.Fatalf("explicit origin=%q err=%v", origin, err)
+	}
+	g.config.FormOrigin = ""
+	g.config.ListenAddr = "http://127.0.0.1:8081"
+	if _, err := g.formOrigin(); err != nil {
+		t.Fatal(err)
+	}
+	g.config.ListenAddr = "127.0.0.1:8081"
+	if _, err := g.formOrigin(); err != nil {
+		t.Fatal(err)
+	}
+	g.forms = nil
+	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
+		t.Fatal(err)
+	}
+	g.forms["expired"] = credentialForm{OwnerID: "alice", ExpiresAt: time.Now().Add(-time.Minute)}
+	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
+		t.Fatal(err)
+	}
+
+	user := User{ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}
+	if _, err := g.formKeys(user, "", nil); err == nil {
+		t.Fatal("empty credential request accepted")
+	}
+	if _, err := g.formKeys(user, "missing", nil); err == nil {
+		t.Fatal("unknown connector accepted")
+	}
+	if _, err := g.formKeys(user, "", []string{"HUB_RUNTIME_AUTH"}); err == nil {
+		t.Fatal("gateway secret accepted")
+	}
+	keys, err := g.formKeys(user, "", []string{"GITHUB_TOKEN", "GITHUB_TOKEN"})
+	if err != nil || len(keys) != 1 || keys[0] != "GITHUB_TOKEN" {
+		t.Fatalf("deduplicated keys=%v err=%v", keys, err)
+	}
+
+	if communicationLoopbackHTTP(nil) || communicationLoopbackHTTP(httptest.NewRequest(http.MethodGet, "/", nil)) {
+		t.Fatal("non-loopback request accepted")
+	}
+	localhost := httptest.NewRequest(http.MethodGet, "/", nil)
+	localhost.Host = "localhost:8081"
+	if !communicationLoopbackHTTP(localhost) {
+		t.Fatal("localhost request rejected")
+	}
+	missingPath := httptest.NewRequest(http.MethodGet, "/credentials/?nonce=bad", nil)
+	missingPath.Host = "127.0.0.1:8081"
+	missingResult := httptest.NewRecorder()
+	g.Handler().ServeHTTP(missingResult, missingPath)
+	if missingResult.Code != http.StatusNotFound {
+		t.Fatalf("missing form path status=%d", missingResult.Code)
+	}
+}
+
+func TestCredentialFormRequestRejectsInvalidControlInput(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	c.FormOrigin = "http://127.0.0.1:8081"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodPost, "/v1/credential-forms", strings.NewReader(`{"service":"missing"}`)),
+		httptest.NewRequest(http.MethodGet, "/v1/credential-forms", nil),
+		httptest.NewRequest(http.MethodPost, "/v1/credential-forms", strings.NewReader("not-json")),
+	} {
+		request.Header.Set("Authorization", "Bearer control-token")
+		request.Header.Set("X-Hub-Principal", "alice")
+		result := httptest.NewRecorder()
+		g.Handler().ServeHTTP(result, request)
+		if result.Code != http.StatusBadRequest && result.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("invalid control request status=%d body=%s", result.Code, result.Body.String())
+		}
+	}
+	unauthorized := httptest.NewRecorder()
+	g.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/v1/credential-forms", strings.NewReader(`{}`)))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+	g.config.FormOrigin = "ftp://example.com"
+	unavailable := httptest.NewRequest(http.MethodPost, "/v1/credential-forms", strings.NewReader(`{"service":"github"}`))
+	unavailable.Header.Set("Authorization", "Bearer control-token")
+	unavailable.Header.Set("X-Hub-Principal", "alice")
+	unavailableResult := httptest.NewRecorder()
+	g.Handler().ServeHTTP(unavailableResult, unavailable)
+	if unavailableResult.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable form status=%d", unavailableResult.Code)
+	}
+}
+
+func TestCredentialFormRuntimeRejectsUpdate(t *testing.T) {
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rejected", http.StatusUnauthorized)
+	}))
+	defer runtimeAPI.Close()
+	g := &Gateway{config: Config{RuntimeURL: runtimeAPI.URL, RuntimeAuth: "runtime-secret"}}
+	request := httptest.NewRequest(http.MethodPost, "/credentials/form", nil)
+	if err := g.persistCredentialForm(request, credentialForm{OwnerID: "alice"}, map[string]string{"GITHUB_TOKEN": "secret"}); err == nil {
+		t.Fatal("runtime rejection accepted")
+	}
+}
+
+func TestCredentialFormPersistsThroughEncryptedStore(t *testing.T) {
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := credstore.WriteKeyFile(keyFile, key); err != nil {
+		t.Fatal(err)
+	}
+	c := testConfig(t)
+	c.CredentialStore = filepath.Join(t.TempDir(), "store.enc")
+	c.CredentialKeyFile = keyFile
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/credentials/form", nil)
+	form := credentialForm{OwnerID: "alice", Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1")}
+	if err := g.persistCredentialForm(request, form, map[string]string{"GITHUB_TOKEN": "encrypted-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := g.secrets.List("alice")
+	if err != nil || len(entries) != 1 || entries[0].Name != "GITHUB_TOKEN" {
+		t.Fatalf("encrypted entries=%+v err=%v", entries, err)
 	}
 }
 
@@ -911,11 +1197,11 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 	if err := g.handleUpdate(context.Background(), Update{UpdateID: 9, Message: &Message{MessageID: 21, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "GOOGLE_TOKEN=rotated-chat-secret"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "after"}}); err == nil {
-		t.Fatal("chat intercept did not cut open session")
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "after"}}); err != nil {
+		t.Fatal("chat rejection unexpectedly cut open session:", err)
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("backend ran after chat rotate: %d", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("backend did not remain available after rejected chat secret: %d", calls.Load())
 	}
 }
 

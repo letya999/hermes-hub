@@ -112,7 +112,7 @@ func TestArtifactAutomaticContextUsesVerifiedRawFiles(t *testing.T) {
 			}))
 			defer fixture.Close()
 			client := &http.Client{Transport: calendarFixtureTransport{endpoint: fixture.URL, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-			data, err := fetchArtifactContextMode(context.Background(), client, ArtifactSource{Repository: "https://github.com/example/mcp", CommitSHA: sha}, nil, 64<<20, true)
+			data, err := fetchArtifactContextMode(context.Background(), client, ArtifactSource{Repository: "https://github.com/example/mcp", CommitSHA: sha}, nil, 64<<20, true, false)
 			if scenario != "ok" {
 				if err == nil || data != nil {
 					t.Fatal("unsafe automatic source accepted")
@@ -138,6 +138,48 @@ func TestArtifactAutomaticContextUsesVerifiedRawFiles(t *testing.T) {
 	}
 	if _, err := FetchRepositoryArtifactContext(context.Background(), ArtifactSource{Repository: "https://github.com/example/mcp", CommitSHA: "main"}, 1024); err == nil {
 		t.Fatal("mutable ref accepted")
+	}
+}
+
+func TestArtifactAutomaticContextScopesPinnedSubfolder(t *testing.T) {
+	sha, treeSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	content := []byte("print('scoped')\n")
+	h := sha1.New() // #nosec G401 -- fixture Git blob ID.
+	_, _ = fmt.Fprintf(h, "blob %d\x00", len(content))
+	_, _ = h.Write(content)
+	blobSHA := hex.EncodeToString(h.Sum(nil))
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/git/commits/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "tree": map[string]any{"sha": treeSHA}})
+		case strings.Contains(r.URL.Path, "/git/trees/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": treeSHA, "tree": []any{
+				map[string]any{"path": "packages/mcp/server.py", "type": "blob", "mode": "100644", "sha": blobSHA, "size": len(content)},
+				map[string]any{"path": "other/server.py", "type": "blob", "mode": "100644", "sha": blobSHA, "size": len(content)},
+			}})
+		default:
+			if r.URL.Path != "/example/mcp/"+sha+"/packages/mcp/server.py" {
+				t.Errorf("unexpected raw file %s", r.URL.Path)
+			}
+			_, _ = w.Write(content)
+		}
+	}))
+	defer fixture.Close()
+	client := &http.Client{Transport: calendarFixtureTransport{endpoint: fixture.URL, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	data, err := fetchArtifactContextMode(context.Background(), client, ArtifactSource{Repository: "https://github.com/example/mcp", Subfolder: "packages/mcp", CommitSHA: sha}, nil, 64<<20, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := tar.NewReader(bytes.NewReader(data))
+	header, err := r.Next()
+	if err != nil || header.Name != "server.py" {
+		t.Fatalf("wrong scoped file: %+v %v", header, err)
+	}
+	if got, _ := io.ReadAll(r); !bytes.Equal(got, content) {
+		t.Fatal("scoped file content changed")
+	}
+	if _, err := r.Next(); err != io.EOF {
+		t.Fatal("file outside pinned subfolder included")
 	}
 }
 

@@ -1,6 +1,6 @@
 ---
 description: "Native TLS, private directories, providers и согласование runtime paths."
-last_verified: "2026-09-18"
+last_verified: "2026-09-21"
 ---
 
 # Конфигурация и развёртывание
@@ -24,6 +24,15 @@ Public origin должен совпадать с фактическим Host, в
 `master.key` — 32 raw random bytes для шифрования metadata и optional local provider, не пользовательский
 PAT. Private identity keys остаются в соответствующих Hub/runtime services; Broker получает только
 их raw32 public keys. Dev init создаёт все роли рядом только для лаборатории.
+
+## Browser session approval
+
+По умолчанию `/connect/<id>` сначала показывает одноразовый код привязки: форма открывается только
+после `POST /v1/requests/<id>/approve` из доверенного канала Hub. Поле `direct_form` в config.json
+или переменная `BROKER_DIRECT_FORM=1` при `serve` отключают этот шаг — форма доступна сразу по
+ссылке. Режим предназначен для personal loopback-развёртываний: единственными барьерами остаются
+секретность 128-битного id ссылки, TTL запроса и одноразовая сессия. На shared listener или при
+пересылаемых ссылках режим не включать; TLS, Origin/CSRF и аудит он не затрагивает.
 
 ## Providers
 

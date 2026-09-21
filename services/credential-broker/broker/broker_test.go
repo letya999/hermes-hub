@@ -593,3 +593,24 @@ func TestRotationCannotResurrectRevokedCredential(t *testing.T) {
 		t.Fatal(current)
 	}
 }
+
+func TestDirectFormSkipsChannelApproval(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.DirectForm = true
+	f.restart()
+	r := f.request(alice, "pat", "conn_direct", "create__direct")
+	v, cookie, e := f.b.OpenSession(r.ID, "")
+	if e != nil || !v.Approved || len(v.Fields) != 1 {
+		t.Fatal("direct form must open pre-approved", v, e)
+	}
+	if e = f.b.Approve(alice, r.ID, v.Code); !errors.Is(e, ErrDenied) {
+		t.Fatal("pre-approved session accepted a second approval", e)
+	}
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("SENTINEL_NOT_A_REAL_SECRET")}); e != nil {
+		t.Fatal(e)
+	}
+	rr, e := f.b.GetRequest(alice, r.ID)
+	if e != nil || rr.Status != "ready" || rr.CredentialID == "" {
+		t.Fatal(rr, e)
+	}
+}

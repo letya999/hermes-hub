@@ -58,32 +58,26 @@ Add `telegram_user` and restart with `up`. Default tools only read. Add `telegra
 only if you want Hermes to send/reply or save Telegram drafts under your account.
 Enabling it makes these tools available; SOUL requires the owner's sending instruction.
 
-## 2a. Updating connector env from the owner chat
+## 2a. Updating connector credentials
 
-After the runtime is already reachable, the owner can send explicit entries such as:
-
-```text
-GITHUB_TOKEN=...
-SLACK_MCP_XOXP_TOKEN=...
-```
-
-Hermes passes the message to `env_update`. The bot accepts `KEY=value`, `KEY: value`,
-or a key on one line followed by its value on the next line. Values are stored only in
-that user's runtime volume as `self-env.json`; the tool returns key names and schedules a
-supervisor restart after the Telegram reply is delivered. Organization secret keys and
-runtime-control variables cannot be changed this way. The initial bot token/model
-credential still has to be provisioned locally so the runtime can receive the first
-message. After processing, the communication gateway asks Telegram to delete the
-secret-bearing message and never writes its value to the gateway spool; deletion is
-best-effort, so Telegram retention policy still applies.
+Connector credentials are entered only through the one-time protected form that Hermes
+returns after `service_enable` or ToolHub `required_credentials`. They are never sent as
+`KEY=value` through Telegram or Hermes. The form writes only to the selected user's
+runtime and schedules a restart; it expires after a short TTL and cannot be reused.
+The initial bot token/model credential still has to be provisioned locally so the runtime
+can receive the first message. If an old chat message contains `KEY=value`, it is deleted
+best-effort and rejected; use the returned protected form instead.
 
 The same Telegram bot can manage the connector lifecycle. Ask “какие сервисы доступны”
 to receive the current catalog and statuses, then say “включи GitLab” (or another
-self-service connector). Hermes returns the exact missing key names, accepts the next
-explicit connector env message through `env_update`, stores it in the user's isolated
-runtime and restarts after delivering the reply before retrying the enable request. Values are never returned by
-the tools. Browser, Meet, Telegram transport and native bridges remain host-managed and
-are reported as such.
+self-service connector). Hermes returns the exact missing key names and a protected form
+link. After submission, retry the enable request. Google may then return its official OAuth
+consent URL; follow that URL in the browser. Values are never returned by the tools.
+For an arbitrary MCP, the form is generated on demand from its resolved Connection Recipe:
+field names, count and order are taken from that recipe, with the declared input type,
+delivery target and OAuth alternatives. There is no pre-created universal credential form.
+Browser, Meet, Telegram transport and native bridges remain host-managed and are reported
+as such.
 
 ## 3. Google Workspace and archive
 

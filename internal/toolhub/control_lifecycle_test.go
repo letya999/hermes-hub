@@ -24,7 +24,11 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	control := &ControlPlane{Store: store, WorkloadRoot: root, Now: time.Now}
+	var released []string
+	control := &ControlPlane{Store: store, WorkloadRoot: root, Now: time.Now, Release: func(_ context.Context, workloadID string) error {
+		released = append(released, workloadID)
+		return nil
+	}}
 	auth := aliceAuth()
 	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "life-1"})
 	if err != nil {
@@ -86,6 +90,15 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	}
 	if _, err := os.Stat(ws.Path); !os.IsNotExist(err) {
 		t.Fatal("binding volume survived remove")
+	}
+	found := false
+	for _, id := range released {
+		if id == workload.WorkloadID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("remove did not release workload %s: %v", workload.WorkloadID, released)
 	}
 	if tools, err := store.ListProjectedTools(auth); err != nil || len(tools) != 0 {
 		t.Fatalf("removed projection=%+v err=%v", tools, err)

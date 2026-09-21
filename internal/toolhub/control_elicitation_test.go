@@ -122,17 +122,11 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status["phase"] != PhaseAwaitingConfirm {
-		t.Fatalf("credential form did not await confirmation: %v", status)
+	if status["phase"] != PhaseEnabled {
+		t.Fatalf("credential form did not complete authorization: %v", status)
 	}
 	if err := control.SubmitCredentials(prepared["onboarding_id"].(string), nonceFromPath(formPath), map[string]string{"GOOGLE_TOKEN": testSecret}); err == nil {
 		t.Fatal("one-time credential form replay accepted")
-	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
-		t.Fatal(err)
 	}
 	status, err = callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil || status["phase"] != PhaseEnabled {

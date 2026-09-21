@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -193,7 +194,14 @@ func (r ArtifactRecipe) verifyDockerfile(data []byte) error {
 		case "USER":
 			user = strings.Join(fields[1:], " ")
 		case "COPY", "RUN", "WORKDIR", "ENV", "LABEL", "CMD", "EXPOSE":
-			if strings.HasPrefix(fields[1], "--") && instruction != "COPY" {
+			rest := fields[1:]
+			for instruction == "RUN" && len(rest) > 0 && strings.HasPrefix(rest[0], "--mount=") {
+				if err := validateCacheMountFlag(rest[0]); err != nil {
+					return err
+				}
+				rest = rest[1:]
+			}
+			if len(rest) == 0 || (strings.HasPrefix(rest[0], "--") && instruction != "COPY") {
 				return fmt.Errorf("%w: build entitlements and mounts unsupported", ErrInvalid)
 			}
 			if instruction == "COPY" {
@@ -209,6 +217,65 @@ func (r ArtifactRecipe) verifyDockerfile(data []byte) error {
 	}
 	if !from || user != "10001:10001" || !slices.Equal(entrypoint, r.Entrypoint) {
 		return fmt.Errorf("%w: final-stage non-root owner and declared entrypoint required", ErrInvalid)
+	}
+	return nil
+}
+
+var (
+	cacheMountIDPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+	cacheMountModePattern  = regexp.MustCompile(`^0?[0-7]{3,4}$`)
+	cacheMountOwnerPattern = regexp.MustCompile(`^[0-9]{1,7}$`)
+)
+
+// validateCacheMountFlag admits only BuildKit cache mounts. Cache mounts persist
+// package-manager state across isolated builds; bind, secret, ssh and tmpfs
+// mounts could smuggle host data or credentials into a build and stay rejected.
+func validateCacheMountFlag(flag string) error {
+	keys := map[string]bool{}
+	for _, pair := range strings.Split(strings.TrimPrefix(flag, "--mount="), ",") {
+		key, value, found := strings.Cut(pair, "=")
+		if !found && key == "readonly" {
+			value = "true"
+		}
+		if !found && key != "readonly" || keys[key] {
+			return fmt.Errorf("%w: malformed cache build mount", ErrInvalid)
+		}
+		keys[key] = true
+		switch key {
+		case "type":
+			if value != "cache" {
+				return fmt.Errorf("%w: only cache build mounts are supported", ErrInvalid)
+			}
+		case "id":
+			if !cacheMountIDPattern.MatchString(value) {
+				return fmt.Errorf("%w: invalid cache mount id", ErrInvalid)
+			}
+		case "target":
+			if !strings.HasPrefix(value, "/") || strings.Contains(value, "..") {
+				return fmt.Errorf("%w: invalid cache mount target", ErrInvalid)
+			}
+		case "sharing":
+			if value != "shared" && value != "private" && value != "locked" {
+				return fmt.Errorf("%w: invalid cache mount sharing", ErrInvalid)
+			}
+		case "mode":
+			if !cacheMountModePattern.MatchString(value) {
+				return fmt.Errorf("%w: invalid cache mount mode", ErrInvalid)
+			}
+		case "uid", "gid":
+			if !cacheMountOwnerPattern.MatchString(value) {
+				return fmt.Errorf("%w: invalid cache mount owner", ErrInvalid)
+			}
+		case "readonly":
+			if value != "true" && value != "false" {
+				return fmt.Errorf("%w: invalid cache mount readonly", ErrInvalid)
+			}
+		default:
+			return fmt.Errorf("%w: unsupported cache mount key %q", ErrInvalid, key)
+		}
+	}
+	if !keys["type"] || !keys["target"] {
+		return fmt.Errorf("%w: cache build mount requires type and target", ErrInvalid)
 	}
 	return nil
 }

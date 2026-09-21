@@ -44,6 +44,11 @@ type Config struct {
 	SessionKey      []byte
 	Now             func() time.Time
 	OAuth           map[string]*OAuthProvider
+	// DirectForm opens the credential form immediately instead of requiring a
+	// confirmation code sent through a trusted Hub channel. Intended for
+	// personal loopback deployments; link secrecy plus the short request TTL
+	// become the only barrier before the form is reachable.
+	DirectForm bool
 }
 
 type requestRecord struct {

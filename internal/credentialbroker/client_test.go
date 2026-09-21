@@ -3,6 +3,7 @@ package credentialbroker
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -88,6 +89,43 @@ func TestConfigFromEnvAndActor(t *testing.T) {
 	got, err := FromEnv("BROKER_TEST_")
 	if err != nil || got.URL != "https://broker.example" || got.KeyID != "toolhub" || got.Issuer != "hermes-toolhub" {
 		t.Fatalf("broker config: %#v %v", got, err)
+	}
+	if got.HTTPClient != nil {
+		t.Fatal("HTTPClient set without a CA file")
+	}
+	t.Setenv("BROKER_TEST_CA_FILE", filepath.Join(t.TempDir(), "missing.pem"))
+	if _, err := FromEnv("BROKER_TEST_"); err == nil {
+		t.Fatal("unreadable CA file accepted")
+	}
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caPath, []byte("not-a-certificate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BROKER_TEST_CA_FILE", caPath)
+	if _, err := FromEnv("BROKER_TEST_"); err == nil {
+		t.Fatal("invalid CA bundle accepted")
+	}
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer tlsServer.Close()
+	pem := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsServer.Certificate().Raw})
+	if err := os.WriteFile(caPath, pem, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = FromEnv("BROKER_TEST_")
+	if err != nil || got.HTTPClient == nil {
+		t.Fatalf("CA file client missing: %v", err)
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, tlsServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := got.HTTPClient.Do(request)
+	if err != nil {
+		t.Fatalf("self-signed broker CA rejected: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatal(response.Status)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
 	actor := Actor(auth, "binding-1", "workload-1")

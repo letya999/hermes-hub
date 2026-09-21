@@ -51,6 +51,23 @@ fallback. The upstream Dockerfile is never executed, admitted as the active
 recipe or given secrets; `ArtifactRecipe.VerifyContext` remains the only
 build-recipe admission boundary.
 
+Inside the restricted generated build the upstream Dockerfile stays inert
+metadata. Its last exec-form `ENTRYPOINT`/`CMD` may only disambiguate a Go
+source tree with several `main` packages (basename match against the selected
+main directory or the `go.mod` module basename) and supply the default server
+arguments for the matched binary; any other shape fails closed or is ignored.
+The isolated `initialize`/`tools/list` preflight may retry once with every
+declared-but-optional secret injected as a placeholder: when the probe then
+succeeds it has proven those credentials gate server startup and they become
+required inputs for onboarding. Credentials never receive or store real values
+inside the resolver or preflight.
+
+The artifact-context content gate stays fail-closed with one narrow exception:
+a token-shaped match whose secret body (after the fixed detector prefix,
+ignoring separators) is a single repeated character is a placeholder fixture,
+not a usable credential, and does not block the build. Any varied body still
+fails closed, and PEM private-key headers are never exempt.
+
 The resolver may inspect `.mcp.json`, `.env.example`, package/lock manifests,
 release metadata and CI files as bounded, secret-free evidence. It never
 executes client configuration, package scripts, shell commands, Compose or an

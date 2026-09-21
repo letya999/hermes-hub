@@ -19,19 +19,144 @@ import (
 // runs tools/list with the MCP runtime profile (not the BuildKit bootstrap
 // profile), and restamps the review packet with that confirmed contract.
 func PreflightImportedArtifact(ctx context.Context, imported ImportedArtifact, artifactsDir string) (ImportedArtifact, ConfirmedToolContract, error) {
-	if _, err := LoadStoredOCIArtifact(ctx, artifactsDir, imported.Artifact.ArchiveDigest, imported.Definition.Source.Image, 8<<30); err != nil {
+	if _, err := storedArtifactLoader(ctx, artifactsDir, imported.Artifact.ArchiveDigest, imported.Definition.Source.Image, 8<<30); err != nil {
 		return ImportedArtifact{}, ConfirmedToolContract{}, err
 	}
 	listCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	tools, err := listMCPToolsFromLocalImage(listCtx, imported)
+	tools, err := localMCPToolList(listCtx, imported)
 	if err != nil {
-		return ImportedArtifact{}, ConfirmedToolContract{}, err
+		promoted, retry, retryErr := retryListWithPromotedCredentials(listCtx, imported, err, localMCPToolList)
+		if retryErr != nil {
+			return ImportedArtifact{}, ConfirmedToolContract{}, fmt.Errorf("%v [credential-promotion retry: %v]", err, retryErr)
+		}
+		imported, tools = promoted, retry
 	}
 	if len(imported.Definition.Credentials) == 0 {
 		imported.Definition.Credentials = discoverMCPHelpCredentials(listCtx, imported)
 	}
 	return restampFromMCPList(listCtx, imported, func(context.Context, ImportedArtifact) ([]ToolSpec, error) { return tools, nil })
+}
+
+// PreflightPublishedArtifact pulls only the reviewed immutable image and runs
+// the same isolated MCP initialize/tools-list probe used for local artifacts.
+func PreflightPublishedArtifact(ctx context.Context, imported ImportedArtifact) (ImportedArtifact, ConfirmedToolContract, error) {
+	if imported.Definition.Source.ArchiveDigest != "" || imported.Definition.Source.Repository == "" || !digestPattern.MatchString(imported.Definition.Source.Digest) {
+		return ImportedArtifact{}, ConfirmedToolContract{}, fmt.Errorf("%w: published artifact evidence required", ErrInvalid)
+	}
+	if err := publishedImagePull(ctx, imported.Definition.Source.Image, imported.Definition.Source.Digest); err != nil {
+		return ImportedArtifact{}, ConfirmedToolContract{}, err
+	}
+	listCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	tools, err := publishedMCPToolList(listCtx, imported)
+	if err != nil {
+		promoted, retry, retryErr := retryListWithPromotedCredentials(listCtx, imported, err, publishedMCPToolList)
+		if retryErr != nil {
+			return ImportedArtifact{}, ConfirmedToolContract{}, fmt.Errorf("%v [credential-promotion retry: %v]", err, retryErr)
+		}
+		imported, tools = promoted, retry
+	}
+	return restampFromMCPList(listCtx, imported, func(context.Context, ImportedArtifact) ([]ToolSpec, error) { return tools, nil })
+}
+
+var publishedImagePull = pullPublishedImage
+var publishedMCPToolList = listMCPToolsFromLocalImage
+var storedArtifactLoader = LoadStoredOCIArtifact
+var localMCPToolList = listMCPToolsFromLocalImage
+
+// retryListWithPromotedCredentials gives the isolated tools/list probe one
+// evidence-based second chance: manifests declare some credentials optional
+// because an interactive alternative exists upstream, but a container without
+// a browser cannot run it. If injecting every declared-but-optional secret as
+// a placeholder lets the server answer tools/list, the probe has proven those
+// credentials gate startup and they are promoted to required inputs.
+func retryListWithPromotedCredentials(ctx context.Context, imported ImportedArtifact, firstErr error, list func(context.Context, ImportedArtifact) ([]ToolSpec, error)) (ImportedArtifact, []ToolSpec, error) {
+	// Servers that gate startup on auth usually name the missing variable in
+	// their failure output ("set FOO_TOKEN", "FOO_TOKEN is required"). When the
+	// error names credentials, promote exactly those; alternative auth methods
+	// declared optional must stay optional. When the error names nothing, fall
+	// back to promoting every declared-but-optional secret.
+	named := map[string]bool{}
+	for _, name := range authErrorCredentialNames(firstErr) {
+		named[name] = true
+	}
+	imported.Definition.Credentials = append([]CredentialInput(nil), imported.Definition.Credentials...)
+	changed := false
+	for _, name := range authErrorCredentialNames(firstErr) {
+		if !credentialNameDeclared(imported.Definition.Credentials, name) {
+			imported.Definition.Credentials = append(imported.Definition.Credentials, CredentialInput{Name: name, Required: true})
+			changed = true
+		}
+	}
+	for index := range imported.Definition.Credentials {
+		input := &imported.Definition.Credentials[index]
+		if !input.Required && secretName(input.Name) && (len(named) == 0 || named[input.Name]) {
+			input.Required = true
+			changed = true
+		}
+	}
+	if !changed {
+		return imported, nil, fmt.Errorf("%w: no declared credential to retry with", ErrInvalid)
+	}
+	tools, err := list(ctx, imported)
+	if err != nil {
+		return ImportedArtifact{}, nil, err
+	}
+	return imported, tools, nil
+}
+
+var authErrorEnvVar = regexp.MustCompile(`\b(?:set|missing|provide|export)\s+(?:the\s+)?(?:environment\s+(?:variable|variable\s+name)\s+)?([A-Z][A-Z0-9_]{2,63})\b|\b([A-Z][A-Z0-9_]{2,63})\s+(?:is\s+required|environment\s+variable\s+is\s+required|not\s+set|must\s+be\s+set)`)
+
+// authErrorCredentialNames extracts secret-shaped env names a failed server
+// printed in its auth error. Only TOKEN/SECRET/KEY-style names are promoted:
+// plain config variables mentioned in usage text are not credentials.
+func authErrorCredentialNames(err error) []string {
+	if err == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, match := range authErrorEnvVar.FindAllStringSubmatch(err.Error(), 8) {
+		name := match[1]
+		if name == "" {
+			name = match[2]
+		}
+		if name == "" || seen[name] || !secretName(name) || !credentialPattern.MatchString(name) {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+func credentialNameDeclared(inputs []CredentialInput, name string) bool {
+	for _, input := range inputs {
+		if input.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func pullPublishedImage(ctx context.Context, image, digest string) error {
+	if err := validateLocalImageName(image); err != nil || !digestPattern.MatchString(digest) {
+		return fmt.Errorf("%w: published image reference", ErrInvalid)
+	}
+	dockerConfig, err := os.MkdirTemp("", "hermes-published-docker-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dockerConfig)
+	command := exec.CommandContext(ctx, "docker", "pull", "--quiet", image+"@"+digest) // #nosec G204 -- image is digest-pinned and validated.
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_CONFIG=" + dockerConfig}
+	output := &boundedOutput{limit: 1 << 20, exceeded: make(chan struct{})}
+	command.Stdout, command.Stderr = output, output
+	if err := command.Run(); err != nil || output.overflow {
+		return fmt.Errorf("%w: published image pull failed", ErrIsolation)
+	}
+	return nil
 }
 
 var helpEnvironmentLine = regexp.MustCompile(`^\s*([A-Z][A-Z0-9_]{0,63})\s+(.+)$`)
@@ -113,7 +238,12 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 	if err != nil {
 		return nil, err
 	}
-	args := preflightDockerRunArgs(imported, name)
+	credentialArgs, cleanup, err := preflightCredentialArgs(imported)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	args := preflightDockerRunArgs(imported, name, credentialArgs...)
 	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- image name is catalog-validated; flags are fixed.
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_CONFIG=" + dockerConfig}
 	stdin, err := cmd.StdinPipe()
@@ -143,9 +273,8 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 			return nil, fmt.Errorf("%w: MCP preflight write: %v: %s", ErrIsolation, err, stderr.String())
 		}
 	}
-	if err := stdin.Close(); err != nil {
-		return nil, err
-	}
+	// Keep stdin open while decoding: some servers treat stdin EOF as a session
+	// shutdown and drop the queued tools/list response.
 	tools, err := decodeMCPToolList(stdout)
 	if err != nil {
 		return nil, fmt.Errorf("%w: MCP tools/list: %v: %s", ErrIsolation, err, stderr.String())
@@ -211,7 +340,7 @@ func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
 	}
 }
 
-func preflightDockerRunArgs(imported ImportedArtifact, name string) []string {
+func preflightDockerRunArgs(imported ImportedArtifact, name string, extra ...string) []string {
 	args := []string{
 		"run", "--rm", "-i",
 		"--name", name,
@@ -233,7 +362,12 @@ func preflightDockerRunArgs(imported ImportedArtifact, name string) []string {
 		}
 		args = append(args, "--tmpfs", mount.Target+":rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m")
 	}
-	args = append(args, imported.Definition.Source.Image)
+	args = append(args, extra...)
+	image := imported.Definition.Source.Image
+	if imported.Definition.Source.ArchiveDigest == "" {
+		image += "@" + imported.Definition.Source.Digest
+	}
+	args = append(args, image)
 	for _, mount := range imported.Definition.Execution.Mounts {
 		if !strings.HasPrefix(mount.Target, "/") || strings.Contains(mount.Target, "..") {
 			continue
@@ -250,4 +384,33 @@ func preflightDockerRunArgs(imported ImportedArtifact, name string) []string {
 		}
 	}
 	return args
+}
+
+func preflightCredentialArgs(imported ImportedArtifact) ([]string, func(), error) {
+	root := os.Getenv("HUB_STATE")
+	directory, err := os.MkdirTemp(root, "hermes-preflight-credentials-")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(directory) }
+	args := []string{}
+	for _, input := range imported.Definition.Credentials {
+		if !input.Required {
+			continue
+		}
+		value := "preflight"
+		if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") {
+			path := directory + string(os.PathSeparator) + input.Name + ".json"
+			body := []byte(`{"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}`)
+			if err := os.WriteFile(path, body, 0600); err != nil {
+				cleanup()
+				return nil, func() {}, err
+			}
+			target := "/run/hermes-preflight/" + input.Name + ".json"
+			args = append(args, "--mount", "type=bind,source="+dockerBindSource(path)+",target="+target+",readonly")
+			value = target
+		}
+		args = append(args, "--env", input.Name+"="+value)
+	}
+	return args, cleanup, nil
 }

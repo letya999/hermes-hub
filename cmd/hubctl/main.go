@@ -54,6 +54,33 @@ func run(ctx context.Context, args []string) error {
 		}
 		return companion.RunRelay(ctx, *listen, *target, os.Getenv(*tokenEnv))
 	}
+	if op == "oauth-relay" {
+		f := flag.NewFlagSet("oauth-relay", flag.ContinueOnError)
+		listen := f.String("listen", "0.0.0.0:3500", "private OAuth callback address")
+		target := f.String("target", "", "fixed OAuth callback endpoint")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return fmt.Errorf("oauth-relay accepts no positional arguments")
+		}
+		return companion.RunOAuthRelay(ctx, *listen, *target)
+	}
+	if op == "oauth-exec-relay" {
+		f := flag.NewFlagSet("oauth-exec-relay", flag.ContinueOnError)
+		listen := f.String("listen", "127.0.0.1:3500", "loopback OAuth callback address")
+		container := f.String("container", "", "operator-owned workload container")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return fmt.Errorf("oauth-exec-relay accepts no positional arguments")
+		}
+		return companion.RunOAuthExecRelay(ctx, *listen, *container)
+	}
+	if op == "oauth-forward" {
+		return companion.OAuthForward(ctx, os.Stdin, os.Stdout)
+	}
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
 	}

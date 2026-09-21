@@ -70,6 +70,7 @@ type OAuthConfig struct {
 type Config struct {
 	Listen          string           `json:"listen"`
 	PublicOrigin    string           `json:"public_origin"`
+	APIHosts        []string         `json:"api_hosts,omitempty"`
 	DataDir         string           `json:"data_dir"`
 	RuntimeDir      string           `json:"runtime_dir"`
 	MasterKeyFile   string           `json:"master_key_file"`
@@ -82,6 +83,10 @@ type Config struct {
 	Providers       []ProviderConfig `json:"providers"`
 	ExternalAliases []AliasConfig    `json:"external_aliases,omitempty"`
 	OAuthProviders  []OAuthConfig    `json:"oauth_providers,omitempty"`
+	// DirectForm skips the trusted-channel confirmation code and opens the
+	// credential form on first visit. Personal loopback deployments only;
+	// BROKER_DIRECT_FORM=1 enables it without editing this file.
+	DirectForm bool `json:"direct_form,omitempty"`
 }
 
 func ReadConfig(path string) (Config, error) {
@@ -309,13 +314,13 @@ func Build(c Config) (*Service, error) {
 		_ = ledger.Close()
 		return nil, e
 	}
-	b, e := broker.New(broker.Config{Contracts: contracts, Providers: providers, ExternalAliases: aliases, Journal: ledger, Materializer: m, PublicOrigin: c.PublicOrigin, SessionKey: seal.Derive(master, "browser"), OAuth: oauth})
+	b, e := broker.New(broker.Config{Contracts: contracts, Providers: providers, ExternalAliases: aliases, Journal: ledger, Materializer: m, PublicOrigin: c.PublicOrigin, SessionKey: seal.Derive(master, "browser"), OAuth: oauth, DirectForm: c.DirectForm})
 	if e != nil {
 		_ = m.Close()
 		_ = ledger.Close()
 		return nil, e
 	}
-	handler, e := httpapi.New(httpapi.Config{Broker: b, Verifier: verifier, DevHTTP: c.DevHTTP})
+	handler, e := httpapi.New(httpapi.Config{Broker: b, Verifier: verifier, DevHTTP: c.DevHTTP, APIHosts: c.APIHosts})
 	if e != nil {
 		_ = b.Close()
 		return nil, e

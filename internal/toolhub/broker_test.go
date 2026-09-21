@@ -233,6 +233,11 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 		t.Fatal("missing reviewed contract accepted")
 	}
 	store := NewStore()
+	stored := remoteDefinition()
+	stored.DefinitionID = "github-work"
+	if err := store.RegisterDefinition(stored); err != nil {
+		t.Fatal(err)
+	}
 	onboarding := Onboarding{
 		Schema: SchemaVersion, OnboardingID: "onboard_broker_status", PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
@@ -297,5 +302,72 @@ func TestCredentialBrokerContractValidation(t *testing.T) {
 				t.Fatal("invalid credential broker contract accepted")
 			}
 		})
+	}
+}
+
+func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var idempotencyKeys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_old":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_old", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "expired", AuthorizationURL: "https://broker.example/connect/request_old"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			var in map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			idempotencyKeys = append(idempotencyKeys, in["idempotency_key"].(string))
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_new", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_new"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_new":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_new", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_new"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "broker-regen", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_old"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_old"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["broker_request_id"] != "request_new" || body["authorization_url"] != "https://broker.example/connect/request_new" {
+		t.Fatalf("dead link was not replaced: %v", body)
+	}
+	stored, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.BrokerAttempts != 1 || stored.BrokerRequestID != "request_new" {
+		t.Fatalf("unexpected regeneration state: %+v", stored)
+	}
+	if len(idempotencyKeys) != 1 || idempotencyKeys[0] == stored.OnboardingID {
+		t.Fatalf("retry must use a fresh idempotency key: %v", idempotencyKeys)
 	}
 }

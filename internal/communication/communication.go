@@ -106,6 +106,7 @@ type Config struct {
 	SlackBotToken      string                  `yaml:"-"`
 	ControlAuth        string                  `yaml:"-"`
 	ListenAddr         string                  `yaml:"-"`
+	FormOrigin         string                  `yaml:"-"`
 	NativeCron         string                  `yaml:"-"`
 	STTCommand         string                  `yaml:"-"`
 	TTSCommand         string                  `yaml:"-"`
@@ -316,6 +317,7 @@ func fillChannelSecrets(config *Config) {
 	}
 	config.ControlAuth = envOr("HUB_COMMUNICATION_AUTH", config.RuntimeAuth)
 	config.ListenAddr = os.Getenv("HUB_COMMUNICATION_LISTEN")
+	config.FormOrigin = os.Getenv("HUB_COMMUNICATION_FORM_ORIGIN")
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
 	config.STTCommand = os.Getenv("HUB_STT_COMMAND")
 	config.TTSCommand = os.Getenv("HUB_TTS_COMMAND")
@@ -1185,6 +1187,8 @@ type Gateway struct {
 	audit       *audit.Ledger
 	transcriber Transcriber
 	synthesizer Synthesizer
+	formsMu     sync.Mutex
+	forms       map[string]credentialForm
 }
 
 func New(config Config) (*Gateway, error) {
@@ -1243,7 +1247,7 @@ func New(config Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: commandTranscriber(config.STTCommand), synthesizer: commandSynthesizer(config.TTSCommand)}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: commandTranscriber(config.STTCommand), synthesizer: commandSynthesizer(config.TTSCommand), forms: map[string]credentialForm{}}
 	if config.SlackBotToken != "" {
 		g.slack = newSlackAPI(config.SlackBotToken)
 	}
@@ -1270,6 +1274,14 @@ func openCredentialSurface(config Config) (*secrets.Service, *audit.Ledger, erro
 		return nil, nil, err
 	}
 	opened.Audit = ledger
+	opened.EnvFile = func(owner string) string {
+		for _, user := range config.Users {
+			if user.ID == owner {
+				return filepath.Join(user.StateDir, envstore.FileName)
+			}
+		}
+		return ""
+	}
 	storePath := config.ToolHubStore
 	if storePath == "" && len(config.Users) > 0 && config.Users[0].StateDir != "" {
 		candidate := filepath.Join(config.Users[0].StateDir, "runtime", "toolhub", "store.json")
@@ -1529,16 +1541,18 @@ func (g *Gateway) voiceCommand(user User, sender int64, text string) string {
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID int64, messageID int, text string) error {
 	_ = g.api.DeleteMessage(ctx, chatID, messageID)
-	reply := "Статус: rejected"
-	if g.secrets != nil {
-		names, message, err := g.secrets.ApplyChat(user.ID, text)
-		if err == nil {
-			reply = message
+	reply := "Секреты через чат не принимаются."
+	values, err := envstore.Parse(text)
+	if err == nil && len(values) > 0 && len(user.TelegramIDs) > 0 {
+		keys := make([]string, 0, len(values))
+		for key := range values {
+			keys = append(keys, key)
+			values[key] = ""
 		}
-		_ = names
-	}
-	if envstore.LooksLikeEnv(reply) {
-		reply = "Статус: rejected"
+		slices.Sort(keys)
+		if form, formErr := g.createCredentialForm(user.envelope(user.TelegramIDs[0]), keys); formErr == nil {
+			reply = "Введите данные только в защищённой форме: " + form.FormURL
+		}
 	}
 	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, reply)
 }

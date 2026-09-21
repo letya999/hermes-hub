@@ -30,13 +30,17 @@ type genericImageConfig struct {
 }
 
 func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan controllerPlan) (workload genericWorkload, err error) {
+	definition := c.config.Definition
+	if c.config.DynamicDefinitions {
+		definition = plan.Definition
+	}
 	step := "validate"
 	defer func() {
 		if step != "complete" {
 			slog.Warn("generic Docker fallback did not start", "step", step, "error", err)
 		}
 	}()
-	if c.config.Definition.Workload.Class == Shared && (c.config.Definition.Workload.Stateful || len(c.config.Definition.Credentials) != 0 || len(plan.Execution.Mounts) != 0) {
+	if definition.Workload.Class == Shared && (definition.Workload.Stateful || len(definition.Credentials) != 0 || len(plan.Execution.Mounts) != 0) {
 		return genericWorkload{}, fmt.Errorf("%w: shared Docker fallback cannot retain state or credentials", ErrIsolation)
 	}
 	for _, mount := range plan.Execution.Mounts {
@@ -44,7 +48,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 			return genericWorkload{}, fmt.Errorf("%w: Docker fallback supports only named state volumes", ErrIsolation)
 		}
 	}
-	if c.config.Definition.Workload.Stateful && len(plan.Execution.Mounts) == 0 {
+	if definition.Workload.Stateful && len(plan.Execution.Mounts) == 0 {
 		return genericWorkload{}, fmt.Errorf("%w: stateful Docker fallback requires a named state volume", ErrIsolation)
 	}
 	bridgeBinary, err := resolveLinuxBridgeBinary(c.config.BridgeBinary)
@@ -61,7 +65,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		return genericWorkload{}, err
 	}
 	step = "artifact-entrypoint"
-	command, err := c.artifactCommand(ctx, imageRef)
+	command, err := c.artifactCommand(ctx, imageRef, definition)
 	if err != nil {
 		return genericWorkload{}, err
 	}
@@ -81,13 +85,6 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		stateVols[i] = genericStateVolume(plan.WorkloadID, i)
 	}
 	remoteState := filepath.Join(c.config.StateRoot, ".toolhive-"+plan.WorkloadID)
-	if noSymlinkPath(remoteState) == nil {
-		return genericWorkload{}, fmt.Errorf("%w: existing ToolHive fallback state", ErrIsolation)
-	}
-	if err := os.Mkdir(remoteState, 0700); err != nil {
-		return genericWorkload{}, err
-	}
-	started := false
 	cleanup := func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -102,6 +99,19 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		}
 		_ = os.RemoveAll(remoteState)
 	}
+	if noSymlinkPath(remoteState) == nil {
+		// Orphaned state from a killed controller admit: all resources are
+		// named after this workload ID, so reclaim them instead of wedging
+		// every future admission of the same binding.
+		cleanup()
+		if noSymlinkPath(remoteState) == nil {
+			return genericWorkload{}, fmt.Errorf("%w: existing ToolHive fallback state", ErrIsolation)
+		}
+	}
+	if err := os.Mkdir(remoteState, 0700); err != nil {
+		return genericWorkload{}, err
+	}
+	started := false
 	defer func() {
 		if !started {
 			cleanup()
@@ -133,23 +143,15 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	if err != nil {
 		return genericWorkload{}, err
 	}
-	file, err := os.CreateTemp(c.config.StateRoot, ".proxy-*")
+	fileName, err := writeWorldReadableTemp(c.config.StateRoot, ".proxy-*", proxyConfig)
 	if err != nil {
 		return genericWorkload{}, err
 	}
-	fileName := file.Name()
 	defer os.Remove(fileName)
-	if _, err = file.WriteString(proxyConfig); err != nil {
-		file.Close()
-		return genericWorkload{}, err
-	}
-	if err = file.Close(); err != nil {
-		return genericWorkload{}, err
-	}
 	limits := []string{"--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs)}
 	step = "proxy-create"
 	proxyArgs := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, limits...)
-	proxyArgs = append(proxyArgs, c.config.Definition.Workload.SidecarImages[0])
+	proxyArgs = append(proxyArgs, definition.Workload.SidecarImages[0])
 	if _, err := c.command(ctx, "docker", proxyArgs...); err != nil {
 		return genericWorkload{}, err
 	}
@@ -173,28 +175,17 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		TokenEnv     string   `json:"token_env"`
 		Command      []string `json:"command"`
 		AllowedTools []string `json:"allowed_tools"`
-	}{genericBridgeListen, "", command, definitionToolNames(c.config.Definition.Tools)})
+	}{genericBridgeListen, "", command, definitionToolNames(definition.Tools)})
 	if err != nil {
 		return genericWorkload{}, err
 	}
-	configFile, err := os.CreateTemp(c.config.StateRoot, ".bridge-*.json")
+	configFileName, err := writeWorldReadableTemp(c.config.StateRoot, ".bridge-*.json", string(configBytes))
 	if err != nil {
 		return genericWorkload{}, err
 	}
-	configFileName := configFile.Name()
 	defer os.Remove(configFileName)
-	if _, err := configFile.Write(configBytes); err != nil {
-		configFile.Close()
-		return genericWorkload{}, err
-	}
-	if err := configFile.Close(); err != nil {
-		return genericWorkload{}, err
-	}
-	if err := os.Chmod(configFileName, 0644); err != nil {
-		return genericWorkload{}, err
-	}
 	step = "bridge-seed"
-	seedArgs := append([]string{"create", "--name", bridgeSeed, "--network", "none", "--read-only", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--memory", "32m", "--cpus", "0.1", "--pids-limit", "16", "--mount", "type=volume,source=" + bridgeVol + ",target=/hermes-bridge", "--mount", "type=volume,source=" + relayVol + ",target=/hermes-relay"}, c.config.Definition.Workload.SidecarImages[0])
+	seedArgs := append([]string{"create", "--name", bridgeSeed, "--network", "none", "--read-only", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--memory", "32m", "--cpus", "0.1", "--pids-limit", "16", "--mount", "type=volume,source=" + bridgeVol + ",target=/hermes-bridge", "--mount", "type=volume,source=" + relayVol + ",target=/hermes-relay"}, definition.Workload.SidecarImages[0])
 	if _, err := c.command(ctx, "docker", seedArgs...); err != nil {
 		return genericWorkload{}, err
 	}
@@ -211,15 +202,20 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		return genericWorkload{}, err
 	}
 	step = "bridge-create"
-	bridgeArgs := append([]string{"create", "--name", plan.WorkloadID, "--network", network, "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m", "--tmpfs", "/run:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m", "--env", "HOME=/tmp", "--env", "HTTP_PROXY=http://" + proxyIP + ":3128", "--env", "HTTPS_PROXY=http://" + proxyIP + ":3128", "--env", "NO_PROXY=127.0.0.1,localhost", "--entrypoint", "/hermes-bridge/hubctl"}, limits...)
-	if len(c.config.Definition.Credentials) > 0 {
+	bridgeArgs := append([]string{"create", "--name", plan.WorkloadID, "--network", network, "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m", "--tmpfs", "/run:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m", "--env", "HOME=/tmp", "--env", "HTTP_PROXY=http://" + proxyIP + ":3128", "--env", "HTTPS_PROXY=http://" + proxyIP + ":3128", "--env", "NO_PROXY=127.0.0.1,localhost", "--env", "NODE_USE_ENV_PROXY=1", "--entrypoint", "/hermes-bridge/hubctl"}, limits...)
+	if len(definition.Credentials) > 0 {
 		if plan.WorkspacePath == "" {
 			return genericWorkload{}, fmt.Errorf("%w: credential-bearing fallback requires an owner workspace", ErrUnauthorized)
 		}
-		if _, err = readGenericSecrets(filepath.Join(plan.WorkspacePath, "credentials.env"), c.config.Definition); err != nil {
+		credentialEnv, credentialMounts, materializeErr := materializeRuntimeCredentials(plan.WorkspacePath, definition)
+		if materializeErr != nil {
+			return genericWorkload{}, materializeErr
+		}
+		if _, err = readGenericSecrets(credentialEnv, definition); err != nil {
 			return genericWorkload{}, err
 		}
-		bridgeArgs = append(bridgeArgs, "--env-file", filepath.Join(plan.WorkspacePath, "credentials.env"))
+		bridgeArgs = append(bridgeArgs, "--env-file", credentialEnv)
+		plan.CredentialMounts = append(plan.CredentialMounts, credentialMounts...)
 	}
 	for i, mount := range plan.Execution.Mounts {
 		mountSpec := "type=volume,source=" + stateVols[i] + ",target=" + mount.Target
@@ -229,7 +225,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		bridgeArgs = append(bridgeArgs, "--mount", mountSpec)
 	}
 	for _, mount := range plan.CredentialMounts {
-		bridgeArgs = append(bridgeArgs, "--mount", "type=bind,source="+mount.Source+",target="+mount.Target+",readonly")
+		bridgeArgs = append(bridgeArgs, "--mount", "type=bind,source="+dockerBindSource(mount.Source)+",target="+mount.Target+",readonly")
 	}
 	bridgeArgs = append(bridgeArgs, "--mount", "type=volume,source="+bridgeVol+",target=/hermes-bridge,readonly", imageRef, "companion", "--config", "/hermes-bridge/config.json")
 	if _, err := c.command(ctx, "docker", bridgeArgs...); err != nil {
@@ -241,7 +237,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	step = "relay-create"
 	relayArgs := append([]string{"create", "--name", relayName, "--network", network, "--publish", "127.0.0.1::8765/tcp", "--no-healthcheck", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--env", "HERMES_BRIDGE_TOKEN=" + bridgeToken, "--entrypoint", "/hermes-relay/hubctl"}, limits...)
-	relayArgs = append(relayArgs, "--mount", "type=volume,source="+relayVol+",target=/hermes-relay,readonly", c.config.Definition.Workload.SidecarImages[0], "relay", "--listen", genericBridgeListen, "--target", "http://"+plan.WorkloadID+":8765/mcp", "--token-env", "HERMES_BRIDGE_TOKEN")
+	relayArgs = append(relayArgs, "--mount", "type=volume,source="+relayVol+",target=/hermes-relay,readonly", definition.Workload.SidecarImages[0], "relay", "--listen", genericBridgeListen, "--target", "http://"+plan.WorkloadID+":8765/mcp", "--token-env", "HERMES_BRIDGE_TOKEN")
 	if _, err := c.command(ctx, "docker", relayArgs...); err != nil {
 		return genericWorkload{}, err
 	}
@@ -255,16 +251,36 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	if err != nil {
 		return genericWorkload{}, err
 	}
-	remoteURL := "http://127.0.0.1:" + strconv.Itoa(bridgePort) + "/mcp"
+	// The relay publishes on the daemon's loopback. With HUB_CONTROLLER_REMOTE=1
+	// this process runs inside a container whose loopback is its own, so it must
+	// reach the published port through the host gateway instead; likewise the
+	// ToolHive proxy has to listen on the pod network and advertise a name the
+	// ToolHub container can resolve.
+	remoteHost := "127.0.0.1"
+	proxyHost := "127.0.0.1"
+	advertiseHost := ""
+	if os.Getenv("HUB_CONTROLLER_REMOTE") == "1" {
+		remoteHost = "host.docker.internal"
+		proxyHost = "0.0.0.0"
+		advertiseHost = os.Getenv("HUB_CONTROLLER_ADVERTISE_HOST")
+		if advertiseHost == "" {
+			advertiseHost = "workload-controller"
+		}
+	}
+	remoteURL := "http://" + remoteHost + ":" + strconv.Itoa(bridgePort) + "/mcp"
 	step = "toolhive-remote"
 	remoteEnv := fallbackToolHiveEnv(remoteState, map[string]string{"TOOLHIVE_SECRET_BRIDGE_AUTH": "Bearer " + bridgeToken})
-	remoteArgs := []string{"run", remoteURL, "--name", remoteName, "--host", "127.0.0.1", "--proxy-port", "0", "--stateless", "--ignore-globally=false", "--remote-forward-headers-secret", "Authorization=BRIDGE_AUTH"}
+	remoteArgs := []string{"run", remoteURL, "--name", remoteName, "--host", proxyHost, "--proxy-port", "0", "--stateless", "--ignore-globally=false", "--remote-forward-headers-secret", "Authorization=BRIDGE_AUTH"}
 	if _, err := c.commandEnv(ctx, remoteEnv, c.config.ToolHiveBinary, remoteArgs...); err != nil {
 		return genericWorkload{}, err
 	}
 	endpoint, err := c.toolHiveEndpoint(ctx, remoteState, remoteName)
 	if err != nil {
 		return genericWorkload{}, err
+	}
+	advertisedEndpoint := endpoint
+	if advertiseHost != "" {
+		advertisedEndpoint = strings.Replace(endpoint, "http://127.0.0.1:", "http://"+advertiseHost+":", 1)
 	}
 	ready, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -283,13 +299,72 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		return genericWorkload{}, err
 	}
 	step = "inspection"
-	workload = genericWorkload{plan: plan, endpoint: endpoint, proxyName: proxyName, proxyVol: proxyVol, bridgeVol: bridgeVol, stateVols: stateVols, remoteName: remoteName, remoteState: remoteState, bridgePort: bridgePort, relayName: relayName, relayVol: relayVol, dockerFallback: true, imageRef: imageRef}
+	workload = genericWorkload{plan: plan, endpoint: advertisedEndpoint, proxyName: proxyName, proxyVol: proxyVol, bridgeVol: bridgeVol, stateVols: stateVols, remoteName: remoteName, remoteState: remoteState, bridgePort: bridgePort, relayName: relayName, relayVol: relayVol, dockerFallback: true, imageRef: imageRef}
 	if _, err := c.inspect(ctx, workload); err != nil {
 		return genericWorkload{}, err
 	}
 	started = true
 	step = "complete"
 	return workload, nil
+}
+
+// writeWorldReadableTemp writes staging files that docker cp pushes into
+// sidecar containers. CreateTemp leaves 0600 while the receiving process runs
+// as squid/bridge UIDs, so the file must be readable before the copy.
+func writeWorldReadableTemp(dir, pattern, content string) (string, error) {
+	file, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	name := file.Name()
+	if _, err = file.WriteString(content); err != nil {
+		file.Close()
+		os.Remove(name)
+		return "", err
+	}
+	if err = file.Close(); err != nil {
+		os.Remove(name)
+		return "", err
+	}
+	if err := os.Chmod(name, 0644); err != nil {
+		os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
+func materializeRuntimeCredentials(workspace string, definition ToolDefinition) (string, []Mount, error) {
+	source := filepath.Join(workspace, "credentials.env")
+	values, err := readGenericSecrets(source, definition)
+	if err != nil {
+		return "", nil, err
+	}
+	var body strings.Builder
+	var mounts []Mount
+	for _, input := range definition.Credentials {
+		value := values[input.Name]
+		if value == "" {
+			continue
+		}
+		if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
+			path := filepath.Join(workspace, input.Name+".json")
+			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+				return "", nil, err
+			}
+			target := "/run/credentials/" + input.Name + ".json"
+			mounts = append(mounts, Mount{Source: path, Target: target, ReadOnly: true})
+			value = target
+		}
+		body.WriteString(input.Name + "=" + value + "\n")
+	}
+	if len(mounts) == 0 {
+		return source, nil, nil
+	}
+	runtimeEnv := filepath.Join(workspace, "credentials.runtime.env")
+	if err := os.WriteFile(runtimeEnv, []byte(body.String()), 0600); err != nil {
+		return "", nil, err
+	}
+	return runtimeEnv, mounts, nil
 }
 
 type fallbackResources struct {
@@ -360,6 +435,9 @@ func parseToolHiveLogEndpoint(path string) string {
 		if strings.HasPrefix(raw, "http://localhost:") {
 			raw = "http://127.0.0.1:" + strings.TrimPrefix(raw, "http://localhost:")
 		}
+		if strings.HasPrefix(raw, "http://0.0.0.0:") {
+			raw = "http://127.0.0.1:" + strings.TrimPrefix(raw, "http://0.0.0.0:")
+		}
 		if ValidateBackendEndpoint(raw) == nil && strings.HasPrefix(raw, "http://127.0.0.1:") {
 			return raw
 		}
@@ -389,6 +467,9 @@ func (c *genericController) toolHiveEndpoint(ctx context.Context, stateRoot, nam
 		endpoint := row.URL
 		if strings.HasPrefix(endpoint, "http://localhost:") {
 			endpoint = "http://127.0.0.1:" + strings.TrimPrefix(endpoint, "http://localhost:")
+		}
+		if strings.HasPrefix(endpoint, "http://0.0.0.0:") {
+			endpoint = "http://127.0.0.1:" + strings.TrimPrefix(endpoint, "http://0.0.0.0:")
 		}
 		if ValidateBackendEndpoint(endpoint) == nil && strings.HasPrefix(endpoint, "http://127.0.0.1:") {
 			return endpoint, nil
@@ -422,6 +503,17 @@ func (c *genericController) resolveArtifactImage(ctx context.Context, plan contr
 	if _, err := c.command(ctx, "docker", "image", "inspect", pinned); err == nil {
 		return pinned, nil
 	}
+	definition := c.config.Definition
+	if c.config.DynamicDefinitions {
+		definition = plan.Definition
+	}
+	if definition.Source.Repository != "" && definition.Source.ArchiveDigest == "" {
+		if _, err := c.command(ctx, "docker", "pull", "--quiet", pinned); err == nil {
+			if id, inspectErr := c.command(ctx, "docker", "image", "inspect", pinned, "--format", "{{.Id}}"); inspectErr == nil && dockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
+				return pinned, nil
+			}
+		}
+	}
 	return "", fmt.Errorf("%w: reviewed artifact image unavailable", ErrIsolation)
 }
 
@@ -435,9 +527,13 @@ func artifactImageMatches(configImage string, plan controllerPlan, resolved stri
 	return false
 }
 
-func (c *genericController) artifactCommand(ctx context.Context, imageRef string) ([]string, error) {
-	if c.config.Definition.Source.Command != "" {
-		command := append([]string{c.config.Definition.Source.Command}, c.config.Definition.Source.Args...)
+func (c *genericController) artifactCommand(ctx context.Context, imageRef string, definitions ...ToolDefinition) ([]string, error) {
+	definition := c.config.Definition
+	if len(definitions) > 0 {
+		definition = definitions[0]
+	}
+	if definition.Source.Command != "" {
+		command := append([]string{definition.Source.Command}, definition.Source.Args...)
 		return validateArtifactCommand(command)
 	}
 	body, err := c.command(ctx, "docker", "image", "inspect", imageRef, "--format", "{{json .Config}}")

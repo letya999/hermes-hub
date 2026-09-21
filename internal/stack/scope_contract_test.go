@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,8 +60,20 @@ func TestRenderedServiceBoundaries(t *testing.T) {
 	}
 	runtimeService := services["hermes-runtime"].(M)
 	communication := services["communication-hub"].(M)
-	if len(communication["volumes"].([]any)) != 1 || len(runtimeService["volumes"].([]any)) == 0 {
-		t.Fatal("unexpected volume boundary")
+	if len(runtimeService["volumes"].([]any)) == 0 {
+		t.Fatal("runtime lost its state mounts")
+	}
+	for _, raw := range communication["volumes"].([]any) {
+		if target := raw.(M)["target"]; target == "/state" || target == "/workspace" {
+			t.Fatal("gateway received a user mount")
+		}
+	}
+	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "credential-broker"} {
+		for _, raw := range services[name].(M)["volumes"].([]any) {
+			if strings.Contains(fmt.Sprint(raw.(M)["source"]), "docker.sock") {
+				t.Fatalf("docker socket mounted into %s", name)
+			}
+		}
 	}
 	if _, ok := communication["environment"].(M)["TELEGRAM_BOT_TOKEN"]; ok {
 		// The bot token is supplied by the gateway-only env file, never runtime env.

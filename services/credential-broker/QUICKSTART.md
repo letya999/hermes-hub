@@ -36,6 +36,10 @@ just ctl --key-file /tmp/credential-broker-demo/keys/toolhub.private \
 
 ## 2. Communication Hub подтверждает браузер
 
+Шаг пропускается, когда Broker запущен с `BROKER_DIRECT_FORM=1` или `direct_form` в config
+(см. [configuration](docs/operations/configuration.md)): форма открывается сразу по ссылке.
+Режим для personal loopback-развёртываний, код ниже тогда не нужен.
+
 В отдельном JSON-файле записать только `{"code":"код-со-страницы"}`. Это не токен внешнего провайдера.
 В команде ниже заменить `REQUEST_ID` на `id` запроса. На настоящем Hub эту операцию выполняет адаптер
 после получения кода из уже аутентифицированной личной беседы, а не модель по собственной инициативе.

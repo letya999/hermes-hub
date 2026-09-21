@@ -81,19 +81,139 @@ func TestGenerateArtifactRecipeSelectsPinnedBase(t *testing.T) {
 
 func TestDiscoverOpenAPIEgress(t *testing.T) {
 	contextBytes := languageContext(t, map[string]string{
-		"api/openapi.json": `{"servers":[{"url":"https://API.Example.com/v1"},{"url":"http://unsafe.example"},{"url":"https://user@unsafe.example"},{"url":"https://unsafe.example:443"},{"url":"relative"}]}`,
+		"api/openapi.json": `{"servers":[{"url":"https://API.TestSvc.dev/v1"},{"url":"http://unsafe.example"},{"url":"https://user@unsafe.example"},{"url":"https://unsafe.example:443"},{"url":"relative"}]}`,
 		"bad-openapi.json": `{`,
 		"other.json":       `{"servers":[{"url":"https://ignored.example"}]}`,
 	})
-	if got := discoverOpenAPIEgress(contextBytes); !slices.Equal(got, []string{"api.example.com"}) {
+	if got := discoverOpenAPIEgress(contextBytes); !slices.Equal(got, []string{"api.testsvc.dev"}) {
 		t.Fatalf("egress = %v", got)
 	}
 	many := map[string]string{}
 	for i := range 33 {
-		many[fmt.Sprintf("%d-openapi.json", i)] = fmt.Sprintf(`{"servers":[{"url":"https://api%d.example.com"}]}`, i)
+		many[fmt.Sprintf("%d-openapi.json", i)] = fmt.Sprintf(`{"servers":[{"url":"https://api%d.testsvc.dev"}]}`, i)
 	}
 	if got := discoverOpenAPIEgress(languageContext(t, many)); got != nil {
 		t.Fatalf("oversized egress = %v", got)
+	}
+}
+
+func TestDiscoverRepositoryHTTPSLiteralEgress(t *testing.T) {
+	contextBytes := languageContext(t, map[string]string{"src/server.ts": `const endpoint = "https://calendar.googleapis.com/calendar/v3"`})
+	if got := discoverOpenAPIEgress(contextBytes); !slices.Equal(got, []string{"calendar.googleapis.com"}) {
+		t.Fatalf("repository HTTPS egress=%v", got)
+	}
+}
+
+func TestDiscoverRepositoryHTTPSLiteralFiltersFixtures(t *testing.T) {
+	contextBytes := languageContext(t, map[string]string{
+		"src/server.ts":          `const urls = ["https://api.real-service.io","https://attacker.example.com","https://api.","https://raw.hostname","https://EVIL.Example.org","https://127.0.0.1"]`,
+		"src/server_test.go":     `const fixture = "https://api.github.com.attacker.example"`,
+		"testdata/mock.ts":       `const mock = "https://fixture.real-domain.io"`,
+		"pkg/__toolsnaps__/x.go": `const snap = "https://snap.real-domain.io"`,
+	})
+	if got := discoverOpenAPIEgress(contextBytes); !slices.Equal(got, []string{"api.real-service.io"}) {
+		t.Fatalf("filtered egress=%v", got)
+	}
+}
+
+func TestCredentialEgressAddsGoogleOAuthEndpoints(t *testing.T) {
+	got := credentialEgress([]string{"www.googleapis.com"}, []CredentialInput{{Name: "GOOGLE_OAUTH_CREDENTIALS", Required: true}})
+	if !slices.Equal(got, []string{"accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"}) {
+		t.Fatalf("credential egress=%v", got)
+	}
+}
+
+func TestGenerateArtifactRecipeGoDisambiguationUsesUpstreamMetadata(t *testing.T) {
+	base := "example/toolchain@sha256:" + strings.Repeat("a", 64)
+	upstream := "FROM golang AS build\n" +
+		"RUN --mount=type=cache,target=/go/pkg/mod \\\n" +
+		"    --mount=type=secret,id=oauth_client_id \\\n" +
+		"    go build ./cmd/server-mcp\n" +
+		"FROM gcr.io/distroless/base\n" +
+		"COPY --from=build /build/server-mcp /server/server-mcp\n" +
+		"ENTRYPOINT [\"/server/server-mcp\"]\n" +
+		"CMD [\"stdio\"]\n"
+	for _, test := range []struct {
+		name  string
+		files map[string]string
+		argv  []string
+		build string
+	}{
+		{
+			"dockerfile-entrypoint-selects-main-and-args",
+			map[string]string{
+				"go.mod":                            "module example.org/server-mcp",
+				"go.sum":                            "",
+				"cmd/server-mcp/main.go":            "package main\nfunc main() {}",
+				"cmd/mcpcurl/main.go":               "package main\nfunc main() {}",
+				"script/print-diff-configs/main.go": "package main\nfunc main() {}",
+				"Dockerfile":                        upstream,
+			},
+			[]string{"/app/mcp-server", "stdio"}, "./cmd/server-mcp",
+		},
+		{
+			"module-basename-selects-main",
+			map[string]string{
+				"go.mod":                 "module example.org/server-mcp",
+				"go.sum":                 "",
+				"cmd/server-mcp/main.go": "package main",
+				"cmd/mcpcurl/main.go":    "package main",
+			},
+			[]string{"/app/mcp-server"}, "./cmd/server-mcp",
+		},
+		{
+			"cmd-without-entrypoint-supplies-args",
+			map[string]string{
+				"go.mod":           "module example.org/tool",
+				"go.sum":           "",
+				"cmd/tool/main.go": "package main",
+				"Dockerfile":       "FROM base\nCMD [\"/server/tool\",\"--serve\"]\n",
+			},
+			[]string{"/app/mcp-server", "--serve"}, "./cmd/tool",
+		},
+		{
+			"different-upstream-binary-keeps-plain-argv",
+			map[string]string{
+				"go.mod":           "module example.org/tool",
+				"go.sum":           "",
+				"cmd/tool/main.go": "package main",
+				"Dockerfile":       "FROM base\nENTRYPOINT [\"/other/bin\"]\nCMD [\"stdio\"]\n",
+			},
+			[]string{"/app/mcp-server"}, "./cmd/tool",
+		},
+		{
+			"shell-form-cmd-is-not-an-argument",
+			map[string]string{
+				"go.mod":           "module example.org/tool",
+				"go.sum":           "",
+				"cmd/tool/main.go": "package main",
+				"Dockerfile":       "FROM base\nENTRYPOINT [\"/server/tool\"]\nCMD stdio\n",
+			},
+			[]string{"/app/mcp-server"}, "./cmd/tool",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recipe, contextBytes, err := GenerateArtifactRecipe(languageContext(t, test.files), "", base, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(recipe.Entrypoint, test.argv) {
+				t.Fatalf("argv = %v", recipe.Entrypoint)
+			}
+			if !bytes.Contains(contextBytes, []byte(test.build)) {
+				t.Fatalf("wrong main package built: %s", contextBytes)
+			}
+		})
+	}
+	for _, files := range []map[string]string{
+		{"go.mod": "module example.org/mcp", "a/main.go": "package main", "b/main.go": "package main"},
+		{"go.mod": "module example.org/mcp", "cmd/a/main.go": "package main", "cmd/b/main.go": "package main", "Dockerfile": "FROM base\nENTRYPOINT [\"/server/unrelated\"]\n"},
+		{"go.mod": "module example.org/mcp", "cmd/a/main.go": "package main", "cmd/b/main.go": "package main", "Dockerfile": "FROM base\nENTRYPOINT /server/a\n"},
+		{"go.mod": "module example.org/mcp", "x/main.go": "package main", "y/main.go": "package main", "Dockerfile": "FROM base\nCMD [\"/bin/true\"]\n"},
+	} {
+		if _, _, err := GenerateArtifactRecipe(languageContext(t, files), "", base, nil); err == nil {
+			t.Fatalf("ambiguous mains accepted: %v", files)
+		}
 	}
 }
 

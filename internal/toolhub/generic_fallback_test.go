@@ -51,6 +51,7 @@ func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
 	})
 	containers, _ := json.Marshal(containerValues)
 	var calls []string
+	var remoteURLArg string
 	var remoteServer *http.Server
 	var remoteListener net.Listener
 	c.command = func(_ context.Context, binary string, args ...string) ([]byte, error) {
@@ -94,6 +95,7 @@ func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
 		if environment["TOOLHIVE_SECRET_BRIDGE_AUTH"] == "" {
 			return nil, errors.New("bridge secret missing")
 		}
+		remoteURLArg = args[1]
 		for i := range args {
 			if args[i] != "--proxy-port" || i+1 >= len(args) {
 				continue
@@ -125,14 +127,31 @@ func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
 		}
 		return nil, errors.New("remote proxy port missing")
 	}
+	// Orphaned fallback state from a killed controller must be reclaimed, not
+	// wedge the workload, and in remote mode the relay port is reached through
+	// the host gateway instead of the container's own loopback.
+	t.Setenv("HUB_CONTROLLER_REMOTE", "1")
+	orphan := filepath.Join(root, ".toolhive-"+plan.WorkloadID)
+	if err := os.MkdirAll(orphan, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan, "stale.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	workload, err := c.start(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("fallback: %v; calls=%v", err, calls)
 	}
-	if !workload.dockerFallback || workload.remoteName == "" || !strings.HasPrefix(workload.endpoint, "http://127.0.0.1:") {
+	if !workload.dockerFallback || workload.remoteName == "" || !strings.HasPrefix(workload.endpoint, "http://workload-controller:") {
 		t.Fatalf("fallback receipt metadata missing: %+v", workload)
 	}
 	joined := strings.Join(calls, " ")
+	if !strings.Contains(joined, "docker rm --force "+plan.WorkloadID) {
+		t.Fatalf("orphaned fallback state was not reclaimed: %s", joined)
+	}
+	if remoteURLArg != "http://host.docker.internal:40001/mcp" {
+		t.Fatalf("remote mode must reach the relay through the host gateway, got %q", remoteURLArg)
+	}
 	if !strings.Contains(joined, "--env-file "+filepath.Join(workspace, "credentials.env")) {
 		t.Fatalf("credential env-file was not handed to Docker: %s", joined)
 	}
@@ -208,6 +227,41 @@ func TestResolveArtifactImagePrefersPinnedThenLoadedName(t *testing.T) {
 	}
 	if !artifactImageMatches(plan.Image+":latest", plan, plan.Image) || !artifactImageMatches(pinned, plan, pinned) || artifactImageMatches("other", plan, plan.Image) {
 		t.Fatal("artifact image match")
+	}
+}
+
+func TestResolveArtifactImagePullsPublishedDigestOnly(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	d.Source.ArchiveDigest = ""
+	parts := strings.Split(paths, "\x00")
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := genericPlan(d)
+	pinned := plan.Image + "@" + plan.Digest
+	var calls []string
+	pulled := false
+	c.command = func(_ context.Context, binary string, args ...string) ([]byte, error) {
+		calls = append(calls, binary+" "+strings.Join(args, " "))
+		if len(args) == 3 && args[0] == "pull" && args[2] == pinned {
+			pulled = true
+			return []byte("pulled"), nil
+		}
+		if pulled && len(args) >= 4 && args[0] == "image" && args[1] == "inspect" && args[2] == pinned {
+			return []byte("sha256:" + strings.Repeat("a", 64)), nil
+		}
+		if len(args) >= 3 && args[0] == "image" && args[1] == "inspect" {
+			return nil, errors.New("not present")
+		}
+		return nil, errors.New("unexpected command")
+	}
+	got, err := c.resolveArtifactImage(context.Background(), plan)
+	if err != nil || got != pinned {
+		t.Fatalf("published image pull: got %q err=%v calls=%v", got, err, calls)
+	}
+	if len(calls) != 5 || !strings.Contains(calls[3], "pull --quiet "+pinned) {
+		t.Fatalf("unexpected published image command sequence: %v", calls)
 	}
 }
 
@@ -573,5 +627,28 @@ func TestGenericDockerFallbackFailureBoundaries(t *testing.T) {
 				t.Fatal("injected fallback failure was accepted")
 			}
 		})
+	}
+}
+
+func TestWriteWorldReadableTempLeaves0644(t *testing.T) {
+	dir := t.TempDir()
+	name, err := writeWorldReadableTemp(dir, ".proxy-*", "conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(name)
+	info, err := os.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0044 != 0044 {
+		t.Fatalf("sidecar staging file mode %o must stay group/other readable for docker cp", info.Mode().Perm())
+	}
+	body, err := os.ReadFile(name)
+	if err != nil || string(body) != "conf" {
+		t.Fatal(err, string(body))
+	}
+	if _, err := writeWorldReadableTemp(filepath.Join(dir, "missing"), ".proxy-*", "x"); err == nil {
+		t.Fatal("unwritable state dir accepted")
 	}
 }

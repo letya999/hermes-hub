@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -150,6 +151,205 @@ func TestImportGitHubArtifactRejectsBeforeNetwork(t *testing.T) {
 	}
 	if _, err := ImportGitHubArtifact(context.Background(), ArtifactSource{Repository: "https://github.com/example/mcp", CommitSHA: "0123456789012345678901234567890123456789"}, ArtifactImportConfig{DefinitionID: "mcp", Version: "1.0.0", Image: "repo@sha256:bad"}, RestrictedBuildConfig{}); err == nil {
 		t.Fatal("unsafe image accepted")
+	}
+}
+
+func TestImportPublishedArtifactUsesDigestAndAttestationEvidence(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	source := ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
+	resolution := RecipeResolution{
+		Source: source, State: "ready",
+		Launch: LaunchRecipe{Transport: ContainerMCP, Artifact: "ghcr.io/acme/weather", Digest: "sha256:" + repeatHex('a'), Entrypoint: []string{"/app/server"}},
+		Evidence: []RecipeEvidence{
+			{Source: "oci", Digest: "sha256:" + repeatHex('b'), Detail: "immutable provenance referrer"},
+			{Source: "oci", Digest: "sha256:" + repeatHex('c'), Detail: "immutable SBOM referrer"},
+		},
+	}
+	imported, err := ImportPublishedArtifact(source, defaultSelfInstallConfig(source), resolution, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Artifact.ArchiveDigest != "" || imported.Definition.Source.Image != resolution.Launch.Artifact || imported.Definition.Source.Digest != resolution.Launch.Digest || imported.Definition.Source.ProvenanceDigest == "" || imported.Definition.Source.SBOMDigest == "" {
+		t.Fatalf("published evidence: %+v", imported)
+	}
+	if err := ValidateTrustedArtifactDefinition(imported.Definition); err == nil {
+		t.Fatal("published packet accepted without a real tools/list contract")
+	}
+	if err := AttachConfirmedToolContract(&imported, ConfirmedToolContract{Source: ToolContractPreflight, Tools: imported.Definition.Tools}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTrustedArtifactDefinition(imported.Definition); err != nil {
+		t.Fatalf("published trusted packet rejected: %v", err)
+	}
+}
+
+func TestPreflightPublishedArtifactKeepsTheRealToolsListGate(t *testing.T) {
+	d := statefulContainerDefinition()
+	d.Source.Repository = "https://github.com/acme/weather"
+	d.Source.CommitSHA = "0123456789abcdef0123456789abcdef01234567"
+	d.Source.ArchiveDigest = ""
+	packet := ImportedArtifact{Definition: d}
+	originalPull, originalList := publishedImagePull, publishedMCPToolList
+	defer func() { publishedImagePull, publishedMCPToolList = originalPull, originalList }()
+	pulled := false
+	publishedImagePull = func(context.Context, string, string) error { pulled = true; return nil }
+	publishedMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+	}
+	preflighted, contract, err := PreflightPublishedArtifact(context.Background(), packet)
+	if err != nil || !pulled || contract.Source != ToolContractPreflight || len(preflighted.Definition.Tools) != 1 || preflighted.Definition.Source.ToolContractDigest == "" {
+		t.Fatalf("published preflight: pulled=%v contract=%+v packet=%+v err=%v", pulled, contract, preflighted, err)
+	}
+	if err := pullPublishedImage(context.Background(), "bad image", "sha256:bad"); err == nil {
+		t.Fatal("invalid published image reference accepted")
+	}
+}
+
+func TestPreflightImportedArtifactUsesTheSameToolsListContract(t *testing.T) {
+	d := statefulContainerDefinition()
+	d.Credentials = []CredentialInput{{Name: "API_TOKEN", Required: true}}
+	packet := ImportedArtifact{Definition: d, Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
+	originalLoader, originalList := storedArtifactLoader, localMCPToolList
+	defer func() { storedArtifactLoader, localMCPToolList = originalLoader, originalList }()
+	storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+		return packet.Definition.Source.Image, nil
+	}
+	localMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+	}
+	preflighted, contract, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir())
+	if err != nil || contract.Source != ToolContractPreflight || preflighted.Definition.Source.ToolContractDigest == "" {
+		t.Fatalf("local preflight: packet=%+v contract=%+v err=%v", preflighted, contract, err)
+	}
+}
+
+func TestPreflightPromotesCredentialsProvenByToolsList(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		credentials  []CredentialInput
+		failText     string
+		wantAttempts int
+		wantErr      bool
+		promoted     bool
+	}{
+		{"optional-secret-promoted", []CredentialInput{{Name: "API_TOKEN"}, {Name: "MCP_MODE"}}, "", 2, false, true},
+		{"already-required", []CredentialInput{{Name: "API_TOKEN", Required: true}}, "", 1, false, false},
+		{"no-secret-fields", []CredentialInput{{Name: "MCP_MODE"}}, "", 1, true, false},
+		{"no-credentials", nil, "", 1, true, false},
+		{"undeclared-from-auth-error", nil, "Error: authentication required: set GITHUB_PERSONAL_ACCESS_TOKEN, configure GitHub App auth, or pass --oauth-client-id", 2, false, true},
+		{"undeclared-nonsecret-ignored", nil, "Error: set MCP_MODE to configure transport", 1, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			d := statefulContainerDefinition()
+			d.Credentials = test.credentials
+			packet := ImportedArtifact{Definition: d, Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
+			originalLoader, originalList := storedArtifactLoader, localMCPToolList
+			defer func() { storedArtifactLoader, localMCPToolList = originalLoader, originalList }()
+			storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+				return packet.Definition.Source.Image, nil
+			}
+			failText := test.failText
+			if failText == "" {
+				failText = "authentication required"
+			}
+			attempts := 0
+			localMCPToolList = func(_ context.Context, candidate ImportedArtifact) ([]ToolSpec, error) {
+				attempts++
+				for _, input := range candidate.Definition.Credentials {
+					if input.Required && secretName(input.Name) {
+						return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+					}
+				}
+				return nil, fmt.Errorf("%w: %s", ErrIsolation, failText)
+			}
+			preflighted, _, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir())
+			if (err != nil) != test.wantErr || attempts != test.wantAttempts {
+				t.Fatalf("preflight: attempts=%d err=%v", attempts, err)
+			}
+			if test.wantErr || !test.promoted {
+				return
+			}
+			for _, input := range preflighted.Definition.Credentials {
+				if input.Required != secretName(input.Name) {
+					t.Fatalf("promotion boundary wrong: %+v", preflighted.Definition.Credentials)
+				}
+			}
+		})
+	}
+}
+
+func TestPreflightPromotionNarrowsToNamedCredentials(t *testing.T) {
+	d := statefulContainerDefinition()
+	d.Credentials = []CredentialInput{{Name: "API_TOKEN"}, {Name: "GITHUB_PERSONAL_ACCESS_TOKEN"}, {Name: "MCP_MODE"}}
+	packet := ImportedArtifact{Definition: d, Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
+	originalLoader, originalList := storedArtifactLoader, localMCPToolList
+	defer func() { storedArtifactLoader, localMCPToolList = originalLoader, originalList }()
+	storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+		return packet.Definition.Source.Image, nil
+	}
+	attempts := 0
+	localMCPToolList = func(_ context.Context, candidate ImportedArtifact) ([]ToolSpec, error) {
+		attempts++
+		for _, input := range candidate.Definition.Credentials {
+			if input.Name == "GITHUB_PERSONAL_ACCESS_TOKEN" && input.Required {
+				return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: authentication required: set GITHUB_PERSONAL_ACCESS_TOKEN", ErrIsolation)
+	}
+	preflighted, _, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir())
+	if err != nil || attempts != 2 {
+		t.Fatalf("preflight: attempts=%d err=%v", attempts, err)
+	}
+	for _, input := range preflighted.Definition.Credentials {
+		want := input.Name == "GITHUB_PERSONAL_ACCESS_TOKEN"
+		if input.Required != want {
+			t.Fatalf("promotion boundary wrong for %s: %+v", input.Name, preflighted.Definition.Credentials)
+		}
+	}
+}
+
+func TestPreflightPublishedArtifactPromotesProvenCredentials(t *testing.T) {
+	d := statefulContainerDefinition()
+	d.Source.Repository = "https://github.com/acme/weather"
+	d.Source.CommitSHA = "0123456789abcdef0123456789abcdef01234567"
+	d.Source.ArchiveDigest = ""
+	d.Source.Digest = "sha256:" + repeatHex('b')
+	d.Credentials = []CredentialInput{{Name: "API_TOKEN"}}
+	packet := ImportedArtifact{Definition: d}
+	originalPull, originalList := publishedImagePull, publishedMCPToolList
+	defer func() { publishedImagePull, publishedMCPToolList = originalPull, originalList }()
+	publishedImagePull = func(context.Context, string, string) error { return nil }
+	publishedMCPToolList = func(_ context.Context, candidate ImportedArtifact) ([]ToolSpec, error) {
+		for _, input := range candidate.Definition.Credentials {
+			if input.Required && secretName(input.Name) {
+				return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: authentication required", ErrIsolation)
+	}
+	preflighted, _, err := PreflightPublishedArtifact(context.Background(), packet)
+	if err != nil || !preflighted.Definition.Credentials[0].Required {
+		t.Fatalf("published promotion failed: %+v err=%v", preflighted.Definition.Credentials, err)
+	}
+}
+
+func TestImportPublishedArtifactRejectsIncompleteOrMismatchedResolution(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	source := ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
+	base := RecipeResolution{Source: source, State: "ready", Launch: LaunchRecipe{Transport: ContainerMCP, Artifact: "ghcr.io/acme/weather", Digest: "sha256:" + repeatHex('a'), Entrypoint: []string{"/app/server"}}, Evidence: []RecipeEvidence{{Source: "oci", Digest: "sha256:" + repeatHex('b'), Detail: "immutable provenance referrer"}, {Source: "oci", Digest: "sha256:" + repeatHex('c'), Detail: "immutable SBOM referrer"}}}
+	for name, candidate := range map[string]RecipeResolution{
+		"draft":           {Source: source, State: "draft", Launch: base.Launch, Evidence: base.Evidence},
+		"wrong-source":    {Source: ArtifactSource{Repository: "https://github.com/other/weather", CommitSHA: commit}, State: "ready", Launch: base.Launch, Evidence: base.Evidence},
+		"wrong-transport": {Source: source, State: "ready", Launch: LaunchRecipe{Transport: RemoteMCP, Endpoint: "https://mcp.example"}, Evidence: base.Evidence},
+		"bad-digest":      {Source: source, State: "ready", Launch: LaunchRecipe{Transport: ContainerMCP, Artifact: "ghcr.io/acme/weather", Digest: "bad", Entrypoint: []string{"/app/server"}}, Evidence: base.Evidence},
+		"missing-proof":   {Source: source, State: "ready", Launch: base.Launch, Evidence: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ImportPublishedArtifact(source, defaultSelfInstallConfig(source), candidate, nil); err == nil {
+				t.Fatal("incomplete published recipe accepted")
+			}
+		})
 	}
 }
 

@@ -91,6 +91,10 @@ func TestRenderAllFeatures(t *testing.T) {
 	if !ok || display["busy_input_mode"] != "queue" || display["long_running_notifications"] != true {
 		t.Fatalf("long-running Telegram defaults missing: %#v", cfg["display"])
 	}
+	timeouts := cfg["timeouts"].(M)["tools"].(M)
+	if timeouts["sequential_call"] != 1800 || timeouts["concurrent_batch"] != 1800 {
+		t.Fatalf("long-running tool timeouts missing: %#v", timeouts)
+	}
 	servers := cfg["mcp_servers"].(M)
 	if len(servers) != 9 {
 		t.Fatalf("servers: %v", servers)
@@ -142,9 +146,11 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatal("overwrote memory")
 	}
 	compose, _ := os.ReadFile(filepath.Join(d, "compose.prod.yaml"))
-	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") || strings.Contains(string(compose), "docker.sock") {
-		t.Fatal("network or mount boundary")
+	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") {
+		t.Fatal("network boundary")
 	}
+	// docker.sock is restricted to toolhub/workload-controller; the per-service
+	// boundary is asserted in TestRenderedServiceBoundaries.
 	if !strings.Contains(string(compose), "target: /state/hermes/SOUL.md") || !strings.Contains(string(compose), "read_only: true") {
 		t.Fatal("managed SOUL is not mounted read-only")
 	}
@@ -194,7 +200,12 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 		t.Fatalf("gateway env boundary broken: %q", gatewayEnv)
 	}
 	services := Compose(settings, root, d)["services"].(M)
-	if len(services) != 2 || services["communication-hub"].(M)["entrypoint"].([]string)[0] != "communication-hub" {
+	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "toolhub", "workload-controller", "credential-broker"} {
+		if _, ok := services[name]; !ok {
+			t.Fatalf("service %s missing: %#v", name, services)
+		}
+	}
+	if services["communication-hub"].(M)["entrypoint"].([]string)[0] != "communication-hub" {
 		t.Fatalf("split services missing: %#v", services)
 	}
 	for _, raw := range services["communication-hub"].(M)["volumes"].([]any) {

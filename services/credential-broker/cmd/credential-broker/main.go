@@ -61,6 +61,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 			_, e = fmt.Fprintln(out, "Configuration syntax is valid. Adapter credentials, TLS and contract readiness are verified at service startup.")
 			return e
 		}
+		if os.Getenv("BROKER_DIRECT_FORM") == "1" {
+			cfg.DirectForm = true
+		}
 		svc, e := app.Build(cfg)
 		if e != nil {
 			return e

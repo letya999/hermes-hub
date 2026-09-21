@@ -5,6 +5,8 @@ package credentialbroker
 
 import (
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net/http"
 	"os"
@@ -83,7 +85,29 @@ func FromEnv(prefix string) (Config, error) {
 	if c.KeyFile == "" || c.KeyID == "" || c.Issuer == "" {
 		return Config{}, errors.New("credential broker URL requires key file, key ID and issuer")
 	}
+	if caFile := os.Getenv(prefix + "CA_FILE"); caFile != "" {
+		client, err := caHTTPClient(caFile)
+		if err != nil {
+			return Config{}, err
+		}
+		c.HTTPClient = client
+	}
 	return c, nil
+}
+
+// caHTTPClient trusts the PEM bundle at path on top of the platform policy.
+// Self-signed broker deployments publish their server certificate as the CA
+// file, which keeps transport verification strict inside the compose network.
+func caHTTPClient(path string) (*http.Client, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	pem, err := os.ReadFile(filepath.Clean(path))
+	if err != nil || !pool.AppendCertsFromPEM(pem) {
+		return nil, errors.New("credential broker CA file is invalid")
+	}
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}, nil
 }
 
 func readPrivateKey(path string) ([]byte, error) {

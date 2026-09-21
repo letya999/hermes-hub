@@ -32,6 +32,38 @@ func streamEvent(job Job) hubruntime.ExecuteResponse {
 	return hubruntime.ExecuteResponse{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 }
 
+func TestProgressDeliveryPreservesUsefulTextAndDropsEmptyToolNoise(t *testing.T) {
+	s, job := streamJob(t)
+	progress := streamEvent(job)
+	progress.EventID, progress.LastEvent, progress.Text = "tool:prepare", "tool.start", "MCP: шаг 1/4 — собираю образ."
+	if err := s.RecordStreamEvent(job, progress); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := s.ClaimDelivery()
+	if err != nil || delivery == nil || delivery.Text != progress.Text {
+		t.Fatalf("useful progress lost: %+v %v", delivery, err)
+	}
+	if err := s.CompleteDelivery(delivery.ID); err != nil {
+		t.Fatal(err)
+	}
+	repeated := progress
+	repeated.EventID = "tool:prepare-again"
+	if err := s.RecordStreamEvent(job, repeated); err != nil {
+		t.Fatal(err)
+	}
+	if delivery, err := s.ClaimDelivery(); err != nil || delivery != nil {
+		t.Fatalf("repeated progress produced spam: %+v %v", delivery, err)
+	}
+	noise := progress
+	noise.EventID, noise.Text = "tool:noise", ""
+	if err := s.RecordStreamEvent(job, noise); err != nil {
+		t.Fatal(err)
+	}
+	if delivery, err := s.ClaimDelivery(); err != nil || delivery != nil {
+		t.Fatalf("empty tool progress produced spam: %+v %v", delivery, err)
+	}
+}
+
 func TestCachedTerminalResponseRepairsDeliveryWithoutWorker(t *testing.T) {
 	s, job := streamJob(t)
 	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {

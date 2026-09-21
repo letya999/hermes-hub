@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -38,6 +39,17 @@ type ExecuteRequest struct {
 	Trigger        string `json:"trigger"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Text           string `json:"text"`
+}
+
+// SelfEnvRequest is the private protected-form-to-runtime contract. It is
+// never sent through Hermes jobs or exposed as a model tool.
+type SelfEnvRequest struct {
+	identity.Envelope
+	OrganizationID string            `json:"organization_id"`
+	UserID         string            `json:"user_id"`
+	ActorID        string            `json:"actor_id"`
+	ScopeID        string            `json:"scope_id"`
+	Values         map[string]string `json:"values"`
 }
 
 type ExecuteResponse struct {
@@ -85,6 +97,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.control(w, r)
 	case "/v1/restart":
 		s.restart(w, r)
+	case "/v1/self-env":
+		s.selfEnv(w, r)
 	default:
 		writeRuntimeError(w, http.StatusNotFound, "not found")
 	}
@@ -336,7 +350,7 @@ func toolProgressText(event nativeRunEvent) string {
 	case completed:
 		return "Шаг завершён, продолжаю."
 	default:
-		return "Выполняю запрос."
+		return ""
 	}
 }
 
@@ -492,6 +506,53 @@ func (s *runtimeHTTP) restart(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(250 * time.Millisecond)
 		signalRuntimeProcess()
 	}()
+}
+
+func (s *runtimeHTTP) selfEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) {
+		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeRuntimeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	defer clear(body)
+	var request SelfEnvRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeRuntimeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if err := validateSelfEnvRequest(request); err != nil {
+		writeRuntimeError(w, http.StatusConflict, "invalid runtime scope")
+		return
+	}
+	keys, err := envstore.UpdateValues(filepath.Join(state, envstore.FileName), request.Values, os.Getenv("HUB_SELF_ENV_KEYS"), os.Getenv("HUB_PROTECTED_ENV_KEYS"))
+	if err != nil {
+		writeRuntimeError(w, http.StatusBadRequest, "credential update rejected")
+		return
+	}
+	if err := os.WriteFile(filepath.Join(state, "restart.request"), nil, 0600); err != nil {
+		writeRuntimeError(w, http.StatusInternalServerError, "restart unavailable")
+		return
+	}
+	writeRuntimeJSON(w, http.StatusOK, map[string]any{"updated": keys, "restart_scheduled": true})
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		signalRuntimeProcess()
+	}()
+}
+
+func validateSelfEnvRequest(request SelfEnvRequest) error {
+	user := env("HUB_USER_ID", "me")
+	organization := env("HUB_ORGANIZATION_ID", "personal")
+	if request.OrganizationID != organization || request.UserID != user || request.ActorID != user || request.ScopeID != "user:"+user {
+		return errors.New("runtime scope mismatch")
+	}
+	return request.Envelope.Validate(user, user, env("HUB_RUNTIME_ID", user), env("HUB_POLICY_VERSION", "policy-1"))
 }
 
 func shutdownRuntimeServer(server *http.Server) {

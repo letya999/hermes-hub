@@ -38,9 +38,15 @@ release version:
     go run ./cmd/package {{version}}
 
 docker-check target="prod":
-    docker build --target {{target}} -t hermes-hub:test -f docker/Dockerfile .
+    go run ./cmd/devcheck docker-build hermes-hub:test {{target}}
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
+    go run ./cmd/devcheck docker-clean
+
+# Reclaim superseded hermes-hub tags, dangling images and orphan build
+# resources; "just docker-clean --deep" also drops the shared BuildKit cache.
+docker-clean flag="":
+    go run ./cmd/devcheck docker-clean {{flag}}
 
 # Credential Broker is a separate Go module and process. Keep its own gates
 # intact while making the monorepo entrypoint explicit.

@@ -107,7 +107,7 @@ func TestControlResolvesRepositoryURLBeforeReview(t *testing.T) {
 func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 	definition := statefulContainerDefinition()
 	definition.DefinitionID = "mcp"
-	definition.Version = "0.0.1"
+	definition.Version = "0.0.2"
 	definition.Source.Repository = "https://github.com/example/mcp"
 	definition.Source.CommitSHA = "0123456789abcdef0123456789abcdef01234567"
 	fix := newControlFixture(t, func(context.Context, ArtifactSource) (SourceReview, error) {
@@ -117,7 +117,7 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 	if err := fix.store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := fix.store.PutPublication(DefinitionPublication{DefinitionID: "mcp", Version: "0.0.1", Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
+	if err := fix.store.PutPublication(DefinitionPublication{DefinitionID: "mcp", Version: "0.0.2", Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {

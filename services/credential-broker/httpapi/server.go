@@ -8,8 +8,11 @@ import (
 	"errors"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,17 +29,39 @@ type Config struct {
 	Broker   *broker.Broker
 	Verifier identity.Verifier
 	// DevHTTP disables Secure cookies ONLY on an explicit loopback HTTP origin.
-	DevHTTP       bool
+	DevHTTP bool
+	// APIHosts lists extra Host header values accepted on the authenticated /v1/
+	// surface, e.g. an internal service name. Browser endpoints stay pinned to
+	// the public origin host so DNS rebinding cannot reach the connect form.
+	APIHosts      []string
 	NetworkPolicy safenet.Policy
 }
 type Server struct {
-	b       *broker.Broker
-	cfg     Config
-	host    string
-	origin  string
-	slots   chan struct{}
-	limits  *limiter
-	clients sync.Map
+	b        *broker.Broker
+	cfg      Config
+	host     string
+	origin   string
+	apiHosts []string
+	slots    chan struct{}
+	limits   *limiter
+	clients  sync.Map
+}
+
+var apiHostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
+
+// validAPIHost accepts a DNS name or IP literal with an optional numeric port.
+func validAPIHost(v string) bool {
+	host, port, e := net.SplitHostPort(v)
+	if e != nil {
+		host, port = v, ""
+	}
+	if port != "" {
+		n, e := strconv.Atoi(port)
+		if e != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	return apiHostPattern.MatchString(strings.ToLower(strings.TrimSuffix(host, "."))) || net.ParseIP(strings.Trim(host, "[]")) != nil
 }
 
 func New(cfg Config) (*Server, error) {
@@ -54,7 +79,15 @@ func New(cfg Config) (*Server, error) {
 	} else if u.Scheme != "https" {
 		return nil, broker.ErrInvalid
 	}
-	return &Server{b: cfg.Broker, cfg: cfg, host: u.Host, origin: u.String(), slots: make(chan struct{}, 64), limits: newLimiter()}, nil
+	if len(cfg.APIHosts) > 8 {
+		return nil, broker.ErrInvalid
+	}
+	for _, h := range cfg.APIHosts {
+		if !validAPIHost(h) || h == u.Host {
+			return nil, broker.ErrInvalid
+		}
+	}
+	return &Server{b: cfg.Broker, cfg: cfg, host: u.Host, origin: u.String(), apiHosts: cfg.APIHosts, slots: make(chan struct{}, 64), limits: newLimiter()}, nil
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -67,7 +100,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.DevHTTP {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 	}
-	if r.Host != s.host || !s.cfg.DevHTTP && r.TLS == nil {
+	browserPath := strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css"
+	if r.Host != s.host && (browserPath || !slices.Contains(s.apiHosts, r.Host)) || !s.cfg.DevHTTP && r.TLS == nil {
 		fail(w, broker.ErrDenied)
 		return
 	}

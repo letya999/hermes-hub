@@ -393,10 +393,20 @@ func ValidateBackendEndpoint(raw string) error {
 		return fmt.Errorf("%w: private MCP backend URL", ErrInvalid)
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || host == "host.docker.internal" || host == "toolhive" || host == "vmcp" {
+	if host == "localhost" || host == "host.docker.internal" || host == "toolhive" || host == "vmcp" || host == "workload-controller" {
 		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		return nil
+	}
+	// Compose-style service names are operator-configured, not user input; they
+	// qualify only when every resolved address is loopback or private.
+	if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
+		for _, ip := range ips {
+			if !ip.IsLoopback() && !ip.IsPrivate() {
+				return fmt.Errorf("%w: backend URL must be private", ErrInvalid)
+			}
+		}
 		return nil
 	}
 	return fmt.Errorf("%w: backend URL must be private", ErrInvalid)

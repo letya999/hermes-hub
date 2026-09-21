@@ -9,13 +9,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+var repositoryHTTPSURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+`)
 
 // ArtifactImportConfig is the small operator-facing part of automatic import.
 // Source, recipe and OCI evidence are produced by the pipeline; the operator
@@ -77,6 +81,10 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if len(config.Execution.Egress) == 0 {
 		config.Execution.Egress = discoverOpenAPIEgress(contextBytes)
 	}
+	config.Execution.Egress = credentialEgress(config.Execution.Egress, config.Credentials)
+	if len(config.Execution.Egress) == 0 {
+		config.Execution.Egress = []string{"127.0.0.1"}
+	}
 	recipe, generated, err := GenerateArtifactRecipe(contextBytes, config.Language, config.BaseImage, config.Entrypoint)
 	if err != nil {
 		return ImportedArtifact{}, err
@@ -102,7 +110,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 		Source: DefinitionSource{
 			Image: config.Image, Digest: artifact.Evidence.ImageManifestDigest,
 			Command: firstArg(recipe.Entrypoint), Args: remainingArgs(recipe.Entrypoint),
-			Repository: source.Repository, CommitSHA: source.CommitSHA,
+			Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA,
 			ArchiveDigest: artifact.ArchiveDigest, ProvenanceDigest: artifact.Evidence.ProvenanceDigest,
 			SBOMDigest: artifact.Evidence.SBOMDigest, RecipeDigest: recipeDigest, ReviewDigest: reviewDigest,
 		},
@@ -115,6 +123,110 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	return ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}, nil
 }
 
+// ImportPublishedArtifact turns a catalog-proven immutable OCI image into the
+// same review packet used by the local build path. ArchiveDigest stays empty:
+// the image digest, source labels and OCI attestations are the immutable
+// evidence for this path.
+func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig, resolution RecipeResolution, egress []string) (ImportedArtifact, error) {
+	if resolution.State != "ready" || resolution.Launch.Transport != ContainerMCP || resolution.Source != source {
+		return ImportedArtifact{}, fmt.Errorf("%w: published recipe is not ready", ErrInvalid)
+	}
+	if resolution.Launch.Artifact == "" || !digestPattern.MatchString(resolution.Launch.Digest) || len(resolution.Launch.Entrypoint) == 0 {
+		return ImportedArtifact{}, fmt.Errorf("%w: published OCI image evidence is incomplete", ErrInvalid)
+	}
+	provenance, sbom := recipeAttestationDigests(resolution.Evidence)
+	if provenance == "" || sbom == "" {
+		return ImportedArtifact{}, fmt.Errorf("%w: published OCI attestations are incomplete", ErrUnauthorized)
+	}
+	config = normalizeArtifactImportConfig(config)
+	config.Image = resolution.Launch.Artifact
+	config.Entrypoint = append([]string(nil), resolution.Launch.Entrypoint...)
+	config.Health = resolution.Launch.Health
+	if config.Health.Value == "" {
+		config.Health = HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5}
+	}
+	if len(egress) == 0 {
+		egress = append([]string(nil), resolution.Launch.Network...)
+	}
+	if len(egress) == 0 {
+		egress = []string{"127.0.0.1"}
+	}
+	config.Execution.Egress = append([]string(nil), egress...)
+	config.Credentials = resolution.Connection.CredentialInputs()
+	config.Execution.Egress = credentialEgress(config.Execution.Egress, config.Credentials)
+	recipe := ArtifactRecipe{Format: "published-oci-v1", Entrypoint: append([]string(nil), resolution.Launch.Entrypoint...)}
+	recipeDigest, err := publishedRecipeDigest(source, resolution)
+	if err != nil {
+		return ImportedArtifact{}, err
+	}
+	artifact := StoredOCIArtifact{Evidence: OCIArtifactEvidence{ImageManifestDigest: resolution.Launch.Digest, ProvenanceDigest: provenance, SBOMDigest: sbom}}
+	definition := ToolDefinition{
+		Schema: SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version, Transport: ContainerMCP,
+		Source: DefinitionSource{Image: config.Image, Digest: resolution.Launch.Digest, Command: firstArg(config.Entrypoint), Args: remainingArgs(config.Entrypoint), Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA, ProvenanceDigest: provenance, SBOMDigest: sbom, RecipeDigest: recipeDigest},
+		Tools:  append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
+	}
+	imported := ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}
+	review, err := reviewDigestForImported(imported)
+	if err != nil {
+		return ImportedArtifact{}, err
+	}
+	imported.Definition.Source.ReviewDigest = review
+	if err := imported.Definition.Validate(); err != nil {
+		return ImportedArtifact{}, err
+	}
+	return imported, nil
+}
+
+func credentialEgress(egress []string, credentials []CredentialInput) []string {
+	hosts := map[string]bool{}
+	for _, host := range egress {
+		hosts[host] = true
+	}
+	for _, credential := range credentials {
+		if credential.Name == "GOOGLE_OAUTH_CREDENTIALS" {
+			hosts["accounts.google.com"] = true
+			hosts["oauth2.googleapis.com"] = true
+		}
+	}
+	result := make([]string, 0, len(hosts))
+	for host := range hosts {
+		result = append(result, host)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func recipeAttestationDigests(evidence []RecipeEvidence) (string, string) {
+	var provenance, sbom string
+	for _, item := range evidence {
+		if item.Source != "oci" || !digestPattern.MatchString(item.Digest) {
+			continue
+		}
+		detail := strings.ToLower(item.Detail)
+		if provenance == "" && strings.Contains(detail, "provenance") {
+			provenance = item.Digest
+		}
+		if sbom == "" && strings.Contains(detail, "sbom") {
+			sbom = item.Digest
+		}
+	}
+	return provenance, sbom
+}
+
+func publishedRecipeDigest(source ArtifactSource, resolution RecipeResolution) (string, error) {
+	encoded, err := json.Marshal(struct {
+		Source     ArtifactSource
+		Launch     LaunchRecipe
+		Connection ConnectionRecipe
+		Evidence   []RecipeEvidence
+	}{source, resolution.Launch, resolution.Connection, resolution.Evidence})
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(hash[:]), nil
+}
+
 func discoverOpenAPIEgress(contextBytes []byte) []string {
 	reader := tar.NewReader(bytes.NewReader(contextBytes))
 	hosts := map[string]bool{}
@@ -124,7 +236,27 @@ func discoverOpenAPIEgress(contextBytes []byte) []string {
 			break
 		}
 		name := strings.ToLower(path.Base(header.Name))
-		if err != nil || header.Typeflag != tar.TypeReg || !strings.Contains(name, "openapi") || !strings.HasSuffix(name, ".json") {
+		if err != nil || header.Typeflag != tar.TypeReg || header.Size > 8<<20 {
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(reader, 8<<20))
+		if readErr != nil {
+			continue
+		}
+		if !strings.Contains(name, "openapi") || !strings.HasSuffix(name, ".json") {
+			if egressDiscoveryFixturePath(header.Name) {
+				continue
+			}
+			switch path.Ext(name) {
+			case ".go", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".rs":
+				for _, literal := range repositoryHTTPSURL.FindAllString(string(body), -1) {
+					if parsed, parseErr := url.Parse(literal); parseErr == nil {
+						if host, ok := egressDiscoveryHost(parsed.Hostname()); ok {
+							hosts[host] = true
+						}
+					}
+				}
+			}
 			continue
 		}
 		var document struct {
@@ -132,13 +264,15 @@ func discoverOpenAPIEgress(contextBytes []byte) []string {
 				URL string `json:"url"`
 			} `json:"servers"`
 		}
-		if json.NewDecoder(io.LimitReader(reader, 8<<20)).Decode(&document) != nil {
+		if json.Unmarshal(body, &document) != nil {
 			continue
 		}
 		for _, server := range document.Servers {
 			parsed, err := url.Parse(server.URL)
-			if err == nil && parsed.Scheme == "https" && parsed.User == nil && parsed.Host == parsed.Hostname() && parsed.Hostname() != "" {
-				hosts[strings.ToLower(parsed.Hostname())] = true
+			if err == nil && parsed.Scheme == "https" && parsed.User == nil && parsed.Host == parsed.Hostname() {
+				if host, ok := egressDiscoveryHost(parsed.Hostname()); ok {
+					hosts[host] = true
+				}
 			}
 		}
 	}
@@ -151,6 +285,48 @@ func discoverOpenAPIEgress(contextBytes []byte) []string {
 		return nil
 	}
 	return result
+}
+
+// egressDiscoveryFixturePath skips files whose URLs are test fixtures rather
+// than runtime destinations: unit tests, testdata trees and snapshot stores
+// routinely contain attacker-controlled and reserved hostnames.
+func egressDiscoveryFixturePath(name string) bool {
+	lower := strings.ToLower(name)
+	base := path.Base(lower)
+	if strings.HasPrefix(lower, "testdata/") || strings.Contains(lower, "/testdata/") || strings.Contains(lower, "__tests__/") || strings.Contains(lower, "__fixtures__/") || strings.Contains(lower, "__snapshots__/") || strings.Contains(lower, "__toolsnaps__/") {
+		return true
+	}
+	for _, marker := range []string{"_test.", ".test.", ".spec.", ".tests."} {
+		if strings.Contains(base, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// egressDiscoveryHost normalizes a discovered literal and rejects hosts that
+// can never be real egress destinations: reserved fixture TLDs (RFC 2606/6761),
+// placeholder suffixes, names without a dot and non-global IP literals.
+func egressDiscoveryHost(host string) (string, bool) {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" || !strings.Contains(host, ".") || !hostPattern.MatchString(host) {
+		return "", false
+	}
+	switch host[strings.LastIndex(host, ".")+1:] {
+	case "example", "test", "invalid", "localhost", "local", "internal", "host", "hostname", "corp", "lan", "home":
+		return "", false
+	}
+	for _, fixture := range []string{"example.com", "example.net", "example.org", "localhost"} {
+		if host == fixture || strings.HasSuffix(host, "."+fixture) {
+			return "", false
+		}
+	}
+	// Discovered egress is DNS-only; a bare IP literal in source is a fixture
+	// or an odd endpoint the reviewer can add explicitly.
+	if _, err := netip.ParseAddr(host); err == nil {
+		return "", false
+	}
+	return host, true
 }
 
 // RegisterTrustedArtifact is the only publication step. The review digest is
@@ -188,8 +364,11 @@ func ValidateTrustedArtifactDefinition(definition ToolDefinition) error {
 	if err := definition.Validate(); err != nil {
 		return err
 	}
-	if definition.Transport != ContainerMCP || definition.Source.Repository == "" || definition.Source.CommitSHA == "" || definition.Source.ArchiveDigest == "" || definition.Source.ProvenanceDigest == "" || definition.Source.SBOMDigest == "" || definition.Source.RecipeDigest == "" || definition.Source.ReviewDigest == "" {
+	if definition.Transport != ContainerMCP || definition.Source.Repository == "" || definition.Source.CommitSHA == "" || definition.Source.ProvenanceDigest == "" || definition.Source.SBOMDigest == "" || definition.Source.RecipeDigest == "" || definition.Source.ReviewDigest == "" {
 		return fmt.Errorf("%w: immutable build evidence required", ErrUnauthorized)
+	}
+	if definition.Source.ArchiveDigest != "" && !digestPattern.MatchString(definition.Source.ArchiveDigest) {
+		return fmt.Errorf("%w: invalid local artifact evidence", ErrInvalid)
 	}
 	return verifyDefinitionToolContract(definition)
 }
@@ -237,7 +416,7 @@ func reviewDigest(source ArtifactSource, recipe ArtifactRecipe, artifact StoredO
 }
 
 func reviewDigestForImported(imported ImportedArtifact) (string, error) {
-	source := ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA}
+	source := ArtifactSource{Repository: imported.Definition.Source.Repository, Subfolder: imported.Definition.Source.Subfolder, CommitSHA: imported.Definition.Source.CommitSHA}
 	config := ArtifactImportConfig{
 		DefinitionID: imported.Definition.DefinitionID, Version: imported.Definition.Version,
 		Image: imported.Definition.Source.Image, Tools: imported.Definition.Tools,

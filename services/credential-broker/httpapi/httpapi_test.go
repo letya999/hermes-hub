@@ -339,6 +339,46 @@ func TestHTTPBoundaryAndValidation(t *testing.T) {
 }
 func (f *httpFixture) cfgVerifier() identity.Verifier { return f.s.cfg.Verifier }
 
+func TestHTTPAPIHosts(t *testing.T) {
+	f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
+	for _, hosts := range [][]string{
+		{"bad host"},
+		{"ok.example:65536"},
+		{"credentials.example"},
+		{strings.Repeat("a", 300)},
+	} {
+		if _, e := New(Config{Broker: f.b, Verifier: f.cfgVerifier(), APIHosts: hosts}); e == nil {
+			t.Fatalf("invalid api hosts %v accepted", hosts)
+		}
+	}
+	s, e := New(Config{Broker: f.b, Verifier: f.cfgVerifier(), APIHosts: []string{"credential-broker.internal:8787", "broker"}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	serve := func(r *http.Request) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		return w
+	}
+	request := func(method, path, host string, signed bool) *http.Request {
+		r := f.request(method, path, map[bool]string{true: "broker:control"}[signed], actor, nil)
+		r.Host = host
+		return r
+	}
+	if w := serve(request("GET", "/v1/contracts", "credential-broker.internal:8787", true)); w.Code != 200 {
+		t.Fatal("internal host /v1:", w.Code)
+	}
+	if w := serve(request("GET", "/healthz", "broker", false)); w.Code != 200 {
+		t.Fatal("internal host healthz:", w.Code)
+	}
+	if w := serve(request("GET", "/connect/r_anything", "credential-broker.internal:8787", false)); w.Code != 403 {
+		t.Fatal("browser path on internal host:", w.Code)
+	}
+	if w := serve(request("GET", "/v1/contracts", "rogue.example:8787", true)); w.Code != 403 {
+		t.Fatal("unlisted host /v1:", w.Code)
+	}
+}
+
 func TestBrowserCSRFMultipartAndExpiredLinks(t *testing.T) {
 	f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
 	r := f.create()

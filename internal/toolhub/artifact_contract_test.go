@@ -2,6 +2,8 @@ package toolhub
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -128,6 +130,44 @@ func TestRestampFromMCPListIgnoresClaimedImportTools(t *testing.T) {
 	}
 	if contract.Tools[0].Name != "resolve-library-id" || packet.Definition.Tools[0].Name == claimed {
 		t.Fatalf("claimed import tools survived preflight: %+v", packet.Definition.Tools)
+	}
+}
+
+func TestPreflightHelpersFailClosedBeforeDocker(t *testing.T) {
+	bad := importedReviewPacket(t)
+	bad.Definition.Source.Image = "bad image"
+	if _, err := listMCPToolsFromLocalImage(context.Background(), bad); err == nil {
+		t.Fatal("invalid local image reached Docker preflight")
+	}
+	if got := discoverMCPHelpCredentials(context.Background(), bad); got != nil {
+		t.Fatalf("invalid local image produced credentials: %+v", got)
+	}
+	for _, body := range []string{
+		"",
+		`{"jsonrpc":"2.0","id":2,"error":{"message":"denied"}}`,
+		`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`,
+		`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"bad name"}]}}`,
+	} {
+		if _, err := decodeMCPToolList(strings.NewReader(body)); err == nil {
+			t.Fatalf("unsafe tools/list accepted: %q", body)
+		}
+	}
+}
+
+func TestMCPPreflightUsesIsolatedDockerToolsList(t *testing.T) {
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker.cmd")
+	script := "@echo off\r\necho {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\",\"annotations\":{\"readOnlyHint\":true}}]}}\r\n"
+	if err := os.WriteFile(docker, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+";"+os.Getenv("PATH"))
+	packet := importedReviewPacket(t)
+	packet.Definition.Source.Image = "ghcr.io/acme/weather"
+	packet.Definition.Credentials = []CredentialInput{{Name: "API_TOKEN", Required: true}}
+	tools, err := listMCPToolsFromLocalImage(context.Background(), packet)
+	if err != nil || len(tools) != 1 || tools[0].Name != "read" || tools[0].Effect != ReadEffect {
+		t.Fatalf("isolated tools/list: %+v %v", tools, err)
 	}
 }
 

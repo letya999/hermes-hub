@@ -1,8 +1,10 @@
 package toolhub
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +17,41 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
 )
+
+func TestGoogleOAuthFormAcceptsFileOrExplicitValues(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	file, _ := writer.CreateFormFile("google_oauth_file", "client_secret.json")
+	_, _ = file.Write([]byte(`{"installed":{"client_id":"id","client_secret":"secret"}}`))
+	_ = writer.Close()
+	req := httptest.NewRequest(http.MethodPost, "/", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if err := req.ParseMultipartForm(64 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := googleOAuthFormValue(req); err != nil || !strings.Contains(value, `"client_id":"id"`) {
+		t.Fatalf("file value=%q err=%v", value, err)
+	}
+
+	body.Reset()
+	writer = multipart.NewWriter(&body)
+	_ = writer.WriteField("google_oauth_client_id", "id")
+	_ = writer.WriteField("google_oauth_client_secret", "secret")
+	_ = writer.Close()
+	manual := httptest.NewRequest(http.MethodPost, "/", &body)
+	manual.Header.Set("Content-Type", writer.FormDataContentType())
+	if err := manual.ParseMultipartForm(64 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := googleOAuthFormValue(manual); err != nil || !strings.Contains(value, `"client_secret":"secret"`) {
+		t.Fatalf("manual value=%q err=%v", value, err)
+	}
+
+	hints := credentialFormHints([]CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}, {Name: "HOST"}, {Name: "PORT"}, {Name: "TRANSPORT"}})
+	if len(hints) != 1 || hints[0].Name != "GOOGLE_OAUTH_CREDENTIALS" {
+		t.Fatalf("visible hints=%+v", hints)
+	}
+}
 
 func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := (&ControlPlane{}).Invoke(context.Background(), aliceAuth(), "status", nil); !errors.Is(err, ErrInvalid) {
@@ -248,7 +285,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	hints := credentialHints(ToolDefinition{Credentials: []CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "OPTIONAL", Required: false}}})
+	hints := credentialHints(ToolDefinition{Credentials: []CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}}})
 	if len(hints) != 1 || hints[0].Type != "oauth" {
 		t.Fatalf("hints=%v", hints)
 	}
@@ -443,6 +480,39 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	}
 	if err := (DefinitionPublication{DefinitionID: "catalog-read", Version: "1.0.0", Visibility: PublicationUser}).Validate(); err == nil {
 		t.Fatal("user publication without owner accepted")
+	}
+}
+
+func TestMaterializeBindingRotatesExistingOwnerConnection(t *testing.T) {
+	store := NewStore()
+	v1 := remoteDefinition()
+	v2 := v1
+	v2.Version = "2.0.0"
+	if err := store.RegisterDefinition(v1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterDefinition(v2); err != nil {
+		t.Fatal(err)
+	}
+	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: credstore.BackendLocal, Locator: "old-locator", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus}
+	if err := store.PutCredentialReference(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: v1.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Ready: func(context.Context, EffectiveBinding) error { return nil }}
+	binding, err := control.materializeBinding(context.Background(), aliceAuth(), Onboarding{OnboardingID: "onboard-new", Locator: "new-locator", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}, v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.DefinitionVersion != v2.Version || binding.ConnectionID != "conn-existing" || binding.CredentialRevision != 2 {
+		t.Fatalf("binding did not reuse rotated connection: %+v", binding)
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if len(store.connections) != 1 || store.connections["conn-existing"].Revision != 2 || store.credentials[old.CredentialRefID].Status != RevokedStatus || store.credentials[binding.CredentialRefID].Locator != "new-locator" {
+		t.Fatalf("credential rotation state is inconsistent")
 	}
 }
 

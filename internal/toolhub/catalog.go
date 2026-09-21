@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -97,19 +98,58 @@ func (s *Store) findBindingLocked(auth identity.Envelope, definition ToolDefinit
 // reusableSelfInstallDefinition returns the user's immutable definition for an
 // already reviewed source. Rebuilding the same commit can produce different
 // artifact metadata, so retries must reuse the approved record instead of
-// attempting to overwrite it.
+// attempting to overwrite it. The newest matching version wins: a definition
+// superseded by a contract-bound revision must not be resurrected.
 func (s *Store) reusableSelfInstallDefinition(auth identity.Envelope, source ArtifactSource, definitionID, version string) (ToolDefinition, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	definition, ok := s.definitions[definitionKey(definitionID, version)]
-	if !ok || definition.Source.Repository != source.Repository || !strings.EqualFold(definition.Source.CommitSHA, source.CommitSHA) {
-		return ToolDefinition{}, false
+	var best ToolDefinition
+	found := false
+	for _, definition := range s.definitions {
+		if definition.DefinitionID != definitionID || versionLess(definition.Version, version) || definition.Source.Repository != source.Repository || definition.Source.Subfolder != source.Subfolder || !strings.EqualFold(definition.Source.CommitSHA, source.CommitSHA) {
+			continue
+		}
+		publication := s.publicationLocked(definition)
+		if publication.Visibility != PublicationUser || publication.OwnerPrincipalID != auth.PrincipalID {
+			continue
+		}
+		if !found || versionLess(best.Version, definition.Version) {
+			best, found = definition, true
+		}
 	}
-	publication := s.publicationLocked(definition)
-	if publication.Visibility != PublicationUser || publication.OwnerPrincipalID != auth.PrincipalID {
-		return ToolDefinition{}, false
+	return best, found
+}
+
+// versionLess compares dot-separated numeric versions ("0.0.10" > "0.0.2").
+// Non-numeric components fall back to lexical order.
+func versionLess(a, b string) bool {
+	ap, bp := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(ap) && i < len(bp); i++ {
+		an, aErr := strconv.Atoi(ap[i])
+		bn, bErr := strconv.Atoi(bp[i])
+		if aErr == nil && bErr == nil {
+			if an != bn {
+				return an < bn
+			}
+			continue
+		}
+		if ap[i] != bp[i] {
+			return ap[i] < bp[i]
+		}
 	}
-	return definition, true
+	return len(ap) < len(bp)
+}
+
+// nextPatchVersion bumps the last numeric component of a version string.
+func nextPatchVersion(version string) string {
+	parts := strings.Split(version, ".")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if n, err := strconv.Atoi(parts[i]); err == nil {
+			parts[i] = strconv.Itoa(n + 1)
+			return strings.Join(parts, ".")
+		}
+	}
+	return version + ".1"
 }
 
 // Enable creates the smallest effective binding for an immutable manifest,

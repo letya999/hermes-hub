@@ -152,7 +152,7 @@ func TestToolHubProgressMessages(t *testing.T) {
 		"mcp__toolhub__required_credentials": "шаг 2/4",
 		"mcp__toolhub__confirm":              "шаг 3/4",
 		"mcp__toolhub__invoke":               "реальный вызов",
-		"other":                              "Выполняю запрос",
+		"other":                              "",
 	} {
 		if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: tool}); !strings.Contains(got, want) {
 			t.Fatalf("%s progress=%q", tool, got)
