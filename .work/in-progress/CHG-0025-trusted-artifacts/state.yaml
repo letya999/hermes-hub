@@ -1,0 +1,138 @@
+change: CHG-0025
+status: done
+phase: m51-closeout-accepted-scale-mcp-secret-reuse-revoke
+checks:
+  safety_doctor: passed-required-git-python-uv
+  docker_runtime: available-29.4.3
+  buildx: available-0.33.0
+  toolhive: available-0.48.0
+  integration: passed-real-four-language-builds; generic-controller-contract-fail-closed-on-stock-toolhive; docker-fallback-live-tools-list-call
+  sha_context_tests: passed
+  go_race_tests: passed
+  own_go_coverage: 85.02-percent-latest-just-check
+  just_check: passed-85.02-percent-race-format-vet-staticcheck-docs-actionlint
+  just_docker_check: completed-exit-zero-project-image-c688af9ac87b-hermes-contract-passed-stt-probe-unavailable
+  current_docker_check_handle: exec-session-29413-completed-exit-zero
+  current_just_check_handle: exec-session-41300-completed-exit-zero
+  bounded_toolhive_stdio_proof: passed-real-docker-session-39923-exit-zero
+  same_uid_control_secret_isolation: failed-real-sibling-proc-environment-probe-session-3163
+  exact_tool_call_content: passed-real-toolhive-stdio-session-3163
+  split_toolhive_stdio_isolation: passed-real-docker-session-22030-separate-pid-and-volumes-mcp-proc-and-control-marker-denial
+  native_toolhive_without_runtime: passed-fail-closed-real-windows-probe
+  anonymous_binding_isolation: passed-100-unique-ids-real-state-directories-restart-and-cross-user-denial-race
+  credential_binding_model_95_plus_5: passed-100-distinct-workload-ids-and-state-paths-five-shared-reference-model
+  requested_public_mcp_source_recipes: passed-serena-context7-go-and-rust-in-separate-real-runs
+  serena_mcp_launch_recipe: passed-real-exact-sha-session-33391-explicit-stdio-subcommand-no-runtime
+  requested_public_mcp_repeat: failed-go-and-rust-anonymous-github-http-403-serena-context7-passed
+  requested_public_mcp_build_runtime_hermes: not-run-pre-start-enforcement-unavailable
+  project_docker_image: built-c688af9ac87b-smoke-and-real-hermes-contract-passed
+  isolated_artifact_builder: passed-offline-oci-probe-minimal-authorized-bootstrap-profile
+  safety_scan: project-just-security-passed-govulncheck-and-npm-audit; broader-ai-repo-safety-separate
+  current_security_handle: exec-session-27127-completed-exit-zero
+  restricted_builder_policy: implemented-pinned-image-seccomp-and-fixed-bounds
+  restricted_builder_egress_policy: passed-real-internal-network-toolhive-proxy-allowlisted-connect-and-escape-denial
+  restricted_builder_attested_oci: passed-real-four-language-builds-provenance-spdx-sbom-and-verifier
+  trusted_artifact_import_cli: implemented-hubctl-artifact-import-and-explicit-approve
+  trusted_catalog_registration: implemented-immutable-review-digest-and-source-evidence
+  artifact_image_materialization: implemented-local-linux-docker-load-and-tag-helper
+  workload_budget_queue_idle_cleanup: implemented-fifo-budget-touch-release-idle-reclaim
+  runtime_security_profile: implemented-prestart-fail-closed-contract
+  generic_toolhive_controller: implemented-loopback-plan-budget-secret-ref-and-docker-profile-adapter; live-stock-v049-fails-closed-before-mcp-start; explicit-docker-fallback-live
+  serena_toolhub_hermes_visibility: passed-real-serena-1.5.3-hermes-container-mcp-test-28-tools-and-read-only-call
+  selected_git_blob_fetch: passed-real-public-github-read-at-d79fba521cf50b581701ee1c402b828e793262b6
+  artifact_fetch_negative_tests: passed-race
+  slack_callback_retries: passed-five-race-runs
+  recipe_checks: passed-pinned-context-entrypoint-base-digest-and-negative-tests
+  just_check_current_recipe: passed-generic-fallback-race-format-vet-staticcheck-docs-actionlint-85.06-percent
+  tool_contract_gate: implemented-approve-requires-confirmed-preflight-or-review-manifest
+  windows_linux_bridge: implemented-pe-rejected-live-elf-build
+  trusted_builder_policy: frozen-rootless-buildkit-bootstrap-v1-distinct-from-mcp-runtime
+  fallback_secret_topology: implemented-mcp-has-no-forwarding-token-relay-authenticates
+  bindings_95_plus_5_controller: passed-shipped-start-command-hook-100-unique-names-and-env-files
+  bindings_95_plus_5_live_docker: passed-100-sequential-unique-networks-volumes-containers-95-plus-5-env-files
+  public_mcp_sha_fallback_hermes: passed-live-four-mcp-docker-fallback-toolhive-hermes-list-and-safe-call-2026-09-16
+  caller_catalog_grant_issue: opened-103-distinct-from-81
+  just_check_product_gaps: passed-85.03-percent-race-format-vet-staticcheck-docs-actionlint
+  lifecycle_restart_remove_isolation: passed-real-docker-restart-same-volume-and-remove-one-without-other
+  concurrent_100_mcp_toolhive_stacks: not-a-closeout-gate-accepted-registered-bindings-plus-budget
+  closeout_plan: passed-2026-09-16-image-reuse-mcp-proc-secret-inaccessible-revoke-denies-call
+  mcp_container_secret_probe: passed-live-docker-mcp-proc-and-env-inaccessible
+  image_reuse_two_bindings: passed-same-image-id-distinct-containers-volumes-env-files
+  revoke_denies_live_backend: passed-gateway-call-then-setbindingstatus-revoked-no-second-hit
+  automatic_language_recipe_tests: passed-four-languages-ambiguity-path-link-duplicate-trailing-data-negatives
+  automatic_git_context_tests: passed-raw-sha-auth-exclusion-drift-size-redirect-link-submodule-duplicate-negatives
+  automatic_python_github_recipe: passed-chigwell-telegram-mcp-c9460f8ded6e2457bd70ebabfad840b58d23645d
+  just_check_auto_context_primary_entrypoint: passed-race-format-vet-staticcheck-docs-actionlint
+  oci_evidence_tests: passed-synthetic-layout-legacy-artifact-embedded-v1-provenance-integrity-subject-and-missing-evidence-negatives
+  inherited_base_cmd_regression: passed-all-four-language-recipes-clear-cmd
+  artifact_storage_race_tests: passed-sixteen-writers-one-object-no-temp-leak-corruption-cancel-size-negatives
+  artifact_storage_foreign_symlink: passed-real-windows-filesystem-denial
+notes:
+  - Real isolated automatic builds passed: Serena archive sha256:477caacd116c60b3be7fd67bff20d995e1041d1d1f20ec490c2a6d88df8236ce, Context7 archive sha256:7656bf84b90330f86441c6bc8cf7b2557f8b95f832dfd1782db355ae272498f5, Go archive sha256:ff385e206964c5549c8c39044c8900a1a5bb25dc129db8ac7848fc9ae5072502, Rust archive sha256:929c115174c80160638516db702a5bed4a30b168897f836acf9a2348e3b601ff. All had verified provenance/SBOM and image manifest evidence.
+  - Generated proxy ARG declarations fixed package-manager networking without persisting proxy endpoints in image ENV; BuildKit executor uses the owned proxy IPv4 because its sandbox resolver does not reliably resolve Docker names.
+  - Added hubctl artifact import/approve commands, immutable source/evidence/review metadata, local OCI materialization helper, FIFO active workload budget and pre-start runtime security contract. These are library/control-plane pieces; generic two-container ToolHive controller and live public MCP tools/list/tools/call remain outstanding.
+  - Latest just check session 13057 completed exit zero at exactly 85.00% total Go coverage; race, format, vet, staticcheck, docs and actionlint passed.
+  - Owner authorized the recommended MVP: a separate minimal trusted-builder bootstrap profile while all MCP runtime restrictions remain unchanged.
+  - Pinned moby/buildkit v0.29.0 rootless index digest sha256:93efd7f1c17f16cea080c34f68e19863b9fe541db550bf607221ce425c0ab9ef; pulled with an empty project-local Docker client config.
+  - Actual builder profile used non-root 1000:1000, privileged false, network none, read-only root, cap-drop ALL plus only SETUID/SETGID, private PID/cgroup namespaces, no devices/binds, 2 CPU, 2 GiB memory/swap and 512 PIDs. State was one owned named volume; temporary paths were bounded tmpfs.
+  - Default seccomp failed closed before bootstrap. Diagnostic unconfined seccomp proved the cause but built no source and was rejected as final. Pinned Moby seccomp v0.2.1 was minimally extended for clone/user-namespace and mount-family calls plus systempaths unmasking; native snapshotter worker became ready.
+  - Real network-none scratch build exported OCI archive sha256:195dbb4ce04a19f3995956e0c4841a8da75c3ca653d6dcc12aa7184a3edd2399. No credentials or upstream MCP code entered the probe. Provenance/SBOM were not produced, so artifact is not trusted.
+  - Exact labelled probe container and state volume were verified then removed. Pinned image layers and local evidence files remain; no live builder remains.
+  - Same builder-profile authority blocker repeated for three consecutive goal turns; no owner answer or newly verified permitted builder path. Goal blocked pending scope decision, not complete. No running verification gate is being interrupted.
+  - Builder research confirmed RootlessKit's stock bootstrap always invokes newuidmap/newgidmap; Linux no_new_privs suppresses their setuid/file-capability elevation. BuildKit v0.29.0 executor explicitly selects oci.WithNewPrivileges. These source facts do not prove every alternative impossible, but invalidate assuming the runtime drop-all/NNP profile works unchanged for a stock rootless builder.
+  - Need owner clarification whether the mandatory runtime capability/NNP restrictions also apply to trusted builder bootstrap, before introducing any distinct builder security profile. No privileged/unconfined worker, mapping privilege exception, package install or image build was executed in this investigation.
+  - Replaced host fixture topology with two bounded containers sharing only the owned MCP network-none namespace; distinct PID namespaces and named volumes inspected before start. Session 22030 passed actual stdio/list/exact-call/export/stop/remove in 17.74 seconds.
+  - MCP echo handler actively rejects control-volume marker access or ToolHive secret marker in its readable /proc environments; successful exact tool result proves these scoped synthetic checks passed during the ToolHive call. Proxy-container same-UID sibling diagnostic remains exposure-positive intentionally, not an isolated MCP.
+  - Corrected Docker network namespace inspection to exact owned container ID and populated UID-10001 private state directory in each synthetic volume. No privilege or filesystem restriction was relaxed.
+  - Synthetic verification containers and both named volumes were cleaned up after each run; generic controller, inbound authorization, public MCP builds and Hermes delivery remain missing.
+  - Docker gate session 33770 completed exit zero for project image d01a38a05563: pinned Hermes 0.21.0 contract and actual five-minute idle shutdown/cold restore passed. STT adapter probe unavailable. No generic public MCP build/runtime success implied; no live gate handles remain.
+  - Serena exact-SHA import repeated successfully with actual start-mcp-server stdio argv, headless flags and tool timeout 10; session 33391 exited zero in 39 seconds, 1070 files. This does not prove build or MCP/Hermes runtime.
+  - Fresh just check after Serena integration-gate change is running on session 4840; earlier 72750 exited zero at 85.59 percent.
+  - Actual same-UID sibling read synthetic ToolHive forwarding secret via /proc; same-container candidate must not become production runtime. Separate bounded MCP and proxy containers with private state are required.
+  - Diagnostic session 3163 exited zero and also verified exact tools/call structured content; its test pass reports secret exposure, not a passing isolation gate. Initial sibling diagnostic lacked verbose test output and was corrected before repeating.
+  - Stock Linux ToolHive 0.48.0 ran an actual synthetic stdio MCP via existing companion inside one pre-start-bounded Docker container with network none and no real Docker socket.
+  - Tiny private Unix bootstrap shim implements ping and empty container listing only; mutations return 403 and are never forwarded to a daemon. This remains an opt-in integration test, not a production generic controller.
+  - Actual tools/list, tools/call, RunConfig export without synthetic bearer literal, stop and remove passed; owned verification container and named volume were removed by test cleanup.
+  - ToolHive-only environment secret provider forwards private bridge authorization; MCP child receives no bridge token. Incoming proxy authorization and generic lifecycle/budget still require implementation.
+  - Current generic-controller adapter tests pass at the contract boundary, but stock ToolHive v0.48.0 fails the advertised create-time capability check before creating a generic MCP. No live public Serena/Context7 tools/list or tools/call is claimed until ToolHive exposes the required flags or a separately authorized runner is selected.
+  - Real compatibility probe passed: Hermes 0.21.0 container connected to the authenticated ToolHub endpoint, discovered all 28 Serena 1.5.3 tools, and a read-only get_current_config call returned Serena configuration. Backend MCP protocol header is pinned to 2025-11-25. Temporary Serena and ToolHub processes, Hermes volume and synthetic token were removed; no test files were written to the repository.
+  - Follow-up just check session 70179 completed exit zero at 85.03% Go statement coverage after the Serena protocol compatibility fix and documentation update.
+  - Added explicit docker_fallback for stateless credential-free generic artifacts: Docker pre-creates the bounded MCP container and ToolHive remains the isolated remote proxy/lifecycle path. Stateful and credential-bearing fallbacks fail closed; isolated ToolHive control state and generated bridge auth are not inherited from host credentials. A fixed-target relay is used because Docker Desktop does not publish ports from an internal network. Unit admission/cleanup and deny-path tests pass; a live synthetic artifact completed ToolHive tools/list and tools/call.
+  - Current project Docker gate session 29413 completed exit zero: smoke, pinned Hermes contract, five-minute gateway idle shutdown/cold restore and lifecycle checks passed. The faster-whisper executable probe remains unavailable on the shipped image.
+  - Current project docker-check session 33770 is running; do not restart it or claim its completion. This is not isolated public MCP build evidence.
+  - Previous goal turn made progress through real four-server source/recipe evidence and bounded downloads/pnpm support.
+  - Fixed anonymous per-user Resolve/NewWorkloadInstance IDs and filesystem state to use deterministic binding identity; connection-bearing legacy controller identity/state unchanged.
+  - Added 100 anonymous bindings with distinct runtime IDs, distinct state directories, stable restart paths and cross-user authorization denial; this is not the required 95-plus-5 credential-bearing Docker topology proof.
+  - Isolated rootless-builder diagnostic launch command was rejected by execution policy before running; no image pull/container launch or privilege relaxation claimed.
+  - Owner requested Serena, Context7 and real Go/Rust MCP servers without account credentials, through Hermes.
+  - Added exact-SHA integration gate for oraios/serena, upstash/context7, mark3labs/mcp-filesystem-server and rust-mcp-stack/rust-mcp-filesystem; no host execution of upstream sources.
+  - Real imports exposed sequential-download 60-second failures for Serena and Context7. Bounded eight-request batches resolved source fetch; race tests passed.
+  - Added pinned pnpm frozen-install and conventional MCP-workspace discovery after actual Context7 npm-only failure. Actual Context7 source import and recipe verification passed; no build or runtime delivery claimed.
+  - Owner explicitly rejected a ToolHive patch and requested lightweight MVP implementation.
+  - Owner rejected manual OCI preparation and confirmed automatic GitHub import/build for Python, Node, Go and Rust. Implement without ToolHive patch; all original security gates remain explicit.
+  - Removed our abandoned mcp-compose command, three unfinished source/test files and documentation section. Unrelated provider changes preserved.
+  - Existing dirty worktree belongs to owner; preserve unrelated connector changes.
+  - No account login, sending, publication or provider mutation authorized.
+  - Generic runtime must enforce limits before user code starts.
+  - Added SHA URL validation and bounded explicit regular-file archive export; not yet wired to import/build CLI.
+  - ToolHive 0.48.0 and 0.49.0 Docker deployment contracts omit resource limits and read-only rootfs at create time.
+  - ToolHive patch is explicitly rejected; no upstream patch or second supervisor introduced.
+  - Source fetch confirms commit and tree SHA, reads only selected blobs, verifies Git object IDs, and exports bounded sanitized tar in memory.
+  - Real source fetch is not Python/Node build or runtime integration evidence.
+  - Full scope and missing evidence are tracked in verification.md; no generic artifact is marked trusted yet.
+  - Dockerfile-v1 is a conservative declared recipe grammar; richer recipes and real language builds remain required work.
+  - Recipe context rejects metadata privilege bits, xattrs, missing/unlisted files and trailing archive data.
+  - Shared command validator now rejects Windows shell exe variants and bat/cmd scripts, with regression checks.
+  - Project Docker gate finished successfully, including five-minute idle shutdown and session cold restore; STT executable probe unavailable. This is not generic artifact/runtime evidence.
+  - buildx 0.33.0 docker-container driver creates a privileged builder. Official rootless BuildKit Docker examples relax seccomp/AppArmor; no such worker or exception was introduced.
+  - Added automatic conventional Python, Node, Go and Rust recipe generation and positive/negative regression tests. No administrator-prepared Dockerfile is required by this helper.
+  - Four-language recipe tests passed; import CLI, actual isolated builds, trusted admission and generic runtime remain incomplete.
+  - Current just check passed at 85.47 percent; real exact-SHA GitHub source read passed again. Docker gate rerun is still in progress, not generic import integration.
+  - Automatic source context now selects permitted files before fetching contents; exact-SHA raw reads verify Git object IDs and avoid per-file GitHub API quota.
+  - Real automatic Python context and generated recipe passed without manual file list. Python primary console entrypoint matches project name when multiple commands exist. No account or MCP runtime was started by this integration test.
+  - Latest just check passed at 85.50 percent; project-image Docker smoke passed and Hermes contract checks are live on session 89565. Do not restart or treat observation timeout as terminal.
+  - OCI evidence verifier streams layer hashes without extraction; keeps layout/index/manifest/config digests distinct and checks provenance/SBOM subjects. Fixtures are not isolated build integration evidence.
+  - Fixed generated Dockerfiles to clear inherited base CMD. Latest just check passed at 85.52 percent with no new dependency or upstream patch.
+  - Added write-once SHA-256-addressed OCI quarantine persistence and checksum/evidence revalidation on open using os.Root; no trusted definition is synthesized.
+  - Sixteen concurrent identical writers produced one object and no partial files. Actual Windows foreign symlink denial passed; latest just check passed at 85.50 percent.
+  - Docker gate session 89565 finished exit zero for the earlier project image, including real five-minute idle shutdown and cold restore; STT probe remains unavailable. Not isolated artifact-build or generic runtime evidence.

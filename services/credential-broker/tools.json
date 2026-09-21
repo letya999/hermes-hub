@@ -1,0 +1,11 @@
+{
+  "go_production": "go1.27.1",
+  "go_language_minimum": "1.23.0",
+  "just": "1.58.0",
+  "python_minimum": "3.10",
+  "go_tools": {
+    "staticcheck": "honnef.co/go/tools/cmd/staticcheck@v0.8.1",
+    "gosec": "github.com/securego/gosec/v2/cmd/gosec@v2.29.0",
+    "govulncheck": "golang.org/x/vuln/cmd/govulncheck@v1.1.4"
+  }
+}

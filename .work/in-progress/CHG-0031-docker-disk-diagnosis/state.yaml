@@ -1,0 +1,10 @@
+status: in_progress
+change: CHG-0031-docker-disk-diagnosis
+completed: []
+remaining:
+  - collect repository and Docker read-only evidence
+  - write and review the worker diagnosis receipt
+notes:
+  - investigation only; no product change is authorized
+  - the worktree was already dirty before this run and must remain intact
+  - Docker context comparison must not change the active context or mutate Docker state

@@ -1,0 +1,15 @@
+status: complete
+change: CHG-0026-recipe-resolver
+completed:
+  - read README.md and docs/index.md
+  - inspected existing M5.3 and artifact pipeline
+  - ran ai-repo-safety doctor
+  - implemented secret-free Launch/Connection Recipe resolution and onboarding persistence
+  - added pinned subfolder handling to the existing GitHub build context
+  - added manifest, MCPB, Dockerfile, Compose, credential and isolation regression tests
+  - added opt-in official Registry, ToolHive, Docker MCP and Smithery adapters with OCI provenance/SBOM correlation
+  - added verified published-image reuse with immutable pull and isolated tools/list preflight
+  - added resolver-only .mcp.json/.env.example metadata parsing and full YAML Compose declarations
+  - passed just security and just docker-check
+  - passed real ToolHive 0.49.0 initialize/tools/list against Docker MCP Catalog mcp/sequentialthinking at immutable digest
+remaining: []

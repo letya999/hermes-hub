@@ -74,7 +74,10 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		}
 		event.ApprovalChoices = choices
 	}
-	if event.Status != "completed" {
+	// Runtime progress text is already a bounded, redacted projection; preserve
+	// it so the channel can explain long-running MCP preparation. Other
+	// non-terminal event text is not user-facing.
+	if event.Status != "completed" && event.LastEvent != "tool.start" && event.LastEvent != "tool.end" && event.LastEvent != "run.started" {
 		event.Text = ""
 	}
 	s.mu.Lock()
@@ -121,7 +124,13 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		case event.LastEvent == "approval.request":
 			text = "Требуется подтверждение действия.\n/approve " + job.ID + " " + event.ApprovalID + " <choice>\nВарианты: " + strings.Join(event.ApprovalChoices, ", ") + "\nОтмена: /cancel " + job.ID
 		case event.LastEvent == "tool.start" || event.LastEvent == "tool.end" || event.LastEvent == "run.started":
-			text = "Выполняю запрос."
+			text = strings.TrimSpace(event.Text)
+			if text == "" && event.LastEvent == "run.started" {
+				text = "Выполняю запрос."
+			}
+			if text == strings.TrimSpace(mapping.Result) {
+				text = ""
+			}
 		}
 		if text != "" {
 			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, CreatedAt: time.Now().UTC()}

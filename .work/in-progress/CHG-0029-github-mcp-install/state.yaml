@@ -1,0 +1,28 @@
+schema: 1
+id: CHG-0029-github-mcp-install
+title: "Безопасная установка GitHub MCP через ToolHub"
+status: in_progress
+phase: implemented-verification
+started_at: "2026-09-19"
+updated_at: "2026-09-20"
+completed:
+  - "Прочитаны project rules, Memory Bank index и релевантные active specs/docs/work items"
+  - "Прослежен prepare_source -> pinned source -> recipe context -> resolver/catalog -> published preflight или restricted generated-build fallback"
+  - "Подтверждён root cause: parseDockerfile отвергал любой RUN --mount до безопасного fallback (уже исправлено узкой классификацией в HEAD)"
+  - "Подтверждён отдельный official opt-in GitHub remote MCP path через feature github и GITHUB_TOKEN"
+  - "Go disambiguation: basename upstream ENTRYPOINT/CMD -> выбранный main-пакет, fallback basename go.mod; ambiguous cases fail closed"
+  - "Upstream exec-form CMD args прокидываются в generated recipe при совпадении binary (github-mcp-server -> stdio)"
+  - "Preflight retry/promotion: optional declared secrets становятся required когда tools/list доказывает, что они гейтуют startup"
+  - "Regression tests: language disambiguation/args, preflight promotion (оба import path), опубликованный artifact path"
+  - "Docs: SPEC-0026 и docs/integrations.md обновлены (mount policy, entrypoint evidence, credential promotion, два GitHub path)"
+  - "Live OCI probe: ghcr.io/github/github-mcp-server:1.12.2 revision == pinned HEAD commit, attestations присутствуют (published path механически работает, но unsafe Dockerfile -> review -> generated fallback by design)"
+  - "bin/toolhub.exe + bin/hubctl.exe пересобраны; стек поднят контейнерно (compose.dev.yaml, 6/6 up, runtime healthy); toolhub :8090 MCP initialize+tools/list OK; controller /admit 401"
+  - "Live end-to-end: onboarding -> broker direct form -> PAT submit -> confirm -> binding -> 54 projected tools -> get_me вернул реальный GitHub profile через isolated workload+egress+relay"
+next:
+  - "just check пройден (85.06%)"
+  - "Пользователь должен ротировать PAT, переданный в чат для верификации"
+risks:
+  - "Нельзя ослабить admission для bind, ssh, tmpfs или неизвестных mount types"
+  - "Preflight promotion использует placeholder только как technical probe; реальные значения идут через protected form или broker"
+  - "Provider mutations и account login остаются вне scope без отдельной явной инструкции"
+  - "Существующее dirty tree содержит незакоммиченные resolver/spec/docs изменения; править с сохранением пользовательской работы"

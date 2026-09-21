@@ -553,8 +553,13 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 13 {
+	if err != nil || len(list.Tools) != 12 {
 		t.Fatal(list, err)
+	}
+	for _, tool := range list.Tools {
+		if tool.Name == "env_update" {
+			t.Fatal("legacy chat credential tool is still published")
+		}
 	}
 	listed, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "routine_list", Arguments: map[string]any{}})
 	if err == nil && listed != nil && !listed.IsError {

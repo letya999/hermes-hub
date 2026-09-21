@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -35,6 +37,7 @@ var (
 	versionPattern         = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$`)
 	toolHiveVersionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 	toolNamePattern        = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+	mcpToolNamePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 	credentialPattern      = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 	hostPattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}(:[0-9]{1,5})?$`)
 	digestPattern          = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -65,6 +68,10 @@ const (
 	RemoteMCP    Transport = "remote-mcp"
 	ContainerMCP Transport = "container-mcp"
 	BoundedCLI   Transport = "bounded-cli"
+	// ProviderAPI is an in-process official HTTPS REST data plane. It starts no
+	// child process and owns no filesystem state, so its enforcement is the
+	// declared egress allowlist, the authorization fence and bounded output.
+	ProviderAPI Transport = "provider-api"
 )
 
 type Effect string
@@ -119,32 +126,47 @@ func (o OwnerRef) Matches(e identity.Envelope) bool {
 }
 
 type ToolDefinition struct {
-	Schema       int               `json:"schema"`
-	DefinitionID string            `json:"definition_id"`
-	Version      string            `json:"version"`
-	Transport    Transport         `json:"transport"`
-	Source       DefinitionSource  `json:"source"`
-	Tools        []ToolSpec        `json:"tools"`
-	Credentials  []CredentialInput `json:"credentials,omitempty"`
-	Workload     WorkloadPolicy    `json:"workload"`
-	Execution    ExecutionPolicy   `json:"execution"`
-	Health       HealthProbe       `json:"health"`
+	Schema                     int               `json:"schema"`
+	DefinitionID               string            `json:"definition_id"`
+	Version                    string            `json:"version"`
+	Transport                  Transport         `json:"transport"`
+	Source                     DefinitionSource  `json:"source"`
+	Tools                      []ToolSpec        `json:"tools"`
+	Credentials                []CredentialInput `json:"credentials,omitempty"`
+	CredentialContractID       string            `json:"credential_contract_id,omitempty"`
+	CredentialContractRevision int               `json:"credential_contract_revision,omitempty"`
+	CredentialContractEnv      map[string]string `json:"credential_contract_env,omitempty"`
+	Environment                []string          `json:"environment,omitempty"`
+	Workload                   WorkloadPolicy    `json:"workload"`
+	Execution                  ExecutionPolicy   `json:"execution"`
+	Health                     HealthProbe       `json:"health"`
 }
 
 type DefinitionSource struct {
-	URL     string   `json:"url,omitempty"`
-	TLSMode string   `json:"tls_mode,omitempty"`
-	Image   string   `json:"image,omitempty"`
-	Digest  string   `json:"digest,omitempty"`
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
+	URL                string   `json:"url,omitempty"`
+	TLSMode            string   `json:"tls_mode,omitempty"`
+	Image              string   `json:"image,omitempty"`
+	Digest             string   `json:"digest,omitempty"`
+	Command            string   `json:"command,omitempty"`
+	Args               []string `json:"args,omitempty"`
+	Repository         string   `json:"repository,omitempty"`
+	Subfolder          string   `json:"subfolder,omitempty"`
+	CommitSHA          string   `json:"commit_sha,omitempty"`
+	ArchiveDigest      string   `json:"archive_digest,omitempty"`
+	ProvenanceDigest   string   `json:"provenance_digest,omitempty"`
+	SBOMDigest         string   `json:"sbom_digest,omitempty"`
+	RecipeDigest       string   `json:"recipe_digest,omitempty"`
+	ReviewDigest       string   `json:"review_digest,omitempty"`
+	ToolContractDigest string   `json:"tool_contract_digest,omitempty"`
+	ToolContractSource string   `json:"tool_contract_source,omitempty"`
 }
 
 type ToolSpec struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description,omitempty"`
-	Effect      Effect        `json:"effect"`
-	Arguments   []CLIArgument `json:"arguments,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Effect      Effect          `json:"effect"`
+	Arguments   []CLIArgument   `json:"arguments,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
 // CLIArgument is the only model-controlled input accepted by a bounded CLI
@@ -211,7 +233,10 @@ func (d ToolDefinition) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, tool := range d.Tools {
-		if !toolNamePattern.MatchString(tool.Name) || (tool.Effect != ReadEffect && tool.Effect != WriteEffect) || seen[tool.Name] {
+		if len(tool.InputSchema) > 65536 || (len(tool.InputSchema) > 0 && (!json.Valid(tool.InputSchema) || (d.Transport != RemoteMCP && d.Transport != ContainerMCP))) {
+			return fmt.Errorf("%w: MCP input schema", ErrInvalid)
+		}
+		if !mcpToolNamePattern.MatchString(tool.Name) || (tool.Effect != ReadEffect && tool.Effect != WriteEffect) || seen[tool.Name] {
 			return fmt.Errorf("%w: invalid or duplicate tool %q", ErrInvalid, tool.Name)
 		}
 		if len(tool.Description) > 1024 || len(tool.Arguments) > 32 {
@@ -219,21 +244,32 @@ func (d ToolDefinition) Validate() error {
 		}
 		argumentNames := map[string]bool{}
 		for _, argument := range tool.Arguments {
-			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validCLIFlag(argument.Flag) || !validCLIType(argument.Type) {
-				return fmt.Errorf("%w: invalid CLI argument %q", ErrInvalid, argument.Name)
+			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validCLIType(argument.Type) {
+				return fmt.Errorf("%w: invalid tool argument %q", ErrInvalid, argument.Name)
+			}
+			switch d.Transport {
+			case BoundedCLI:
+				if !validCLIFlag(argument.Flag) {
+					return fmt.Errorf("%w: invalid CLI argument %q", ErrInvalid, argument.Name)
+				}
+			case ProviderAPI:
+				if argument.Flag != "" {
+					return fmt.Errorf("%w: provider argument %q cannot carry a CLI flag", ErrInvalid, argument.Name)
+				}
+			default:
+				return fmt.Errorf("%w: transport %s cannot declare tool arguments", ErrInvalid, d.Transport)
 			}
 			argumentNames[argument.Name] = true
 		}
 		seen[tool.Name] = true
 	}
-	if d.Transport != BoundedCLI {
-		for _, tool := range d.Tools {
-			if len(tool.Arguments) > 0 {
-				return fmt.Errorf("%w: structured CLI arguments require bounded-cli", ErrInvalid)
-			}
-		}
-	}
 	seen = map[string]bool{}
+	for _, name := range d.Environment {
+		if !credentialPattern.MatchString(name) || seen[name] {
+			return fmt.Errorf("%w: invalid or duplicate environment parameter %q", ErrInvalid, name)
+		}
+		seen[name] = true
+	}
 	for _, input := range d.Credentials {
 		if !credentialPattern.MatchString(input.Name) || seen[input.Name] {
 			return fmt.Errorf("%w: invalid or duplicate credential input %q", ErrInvalid, input.Name)
@@ -243,11 +279,39 @@ func (d ToolDefinition) Validate() error {
 		}
 		seen[input.Name] = true
 	}
+	if d.CredentialContractID != "" {
+		if !identity.ValidID(d.CredentialContractID) || d.CredentialContractRevision < 1 || d.CredentialContractRevision > 100000 {
+			return fmt.Errorf("%w: invalid credential broker contract", ErrInvalid)
+		}
+		for name, target := range d.CredentialContractEnv {
+			if !credentialPattern.MatchString(name) || !credentialPattern.MatchString(target) || !slices.ContainsFunc(d.Credentials, func(input CredentialInput) bool { return input.Name == name }) {
+				return fmt.Errorf("%w: invalid credential broker delivery mapping", ErrInvalid)
+			}
+		}
+		for _, input := range d.Credentials {
+			if input.Required && d.CredentialContractEnv[input.Name] == "" {
+				return fmt.Errorf("%w: missing credential broker delivery for %s", ErrInvalid, input.Name)
+			}
+		}
+	} else if d.CredentialContractRevision != 0 || len(d.CredentialContractEnv) != 0 {
+		return fmt.Errorf("%w: credential broker mapping needs a contract", ErrInvalid)
+	}
 	if d.Workload.Class == Shared && (d.Workload.Stateful || len(d.Execution.Mounts) > 0) {
 		return fmt.Errorf("%w: shared workload cannot own state or mounts", ErrInvalid)
 	}
 	if d.Workload.Class == PerJob && d.Workload.Stateful && !hasMountSource(d.Execution.Mounts, "job-state") {
 		return fmt.Errorf("%w: stateful per-job workload needs job-state", ErrInvalid)
+	}
+	if d.Transport == ProviderAPI {
+		if d.Workload.Class != PerUser || d.Workload.Stateful || len(d.Execution.Mounts) > 0 {
+			return fmt.Errorf("%w: provider API is a stateless per-user data plane", ErrInvalid)
+		}
+		if !slices.ContainsFunc(d.Credentials, func(input CredentialInput) bool { return input.Required && !input.PerRequest }) {
+			return fmt.Errorf("%w: provider API needs a required owner credential", ErrInvalid)
+		}
+		if !slices.ContainsFunc(d.Execution.Egress, func(host string) bool { return strings.EqualFold(strings.TrimSpace(host), hostOfURL(d.Source.URL)) }) {
+			return fmt.Errorf("%w: provider API egress must include its declared host", ErrInvalid)
+		}
 	}
 	if d.Transport == ContainerMCP {
 		if !toolHiveVersionPattern.MatchString(d.Workload.ToolHiveVersion) || len(d.Workload.SidecarImages) == 0 || len(d.Workload.SidecarImages) > 8 {
@@ -265,6 +329,11 @@ func (d ToolDefinition) Validate() error {
 	if err := d.Execution.validate(d.Workload.Class); err != nil {
 		return err
 	}
+	for _, host := range d.Execution.Egress {
+		if strings.Contains(host, "/") && d.Transport != ContainerMCP {
+			return fmt.Errorf("%w: CIDR egress requires a container network controller", ErrInvalid)
+		}
+	}
 	if err := d.Health.Validate(d.Transport); err != nil {
 		return err
 	}
@@ -272,6 +341,24 @@ func (d ToolDefinition) Validate() error {
 }
 
 func (s DefinitionSource) validate(transport Transport) error {
+	if s.CommitSHA != "" && !gitSHAPattern.MatchString(s.CommitSHA) {
+		return fmt.Errorf("%w: source commit must be an exact lowercase SHA", ErrInvalid)
+	}
+	for name, value := range map[string]string{"archive_digest": s.ArchiveDigest, "provenance_digest": s.ProvenanceDigest, "sbom_digest": s.SBOMDigest, "recipe_digest": s.RecipeDigest, "review_digest": s.ReviewDigest, "tool_contract_digest": s.ToolContractDigest} {
+		if value != "" && !digestPattern.MatchString(value) {
+			return fmt.Errorf("%w: source %s must be a sha256 digest", ErrInvalid, name)
+		}
+	}
+	if s.ToolContractSource != "" && s.ToolContractSource != ToolContractPreflight && s.ToolContractSource != ToolContractReviewManifest {
+		return fmt.Errorf("%w: unknown tool contract source", ErrInvalid)
+	}
+	if s.Repository != "" {
+		if _, err := (ArtifactSource{Repository: s.Repository, Subfolder: s.Subfolder, CommitSHA: "0000000000000000000000000000000000000000"}).ArchiveURL(); err != nil {
+			return fmt.Errorf("%w: canonical artifact repository required", ErrInvalid)
+		}
+	} else if s.Subfolder != "" {
+		return fmt.Errorf("%w: source subfolder requires a repository", ErrInvalid)
+	}
 	values := 0
 	if s.URL != "" {
 		values++
@@ -283,13 +370,13 @@ func (s DefinitionSource) validate(transport Transport) error {
 		values++
 	}
 	switch transport {
-	case RemoteMCP:
-		if s.URL == "" || values != 1 || s.TLSMode != "required" || s.Digest != "" || len(s.Args) != 0 {
-			return fmt.Errorf("%w: remote MCP needs an HTTPS URL and required TLS", ErrInvalid)
+	case RemoteMCP, ProviderAPI:
+		if s.URL == "" || values != 1 || s.TLSMode != "required" || s.Digest != "" || len(s.Args) != 0 || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" {
+			return fmt.Errorf("%w: %s needs an HTTPS URL and required TLS", ErrInvalid, transport)
 		}
 		u, err := url.Parse(s.URL)
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return fmt.Errorf("%w: remote MCP URL must be HTTPS without credentials, query or fragment", ErrInvalid)
+			return fmt.Errorf("%w: %s URL must be HTTPS without credentials, query or fragment", ErrInvalid, transport)
 		}
 	case ContainerMCP:
 		if s.Image == "" || s.URL != "" || !digestPattern.MatchString(s.Digest) || s.TLSMode != "" || strings.Contains(s.Image, "@") || strings.ContainsAny(s.Image, " \t\r\n") || strings.Contains(s.Image, "..") {
@@ -302,7 +389,7 @@ func (s DefinitionSource) validate(transport Transport) error {
 			return fmt.Errorf("%w: invalid container command", ErrInvalid)
 		}
 	case BoundedCLI:
-		if s.Command == "" || values != 1 || s.Image != "" || s.URL != "" || s.Digest != "" || s.TLSMode != "" || !validCommand(s.Command) {
+		if s.Command == "" || values != 1 || s.Image != "" || s.URL != "" || s.Digest != "" || s.TLSMode != "" || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" || !validCommand(s.Command) {
 			return fmt.Errorf("%w: bounded CLI needs a command and no mutable source", ErrInvalid)
 		}
 	default:
@@ -323,7 +410,9 @@ func (e ExecutionPolicy) validate(class WorkloadClass) error {
 	seen := map[string]bool{}
 	for _, host := range e.Egress {
 		host = strings.ToLower(strings.TrimSpace(host))
-		if !hostPattern.MatchString(host) || seen[host] {
+		prefix, prefixErr := netip.ParsePrefix(host)
+		validPrefix := prefixErr == nil && prefix.Addr().Is4() && prefix.Bits() >= 8 && prefix == prefix.Masked()
+		if (!hostPattern.MatchString(host) && !validPrefix) || seen[host] {
 			return fmt.Errorf("%w: invalid or duplicate egress host", ErrInvalid)
 		}
 		seen[host] = true
@@ -361,13 +450,22 @@ func (h HealthProbe) Validate(transport Transport) error {
 	if h.TimeoutSeconds < 1 || h.TimeoutSeconds > 30 || h.Value == "" || strings.ContainsAny(h.Value, "\r\n") {
 		return fmt.Errorf("%w: bounded health probe is required", ErrInvalid)
 	}
-	if transport == RemoteMCP && (h.Kind != "http" || !strings.HasPrefix(h.Value, "/")) {
-		return fmt.Errorf("%w: remote MCP health probe must be an HTTP path", ErrInvalid)
+	if (transport == RemoteMCP || transport == ProviderAPI) && (h.Kind != "http" || !strings.HasPrefix(h.Value, "/")) {
+		return fmt.Errorf("%w: %s health probe must be an HTTP path", ErrInvalid, transport)
 	}
-	if transport != RemoteMCP && h.Kind != "exec" {
+	if transport != RemoteMCP && transport != ProviderAPI && h.Kind != "exec" {
 		return fmt.Errorf("%w: container and CLI health probes must be exec", ErrInvalid)
 	}
 	return nil
+}
+
+// hostOfURL returns the lowercase host of an already validated HTTPS URL.
+func hostOfURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
 }
 
 func hasMountSource(mounts []Mount, source string) bool {
@@ -379,6 +477,10 @@ func validCommand(command string) bool {
 		return false
 	}
 	base := strings.ToLower(filepath.Base(command))
+	if strings.HasSuffix(base, ".bat") || strings.HasSuffix(base, ".cmd") {
+		return false
+	}
+	base = strings.TrimSuffix(base, ".exe")
 	if base == "sh" || base == "bash" || base == "zsh" || base == "cmd" || base == "powershell" || base == "pwsh" {
 		return false
 	}
@@ -419,14 +521,18 @@ func DecodeDefinition(data []byte) (ToolDefinition, error) {
 }
 
 type CredentialReference struct {
-	Schema          int      `json:"schema"`
-	CredentialRefID string   `json:"credential_ref"`
-	ConnectionID    string   `json:"connection_id"`
-	Revision        uint64   `json:"revision"`
-	Backend         string   `json:"backend"`
-	Locator         string   `json:"locator"`
-	Keys            []string `json:"keys"`
-	Status          Status   `json:"status"`
+	Schema                 int               `json:"schema"`
+	CredentialRefID        string            `json:"credential_ref"`
+	ConnectionID           string            `json:"connection_id"`
+	Revision               uint64            `json:"revision"`
+	Backend                string            `json:"backend"`
+	Locator                string            `json:"locator"`
+	Keys                   []string          `json:"keys"`
+	BrokerGrantID          string            `json:"broker_grant_id,omitempty"`
+	BrokerContractID       string            `json:"broker_contract_id,omitempty"`
+	BrokerContractRevision int               `json:"broker_contract_revision,omitempty"`
+	BrokerEnv              map[string]string `json:"broker_env,omitempty"`
+	Status                 Status            `json:"status"`
 }
 
 func (r CredentialReference) Validate() error {
@@ -435,6 +541,16 @@ func (r CredentialReference) Validate() error {
 	}
 	if strings.ContainsAny(r.Locator, "\r\n=") || len(r.Locator) > 256 {
 		return fmt.Errorf("%w: credential locator must be opaque metadata", ErrInvalid)
+	}
+	if r.Backend == "credential-broker" {
+		if (r.BrokerGrantID != "" && !identity.ValidID(r.BrokerGrantID)) || !identity.ValidID(r.BrokerContractID) || r.BrokerContractRevision < 1 {
+			return fmt.Errorf("%w: credential broker reference", ErrInvalid)
+		}
+		for key, target := range r.BrokerEnv {
+			if !credentialPattern.MatchString(key) || !credentialPattern.MatchString(target) {
+				return fmt.Errorf("%w: credential broker environment mapping", ErrInvalid)
+			}
+		}
 	}
 	seen := map[string]bool{}
 	for _, key := range r.Keys {
@@ -593,6 +709,12 @@ func NewWorkloadInstance(binding ToolBinding, owner *OwnerRef, jobID string, gen
 	if owner != nil {
 		ownerID = owner.ID
 	}
+	if w.Class == PerUser && binding.ConnectionID != "" {
+		ownerID += ":" + binding.PrincipalID + ":" + binding.ConnectionID
+	}
+	if w.Class == PerUser && binding.ConnectionID == "" {
+		ownerID = binding.ToolBindingID
+	}
 	w.WorkloadID = WorkloadInstanceID(w.DefinitionID, w.Class, ownerID, jobID)
 	return w, w.Validate()
 }
@@ -603,6 +725,9 @@ type EffectiveBinding struct {
 	Connection *Connection
 	Credential *CredentialReference
 	WorkloadID string
+	// CredentialMounts are runtime-only paths returned by Credential Broker.
+	// They never enter the persisted projection or audit ledger.
+	CredentialMounts []Mount `json:"-"`
 }
 
 type WorkloadStopper interface {
@@ -612,6 +737,8 @@ type WorkloadStopper interface {
 type Store struct {
 	mu                  sync.RWMutex
 	path                string
+	savedPath           string
+	diskDigest          [32]byte
 	Reconnect           *ReconnectController
 	Stopper             WorkloadStopper
 	definitions         map[string]ToolDefinition
@@ -620,10 +747,14 @@ type Store struct {
 	bindings            map[string]ToolBinding
 	workloads           map[string]WorkloadInstance
 	projectionRevisions map[string]uint64
+	grants              map[string]Grant
+	onboardings         map[string]Onboarding
+	publications        map[string]DefinitionPublication
+	sharedPolicies      map[string]SharedCredentialPolicy
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}}
+	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]Grant{}, onboardings: map[string]Onboarding{}, publications: map[string]DefinitionPublication{}, sharedPolicies: map[string]SharedCredentialPolicy{}}
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
@@ -799,6 +930,35 @@ func (s *Store) RotateCredential(connectionID, backend, locator string, keys []s
 	}
 	next := connection.Revision + 1
 	reference := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID(connectionID, next), ConnectionID: connectionID, Revision: next, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), Status: ActiveStatus}
+	return s.rotateCredentialLocked(connection, reference)
+}
+
+// RotateCredentialRecord replaces the connection's credential with a fully
+// populated reference (broker backend fields included). The caller sets
+// Revision to the expected next connection revision so a concurrent rotation
+// fails instead of recording a grant bound to the wrong reference.
+func (s *Store) RotateCredentialRecord(reference CredentialReference) (CredentialReference, error) {
+	s.mu.Lock()
+	connection, ok := s.connections[reference.ConnectionID]
+	if !ok {
+		s.mu.Unlock()
+		return CredentialReference{}, fmt.Errorf("%w: connection", ErrNotFound)
+	}
+	if connection.Status != ActiveStatus {
+		s.mu.Unlock()
+		return CredentialReference{}, fmt.Errorf("%w: connection is not active", ErrRevoked)
+	}
+	next := connection.Revision + 1
+	if reference.Revision != next || reference.CredentialRefID != CredentialReferenceID(reference.ConnectionID, next) {
+		s.mu.Unlock()
+		return CredentialReference{}, fmt.Errorf("%w: credential rotation conflict", ErrConflict)
+	}
+	reference.Schema = SchemaVersion
+	reference.Status = ActiveStatus
+	return s.rotateCredentialLocked(connection, reference)
+}
+
+func (s *Store) rotateCredentialLocked(connection Connection, reference CredentialReference) (CredentialReference, error) {
 	if err := reference.Validate(); err != nil {
 		s.mu.Unlock()
 		return CredentialReference{}, err
@@ -810,19 +970,19 @@ func (s *Store) RotateCredential(connectionID, backend, locator string, keys []s
 	}
 	s.credentials[reference.CredentialRefID] = reference
 	connection.CredentialRefID = reference.CredentialRefID
-	connection.Revision = next
-	s.connections[connectionID] = connection
+	connection.Revision = reference.Revision
+	s.connections[connection.ConnectionID] = connection
 	for id, binding := range s.bindings {
-		if binding.ConnectionID == connectionID {
+		if binding.ConnectionID == connection.ConnectionID {
 			s.touchProjectionLocked(&binding)
 			s.bindings[id] = binding
 		}
 	}
-	stopped := s.stopAffectedLocked(connectionID)
+	stopped := s.stopAffectedLocked(connection.ConnectionID)
 	s.mu.Unlock()
 	s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
-		_ = s.MarkDegraded(connectionID)
+		_ = s.MarkDegraded(connection.ConnectionID)
 		return CredentialReference{}, err
 	}
 	return reference, nil
@@ -979,7 +1139,11 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (Effecti
 		if len(definition.Credentials) > 0 {
 			return EffectiveBinding{}, fmt.Errorf("%w: missing connection", ErrUnauthorized)
 		}
-		effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, "", "")
+		ownerID := ""
+		if definition.Workload.Class == PerUser {
+			ownerID = binding.ToolBindingID
+		}
+		effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
 		return effective, nil
 	}
 	connection, ok := s.connections[binding.ConnectionID]
@@ -1022,26 +1186,51 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (Effecti
 	if definition.Workload.Class == Shared {
 		ownerID = ""
 	}
+	if definition.Workload.Class == PerUser {
+		ownerID += ":" + auth.PrincipalID + ":" + connection.ConnectionID
+	}
 	effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
 	return effective, nil
 }
 
 type snapshot struct {
-	Schema              int                   `json:"schema"`
-	Definitions         []ToolDefinition      `json:"definitions"`
-	Connections         []Connection          `json:"connections"`
-	Credentials         []CredentialReference `json:"credential_references"`
-	Bindings            []ToolBinding         `json:"bindings"`
-	Workloads           []WorkloadInstance    `json:"workloads"`
-	ProjectionRevisions map[string]uint64     `json:"projection_revisions,omitempty"`
+	Schema              int                      `json:"schema"`
+	Definitions         []ToolDefinition         `json:"definitions"`
+	Connections         []Connection             `json:"connections"`
+	Credentials         []CredentialReference    `json:"credential_references"`
+	Bindings            []ToolBinding            `json:"bindings"`
+	Workloads           []WorkloadInstance       `json:"workloads"`
+	ProjectionRevisions map[string]uint64        `json:"projection_revisions,omitempty"`
+	Grants              []Grant                  `json:"grants,omitempty"`
+	Onboardings         []Onboarding             `json:"onboardings,omitempty"`
+	Publications        []DefinitionPublication  `json:"publications,omitempty"`
+	SharedPolicies      []SharedCredentialPolicy `json:"shared_credential_policies,omitempty"`
 }
 
 func (s *Store) Save(path string) error {
 	if err := safeStorePath(path); err != nil {
 		return err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	if err := safeStorePath(path + ".lock"); err != nil {
+		return err
+	}
+	lock := flock.New(path + ".lock")
+	if err := lock.Lock(); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	previous, err := os.ReadFile(path) // #nosec G304 -- trusted, symlink-checked registry path.
+	if err == nil && (s.savedPath != path || sha256.Sum256(previous) != s.diskDigest) {
+		return ErrConflict
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	state := snapshot{Schema: SchemaVersion, ProjectionRevisions: map[string]uint64{}}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
@@ -1061,6 +1250,18 @@ func (s *Store) Save(path string) error {
 	for key, revision := range s.projectionRevisions {
 		state.ProjectionRevisions[key] = revision
 	}
+	for _, grant := range s.grants {
+		state.Grants = append(state.Grants, grant)
+	}
+	for _, onboarding := range s.onboardings {
+		state.Onboardings = append(state.Onboardings, onboarding)
+	}
+	for _, pub := range s.publications {
+		state.Publications = append(state.Publications, pub)
+	}
+	for _, policy := range s.sharedPolicies {
+		state.SharedPolicies = append(state.SharedPolicies, policy)
+	}
 	slices.SortFunc(state.Definitions, func(a, b ToolDefinition) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
@@ -1068,6 +1269,12 @@ func (s *Store) Save(path string) error {
 	slices.SortFunc(state.Credentials, func(a, b CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
 	slices.SortFunc(state.Bindings, func(a, b ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
 	slices.SortFunc(state.Workloads, func(a, b WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
+	slices.SortFunc(state.Grants, func(a, b Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
+	slices.SortFunc(state.Onboardings, func(a, b Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
+	slices.SortFunc(state.Publications, func(a, b DefinitionPublication) int {
+		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
+	})
+	slices.SortFunc(state.SharedPolicies, func(a, b SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -1093,7 +1300,11 @@ func (s *Store) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	s.savedPath, s.diskDigest = path, sha256.Sum256(body)
+	return nil
 }
 
 func Load(path string) (*Store, error) {
@@ -1164,6 +1375,30 @@ func Load(path string) (*Store, error) {
 		}
 		store.projectionRevisions[key] = revision
 	}
+	for _, grant := range state.Grants {
+		if err := grant.Validate(); err != nil {
+			return nil, err
+		}
+		store.grants[grant.GrantID] = grant
+	}
+	for _, onboarding := range state.Onboardings {
+		if err := onboarding.Validate(); err != nil {
+			return nil, err
+		}
+		store.onboardings[onboarding.OnboardingID] = onboarding
+	}
+	for _, pub := range state.Publications {
+		if err := pub.Validate(); err != nil {
+			return nil, err
+		}
+		store.publications[definitionKey(pub.DefinitionID, pub.Version)] = pub
+	}
+	for _, policy := range state.SharedPolicies {
+		if err := policy.Validate(); err != nil {
+			return nil, err
+		}
+		store.sharedPolicies[policy.PolicyID] = policy
+	}
 	for _, binding := range store.bindings {
 		key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
 		if binding.ProjectionRevision > store.projectionRevisions[key] {
@@ -1174,6 +1409,7 @@ func Load(path string) (*Store, error) {
 		return nil, err
 	}
 	store.path = path
+	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
 	return store, nil
 }
 
@@ -1262,6 +1498,11 @@ func (s *Store) Reload() error {
 	s.bindings = fresh.bindings
 	s.workloads = fresh.workloads
 	s.projectionRevisions = fresh.projectionRevisions
+	s.grants = fresh.grants
+	s.onboardings = fresh.onboardings
+	s.publications = fresh.publications
+	s.sharedPolicies = fresh.sharedPolicies
+	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.mu.Unlock()
 	s.stopWorkloads(stopped)
 	return nil

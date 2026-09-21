@@ -62,14 +62,19 @@ func TestWriteAuthorizedFilesAndCorrelation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(filepath.Join(root, "per-user", "alice", "google-work", "credentials.env"))
+	t.Cleanup(func() { _ = wipe() })
+	workspace, err := OpenWorkloadWorkspace(root, effective, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
 	if err != nil || !strings.Contains(string(body), "file-secret") {
 		t.Fatalf("file=%s err=%v", body, err)
 	}
 	if err := wipe(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "per-user", "alice", "google-work", "credentials.env")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); !os.IsNotExist(err) {
 		t.Fatal("credentials.env survived wipe")
 	}
 	if _, err := writeAuthorizedFiles(context.Background(), "", effective, map[string]string{"GOOGLE_TOKEN": "x"}); err == nil {

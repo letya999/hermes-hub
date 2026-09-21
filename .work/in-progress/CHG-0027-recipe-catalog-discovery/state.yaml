@@ -1,0 +1,16 @@
+status: complete
+change: CHG-0027-recipe-catalog-discovery
+completed:
+  - added Docker Hub namespace/tag discovery with OCI source, revision, provenance and SBOM verification
+  - added GitHub Packages/GHCR discovery with optional operator-selected token
+  - added complete fixed catalog set through HUB_RECIPE_CATALOGS=all
+  - normalized Smithery camelCase config fields into safe credential names and JSON targets
+  - passed just check: race tests, 85.00% statement coverage, vet, staticcheck, docs and actionlint
+  - passed just security: govulncheck and browser npm audit
+  - passed just docker-check: image build, runtime smoke and Hermes contract suite
+  - passed live Docker Hub, GHCR image-hint, OCI SPDX/provenance and public Smithery schema checks
+  - passed ToolHive catalog contract and prior real ToolHive initialize/tools-list acceptance for the verified Docker MCP image
+remaining: []
+notes:
+  - Smithery release correlation uses an operator-provided token; the public schema check does not retrieve secret values
+  - GHCR package enumeration may use an operator-selected token, while public image hints remain directly verifiable

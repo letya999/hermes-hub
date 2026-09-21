@@ -3,6 +3,7 @@ package toolhub
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -283,6 +284,89 @@ func TestWorkloadClassLifecycleModel(t *testing.T) {
 	}
 	if err := store.PutWorkloadInstance(job); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAnonymousPerBindingWorkloadIdentity(t *testing.T) {
+	store := NewStore()
+	definition := remoteDefinition()
+	definition.Credentials = nil
+	definition.Workload.Stateful = true
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	paths := map[string]bool{}
+	root := t.TempDir()
+	if _, err := OpenWorkloadWorkspace(root, EffectiveBinding{Definition: definition, Binding: ToolBinding{ContextID: "alice"}}, ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unidentified anonymous workspace accepted: %v", err)
+	}
+	for i := 0; i < 100; i++ {
+		auth := identity.TelegramEnvelope("alice", 7, fmt.Sprintf("runtime-%d", i), "policy-1")
+		binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+		binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+		if err := store.PutBinding(binding); err != nil {
+			t.Fatal(err)
+		}
+		effective, err := store.Resolve(auth, binding.ToolBindingID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workload, err := NewWorkloadInstance(binding, &OwnerRef{Type: ContextOwner, ID: "alice"}, "", 1, time.Now(), time.Time{})
+		if err != nil || workload.WorkloadID != effective.WorkloadID || seen[workload.WorkloadID] {
+			t.Fatalf("binding %d collided or resolve/create disagree: %v", i, err)
+		}
+		seen[workload.WorkloadID] = true
+		workspace, err := OpenWorkloadWorkspace(root, effective, "")
+		if err != nil || paths[workspace.Path] {
+			t.Fatalf("binding %d shares a state directory: %v", i, err)
+		}
+		paths[workspace.Path] = true
+		if err := os.WriteFile(filepath.Join(workspace.Path, "synthetic-marker"), []byte(auth.RuntimeID), 0600); err != nil {
+			t.Fatal(err)
+		}
+		restarted, err := OpenWorkloadWorkspace(root, effective, "")
+		if err != nil || restarted.Path != workspace.Path {
+			t.Fatalf("restart state moved: %v", err)
+		}
+		if err := store.PutWorkloadInstance(workload); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Resolve(identity.TelegramEnvelope("bob", 8, auth.RuntimeID, "policy-1"), binding.ToolBindingID); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("cross-user resolve: %v", err)
+		}
+	}
+}
+
+func TestCredentialBindingIsolationNinetyFivePlusFive(t *testing.T) {
+	definition := remoteDefinition()
+	definition.Workload.Stateful = true
+	root := t.TempDir()
+	workloads := map[string]bool{}
+	paths := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		principal := fmt.Sprintf("user-%03d", i)
+		connectionID := fmt.Sprintf("connection-%03d", i)
+		credentialID := fmt.Sprintf("credential-%03d", i)
+		if i >= 95 {
+			connectionID, credentialID = "shared-connection", "shared-credential"
+		}
+		binding := ToolBinding{Schema: SchemaVersion, PrincipalID: principal, ContextID: principal, RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connectionID, CredentialRefID: credentialID, PolicyVersion: "policy-1", WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+		binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+		workload, err := NewWorkloadInstance(binding, &OwnerRef{Type: ContextOwner, ID: principal}, "", 1, time.Now(), time.Time{})
+		if err != nil || workloads[workload.WorkloadID] {
+			t.Fatalf("binding %d shares a workload: %v", i, err)
+		}
+		workloads[workload.WorkloadID] = true
+		effective := EffectiveBinding{Definition: definition, Binding: binding, Connection: &Connection{ConnectionID: connectionID}}
+		workspace, err := OpenWorkloadWorkspace(root, effective, "")
+		if err != nil || paths[workspace.Path] {
+			t.Fatalf("binding %d shares state: %v", i, err)
+		}
+		paths[workspace.Path] = true
+	}
+	if len(workloads) != 100 || len(paths) != 100 {
+		t.Fatalf("got %d workloads and %d state paths", len(workloads), len(paths))
 	}
 }
 

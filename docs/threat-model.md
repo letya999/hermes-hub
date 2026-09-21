@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-09-13
+last_verified: 2026-09-17
 ---
 # Threat model
 
@@ -81,6 +81,13 @@ leased only for current work and is not an authorization source.
 | Duplicate or spoofed scheduled occurrence targets another audience | Hub owns schedule identity and audience; occurrence key is durable and execution rechecks current owner/context/policy | Schedule/occurrence/job/delivery IDs | #28, #33 |
 | Browser profile, Telegram session or personal terminal bypass | Treat profiles/sessions as credentials; managed mode stays outside Hermes; personal-terminal exposure is explicit, reversible and owner-scoped | Exposure mode and lifecycle, no values | #51 and connector issue |
 | Group/reply audience disclosure or replayed delivery | Group use stays disabled; delivery binds normalized conversation to verified audience and idempotency record | Conversation/audience IDs and delivery state | communication gateway; future group issue |
+| Model forges owner, locator, backend or policy on the control MCP | Control operations derive identity from the authenticated request and reject authority arguments before any store write | Principal and denial reason; no locators as model input | #81, #101 |
+| User without a self-install grant imports GitHub MCP | `prepare_source` requires an operator `self-install` grant; catalog definitions require catalog-default or definition assignment | Grant kind and outcome | #81, #101 |
+| Alice lists or calls Bob's binding | Projection and control status are exact-owner; foreign onboarding/binding ids are not found | Principal/binding ids | #101, #86 |
+| Secret entered as Telegram `KEY=value` or chat becomes an MCP credential | Production MCP credentials use the loopback form or URL elicitation into ciphertext; control tools reject credential-named arguments | Key names only | #102 |
+| Expired confirmation or replayed nonce | Single-use nonce with TTL; replay and expiry fail closed | Onboarding id and deny reason | #102 |
+| Effect or budget escalation at confirm/enable | Requested effects and execution limits cannot exceed the reviewed definition | Definition bounds and deny reason | #86 |
+| Rotate/revoke leaves an open session authorized | Go rereads current revision under the registry fence and stops affected workloads; the next `tools/call` is denied before backend | Credential/binding revision | #86, #102 |
 | OAuth account mis-linking | Callback state binds authenticated principal, context and intended connector; account identity is displayed and explicitly accepted | Link event, provider account identifier and owner | provider OAuth issue |
 | Backup or restore crosses owner/context | Backups preserve scope metadata and encryption separation; mismatch or unknown revision blocks restore | Backup identity/revision and restore outcome | #48 and operations |
 

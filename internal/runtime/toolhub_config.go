@@ -14,6 +14,11 @@ var runtimeEnvName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 
 const defaultToolHubEndpoint = "http://127.0.0.1:8090/mcp"
 
+// ToolHub source review/build runs in an isolated builder and may outlive the
+// ordinary MCP call timeout. The user gets Hermes' heartbeat while this call
+// is in flight, so do not kill it after the default two minutes.
+const toolHubCallTimeoutSeconds = 1800
+
 func toolHubEndpoint() string {
 	endpoint := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_ENDPOINT"))
 	if endpoint == "" && os.Getenv("HUB_TOOLHUB_AUTOSTART") == "true" {
@@ -61,9 +66,19 @@ func applyToolHubConfig(configPath string) error {
 	}
 	servers["toolhub"] = map[string]any{
 		"url":            endpoint,
-		"timeout":        120,
+		"timeout":        toolHubCallTimeoutSeconds,
 		"skip_preflight": true,
 		"headers":        map[string]string{"Authorization": "Bearer ${" + tokenEnv + "}"},
+	}
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_RECONNECT")), "false") {
+		approvals, ok := config["approvals"].(map[string]any)
+		if !ok {
+			approvals = map[string]any{}
+			config["approvals"] = approvals
+		}
+		if _, exists := approvals["mcp_reload_confirm"]; !exists {
+			approvals["mcp_reload_confirm"] = false
+		}
 	}
 	updated, err := yaml.Marshal(config)
 	if err != nil {

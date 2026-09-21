@@ -880,6 +880,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.list(w, r)
 	case "/v1/leases":
 		m.lease(w, r)
+	case "/v1/self-env":
+		m.selfEnv(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 			m.jobStatus(w, r, strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
@@ -927,6 +929,59 @@ func (m *Manager) lease(w http.ResponseWriter, r *http.Request) {
 		Lease   Lease   `json:"lease"`
 		Runtime Runtime `json:"runtime"`
 	}{lease, runtime})
+}
+
+func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	defer clear(body)
+	var request hubruntime.SelfEnvRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	job := hubruntime.ExecuteRequest{Envelope: request.Envelope, OrganizationID: request.OrganizationID, UserID: request.UserID, ActorID: request.ActorID, ScopeID: request.ScopeID, Channel: "communication", Trigger: "credential-form", JobID: "credential-form", IdempotencyKey: "credential-form", Text: "protected credential form"}
+	binding, err := m.bindingFor(job)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
+		return
+	}
+	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	defer m.ReleaseLease(lease.ID)
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/self-env", bytes.NewReader(body))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
+	upstream.Header.Set("Content-Type", "application/json")
+	response, err := m.cfg.HTTP.Do(upstream)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	defer response.Body.Close()
+	result, err := io.ReadAll(io.LimitReader(response.Body, 128*1024+1))
+	if err != nil || len(result) > 128*1024 {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime response unavailable"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, _ = w.Write(result)
 }
 
 func (m *Manager) releaseLeaseHTTP(w http.ResponseWriter, r *http.Request, leaseID string) {

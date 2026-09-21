@@ -1,0 +1,23 @@
+schema: 1
+id: CHG-0031-docker-reclaim
+title: "Docker reclaim: старые версии образов, dangling, сироты artifact-build"
+status: in_progress
+phase: implemented-verification
+started_at: "2026-09-20"
+updated_at: "2026-09-20"
+completed:
+  - "Диагноз: classic builder (DOCKER_BUILDKIT=0) + отсутствие retention: каждая пересборка = новое поколение ~7.5GB unique + старое dangling"
+  - "devcheck docker-build с BuildKit, devcheck docker-clean [--deep], just docker-clean, clean в хвосте docker-check"
+  - "Label hermes-hub.role=artifact-build-seed на seed-контейнере"
+  - "Live clean: -14.7GB внутри VM (образ 8.77GB + волюмы ~7.6GB), stale контейнеры стека удалены"
+  - "docs/operations.md: секция Docker build hygiene"
+  - "bin/toolhub.exe и bin/hubctl.exe пересобраны; start-local-toolhub.ps1: toolhub :8090 + controller :8545 подняты, MCP initialize OK"
+  - "Root cause #2: DOCKER_BUILDKIT=0 в User env Windows — удалён; justfile экспортирует DOCKER_BUILDKIT=1/COMPOSE_DOCKER_CLI_BUILD=1, hubctl форсит их для compose"
+  - "Root cause #3: render.go ставил build: на каждый сервис (6 копий) — legacy-билдер собирал 8.8GB образ по разу на сервис; теперь build: только на toolhub, остальные image: (compose#7343 паттерн)"
+  - "compose.dev.yaml перерендерен: 1 build-секция вместо 6; тест spaces_test ассертит ровно один build"
+next:
+  - "just check до конца"
+  - "VHDX docker_data.vhdx (136GB): fstrim + wsl --shutdown + diskpart compact — требует остановки Docker"
+risks:
+  - "docker-clean во время активного artifact build сорвёт его sweep'ом — только ручной запуск"
+  - "docker rmi/prune best-effort: busy-объекты пропускаются без ошибки"

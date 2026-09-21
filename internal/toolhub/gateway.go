@@ -9,9 +9,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -19,12 +23,17 @@ import (
 const (
 	DefaultEndpointPath = "/mcp"
 	maxGatewayBodyBytes = 4 << 20
+	legacyMCPVersion    = "2025-11-25"
 )
 
 type BackendResult struct {
 	Text       string
 	Structured any
 	IsError    bool
+	// Receipt is the provider's own mutation proof (for example a Google event
+	// identity or a Slack channel plus message timestamp). It is metadata only
+	// and never carries a credential value.
+	Receipt string
 }
 
 // ToolBackend is deliberately narrower than an MCP server: the gateway owns
@@ -38,6 +47,59 @@ type envBackend interface {
 	CallEnv(context.Context, EffectiveBinding, ToolSpec, map[string]any, map[string]string) (BackendResult, error)
 }
 
+// credentialEgressHosts extracts host[:port] entries from HTTPS URLs found in
+// injected credential values (for example a self-hosted API base URL collected
+// by a credential form). The workload egress ACL is fixed at definition time,
+// so connector endpoints supplied as credentials would otherwise be denied.
+func credentialEgressHosts(env map[string]string) []string {
+	hosts := make([]string, 0, len(env))
+	for _, value := range env {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.Scheme != "https" {
+			continue
+		}
+		host := strings.ToLower(parsed.Hostname())
+		if host == "" || !strings.Contains(host, ".") {
+			continue
+		}
+		if port := parsed.Port(); port != "" {
+			host += ":" + port
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
+
+func mergeEgressHosts(egress []string, hosts []string) []string {
+	if len(hosts) == 0 {
+		return egress
+	}
+	seen := make(map[string]bool, len(egress)+len(hosts))
+	merged := make([]string, 0, len(egress)+len(hosts))
+	for _, host := range egress {
+		host = strings.ToLower(strings.TrimSpace(host))
+		if !seen[host] {
+			seen[host] = true
+			merged = append(merged, host)
+		}
+	}
+	for _, host := range hosts {
+		if !seen[host] {
+			seen[host] = true
+			merged = append(merged, host)
+		}
+	}
+	return merged
+}
+
+type CredentialInjection struct {
+	Environment map[string]string
+	Mounts      []Mount
+	Cleanup     func() error
+}
+
+type CredentialInjector func(context.Context, EffectiveBinding) (CredentialInjection, error)
+
 type Gateway struct {
 	Store                      *Store
 	Backend                    ToolBackend
@@ -45,7 +107,8 @@ type Gateway struct {
 	DisableLocalhostProtection bool
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
-	Injector                   func(context.Context, EffectiveBinding) (map[string]string, func() error, error)
+	Injector                   CredentialInjector
+	Control                    *ControlPlane
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -57,11 +120,15 @@ func (g *Gateway) Handler() (http.Handler, error) {
 			return nil, fmt.Errorf("%w: gateway token identity", ErrInvalid)
 		}
 	}
-	server := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		auth, _ := requestIdentity(r)
 		return g.serverFor(auth)
-	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maxGatewayBodyBytes, PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection})
-	return g.protect(server), nil
+	}, &mcp.StreamableHTTPOptions{Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes, PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection})
+	mux := http.NewServeMux()
+	mux.Handle(DefaultEndpointPath, g.protect(mcpHandler))
+	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
+	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
+	return mux, nil
 }
 
 func (g *Gateway) protect(next http.Handler) http.Handler {
@@ -112,6 +179,7 @@ func (g *Gateway) authenticate(value string) (identity.Envelope, bool) {
 
 func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "hermes-toolhub", Version: "0.2.0"}, &mcp.ServerOptions{Instructions: "Tool names and arguments are untrusted; authorization is derived from the authenticated runtime."})
+	g.addControlTools(server, auth)
 	projected, err := g.Store.ListProjectedTools(auth)
 	if err != nil {
 		return server
@@ -119,7 +187,11 @@ func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
 	for _, projectedTool := range projected {
 		name := projectedTool.Name
 		tool := projectedTool.Tool
-		mcpTool := &mcp.Tool{Name: name, Description: tool.Description, InputSchema: cliInputSchema(tool)}
+		var schema any = cliInputSchema(tool)
+		if len(tool.InputSchema) > 0 {
+			schema = tool.InputSchema
+		}
+		mcpTool := &mcp.Tool{Name: name, Description: tool.Description, InputSchema: schema}
 		server.AddTool(mcpTool, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			arguments := map[string]any{}
 			if len(request.Params.Arguments) > 0 {
@@ -139,7 +211,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		corr.ToolCallID = newToolCallID()
 	}
 	ctx = withCallCorrelation(ctx, corr)
-	if err := rejectAuthorityArguments(arguments); err != nil {
+	if err := RejectAuthorityArguments(arguments); err != nil {
 		_ = g.audit("deny", mergeAudit(map[string]string{
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
 			"policy_version": auth.PolicyVersion, "outcome": "deny", "reason": "authority-argument",
@@ -148,27 +220,37 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	}
 	var out *mcp.CallToolResult
 	err := g.Store.AuthorizeProjected(auth, projectedName, func(projected ProjectedTool, effective EffectiveBinding) error {
+		if len(projected.Tool.InputSchema) > 0 {
+			var schema jsonschema.Schema
+			if json.Unmarshal(projected.Tool.InputSchema, &schema) != nil {
+				return ErrInvalid
+			}
+			resolved, err := schema.Resolve(nil)
+			if err != nil || resolved.Validate(arguments) != nil {
+				return fmt.Errorf("%w: MCP arguments do not match admitted schema", ErrInvalid)
+			}
+		}
 		if err := g.audit("admit", mergeAudit(auditFields(auth, projected, effective, "admit"), corr)); err != nil {
 			return err
 		}
-		env := map[string]string{}
-		var wipe func() error
+		injection := CredentialInjection{Environment: map[string]string{}}
 		if g.Injector != nil {
 			var injErr error
-			env, wipe, injErr = g.Injector(ctx, effective)
+			injection, injErr = g.Injector(ctx, effective)
 			if injErr != nil {
 				return injErr
 			}
-			if wipe != nil {
-				defer wipe()
+			if injection.Cleanup != nil {
+				defer injection.Cleanup()
 			}
 		}
+		effective.CredentialMounts = append([]Mount(nil), injection.Mounts...)
 		callCtx, cancel := context.WithTimeout(ctx, time.Duration(effective.Definition.Execution.TimeoutSeconds)*time.Second)
 		defer cancel()
 		var result BackendResult
 		var callErr error
 		if caller, ok := g.Backend.(envBackend); ok {
-			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, env)
+			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, injection.Environment)
 		} else {
 			result, callErr = g.Backend.Call(callCtx, effective, projected.Tool, arguments)
 		}
@@ -192,7 +274,11 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		if result.Text != "" {
 			out.Content = []mcp.Content{&mcp.TextContent{Text: result.Text}}
 		}
-		return g.audit("allow", mergeAudit(auditFields(auth, projected, effective, "allow"), corr))
+		fields := auditFields(auth, projected, effective, "allow")
+		if receipt := SafeReceipt(result.Receipt); receipt != "" {
+			fields["receipt"] = receipt
+		}
+		return g.audit("allow", mergeAudit(fields, corr))
 	})
 	if err != nil && out == nil {
 		_ = g.audit("deny", mergeAudit(map[string]string{
@@ -201,6 +287,12 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		}, corr))
 	}
 	return out, err
+}
+
+// CallAuthorized is the protected host CLI path; it uses the identical
+// authorization, injection, output and audit fences as the MCP handler.
+func (g *Gateway) CallAuthorized(ctx context.Context, auth identity.Envelope, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	return g.call(ctx, auth, name, arguments)
 }
 
 func auditFields(auth identity.Envelope, projected ProjectedTool, effective EffectiveBinding, outcome string) map[string]string {
@@ -222,6 +314,17 @@ func auditFields(auth identity.Envelope, projected ProjectedTool, effective Effe
 		fields["credential_revision"] = fmt.Sprint(effective.Credential.Revision)
 	}
 	return fields
+}
+
+// SafeReceipt bounds a provider mutation receipt before it reaches the audit
+// ledger. An oversized or control-character receipt is dropped rather than
+// truncated, so a provider cannot smuggle content into control-plane records.
+func SafeReceipt(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 256 || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return ""
+	}
+	return value
 }
 
 func mergeAudit(fields map[string]string, corr callCorrelation) map[string]string {
@@ -256,11 +359,13 @@ func (g *Gateway) audit(event string, fields map[string]string) error {
 	return nil
 }
 
-// RoutingBackend sends bounded CLI calls to the CLI runner and MCP transports
-// to the private ToolHive/vMCP adapter.
+// RoutingBackend sends bounded CLI calls to the CLI runner, provider API calls
+// to the in-process official REST data plane and MCP transports to the private
+// ToolHive/vMCP adapter.
 type RoutingBackend struct {
-	MCP ToolBackend
-	CLI ToolBackend
+	MCP      ToolBackend
+	CLI      ToolBackend
+	Provider ToolBackend
 }
 
 func (b RoutingBackend) Call(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any) (BackendResult, error) {
@@ -268,31 +373,38 @@ func (b RoutingBackend) Call(ctx context.Context, effective EffectiveBinding, to
 }
 
 func (b RoutingBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
+	var backend ToolBackend
 	switch effective.Definition.Transport {
 	case BoundedCLI:
-		if b.CLI == nil {
+		backend = b.CLI
+	case ProviderAPI:
+		backend = b.Provider
+	default:
+		backend = b.MCP
+	}
+	if backend == nil {
+		if effective.Definition.Transport == BoundedCLI || effective.Definition.Transport == ProviderAPI {
 			return BackendResult{}, ErrIsolation
 		}
-		if caller, ok := b.CLI.(envBackend); ok {
-			return caller.CallEnv(ctx, effective, tool, arguments, environment)
-		}
-		return b.CLI.Call(ctx, effective, tool, arguments)
-	default:
-		if b.MCP == nil {
-			return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)
-		}
-		if caller, ok := b.MCP.(envBackend); ok {
-			return caller.CallEnv(ctx, effective, tool, arguments, environment)
-		}
-		return b.MCP.Call(ctx, effective, tool, arguments)
+		return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)
 	}
+	if caller, ok := backend.(envBackend); ok {
+		return caller.CallEnv(ctx, effective, tool, arguments, environment)
+	}
+	return backend.Call(ctx, effective, tool, arguments)
 }
 
-func rejectAuthorityArguments(arguments map[string]any) error {
+// RejectAuthorityArguments denies model-supplied identity, binding or
+// credential selectors. Authorization comes only from the authenticated
+// runtime and the resolved binding.
+func RejectAuthorityArguments(arguments map[string]any) error {
 	for key := range arguments {
-		switch strings.ToLower(key) {
-		case "principal_id", "context_id", "runtime_id", "policy_version", "binding_id", "tool_binding_id", "connection_id", "credential_ref", "credential_ref_id":
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "principal_id", "context_id", "runtime_id", "policy_version", "binding_id", "tool_binding_id", "connection_id", "credential_ref", "credential_ref_id", "owner", "owner_id", "user", "user_id", "account_id", "locator", "credential_locator", "backend", "backend_url", "mcp_endpoint", "policy", "grant", "grant_id", "issued_by", "store_owner":
 			return fmt.Errorf("%w: authority argument %q", ErrUnauthorized, key)
+		}
+		if credentialPattern.MatchString(key) {
+			return fmt.Errorf("%w: credential value argument %q", ErrUnauthorized, key)
 		}
 	}
 	return nil
@@ -326,10 +438,20 @@ func ValidateBackendEndpoint(raw string) error {
 		return fmt.Errorf("%w: private MCP backend URL", ErrInvalid)
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || host == "toolhive" || host == "vmcp" {
+	if host == "localhost" || host == "host.docker.internal" || host == "toolhive" || host == "vmcp" || host == "workload-controller" {
 		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		return nil
+	}
+	// Compose-style service names are operator-configured, not user input; they
+	// qualify only when every resolved address is loopback or private.
+	if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
+		for _, ip := range ips {
+			if !ip.IsLoopback() && !ip.IsPrivate() {
+				return fmt.Errorf("%w: backend URL must be private", ErrInvalid)
+			}
+		}
 		return nil
 	}
 	return fmt.Errorf("%w: backend URL must be private", ErrInvalid)
@@ -343,12 +465,98 @@ type MCPBackend struct {
 	Root              string
 	Admission         WorkloadAdmission
 	AdmissionVerifier func(context.Context, EffectiveBinding) (AdmissionReceipt, error)
+	AdmissionRelease  func(context.Context, string) error
 }
 
 // WorkloadAdmission is the narrow hand-off to the external ToolHive/Docker
 // controller. The gateway owns identity and current catalog state; the
 // controller owns actual CPU, memory, PID, filesystem and egress enforcement.
 type WorkloadAdmission func(context.Context, EffectiveBinding) error
+
+func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding, environment map[string]string) error {
+	if effective.Definition.Transport != ContainerMCP {
+		return nil
+	}
+	if len(effective.CredentialMounts) > 0 {
+		return fmt.Errorf("%w: file credentials are admitted per call", ErrIsolation)
+	}
+	var previous []byte
+	var hadPrevious bool
+	if len(environment) > 0 && strings.TrimSpace(b.Root) != "" {
+		workspace, workspaceErr := OpenWorkloadWorkspace(b.Root, effective, injectJobID(ctx, effective))
+		if workspaceErr == nil && workspace.Path != "" {
+			previous, workspaceErr = os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
+			hadPrevious = workspaceErr == nil
+		}
+	}
+	path, unlock, err := writeAuthorizedFilesPersistent(ctx, b.Root, effective, environment)
+	if err != nil {
+		return err
+	}
+	// Keep the admission plan and the local receipt check on the same extended
+	// egress view; admit applies the identical merge for the submitted plan.
+	effective.Definition.Execution.Egress = mergeEgressHosts(effective.Definition.Execution.Egress, credentialEgressHosts(environment))
+	receipt, err := b.admit(ctx, effective, environment)
+	if err != nil {
+		restoreAuthorizedFile(path, previous, hadPrevious)
+		if unlock != nil {
+			_ = unlock()
+		}
+		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
+	}
+	if err := receipt.validate(effective); err != nil {
+		restoreAuthorizedFile(path, previous, hadPrevious)
+		if unlock != nil {
+			_ = unlock()
+		}
+		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
+	}
+	if unlock != nil {
+		_ = unlock()
+	}
+	return nil
+}
+
+func restoreAuthorizedFile(workspacePath string, previous []byte, hadPrevious bool) {
+	if workspacePath == "" {
+		return
+	}
+	path := filepath.Join(workspacePath, "credentials.env")
+	if hadPrevious {
+		_ = os.WriteFile(path, previous, 0600)
+	} else {
+		_ = os.Remove(path)
+	}
+}
+
+func (b MCPBackend) admit(ctx context.Context, effective EffectiveBinding, environment map[string]string) (AdmissionReceipt, error) {
+	// Credential-supplied HTTPS endpoints (for example a self-hosted provider
+	// URL) arrive after the definition digest is frozen, so every admission
+	// extends the egress allowlist from the same injected environment. Keeping
+	// this inside admit makes ready-time and per-call plans identical, which
+	// the controller receipt check requires.
+	effective.Definition.Execution.Egress = mergeEgressHosts(effective.Definition.Execution.Egress, credentialEgressHosts(environment))
+	if err := validateToolHivePolicy(effective.Definition); err != nil {
+		return AdmissionReceipt{}, err
+	}
+	if b.AdmissionVerifier == nil && b.Admission == nil {
+		return AdmissionReceipt{}, ErrIsolation
+	}
+	var receipt AdmissionReceipt
+	if b.AdmissionVerifier != nil {
+		var err error
+		receipt, err = b.AdmissionVerifier(ctx, effective)
+		if err != nil {
+			return AdmissionReceipt{}, err
+		}
+	} else {
+		if err := b.Admission(ctx, effective); err != nil {
+			return AdmissionReceipt{}, err
+		}
+		return AdmissionReceipt{}, fmt.Errorf("%w: workload controller returned no enforcement proof", ErrIsolation)
+	}
+	return receipt, nil
+}
 
 func validateToolHivePolicy(definition ToolDefinition) error {
 	if definition.Transport != ContainerMCP {
@@ -362,8 +570,18 @@ func (b MCPBackend) Call(ctx context.Context, effective EffectiveBinding, tool T
 }
 
 func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
-	if effective.Connection == nil {
+	if strings.HasPrefix(effective.Definition.DefinitionID, "google-workspace-") {
+		return (GoogleWorkspaceBackend{HTTP: b.HTTPClient}).CallEnv(ctx, effective, tool, arguments, environment)
+	}
+	if effective.Connection == nil && effective.Definition.Transport != ContainerMCP {
 		return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)
+	}
+	telegram := strings.HasPrefix(effective.Definition.DefinitionID, "telegram-account-")
+	if telegram && (effective.Definition.Transport != ContainerMCP || environment["TELEGRAM_ACCOUNT_ID"] == "" || environment["TELEGRAM_ACCOUNT_ID"] != effective.Connection.Metadata["telegram_account"] || !telegramTool(tool.Name, tool.Effect) || (tool.Effect == WriteEffect && environment["TELEGRAM_WRITE"] != "true")) {
+		return BackendResult{}, ErrUnauthorized
+	}
+	if len(effective.CredentialMounts) > 0 && b.AdmissionRelease == nil {
+		return BackendResult{}, fmt.Errorf("%w: file credential admission release is not configured", ErrIsolation)
 	}
 	var wipe func() error
 	if len(environment) > 0 {
@@ -376,24 +594,30 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 			defer wipe()
 		}
 	}
+	var receipt AdmissionReceipt
 	if effective.Definition.Transport == ContainerMCP {
-		if err := validateToolHivePolicy(effective.Definition); err != nil {
-			return BackendResult{}, err
-		}
-		if b.AdmissionVerifier == nil && b.Admission == nil {
-			return BackendResult{}, ErrIsolation
-		}
-		if b.AdmissionVerifier != nil {
-			if _, err := b.AdmissionVerifier(ctx, effective); err != nil {
-				return BackendResult{}, fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
-			}
-		} else if err := b.Admission(ctx, effective); err != nil {
+		var err error
+		receipt, err = b.admit(ctx, effective, environment)
+		if err != nil {
 			return BackendResult{}, fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
-		} else {
-			return BackendResult{}, fmt.Errorf("%w: workload controller returned no enforcement proof", ErrIsolation)
 		}
 	}
-	endpoint := effective.Connection.Metadata["mcp_endpoint"]
+	released := false
+	release := func() error {
+		if released || len(effective.CredentialMounts) == 0 {
+			return nil
+		}
+		released = true
+		return b.AdmissionRelease(context.Background(), receipt.WorkloadID)
+	}
+	defer func() { _ = release() }()
+	endpoint := ""
+	if effective.Connection != nil {
+		endpoint = effective.Connection.Metadata["mcp_endpoint"]
+	}
+	if endpoint == "" {
+		endpoint = receipt.Endpoint
+	}
 	if err := ValidateBackendEndpoint(endpoint); err != nil {
 		return BackendResult{}, err
 	}
@@ -407,16 +631,27 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	if httpClient.Transport != nil {
 		baseTransport = httpClient.Transport
 	}
+	// Serena 1.5.x and other established MCP servers speak the latest legacy
+	// protocol. ToolHub only needs request/response calls, so pin this backend
+	// hop to that version instead of letting the SDK's newer handshake break
+	// otherwise compatible servers.
+	baseTransport = legacyMCPRoundTripper{base: baseTransport}
 	clientCopy.Transport = bearerRoundTripper{base: baseTransport, token: b.Token}
 	transport := &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: &clientCopy, DisableStandaloneSSE: true}
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return BackendResult{}, err
 	}
-	defer session.Close()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: arguments})
+	closeErr := session.Close()
 	if err != nil {
 		return BackendResult{}, err
+	}
+	if closeErr != nil {
+		return BackendResult{}, closeErr
+	}
+	if err := release(); err != nil {
+		return BackendResult{}, fmt.Errorf("%w: file credential workload release", ErrIsolation)
 	}
 	var text strings.Builder
 	for _, content := range result.Content {
@@ -424,7 +659,42 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 			text.WriteString(value.Text)
 		}
 	}
-	return BackendResult{Text: text.String(), Structured: result.StructuredContent, IsError: result.IsError}, nil
+	out := BackendResult{Text: text.String(), Structured: result.StructuredContent, IsError: result.IsError}
+	if telegram && tool.Effect == WriteEffect && !result.IsError {
+		raw, err := json.Marshal(result.StructuredContent)
+		var receipt struct {
+			Receipt   string `json:"receipt"`
+			PeerID    int64  `json:"peer_id"`
+			MessageID int64  `json:"message_id"`
+			PTS       int64  `json:"pts"`
+		}
+		if err != nil || json.Unmarshal(raw, &receipt) != nil || receipt.PeerID <= 0 || receipt.MessageID <= 0 {
+			return BackendResult{}, fmt.Errorf("telegram mutation returned no provider receipt")
+		}
+		if fmt.Sprint(arguments["peer_id"]) != fmt.Sprint(receipt.PeerID) || (tool.Name == "delete_message" && fmt.Sprint(arguments["target_id"]) != fmt.Sprint(receipt.MessageID)) {
+			return BackendResult{}, ErrInvalid
+		}
+		want := fmt.Sprintf("%s:%d:%d", environment["TELEGRAM_ACCOUNT_ID"], receipt.PeerID, receipt.MessageID)
+		if tool.Name == "delete_message" {
+			if receipt.PTS <= 0 {
+				return BackendResult{}, ErrInvalid
+			}
+			want += fmt.Sprintf(":pts:%d", receipt.PTS)
+		}
+		if receipt.Receipt != want {
+			return BackendResult{}, ErrInvalid
+		}
+		out.Receipt = want
+	}
+	return out, nil
+}
+
+type legacyMCPRoundTripper struct{ base http.RoundTripper }
+
+func (t legacyMCPRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	copyRequest := request.Clone(request.Context())
+	copyRequest.Header.Set("MCP-Protocol-Version", legacyMCPVersion)
+	return t.base.RoundTrip(copyRequest)
 }
 
 type bearerRoundTripper struct {

@@ -1,0 +1,22 @@
+{
+  "id": "google-oauth-proxy",
+  "revision": 1,
+  "title": "Google Calendar: авторизация в Broker",
+  "storage": "local",
+  "fields": [],
+  "allow_shared": true,
+  "oauth_provider": "google",
+  "routes": [
+    {
+      "id": "calendar",
+      "base_url": "https://www.googleapis.com",
+      "path_prefixes": [
+        "/calendar/v3"
+      ],
+      "methods": [
+        "GET"
+      ],
+      "auth": "oauth2"
+    }
+  ]
+}

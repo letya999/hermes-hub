@@ -1,8 +1,20 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-14
+last_verified: 2026-09-17
 ---
 # Architecture
+
+M5 stage-2 Calendar and Slack data calls use opt-in stateless `provider-api`
+definitions behind the same ToolHub authorization/injection/audit gateway.
+The protected `hubctl connector` host CLI verifies provider identity before
+binding. Read/write definitions and scopes are independent; no bot/app credential
+is a data grant. Official HTTPS requests reject redirects and bound response
+sizes. Registry writes use an OS lock and loaded-content precondition so stale
+snapshots fail rather than overwriting another process's revoke. Generated MCP
+remains the default. See SPEC-0022 and ADR-0018. Personal Telegram has a pinned,
+locally prepared read-only ToolHive workload; real account login is still pending.
+Official Workspace MCP uses Google's remote endpoints, subject to Preview approval.
+See ADR-0020 and [the owner setup guide](local-accounts-manager.md).
 
 The current implementation follows [ADR-0009](adr/ADR-0009-scoped-homes-and-communication-hub.md):
 organization and user homes are peers under `spaces/`, mutable Hermes data lives in
@@ -30,7 +42,11 @@ and validated against the real image by the Docker gate. This is a future adapte
 surface: the capability response explicitly reports `split_runtime=false`, so tools
 would execute on the API-server host. The current Go `/v1/execute` runtime remains the
 private identity and filesystem trust boundary until a split-runtime adapter is
-implemented.
+implemented. When ToolHub writes a durable `toolhub-reconnect.request` projection
+marker, the serve runtime consumes it and submits Hermes' native `/reload-mcp`
+command through this API. That reconnects MCP transports and refreshes the cached
+tool surface without restarting Hermes; the watcher is opt-out with
+`HUB_TOOLHUB_RECONNECT=false`.
 
 ## Scope homes
 
@@ -121,8 +137,10 @@ organization/user deployment boundary, not a public hostile-tenant service. A us
 OAuth and Hermes state stay in that user's named volumes. Organization documents are
 read-only. Organization actions are explicit strings in host policy and are passed to
 hub-owned tools, not exposed as free `tenant`, `org` or `user` tool arguments.
-The hub `env_update` tool writes only the user runtime's `self-env.json`; the supervisor
-loads it on startup and restarts after an explicit owner update. `service_catalog` reports
+The hub `env_update` tool is legacy-only and is disabled for connector credentials when
+Communication Hub control is configured. `service_enable` returns a one-time protected
+form; the authenticated runtime control endpoint writes only the user runtime's
+`self-env.json`, and the supervisor loads it on startup. `service_catalog` reports
 connector status, and `service_enable` writes only the user runtime's `self-services.json`;
 the supervisor merges selected upstream MCP definitions into the next Hermes config.
 The allowlist comes from connector references, and organization-owned keys plus
@@ -141,7 +159,8 @@ external tool is used only if configured. The agent works without any business s
 Remote hosted MCP APIs may change independently of this code.
 GitLab uses the runtime's `glab` CLI rather than MCP; `GITLAB_TOKEN` and
 `GITLAB_HOST` are supplied to the isolated runtime. Atlassian uses the pinned
-`mcp-atlassian` package installed in the image and launched as a local stdio process;
+`mcp-atlassian` stdio server from `docker/mcp-atlassian.Dockerfile` (ADR-0010,
+ADR-0023), not a copy inside the hub image;
 `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN` are passed only to that process.
 
 File writes use cross-process locks, hash preconditions and atomic rename. Search/read
@@ -156,12 +175,65 @@ owner-scoped connections, opaque credential references, effective bindings and w
 instances. Exact `principal_id`, `context_id`, `runtime_id` and `policy_version`
 checks reuse `internal/identity`; ToolHub does not create a second ownership registry.
 
+Credential-free per-user bindings use their deterministic binding ID for workload
+identity and a separate `per-binding/<principal>/<context>/<definition>/<binding>`
+state directory. Different runtimes or definition versions cannot reuse that
+identity/state; restart of the same binding retains its directory. Previously
+created anonymous per-user workload IDs and `per-user/<context>/<definition>`
+directories are not reused or automatically moved/deleted. The existing
+credential-bearing Telegram/controller path remains connection-scoped. The generic
+Docker fallback gives each binding its own workload ID, network, volumes and
+`credentials.env`; shared stateful or credential-bearing workloads stay denied.
+Live Docker 95-plus-5 used 100 sequential unique networks, volumes and
+containers (95 distinct owner env-files + 5 of one shared file). One hundred
+users means one hundred **registered** bindings and a bounded live set
+(`max_active` + FIFO); it does not mean one hundred concurrent MCP+ToolHive
+stacks. Same SHA reuses one image id with distinct processes, volumes and
+credentials. The MCP container does not receive the forwarding token; a
+process inside it cannot read that token from env, logs or `/proc`. A
+same-UID sibling inside the ToolHive process namespace is a rejected
+one-container layout, not the production fallback.
+
 Definitions classify execution as shared, per-user or per-job and carry finite resource
 limits, explicit egress, logical mounts and immutable source pins. The registry can
 save/load a permissioned atomic JSON snapshot. Container definitions also require an
 exact ToolHive version and digest-pinned sidecars; actual resource and egress enforcement
 is admitted only by the private `HUB_TOOLHIVE_ADMISSION_ENDPOINT` controller contract
 and fails closed when absent.
+
+The M5.2 control plane is recorded in [SPEC-0023](../specs/active/SPEC-0023-toolhub-control-plane.md)
+and [ADR-0021](adr/ADR-0021-toolhub-control-plane.md). The same authenticated
+ToolHub MCP endpoint exposes `prepare_source`, `status`,
+`required_credentials`, `confirm`, `enable`, `disable`, `revoke` and
+`remove`. Identity is taken from the bearer mapping; model arguments cannot
+change owner, locator, backend or policy. Operator grants select
+catalog-default, assigned definition or self-install. Credentials enter a
+loopback form (or MCP URL elicitation pointing at it) and stay in
+ciphertext until inject-after-authorize. Promoting a user MCP to the
+catalog does not convert existing user bindings into shared workloads.
+
+M5.3 is tracked by [SPEC-0024](../specs/active/SPEC-0024-m53-hermes-onboarding.md).
+For self-install, a canonical public GitHub repository URL is resolved once to
+the default branch's exact commit SHA; review and build receive only that immutable
+source. Control calls use standard MCP progress notifications over the existing
+authenticated stateless streamable-HTTP endpoint.
+
+Credential Broker now lives at `services/credential-broker` as a separate Go
+module and process. Its reviewed-contract forms, approval pairing, provider
+references, grants, leases and runtime materialization stay behind its own HTTP
+and identity-audience boundary. The root image includes `credential-broker` and
+`hub-credential-broker`; the root `go.work` and CI expose the module without
+flattening it into Hermes. ToolHub remains the owner of source review, workload
+admission, projection and reconnect. When the Broker audience/key environment
+is configured, onboarding uses Broker requests and grants, Communication Hub
+approves the pairing code, and the runtime materializer handles the lease. With
+that environment unset, the existing encrypted store and loopback form remain
+the compatibility path. Broker file deliveries use a dynamic read-only ToolHive
+mount hand-off: the generic controller accepts only regular files below its
+operator-configured `credential_mount_root`, starts a one-call workload, and
+exposes `/release` to remove it before the Broker runtime lease is released.
+A separate Broker container therefore needs an explicitly shared runtime
+directory; with no shared root, file delivery remains fail closed.
 
 The stage-2 opt-in surface is recorded in [SPEC-0018](../specs/active/SPEC-0018-toolhub-stage2.md).
 When `HUB_TOOLHUB_STORE` is explicitly configured, `service_catalog`,
@@ -173,6 +245,10 @@ binding (narrow) but cannot enable one (expand). The legacy `stack`/`self-servic
 path remains the compatibility fallback when the store is unset; no runtime route is
 switched by this stage. Each projection has a persisted monotonic revision and an
 observable, at-most-once reconnect hook that writes `toolhub-reconnect.request`.
+Credential-bearing onboarding can use the generic MCP readiness hook: ToolHive
+admission and its validated running receipt complete before a new binding is
+persisted and its projection is published; failed admission restores any previous
+credentials file.
 The hook is transport-only: current binding state is rechecked under the registry
 read fence before backend execution and Hermes session/home ownership stays outside
 this package. Bounded CLI calls go to the CLI runner and fail closed without an
@@ -187,6 +263,9 @@ ToolHive/vMCP MCP client adapter and a bounded direct-exec runner. The runtime
 image enables the MCP SDK's legacy-session compatibility flag so Hermes clients
 may send session headers while authorization remains per request. The backend
 adapter disables standalone SSE because ToolHub calls are request/response only.
+For upstream servers that implement the current legacy MCP wire version (for
+example Serena 1.5.x), the backend hop pins `MCP-Protocol-Version: 2025-11-25`
+so discovery and calls remain compatible with the SDK's newer default handshake.
 Both list and call use the same current projection resolver. Setting `HUB_TOOLHUB_ENDPOINT` (or
 `HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store) injects one authenticated
 ToolHub MCP entry into the copied Hermes config; unset variables leave the generated

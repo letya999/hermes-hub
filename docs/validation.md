@@ -1,8 +1,52 @@
 ---
 description: Measured delivery evidence and explicit unverified boundaries.
-last_verified: 2026-09-14
+last_verified: 2026-09-17
 ---
 # Delivery evidence — CHG-0009 and CHG-0012
+
+## CHG-0026 / SPEC-0023 ToolHub control plane
+
+M5.2 in-repo tests drive the shipped ToolHub MCP handler (`NewEndpointHandler`
+/ `Gateway`) with two synthetic principals. They cover the eight control
+operations, forged owner/locator/backend/policy denial, Alice/Bob isolation,
+self-install grant enforcement, catalog assignment, promotion without converting
+user bindings, loopback credential elicitation into the encrypted store, OAuth
+PKCE/state/redirect/TTL/nonce, expired confirmation and replay, rotate/revoke
+cutting an open session, idempotent enable, disable/remove dropping tools and
+that binding's volumes, effect/budget escalation, concurrent lifecycle races,
+and 95 unique plus 5 shared credential references. A live Hermes chat that
+reconnects tools remains #74 / M5.3. Live GitHub import and Docker workload
+start reuse M5.1 evidence when present; they are not required to freeze the
+control-plane contract.
+
+On 2026-09-17, `just check` passed, including race tests, formatting, vet,
+staticcheck, documentation/workflow checks and 85.17% original Go statement
+coverage. Production `NewEndpointHandler` wires a default source reviewer,
+OAuth broker and `FormOrigin`; `required_credentials` URL elicitation points
+at the same loopback `form_url` the status body returns. `go.mod` and `go.sum` were not changed, so `just security` was not
+required. `just docker-check` built image `68424bee6191` and passed standalone
+smoke plus the pinned Hermes 0.21.0 contract and five-minute gateway
+lifecycle. The probe used fixtures and made no live Telegram or provider
+call. faster-whisper `hub-stt` on that image was unavailable
+(`exec /usr/local/bin/hub-stt: no such file or directory`); that is not
+treated as ToolHub control-plane or provider integration success.
+
+## CHG-0027 / SPEC-0024 M5.3 Hermes-mediated onboarding
+
+The local M5.3 path now has immutable GitHub source resolution, restricted build
+and preflight evidence, generic ToolHive admission, credential readiness before
+projection, one-time credential completion and durable no-restart reconnect. A
+projection revision is written to `toolhub-reconnect.request`; the serve runtime
+consumes it through Hermes' authenticated `/reload-mcp` API and the watcher test
+proves exactly-once handling for a revision. `just check` passes on the final diff
+with 85.01% Go statement coverage, race tests, vet, staticcheck, docs checks and
+actionlint. The Docker gate also passes the production image, standalone smoke and
+pinned Hermes 0.21.0 lifecycle/API contract.
+
+This still does not claim live Telegram delivery, a real Notion login/token or a
+read-only Notion data call. The shipped image lacks `/usr/local/bin/hub-stt`, so the
+optional faster-whisper fixture remains unavailable. Those are external-account or
+image-content boundaries, not evidence of a successful provider call.
 
 CHG-0011 freezes the identity and ownership contract and maps it to the existing space
 layout without data migration. The Telegram gateway now creates a schema-1 canonical
@@ -113,7 +157,8 @@ verifies generic MCP configuration and the native bridge without real account cr
 Google configuration tests verify the read-only default and explicit write opt-in;
 runtime and stack tests verify that Atlassian is configured as the pinned local
 `mcp-atlassian` stdio server with Jira credentials, without the legacy Rovo endpoint.
-Docker smoke verifies that `glab` is installed. These checks do not claim Google,
+The default hub image does not install that tree; `docker/mcp-atlassian.Dockerfile`
+holds it. Docker smoke verifies that `glab` and Hermes sqlite are installed. These checks do not claim Google,
 Atlassian or GitLab account access; Google OAuth consent, Jira API-token validity,
 GitLab PAT and a read operation require deployment acceptance, while any mutation
 requires a separate explicit owner instruction.
@@ -394,3 +439,54 @@ live ToolHive/vMCP on Linux VPS, and [#74](https://github.com/letya999/hermes-hu
 transport reconnect while preserving session/home/memory/run state. `just security`
 is not required because this change adds no dependency or pin. GitHub #20–#26 are
 closed against this control-plane evidence; #47 stays open for M3 secret storage.
+
+## CHG-0027 M5.3 onboarding (in progress)
+
+- A generic control-MCP regression proves that an ordinary canonical GitHub
+  repository URL is resolved to a full commit SHA before the reviewer sees it,
+  and that only the repository plus SHA are persisted on onboarding.
+- The streamable-HTTP control MCP now delivers standard progress notifications
+  for source review/build, credential/OAuth requirement and workload readiness;
+  its regression uses the real HTTP MCP transport.
+- These repository tests do not prove Telegram delivery, provider login,
+  Hermes dynamic discovery or a Notion data read. Those remain live acceptance
+  gates and require explicit account-login instruction. Separate local Docker
+  evidence below covers the immutable Notion artifact and ToolHive admission.
+- The GitHub read guard resolved the public Notion repository to commit
+  `1d38420769c8a1fe2d583ff1e7d2d108d4eb0b30`. The restricted Docker builder
+  produced OCI manifest `sha256:6dbad51ce3168352093f49e796717079d5e173130339aaf9a4dfbc3b8508730d`
+  with provenance and SBOM evidence, without credentials. This proves the
+  immutable import/build slice, not ToolHive start or Notion account access.
+- An isolated `--network none`, non-root, read-only-root MCP initialize and
+  `tools/list` succeeded for that image. The live response exposed both explicit
+  read-only and destructive annotations. A regression fixed preflight to trust
+  read-only only when `readOnlyHint=true` and `destructiveHint` is not true;
+  destructive or unannotated tools now fail closed to write policy.
+- Stock ToolHive v0.49.0 admitted the built image through the explicit Docker
+  fallback. The proxied endpoint completed MCP initialize and `tools/list`,
+  exposed only the reviewed `API-get-self` tool, and repeated admission reused
+  the same workload and endpoint; all disposable resources were removed after
+  the probe. Credential-bearing onboarding now validates this receipt before
+  publishing its binding/projection, with regression coverage for rollback and
+  re-enable.
+- `just docker-check` also passed the production image build, standalone
+  Docker smoke, and the pinned Hermes 0.21.0 lifecycle/API contract. The
+  faster-whisper fixture was unavailable on the shipped image because
+  `/usr/local/bin/hub-stt` was absent; no external provider account was used.
+- Live local ToolHub acceptance initially failed because the administrator-provisioned
+  `spaces/local/runtime/artifacts` directory was missing. Runtime rendering now
+  provisions it; after repair, the real Notion source resolved to commit
+  `1d38420769c8a1fe2d583ff1e7d2d108d4eb0b30`, built to OCI, and passed MCP
+  preflight with generic `NOTION_TOKEN` discovery. Preflight no longer duplicates
+  discovered credentials into the ordinary environment contract, and wildcard
+  listeners now emit protected-form links at `127.0.0.1`.
+- The live onboarding is currently `awaiting-credentials`; no Notion token was
+  entered, no workload was enabled, and no Notion data read or Telegram delivery
+  is claimed. The loopback form is intentionally usable only from the same host.
+- Retrying a self-install for the same repository commit now reuses the existing
+  user-owned immutable definition instead of rebuilding it; expired credential
+  forms rotate their nonce and expiry on resume.
+- Final post-fix gates: `just check` passed with 85.06% Go statement coverage;
+  `just docker-check` passed the prod image, standalone smoke and pinned Hermes
+  contract/lifecycle. The pre-existing `/usr/local/bin/hub-stt` fixture warning
+  remains unrelated.

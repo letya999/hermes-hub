@@ -33,6 +33,7 @@ func TestApplyToolHubConfigIsOptInAndUsesEnvReference(t *testing.T) {
 
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", "http://127.0.0.1:8090/mcp")
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_TOOLHUB_RECONNECT", "")
 	if err := applyToolHubConfig(path); err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +42,16 @@ func TestApplyToolHubConfigIsOptInAndUsesEnvReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "http://127.0.0.1:8090/mcp") || !strings.Contains(text, "${HUB_RUNTIME_AUTH}") || strings.Contains(text, strings.Repeat("a", 32)) {
+	if !strings.Contains(text, "http://127.0.0.1:8090/mcp") || !strings.Contains(text, "${HUB_RUNTIME_AUTH}") || !strings.Contains(text, "timeout: 1800") || !strings.Contains(text, "mcp_reload_confirm: false") || strings.Contains(text, strings.Repeat("a", 32)) {
 		t.Fatalf("ToolHub config leaked or omitted token reference: %s", text)
+	}
+	t.Setenv("HUB_TOOLHUB_RECONNECT", "false")
+	if err := applyToolHubConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(path)
+	if err != nil || strings.Count(string(body), "mcp_reload_confirm: false") != 1 {
+		t.Fatalf("disabled reconnect rewrote approval unexpectedly: %s %v", body, err)
 	}
 }
 

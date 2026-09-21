@@ -71,3 +71,30 @@ func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 		t.Fatalf("hub calls: %v", seen)
 	}
 }
+
+func TestCredentialFormCallCommunicationHub(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/credential-forms" || r.Header.Get("Authorization") != "Bearer control-token" || r.Header.Get("X-Hub-Principal") != "alice" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var request map[string]any
+		if json.NewDecoder(r.Body).Decode(&request) != nil || request["service"] != "google" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"input":"protected-form","form_url":"http://127.0.0.1:8081/credentials/id?nonce=nonce","fields":["GOOGLE_OAUTH_CLIENT_SECRET"]}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	v.CommunicationAuth = "control-token"
+	form, err := v.credentialForm(context.Background(), "google", []string{"GOOGLE_OAUTH_CLIENT_SECRET"})
+	if err != nil || form["form_url"] != "http://127.0.0.1:8081/credentials/id?nonce=nonce" {
+		t.Fatalf("form=%v err=%v", form, err)
+	}
+	if _, err := v.EnvUpdate(Input{Text: "GOOGLE_OAUTH_CLIENT_SECRET=must-not-be-stored"}); err == nil {
+		t.Fatal("env_update accepted credentials with protected form configured")
+	}
+}

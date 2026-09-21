@@ -1,0 +1,32 @@
+change: CHG-0027
+status: in-progress
+phase: live-notion-authorization
+notes:
+  - Started from the M5.3 goal on 2026-09-17.
+  - CHG-0026 baseline passes just check at 85.17% coverage.
+  - Live account login and external sending remain separate actions.
+  - Public Notion source resolved under the GitHub read guard to commit 1d38420769c8a1fe2d583ff1e7d2d108d4eb0b30.
+  - The existing restricted builder produced OCI sha256:6dbad51ce3168352093f49e796717079d5e173130339aaf9a4dfbc3b8508730d with provenance and SBOM evidence; no credentials were used.
+  - Isolated network-none MCP initialize/tools-list passed for that image and exposed real Notion tools. Preflight now maps explicit readOnlyHint to read and fails closed to write for destructive or unannotated tools; previously every discovered tool was mislabeled read.
+  - Generic isolated help discovery recognizes explicitly required or recommended environment variables. The real MCP therefore declares NOTION_TOKEN without a provider-specific branch; alternatives remain reviewable instead of being guessed.
+  - Stock ToolHive v0.49.0 admitted the real image with docker_fallback. Its proxied MCP endpoint initialized, exposed only the reviewed API-get-self tool, reached tools/call without credentials, and repeated admission reused the same workload and endpoint. The uppercase MCP tool-name grammar mismatch was fixed at the shared validation boundary.
+  - Automatic source import now selects the repository-pinned toolchain digest after language detection, so the production self-install path no longer requires a hand-written base image.
+  - Runtime egress is generically proposed from reviewed HTTPS OpenAPI server metadata. The Notion image declares api.notion.com; no provider-specific hostname branch or guessed egress is used.
+  - The live controller was stopped after verification. No provider credential was supplied and no real Notion data read is claimed.
+  - just check passes with exactly 85.00% Go statement coverage after the production-path fixes.
+  - Protected credential and OAuth callbacks now finalize the authenticated onboarding automatically; replaying the one-time form is rejected. Fixture coverage proves ready/enabled transition without a second model call.
+  - Generic credential-bearing onboarding now admits the ToolHive workload and validates its running receipt before publishing a new binding/projection; failed admission restores the previous credentials file. Existing pre-bound workloads retain lazy call admission for compatibility.
+  - Real Hermes reconnect and Telegram delivery remain unverified.
+  - Latest just check passes with 85.01% Go statement coverage, race tests, vet, staticcheck, docs-check and actionlint.
+  - Production endpoint coverage now proves the readiness hook gates initial projection and re-enable after disable; a failed readiness callback leaves the prior binding/projection intact.
+  - just docker-check passed: prod image build, standalone Docker smoke and pinned Hermes 0.21.0 lifecycle/API contract. The faster-whisper fixture remained unavailable on the shipped image because /usr/local/bin/hub-stt was absent; no provider account was used.
+  - ToolHub projection markers are now consumed by the serve runtime through Hermes' authenticated /reload-mcp API; watcher and no-restart request tests pass. Live Telegram delivery and real Notion authorization/read remain unverified.
+  - Hermes busy input now defaults to FIFO queue for long connector turns; rendered runtimes send a 60-second heartbeat and ToolHub MCP timeout is 1800 seconds. Live dev Docker was rebuilt and restarted; the container registered the ToolHub control MCP and the global onboarding skill.
+  - just check and just docker-check pass. Docker acceptance still reports the pre-existing faster-whisper image fixture unavailable because /usr/local/bin/hub-stt is absent; no external Telegram/provider account was exercised.
+  - Live ToolHub investigation found the 20:19 failure was a missing administrator-provisioned runtime/artifacts directory. Runtime rendering now creates it and the current local deployment was repaired before restarting ToolHub.
+  - A live Notion prepare_source then completed source resolution, restricted OCI build and MCP tools/list preflight, resolving commit 1d38420769c8a1fe2d583ff1e7d2d108d4eb0b30 and detecting NOTION_TOKEN through generic help discovery.
+  - Fixed preflight credential discovery that duplicated discovered secrets into Environment and Credentials; protected form now returns a loopback 127.0.0.1 URL instead of the wildcard 0.0.0.0 bind address. No Notion secret was submitted; final enable/read and Telegram delivery remain unverified.
+  - Post-fix `just check` passed at 85.06% coverage; `just docker-check` passed prod image, standalone smoke and the pinned Hermes contract/lifecycle. The shipped-image faster-whisper fixture remains unavailable because `/usr/local/bin/hub-stt` is absent.
+  - Live Hermes runtime E2E now proves status -> exact projected_tools -> invoke -> real Notion API without a process restart; the provider returned an authenticated workspace and an empty accessible-page list.
+  - Removed the per-artifact controller pin from self-install mode: one authenticated dynamic controller now revalidates the complete immutable reviewed definition on every admission. Static single-definition mode remains the default.
+  - Pinned Hermes emits `tool.started` / `tool.completed`; runtime now normalizes those real event names and publishes bounded four-step MCP progress with an ETA instead of silently dropping them.

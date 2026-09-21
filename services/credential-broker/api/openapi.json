@@ -1,0 +1,2009 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hermes Credential Broker",
+    "version": "0.1.0",
+    "description": "Reviewed credential contracts, owner-bound forms, replaceable providers, grants and isolated runtime delivery. No canonical secret-store requirement."
+  },
+  "servers": [
+    {
+      "url": "https://credentials.example.com:8443"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "HubAssertion": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "purpose-separated Ed25519 assertion v1 (not JWT)"
+      }
+    },
+    "schemas": {
+      "Field": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "max_bytes": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "required",
+          "max_bytes"
+        ]
+      },
+      "Delivery": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "env_name": {
+            "type": "string"
+          },
+          "mapping": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "target"
+        ]
+      },
+      "StateFile": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "max_bytes": {
+            "type": "integer"
+          },
+          "json": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "max_bytes",
+          "json"
+        ]
+      },
+      "State": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StateFile"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "files"
+        ]
+      },
+      "Route": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "path_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "auth": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "password_field": {
+            "type": "string"
+          },
+          "header": {
+            "type": "string"
+          },
+          "static_headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "base_url",
+          "path_prefixes",
+          "methods",
+          "auth"
+        ]
+      },
+      "Contract": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "storage": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Field"
+            }
+          },
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Delivery"
+            }
+          },
+          "state": {
+            "$ref": "#/components/schemas/State"
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Route"
+            }
+          },
+          "oauth_provider": {
+            "type": "string"
+          },
+          "allow_shared": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "revision",
+          "title",
+          "storage",
+          "fields",
+          "allow_shared"
+        ]
+      },
+      "Actor": {
+        "type": "object",
+        "properties": {
+          "principal_id": {
+            "type": "string"
+          },
+          "context_id": {
+            "type": "string"
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "external_identity_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "policy_version": {
+            "type": "string"
+          },
+          "context_manager": {
+            "type": "boolean"
+          },
+          "binding_id": {
+            "type": "string"
+          },
+          "workload_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "principal_id",
+          "context_id",
+          "runtime_id",
+          "policy_version"
+        ]
+      },
+      "Claims": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer"
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "issued_at": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "request_uri": {
+            "type": "string"
+          },
+          "body_sha256": {
+            "type": "string"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "key_id",
+          "issuer",
+          "audience",
+          "issued_at",
+          "expires_at",
+          "method",
+          "request_uri",
+          "body_sha256",
+          "actor"
+        ],
+        "description": "Purpose-separated Ed25519 assertion, NOT JWT; exact signature contract in docs/architecture/api-contract.md."
+      },
+      "CreateRequest": {
+        "type": "object",
+        "properties": {
+          "contract_id": {
+            "type": "string"
+          },
+          "contract_revision": {
+            "type": "integer"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "onboarding_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "external_alias": {
+            "type": "string"
+          },
+          "rotate_credential_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "contract_id",
+          "contract_revision",
+          "connection_id",
+          "onboarding_id",
+          "idempotency_key"
+        ]
+      },
+      "Request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "contract_id": {
+            "type": "string"
+          },
+          "contract_revision": {
+            "type": "integer"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "onboarding_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "authorization_url": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "contract_id",
+          "contract_revision",
+          "connection_id",
+          "onboarding_id",
+          "status",
+          "authorization_url",
+          "expires_at"
+        ]
+      },
+      "Approve": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "code"
+        ]
+      },
+      "GrantRequest": {
+        "type": "object",
+        "properties": {
+          "contract_id": {
+            "type": "string"
+          },
+          "contract_revision": {
+            "type": "integer"
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "context_id": {
+            "type": "string"
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "binding_id": {
+            "type": "string"
+          },
+          "workload_id": {
+            "type": "string"
+          },
+          "execution": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "contract_id",
+          "contract_revision",
+          "principal_id",
+          "context_id",
+          "runtime_id",
+          "binding_id",
+          "workload_id",
+          "execution",
+          "idempotency_key"
+        ]
+      },
+      "Grant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "context_id": {
+            "type": "string"
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "binding_id": {
+            "type": "string"
+          },
+          "workload_id": {
+            "type": "string"
+          },
+          "execution": {
+            "type": "string"
+          },
+          "contract_id": {
+            "type": "string"
+          },
+          "contract_revision": {
+            "type": "integer"
+          },
+          "policy_version": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "credential_id",
+          "principal_id",
+          "context_id",
+          "runtime_id",
+          "binding_id",
+          "workload_id",
+          "execution",
+          "contract_id",
+          "contract_revision",
+          "policy_version",
+          "active"
+        ]
+      },
+      "AcquireLease": {
+        "type": "object",
+        "properties": {
+          "grant_id": {
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "grant_id"
+        ]
+      },
+      "Lease": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Delivery"
+            }
+          },
+          "state": {
+            "$ref": "#/components/schemas/State"
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "grant_id",
+          "credential_id",
+          "revision",
+          "expires_at"
+        ]
+      },
+      "Credential": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "context_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "owner_kind",
+          "principal_id",
+          "context_id",
+          "connection_id",
+          "revision",
+          "status",
+          "provider"
+        ]
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "sequence": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "context_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "onboarding_id": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "lease_id": {
+            "type": "string"
+          },
+          "binding_id": {
+            "type": "string"
+          },
+          "workload_id": {
+            "type": "string"
+          },
+          "policy_version": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "at",
+          "kind"
+        ]
+      },
+      "Events": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "next_cursor": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "events",
+          "next_cursor"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "code"
+        ]
+      },
+      "Materialized": {
+        "type": "object",
+        "properties": {
+          "lease_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mount"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "lease_id",
+          "expires_at"
+        ],
+        "description": "SENSITIVE: ENV contains plaintext; trusted runtime audience only. Never send to model or ToolHub job state."
+      },
+      "Mount": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "read_only": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "target",
+          "read_only"
+        ]
+      },
+      "RuntimeRelease": {
+        "type": "object",
+        "properties": {
+          "checkpoint": {
+            "type": "boolean"
+          },
+          "quiesced": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "Renew": {
+        "type": "object",
+        "properties": {
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "paths": {
+    "/v1/contracts": {
+      "get": {
+        "operationId": "catalog",
+        "summary": "Reviewed contracts",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Contract"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "operationId": "events",
+        "summary": "Owner-filtered audit events and global cursor",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Events"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ]
+      }
+    },
+    "/v1/requests": {
+      "post": {
+        "operationId": "createRequest",
+        "summary": "Idempotent credential enrollment",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Request"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/requests/{request_id}": {
+      "get": {
+        "operationId": "getRequest",
+        "summary": "Enrollment status",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Request"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/requests/{request_id}/approve": {
+      "post": {
+        "operationId": "approve",
+        "summary": "Approve exact browser pairing code",
+        "x-required-audience": "broker:approve",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Approve"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/requests/{request_id}/cancel": {
+      "post": {
+        "operationId": "cancel",
+        "summary": "Cancel enrollment",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/credentials/{credential_id}": {
+      "get": {
+        "operationId": "getCredential",
+        "summary": "Opaque credential metadata",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteCredential",
+        "summary": "Delete managed secret versions; preserve imported source",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/credentials/{credential_id}/revoke": {
+      "post": {
+        "operationId": "revokeCredential",
+        "summary": "Fence local grants/leases; does not revoke upstream provider token",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/credentials/{credential_id}/grants": {
+      "post": {
+        "operationId": "createGrant",
+        "summary": "Explicit binding grant",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Grant"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/grants/{grant_id}/revoke": {
+      "post": {
+        "operationId": "revokeGrant",
+        "summary": "Revoke a single binding grant",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/leases": {
+      "post": {
+        "operationId": "acquire",
+        "summary": "Acquire a bounded revision-bound lease",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lease"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcquireLease"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runtime/leases/{lease_id}": {
+      "get": {
+        "operationId": "inspectLease",
+        "summary": "Inspect own runtime lease",
+        "x-required-audience": "broker:runtime",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lease"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/runtime/leases/{lease_id}/materialize": {
+      "post": {
+        "operationId": "materialize",
+        "summary": "SENSITIVE plaintext only to trusted runtime adapter",
+        "x-required-audience": "broker:runtime",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Materialized"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/runtime/leases/{lease_id}/renew": {
+      "post": {
+        "operationId": "renew",
+        "summary": "Renew valid runtime lease",
+        "x-required-audience": "broker:runtime",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lease"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Renew"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runtime/leases/{lease_id}/release": {
+      "post": {
+        "operationId": "release",
+        "summary": "Optional quiesced checkpoint, then remove lease",
+        "x-required-audience": "broker:runtime",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeRelease"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runtime/proxy/{lease_id}/{route_id}/{upstream_path}": {
+      "get": {
+        "operationId": "proxyGet",
+        "summary": "Fixed-destination restricted API proxy; route methods remain authoritative",
+        "x-required-audience": "broker:runtime",
+        "x-upstream-path-greedy": true,
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "upstream_path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Bounded upstream response or sanitized broker error; redirects and secret echo denied",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "proxyHead",
+        "summary": "Fixed-destination restricted API proxy; route methods remain authoritative",
+        "x-required-audience": "broker:runtime",
+        "x-upstream-path-greedy": true,
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "upstream_path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Bounded upstream response or sanitized broker error; redirects and secret echo denied",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "proxyPost",
+        "summary": "Fixed-destination restricted API proxy; route methods remain authoritative",
+        "x-required-audience": "broker:runtime",
+        "x-upstream-path-greedy": true,
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "upstream_path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Bounded upstream response or sanitized broker error; redirects and secret echo denied",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {}
+            },
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "proxyPut",
+        "summary": "Fixed-destination restricted API proxy; route methods remain authoritative",
+        "x-required-audience": "broker:runtime",
+        "x-upstream-path-greedy": true,
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "upstream_path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Bounded upstream response or sanitized broker error; redirects and secret echo denied",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {}
+            },
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "proxyPatch",
+        "summary": "Fixed-destination restricted API proxy; route methods remain authoritative",
+        "x-required-audience": "broker:runtime",
+        "x-upstream-path-greedy": true,
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "upstream_path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Bounded upstream response or sanitized broker error; redirects and secret echo denied",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {}
+            },
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "proxyDelete",
+        "summary": "Fixed-destination restricted API proxy; route methods remain authoritative",
+        "x-required-audience": "broker:runtime",
+        "x-upstream-path-greedy": true,
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "upstream_path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Bounded upstream response or sanitized broker error; redirects and secret echo denied",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {}
+            },
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "health",
+        "summary": "Storage readiness; Host/native TLS policy still applies",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Healthy"
+          },
+          "503": {
+            "description": "Unavailable"
+          }
+        }
+      }
+    },
+    "/connect/{request_id}": {
+      "get": {
+        "operationId": "form",
+        "summary": "Open owner-approved browser enrollment; link alone is insufficient",
+        "security": [],
+        "x-browser-security": "Secure HttpOnly SameSite=Lax __Host-cb_session; separate signed pairing approval; POST exact Origin + CSRF",
+        "responses": {
+          "200": {
+            "description": "HTML result"
+          },
+          "303": {
+            "description": "Reviewed OAuth redirect or continuation"
+          },
+          "default": {
+            "description": "Sanitized error"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/connect/{request_id}/submit": {
+      "post": {
+        "operationId": "submit",
+        "summary": "CSRF/Origin-bound multipart submission",
+        "security": [],
+        "x-browser-security": "Secure HttpOnly SameSite=Lax __Host-cb_session; separate signed pairing approval; POST exact Origin + CSRF",
+        "responses": {
+          "200": {
+            "description": "HTML result"
+          },
+          "303": {
+            "description": "Reviewed OAuth redirect or continuation"
+          },
+          "default": {
+            "description": "Sanitized error"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/connect/{request_id}/oauth": {
+      "post": {
+        "operationId": "startOAuth",
+        "summary": "CSRF/Origin-bound OAuth redirect",
+        "security": [],
+        "x-browser-security": "Secure HttpOnly SameSite=Lax __Host-cb_session; separate signed pairing approval; POST exact Origin + CSRF",
+        "responses": {
+          "200": {
+            "description": "HTML result"
+          },
+          "303": {
+            "description": "Reviewed OAuth redirect or continuation"
+          },
+          "default": {
+            "description": "Sanitized error"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/oauth/callback": {
+      "get": {
+        "operationId": "oauthCallback",
+        "summary": "One-use bound state plus same approved browser cookie",
+        "security": [],
+        "x-browser-security": "Secure HttpOnly SameSite=Lax __Host-cb_session; separate signed pairing approval; POST exact Origin + CSRF",
+        "responses": {
+          "200": {
+            "description": "HTML result"
+          },
+          "303": {
+            "description": "Reviewed OAuth redirect or continuation"
+          },
+          "default": {
+            "description": "Sanitized error"
+          }
+        }
+      }
+    }
+  }
+}

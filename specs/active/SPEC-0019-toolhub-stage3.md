@@ -42,7 +42,39 @@ exact workload ID, `running` state, enforcement proof, image digest, sidecar ima
 digests and execution policy. An empty HTTP 200/204 is not proof. Missing, malformed,
 stale or mismatched receipts fail closed. The Go gateway does not claim to enforce
 CPU, memory, PID, mounts or egress itself; bounded CLI host execution likewise does
-not claim a sandbox that is not present.
+not claim a sandbox that is not present. The lightweight local generic adapter is
+started with `hubctl connector generic-controller`; it accepts only a trusted
+artifact plan, uses ToolHive environment secret references, allocates an owned
+per-workload network and proxy volume, and returns a private endpoint only after
+Docker inspection. Trusted registration requires a confirmed tool contract from a
+real MCP `tools/list` or a review manifest checked against one; claimed import
+tools are not enough. It refuses host state binds and shared credential-bearing
+workloads. Stateful fallback plans may declare only controller-owned named
+connection/job state volumes; credential-bearing fallback plans require an owner
+workspace `credentials.env`, validated against the definition and passed to
+Docker as an env-file (never to ToolHive arguments). Before starting MCP code it requires the ToolHive CLI to advertise
+create-time controls for read-only root, no-new-privileges, dropped capabilities,
+seccomp and bounded resources; a stock ToolHive build that lacks these flags is
+denied rather than repaired with a post-start update. An explicit
+`docker_fallback` opt-in may instead use Docker to create a bounded container
+before starting the reviewed artifact, then use ToolHive only as the private
+remote proxy and lifecycle API. Shared stateful or credential-bearing
+definitions remain denied on this fallback.
+The MCP companion stays on an internal network without the forwarding token; a
+separate fixed-target relay authenticates and publishes only the loopback `/mcp`
+endpoint because Docker Desktop cannot publish ports directly from an internal
+network. The companion stdio client synthesizes JSON-RPC method-not-found for
+`server/discover` so MCP servers that ignore that RPC still complete
+`initialize`. The copied bridge must be a Linux ELF; Windows `hubctl.exe` is
+rejected. Builder bootstrap policy `rootless-buildkit-bootstrap-v1` is distinct
+from the MCP runtime profile and does not permit privileged or unconfined
+workers. Capacity proof for 95 distinct credential files plus five uses of one
+shared file is sequential unique Docker networks/volumes/containers when the
+host cannot allocate 100 concurrent internal networks. A hundred users are a
+hundred registered bindings; live processes stay bounded by `max_active` and
+idle cleanup. Identical artifact SHAs reuse one image; they do not share
+processes, volumes or credentials. `tools/call` after revoke is denied before
+the backend.
 
 ## Explicit migration
 

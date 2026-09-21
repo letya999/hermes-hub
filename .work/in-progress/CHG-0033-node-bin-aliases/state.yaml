@@ -1,0 +1,19 @@
+schema: 1
+id: CHG-0033-node-bin-aliases
+title: "Node bin aliases to one file resolve as a single MCP entrypoint"
+status: in_progress
+phase: implemented-verification
+started_at: "2026-09-21"
+updated_at: "2026-09-21"
+completed:
+  - "Воспроизведён root cause на zereight/gitlab-mcp: два bin-имени на build/index.js давали два identical argv -> ambiguous MCP entrypoint"
+  - "Dedup bin targets по resolved context path в GenerateArtifactRecipe; distinct targets остаются fail-closed"
+  - "Regression tests: alias case принят с literal argv, разные файлы отклонены"
+  - "docs/integrations.md обновлён"
+  - "just check пройден (85.01%); TestOfficialWorkspaceCLIConnectOAuthEmail флейковал один раз под shuffle (EOF callback listener), изолированно и на повторе зелёный, к изменению отношения не имеет"
+  - "hermes-hub:0.3.0-dev пересобран, все 6 контейнеров hermes-hub-local-dev пересозданы, toolhub :8090 отвечает (401 auth)"
+  - "zereight/gitlab-mcp содержит package-lock.json; lockfile-гейт пройдёт, entrypoint-блокер снят"
+next:
+  - "повторный self-install zereight/gitlab-mcp через prepare_source для живой верификации"
+risks:
+  - "Дедупликация по resolved path только; разные spelling одного файла (./x vs x) нормализуются TrimPrefix как раньше"
