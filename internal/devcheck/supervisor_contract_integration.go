@@ -591,12 +591,29 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 	if err := spool.CompleteJob(job.ID); err != nil {
 		return err
 	}
-	delivery, err := spool.ClaimDelivery()
-	if err != nil || delivery == nil || delivery.Text != "contract final answer" {
-		return fmt.Errorf("routine durable final missing: %v", err)
+	finalFound := false
+	for range 16 {
+		delivery, err := spool.ClaimDelivery()
+		if err != nil {
+			return fmt.Errorf("routine durable final missing: %v", err)
+		}
+		if delivery == nil {
+			break
+		}
+		if delivery.Text == "contract final answer" && delivery.JobID == job.ID {
+			finalFound = true
+		} else if delivery.JobID != "" {
+			return fmt.Errorf("routine published an unexpected final")
+		}
+		if err := spool.CompleteDelivery(delivery.ID); err != nil {
+			return err
+		}
+		if finalFound {
+			break
+		}
 	}
-	if err := spool.CompleteDelivery(delivery.ID); err != nil {
-		return err
+	if !finalFound {
+		return fmt.Errorf("routine durable final missing: progress exhausted")
 	}
 	if duplicate, err := spool.ClaimJob(); err != nil || duplicate != nil {
 		return fmt.Errorf("routine dispatched twice")

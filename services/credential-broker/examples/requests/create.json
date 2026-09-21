@@ -1,0 +1,8 @@
+{
+  "contract_id": "github-pat",
+  "contract_revision": 1,
+  "connection_id": "github-artem",
+  "onboarding_id": "install-github",
+  "idempotency_key": "github-enroll-v1",
+  "owner_kind": "user"
+}

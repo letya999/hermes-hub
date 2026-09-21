@@ -1,0 +1,34 @@
+{
+  "id": "google-file-session",
+  "revision": 1,
+  "title": "Google: JSON и состояние авторизации",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "client_json",
+      "label": "JSON OAuth-клиента",
+      "kind": "json",
+      "required": true,
+      "max_bytes": 65536
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "file",
+      "field": "client_json",
+      "target": "/run/mcp-secrets/google/client.json",
+      "env_name": "GOOGLE_OAUTH_CREDENTIALS"
+    }
+  ],
+  "state": {
+    "target": "/home/mcp/.config/google-calendar",
+    "files": [
+      {
+        "name": "runtime_session.json",
+        "max_bytes": 65536,
+        "json": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,91 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+# Список команд. Все пользовательские и CI-команды идут через этот файл.
+default:
+    @just --list
+
+check:
+    python3 scripts/quality.py check
+
+release-check:
+    python3 scripts/quality.py release-check
+
+fmt:
+    python3 scripts/quality.py fmt
+
+fmt-check:
+    python3 scripts/quality.py fmt-check
+
+lint:
+    python3 scripts/quality.py lint
+
+lint-security:
+    python3 scripts/quality.py lint-security
+
+tools-install:
+    python3 scripts/quality.py tools-install
+
+test:
+    python3 scripts/quality.py test
+
+test-unit:
+    python3 scripts/quality.py test-unit
+
+test-integration:
+    python3 scripts/quality.py test-integration
+
+test-e2e:
+    python3 scripts/quality.py test-e2e
+
+test-race:
+    python3 scripts/quality.py test-race
+
+coverage:
+    python3 scripts/quality.py coverage
+
+fuzz:
+    python3 scripts/quality.py fuzz
+
+build:
+    python3 scripts/quality.py build
+
+docs-check:
+    python3 docs_scripts/check.py check
+
+docs-fix:
+    python3 docs_scripts/check.py fix
+
+docs-doctor:
+    python3 scripts/quality.py doctor
+
+init dir:
+    .build/bin/credential-broker init --dir {{ quote(dir) }}
+
+serve config:
+    .build/bin/credential-broker serve --config {{ quote(config) }}
+
+check-config config:
+    .build/bin/credential-broker check-config --config {{ quote(config) }}
+
+# JSON-параметры команды лежат в файле; секреты через CLI не принимаются.
+ctl *args:
+    .build/bin/brokerctl {{ args }}
+
+change-new name title:
+    python3 docs_scripts/check.py new-change {{ quote(name) }} {{ quote(title) }}
+
+archive:
+    python3 scripts/package.py
+
+ci: check fuzz
+
+ci-release: release-check
+
+api-fix:
+    python3 scripts/openapi.py
+
+api-check:
+    python3 scripts/openapi.py --check
+
+hooks-install:
+    git config core.hooksPath .githooks

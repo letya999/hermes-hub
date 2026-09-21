@@ -1,0 +1,48 @@
+{
+  "state_root": "C:/Users/User/AppData/Local/Temp/hermes-m53-controller",
+  "toolhive_binary": "C:/Users/User/AppData/Local/Microsoft/WinGet/Packages/stacklok.thv_Microsoft.Winget.Source_8wekyb3d8bbwe/thv.exe",
+  "seccomp_profile": "C:/Users/User/a_projects/hermes-hub/docker/seccomp-mcp-runtime.json",
+  "docker_fallback": true,
+  "bridge_binary": "C:/Users/User/AppData/Local/Temp/hermes-m53-linux-bridge",
+  "definition": {
+    "schema": 1,
+    "definition_id": "m53-acceptance",
+    "version": "0.0.1",
+    "transport": "container-mcp",
+    "source": {
+      "image": "hermes-artifact/m53-acceptance",
+      "digest": "sha256:6dbad51ce3168352093f49e796717079d5e173130339aaf9a4dfbc3b8508730d",
+      "command": "node",
+      "args": ["/app/bin/cli.mjs"],
+      "repository": "https://github.com/makenotion/notion-mcp-server",
+      "commit_sha": "1d38420769c8a1fe2d583ff1e7d2d108d4eb0b30",
+      "archive_digest": "sha256:abb893441937ef71c0acd20778bb1134c54bd0ac512f53aa8653469c24233e86",
+      "provenance_digest": "sha256:6c0ffeae357a555a9b0fd5caf1251a1ba7c124999078c08f013b189b7c153e9d",
+      "sbom_digest": "sha256:9f1251d4c2d3d0a93709f61a66ff36c0171c9dcbc51e97a75acaefab63b6a40f",
+      "recipe_digest": "sha256:a2b9e1f97728dc84f0e7b66291f763aec0e6d86246dc304c044dc23a39420ab2",
+      "review_digest": "sha256:b79f45e5bd867b411423c945af7dcd996fda76ba77ea7e10a2781f59e9420161",
+      "tool_contract_digest": "sha256:ce82b3f9031a60e37c6f784487787b3780a6046c0e90b941bcf5a2856656c010",
+      "tool_contract_source": "preflight-list"
+    },
+    "tools": [{"name": "API-get-self", "effect": "read"}],
+    "workload": {
+      "class": "per-user",
+      "stateful": true,
+      "rationale": "user self-install MCP is principal-owned",
+      "toolhive_version": "v0.48.0",
+      "sidecar_images": ["ghcr.io/stacklok/toolhive/egress-proxy@sha256:72a43857af69e602bdc1285bbb074e829ae967c1ede4144377ddeb048bacb1be"]
+    },
+    "execution": {
+      "timeout_seconds": 60,
+      "output_bytes": 2097152,
+      "cpu_millis": 1000,
+      "memory_mib": 512,
+      "max_pids": 64,
+      "egress": ["github.com"],
+      "mounts": [{"source": "connection-state", "target": "/state"}]
+    },
+    "health": {"kind": "exec", "value": "/app/health", "timeout_seconds": 5}
+  },
+  "max_active": 2,
+  "idle_ttl_seconds": 60
+}

@@ -5,6 +5,15 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0034](in-progress/CHG-0034-noncredential-env-filter/plan.md) | Non-credential env names excluded from connection recipe; gitlab-pat broker contract |
+| [CHG-0033](in-progress/CHG-0033-node-bin-aliases/plan.md) | Node bin aliases to one file resolve as a single MCP entrypoint |
+| [CHG-0031](in-progress/CHG-0031-docker-reclaim/plan.md) | Docker reclaim: stale hub tags, dangling and artifact-build orphans removed by devcheck docker-clean |
+| [CHG-0029](in-progress/CHG-0029-github-mcp-install/plan.md) | Safe generic GitHub MCP source review; cache mounts ignored as metadata, secret mounts remain denied |
+| [CHG-0028](in-progress/CHG-0028-credential-broker-merge/plan.md) | Перенос Credential Broker и opt-in интеграция с Hermes Hub |
+| [CHG-0027](in-progress/CHG-0027-m53-e2e/plan.md) | M5.3 Hermes-mediated MCP onboarding |
+| [CHG-0026](in-progress/CHG-0026-user-binding-journey/plan.md) | M5.2 control MCP, grants, elicitation and bind/project/revoke |
+| [CHG-0025](in-progress/CHG-0025-trusted-artifacts/plan.md) | **done** M5.1 trusted artifacts + local ToolHive; [closeout.md](in-progress/CHG-0025-trusted-artifacts/closeout.md) |
+| [CHG-0024](in-progress/CHG-0024-personal-data-connectors/plan.md) | M5 stage 2: Google Workspace, Slack data and personal Telegram connectors behind ToolHub |
 | [CHG-0023](in-progress/CHG-0023-personal-assistant/plan.md) | M4 personal assistant: Telegram/Slack channels, voice, routines, memory/skills/backup |
 | [CHG-0022](in-progress/CHG-0022-credentials-connector-platform/plan.md) | M3 shipped-path inject/audit/registry wiring; just check 85.07%; docker-check prod a61ce4879a1d |
 | [CHG-0021](in-progress/CHG-0021-toolhub-stage3/plan.md) | M2 control-plane done; #20–#26 closed; live ToolHive/Hermes evidence is #73/#74 |

@@ -1,0 +1,15 @@
+change: CHG-0032-broker-direct-form
+status: verified
+steps:
+  - done: DirectForm flag broker.Config -> app.Config -> BROKER_DIRECT_FORM env
+  - done: render.go sets BROKER_DIRECT_FORM=1 on credential-broker service
+  - done: toolhub regenerates expired/canceled broker requests (BrokerAttempts)
+  - done: tests + docs (configuration.md, QUICKSTART, integrations.md)
+  - done: broker test-unit in container (module is Linux-only)
+  - done: image rebuild + compose restart
+  - done: live /connect direct-form + PAT submit verification
+  - done: generic fallback fixes (squid.conf 0644, host.docker.internal relay URL,
+      workload-controller advertise endpoint, orphan state reclaim)
+  - done: live GitHub MCP get_me returned real user data through isolated runtime
+  - done: remove/revoke release the workload via controller /release
+      (ControlPlane.Release); github-mcp-server fully uninstalled and verified

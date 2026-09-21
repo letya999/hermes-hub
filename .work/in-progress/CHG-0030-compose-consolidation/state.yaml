@@ -1,0 +1,40 @@
+schema: 1
+id: CHG-0030-compose-consolidation
+title: "Консолидация hermes-hub: один образ, 6 сервисов в одном compose"
+status: in_progress
+phase: verifying
+started_at: "2026-09-20"
+updated_at: "2026-09-20"
+completed:
+  - "Разведка Docker: перечислены все контейнеры/образы/волюмы, ai-stp-* помечены как чужой проект"
+  - "Найден канонический broker volume hermes-credential-broker-real-prod-20260918 (keys, ledger 43KB, 7 secrets, contracts, TLS)"
+  - "Подтверждено: compose.dev.yaml генерируется internal/stack/render.go, меняем генератор"
+  - "cli-proxy-api = router-for-me/CLIProxyAPI, v7.2.154 = commit ba7e55836dee959e93ec6d41395865d9ec535086"
+  - "thv бинарь в ghcr.io/stacklok/toolhive:v0.48.0 по пути /ko-app/thv"
+  - "Dockerfile: cli-proxy-api собирается из pinned commit; docker-cli, thv, seccomp-профили в runtime-стадии"
+  - "HUB_DOCKER_HOST_ROOT трансляция путей (internal/toolhub/dockerhost.go) + табличные тесты"
+  - "credentialbroker <prefix>CA_FILE: self-signed CA поверх system roots, TLS>=1.2 + тесты"
+  - "ValidateBackendEndpoint: compose-имена принимаются через DNS-resolve (все адреса private/loopback)"
+  - "RunGenericController: HUB_CONTROLLER_REMOTE=1 opt-in для не-loopback listen (token обязателен всегда)"
+  - "render.go: 6 сервисов; broker state = external named volume (securefs не переносит Windows-bind 0777)"
+  - "broker-secrets-{toolhub,runtime,communication} named volumes с ключами 0600 uid 10001, ro-монтирование"
+  - "TLS cert в broker volume перегенерирован: SAN credential-broker,localhost,127.0.0.1"
+  - "broker config.json в volume: runtime_dir=/run/broker-materialized (tmpfs, требование materialize)"
+  - "cliproxy state → spaces/local/cliproxy bind, auth-dir исправлен на /cliproxy/auths"
+  - "Миграция: spaces/local/broker = копия prod volume (бэкап); volume broker-state остаётся источником истины"
+  - "Бэкапы удаляемого: ../hermes-hub-backup-20260920/{hermes-hub-local-dev_state,hermes-credential-broker-real-20260918}.tar.gz"
+  - "Стек поднят: 6 контейнеров Up, runtime healthy; smoke: toolhub MCP init+tools/list OK, broker TLS verified by CA (403=auth layer), controller /admit 401, cliproxy 401, comm-hub alive, docker.sock работает из toolhub и controller"
+  - "Удалено: 15 сирот-контейнеров hermes-*, 13 build-волюмов, дубль broker-волюма, legacy state/workspace volumes, образы hermes-hub:{test,credential-broker,0.3.0-runtime,0.2.0-dev}, hermes-telegram-account:*, hermes-credential-broker:test, eceasy/cli-proxy-api:v7.2.154"
+next:
+  - "just check + coverage >=85%"
+  - "docker image prune завершить; финальный инвентарь"
+  - "Обновить docs (integrations.md / README топология) и закрыть CHG-0030"
+notes:
+  - "eceasy/cli-proxy-api:v7.2.145 НЕ удалён — используется ai-stp-cliproxy-1 (чужой проект)"
+  - "Анонимный волюм 85cff5... принадлежит ai-stp-ci-debug — не трогать"
+  - "eceasy-образ для hermes заменён in-image бинарём cli-proxy-api (pinned commit)"
+  - "File-mount deliveries брокера (mount.Source из broker tmpfs) недостижимы для daemon — env-deliveries работают; ограничение зафиксировать в docs"
+risks:
+  - "docker.sock в toolhub/controller контейнерах — осознанный tradeoff локального dev"
+  - "broker-secrets-* volumes создаются вручную при provision — render.go их декларирует, сидирование разово"
+  - "broker state volume external=true — compose его не создаёт и не удаляет"

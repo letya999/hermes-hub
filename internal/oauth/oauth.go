@@ -33,8 +33,33 @@ type Provider struct {
 	Audience      string
 }
 
+// ClientCredential is the OAuth client registered with a provider. The secret
+// is never logged, audited, returned to a caller or written to the registry.
+type ClientCredential struct {
+	ID     string
+	Secret string
+	// BasicAuth sends client_secret_basic as Slack recommends; otherwise the
+	// values travel in the token request body as Google documents.
+	BasicAuth bool
+}
+
+// AuthRequest is one authorization-code start. Scopes are the official provider
+// scope values; Slack maps them to `user_scope` so no bot token is requested.
+type AuthRequest struct {
+	Principal            string
+	Context              string
+	Connection           string
+	Provider             string
+	Redirect             string
+	Scopes               []string
+	AccessType           string
+	IncludeGrantedScopes bool
+	Prompt               string
+}
+
 type Broker struct {
 	Providers map[string]Provider
+	Clients   map[string]ClientCredential
 	Redirects []string
 	Secrets   credstore.Backend
 	HTTP      *http.Client
@@ -68,15 +93,20 @@ type StartResult struct {
 	DeviceCode   string
 }
 
+// TokenMeta is the secret-free result of a token exchange. Values live only in
+// the ciphertext store behind Locator; Scopes and Account are metadata.
 type TokenMeta struct {
 	Locator  string
 	Provider string
 	Status   string
+	Scopes   []string
+	Account  map[string]string
 }
 
 func NewBroker(secrets credstore.Backend, redirects []string) *Broker {
 	return &Broker{
 		Providers: OfficialProviders(),
+		Clients:   map[string]ClientCredential{},
 		Redirects: append([]string(nil), redirects...),
 		Secrets:   secrets,
 		HTTP:      &http.Client{Timeout: 10 * time.Second},
@@ -88,13 +118,17 @@ func NewBroker(secrets credstore.Backend, redirects []string) *Broker {
 }
 
 func (b *Broker) StartAuthCode(principal, contextID, connection, provider, redirect string) (StartResult, error) {
+	return b.StartAuth(AuthRequest{Principal: principal, Context: contextID, Connection: connection, Provider: provider, Redirect: redirect})
+}
+
+func (b *Broker) StartAuth(request AuthRequest) (StartResult, error) {
 	if err := b.ready(); err != nil {
 		return StartResult{}, err
 	}
-	if !b.allowRedirect(redirect) {
+	if !b.allowRedirect(request.Redirect) {
 		return StartResult{}, fmt.Errorf("%w: redirect", ErrDenied)
 	}
-	prov, err := b.provider(provider)
+	prov, err := b.provider(request.Provider)
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -108,16 +142,37 @@ func (b *Broker) StartAuthCode(principal, contextID, connection, provider, redir
 	}
 	now := b.Now().UTC()
 	b.mu.Lock()
-	b.states[state] = pending{State: state, Verifier: verifier, Principal: principal, Context: contextID, Connection: connection, Provider: provider, Redirect: redirect, Expires: now.Add(b.TTL)}
+	b.states[state] = pending{State: state, Verifier: verifier, Principal: request.Principal, Context: request.Context, Connection: request.Connection, Provider: request.Provider, Redirect: request.Redirect, Expires: now.Add(b.TTL)}
 	b.mu.Unlock()
 	values := url.Values{}
 	values.Set("response_type", "code")
 	values.Set("state", state)
-	values.Set("redirect_uri", redirect)
+	values.Set("redirect_uri", request.Redirect)
 	values.Set("code_challenge", pkceChallenge(verifier))
 	values.Set("code_challenge_method", "S256")
 	if prov.Audience != "" {
 		values.Set("audience", prov.Audience)
+	}
+	if client := b.client(request.Provider); client.ID != "" {
+		values.Set("client_id", client.ID)
+	}
+	if len(request.Scopes) > 0 {
+		if request.Provider == "slack" {
+			// Official Slack v2 user authorization; `scope` would request a bot
+			// token, which this broker path must never produce.
+			values.Set("user_scope", strings.Join(request.Scopes, ","))
+		} else {
+			values.Set("scope", strings.Join(request.Scopes, " "))
+		}
+	}
+	if request.AccessType != "" {
+		values.Set("access_type", request.AccessType)
+	}
+	if request.IncludeGrantedScopes {
+		values.Set("include_granted_scopes", "true")
+	}
+	if request.Prompt != "" {
+		values.Set("prompt", request.Prompt)
 	}
 	authorize, err := url.Parse(prov.AuthorizeURL)
 	if err != nil {
@@ -168,7 +223,7 @@ func (b *Broker) HandleCallback(principal, contextID, connection, state, code, r
 	form.Set("code", code)
 	form.Set("redirect_uri", redirect)
 	form.Set("code_verifier", pendingState.Verifier)
-	tokens, err := b.exchange(prov.TokenURL, form)
+	tokens, err := b.exchangeClient(pendingState.Provider, prov.TokenURL, form)
 	if err != nil {
 		return TokenMeta{}, err
 	}
@@ -248,7 +303,7 @@ func (b *Broker) Refresh(principal, connection, provider string) (TokenMeta, err
 	if err := b.ready(); err != nil {
 		return TokenMeta{}, err
 	}
-	unlock := b.lockRefresh(connection)
+	unlock := b.lockRefresh(principal + ":" + connection)
 	defer unlock()
 	listed, err := b.Secrets.List(principal)
 	if err != nil {
@@ -260,8 +315,17 @@ func (b *Broker) Refresh(principal, connection, provider string) (TokenMeta, err
 			continue
 		}
 		if containsName(info.Names, "REFRESH_TOKEN") {
-			locator = info.Locator
-			break
+			values, getErr := b.Secrets.Get(info.Locator, principal)
+			if getErr != nil {
+				return TokenMeta{}, getErr
+			}
+			if values["OAUTH_CONNECTION"] == connection {
+				if values["OAUTH_PROVIDER"] != provider {
+					return TokenMeta{}, ErrInvalid
+				}
+				locator = info.Locator
+				break
+			}
 		}
 	}
 	if locator == "" {
@@ -282,14 +346,28 @@ func (b *Broker) Refresh(principal, connection, provider string) (TokenMeta, err
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refresh)
-	tokens, err := b.exchange(prov.TokenURL, form)
+	tokens, err := b.exchangeClient(provider, prov.TokenURL, form)
 	if err != nil {
 		return TokenMeta{}, err
 	}
 	if tokens["refresh_token"] == "" {
 		tokens["refresh_token"] = refresh
 	}
-	if err := b.Secrets.Put(locator, principal, tokenValues(tokens)); err != nil {
+	if tokens["scope"] == "" {
+		tokens["scope"] = values["OAUTH_SCOPE"]
+	}
+	for _, key := range []string{"account_team", "account_user"} {
+		storedKey := "OAUTH_" + strings.ToUpper(strings.TrimPrefix(key, "account_"))
+		if tokens[key] != "" && values[storedKey] != "" && tokens[key] != values[storedKey] {
+			return TokenMeta{}, ErrDenied
+		}
+		if tokens[key] == "" {
+			tokens[key] = values[storedKey]
+		}
+	}
+	updated := tokenValues(tokens)
+	updated["OAUTH_CONNECTION"], updated["OAUTH_PROVIDER"] = connection, provider
+	if err := b.Secrets.Put(locator, principal, updated); err != nil {
 		return TokenMeta{}, err
 	}
 	return TokenMeta{Locator: locator, Provider: provider, Status: credstore.StatusActive}, nil
@@ -337,6 +415,7 @@ func (b *Broker) persist(principal, connection, provider string, tokens map[stri
 		return TokenMeta{}, err
 	}
 	values := tokenValues(tokens)
+	values["OAUTH_CONNECTION"], values["OAUTH_PROVIDER"] = connection, provider
 	if err := b.Secrets.Put(locator, principal, values); err != nil {
 		return TokenMeta{}, err
 	}
@@ -357,6 +436,14 @@ func tokenValues(tokens map[string]string) map[string]string {
 	if tokens["expires_in"] != "" {
 		values["EXPIRES_IN"] = tokens["expires_in"]
 	}
+	if tokens["scope"] != "" {
+		values["OAUTH_SCOPE"] = tokens["scope"]
+	}
+	for _, key := range []string{"team", "user"} {
+		if tokens["account_"+key] != "" {
+			values["OAUTH_"+strings.ToUpper(key)] = tokens["account_"+key]
+		}
+	}
 	return values
 }
 
@@ -365,8 +452,28 @@ func (b *Broker) exchange(tokenURL string, form url.Values) (map[string]string, 
 	if err != nil {
 		return nil, err
 	}
+	return captureTokens("", resp)
+}
+
+func captureTokens(provider string, resp map[string]any) (map[string]string, error) {
+	accountTeam, accountUser := "", ""
+	if provider == "slack" {
+		if resp["ok"] != true {
+			return nil, ErrDenied
+		}
+		if user, ok := resp["authed_user"].(map[string]any); ok {
+			accountUser, _ = user["id"].(string)
+			if team, ok := resp["team"].(map[string]any); ok {
+				accountTeam, _ = team["id"].(string)
+			}
+			resp = user // Never capture a top-level bot token.
+		}
+		if resp["token_type"] != "user" {
+			return nil, ErrDenied
+		}
+	}
 	tokens := map[string]string{}
-	for _, key := range []string{"access_token", "refresh_token", "token_type", "expires_in"} {
+	for _, key := range []string{"access_token", "refresh_token", "token_type", "expires_in", "scope"} {
 		switch v := resp[key].(type) {
 		case string:
 			tokens[key] = v
@@ -377,16 +484,26 @@ func (b *Broker) exchange(tokenURL string, form url.Values) (map[string]string, 
 	if tokens["access_token"] == "" {
 		return nil, fmt.Errorf("%w: token response", ErrDenied)
 	}
+	tokens["account_team"], tokens["account_user"] = accountTeam, accountUser
 	return tokens, nil
 }
 
 func (b *Broker) postForm(endpoint string, form url.Values) (map[string]any, error) {
+	return b.postFormClient(endpoint, form, ClientCredential{})
+}
+
+func (b *Broker) postFormClient(endpoint string, form url.Values, client ClientCredential) (map[string]any, error) {
 	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := b.HTTP.Do(req)
+	if client.BasicAuth && client.ID != "" {
+		req.SetBasicAuth(client.ID, client.Secret)
+	}
+	clientCopy := *b.HTTP
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := clientCopy.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -441,9 +558,40 @@ func (b *Broker) provider(name string) (Provider, error) {
 	return prov, nil
 }
 
+func (b *Broker) exchangeClient(provider, endpoint string, form url.Values) (map[string]string, error) {
+	client := b.client(provider)
+	if client.ID != "" && !client.BasicAuth {
+		form.Set("client_id", client.ID)
+		form.Set("client_secret", client.Secret)
+	}
+	resp, err := b.postFormClient(endpoint, form, client)
+	if err != nil {
+		return nil, err
+	}
+	return captureTokens(provider, resp)
+}
+
+func (b *Broker) client(name string) ClientCredential {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Clients[name]
+}
+
 func (b *Broker) allowRedirect(redirect string) bool {
 	for _, allowed := range b.Redirects {
 		if allowed == redirect {
+			return true
+		}
+		got, err := url.Parse(redirect)
+		want, wantErr := url.Parse(allowed)
+		if err != nil || wantErr != nil || want.RawQuery != "" {
+			continue
+		}
+		if got.Scheme != want.Scheme || got.Host != want.Host || got.Path != want.Path {
+			continue
+		}
+		query := got.Query()
+		if len(query) == 1 && strings.TrimSpace(query.Get("onboarding_id")) != "" {
 			return true
 		}
 	}

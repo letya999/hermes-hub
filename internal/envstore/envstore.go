@@ -115,11 +115,20 @@ func followingValue(lines []string, current int) (string, int, bool) {
 }
 
 func Update(path, text, allowedRaw, protectedRaw string) ([]string, error) {
-	allowed, protected, err := policy(allowedRaw, protectedRaw)
+	updates, err := Parse(text)
 	if err != nil {
 		return nil, err
 	}
-	updates, err := Parse(text)
+	if len(updates) == 0 {
+		return nil, errors.New("at least one env entry required")
+	}
+	return UpdateValues(path, updates, allowedRaw, protectedRaw)
+}
+
+// UpdateValues is the non-chat boundary for a protected form or an internal
+// runtime control request. Values never need to be serialized as KEY=value.
+func UpdateValues(path string, updates map[string]string, allowedRaw, protectedRaw string) ([]string, error) {
+	allowed, protected, err := policy(allowedRaw, protectedRaw)
 	if err != nil {
 		return nil, err
 	}

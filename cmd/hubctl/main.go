@@ -31,12 +31,61 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
+	if op == "connector" {
+		return runConnector(ctx, args[1:])
+	}
+	if op == "artifact" {
+		return runArtifact(ctx, args[1:])
+	}
+	if op == "relay" {
+		f := flag.NewFlagSet("relay", flag.ContinueOnError)
+		listen := f.String("listen", "127.0.0.1:8765", "private relay address")
+		target := f.String("target", "", "fixed MCP target endpoint")
+		tokenEnv := f.String("token-env", "", "environment variable holding the relay bearer token")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *tokenEnv == "" {
+			return fmt.Errorf("relay requires --listen, --target and --token-env")
+		}
+		return companion.RunRelay(ctx, *listen, *target, os.Getenv(*tokenEnv))
+	}
+	if op == "oauth-relay" {
+		f := flag.NewFlagSet("oauth-relay", flag.ContinueOnError)
+		listen := f.String("listen", "0.0.0.0:3500", "private OAuth callback address")
+		target := f.String("target", "", "fixed OAuth callback endpoint")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return fmt.Errorf("oauth-relay accepts no positional arguments")
+		}
+		return companion.RunOAuthRelay(ctx, *listen, *target)
+	}
+	if op == "oauth-exec-relay" {
+		f := flag.NewFlagSet("oauth-exec-relay", flag.ContinueOnError)
+		listen := f.String("listen", "127.0.0.1:3500", "loopback OAuth callback address")
+		container := f.String("container", "", "operator-owned workload container")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return fmt.Errorf("oauth-exec-relay accepts no positional arguments")
+		}
+		return companion.RunOAuthExecRelay(ctx, *listen, *container)
+	}
+	if op == "oauth-forward" {
+		return companion.OAuthForward(ctx, os.Stdin, os.Stdout)
+	}
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
+	}
+	if op == "grant" {
+		return runGrant(ctx, args[1:])
 	}
 	if op == "context" {
 		return runContext(ctx, args[1:])
@@ -199,21 +248,29 @@ func run(ctx context.Context, args []string) error {
 		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
 	}
 	prefix := []string{"compose", "-f", composePath}
-	docker := func(a ...string) error {
-		cmd := exec.CommandContext(ctx, "docker", append(append([]string{}, prefix...), a...)...)
+	dockerCmd := func(args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd.Env = dockerCLIEnv()
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		return cmd
+	}
+	docker := func(a ...string) error {
+		return dockerCmd(append(append([]string{}, prefix...), a...)...).Run()
 	}
 	if op == "build" || op == "up" {
+		if os.Getenv("DOCKER_BUILDKIT") == "0" {
+			fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
+		}
 		if err = docker("build"); err != nil {
 			return err
 		}
+		pruneDanglingImages(ctx)
 		if op == "build" {
 			return nil
 		}
-		return docker("up", "-d", "--wait", "--wait-timeout", "180", "--remove-orphans")
+		return docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans")
 	}
 	switch op {
 	case "down":
@@ -235,7 +292,15 @@ func run(ctx context.Context, args []string) error {
 		}
 		return docker("exec", "hermes-runtime", "hermes", "chat")
 	case "telegram-login":
-		return docker("run", "--rm", "--no-deps", "--entrypoint", "/opt/telegram/.venv/bin/python", "hermes-runtime", "/opt/telegram/session_string_generator.py", "--phone")
+		rootAbs, err := filepath.Abs(*root)
+		if err != nil {
+			return err
+		}
+		image := "hermes-telegram-account:local"
+		if err := dockerCmd("build", "-f", filepath.Join(rootAbs, "docker", "telegram-account.Dockerfile"), "-t", image, rootAbs).Run(); err != nil {
+			return err
+		}
+		return dockerCmd("run", "--rm", "--entrypoint", "/opt/telegram/.venv/bin/python", image, "/opt/telegram/session_string_generator.py", "--phone").Run()
 	case "meet-auth":
 		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
 	}
@@ -247,4 +312,16 @@ func supervisorAuthFromEnv() string {
 		return value
 	}
 	return os.Getenv("HUB_RUNTIME_AUTH")
+}
+
+func dockerCLIEnv() []string {
+	return append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
+}
+
+func pruneDanglingImages(ctx context.Context) {
+	cmd := exec.CommandContext(ctx, "docker", "image", "prune", "-f")
+	cmd.Env = dockerCLIEnv()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
 }

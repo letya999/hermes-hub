@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-14
+last_verified: 2026-09-20
 ---
 # Operations
 
@@ -14,6 +14,17 @@ sender IDs from the configured allowlist to the selected user scope, writes dura
 and replies under `/state/gateway`, and runs one fresh bounded Hermes process per job.
 The current deployment uses one configured user; adding another is a configuration and
 isolated-space operation, not a shared Hermes home.
+The runtime includes the deployed `SOUL.md` digest in its deterministic conversation
+session ID, so changed system instructions start a fresh chat session on the next
+message while durable owner memory remains intact.
+
+Long Telegram turns (for example, ToolHub source review/build) use Hermes' FIFO
+`display.busy_input_mode: queue`; a new ordinary message is kept for the next turn
+instead of cancelling the active MCP call. `HERMES_AGENT_NOTIFY_INTERVAL` is rendered
+as 60 seconds, so the native Hermes gateway sends a periodic working heartbeat while
+the call is running. ToolHub's generated MCP timeout is 1800 seconds, matching the
+isolated builder's 25-minute safety ceiling plus startup margin. `/stop` and `/cancel`
+remain explicit cancellation controls.
 
 Treat `scope.yaml` IDs as immutable. Moving or renaming a home does not change its
 principal or context identity. Today Telegram links are provisioned only in trusted
@@ -43,9 +54,11 @@ hubctl secret rotate-key --user <id> --from-file new.key
 hubctl secret activity --user <id>
 ```
 
-An explicit owner `KEY=value` chat message is intercepted before Hermes, persisted
-through that store, and best-effort deleted. Replies contain names and status only.
-Groups reject credential entry. Set and delete also load the ToolHub registry
+An explicit owner `KEY=value` chat message is intercepted before Hermes, rejected and
+best-effort deleted; it is never persisted. The gateway returns a one-time protected
+loopback form generated from the selected connector or MCP Connection Recipe; its fields,
+types, order, delivery metadata and OAuth alternatives are derived at request time.
+There is no static credential form. Groups reject credential entry. Set and delete also load the ToolHub registry
 (`HUB_TOOLHUB_STORE` or `spaces/<user>/runtime/toolhub/store.json`) so rotate and
 revoke cut an already-open MCP session and stop affected workloads. Personal-terminal
 exposure copies selected names into that owner's `self-env.json` overlay and is
@@ -56,6 +69,22 @@ audit ledger together with a generated tool-call id. The communication worker
 appends matching job events when `HUB_AUDIT_LEDGER` or a credential store is
 configured. `HUB_CREDENTIAL_STORE` must be set on `hub-toolhub` for decrypt-and-inject.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
+
+To enable the Credential Broker path, configure the control, approval and
+runtime URL/key/ID/issuer variables documented in
+[integrations](integrations.md). All three audiences are required. Start the
+copied Broker with its own config and provider/contract directories; the Hub
+only receives the Broker origin and role-specific private signer files. For a
+pending onboarding, send `/credentials <request-id> <code>` through the
+authenticated Communication Hub chat. Existing local references are not
+auto-migrated when Broker mode is enabled.
+
+For a contract that delivers a file (for example a Google service-account JSON),
+the Broker materialization directory must be a dedicated shared tmpfs visible
+at the same absolute path to the Broker, ToolHub/controller and Docker daemon.
+Set that path as `credential_mount_root` in the generic controller config. The
+controller passes it as a read-only `--volume` and tears down the workload after
+the call; without this shared path the request is rejected.
 
 The selected user home contains persistent Hermes, connection, workspace and archive
 data. An organization home is mounted read-only for members. Dev/prod selects separate
@@ -91,6 +120,8 @@ Honcho failure must not be required for ordinary Hermes memory.
 
 User skills install into `spaces/<id>/hermes/skills` without rebuilding the image.
 Organization and global skills are read-only `skills.external_dirs` mounts.
+Every rendered runtime mounts the repository `config/skills` directory as the default
+global skill source; it includes the ToolHub-first MCP/connector onboarding skill.
 `hubctl skill install --consent` scans SKILL.md and refuses provider-mutation text.
 
 Back up all `spaces/<id>` homes and the `communication-hub-data` volume to encrypted
@@ -98,6 +129,37 @@ storage while services are stopped. Ciphertext backups use `hubctl secret backup
 must not include the encryption key. Do not use `docker compose down --volumes` unless
 deleting that user's data intentionally. Restore organization and user homes separately;
 never merge memories, Telegram sessions or provider credentials.
+
+The hub image is one shared runtime (apt Chromium, Hermes with the `mcp`
+extra) used by every compose service. Playwright browsers, Hermes
+`messaging`/`google`/`voice` extras, the Go toolchain, and the Google /
+Atlassian / Telegram-account Python trees stay out of the default image.
+Those MCP trees are `docker/telegram-account.Dockerfile`,
+`docker/mcp-atlassian.Dockerfile`, and the official Google Workspace remote
+MCP (ADR-0019). Repeating `build:` on each service made `docker compose build` run that
+Dockerfile once per service. Combined with the classic builder
+(`DOCKER_BUILDKIT=0`) this materialized every stage as a separate image and
+added roughly one full copy of the image per command.
+
+Generated compose files carry a `build:` section on exactly one service
+(`toolhub`); the rest reference the shared `image:` tag. `just` recipes and
+`hubctl build`/`up` export `DOCKER_BUILDKIT=1`, `COMPOSE_DOCKER_CLI_BUILD=1`
+and `COMPOSE_BAKE=true`, so a stale `DOCKER_BUILDKIT=0` cannot silently
+downgrade those entry points. After a successful compose build, `hubctl`
+prunes dangling images left by retagging. Intermediate BuildKit stages never
+materialize as extra images. Setting `DOCKER_BUILDKIT=0` globally is still
+discouraged because raw `docker compose` outside hubctl/just would use the
+classic builder.
+
+Rebuilds of the tagged hub image used to leave the superseded generation
+dangling at full unique-layer size. `just docker-clean` (also the last step of
+`just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
+`spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
+dangling image layers, orphan `hermes-build-*` containers/networks/volumes and the
+local BuildKit cache. `just docker-clean --deep` additionally drops
+`hermes-build-state-shared`, the opt-in persistent builder cache that
+`HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
+artifact build is in flight.
 
 Health checks prove process liveness and, where enabled, Chromium CDP readiness. They do
 not prove OAuth, model, Telegram or provider access. Live acceptance requires the

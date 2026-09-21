@@ -14,6 +14,8 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/routines/", g.handleRoutineItem)
+	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)
+	mux.HandleFunc("/credentials/", g.serveCredentialForm)
 	return mux
 }
 

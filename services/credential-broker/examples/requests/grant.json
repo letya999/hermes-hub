@@ -1,0 +1,11 @@
+{
+  "contract_id": "github-pat",
+  "contract_revision": 1,
+  "principal_id": "artem",
+  "context_id": "artem",
+  "runtime_id": "hermes-artem",
+  "binding_id": "github-artem",
+  "workload_id": "github-artem",
+  "execution": "dedicated",
+  "idempotency_key": "github-grant-v1"
+}

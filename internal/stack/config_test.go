@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 
@@ -78,40 +77,54 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
 	}
+	generatedConfig, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
+	if err != nil || !strings.Contains(string(generatedConfig), "/opt/hub/skills") {
+		t.Fatalf("default global skills mount missing: %v %s", err, generatedConfig)
+	}
+	generatedCompose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
+	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(root, "config", "skills"))) {
+		t.Fatalf("default global skills source missing: %v %s", err, generatedCompose)
+	}
 	cfg := Config(s)
+	display, ok := cfg["display"].(M)
+	if !ok || display["busy_input_mode"] != "queue" || display["long_running_notifications"] != true {
+		t.Fatalf("long-running Telegram defaults missing: %#v", cfg["display"])
+	}
+	timeouts := cfg["timeouts"].(M)["tools"].(M)
+	if timeouts["sequential_call"] != 1800 || timeouts["concurrent_batch"] != 1800 {
+		t.Fatalf("long-running tool timeouts missing: %#v", timeouts)
+	}
 	servers := cfg["mcp_servers"].(M)
-	if len(servers) != 9 {
-		t.Fatalf("servers: %v", servers)
+	// Every catalog feature enabled still yields no direct upstream MCP server:
+	// connectors are served through ToolHub, never embedded in Hermes config.
+	for _, name := range []string{"google", "browser", "github", "slack", "atlassian", "telegram_user", "desktop", "drafts"} {
+		if _, ok := servers[name]; ok {
+			t.Fatalf("direct MCP server leaked into Hermes config: %s", name)
+		}
 	}
-	telegram := servers["telegram_user"].(M)["env"].(M)
-	if !strings.HasPrefix(telegram["TELEGRAM_EXPOSED_TOOLS"].(string), "read-only+") {
-		t.Fatal("write optin missing")
+	if _, ok := servers["hub"]; !ok {
+		t.Fatal("platform hub tool server missing")
 	}
-	s.Features = []string{"telegram_user"}
-	telegram = Config(s)["mcp_servers"].(M)["telegram_user"].(M)["env"].(M)
-	if telegram["TELEGRAM_EXPOSED_TOOLS"] != "read-only" {
-		t.Fatal("unsafe default")
-	}
-	s.Features = []string{"google"}
-	googleArgs := Config(s)["mcp_servers"].(M)["google"].(M)["args"].([]string)
-	if !slices.Contains(googleArgs, "--read-only") {
-		t.Fatal("Google writes enabled by default")
-	}
-	s.Features = []string{"google", "google_write"}
-	googleArgs = Config(s)["mcp_servers"].(M)["google"].(M)["args"].([]string)
-	if slices.Contains(googleArgs, "--read-only") {
-		t.Fatal("Google write opt-in ignored")
+	s.Features = []string{"telegram_user", "google", "google_write"}
+	if servers := Config(s)["mcp_servers"].(M); len(servers) != 0 {
+		t.Fatalf("connector features produced direct MCP servers: %v", servers)
 	}
 	s.Features = []string{"gitlab"}
 	s.GitLabHost = "gitlab.example.com"
+	s.Environment = "prod"
 	composeEnv := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	if composeEnv["HERMES_AGENT_NOTIFY_INTERVAL"] != "60" {
+		t.Fatalf("heartbeat interval missing: %#v", composeEnv["HERMES_AGENT_NOTIFY_INTERVAL"])
+	}
 	if composeEnv["GITLAB_HOST"] != "gitlab.example.com" {
 		t.Fatal("GitLab host missing")
 	}
+	if composeEnv["HUB_RUNTIME_GENERATION"] != "static-me-prod" {
+		t.Fatalf("static runtime generation missing: %#v", composeEnv["HUB_RUNTIME_GENERATION"])
+	}
 	s.Features = []string{"atlassian"}
-	atlassian := Config(s)["mcp_servers"].(M)["atlassian"].(M)
-	if atlassian["command"] != "/opt/mcp-atlassian/.venv/bin/mcp-atlassian" || atlassian["headers"] != nil || atlassian["env"].(M)["JIRA_API_TOKEN"] != "${JIRA_API_TOKEN}" {
-		t.Fatal("direct Atlassian MCP config missing")
+	if _, ok := Config(s)["mcp_servers"].(M)["atlassian"]; ok {
+		t.Fatal("direct Atlassian MCP config leaked")
 	}
 	soul := filepath.Join(d, "SOUL.md")
 	_ = os.WriteFile(soul, []byte("owner changes"), 0600)
@@ -123,8 +136,13 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatal("overwrote memory")
 	}
 	compose, _ := os.ReadFile(filepath.Join(d, "compose.prod.yaml"))
-	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") || strings.Contains(string(compose), "docker.sock") {
-		t.Fatal("network or mount boundary")
+	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") {
+		t.Fatal("network boundary")
+	}
+	// docker.sock is restricted to toolhub/workload-controller; the per-service
+	// boundary is asserted in TestRenderedServiceBoundaries.
+	if !strings.Contains(string(compose), "target: /state/hermes/SOUL.md") || !strings.Contains(string(compose), "read_only: true") {
+		t.Fatal("managed SOUL is not mounted read-only")
 	}
 }
 
@@ -172,7 +190,12 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 		t.Fatalf("gateway env boundary broken: %q", gatewayEnv)
 	}
 	services := Compose(settings, root, d)["services"].(M)
-	if len(services) != 2 || services["communication-hub"].(M)["entrypoint"].([]string)[0] != "communication-hub" {
+	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "toolhub", "workload-controller", "credential-broker"} {
+		if _, ok := services[name]; !ok {
+			t.Fatalf("service %s missing: %#v", name, services)
+		}
+	}
+	if services["communication-hub"].(M)["entrypoint"].([]string)[0] != "communication-hub" {
 		t.Fatalf("split services missing: %#v", services)
 	}
 	for _, raw := range services["communication-hub"].(M)["volumes"].([]any) {
@@ -228,8 +251,8 @@ func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	}
 	s.Features = []string{"telegram_user"}
 	config = Config(s)
-	if _, ok := config["mcp_servers"].(M)["telegram_user"]; !ok {
-		t.Fatal("personal Telegram MCP missing")
+	if _, ok := config["mcp_servers"].(M)["telegram_user"]; ok {
+		t.Fatal("personal Telegram MCP is served through ToolHub, not embedded")
 	}
 	services = Compose(s, "/source", "/space")["services"].(M)
 	if _, ok := services["communication-hub"]; ok {
@@ -250,17 +273,24 @@ func TestServiceCatalogConfig(t *testing.T) {
 	if !ok || !gitlab.SelfService || len(gitlab.Requires) != 1 || gitlab.Requires[0] != "GITLAB_TOKEN" {
 		t.Fatal(gitlab, ok)
 	}
+	// Upstream connectors are served through ToolHub and must not write a
+	// direct MCP definition into the Hermes config.
 	server, config, ok, err := ServiceMCPConfig("atlassian")
-	if err != nil || !ok || server != "atlassian" || config["command"] != "/opt/mcp-atlassian/.venv/bin/mcp-atlassian" || config["env"].(M)["JIRA_USERNAME"] != "${JIRA_USERNAME}" {
+	if err != nil || !ok || server != "" || config != nil {
 		t.Fatal(server, config, ok, err)
 	}
 	if _, _, _, err := ServiceMCPConfig("browser"); err == nil {
 		t.Fatal("host-managed service accepted")
 	}
-	for _, name := range []string{"google", "google_write", "github", "slack", "telegram_user", "telegram_write", "hh", "gitlab"} {
-		if _, _, _, err := ServiceMCPConfig(name); err != nil {
-			t.Fatal(name, err)
+	for _, name := range []string{"google", "google_write", "github", "slack", "telegram_user", "telegram_write", "gitlab"} {
+		server, config, ok, err := ServiceMCPConfig(name)
+		if err != nil || !ok || server != "" || config != nil {
+			t.Fatal(name, server, config, ok, err)
 		}
+	}
+	server, config, ok, err = ServiceMCPConfig("hh")
+	if err != nil || !ok || server != "hub" || config == nil {
+		t.Fatal("hh must still enable the platform hub tool server", server, ok, err)
 	}
 	if _, _, _, err := ServiceMCPConfig("unknown"); err == nil {
 		t.Fatal("unknown service accepted")

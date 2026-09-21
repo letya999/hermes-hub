@@ -1,0 +1,40 @@
+change: CHG-0024
+title: Personal Data Connectors (M5 stage 2)
+status: in-progress
+issues: [37, 38, 39]
+started: 2026-09-15
+updated: 2026-09-15
+implementation:
+  provider_api_transport: implemented
+  google_calendar: fixture-verified
+  google_gmail_read: official-mcp-fixture-verified
+  slack_data: fixture-verified
+  google_workspace_official_mcp: fixture-verified-read-products
+  telegram_account: local-toolhive-user-history-read-prepared-account-login-pending
+  local_account_setup: protected-launcher-and-go-controller-prepared
+  hubctl_connector: google-slack-telegram-implemented
+checks:
+  targeted_tests: passed
+  just_check: passed-final-snapshot-85.14-percent
+  just_security: passed-govulncheck-and-npm-audit
+  just_docker_check: passed-pre-final-cli-snapshot-stt-probe-unavailable
+  final_docker_build_smoke: passed-image-9a97e662f605
+  telegram_adapter_docker: final-image-built-real-stdio-check-passed
+notes:
+  - Base is origin/dev d79fba5 on branch feat/m5-personal-data-connectors.
+  - Generated MCP remains the default; ToolHub stays opt-in via HUB_TOOLHUB_*.
+  - Telegram Bot API and Slack App stay ingress/delivery in communication-hub.
+  - All provider evidence is local official-shaped HTTP fixtures, not live accounts.
+  - Pinned Telegram send/reply discard provider message IDs; no fabricated receipts.
+  - Owner approved Python/Telethon ToolHub workload; Go control plane unchanged.
+  - Official Google Workspace remote MCP requires Developer Preview eligibility and Cloud project/OAuth setup.
+  - Owner selected this PC and requested real local preparation plus manager instructions.
+  - ToolHive v0.48.0 installed from the official checksum-verified Windows release.
+  - Real read-only MCP discovery, authenticated admission, isolated mounts/limits and allowed-denied TCP preparation checks passed.
+  - No live user login or personal provider reads; Google Preview approval and user Google/Telegram login remain external prerequisites.
+  - Telegram history correction: read tools page old user-visible chats/groups/channels and search live history; bots remain excluded.
+  - Updated local ToolHive workload image sha256:930314e465d1b47aaa8ef7adb55ff359c7f378cee4a7995242a249843104d120 and restarted only that workload.
+  - Protected physical user-home deployment avoids the observed AppData-Docker-WSL visibility mismatch.
+  - Telegram imported sessions are locally revoked; provider invalidation is explicit Telegram Devices action.
+  - No commits, push, PR or issue closure; milestone stays open.
+  - Safety assets initialized locally; existing project hooks preserved.

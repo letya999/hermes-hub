@@ -40,6 +40,9 @@ type Event struct {
 	ToolCallID         string    `json:"tool_call_id,omitempty"`
 	CorrelationID      string    `json:"correlation_id,omitempty"`
 	Name               string    `json:"name,omitempty"`
+	// Receipt is a bounded provider mutation proof such as a Slack
+	// channel:timestamp pair. It never carries a credential or message body.
+	Receipt string `json:"receipt,omitempty"`
 }
 
 type Ledger struct {
@@ -132,10 +135,13 @@ func validate(event Event) error {
 	default:
 		return fmt.Errorf("%w: kind", ErrInvalid)
 	}
-	for _, value := range []string{event.EventID, event.PrincipalID, event.ContextID, event.RuntimeID, event.ConnectionID, event.PolicyRevision, event.JobID, event.HermesRunID, event.ToolCallID, event.CorrelationID, event.Name, event.Outcome, event.Kind} {
+	for _, value := range []string{event.EventID, event.PrincipalID, event.ContextID, event.RuntimeID, event.ConnectionID, event.PolicyRevision, event.JobID, event.HermesRunID, event.ToolCallID, event.CorrelationID, event.Name, event.Outcome, event.Kind, event.Receipt} {
 		if strings.ContainsAny(value, "\r\n") {
 			return fmt.Errorf("%w: newline in field", ErrInvalid)
 		}
+	}
+	if len(event.Receipt) > 256 {
+		return fmt.Errorf("%w: receipt is too large", ErrInvalid)
 	}
 	return nil
 }

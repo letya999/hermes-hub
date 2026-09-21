@@ -2,6 +2,11 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0026](active/SPEC-0026-mcp-recipe-resolver.md) | Secret-free MCP Launch/Connection Recipe resolution over the existing M5.3 onboarding flow |
+| [SPEC-0025](active/SPEC-0025-credential-broker-boundary.md) | Credential Broker monorepo placement, opt-in process boundary and adapter gate |
+| [SPEC-0024](active/SPEC-0024-m53-hermes-onboarding.md) | M5.3 Hermes-mediated GitHub MCP onboarding and live acceptance contract |
+| [SPEC-0023](active/SPEC-0023-toolhub-control-plane.md) | M5.2 multi-tenant ToolHub control plane: grants, control MCP, elicitation and lifecycle |
+| [SPEC-0022](active/SPEC-0022-personal-data-connectors.md) | M5 stage 2 personal data connectors and independent capability contracts |
 | [SPEC-0021](active/SPEC-0021-personal-assistant.md) | Personal assistant channels, voice, hub routines and context lifecycle |
 | [SPEC-0020](active/SPEC-0020-credentials-and-connectors.md) | Encrypted credentials, inject-after-authorize, OAuth broker and audit ledger |
 | [SPEC-0019](active/SPEC-0019-toolhub-stage3.md) | Dynamic ToolHub catalog, projection revision, enforcement receipt and explicit migration |

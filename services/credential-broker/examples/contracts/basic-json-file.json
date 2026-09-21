@@ -1,0 +1,33 @@
+{
+  "id": "basic-json-file",
+  "revision": 1,
+  "title": "Два поля в одном JSON",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "username",
+      "label": "Имя пользователя",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 256
+    },
+    {
+      "id": "password",
+      "label": "Пароль",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "json_file",
+      "target": "/run/mcp-secrets/login.json",
+      "mapping": {
+        "username": "username",
+        "password": "password"
+      }
+    }
+  ]
+}

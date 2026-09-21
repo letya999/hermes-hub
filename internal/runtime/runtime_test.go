@@ -184,7 +184,9 @@ func TestApplySelfServicesMergesMCPConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "/opt/mcp-atlassian/.venv/bin/mcp-atlassian") || strings.Contains(text, "mcp.atlassian.com/v2/mcp") || strings.Contains(text, "gitlab") {
+	// Connectors are ToolHub-managed: enabling them must not inject a direct
+	// MCP definition into the Hermes config.
+	if strings.Contains(text, "mcp-atlassian") || strings.Contains(text, "mcp.atlassian.com") || strings.Contains(text, "gitlab") {
 		t.Fatal(text)
 	}
 }

@@ -3,6 +3,9 @@
 !go.sum
 !cmd/**
 !internal/**
+!services/
+!services/credential-broker/
+!services/credential-broker/**
 !docker/**
 **/node_modules
 **/__pycache__

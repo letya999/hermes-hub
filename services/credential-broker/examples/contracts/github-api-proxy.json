@@ -1,0 +1,35 @@
+{
+  "id": "github-api-proxy",
+  "revision": 1,
+  "title": "GitHub API: ограниченный proxy",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "token",
+      "label": "GitHub token",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096
+    }
+  ],
+  "allow_shared": true,
+  "routes": [
+    {
+      "id": "github",
+      "base_url": "https://api.github.com",
+      "path_prefixes": [
+        "/user",
+        "/repos"
+      ],
+      "methods": [
+        "GET"
+      ],
+      "auth": "bearer",
+      "field": "token",
+      "static_headers": {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    }
+  ]
+}

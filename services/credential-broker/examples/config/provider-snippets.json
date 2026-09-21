@@ -1,0 +1,51 @@
+{
+  "vault": {
+    "id": "vault",
+    "type": "vault_kv2",
+    "url": "https://vault.example.com:8200",
+    "mount": "secret",
+    "prefix": "hermes-broker",
+    "token_file": "/var/lib/credential-broker/keys/vault-token",
+    "writable": true
+  },
+  "kubernetes": {
+    "id": "cluster",
+    "type": "kubernetes",
+    "url": "https://kubernetes.example.com:6443",
+    "namespace": "hermes",
+    "token_file": "/var/lib/credential-broker/keys/kubernetes-token",
+    "ca_file": "/var/lib/credential-broker/keys/cluster-ca.pem"
+  },
+  "external_alias": {
+    "id": "github-existing",
+    "ref": {
+      "provider": "vault",
+      "locator": "team/github",
+      "version": "7"
+    },
+    "principal_id": "artem",
+    "context_id": "artem",
+    "contract_id": "github-pat",
+    "contract_revision": 1
+  },
+  "google": {
+    "id": "google",
+    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "client_id": "configured-google-client-id",
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.readonly"
+    ],
+    "auth_style": "post",
+    "client_secret": {
+      "provider": "vault",
+      "locator": "platform/google-client",
+      "version": "1"
+    },
+    "client_secret_field": "client_secret",
+    "authorize_parameters": {
+      "access_type": "offline",
+      "prompt": "consent"
+    }
+  }
+}

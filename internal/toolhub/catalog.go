@@ -1,8 +1,10 @@
 package toolhub
 
 import (
+	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -36,6 +38,9 @@ func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 	defer s.mu.RUnlock()
 	entries := make([]CatalogEntry, 0, len(s.definitions))
 	for _, definition := range s.definitions {
+		if !s.visibleDefinitionLocked(auth, definition) {
+			continue
+		}
 		entry := CatalogEntry{Name: definition.DefinitionID, Version: definition.Version, Transport: definition.Transport, WorkloadClass: definition.Workload.Class, Status: "available"}
 		for _, tool := range definition.Tools {
 			entry.Tools = append(entry.Tools, tool.Name)
@@ -81,19 +86,97 @@ func requiredCredentialNames(definition ToolDefinition) []string {
 }
 
 func (s *Store) findBindingLocked(auth identity.Envelope, definition ToolDefinition) *ToolBinding {
+	var tombstone *ToolBinding
 	for _, binding := range s.bindings {
 		if binding.PrincipalID == auth.PrincipalID && binding.ContextID == auth.ContextID && binding.RuntimeID == auth.RuntimeID && binding.PolicyVersion == auth.PolicyVersion && binding.DefinitionID == definition.DefinitionID && binding.DefinitionVersion == definition.Version {
+			if binding.Status == RevokedStatus {
+				if tombstone == nil {
+					copy := binding
+					tombstone = &copy
+				}
+				continue
+			}
 			copy := binding
 			return &copy
 		}
 	}
-	return nil
+	return tombstone
+}
+
+// reusableSelfInstallDefinition returns the user's immutable definition for an
+// already reviewed source. Rebuilding the same commit can produce different
+// artifact metadata, so retries must reuse the approved record instead of
+// attempting to overwrite it. The newest matching version wins: a definition
+// superseded by a contract-bound revision must not be resurrected.
+func (s *Store) reusableSelfInstallDefinition(auth identity.Envelope, source ArtifactSource, definitionID, version string) (ToolDefinition, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var best ToolDefinition
+	found := false
+	for _, definition := range s.definitions {
+		if definition.DefinitionID != definitionID || versionLess(definition.Version, version) || definition.Source.Repository != source.Repository || definition.Source.Subfolder != source.Subfolder || !strings.EqualFold(definition.Source.CommitSHA, source.CommitSHA) {
+			continue
+		}
+		publication := s.publicationLocked(definition)
+		if publication.Visibility != PublicationUser || publication.OwnerPrincipalID != auth.PrincipalID {
+			continue
+		}
+		if !found || versionLess(best.Version, definition.Version) {
+			best, found = definition, true
+		}
+	}
+	return best, found
+}
+
+// versionLess compares dot-separated numeric versions ("0.0.10" > "0.0.2").
+// Non-numeric components fall back to lexical order.
+func versionLess(a, b string) bool {
+	ap, bp := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(ap) && i < len(bp); i++ {
+		an, aErr := strconv.Atoi(ap[i])
+		bn, bErr := strconv.Atoi(bp[i])
+		if aErr == nil && bErr == nil {
+			if an != bn {
+				return an < bn
+			}
+			continue
+		}
+		if ap[i] != bp[i] {
+			return ap[i] < bp[i]
+		}
+	}
+	return len(ap) < len(bp)
+}
+
+// nextPatchVersion bumps the last numeric component of a version string.
+func nextPatchVersion(version string) string {
+	parts := strings.Split(version, ".")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if n, err := strconv.Atoi(parts[i]); err == nil {
+			parts[i] = strconv.Itoa(n + 1)
+			return strings.Join(parts, ".")
+		}
+	}
+	return version + ".1"
 }
 
 // Enable creates the smallest effective binding for an immutable manifest,
 // or re-enables an existing non-revoked binding. Connections and credentials
 // must already exist and match the authenticated owner.
 func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (ToolBinding, error) {
+	return s.enableWithReady(context.Background(), auth, definitionID, version, nil)
+}
+
+// EnableReady admits a newly materialized workload before its binding is
+// persisted and its projection revision is published.
+func (s *Store) EnableReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, EffectiveBinding) error) (ToolBinding, error) {
+	if ready == nil {
+		return s.Enable(auth, definitionID, version)
+	}
+	return s.enableWithReady(ctx, auth, definitionID, version, ready)
+}
+
+func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, EffectiveBinding) error) (ToolBinding, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return ToolBinding{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
@@ -103,23 +186,10 @@ func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (To
 		s.mu.Unlock()
 		return ToolBinding{}, fmt.Errorf("%w: manifest", ErrNotFound)
 	}
-	if existing := s.findBindingLocked(auth, definition); existing != nil {
-		if existing.Status == RevokedStatus {
-			s.mu.Unlock()
-			return ToolBinding{}, ErrRevoked
-		}
-		if existing.Status != ActiveStatus {
-			existing.Status = ActiveStatus
-			existing.Revision++
-			s.touchProjectionLocked(existing)
-			s.bindings[existing.ToolBindingID] = *existing
-		}
-		result := *existing
+	pub := s.publicationLocked(definition)
+	if pub.Visibility == PublicationUser && pub.OwnerPrincipalID != auth.PrincipalID {
 		s.mu.Unlock()
-		if err := s.persistAndNotify(); err != nil {
-			return ToolBinding{}, err
-		}
-		return result, nil
+		return ToolBinding{}, fmt.Errorf("%w: user definition owner", ErrUnauthorized)
 	}
 	var connection *Connection
 	var credential *CredentialReference
@@ -136,6 +206,46 @@ func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (To
 		c, r := matches[0].connection, matches[0].credential
 		connection, credential = &c, &r
 	}
+	if existing := s.findBindingLocked(auth, definition); existing != nil && existing.Status != RevokedStatus {
+		current := connection == nil || (existing.ConnectionID == connection.ConnectionID && existing.CredentialRefID == credential.CredentialRefID)
+		if !current {
+			// The owner connection was rotated or superseded; the stale
+			// binding can never resolve again, so revoke it before
+			// materializing the replacement below.
+			stale := *existing
+			stale.Status = RevokedStatus
+			stale.Revision++
+			s.touchProjectionLocked(&stale)
+			s.bindings[stale.ToolBindingID] = stale
+		} else {
+			previous := *existing
+			previousProjection := s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)]
+			if existing.Status != ActiveStatus {
+				existing.Status = ActiveStatus
+				existing.Revision++
+				s.touchProjectionLocked(existing)
+				s.bindings[existing.ToolBindingID] = *existing
+			}
+			if ready != nil && existing.Status == ActiveStatus {
+				effective, err := s.resolveLocked(auth, existing.ToolBindingID)
+				if err == nil {
+					err = ready(ctx, effective)
+				}
+				if err != nil {
+					s.bindings[existing.ToolBindingID] = previous
+					s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] = previousProjection
+					s.mu.Unlock()
+					return ToolBinding{}, err
+				}
+			}
+			result := *existing
+			s.mu.Unlock()
+			if err := s.persistAndNotify(); err != nil {
+				return ToolBinding{}, err
+			}
+			return result, nil
+		}
+	}
 	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1}
 	if connection != nil {
 		binding.ConnectionID, binding.ConnectionRevision = connection.ConnectionID, connection.Revision
@@ -145,6 +255,22 @@ func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (To
 	if err := binding.Validate(); err != nil {
 		s.mu.Unlock()
 		return ToolBinding{}, err
+	}
+	if previous, ok := s.bindings[binding.ToolBindingID]; ok && previous.Status == RevokedStatus {
+		s.mu.Unlock()
+		return ToolBinding{}, ErrRevoked
+	}
+	if ready != nil {
+		s.bindings[binding.ToolBindingID] = binding
+		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+		if err == nil {
+			err = ready(ctx, effective)
+		}
+		if err != nil {
+			delete(s.bindings, binding.ToolBindingID)
+			s.mu.Unlock()
+			return ToolBinding{}, err
+		}
 	}
 	s.bindings[binding.ToolBindingID] = binding
 	key := projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)

@@ -19,6 +19,8 @@ type nativeRunEvent struct {
 	Event     string   `json:"event"`
 	RunID     string   `json:"run_id"`
 	Timestamp float64  `json:"timestamp"`
+	Tool      string   `json:"tool"`
+	Error     bool     `json:"error"`
 	RequestID string   `json:"request_id"`
 	Choices   []string `json:"choices"`
 }

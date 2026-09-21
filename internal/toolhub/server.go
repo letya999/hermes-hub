@@ -6,19 +6,26 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/oauth"
 )
 
 type EndpointConfig struct {
-	Listen  string
-	Token   string
-	Auth    identity.Envelope
-	Backend ToolBackend
+	Listen         string
+	Token          string
+	Auth           identity.Envelope
+	Backend        ToolBackend
+	RecipeCatalogs []RecipeCatalog
+	BrokerControl  *credentialbroker.Config
+	BrokerRuntime  *credentialbroker.Config
+	Release        func(context.Context, string) error
 }
 
 func EndpointConfigFromEnv() (EndpointConfig, error) {
@@ -63,14 +70,48 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		DeliveryTargetID:   envOr("HUB_DELIVERY_TARGET_ID", "toolhub"),
 		PolicyVersion:      policy,
 	}
+	controlBroker, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_CONTROL_")
+	if err != nil {
+		return EndpointConfig{}, err
+	}
+	runtimeBroker, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_RUNTIME_")
+	if err != nil {
+		return EndpointConfig{}, err
+	}
+	if controlBroker.Enabled() != runtimeBroker.Enabled() {
+		return EndpointConfig{}, fmt.Errorf("ToolHub requires both Credential Broker control and runtime clients")
+	}
+	release, err := ControllerAdmissionReleaserFromEnv()
+	if err != nil {
+		return EndpointConfig{}, fmt.Errorf("ToolHive release: %w", err)
+	}
+	catalogs, err := RecipeCatalogsFromEnv()
+	if err != nil {
+		return EndpointConfig{}, err
+	}
 	return EndpointConfig{
 		Listen: envOr("HUB_TOOLHUB_LISTEN", "127.0.0.1:8090"),
 		Token:  token,
 		Auth:   auth,
 		Backend: RoutingBackend{
-			MCP: MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, Root: envOr("HUB_STATE", "/state")},
-			CLI: CLIRunner{Root: envOr("HUB_STATE", "/state")},
+			Provider: PersonalProviderBackend{},
+			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: envOr("HUB_STATE", "/state")},
+			CLI:      CLIRunner{Root: envOr("HUB_STATE", "/state")},
 		},
+		RecipeCatalogs: catalogs,
+		BrokerControl: func() *credentialbroker.Config {
+			if controlBroker.Enabled() {
+				return &controlBroker
+			}
+			return nil
+		}(),
+		Release: release,
+		BrokerRuntime: func() *credentialbroker.Config {
+			if runtimeBroker.Enabled() {
+				return &runtimeBroker
+			}
+			return nil
+		}(),
 	}, nil
 }
 
@@ -87,15 +128,56 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	if config.Backend == nil {
 		return nil, fmt.Errorf("%w: nil ToolHub backend", ErrInvalid)
 	}
+	if (config.BrokerControl == nil) != (config.BrokerRuntime == nil) {
+		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", ErrInvalid)
+	}
 	gateway := &Gateway{
 		Store: store, Backend: config.Backend, Tokens: map[string]identity.Envelope{config.Token: config.Auth},
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
 	}
-	if injector, err := credentialInjectorFromEnv(); err != nil {
-		return nil, err
-	} else if injector != nil {
-		gateway.Injector = injector
+	var secrets credstore.Backend
+	var injector CredentialInjector
+	var err error
+	if config.BrokerControl == nil {
+		secrets, injector, err = credentialServicesFromEnv()
+		if err != nil {
+			return nil, err
+		}
 	}
+	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), Broker: config.BrokerControl, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
+	if ready := readinessBackend(config.Backend); ready != nil {
+		control.Ready = func(ctx context.Context, effective EffectiveBinding) error {
+			if gateway.Injector == nil {
+				return ready(ctx, effective, nil)
+			}
+			injection, err := gateway.Injector(ctx, effective)
+			if err != nil {
+				return err
+			}
+			if injection.Cleanup != nil {
+				defer injection.Cleanup()
+			}
+			if len(injection.Mounts) > 0 {
+				// File deliveries are deliberately one-shot: the per-call path
+				// owns the Broker lease and releases the workload after the call.
+				return nil
+			}
+			return ready(ctx, effective, injection.Environment)
+		}
+	}
+	stateRoot := strings.TrimSpace(os.Getenv("HUB_STATE"))
+	if store.Reconnect == nil && filepath.IsAbs(stateRoot) {
+		store.Reconnect = &ReconnectController{Store: store, Auth: config.Auth, OnChange: func(change ProjectionChange) error {
+			return WriteReconnectMarker(stateRoot, change)
+		}}
+	}
+	control.SourceResolver = ResolveGitHubSource
+	control.FormOrigin = formOriginForListen(config.Listen)
+	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
+	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
+	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
+	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)
 		if err != nil {
@@ -111,6 +193,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			record.HermesRunID = fields["hermes_run_id"]
 			record.ToolCallID = fields["tool_call_id"]
 			record.CorrelationID = fields["correlation_id"]
+			record.Receipt = fields["receipt"]
 			if fields["credential_revision"] != "" {
 				n, _ := strconv.ParseUint(fields["credential_revision"], 10, 64)
 				record.CredentialRevision = n
@@ -123,6 +206,41 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 	}
 	return gateway.Handler()
+}
+
+func formOriginForListen(listen string) string {
+	listen = strings.TrimRight(strings.TrimSpace(listen), "/")
+	if strings.Contains(listen, "://") {
+		return listen
+	}
+	host, port, err := net.SplitHostPort(listen)
+	if err == nil && (host == "" || host == "0.0.0.0" || host == "::" || host == "[::]") {
+		return "http://127.0.0.1:" + port
+	}
+	if listen == "" {
+		return "http://127.0.0.1"
+	}
+	return "http://" + listen
+}
+
+type workloadReadiness func(context.Context, EffectiveBinding, map[string]string) error
+
+func readinessBackend(backend ToolBackend) workloadReadiness {
+	switch value := backend.(type) {
+	case MCPBackend:
+		return value.EnsureReady
+	case *MCPBackend:
+		if value != nil {
+			return value.EnsureReady
+		}
+	case RoutingBackend:
+		return readinessBackend(value.MCP)
+	case *RoutingBackend:
+		if value != nil {
+			return readinessBackend(value.MCP)
+		}
+	}
+	return nil
 }
 
 func nonLoopbackListen(address string) bool {
@@ -144,20 +262,17 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-func credentialInjectorFromEnv() (func(context.Context, EffectiveBinding) (map[string]string, func() error, error), error) {
+func credentialServicesFromEnv() (credstore.Backend, CredentialInjector, error) {
 	path := strings.TrimSpace(os.Getenv("HUB_CREDENTIAL_STORE"))
 	if path == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	backend, err := credstore.Open(credstore.Options{Path: path, KeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE")})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return func(ctx context.Context, effective EffectiveBinding) (map[string]string, func() error, error) {
+	return backend, func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
 		env, err := DecryptAuthorized(backend, effective)
-		if err != nil {
-			return nil, nil, err
-		}
-		return env, func() error { return nil }, nil
+		return CredentialInjection{Environment: env}, err
 	}, nil
 }
