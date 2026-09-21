@@ -139,11 +139,18 @@ dangling image layers, orphan `hermes-build-*` containers/networks/volumes and t
 local BuildKit cache. `just docker-clean --deep` additionally drops
 `hermes-build-state-shared`, the opt-in persistent builder cache that
 `HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
-artifact build is in flight. `devcheck docker-build` forces BuildKit for the hub
-image so intermediate stages never materialize as extra dangling images even when
-the shell exports `DOCKER_BUILDKIT=0`; setting that variable (or
-`COMPOSE_DOCKER_CLI_BUILD=0`) globally makes every Docker build on the host use the
-classic builder and re-duplicates layers.
+artifact build is in flight.
+
+Generated compose files carry a `build:` section on exactly one service
+(`toolhub`); the rest reference the shared `image:` tag. `docker compose build`
+therefore runs the multi-stage build once instead of once per service — under
+the classic builder each repeated section materialized a separate copy of every
+layer. Both `just` recipes and `hubctl build`/`up` export
+`DOCKER_BUILDKIT=1`/`COMPOSE_DOCKER_CLI_BUILD=1` for their docker invocations,
+so a stale `DOCKER_BUILDKIT=0` in the operator environment cannot silently
+downgrade builds to the classic builder; setting that variable globally is still
+discouraged because it affects docker commands run outside this project.
+Intermediate BuildKit stages never materialize as extra dangling images.
 
 Health checks prove process liveness and, where enabled, Chromium CDP readiness. They do
 not prove OAuth, model, Telegram or provider access. Live acceptance requires the

@@ -250,6 +250,10 @@ func run(ctx context.Context, args []string) error {
 	prefix := []string{"compose", "-f", composePath}
 	docker := func(a ...string) error {
 		cmd := exec.CommandContext(ctx, "docker", append(append([]string{}, prefix...), a...)...)
+		// Force BuildKit for compose builds: the classic builder materializes
+		// every stage as separate cache images, so each rebuild duplicated the
+		// full image size on disk.
+		cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1")
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

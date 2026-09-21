@@ -86,7 +86,14 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Host headers and CSRF tokens do not replace strict Origin validation.
-	if r.Header.Get("Origin") != s.origin || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+	// Absent or opaque ("null") Origin is tolerated: WebKit/Safari and in-app
+	// webviews omit it on same-origin posts, while SameSite=Lax cookies and
+	// the per-session CSRF token still block cross-site forgery.
+	if o := r.Header.Get("Origin"); o != "" && o != "null" && o != s.origin {
+		fail(w, broker.ErrDenied)
+		return
+	}
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 		fail(w, broker.ErrDenied)
 		return
 	}

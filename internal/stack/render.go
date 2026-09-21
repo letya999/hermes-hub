@@ -192,7 +192,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.GlobalSkillsDir), "target": "/opt/hub/skills", "read_only": true})
 	}
-	common := M{"build": M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}, "image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}}
+	// Only one service carries the build section: every service shares the same
+	// image, and duplicating build blocks makes `docker compose build` run the
+	// whole multi-stage build once per service under builders without shared
+	// cache (the legacy builder materializes each copy as separate layers).
+	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}}
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
 	runtimeService["environment"] = runtimeEnv
@@ -249,6 +253,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubEnv[key] = value
 	}
 	toolhub := cloneMap(common)
+	// Toolhub owns the build block: it is always rendered, unlike hermes-runtime
+	// which is dropped when an external supervisor URL is configured.
+	toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
 	toolhub["entrypoint"] = []string{"toolhub"}
 	toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
 	toolhub["environment"] = toolhubEnv

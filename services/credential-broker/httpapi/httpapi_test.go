@@ -431,6 +431,27 @@ func TestBrowserCSRFMultipartAndExpiredLinks(t *testing.T) {
 	}
 }
 
+func TestBrowserSubmitWithoutOriginHeader(t *testing.T) {
+	// WebKit/Safari and in-app webviews omit Origin on same-origin posts.
+	// The SameSite=Lax cookie plus per-session CSRF token still prevent
+	// cross-site forgery, so an absent or opaque Origin must not be denied.
+	for _, origin := range []string{"", "null"} {
+		f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
+		r := f.create()
+		cookie, csrf := f.pair(r)
+		raw, ct := formBytes(t, [][2]string{{"csrf", csrf}, {"token", "x"}})
+		req := f.request("POST", "/connect/"+r.ID+"/submit", "", actor, raw)
+		req.AddCookie(cookie)
+		req.Header.Set("Content-Type", ct)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if w := f.serve(req); w.Code != 200 {
+			t.Fatalf("origin %q: %d", origin, w.Code)
+		}
+	}
+}
+
 func TestMultipartLimits(t *testing.T) {
 	for _, fields := range [][][2]string{{{"csrf", "x"}, {"token", "x"}, {"token", "y"}}, {{"token", "x"}}, {{"csrf", strings.Repeat("a", 129)}}, {{"csrf", "x"}, {"token", strings.Repeat("a", 65537)}}, {{"csrf", "x"}, {"", "x"}}, {{"csrf", "x"}, {strings.Repeat("a", 81), "x"}}} {
 		raw, ct := formBytes(t, fields)
