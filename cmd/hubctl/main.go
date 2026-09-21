@@ -248,13 +248,16 @@ func run(ctx context.Context, args []string) error {
 		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
 	}
 	prefix := []string{"compose", "-f", composePath}
-	docker := func(a ...string) error {
-		cmd := exec.CommandContext(ctx, "docker", append(append([]string{}, prefix...), a...)...)
+	dockerCmd := func(args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "docker", args...)
 		cmd.Env = dockerCLIEnv()
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		return cmd
+	}
+	docker := func(a ...string) error {
+		return dockerCmd(append(append([]string{}, prefix...), a...)...).Run()
 	}
 	if op == "build" || op == "up" {
 		if os.Getenv("DOCKER_BUILDKIT") == "0" {
@@ -289,7 +292,15 @@ func run(ctx context.Context, args []string) error {
 		}
 		return docker("exec", "hermes-runtime", "hermes", "chat")
 	case "telegram-login":
-		return docker("run", "--rm", "--no-deps", "--entrypoint", "/opt/telegram/.venv/bin/python", "hermes-runtime", "/opt/telegram/session_string_generator.py", "--phone")
+		rootAbs, err := filepath.Abs(*root)
+		if err != nil {
+			return err
+		}
+		image := "hermes-telegram-account:local"
+		if err := dockerCmd("build", "-f", filepath.Join(rootAbs, "docker", "telegram-account.Dockerfile"), "-t", image, rootAbs).Run(); err != nil {
+			return err
+		}
+		return dockerCmd("run", "--rm", "--entrypoint", "/opt/telegram/.venv/bin/python", image, "/opt/telegram/session_string_generator.py", "--phone").Run()
 	case "meet-auth":
 		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
 	}

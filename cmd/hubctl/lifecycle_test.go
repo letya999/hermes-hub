@@ -51,7 +51,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
-	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
 	for _, fail := range []string{"build", "up"} {

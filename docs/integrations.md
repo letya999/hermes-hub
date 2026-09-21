@@ -34,12 +34,12 @@ Refresh/revoke use the same commands; no real Cloud account has been tested.
 ## ToolHub personal Telegram account MCP
 
 Python workloads are supported behind the existing container-MCP admission
-boundary. `docker/telegram-account.Dockerfile` builds the narrow stdio account
-server using the repository's existing pinned Telegram/Telethon virtualenv.
-Build it with `--build-arg HUB_IMAGE=<real-built-hub-image-digest>`, then use
-its actual image digest in an operator deployment manifest. Do not substitute
-a mutable tag or a guessed digest. The upstream hash-locked `proxy` extra is
-enabled so Telethon can use an HTTP CONNECT proxy; no dependency version is guessed.
+boundary. `docker/telegram-account.Dockerfile` is a standalone Python image
+with the pinned Telegram/Telethon virtualenv; it does not `FROM` the hub
+image. Build it from the repository root, then use the actual image digest
+in an operator deployment manifest. Do not substitute a mutable tag or a
+guessed digest. The upstream hash-locked `proxy` extra is enabled so
+Telethon can use an HTTP CONNECT proxy; no dependency version is guessed.
 
 The ToolHive controller must be deployed/configured first. It receives
 workspace_path, pinned image/sidecars and limits, must mount that exact path
@@ -412,11 +412,11 @@ Official contracts: [OAuth](https://docs.slack.dev/authentication/using-pkce),
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
-| Google | [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp), `54b1c56f7f9912ce32681460d7ca38f9c2a37564` | stdio single-user, selected extended tools, read-only default, persisted OAuth |
+| Google | Official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019); the third-party Workspace MCP is not in the default hub image | ToolHub remote read grants per product |
 | Slack | [korotovsky/slack-mcp-server](https://github.com/korotovsky/slack-mcp-server), `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
 | Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | stdio, persistent Chromium over local CDP |
 | GitHub | [official MCP](https://github.com/github/github-mcp-server) | https://api.githubcopilot.com/mcp/ + bearer (`GITHUB_TOKEN`) |
-| Atlassian | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian), `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | Local stdio MCP; Jira Cloud API token via `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
+| Atlassian | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian), `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | Dedicated `docker/mcp-atlassian.Dockerfile`; Jira Cloud API token via `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
 | GitLab | Debian `glab` package from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT and optional `GITLAB_HOST` |
 | HH | [official API](https://api.hh.ru/openapi/redoc) | GET /vacancies, /vacancies/{id}, /resumes/mine; POST /negotiations |
 | Memory Bank | [letya999/memory_bank_setup](https://github.com/letya999/memory_bank_setup), `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | Documentation separation and change-folder conventions |
@@ -522,8 +522,10 @@ run-idempotency retention, session continuity headers `X-Hermes-Session-Id` and
 voice API. Because tools execute on the API-server host, this API is an internal,
 opt-in compatibility surface and does not replace the private Go runtime boundary.
 
-Google uses the upstream `--read-only` mode unless `google_write` is enabled. Atlassian
-uses the pinned upstream `mcp-atlassian` stdio server installed inside the Hermes image.
+Google Workspace reads use the official remote MCP (ADR-0019). The settings
+`google` feature still describes the legacy third-party stdio server, which is
+not in the default hub image. Atlassian uses the pinned upstream
+`mcp-atlassian` stdio server from `docker/mcp-atlassian.Dockerfile`.
 For Jira Cloud, the owner supplies `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN`;
 the server talks directly to Jira REST APIs and does not use the Atlassian Rovo endpoint.
 The upstream server also supports Confluence, but this preset currently enables Jira only.

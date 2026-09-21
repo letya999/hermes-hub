@@ -157,7 +157,8 @@ verifies generic MCP configuration and the native bridge without real account cr
 Google configuration tests verify the read-only default and explicit write opt-in;
 runtime and stack tests verify that Atlassian is configured as the pinned local
 `mcp-atlassian` stdio server with Jira credentials, without the legacy Rovo endpoint.
-Docker smoke verifies that `glab` is installed. These checks do not claim Google,
+The default hub image does not install that tree; `docker/mcp-atlassian.Dockerfile`
+holds it. Docker smoke verifies that `glab` and Hermes sqlite are installed. These checks do not claim Google,
 Atlassian or GitLab account access; Google OAuth consent, Jira API-token validity,
 GitLab PAT and a read operation require deployment acceptance, while any mutation
 requires a separate explicit owner instruction.

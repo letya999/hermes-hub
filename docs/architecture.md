@@ -159,7 +159,8 @@ external tool is used only if configured. The agent works without any business s
 Remote hosted MCP APIs may change independently of this code.
 GitLab uses the runtime's `glab` CLI rather than MCP; `GITLAB_TOKEN` and
 `GITLAB_HOST` are supplied to the isolated runtime. Atlassian uses the pinned
-`mcp-atlassian` package installed in the image and launched as a local stdio process;
+`mcp-atlassian` stdio server from `docker/mcp-atlassian.Dockerfile` (ADR-0010,
+ADR-0023), not a copy inside the hub image;
 `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN` are passed only to that process.
 
 File writes use cross-process locks, hash preconditions and atomic rename. Search/read

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Pinned upstream code, isolated Python environments (Hermes MCP 2, Telegram MCP 1).
+# Pinned upstream code. Hermes MCP lives here; Telegram/Google/Atlassian Python
+# MCP trees are dedicated images, not copies inside every hub service.
 FROM golang:1.27.1-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -22,8 +23,10 @@ RUN curl -fsSL --retry 3 https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz 
 FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS node
 FROM docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS dockercli
 FROM ghcr.io/stacklok/toolhive:v0.48.0@sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d AS toolhive
-FROM ghcr.io/astral-sh/uv:0.12.13-python3.13-trixie@sha256:8add4f333ff97df36c18f42e8082301a2829ccf0cef995538a7d9af0ed0b4183 AS runtime
+FROM ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv
+FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_LINK_MODE=copy
+COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends glab
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep ffmpeg chromium xvfb fluxbox x11vnc novnc websockify && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlite_build /opt/sqlite-fixed/lib/ /usr/local/lib/
@@ -35,13 +38,10 @@ WORKDIR /opt/hermes
 # mcp extra only: messaging/google/voice pull Discord, a second Google client,
 # faster-whisper and a second Chromium that the hub does not use. Browser CDP
 # uses apt Chromium; Meet/STT stay out of the default image.
+# Google Workspace, Atlassian and Telegram-account Python trees are dedicated
+# images (docker/telegram-account.Dockerfile, docker/mcp-atlassian.Dockerfile)
+# and ToolHub artifacts, not copies inside every hub service.
 RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
-WORKDIR /opt/telegram
-RUN git init && git remote add origin https://github.com/chigwell/telegram-mcp.git && git fetch --depth 1 origin c9460f8ded6e2457bd70ebabfad840b58d23645d && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev
-WORKDIR /opt/google
-RUN git init && git remote add origin https://github.com/taylorwilsdon/google_workspace_mcp.git && git fetch --depth 1 origin 54b1c56f7f9912ce32681460d7ca38f9c2a37564 && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev
-WORKDIR /opt/mcp-atlassian
-RUN git init && git remote add origin https://github.com/sooperset/mcp-atlassian.git && git fetch --depth 1 origin 74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76 && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev
 COPY docker/browser/package*.json /opt/browser/
 RUN cd /opt/browser && npm ci --ignore-scripts && npm cache clean --force
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /slack-mcp-server /cli-proxy-api /usr/local/bin/

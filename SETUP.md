@@ -19,13 +19,14 @@ before Telegram login. Do not set `DOCKER_BUILDKIT=0` in the operator environmen
 For the prepared work-service bundle, add these settings once:
 
 ```yaml
-features: [workspace, browser, hh, google, atlassian, gitlab]
-google_email: me@example.com
+features: [workspace, browser, hh, gitlab]
 gitlab_host: gitlab.com
 ```
 
-Then only fill the matching secrets: Google OAuth client ID/secret, Jira URL/email/API
-token and GitLab PAT. Keep `google_write` out unless Workspace mutations are needed.
+Fill the matching GitLab PAT. Google Workspace is the official ToolHub remote MCP
+(`hubctl connector connect --provider google --official-mcp`), not a copy inside
+the hub image. Atlassian is `docker/mcp-atlassian.Dockerfile`. Keep `google_write`
+out unless Workspace mutations are needed.
 
 Run commands from the extracted project root, or pass `--root /absolute/project` on
 build/up/render. Use `hubctl logs` for runtime errors. Do not start simultaneous CLI
@@ -48,11 +49,14 @@ reach this host). This is ingress/delivery only and does not enable Slack
 search/read/write tools; those stay on the separate `slack` feature.
 
 For `telegram_user`, obtain your API ID/hash at [my.telegram.org](https://my.telegram.org).
-Fill TELEGRAM_API_ID and TELEGRAM_API_HASH, build, then run:
+Fill TELEGRAM_API_ID and TELEGRAM_API_HASH, then run:
 
 ```bash
-./bin/hubctl-linux-amd64 telegram-login --user me
+./bin/hubctl-linux-amd64 telegram-login --user me --root .
 ```
+
+That command builds `docker/telegram-account.Dockerfile` (not the hub image)
+and runs the upstream session-string generator.
 
 Complete phone/2FA locally. Copy the generated session string into
 TELEGRAM_SESSION_STRING; it grants account access and must be treated like a password.
@@ -87,14 +91,21 @@ Create a Google Cloud OAuth client of type **Web application**. Enable Gmail, Dr
 Calendar, Docs, Sheets, Slides and Tasks APIs. Configure the consent screen and add
 yourself as a test user if the app is in testing. Register exactly
 `http://localhost:8000/oauth2callback` (substitute your configured oauth_port).
-Fill GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_EMAIL (or the
-equivalent settings.google_email value before rendering).
-Add `google`, start, and ask Hermes to list your upcoming calendar events. Follow its
-OAuth URL in your browser; tokens persist under `spaces/<user>/connections/google`. Consent scopes are
-determined by the selected upstream tools. Google testing-mode refresh tokens can expire.
-The `google` feature is read-only by default. Add `google_write` only when this runtime
-needs to send mail, change events/tasks, or modify Workspace files; individual mutations
-still require an explicit owner request.
+Prefer the official ToolHub Google Workspace remote MCP
+(`hubctl connector connect --provider google --official-mcp --product gmail`
+and the sibling products). The settings `google` feature still describes the
+legacy third-party stdio server under `/opt/google`, which the default hub
+image no longer ships.
+
+If you restore that tree, fill GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET
+and GOOGLE_EMAIL (or settings.google_email before rendering), add `google`,
+start, and ask Hermes to list upcoming calendar events. Follow its OAuth URL
+in your browser; tokens persist under `spaces/<user>/connections/google`.
+Consent scopes are determined by the selected upstream tools. Google
+testing-mode refresh tokens can expire. The `google` feature is read-only by
+default. Add `google_write` only when this runtime needs to send mail, change
+events/tasks, or modify Workspace files; individual mutations still require
+an explicit owner request.
 
 On a VPS establish the SSH tunnel below **before** OAuth. The callback binds to all
 interfaces inside the container but is published only on host loopback. The browser
@@ -156,10 +167,12 @@ the agent supplies `authorized: true` only for that task and records the returne
   cover search/read on your accessible conversations. Leave SLACK_MCP_ADD_MESSAGE_TOOL
   empty to disable posting; set a comma-separated channel ID allowlist to opt in.
 - `atlassian`: pinned [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian)
-  installed in the Hermes image and launched locally over stdio. For Jira Cloud set
+  in `docker/mcp-atlassian.Dockerfile`, not the default hub image. For Jira Cloud set
   `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN`. This bypasses the Atlassian Rovo
   endpoint and its organization-level API-token switch. The upstream MCP also supports
-  Confluence; the built-in preset currently configures Jira only.
+  Confluence; the built-in preset currently configures Jira only. The settings
+  `atlassian` feature still emits the legacy in-process stdio command; that
+  binary is absent until the dedicated image is used as a ToolHub artifact.
 
 ## 7. Native Computer Use and Drafts
 

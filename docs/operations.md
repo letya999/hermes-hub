@@ -130,10 +130,13 @@ must not include the encryption key. Do not use `docker compose down --volumes` 
 deleting that user's data intentionally. Restore organization and user homes separately;
 never merge memories, Telegram sessions or provider credentials.
 
-The hub image is one multi-gigabyte runtime (apt Chromium, Hermes with the
-`mcp` extra, and the bundled Python MCP trees) shared by every compose
-service. Playwright browsers, Hermes `messaging`/`google`/`voice` extras and
-the Go toolchain stay out of the default image. Repeating `build:` on each service made `docker compose build` run that
+The hub image is one shared runtime (apt Chromium, Hermes with the `mcp`
+extra) used by every compose service. Playwright browsers, Hermes
+`messaging`/`google`/`voice` extras, the Go toolchain, and the Google /
+Atlassian / Telegram-account Python trees stay out of the default image.
+Those MCP trees are `docker/telegram-account.Dockerfile`,
+`docker/mcp-atlassian.Dockerfile`, and the official Google Workspace remote
+MCP (ADR-0019). Repeating `build:` on each service made `docker compose build` run that
 Dockerfile once per service. Combined with the classic builder
 (`DOCKER_BUILDKIT=0`) this materialized every stage as a separate image and
 added roughly one full copy of the image per command.
