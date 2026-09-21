@@ -58,10 +58,10 @@ docker-clean flag="":
 # Credential Broker is a separate Go module and process. Keep its own gates
 # intact while making the monorepo entrypoint explicit.
 credential-broker-check:
-    just --working-directory services/credential-broker check
+    just --justfile services/credential-broker/justfile --working-directory services/credential-broker check
 
 credential-broker-build:
-    just --working-directory services/credential-broker build
+    just --justfile services/credential-broker/justfile --working-directory services/credential-broker build
 
 credential-broker-docker-check:
     docker build --file services/credential-broker/deploy/Dockerfile --tag hermes-credential-broker:test services/credential-broker
