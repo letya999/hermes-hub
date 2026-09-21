@@ -259,10 +259,13 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: MCP preflight start: %v", ErrIsolation, err)
 	}
-	defer func() {
+	// Wait joins the stderr-copy goroutine, so the buffer may only be read
+	// after it returns; error paths stop the process before reading stderr.
+	stop := func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-	}()
+	}
+	defer stop()
 	enc := json.NewEncoder(stdin)
 	for _, msg := range []any{
 		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "hub-artifact-preflight", "version": "0.3.0"}}},
@@ -270,6 +273,7 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 		map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
 	} {
 		if err := enc.Encode(msg); err != nil {
+			stop()
 			return nil, fmt.Errorf("%w: MCP preflight write: %v: %s", ErrIsolation, err, stderr.String())
 		}
 	}
@@ -277,6 +281,7 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 	// shutdown and drop the queued tools/list response.
 	tools, err := decodeMCPToolList(stdout)
 	if err != nil {
+		stop()
 		return nil, fmt.Errorf("%w: MCP tools/list: %v: %s", ErrIsolation, err, stderr.String())
 	}
 	return tools, nil
