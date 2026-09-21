@@ -1,0 +1,35 @@
+schema: 1
+id: CHG-0034-noncredential-env-filter
+title: "Non-credential env names excluded from connection recipe; gitlab-pat broker contract"
+status: in_progress
+phase: implemented-verification
+started_at: "2026-09-21"
+updated_at: "2026-09-21"
+completed:
+  - "Воспроизведено: required credentials для gitlab-mcp = GITLAB_TOKEN, GITLAB_TOKEN_TEST, HTTP_PROXY, HTTPS_PROXY (прогон реального .env.example через parseExampleEnv)"
+  - "nonCredentialEnvName фильтрует прокси и TEST-фикстуры в connectionFieldFromEnv (.env.example + compose env)"
+  - "Regression test: форма .env.example zereight/gitlab-mcp -> только GITLAB_TOKEN required"
+  - "server.json upstream объявляет GITLAB_PERSONAL_ACCESS_TOKEN isRequired; .env.example GITLAB_TOKEN — stale alias; контракт доставляет PAT под обоими именами"
+  - "Required=secret для эвристических env-источников: пустой non-secret (GITLAB_ALLOWED_PROJECT_IDS=) -> optional"
+  - "examples/contracts/gitlab-pat.json: token -> GITLAB_PERSONAL_ACCESS_TOKEN + GITLAB_TOKEN, api_url -> GITLAB_API_URL"
+  - "Обновлённый контракт задеплоен в /var/lib/credential-broker/contracts/ живого брокера"
+  - "docs/integrations.md обновлён"
+  - "hermes-hub:0.3.0-dev пересобран со вторым фиксом, стек пересоздан, credential-broker загрузил gitlab-pat (startup validation pass)"
+  - "Live end-to-end: ResolveGitHubSource + FetchRepositoryRecipeContext + Resolve для реальной репы (ff2a5f3) -> required = {GITLAB_PERSONAL_ACCESS_TOKEN, GITLAB_TOKEN}, оба покрыты deliveries gitlab-pat; state=review только отключает npm fast-path, изолированный билд из исходников сохраняется"
+  - "Живой прогон выявил: контейнер собрался и стартовал, но MCP ушёл на gitlab.com — GITLAB_API_URL не доехал; bindReviewedContract писал в CredentialContractEnv только required-deliveries"
+  - "bindReviewedContract: env-мапа = все deliveries на declared inputs + backfill опциональных для уже привязанных definitions (TestBindReviewedContractKeepsOptionalDeliveries)"
+  - "hermes-hub:0.3.0-dev пересобран с фиксом (apt переключён на mirror.yandex.ru на время сборки из-за деградации deb.debian.org ~44KB/s; Dockerfile возвращён в исходный вид), стек пересоздан, брокер загрузил gitlab-pat"
+  - "go test ./internal/toolhub зелёный; just check пройден (85.19%)"
+  - "Живой флоу дошёл до enabled, но whoami -> fetch failed: squid allowlist запечён в definition egress (gitlab.com и пр.), credential-значение GITLAB_API_URL=twinby не входило -> egress deny"
+  - "Живой флоу выявил revoked-томбстоун: enableWithReady по findBindingLocked(def+version) возвращал ErrRevoked навсегда; плюс ambiguous owner connection при повторном онбординге (брокер-ветка без ротации)"
+  - "enableWithReady: reuse только если биндинг указывает на текущие conn+cred; stale supersede -> revoked; tombstone блочит только идентичный binding ID; findBindingLocked предпочитает non-revoked"
+  - "materializeBinding: единая ротация owner-коннекшна для local и broker (RotateCredentialRecord + ensureBrokerGrant до записи); ранний deny при >1 активном коннекшне без сиротских записей"
+  - "credentialEgressHosts + mergeEgressHosts: HTTPS-URL из injected env расширяют egress плана в ready-обёртке (server.go)"
+  - "statusBody: next_action/instructions для awaiting-credentials, awaiting-confirm, confirmed, enabled"
+  - "Тесты: TestMaterializeBindingRotatesBrokerConnection, TestEnableAfterRevokeAllowsNewConnection, TestCredentialEgressHosts, TestStatusBodyExposesNextAction; issue #111 заведён"
+  - "just check пройден (85.17%)"
+next:
+  - "Ребилд hermes-hub:0.3.0-dev с фиксами ротации/tombstone/egress, пересоздание стека, живой прогон confirm+enable+whoami"
+risks:
+  - "Фильтр TEST_*/​*_TEST конвенциональный: легитимное имя вида CONTEST_KEY не задето (границы по _)"
+  - "Контракт грузится на старте брокера; требуется рестарт credential-broker"

@@ -146,11 +146,16 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		} else {
 			var bins map[string]string
 			if json.Unmarshal(pkg.Bin, &bins) == nil {
+				// Published aliases for one file are a single server, not
+				// ambiguity; only distinct targets stay fail-closed.
+				seen := map[string]bool{}
 				for _, file := range bins {
 					file = strings.TrimPrefix(file, "./")
-					if artifactContextPath(file) {
-						automatic = append(automatic, []string{"node", binDirectory + file})
+					if !artifactContextPath(file) || seen[file] {
+						continue
 					}
+					seen[file] = true
+					automatic = append(automatic, []string{"node", binDirectory + file})
 				}
 			}
 		}

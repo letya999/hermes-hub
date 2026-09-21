@@ -9,11 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/credstore"
 )
 
 func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) {
@@ -369,5 +372,192 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	}
 	if len(idempotencyKeys) != 1 || idempotencyKeys[0] == stored.OnboardingID {
 		t.Fatalf("retry must use a fresh idempotency key: %v", idempotencyKeys)
+	}
+}
+
+// An optional contract delivery for a declared credential input must reach the
+// workload env mapping; only required names gate contract selection.
+func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := []contract.Contract{{
+		ID: "gitlab-pat", Revision: 1, Storage: "local",
+		Fields: []contract.Field{
+			{ID: "token", Kind: "secret", Required: true, MaxBytes: 4096},
+			{ID: "api_url", Kind: "string", Required: false, MaxBytes: 2048},
+		},
+		Deliveries: []contract.Delivery{
+			{Type: "env", Field: "token", Target: "GITLAB_PERSONAL_ACCESS_TOKEN"},
+			{Type: "env", Field: "token", Target: "GITLAB_TOKEN"},
+			{Type: "env", Field: "api_url", Target: "GITLAB_API_URL"},
+		},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/contracts" {
+			_ = json.NewEncoder(w).Encode(catalog)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	definition := remoteDefinition()
+	definition.Credentials = []CredentialInput{
+		{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true},
+		{Name: "GITLAB_TOKEN", Required: true},
+		{Name: "GITLAB_API_URL"},
+	}
+	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if definition.CredentialContractID != "gitlab-pat" || definition.CredentialContractRevision != 1 {
+		t.Fatalf("contract not bound: %+v", definition)
+	}
+	want := map[string]string{"GITLAB_PERSONAL_ACCESS_TOKEN": "GITLAB_PERSONAL_ACCESS_TOKEN", "GITLAB_TOKEN": "GITLAB_TOKEN", "GITLAB_API_URL": "GITLAB_API_URL"}
+	if !reflect.DeepEqual(definition.CredentialContractEnv, want) {
+		t.Fatalf("optional delivery dropped from env mapping: %v", definition.CredentialContractEnv)
+	}
+
+	bound := remoteDefinition()
+	bound.Credentials = []CredentialInput{
+		{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true},
+		{Name: "GITLAB_TOKEN", Required: true},
+		{Name: "GITLAB_API_URL"},
+	}
+	bound.CredentialContractID = "gitlab-pat"
+	bound.CredentialContractRevision = 1
+	bound.CredentialContractEnv = map[string]string{"GITLAB_PERSONAL_ACCESS_TOKEN": "GITLAB_PERSONAL_ACCESS_TOKEN", "GITLAB_TOKEN": "GITLAB_TOKEN"}
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &bound); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(bound.CredentialContractEnv, want) {
+		t.Fatalf("bound definition was not backfilled with optional delivery: %v", bound.CredentialContractEnv)
+	}
+}
+
+func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/credentials/credential_2/grants" {
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_2", CredentialID: "credential_2", Active: true})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GOOGLE_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+	if err := store.PutCredentialReference(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error { return nil }}
+	onboarding := Onboarding{OnboardingID: "onboard-new", Locator: "credential_2", BrokerCredentialID: "credential_2", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	binding, err := control.materializeBinding(t.Context(), auth, onboarding, definition)
+	if err != nil {
+		t.Fatalf("broker rotation rejected: %v", err)
+	}
+	if binding.ConnectionID != "conn-existing" || binding.CredentialRevision != 2 {
+		t.Fatalf("binding did not reuse rotated connection: %+v", binding)
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if len(store.connections) != 1 {
+		t.Fatalf("rotation created a second owner connection")
+	}
+	reference := store.credentials[binding.CredentialRefID]
+	if reference.Backend != "credential-broker" || reference.BrokerGrantID != "grant_2" || reference.BrokerEnv["GOOGLE_TOKEN"] != "GOOGLE_TOKEN" {
+		t.Fatalf("rotated reference lost broker fields: %+v", reference)
+	}
+	if store.credentials[old.CredentialRefID].Status != RevokedStatus {
+		t.Fatal("previous credential reference was not revoked")
+	}
+}
+
+func TestEnableAfterRevokeAllowsNewConnection(t *testing.T) {
+	store := NewStore()
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-old", 1), ConnectionID: "conn-old", Revision: 1, Backend: credstore.BackendLocal, Locator: "old", Keys: []string{"GOOGLE_TOKEN"}, Status: RevokedStatus}
+	if err := store.PutCredentialReference(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-old", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: RevokedStatus}); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: "conn-old", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: RevokedStatus, Revision: 2}
+	tombstone.ToolBindingID = DeterministicBindingID(tombstone.PrincipalID, tombstone.ContextID, tombstone.RuntimeID, tombstone.DefinitionID, tombstone.DefinitionVersion, tombstone.ConnectionID, tombstone.CredentialRefID)
+	store.mu.Lock()
+	store.bindings[tombstone.ToolBindingID] = tombstone
+	store.mu.Unlock()
+
+	next := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-new", 1), ConnectionID: "conn-new", Revision: 1, Backend: credstore.BackendLocal, Locator: "new", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus}
+	if err := store.PutCredentialReference(next); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-new", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: next.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
+	if err != nil {
+		t.Fatalf("enable blocked by unrelated revoked binding: %v", err)
+	}
+	if binding.ToolBindingID == tombstone.ToolBindingID || binding.ConnectionID != "conn-new" {
+		t.Fatalf("enable resurrected the tombstone instead of binding the new connection: %+v", binding)
+	}
+}
+
+func TestCredentialEgressHosts(t *testing.T) {
+	env := map[string]string{
+		"GITLAB_API_URL": "https://gitlab.example.com/api/v4",
+		"CUSTOM_PORT":    "https://self.host:8443/api",
+		"TOKEN":          "opaque-secret",
+		"INSECURE":       "http://plain.example.com",
+		"BROKEN":         "://bad",
+	}
+	hosts := credentialEgressHosts(env)
+	want := map[string]bool{"gitlab.example.com": true, "self.host:8443": true}
+	if len(hosts) != len(want) {
+		t.Fatalf("credentialEgressHosts=%v", hosts)
+	}
+	for _, host := range hosts {
+		if !want[host] {
+			t.Fatalf("unexpected egress host %q", host)
+		}
+	}
+	merged := mergeEgressHosts([]string{"gitlab.com", "GITLAB.EXAMPLE.COM"}, hosts)
+	if len(merged) != 3 {
+		t.Fatalf("mergeEgressHosts did not dedupe: %v", merged)
 	}
 }

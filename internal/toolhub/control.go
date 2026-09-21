@@ -267,12 +267,20 @@ func (c *ControlPlane) selfInstallUsable(definition ToolDefinition) bool {
 // reference yet. A contract is eligible only when its deliveries produce an env
 // variable for every required credential name; the most specific candidate wins
 // so a narrow single-purpose contract beats a broad multi-delivery one.
+// Deliveries for optional declared inputs are wired too, so values entered at
+// onboarding actually reach the workload env. An already bound definition keeps
+// its contract id and existing mappings; missing optional deliveries from the
+// same contract are backfilled. If the bound contract vanished or no longer
+// covers the required set, the stored binding is left untouched rather than
+// silently rebound to a different contract.
 func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.Envelope, definition *ToolDefinition) error {
-	if c == nil || c.Broker == nil || !c.Broker.Enabled() || definition == nil || definition.CredentialContractID != "" {
+	if c == nil || c.Broker == nil || !c.Broker.Enabled() || definition == nil {
 		return nil
 	}
 	required := map[string]bool{}
+	declared := map[string]bool{}
 	for _, input := range definition.Credentials {
+		declared[input.Name] = true
 		if input.Required {
 			required[input.Name] = true
 		}
@@ -288,24 +296,43 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 	if err != nil {
 		return err
 	}
+	bound := definition.CredentialContractID
 	best := -1
 	bestExtra := 0
 	var bestEnv map[string]string
 	for i, candidate := range contracts {
+		if bound != "" && candidate.ID != bound {
+			continue
+		}
 		if definition.Workload.Class == Shared && !candidate.AllowShared {
 			continue
 		}
-		env := map[string]string{}
+		env := cloneMap(definition.CredentialContractEnv)
+		if env == nil {
+			env = map[string]string{}
+		}
+		covered := map[string]bool{}
+		for name := range env {
+			if required[name] {
+				covered[name] = true
+			}
+		}
 		for _, delivery := range candidate.Deliveries {
 			target := delivery.Target
 			if delivery.Type != "env" {
 				target = delivery.EnvName
 			}
-			if target != "" && required[target] {
+			if target == "" || !declared[target] {
+				continue
+			}
+			if env[target] == "" {
 				env[target] = target
 			}
+			if required[target] {
+				covered[target] = true
+			}
 		}
-		if len(env) != len(required) {
+		if len(covered) != len(required) {
 			continue
 		}
 		extra := len(candidate.Deliveries) - len(env)
@@ -818,26 +845,47 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		return ToolBinding{}, fmt.Errorf("%w: active owner connection and credential are required", ErrUnauthorized)
 	}
 	// A new onboarding for another version of the same connector replaces the
-	// owner's local credential revision. Creating a second active connection
-	// makes Store.Enable correctly reject the ambiguous owner, so rotate the
+	// owner's credential revision. Creating a second active connection makes
+	// Store.Enable correctly reject the ambiguous owner, so rotate the
 	// existing connection instead.
-	if c.Broker == nil || !c.Broker.Enabled() {
-		c.Store.mu.RLock()
-		matches := c.Store.matchingOwnerConnectionsLocked(auth, definition)
-		c.Store.mu.RUnlock()
-		if len(matches) == 1 {
-			reference, err := c.Store.RotateCredential(matches[0].connection.ConnectionID, credstore.BackendLocal, onboarding.Locator, credentialNames(onboarding))
+	c.Store.mu.RLock()
+	matches := c.Store.matchingOwnerConnectionsLocked(auth, definition)
+	c.Store.mu.RUnlock()
+	if len(matches) > 1 {
+		return ToolBinding{}, fmt.Errorf("%w: ambiguous owner connection", ErrUnauthorized)
+	}
+	if len(matches) == 1 {
+		connection := matches[0].connection
+		if c.Broker != nil && c.Broker.Enabled() {
+			next := connection.Revision + 1
+			reference := CredentialReference{CredentialRefID: CredentialReferenceID(connection.ConnectionID, next), ConnectionID: connection.ConnectionID, Revision: next, Backend: "credential-broker", Locator: onboarding.Locator, Keys: credentialNames(onboarding), BrokerContractID: definition.CredentialContractID, BrokerContractRevision: definition.CredentialContractRevision, BrokerEnv: cloneMap(definition.CredentialContractEnv)}
+			candidate := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: next, CredentialRefID: reference.CredentialRefID, CredentialRevision: next, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+			candidate.ToolBindingID = DeterministicBindingID(candidate.PrincipalID, candidate.ContextID, candidate.RuntimeID, candidate.DefinitionID, candidate.DefinitionVersion, candidate.ConnectionID, candidate.CredentialRefID)
+			grantID, err := c.ensureBrokerGrant(ctx, auth, definition, onboarding, candidate)
+			if err != nil {
+				return ToolBinding{}, err
+			}
+			reference.BrokerGrantID = grantID
+			reference, err = c.Store.RotateCredentialRecord(reference)
 			if err != nil {
 				return ToolBinding{}, err
 			}
 			if reference.Locator != onboarding.Locator {
 				return ToolBinding{}, fmt.Errorf("%w: credential rotation", ErrConflict)
 			}
-			if c.Ready != nil {
-				return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+		} else {
+			reference, err := c.Store.RotateCredential(connection.ConnectionID, credstore.BackendLocal, onboarding.Locator, credentialNames(onboarding))
+			if err != nil {
+				return ToolBinding{}, err
 			}
-			return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+			if reference.Locator != onboarding.Locator {
+				return ToolBinding{}, fmt.Errorf("%w: credential rotation", ErrConflict)
+			}
 		}
+		if c.Ready != nil {
+			return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+		}
+		return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
 	}
 	connectionID := deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
 	reference := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: credstore.BackendLocal, Locator: onboarding.Locator, Keys: credentialNames(onboarding), Status: ActiveStatus}
@@ -1110,6 +1158,19 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 			body["form_path"] = "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
 			body["form_url"] = c.origin() + body["form_path"].(string)
 		}
+	}
+	switch onboarding.Phase {
+	case PhaseAwaitingCreds:
+		body["next_action"] = "submit_credentials"
+		body["instructions"] = "Ask the user to open the credential URL, submit the form, then call this tool again."
+	case PhaseAwaitingConfirm:
+		body["next_action"] = "confirm"
+		body["instructions"] = "Call confirm with onboarding_id and the nonce from this response, then call enable. No browser action is required."
+	case PhaseConfirmed:
+		body["next_action"] = "enable"
+		body["instructions"] = "Call enable with onboarding_id."
+	case PhaseEnabled:
+		body["next_action"] = "ready"
 	}
 	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
 		body["nonce"] = onboarding.ConfirmationNonce

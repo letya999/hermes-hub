@@ -930,6 +930,35 @@ func (s *Store) RotateCredential(connectionID, backend, locator string, keys []s
 	}
 	next := connection.Revision + 1
 	reference := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID(connectionID, next), ConnectionID: connectionID, Revision: next, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), Status: ActiveStatus}
+	return s.rotateCredentialLocked(connection, reference)
+}
+
+// RotateCredentialRecord replaces the connection's credential with a fully
+// populated reference (broker backend fields included). The caller sets
+// Revision to the expected next connection revision so a concurrent rotation
+// fails instead of recording a grant bound to the wrong reference.
+func (s *Store) RotateCredentialRecord(reference CredentialReference) (CredentialReference, error) {
+	s.mu.Lock()
+	connection, ok := s.connections[reference.ConnectionID]
+	if !ok {
+		s.mu.Unlock()
+		return CredentialReference{}, fmt.Errorf("%w: connection", ErrNotFound)
+	}
+	if connection.Status != ActiveStatus {
+		s.mu.Unlock()
+		return CredentialReference{}, fmt.Errorf("%w: connection is not active", ErrRevoked)
+	}
+	next := connection.Revision + 1
+	if reference.Revision != next || reference.CredentialRefID != CredentialReferenceID(reference.ConnectionID, next) {
+		s.mu.Unlock()
+		return CredentialReference{}, fmt.Errorf("%w: credential rotation conflict", ErrConflict)
+	}
+	reference.Schema = SchemaVersion
+	reference.Status = ActiveStatus
+	return s.rotateCredentialLocked(connection, reference)
+}
+
+func (s *Store) rotateCredentialLocked(connection Connection, reference CredentialReference) (CredentialReference, error) {
 	if err := reference.Validate(); err != nil {
 		s.mu.Unlock()
 		return CredentialReference{}, err
@@ -941,19 +970,19 @@ func (s *Store) RotateCredential(connectionID, backend, locator string, keys []s
 	}
 	s.credentials[reference.CredentialRefID] = reference
 	connection.CredentialRefID = reference.CredentialRefID
-	connection.Revision = next
-	s.connections[connectionID] = connection
+	connection.Revision = reference.Revision
+	s.connections[connection.ConnectionID] = connection
 	for id, binding := range s.bindings {
-		if binding.ConnectionID == connectionID {
+		if binding.ConnectionID == connection.ConnectionID {
 			s.touchProjectionLocked(&binding)
 			s.bindings[id] = binding
 		}
 	}
-	stopped := s.stopAffectedLocked(connectionID)
+	stopped := s.stopAffectedLocked(connection.ConnectionID)
 	s.mu.Unlock()
 	s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
-		_ = s.MarkDegraded(connectionID)
+		_ = s.MarkDegraded(connection.ConnectionID)
 		return CredentialReference{}, err
 	}
 	return reference, nil

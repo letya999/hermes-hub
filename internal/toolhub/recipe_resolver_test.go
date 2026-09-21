@@ -408,6 +408,14 @@ func TestParseExampleEnvKeepsCredentialsAndSkipsRuntimeDefaults(t *testing.T) {
 	if field.Name != "GOOGLE_OAUTH_CREDENTIALS" || field.Type != "json" || field.Delivery != "json" || !field.Secret {
 		t.Fatalf("OAuth JSON credential was misclassified: %+v", field)
 	}
+	recipe = parseExampleEnv([]byte("GITLAB_API_URL=https://gitlab.com\nGITLAB_TOKEN=placeholder\nGITLAB_TOKEN_TEST=test-only\nGITLAB_ALLOWED_PROJECT_IDS=\nHTTP_PROXY=\nHTTPS_PROXY=\nNO_PROXY=localhost\nTEST_PROJECT_ID=1\n"), ".env.example")
+	byName := map[string]ConnectionField{}
+	for _, f := range recipe.Fields {
+		byName[f.Name] = f
+	}
+	if len(recipe.Fields) != 2 || !byName["GITLAB_TOKEN"].Required || byName["GITLAB_ALLOWED_PROJECT_IDS"].Required {
+		t.Fatalf("proxy variables, test fixtures or optional knobs became required credentials: %+v", recipe.Fields)
+	}
 }
 
 func TestRecipeResolverMetadataHelpersDoNotGuessValues(t *testing.T) {

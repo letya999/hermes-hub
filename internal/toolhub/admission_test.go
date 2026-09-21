@@ -47,6 +47,41 @@ func TestControllerAdmissionSendsReviewedDefinitionWithoutAuthorityOrSecretValue
 	}
 }
 
+func TestAdmitExtendsEgressFromCredentialEnvironment(t *testing.T) {
+	definition := statefulContainerDefinition()
+	environment := map[string]string{"SERVICE_TOKEN": "opaque", "PROVIDER_API_URL": "https://gitlab.example.com/api/v4"}
+	var admitted []ExecutionPolicy
+	backend := MCPBackend{Root: t.TempDir(), AdmissionVerifier: func(_ context.Context, effective EffectiveBinding) (AdmissionReceipt, error) {
+		admitted = append(admitted, effective.Definition.Execution)
+		return AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, ImageDigest: effective.Definition.Source.Digest, SidecarImages: effective.Definition.Workload.SidecarImages, Execution: effective.Definition.Execution}, nil
+	}}
+	effective := EffectiveBinding{Definition: definition, WorkloadID: "fixture-workload"}
+	effective.Binding = ToolBinding{ToolBindingID: "fixture-binding", PrincipalID: "alice", ContextID: "alice"}
+	if err := backend.EnsureReady(context.Background(), effective, environment); err != nil {
+		t.Fatalf("ready admission failed: %v", err)
+	}
+	// The second admission mimics a per-call invoke against the already running
+	// workload: the controller echoes the plan it enforced at start time, so the
+	// submitted plan must carry the same credential-derived egress hosts.
+	if _, err := backend.admit(context.Background(), effective, environment); err != nil {
+		t.Fatalf("invoke admission failed: %v", err)
+	}
+	if len(admitted) != 2 {
+		t.Fatalf("expected two admissions, got %d", len(admitted))
+	}
+	for i, execution := range admitted {
+		found := false
+		for _, host := range execution.Egress {
+			if host == "gitlab.example.com" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("admission %d missed credential URL egress host: %v", i, execution.Egress)
+		}
+	}
+}
+
 func TestControllerAdmissionDeniesNonSuccess(t *testing.T) {
 	effective := EffectiveBinding{Definition: statefulContainerDefinition(), WorkloadID: "fixture-workload"}
 	for _, receipt := range []AdmissionReceipt{

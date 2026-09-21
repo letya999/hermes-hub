@@ -453,7 +453,7 @@ func parseExampleEnv(data []byte, name string) ConnectionRecipe {
 
 func connectionFieldFromEnv(line string) (ConnectionField, bool) {
 	key := envKey(line)
-	if key == "" {
+	if key == "" || nonCredentialEnvName(key) {
 		return ConnectionField{}, false
 	}
 	value := ""
@@ -464,7 +464,10 @@ func connectionFieldFromEnv(line string) (ConnectionField, bool) {
 	if value != "" && !secret {
 		return ConnectionField{}, false
 	}
-	field := ConnectionField{Name: key, Type: connectionType(key), Required: true, Secret: secret, Delivery: "env", Target: key}
+	// Heuristic sources cannot prove a non-secret knob is mandatory: an
+	// uncommented NAME= in .env.example is conventionally optional. Only
+	// secret-class names and explicit manifest isRequired flags are required.
+	field := ConnectionField{Name: key, Type: connectionType(key), Required: secret, Secret: secret, Delivery: "env", Target: key}
 	if strings.Contains(strings.ToUpper(key), "CREDENTIALS") && strings.HasSuffix(strings.ToLower(value), ".json") {
 		field.Type, field.Delivery = "json", "json"
 	}
@@ -1142,6 +1145,17 @@ func envKey(value string) string {
 		return ""
 	}
 	return value
+}
+
+// nonCredentialEnvName excludes names that can never be user-supplied
+// connection credentials: proxy variables are injected by the workload
+// runtime itself, and TEST_*/​*_TEST fixtures belong to upstream test suites.
+func nonCredentialEnvName(name string) bool {
+	switch name {
+	case "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY":
+		return true
+	}
+	return strings.HasPrefix(name, "TEST_") || strings.HasSuffix(name, "_TEST") || strings.Contains(name, "_TEST_")
 }
 
 func connectionType(name string) string {

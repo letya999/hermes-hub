@@ -112,6 +112,8 @@ is not required.
 Node requires `package-lock.json` or `pnpm-lock.yaml`; pnpm recipes use pinned
 pnpm 10.32.1 and frozen installation. Conventional pnpm monorepositories can
 select a unique `*-mcp` package with a declared bin; other layouts remain explicit.
+Several `bin` aliases resolving to the same file count as one published server;
+only distinct bin targets remain ambiguous.
 When runtime egress was not explicitly reviewed, import proposes HTTPS hosts
 from standard `servers` entries in bundled `*openapi*.json` files. The hosts are
 included in the immutable review digest; missing, malformed, credentialed,
@@ -208,6 +210,32 @@ execution; the existing preflight `tools/list`, Credential Broker, ToolHive and
 
 `.mcp.json` and `.env.example` are read only for names and launch metadata;
 their values are never returned and those files are not passed to BuildKit.
+Names that cannot be user-supplied connection credentials are excluded from
+connection fields entirely: `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`ALL_PROXY`
+are injected by the workload runtime, and `TEST_*`/`*_TEST`/`*_TEST_*` fixtures
+belong to upstream test suites. Heuristic env sources (`.env.example`, Compose
+`environment`) mark only secret-class names required; an uncommented empty
+non-secret knob stays optional, while explicit manifest `isRequired` flags are
+authoritative. Required credentials must be covered by a reviewed Credential
+Broker contract whose deliveries produce the matching env names; one contract
+field may deliver the same secret under several env spellings when upstream
+declarations disagree. Deliveries targeting optional declared inputs are wired
+into the workload env mapping as well, so optional values entered at onboarding
+reach the server; a definition bound before this rule is backfilled on the next
+`prepare_source` from the same contract. The operator installs contracts under
+the broker `contracts_dir`.
+
+Re-onboarding the same definition rotates the single owner connection in place
+instead of opening a second one, for local and broker credentials alike; the
+rotated credential record keeps its contract, env mapping and broker grant, and
+the superseded binding is revoked before the replacement is enabled. A revoked
+binding blocks only its own deterministic ID, so a fresh onboarding can bind a
+new connection after a revoke. Credential values that are HTTPS URLs extend the
+workload's pinned egress ACL at readiness time, since endpoints such as a
+self-hosted API base URL are collected in the credential form after the
+definition digest is frozen. Onboarding status responses carry `next_action`
+and `instructions` so clients can drive the phase machine without guessing.
+
 External recipe adapters are opt-in through `HUB_RECIPE_CATALOGS`, a
 comma-separated allowlist of `mcp-registry`, `toolhive`, `docker-mcp`,
 `smithery`, `docker-hub` and `ghcr`; `HUB_RECIPE_CATALOGS=all` enables all six.

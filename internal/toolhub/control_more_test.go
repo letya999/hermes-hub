@@ -522,3 +522,19 @@ func (c *ControlPlane) publicationForCheck(definition ToolDefinition) Definition
 	}
 	return c.Store.publicationFor(definition)
 }
+
+func TestStatusBodyExposesNextAction(t *testing.T) {
+	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
+	confirm := control.statusBody(Onboarding{OnboardingID: "onboard-1", Phase: PhaseAwaitingConfirm, ConfirmationNonce: "nonce-1"}, false)
+	if confirm["next_action"] != "confirm" || confirm["nonce"] != "nonce-1" || confirm["instructions"] == "" {
+		t.Fatalf("awaiting-confirm status lacks next step: %v", confirm)
+	}
+	enable := control.statusBody(Onboarding{OnboardingID: "onboard-1", Phase: PhaseConfirmed}, false)
+	if enable["next_action"] != "enable" {
+		t.Fatalf("confirmed status lacks enable hint: %v", enable)
+	}
+	creds := control.statusBody(Onboarding{OnboardingID: "onboard-1", Phase: PhaseAwaitingCreds}, false)
+	if creds["next_action"] != "submit_credentials" {
+		t.Fatalf("awaiting-credentials status lacks submit hint: %v", creds)
+	}
+}

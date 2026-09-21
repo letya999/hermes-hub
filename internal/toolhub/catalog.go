@@ -86,13 +86,21 @@ func requiredCredentialNames(definition ToolDefinition) []string {
 }
 
 func (s *Store) findBindingLocked(auth identity.Envelope, definition ToolDefinition) *ToolBinding {
+	var tombstone *ToolBinding
 	for _, binding := range s.bindings {
 		if binding.PrincipalID == auth.PrincipalID && binding.ContextID == auth.ContextID && binding.RuntimeID == auth.RuntimeID && binding.PolicyVersion == auth.PolicyVersion && binding.DefinitionID == definition.DefinitionID && binding.DefinitionVersion == definition.Version {
+			if binding.Status == RevokedStatus {
+				if tombstone == nil {
+					copy := binding
+					tombstone = &copy
+				}
+				continue
+			}
 			copy := binding
 			return &copy
 		}
 	}
-	return nil
+	return tombstone
 }
 
 // reusableSelfInstallDefinition returns the user's immutable definition for an
@@ -183,38 +191,6 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 		s.mu.Unlock()
 		return ToolBinding{}, fmt.Errorf("%w: user definition owner", ErrUnauthorized)
 	}
-	if existing := s.findBindingLocked(auth, definition); existing != nil {
-		if existing.Status == RevokedStatus {
-			s.mu.Unlock()
-			return ToolBinding{}, ErrRevoked
-		}
-		previous := *existing
-		previousProjection := s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)]
-		if existing.Status != ActiveStatus {
-			existing.Status = ActiveStatus
-			existing.Revision++
-			s.touchProjectionLocked(existing)
-			s.bindings[existing.ToolBindingID] = *existing
-		}
-		if ready != nil && existing.Status == ActiveStatus {
-			effective, err := s.resolveLocked(auth, existing.ToolBindingID)
-			if err == nil {
-				err = ready(ctx, effective)
-			}
-			if err != nil {
-				s.bindings[existing.ToolBindingID] = previous
-				s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] = previousProjection
-				s.mu.Unlock()
-				return ToolBinding{}, err
-			}
-		}
-		result := *existing
-		s.mu.Unlock()
-		if err := s.persistAndNotify(); err != nil {
-			return ToolBinding{}, err
-		}
-		return result, nil
-	}
 	var connection *Connection
 	var credential *CredentialReference
 	if len(definition.Credentials) > 0 {
@@ -230,6 +206,46 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 		c, r := matches[0].connection, matches[0].credential
 		connection, credential = &c, &r
 	}
+	if existing := s.findBindingLocked(auth, definition); existing != nil && existing.Status != RevokedStatus {
+		current := connection == nil || (existing.ConnectionID == connection.ConnectionID && existing.CredentialRefID == credential.CredentialRefID)
+		if !current {
+			// The owner connection was rotated or superseded; the stale
+			// binding can never resolve again, so revoke it before
+			// materializing the replacement below.
+			stale := *existing
+			stale.Status = RevokedStatus
+			stale.Revision++
+			s.touchProjectionLocked(&stale)
+			s.bindings[stale.ToolBindingID] = stale
+		} else {
+			previous := *existing
+			previousProjection := s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)]
+			if existing.Status != ActiveStatus {
+				existing.Status = ActiveStatus
+				existing.Revision++
+				s.touchProjectionLocked(existing)
+				s.bindings[existing.ToolBindingID] = *existing
+			}
+			if ready != nil && existing.Status == ActiveStatus {
+				effective, err := s.resolveLocked(auth, existing.ToolBindingID)
+				if err == nil {
+					err = ready(ctx, effective)
+				}
+				if err != nil {
+					s.bindings[existing.ToolBindingID] = previous
+					s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] = previousProjection
+					s.mu.Unlock()
+					return ToolBinding{}, err
+				}
+			}
+			result := *existing
+			s.mu.Unlock()
+			if err := s.persistAndNotify(); err != nil {
+				return ToolBinding{}, err
+			}
+			return result, nil
+		}
+	}
 	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1}
 	if connection != nil {
 		binding.ConnectionID, binding.ConnectionRevision = connection.ConnectionID, connection.Revision
@@ -239,6 +255,10 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 	if err := binding.Validate(); err != nil {
 		s.mu.Unlock()
 		return ToolBinding{}, err
+	}
+	if previous, ok := s.bindings[binding.ToolBindingID]; ok && previous.Status == RevokedStatus {
+		s.mu.Unlock()
+		return ToolBinding{}, ErrRevoked
 	}
 	if ready != nil {
 		s.bindings[binding.ToolBindingID] = binding

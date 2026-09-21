@@ -47,6 +47,51 @@ type envBackend interface {
 	CallEnv(context.Context, EffectiveBinding, ToolSpec, map[string]any, map[string]string) (BackendResult, error)
 }
 
+// credentialEgressHosts extracts host[:port] entries from HTTPS URLs found in
+// injected credential values (for example a self-hosted API base URL collected
+// by a credential form). The workload egress ACL is fixed at definition time,
+// so connector endpoints supplied as credentials would otherwise be denied.
+func credentialEgressHosts(env map[string]string) []string {
+	hosts := make([]string, 0, len(env))
+	for _, value := range env {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.Scheme != "https" {
+			continue
+		}
+		host := strings.ToLower(parsed.Hostname())
+		if host == "" || !strings.Contains(host, ".") {
+			continue
+		}
+		if port := parsed.Port(); port != "" {
+			host += ":" + port
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
+
+func mergeEgressHosts(egress []string, hosts []string) []string {
+	if len(hosts) == 0 {
+		return egress
+	}
+	seen := make(map[string]bool, len(egress)+len(hosts))
+	merged := make([]string, 0, len(egress)+len(hosts))
+	for _, host := range egress {
+		host = strings.ToLower(strings.TrimSpace(host))
+		if !seen[host] {
+			seen[host] = true
+			merged = append(merged, host)
+		}
+	}
+	for _, host := range hosts {
+		if !seen[host] {
+			seen[host] = true
+			merged = append(merged, host)
+		}
+	}
+	return merged
+}
+
 type CredentialInjection struct {
 	Environment map[string]string
 	Mounts      []Mount
@@ -448,7 +493,10 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 	if err != nil {
 		return err
 	}
-	receipt, err := b.admit(ctx, effective)
+	// Keep the admission plan and the local receipt check on the same extended
+	// egress view; admit applies the identical merge for the submitted plan.
+	effective.Definition.Execution.Egress = mergeEgressHosts(effective.Definition.Execution.Egress, credentialEgressHosts(environment))
+	receipt, err := b.admit(ctx, effective, environment)
 	if err != nil {
 		restoreAuthorizedFile(path, previous, hadPrevious)
 		if unlock != nil {
@@ -481,7 +529,13 @@ func restoreAuthorizedFile(workspacePath string, previous []byte, hadPrevious bo
 	}
 }
 
-func (b MCPBackend) admit(ctx context.Context, effective EffectiveBinding) (AdmissionReceipt, error) {
+func (b MCPBackend) admit(ctx context.Context, effective EffectiveBinding, environment map[string]string) (AdmissionReceipt, error) {
+	// Credential-supplied HTTPS endpoints (for example a self-hosted provider
+	// URL) arrive after the definition digest is frozen, so every admission
+	// extends the egress allowlist from the same injected environment. Keeping
+	// this inside admit makes ready-time and per-call plans identical, which
+	// the controller receipt check requires.
+	effective.Definition.Execution.Egress = mergeEgressHosts(effective.Definition.Execution.Egress, credentialEgressHosts(environment))
 	if err := validateToolHivePolicy(effective.Definition); err != nil {
 		return AdmissionReceipt{}, err
 	}
@@ -543,7 +597,7 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	var receipt AdmissionReceipt
 	if effective.Definition.Transport == ContainerMCP {
 		var err error
-		receipt, err = b.admit(ctx, effective)
+		receipt, err = b.admit(ctx, effective, environment)
 		if err != nil {
 			return BackendResult{}, fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
 		}
