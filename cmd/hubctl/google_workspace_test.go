@@ -61,10 +61,7 @@ func TestOfficialWorkspaceCLIConnectOAuthEmail(t *testing.T) {
 	if strings.Contains(u.Query().Get("scope"), "calendar") || !strings.Contains(u.Query().Get("scope"), "gmail.readonly") {
 		t.Fatal("wrong scopes")
 	}
-	response, err := http.Get(u.Query().Get("redirect_uri") + "?state=" + url.QueryEscape(u.Query().Get("state")) + "&code=fixture-code")
-	if err != nil {
-		t.Fatal(err)
-	}
+	response := oauthCallbackGet(t, u.Query().Get("redirect_uri")+"?state="+url.QueryEscape(u.Query().Get("state"))+"&code=fixture-code")
 	response.Body.Close()
 	if err := <-done; err != nil {
 		t.Fatal(err)

@@ -116,6 +116,18 @@ func (f connectorFixtureTransport) RoundTrip(r *http.Request) (*http.Response, e
 	return f.base.RoundTrip(clone)
 }
 
+// oauthCallbackGet hits the loopback OAuth callback listener with a fresh
+// transport: reusing a pooled connection left by a recently closed fixture
+// server whose ephemeral port the listener recycled surfaces as a flaky EOF.
+func oauthCallbackGet(t *testing.T, rawURL string) *http.Response {
+	t.Helper()
+	resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Get(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 func TestConnectorCLIConnectCallRefreshRevoke(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -164,10 +176,7 @@ func TestConnectorCLIConnectCallRefreshRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	redirect := u.Query().Get("redirect_uri")
-	resp, err := http.Get(redirect + "?state=" + url.QueryEscape(u.Query().Get("state")) + "&code=fixture-code")
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := oauthCallbackGet(t, redirect+"?state="+url.QueryEscape(u.Query().Get("state"))+"&code=fixture-code")
 	resp.Body.Close()
 	if err := <-finished; err != nil {
 		t.Fatal(err)

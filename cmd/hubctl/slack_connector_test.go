@@ -73,10 +73,7 @@ func TestSlackConnectorCLIUserOAuthWriteReceiptRefreshRevoke(t *testing.T) {
 	if u.Query().Get("user_scope") != "chat:write" || u.Query().Get("scope") != "" {
 		t.Error("bot scope requested")
 	}
-	resp, err := http.Get(u.Query().Get("redirect_uri") + "?state=" + url.QueryEscape(u.Query().Get("state")) + "&code=fixture-code")
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := oauthCallbackGet(t, u.Query().Get("redirect_uri")+"?state="+url.QueryEscape(u.Query().Get("state"))+"&code=fixture-code")
 	resp.Body.Close()
 	if err := <-finished; err != nil {
 		t.Fatal(err)
