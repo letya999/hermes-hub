@@ -67,49 +67,29 @@ func ServiceInfoByName(name string) (ServiceInfo, bool) {
 	return ServiceInfo{}, false
 }
 
-// ServiceMCPConfig returns the upstream MCP definition for a self-service
-// connector. GitLab is CLI-only and therefore intentionally has no MCP entry.
+// ServiceMCPConfig returns the MCP definition a self-service connector writes
+// into the Hermes config. Upstream connectors (google, github, slack,
+// atlassian, telegram_user and their write variants) are served through
+// ToolHub and intentionally return no direct entry, like CLI-only GitLab.
+// Only the platform-internal hub tool server is written for hh/workspace.
 func ServiceMCPConfig(name string) (string, M, bool, error) {
 	if !selfServiceNames[name] {
 		return "", nil, false, fmt.Errorf("service %q is host-managed", name)
 	}
-	google := Settings{GoogleEmail: "${GOOGLE_EMAIL}", OAuthPort: 8000, Features: []string{"google"}}
-	telegram := Settings{Features: []string{"telegram_user"}}
-	var settings Settings
 	switch name {
-	case "google":
-		settings = google
-	case "google_write":
-		settings = google
-		settings.Features = append(settings.Features, "google_write")
-	case "github", "slack", "atlassian":
-		settings.Features = []string{name}
-	case "telegram_user":
-		settings = telegram
-	case "telegram_write":
-		settings = telegram
-		settings.Features = append(settings.Features, "telegram_write")
 	case "hh":
-		settings.Features = []string{"workspace", "hh"}
-	case "gitlab":
+		servers, ok := Config(Settings{Features: []string{"workspace", "hh"}})["mcp_servers"].(M)
+		if !ok {
+			return "", nil, false, fmt.Errorf("service %q has no MCP definition", name)
+		}
+		config, ok := servers["hub"].(M)
+		if !ok {
+			return "", nil, false, fmt.Errorf("service %q has no MCP definition", name)
+		}
+		return "hub", config, true, nil
+	case "google", "google_write", "github", "slack", "atlassian", "telegram_user", "telegram_write", "gitlab":
 		return "", nil, true, nil
 	default:
 		return "", nil, false, fmt.Errorf("service %q is not available", name)
 	}
-	servers, ok := Config(settings)["mcp_servers"].(M)
-	if !ok {
-		return "", nil, false, fmt.Errorf("service %q has no MCP definition", name)
-	}
-	serverName := name
-	if name == "google_write" || name == "telegram_write" {
-		serverName = map[string]string{"google_write": "google", "telegram_write": "telegram_user"}[name]
-	}
-	if name == "hh" {
-		serverName = "hub"
-	}
-	config, ok := servers[serverName].(M)
-	if !ok {
-		return "", nil, false, fmt.Errorf("service %q has no MCP definition", name)
-	}
-	return serverName, config, true, nil
 }

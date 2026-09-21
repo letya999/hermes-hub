@@ -26,13 +26,6 @@ func env(names ...string) M {
 func stdio(command string, args []string, e M) M {
 	return M{"command": command, "args": args, "env": e, "timeout": 120}
 }
-func remote(url, key string) M {
-	m := M{"url": url, "timeout": 90, "skip_preflight": true}
-	if key != "" {
-		m["headers"] = M{"Authorization": "Bearer ${" + key + "}"}
-	}
-	return m
-}
 func Config(s Settings) M {
 	organizationSkills := s.OrganizationSkillsDir
 	if organizationSkills == "" && s.OrganizationDir != "" {
@@ -60,56 +53,11 @@ func Config(s Settings) M {
 		}
 		servers["hub"] = stdio("/usr/local/bin/hubctl", args, e)
 	}
-	if s.Has("telegram_user") {
-		e := env("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING")
-		e["TELEGRAM_EXPOSED_TOOLS"] = "read-only"
-		if s.Has("telegram_write") {
-			e["TELEGRAM_EXPOSED_TOOLS"] = "read-only+send_message,reply_to_message,save_draft"
-		}
-		e["TELEGRAM_TRANSCRIBE"] = "off"
-		e["TELEGRAM_TRANSCRIPT_CACHE_DIR"] = "/state/telegram/transcripts"
-		e["XDG_STATE_HOME"] = "/state/telegram"
-		servers["telegram_user"] = stdio("/opt/telegram/.venv/bin/python", []string{"/opt/telegram/main.py"}, e)
-	}
-	if s.Has("google") {
-		e := env("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET")
-		e["USER_GOOGLE_EMAIL"] = "${GOOGLE_EMAIL}"
-		e["WORKSPACE_MCP_CREDENTIALS_DIR"] = "/state/google"
-		e["WORKSPACE_MCP_PORT"] = "8000"
-		e["WORKSPACE_MCP_HOST"] = "0.0.0.0"
-		e["WORKSPACE_MCP_BASE_URI"] = "http://0.0.0.0"
-		e["GOOGLE_OAUTH_REDIRECT_URI"] = "${GOOGLE_OAUTH_REDIRECT_URI}"
-		e["WORKSPACE_MCP_MAX_FILE_BYTES"] = "16777216"
-		args := []string{"/opt/google/main.py", "--transport", "stdio", "--single-user", "--tool-tier", "extended", "--tools", "gmail", "drive", "calendar", "docs", "sheets", "slides", "tasks"}
-		if !s.Has("google_write") {
-			args = append(args, "--read-only")
-		}
-		servers["google"] = stdio("/opt/google/.venv/bin/python", args, e)
-	}
-	if s.Has("browser") {
-		servers["browser"] = stdio("node", []string{"/opt/browser/node_modules/@playwright/mcp/cli.js", "--cdp-endpoint", "http://127.0.0.1:9222", "--caps", "vision,pdf", "--output-dir", "/workspace/browser"}, nil)
-	}
-	if s.Has("github") {
-		servers["github"] = remote("https://api.githubcopilot.com/mcp/", "GITHUB_TOKEN")
-	}
-	if s.Has("slack") {
-		e := env("SLACK_MCP_XOXP_TOKEN")
-		if !s.OrgScoped() || s.AllowsOrgAction("slack.write") {
-			e["SLACK_MCP_ADD_MESSAGE_TOOL"] = "${SLACK_MCP_ADD_MESSAGE_TOOL}"
-		} else {
-			e["SLACK_MCP_ADD_MESSAGE_TOOL"] = ""
-		}
-		servers["slack"] = stdio("/usr/local/bin/slack-mcp-server", []string{"--transport", "stdio"}, e)
-	}
-	if s.Has("atlassian") {
-		servers["atlassian"] = stdio("/opt/mcp-atlassian/.venv/bin/mcp-atlassian", nil, env("JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"))
-	}
-	if s.Has("desktop") {
-		servers["desktop"] = remote(s.DesktopURL, "DESKTOP_TOKEN")
-	}
-	if s.Has("drafts") {
-		servers["drafts"] = remote(s.DraftsURL, "DRAFTS_TOKEN")
-	}
+	// No upstream MCP servers are embedded directly: connectors run behind the
+	// ToolHub admission boundary and are projected over its remote endpoint.
+	// Feature flags still drive ports, volumes and auth files, but never write
+	// mcp_servers entries for google/browser/github/slack/atlassian/
+	// telegram_user/desktop/drafts.
 	for name, server := range s.MCP {
 		servers[name] = server.Config()
 	}

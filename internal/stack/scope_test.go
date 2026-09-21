@@ -129,9 +129,8 @@ func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 	if orgMCP["tools"].(*MCPTools).Include[0] != "query" {
 		t.Fatal("organization MCP tool allowlist was not rendered")
 	}
-	slack := c["mcp_servers"].(M)["slack"].(M)["env"].(M)
-	if slack["SLACK_MCP_ADD_MESSAGE_TOOL"] != "" {
-		t.Fatal("Slack write was not disabled by default")
+	if _, ok := c["mcp_servers"].(M)["slack"]; ok {
+		t.Fatal("slack must not produce a direct MCP server; connectors go through ToolHub")
 	}
 	compose := Compose(s, "/source", "/host/spaces/alice")
 	runtime := compose["services"].(M)["hermes-runtime"].(M)
