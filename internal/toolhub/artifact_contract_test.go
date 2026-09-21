@@ -158,7 +158,7 @@ func TestPreflightHelpersFailClosedBeforeDocker(t *testing.T) {
 func TestMCPPreflightUsesIsolatedDockerToolsList(t *testing.T) {
 	dir := t.TempDir()
 	name := "docker"
-	script := "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\",\"annotations\":{\"readOnlyHint\":true}}]}}'\ncat >/dev/null\n"
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\",\"annotations\":{\"readOnlyHint\":true}}]}}'\nexec cat >/dev/null\n"
 	if runtime.GOOS == "windows" {
 		name = "docker.cmd"
 		script = "@echo off\r\necho {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\",\"annotations\":{\"readOnlyHint\":true}}]}}\r\n"
