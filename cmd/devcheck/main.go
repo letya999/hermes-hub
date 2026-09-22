@@ -50,8 +50,15 @@ func run(args []string) error {
 		err = devcheck.ToolHubGatewayContract(context.Background())
 	case len(args) == 1 && args[0] == "toolhub-hermes-contract":
 		err = devcheck.ToolHubHermesContract(context.Background())
+	case len(args) == 4 && args[0] == "mcp-bench":
+		calls, parseErr := strconv.Atoi(args[3])
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
+		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-build IMAGE TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract")
+		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-build IMAGE TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
 	}
 	return err
 }
