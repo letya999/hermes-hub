@@ -1,0 +1,18 @@
+change: CHG-0035
+title: Evaluate ToolHive local vMCP against Hermes dynamic-tool requirements
+status: in-progress
+completed:
+  - issue 11 and upstream contracts inspected
+  - isolated ToolHive 0.48.0 remote and container workloads exercised
+  - persistent-session latency and resident resources measured
+  - no-go decision, ADR and specification recorded
+  - just check passed at 85.10 percent Go statement coverage
+  - just security passed with no reported vulnerabilities
+  - production image build and standalone Docker smoke passed
+  - Go ToolHub scope resolver, authenticated gateway, lifecycle adapter and regression tests implemented
+  - Context7 OCI, shared, isolated, ephemeral, Streamable HTTP and SSE paths exercised
+  - anonymous remote MCP passed through ToolHive and Go ToolHub, including stop and recreate behavior
+pending:
+  - pinned Hermes run replay contract failed twice and needs separate diagnosis
+  - ToolHub supervisor must reconcile ToolHive proxy URL changes after workload recreation
+  - ToolHive secrets provider must be configured before credential-bearing tests
