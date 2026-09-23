@@ -88,7 +88,13 @@ func effectiveBrokerEnvelope(effective EffectiveBinding) identity.Envelope {
 func mergeCredentialInjectors(local, broker CredentialInjector, brokerOnly bool) CredentialInjector {
 	if brokerOnly {
 		return func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
-			if effective.Credential == nil || effective.Credential.Backend != "credential-broker" {
+			if effective.Credential == nil {
+				if len(effective.Definition.Credentials) == 0 {
+					return CredentialInjection{Environment: map[string]string{}}, nil
+				}
+				return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
+			}
+			if effective.Credential.Backend != "credential-broker" {
 				return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
 			}
 			return broker(ctx, effective)

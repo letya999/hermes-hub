@@ -173,6 +173,7 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	}
 	localBinding := EffectiveBinding{Credential: &CredentialReference{Backend: "local"}}
 	brokerBinding := EffectiveBinding{Credential: &CredentialReference{Backend: "credential-broker"}}
+	credentialFreeBinding := EffectiveBinding{Definition: ToolDefinition{Credentials: nil}}
 	for _, test := range []struct {
 		name string
 		fn   CredentialInjector
@@ -194,6 +195,14 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	}
 	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), localBinding); err == nil {
 		t.Fatal("broker-only mode accepted local reference")
+	}
+	injection, err = mergeCredentialInjectors(local, broker, true)(t.Context(), credentialFreeBinding)
+	if err != nil || len(injection.Environment) != 0 || injection.Cleanup != nil {
+		t.Fatalf("broker-only mode rejected a credential-free definition: injection=%+v err=%v", injection, err)
+	}
+	credentialRequiredWithoutRef := EffectiveBinding{Definition: ToolDefinition{Credentials: []CredentialInput{{Name: "TOKEN", Required: true}}}}
+	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), credentialRequiredWithoutRef); err == nil {
+		t.Fatal("broker-only mode accepted a credential-free binding for a credentialed definition")
 	}
 	if mergeCredentialInjectors(nil, nil, false) != nil {
 		t.Fatal("empty injector unexpectedly returned a function")

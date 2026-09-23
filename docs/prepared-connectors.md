@@ -32,7 +32,9 @@ same repository review before installation; registry names and commands grant no
 installation authority. This read-only operation never creates credentials,
 bindings or workloads. A failed adapter adds a bounded warning while other
 sources remain available. Full unprepared registry installation remains open in
-#110. Pass the selected `candidate_id` and a stable
+#110; a live unprepared GitHub-search result has completed the generic install
+lifecycle, while an Official MCP Registry/marketplace result has not. Pass the
+selected `candidate_id` and a stable
 `request_key` to `prepare_source`. Candidates expire and belong to the current
 principal, context, runtime and policy. A direct GitHub `source` works with all
 registries disabled. Both paths re-resolve and review the source; an overlay

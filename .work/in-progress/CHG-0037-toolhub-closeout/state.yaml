@@ -1,7 +1,7 @@
 schema: 1
 id: CHG-0037-toolhub-closeout
 status: in-progress
-phase: hermes-reconnect
+phase: owner-isolation
 started_at: "2026-09-23"
 updated_at: "2026-09-23"
 completed:
@@ -20,8 +20,13 @@ completed:
   - "Serve-runtime Hermes restart watcher was removed; ToolHub process polls persisted projection changes."
   - "Pinned Hermes 0.21.0 Docker fixture observed dynamic removal/restoration, same PID/session, an active run completing through refresh, and cold ToolHub endpoint recovery."
   - "ToolHive and GitHub fallback name search passed real public API probes; Smithery search, fallback ordering, provenance merging and adapter isolation passed fixture regressions."
+  - "Live GitHub-search discovery returned five unprepared echo candidates; one source completed generated Node build, MCP initialize/tools/list, safe echo call and disable/remove with tool absence in the same session."
+  - "Broker-only injection now permits bindings whose manifest has no credential fields, while local refs and missing required credential refs remain denied; focused regressions pass."
+  - "Pinned repository recipe metadata preserves repo-relative paths so a subfolder is applied exactly once; the regression and live generic install pass."
+  - "Post-fix just check passed race/shuffle tests, formatting, vet, staticcheck, docs and actionlint at 85.01% own Go statement coverage."
+  - "Post-fix just docker-check passed image build, standalone smoke, native approval, layered health, orphan inventory, supervisor, gateway five-minute cold restore and pinned Hermes 0.21.0 contract; optional hub-stt fixture is absent from the image."
 next:
-  - "Test an unprepared live registry selection through the full generic lifecycle."
+  - "Complete an unprepared Official MCP Registry/marketplace candidate through the full generic lifecycle."
   - "Run two-owner Docker/Broker acceptance and live provider probes without outputting credentials or payloads."
   - "Complete #74 direct/prepared install, revoke/remove, conflicts, failure/timeout and restart acceptance against real Hermes."
   - "Complete remaining provider/bundle scope and production Telegram journey."

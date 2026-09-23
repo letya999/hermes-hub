@@ -24,6 +24,17 @@ while projection changed, unchanged process PID and session, and a cold ToolHub
 endpoint restart. This does not prove production Telegram delivery, every #74
 failure/recovery case or a live provider account; #74 remains open.
 
+An unprepared source-only result from live GitHub repository search completed
+the generic install lifecycle in the local Docker ToolHub: generated Node recipe,
+isolated build, MCP initialize/`tools/list`, projected echo call and cleanup.
+The echo tool returned the test string; disable/remove then removed it from the
+same open MCP session. The first run exposed two generic defects: Broker-only
+admission rejected definitions with no credential fields, and repository
+metadata for a pinned subfolder was scoped twice. Regressions cover both fixes.
+This does not prove install from an unprepared Official MCP Registry/marketplace
+candidate, two-owner Docker/Broker isolation, or Telegram delivery; #110 and
+the owner/production acceptance remain open.
+
 ## CHG-0026 / SPEC-0023 ToolHub control plane
 
 M5.2 in-repo tests drive the shipped ToolHub MCP handler (`NewEndpointHandler`
