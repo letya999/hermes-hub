@@ -190,6 +190,67 @@ func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	}
 }
 
+func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "refs.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	definition := catalogReadDefinition()
+	definition.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
+	admit := false
+	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error {
+		if !admit {
+			return errors.New("admission denied")
+		}
+		return nil
+	}}
+	prepared, err := control.Invoke(t.Context(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "retry-readiness"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := prepared["onboarding_id"].(string)
+	onboarding, err := store.onboarding(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirm := map[string]any{"onboarding_id": id, "nonce": status["nonce"]}
+	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err == nil {
+		t.Fatal("failed admission was accepted")
+	}
+	if len(store.bindings) != 0 || len(store.connections) != 1 {
+		t.Fatalf("failed admission published binding or duplicated connection: bindings=%d connections=%d", len(store.bindings), len(store.connections))
+	}
+	if err := store.AuthorizeProjected(auth, ProjectedToolName(definition.DefinitionID, definition.Version, "read"), func(ProjectedTool, EffectiveBinding) error { return nil }); err == nil {
+		t.Fatal("failed admission projected a tool")
+	}
+	admit = true
+	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.bindings) != 1 || len(store.connections) != 1 {
+		t.Fatalf("retry did not reuse owner connection: bindings=%d connections=%d", len(store.bindings), len(store.connections))
+	}
+}
+
 func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 	key, err := credstore.GenerateKey()
 	if err != nil {

@@ -5,6 +5,7 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0037](in-progress/CHG-0037-toolhub-closeout/plan.md) | ToolHub closeout: Broker readiness, isolation, registry discovery, Hermes reconnect, prepared bundle and production acceptance |
 | [CHG-0036](in-progress/CHG-0036-repository-driven-toolhub/plan.md) | Repository-driven ToolHub: prepared data, discovery and four exact-source live scenarios |
 | [CHG-0035](in-progress/CHG-0035-toolhive-vmcp-audit/plan.md) | ToolHive local vMCP evaluation: no-go evidence recorded |
 | [CHG-0034](in-progress/CHG-0034-noncredential-env-filter/plan.md) | Non-credential env names excluded from connection recipe; gitlab-pat broker contract |

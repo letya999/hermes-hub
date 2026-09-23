@@ -1,0 +1,26 @@
+schema: 1
+id: CHG-0037-toolhub-closeout
+status: in-progress
+phase: registry-discovery
+started_at: "2026-09-23"
+updated_at: "2026-09-23"
+completed:
+  - "Current main and issue gaps reviewed; work continues on feat/toolhub-closeout."
+  - "Broker runtime now rejects a missing required delivery despite other mounts; cleanup does not falsely claim quiescence."
+  - "First binding uses readiness before projection; retry after admission failure reuses the existing owner connection."
+  - "File-credential readiness admits and releases the workload before state checkpoint."
+  - "Four exact-source entries define reviewed safe provider probes; mock regressions reject MCP error results."
+  - "Prepared provider readiness now rejects MCP error results, missing probes, invalid controller receipts and unquiesced file-credential workloads."
+  - "Official MCP Registry name search returned real unprepared candidates; Docker MCP name search and owner-bound selection have focused regressions."
+  - "Selected OCI artifacts recheck exact source and digest; revision and version drift regressions pass."
+  - "Current just check passed with 85.02% own Go statement coverage, race tests, format, vet, staticcheck and docs checks."
+  - "Current just docker-check passed: image build, smoke, pinned Hermes 0.21.0 contract and five-minute lifecycle; optional hub-stt fixture unavailable."
+  - "Real public Docker MCP OCI metadata verification passed; full unprepared registry install is still pending."
+next:
+  - "Test an unprepared live registry selection through the full generic lifecycle."
+  - "Run two-owner Docker/Broker acceptance and live provider probes without outputting credentials or payloads."
+  - "Use pinned Hermes list_changed support to replace the current stateless/restart reconnect, then prove active-run continuity."
+  - "Complete remaining provider/bundle scope and production Telegram journey."
+risks:
+  - "Mock provider probes do not prove real account access; live acceptance is still required."
+  - "Do not close issues until every issue-specific criterion has current evidence."

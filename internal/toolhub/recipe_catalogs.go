@@ -110,6 +110,46 @@ func (c MCPRegistryCatalog) Lookup(ctx context.Context, lookup RecipeLookup) ([]
 	return catalogCandidates(ctx, c.Client, response.Servers, "mcp-registry", lookup)
 }
 
+func (c MCPRegistryCatalog) SearchSources(ctx context.Context, query string) ([]DiscoveryCandidate, error) {
+	endpoint, err := catalogQuery(c.Endpoint, map[string]string{"search": query, "version": "latest", "limit": "32"})
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := fetchCatalogJSON(ctx, c.Client, endpoint, nil, 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Servers []json.RawMessage `json:"servers"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil || len(response.Servers) > 32 {
+		return nil, fmt.Errorf("%w: MCP Registry search response", ErrInvalid)
+	}
+	var found []DiscoveryCandidate
+	for _, raw := range response.Servers {
+		var document map[string]any
+		if json.Unmarshal(raw, &document) != nil {
+			continue
+		}
+		if nested, ok := document["server"].(map[string]any); ok {
+			document = nested
+		}
+		repository := ""
+		if value, ok := document["repository"].(map[string]any); ok {
+			repository = firstString(value, "url", "uri")
+		} else {
+			repository = firstString(document, "repository", "repositoryUrl", "repository_url")
+		}
+		source, ok := discoverySource(repository)
+		name := firstString(document, "name", "title")
+		if !ok || name == "" || !strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+			continue
+		}
+		found = append(found, DiscoveryCandidate{Name: name, Source: source, Status: "registry-source", Reason: "Registry source metadata; generic review pins the source and verifies the artifact", Evidence: []RecipeEvidence{{Source: "mcp-registry", Detail: "name and repository metadata"}}})
+	}
+	return found, nil
+}
+
 // ToolHiveCatalog reads the published server.json entry from ToolHive's
 // catalog repository. It deliberately does not run the thv CLI or trust a
 // catalog name without repository and OCI correlation.
@@ -185,6 +225,49 @@ func (c DockerMCPCatalog) Lookup(ctx context.Context, lookup RecipeLookup) ([]Re
 		}
 	}
 	return candidates, nil
+}
+
+func (c DockerMCPCatalog) SearchSources(ctx context.Context, query string) ([]DiscoveryCandidate, error) {
+	endpoint := c.Endpoint
+	if endpoint == "" {
+		endpoint = dockerMCPCatalogURL
+	}
+	body, _, err := fetchCatalogJSON(ctx, c.Client, endpoint, nil, 32<<20)
+	if err != nil {
+		return nil, err
+	}
+	var document struct {
+		Registry map[string]map[string]any `json:"registry"`
+	}
+	if json.Unmarshal(body, &document) != nil || len(document.Registry) == 0 {
+		return nil, fmt.Errorf("%w: Docker MCP search response", ErrInvalid)
+	}
+	var found []DiscoveryCandidate
+	for name, entry := range document.Registry {
+		if !strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+			continue
+		}
+		source, ok := discoverySource(firstString(entry, "source", "upstream"))
+		if !ok {
+			continue
+		}
+		found = append(found, DiscoveryCandidate{Name: name, Source: source, Status: "registry-source", Reason: "Docker MCP source metadata; generic review verifies the selected artifact", Credentials: connectionFromDockerEntry(entry).Fields, Evidence: []RecipeEvidence{{Source: "docker-mcp", Path: "registry/" + name, Detail: "source metadata"}}})
+		if len(found) == 32 {
+			break
+		}
+	}
+	return found, nil
+}
+
+func discoverySource(raw string) (ArtifactSource, bool) {
+	if source, err := ParseGitHubSource(raw); err == nil {
+		return source, true
+	}
+	repository, err := parseGitHubRepository(raw)
+	if err != nil {
+		return ArtifactSource{}, false
+	}
+	return ArtifactSource{Repository: repository}, true
 }
 
 // DockerHubCatalog searches the public namespace API, then verifies every
@@ -795,6 +878,9 @@ func verifyRecipeCandidateAt(ctx context.Context, client *http.Client, registryB
 	proof, err := inspectPublishedOCIAt(ctx, client, registryBase, candidate.Launch.Artifact)
 	if err != nil {
 		return RecipeCandidate{}, false, err
+	}
+	if candidate.Launch.Digest != "" && candidate.Launch.Digest != proof.ManifestDigest {
+		return RecipeCandidate{}, false, fmt.Errorf("%w: selected OCI digest changed", ErrStale)
 	}
 	if !sameRepository(proof.Source, lookup.Repository) || !strings.EqualFold(proof.Revision, lookup.CommitSHA) {
 		return RecipeCandidate{}, false, nil

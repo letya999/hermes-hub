@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -508,12 +509,50 @@ type MCPBackend struct {
 // controller owns actual CPU, memory, PID, filesystem and egress enforcement.
 type WorkloadAdmission func(context.Context, EffectiveBinding) error
 
-func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding, environment map[string]string) error {
+func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding, environment map[string]string) (readyErr error) {
 	if effective.Definition.Transport != ContainerMCP {
 		return nil
 	}
+	source := effective.Definition.Source
+	prepared, matched, err := preparedForSource(ArtifactSource{Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA})
+	if err != nil {
+		return err
+	}
+	if matched && prepared.ProbeTool != "" {
+		for _, tool := range effective.Definition.Tools {
+			if tool.Name != prepared.ProbeTool {
+				continue
+			}
+			result, probeErr := b.CallEnv(ctx, effective, tool, map[string]any{}, environment)
+			if probeErr == nil && result.IsError {
+				probeErr = fmt.Errorf("%w: provider read probe failed", ErrUnauthorized)
+			}
+			if probeErr != nil && len(effective.CredentialMounts) == 0 && b.AdmissionRelease != nil {
+				probeErr = errors.Join(probeErr, b.AdmissionRelease(context.Background(), effective.WorkloadID))
+			}
+			return probeErr
+		}
+		return fmt.Errorf("%w: reviewed provider read probe is missing", ErrStale)
+	}
 	if len(effective.CredentialMounts) > 0 {
-		return fmt.Errorf("%w: file credentials are admitted per call", ErrIsolation)
+		if b.AdmissionRelease == nil {
+			return fmt.Errorf("%w: file credential admission release is not configured", ErrIsolation)
+		}
+		wipe, err := writeAuthorizedFiles(ctx, b.Root, effective, environment)
+		if err != nil {
+			return err
+		}
+		defer func() { readyErr = errors.Join(readyErr, wipe()) }()
+		receipt, err := b.admit(ctx, effective, environment)
+		if err != nil {
+			return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
+		}
+		validationErr := receipt.validate(effective)
+		releaseErr := b.AdmissionRelease(context.Background(), effective.WorkloadID)
+		if validationErr != nil || releaseErr != nil {
+			return fmt.Errorf("%w: file credential readiness: %w", ErrIsolation, errors.Join(validationErr, releaseErr))
+		}
+		return nil
 	}
 	var previous []byte
 	var hadPrevious bool
@@ -582,6 +621,12 @@ func (b MCPBackend) admit(ctx context.Context, effective EffectiveBinding, envir
 		var err error
 		receipt, err = b.AdmissionVerifier(ctx, effective)
 		if err != nil {
+			return AdmissionReceipt{}, err
+		}
+		if err := receipt.validate(effective); err != nil {
+			if b.AdmissionRelease != nil {
+				err = errors.Join(err, b.AdmissionRelease(context.Background(), effective.WorkloadID))
+			}
 			return AdmissionReceipt{}, err
 		}
 	} else {

@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,6 +206,31 @@ func TestInspectPublishedOCIRequiresImmutableProvenanceAndSBOM(t *testing.T) {
 	}
 	if proof.ManifestDigest != manifestDigest || proof.Source != "https://github.com/acme/weather" || proof.Revision != commit || proof.ProvenanceDigest != provenanceDigest || proof.SBOMDigest != sbomDigest || proof.Image != "ghcr.io/acme/weather" || len(proof.Entrypoint) != 1 {
 		t.Fatalf("OCI proof: %+v", proof)
+	}
+	lookup := RecipeLookup{Repository: proof.Source, CommitSHA: commit, VersionHints: []string{"1.2.3"}}
+	candidate := RecipeCandidate{Repository: proof.Source, CommitSHA: commit, Launch: LaunchRecipe{Transport: ContainerMCP, Artifact: "ghcr.io/acme/weather:1.2.3", Digest: manifestDigest}}
+	verified, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup)
+	if err != nil || !accepted || verified.Launch.Digest != manifestDigest || verified.Launch.Entrypoint[0] != "/app/server" {
+		t.Fatalf("exact OCI candidate: %+v accepted=%t err=%v", verified, accepted, err)
+	}
+	candidate.Launch.Digest = "sha256:" + strings.Repeat("e", 64)
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || !errors.Is(err, ErrStale) {
+		t.Fatalf("changed OCI digest accepted: accepted=%t err=%v", accepted, err)
+	}
+	candidate.Launch.Digest = manifestDigest
+	lookup.CommitSHA = strings.Repeat("f", 40)
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || err != nil {
+		t.Fatalf("foreign source revision accepted: accepted=%t err=%v", accepted, err)
+	}
+	lookup.CommitSHA = commit
+	lookup.VersionHints = []string{"2.0.0"}
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || err != nil {
+		t.Fatalf("unreviewed OCI version accepted: accepted=%t err=%v", accepted, err)
+	}
+	lookup.VersionHints = nil
+	candidate.CommitSHA = strings.Repeat("f", 40)
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || err != nil {
+		t.Fatalf("candidate revision drift accepted: accepted=%t err=%v", accepted, err)
 	}
 	if _, err := inspectPublishedOCIAt(context.Background(), server.Client(), server.URL, "ghcr.io/acme/weather@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err == nil {
 		t.Fatal("OCI digest drift accepted")

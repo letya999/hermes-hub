@@ -68,7 +68,7 @@ func userMCPDefinition() ToolDefinition {
 }
 
 func fixtureReviewer(definition ToolDefinition) SourceReviewer {
-	return func(context.Context, ArtifactSource) (SourceReview, error) {
+	return func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
 		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review"}, nil
 	}
 }
@@ -79,7 +79,7 @@ func githubCommitURL() string {
 
 func TestControlResolvesRepositoryURLBeforeReview(t *testing.T) {
 	definition := userMCPDefinition()
-	fix := newControlFixture(t, func(_ context.Context, source ArtifactSource) (SourceReview, error) {
+	fix := newControlFixture(t, func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
 		if source.Repository != "https://github.com/example/mcp" || source.CommitSHA != "0123456789abcdef0123456789abcdef01234567" {
 			t.Fatalf("review received mutable source: %+v", source)
 		}
@@ -110,7 +110,7 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 	definition.Version = "0.0.2"
 	definition.Source.Repository = "https://github.com/example/mcp"
 	definition.Source.CommitSHA = "0123456789abcdef0123456789abcdef01234567"
-	fix := newControlFixture(t, func(context.Context, ArtifactSource) (SourceReview, error) {
+	fix := newControlFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
 		t.Fatal("retry rebuilt an immutable source instead of reusing it")
 		return SourceReview{}, nil
 	})

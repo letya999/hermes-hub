@@ -56,7 +56,9 @@ func TestTelegramDefinitionAndReceiptBoundary(t *testing.T) {
 	fixture := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
 	defer fixture.Close()
 	e.Connection.Metadata["mcp_endpoint"] = fixture.URL + "/mcp"
-	b := MCPBackend{Root: t.TempDir(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) { return AdmissionReceipt{}, nil }}
+	b := MCPBackend{Root: t.TempDir(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
+		return AdmissionReceipt{WorkloadID: e.WorkloadID, State: "running", Enforced: true, ImageDigest: d.Source.Digest, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution}, nil
+	}}
 	for _, name := range []string{"send_message", "reply_message", "delete_message"} {
 		tool.Name = name
 		args := map[string]any{"peer_id": 7, "target_id": 42}

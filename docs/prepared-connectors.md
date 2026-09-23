@@ -23,10 +23,13 @@ read/write modes against the approved lease mounts. Broker state stays encrypted
 between leases; its store and keys are never mounted into MCP workloads. The
 controller uses the bridge binary from the deployed Hub image.
 
-`discover` accepts `query` and returns at most five candidates: prepared matches
-and matching artifact alternatives from enabled registries. This read-only
-operation never creates credentials, bindings or workloads. Broader name-only
-GitHub search is not implemented. Pass the selected `candidate_id` and a stable
+`discover` accepts `query` and returns at most five candidates: prepared matches,
+matching artifact alternatives, and source-only name matches from the enabled
+Official MCP Registry or Docker MCP Catalog. Source-only matches require the
+same repository review before installation; registry names and commands grant no
+installation authority. This read-only operation never creates credentials,
+bindings or workloads. ToolHive/Smithery name search and bounded GitHub fallback
+remain open in #110. Pass the selected `candidate_id` and a stable
 `request_key` to `prepare_source`. Candidates expire and belong to the current
 principal, context, runtime and policy. A direct GitHub `source` works with all
 registries disabled. Both paths re-resolve and review the source; an overlay
@@ -35,9 +38,15 @@ applies only to its reviewed commit.
 After the generated restricted build and real MCP preflight, use
 `required_credentials` if requested. Enter credentials only in the protected
 Broker form. Compatible owner connections are reused. Call `confirm` with the
-returned nonce, then `enable`. Projection changes request the existing Hermes
-runtime's controlled Hermes reconnect from its persistent owner home. Installing
-a connector does not authorize provider writes.
+returned nonce, then `enable`. For these four exact-source entries, confirmation
+also invokes the reviewed zero-argument `probe_tool` through the Broker-backed
+workload. A failed provider read leaves the binding unprojected; retry uses the
+same owner connection. File-credential readiness starts and then stops the
+workload before Broker checkpoints writable state. Other MCPs without a reviewed
+provider probe have MCP admission evidence only; their provider access must be
+verified separately. Projection changes request the existing Hermes runtime's
+controlled Hermes reconnect from its persistent owner home. Installing a
+connector does not authorize provider writes.
 Admitted tool schemas and rich MCP content, including embedded file resources,
 are preserved with output bounds. Schema-declared provider resource owners are
 ordinary arguments; runtime identity and credential selectors remain reserved.

@@ -223,7 +223,11 @@ declarations disagree. Deliveries targeting optional declared inputs are wired
 into the workload env mapping as well, so optional values entered at onboarding
 reach the server; a definition bound before this rule is backfilled on the next
 `prepare_source` from the same contract. The operator installs contracts under
-the broker `contracts_dir`.
+the broker `contracts_dir`. Runtime materialization rejects a missing delivery
+for any referenced input, even when another input produced a file mount. A
+file-credential workload must pass admission before its binding is projected;
+writable state is checkpointed only after that workload is stopped. Cleanup
+without a completed stop does not claim quiescence.
 
 Re-onboarding the same definition rotates the single owner connection in place
 instead of opening a second one, for local and broker credentials alike; the

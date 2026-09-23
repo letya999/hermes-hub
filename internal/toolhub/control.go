@@ -29,7 +29,7 @@ type SourceReview struct {
 	Recipe       *RecipeResolution
 }
 
-type SourceReviewer func(context.Context, ArtifactSource) (SourceReview, error)
+type SourceReviewer func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error)
 type SourceResolver func(context.Context, string) (ArtifactSource, error)
 
 type ControlPlane struct {
@@ -139,18 +139,20 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	source := argString(args, "source")
 	definitionID := argString(args, "definition_id")
 	version := argString(args, "version")
+	var selected *RecipeCandidate
 	if candidate := argString(args, "candidate_id"); candidate != "" {
 		if source != "" || definitionID != "" || version != "" {
 			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
 		}
-		var err error
-		source, err = c.selectedRepository(auth, candidate)
+		choice, err := c.selectedCandidate(auth, candidate)
 		if err != nil {
 			return nil, err
 		}
+		source = choice.sourceURL()
+		selected = choice.recipe
 	}
 	if source != "" {
-		return c.prepareSelfInstall(ctx, auth, source, requestKey)
+		return c.prepareSelfInstall(ctx, auth, source, requestKey, selected)
 	}
 	if definitionID != "" && version != "" {
 		return c.prepareCatalog(ctx, auth, definitionID, version, requestKey)
@@ -176,7 +178,7 @@ func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelop
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string) (map[string]any, error) {
+func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
 	if err := c.Store.RequireSelfInstall(auth); err != nil {
 		return nil, err
 	}
@@ -189,13 +191,13 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 	}
 	config := defaultSelfInstallConfig(source)
 	review := SourceReview{}
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
 		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
 			return nil, fmt.Errorf("%w: source reviewer unavailable", ErrInvalid)
 		}
-		review, err = c.Reviewer(ctx, source)
+		review, err = c.Reviewer(ctx, source, selected)
 		if err != nil {
 			return nil, err
 		}
@@ -683,7 +685,13 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 				return nil, err
 			}
 		}
-		binding, enableErr := c.Store.Enable(auth, definitionID, version)
+		var binding ToolBinding
+		var enableErr error
+		if c.Ready != nil {
+			binding, enableErr = c.Store.EnableReady(ctx, auth, definitionID, version, c.Ready)
+		} else {
+			binding, enableErr = c.Store.Enable(auth, definitionID, version)
+		}
 		if enableErr != nil {
 			return nil, enableErr
 		}
@@ -937,6 +945,9 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	if existing := c.Store.findBinding(auth, definition); existing != nil && existing.Status != RevokedStatus && !rotation {
 		_, ref, err := c.Store.OwnedConnection(auth, existing.ConnectionID)
 		if onboarding.Locator == "" || err == nil && ref.Locator == onboarding.Locator {
+			if c.Ready != nil {
+				return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+			}
 			return *existing, nil
 		}
 		rotation = true
@@ -964,6 +975,12 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		return ToolBinding{}, fmt.Errorf("%w: ambiguous owner connection", ErrUnauthorized)
 	}
 	if len(matches) == 1 {
+		if !rotation && matches[0].credential.Locator == onboarding.Locator {
+			if c.Ready != nil {
+				return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+			}
+			return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+		}
 		connection := matches[0].connection
 		// A per-owner workload ID is stable across credential revisions. Stop
 		// its old process before a new grant/credential can be admitted under it.
@@ -1043,14 +1060,10 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	if err := c.Store.PutConnection(connection); err != nil {
 		return ToolBinding{}, err
 	}
-	binding, err := c.Store.Enable(auth, definition.DefinitionID, definition.Version)
-	if err != nil {
-		return ToolBinding{}, err
-	}
 	if c.Ready != nil {
 		return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
 	}
-	return binding, nil
+	return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
 }
 
 func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Envelope, definition ToolDefinition, onboarding Onboarding, binding ToolBinding) (string, error) {

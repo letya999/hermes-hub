@@ -8,7 +8,31 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 )
+
+func TestRealMCPRegistryNameSearch(t *testing.T) {
+	if os.Getenv("HUB_REAL_REGISTRY_SEARCH") != "1" {
+		t.Skip("set HUB_REAL_REGISTRY_SEARCH=1 for public MCP Registry name search")
+	}
+	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []RecipeCatalog{MCPRegistryCatalog{Endpoint: officialMCPRegistryURL}}}
+	result, err := control.discover(t.Context(), aliceAuth(), "weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := result["candidates"].([]DiscoveryCandidate)
+	if len(candidates) == 0 || len(candidates) > 5 {
+		t.Fatalf("public Registry returned %d usable source candidates", len(candidates))
+	}
+	for _, candidate := range candidates {
+		if candidate.PreparedID != "" || candidate.Status != "registry-source" {
+			t.Fatalf("unprepared Registry candidate was mislabeled: %+v", candidate)
+		}
+		if _, err := control.selectedRepository(aliceAuth(), candidate.ID); err != nil {
+			t.Fatalf("selected Registry candidate was unavailable: %v", err)
+		}
+	}
+}
 
 func TestRealPublishedDockerCatalogImageHasExactOCIProof(t *testing.T) {
 	if os.Getenv("HUB_REAL_PUBLISHED_MCP") != "1" {

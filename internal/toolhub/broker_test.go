@@ -214,6 +214,7 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 	}
 	mode := "mount"
 	checkpointed := false
+	quiesced := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -229,8 +230,10 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 				return
 			}
 			if mode == "state" {
-				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Mounts: []brokerv1.Mount{{Source: "/run/lease/state", Target: "/state", ReadOnly: false}}})
+				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Env: map[string]string{"TARGET": "/state"}, Mounts: []brokerv1.Mount{{Source: "/run/lease/state", Target: "/state", ReadOnly: false}}})
 			} else if mode == "mount" {
+				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Env: map[string]string{"TARGET": "/secret"}, Mounts: []brokerv1.Mount{{Source: "/run/secret", Target: "/secret", ReadOnly: true}}})
+			} else if mode == "missing-mount" {
 				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Mounts: []brokerv1.Mount{{Source: "/run/secret", Target: "/secret", ReadOnly: true}}})
 			} else {
 				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Env: map[string]string{}})
@@ -241,6 +244,7 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 				t.Error("invalid release")
 			}
 			checkpointed = release.Checkpoint && release.Quiesced
+			quiesced = release.Quiesced
 			_ = json.NewEncoder(w).Encode(map[string]any{})
 		default:
 			http.NotFound(w, r)
@@ -275,8 +279,12 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := failedInjection.Cleanup(); err != nil || checkpointed {
-		t.Fatal("failed call checkpointed state", err)
+	if err := failedInjection.Cleanup(); err != nil || checkpointed || quiesced {
+		t.Fatal("failed call claimed quiescence or checkpointed state", err)
+	}
+	mode = "missing-mount"
+	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil {
+		t.Fatal("mount without required environment delivery was accepted")
 	}
 	mode = "missing"
 	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil {

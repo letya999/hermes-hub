@@ -5,7 +5,7 @@
     "language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
     "connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
     "contract_id": "notion-token", "contract_revision": 1, "stateful": false,
-    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-retrieve-a-page"],
+    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-retrieve-a-page"], "probe_tool": "API-get-self",
     "runbook": "docs/prepared-connectors.md#notion",
     "handoff": "Install https://github.com/makenotion/notion-mcp-server; reuse my existing Notion connection. Enter NOTION_TOKEN only in the protected Broker form. Verify a read of the shared root/pages; do not create or edit pages."
   },
@@ -18,7 +18,7 @@
     "state_target": "/home/mcp/.config/google-calendar",
     "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
     "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
-    "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"],
+    "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"], "probe_tool": "list-calendars",
     "runbook": "docs/prepared-connectors.md#google-calendar",
     "handoff": "Install https://github.com/nspady/google-calendar-mcp; reuse my existing OAuth client and token state through Broker. Never paste OAuth JSON or tokens in chat. Verify list-calendars and list-events for my account."
   },
@@ -28,7 +28,7 @@
     "language": "go", "entrypoint": ["/app/mcp-server", "stdio"],
     "connection": {"fields": [{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITHUB_PERSONAL_ACCESS_TOKEN"}]},
     "contract_id": "github-pat", "contract_revision": 1, "stateful": false,
-    "egress": ["api.github.com"], "read_tools": ["get_me", "get_file_contents"],
+    "egress": ["api.github.com"], "read_tools": ["get_me", "get_file_contents"], "probe_tool": "get_me",
     "runbook": "docs/prepared-connectors.md#github",
     "handoff": "Install https://github.com/github/github-mcp-server; reuse my existing Broker token. Verify get_me and a read of an authorized repository. Build with the generated Go recipe. Do not mutate issues, pull requests or files."
   },
@@ -42,7 +42,7 @@
       {"name": "GITLAB_API_URL", "type": "url", "required": false, "secret": false, "delivery": "env", "target": "GITLAB_API_URL"}
     ]},
     "contract_id": "gitlab-pat", "contract_revision": 1, "stateful": false,
-    "egress": ["gitlab.com"], "read_tools": ["whoami"],
+    "egress": ["gitlab.com"], "read_tools": ["whoami"], "probe_tool": "whoami",
     "runbook": "docs/prepared-connectors.md#gitlab",
     "handoff": "Install https://github.com/zereight/gitlab-mcp; reuse or rotate my existing Broker connection. Confirm the HTTPS GITLAB_API_URL in the protected form, then verify whoami on that host. Do not create another owner connection or change provider data."
   }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -60,6 +62,11 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	if _, err := parsePreparedCatalog(encoded); err == nil {
 		t.Fatal("accepted duplicate")
 	}
+	entries[0].ProbeTool = "unreviewed-write"
+	encoded, _ = json.Marshal(entries)
+	if _, err := parsePreparedCatalog(encoded); err == nil {
+		t.Fatal("accepted unreviewed provider probe")
+	}
 }
 
 func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
@@ -92,15 +99,25 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolved := false
+	reviewed := false
+	var selectedRecipe *RecipeCandidate
 	c.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
 		resolved = raw == source.Repository
 		return source, nil
 	}
-	c.Reviewer = func(context.Context, ArtifactSource) (SourceReview, error) {
+	c.Reviewer = func(_ context.Context, selected ArtifactSource, recipe *RecipeCandidate) (SourceReview, error) {
+		reviewed = selected == source
+		selectedRecipe = recipe
 		return SourceReview{}, errors.New("test stops at generic reviewer")
 	}
-	if _, err := c.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"candidate_id": choices[0].ID}); err == nil || !resolved {
-		t.Fatal("selection bypassed generic resolver/reviewer", err)
+	if _, err := c.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"candidate_id": choices[0].ID}); err == nil || !reviewed || resolved {
+		t.Fatal("selection did not preserve the prepared exact commit", err)
+	}
+	if selectedRecipe != nil {
+		t.Fatal("prepared source unexpectedly selected a registry artifact")
+	}
+	if _, err := c.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"candidate_id": choices[1].ID}); err == nil || selectedRecipe == nil || selectedRecipe.Launch.Artifact != choices[1].Artifact || selectedRecipe.Launch.Digest != choices[1].Digest {
+		t.Fatal("selected registry artifact was lost before source review", err)
 	}
 	if _, err := c.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": choices[0].ID, "source": source.Repository}); !errors.Is(err, ErrInvalid) {
 		t.Fatal("ambiguous selector accepted")
@@ -152,7 +169,7 @@ func TestDiscoverySelectionIsBoundedReadOnlyAndOwnerScoped(t *testing.T) {
 	if len(choices) != 1 || choices[0].PreparedID != "notion" || choices[0].ID == "" {
 		t.Fatalf("choices %+v", choices)
 	}
-	if repository, err := c.selectedRepository(aliceAuth(), choices[0].ID); err != nil || repository != choices[0].Source.Repository {
+	if repository, err := c.selectedRepository(aliceAuth(), choices[0].ID); err != nil || repository != choices[0].Source.Repository+"/commit/"+choices[0].Source.CommitSHA {
 		t.Fatal(repository, err)
 	}
 	other := aliceAuth()
@@ -169,5 +186,60 @@ func TestDiscoverySelectionIsBoundedReadOnlyAndOwnerScoped(t *testing.T) {
 	}
 	if _, err := c.discover(t.Context(), aliceAuth(), "no-such-mcp"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRegistryNameSearchWithoutPreparedEntryUsesGenericSelection(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0.1/servers":
+			if r.URL.Query().Get("search") != "weather" {
+				t.Error("registry query was not forwarded")
+			}
+			_, _ = w.Write([]byte(`{"servers":[{"server":{"name":"io.github.acme/weather-mcp","repository":{"url":"https://github.com/acme/weather-mcp"}}},{"server":{"name":"bad weather","repository":{"url":"https://evil.invalid/mcp"}}}]}`))
+		case "/catalog.json":
+			_, _ = w.Write([]byte(`{"registry":{"weather-alt":{"source":"https://github.com/acme/weather-alt/commit/` + commit + `"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	control := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []RecipeCatalog{
+		MCPRegistryCatalog{Endpoint: server.URL + "/v0.1/servers", Client: server.Client()},
+		DockerMCPCatalog{Endpoint: server.URL + "/catalog.json", Client: server.Client()},
+	}}
+	body, err := control.discover(t.Context(), aliceAuth(), "weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	choices := body["candidates"].([]DiscoveryCandidate)
+	if len(choices) != 2 || choices[0].PreparedID != "" || choices[1].PreparedID != "" {
+		t.Fatalf("name-only registry results=%+v", choices)
+	}
+	if len(control.Store.onboardings) != 0 || len(control.Store.bindings) != 0 {
+		t.Fatal("registry discovery installed a connector")
+	}
+	if err := control.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	var reviewed ArtifactSource
+	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+		if raw != "https://github.com/acme/weather-mcp" {
+			return ArtifactSource{}, ErrInvalid
+		}
+		return ArtifactSource{Repository: raw, CommitSHA: commit}, nil
+	}
+	control.Reviewer = func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+		reviewed = source
+		return SourceReview{}, errors.New("stopped at generic reviewer")
+	}
+	for _, candidate := range choices {
+		if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID, "request_key": candidate.ID}); err == nil {
+			t.Fatal("test reviewer was bypassed")
+		}
+		if reviewed.Repository != candidate.Source.Repository || reviewed.CommitSHA != commit {
+			t.Fatalf("registry selection lost exact source: choice=%+v reviewed=%+v", candidate.Source, reviewed)
+		}
 	}
 }
