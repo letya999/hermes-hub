@@ -18,13 +18,14 @@ import (
 const (
 	officialMCPRegistryURL = "https://registry.modelcontextprotocol.io/v0.1/servers"
 	toolHiveCatalogURL     = "https://raw.githubusercontent.com/stacklok/toolhive-catalog/main/registries/toolhive/servers"
+	toolHiveIndexURL       = "https://raw.githubusercontent.com/stacklok/toolhive-catalog/main/pkg/catalog/toolhive/data/registry-upstream.json"
 	dockerMCPCatalogURL    = "https://desktop.docker.com/mcp/catalog/v3/catalog.json"
 	smitheryAPIURL         = "https://api.smithery.ai"
 	dockerHubAPIURL        = "https://hub.docker.com"
 	githubAPIURL           = "https://api.github.com"
 )
 
-var allRecipeCatalogNames = []string{"mcp-registry", "toolhive", "docker-mcp", "smithery", "docker-hub", "ghcr"}
+var allRecipeCatalogNames = []string{"mcp-registry", "toolhive", "docker-mcp", "smithery", "docker-hub", "ghcr", "github-search"}
 
 // RecipeCatalogsFromEnv keeps external integrations opt-in. The value is a
 // comma-separated list of the fixed adapters, or "all" for the complete
@@ -68,6 +69,15 @@ func RecipeCatalogsFromEnv() ([]RecipeCatalog, error) {
 				token = os.Getenv(envName)
 			}
 			catalogs = append(catalogs, GitHubPackagesCatalog{Endpoint: githubAPIURL, Token: token})
+		case "github-search":
+			token := ""
+			if envName := strings.TrimSpace(os.Getenv("HUB_GITHUB_SEARCH_TOKEN_ENV")); envName != "" {
+				if !credentialPattern.MatchString(envName) {
+					return nil, fmt.Errorf("%w: GitHub search token environment", ErrInvalid)
+				}
+				token = os.Getenv(envName)
+			}
+			catalogs = append(catalogs, GitHubSearchCatalog{Endpoint: githubAPIURL, Token: token})
 		case "smithery":
 			envName := strings.TrimSpace(os.Getenv("HUB_SMITHERY_TOKEN_ENV"))
 			if envName == "" {
@@ -141,6 +151,9 @@ func (c MCPRegistryCatalog) SearchSources(ctx context.Context, query string) ([]
 			repository = firstString(document, "repository", "repositoryUrl", "repository_url")
 		}
 		source, ok := discoverySource(repository)
+		if value, ok := document["repository"].(map[string]any); ok && source.Subfolder == "" {
+			source.Subfolder = firstString(value, "subfolder")
+		}
 		name := firstString(document, "name", "title")
 		if !ok || name == "" || !strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
 			continue
@@ -154,8 +167,62 @@ func (c MCPRegistryCatalog) SearchSources(ctx context.Context, query string) ([]
 // catalog repository. It deliberately does not run the thv CLI or trust a
 // catalog name without repository and OCI correlation.
 type ToolHiveCatalog struct {
+	Endpoint      string
+	IndexEndpoint string
+	Client        *http.Client
+}
+
+// GitHubSearchCatalog is a source-only fallback. Its results never authorize
+// an artifact or replace repository review.
+type GitHubSearchCatalog struct {
 	Endpoint string
+	Token    string `json:"-"`
 	Client   *http.Client
+}
+
+func (GitHubSearchCatalog) Lookup(context.Context, RecipeLookup) ([]RecipeCandidate, error) {
+	return nil, nil
+}
+
+func (c GitHubSearchCatalog) SearchSources(ctx context.Context, query string) ([]DiscoveryCandidate, error) {
+	base := strings.TrimRight(c.Endpoint, "/")
+	if base == "" {
+		base = githubAPIURL
+	}
+	endpoint, err := catalogQuery(base+"/search/repositories", map[string]string{"q": query + " mcp in:name,description", "page": "1", "per_page": "16"})
+	if err != nil {
+		return nil, err
+	}
+	headers := http.Header{"Accept": []string{"application/vnd.github+json"}}
+	if c.Token != "" {
+		headers.Set("Authorization", "Bearer "+c.Token)
+	}
+	body, _, err := fetchCatalogJSON(ctx, c.Client, endpoint, headers, 4<<20)
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Items []map[string]any `json:"items"`
+	}
+	if json.Unmarshal(body, &response) != nil || len(response.Items) > 16 {
+		return nil, fmt.Errorf("%w: GitHub repository search response", ErrInvalid)
+	}
+	var found []DiscoveryCandidate
+	for _, item := range response.Items {
+		if item["fork"] == true || item["archived"] == true || item["disabled"] == true || item["private"] == true {
+			continue
+		}
+		source, ok := discoverySource(firstString(item, "html_url"))
+		if !ok {
+			continue
+		}
+		name := firstString(item, "full_name")
+		if name == "" || !strings.EqualFold(source.Repository, "https://github.com/"+name) {
+			continue
+		}
+		found = append(found, DiscoveryCandidate{Name: name, Source: source, Status: "github-source", Reason: "GitHub search result only; generic review must establish MCP compatibility", Evidence: []RecipeEvidence{{Source: "github-search", Detail: "public repository search result"}}})
+	}
+	return found, nil
 }
 
 func (c ToolHiveCatalog) Lookup(ctx context.Context, lookup RecipeLookup) ([]RecipeCandidate, error) {
@@ -173,6 +240,46 @@ func (c ToolHiveCatalog) Lookup(ctx context.Context, lookup RecipeLookup) ([]Rec
 	}
 	candidates, err := catalogCandidates(ctx, c.Client, []json.RawMessage{body}, "toolhive", lookup)
 	return candidates, err
+}
+
+func (c ToolHiveCatalog) SearchSources(ctx context.Context, query string) ([]DiscoveryCandidate, error) {
+	endpoint := c.IndexEndpoint
+	if endpoint == "" {
+		endpoint = toolHiveIndexURL
+	}
+	body, _, err := fetchCatalogJSON(ctx, c.Client, endpoint, nil, 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	var index struct {
+		Data struct {
+			Servers []map[string]any `json:"servers"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &index) != nil || len(index.Data.Servers) == 0 || len(index.Data.Servers) > 512 {
+		return nil, fmt.Errorf("%w: ToolHive search response", ErrInvalid)
+	}
+	query = strings.ToLower(query)
+	var found []DiscoveryCandidate
+	for _, server := range index.Data.Servers {
+		name := firstString(server, "title", "name")
+		if !strings.Contains(strings.ToLower(name+" "+path.Base(firstString(server, "name"))+" "+firstString(server, "description")), query) {
+			continue
+		}
+		repository, _ := server["repository"].(map[string]any)
+		source, ok := discoverySource(firstString(repository, "url"))
+		if !ok {
+			continue
+		}
+		if source.Subfolder == "" {
+			source.Subfolder = firstString(repository, "subfolder")
+		}
+		found = append(found, DiscoveryCandidate{Name: name, Source: source, Status: "registry-source", Reason: "ToolHive source metadata; generic review pins and verifies the repository", Evidence: []RecipeEvidence{{Source: "toolhive", Detail: "published catalog repository metadata"}}})
+		if len(found) == 32 {
+			break
+		}
+	}
+	return found, nil
 }
 
 // DockerMCPCatalog reads Docker's public catalog declaration. The catalog's
@@ -676,6 +783,65 @@ func (c SmitheryCatalog) Lookup(ctx context.Context, lookup RecipeLookup) ([]Rec
 		}
 	}
 	return candidates, nil
+}
+
+func (c SmitheryCatalog) SearchSources(ctx context.Context, query string) ([]DiscoveryCandidate, error) {
+	if strings.TrimSpace(c.Token) == "" {
+		return nil, fmt.Errorf("%w: Smithery catalog token required", ErrUnauthorized)
+	}
+	base := strings.TrimRight(c.Endpoint, "/")
+	if base == "" {
+		base = smitheryAPIURL
+	}
+	endpoint, err := catalogQuery(base+"/servers", map[string]string{"q": query, "page": "1", "pageSize": "32"})
+	if err != nil {
+		return nil, err
+	}
+	headers := http.Header{"Authorization": []string{"Bearer " + c.Token}}
+	body, _, err := fetchCatalogJSON(ctx, c.Client, endpoint, headers, 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Servers []map[string]any `json:"servers"`
+	}
+	if json.Unmarshal(body, &response) != nil || len(response.Servers) > 32 {
+		return nil, fmt.Errorf("%w: Smithery search response", ErrInvalid)
+	}
+	var found []DiscoveryCandidate
+	for _, server := range response.Servers {
+		if len(found) == 8 {
+			break
+		}
+		qualified := firstString(server, "qualifiedName")
+		name := firstString(server, "displayName", "qualifiedName")
+		if qualified == "" || len(qualified) > 160 || !strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+			continue
+		}
+		releases, err := c.getSmithery(ctx, base+"/servers/"+url.PathEscape(qualified)+"/releases", headers)
+		if err != nil {
+			continue
+		}
+		var versions []map[string]any
+		if json.Unmarshal(releases, &versions) != nil || len(versions) > 100 {
+			continue
+		}
+		for _, version := range versions {
+			source, ok := discoverySource(firstString(version, "upstreamUrl", "upstreamURL"))
+			if !ok {
+				continue
+			}
+			if commit := strings.ToLower(firstString(version, "commit")); gitSHAPattern.MatchString(commit) {
+				if source.CommitSHA != "" && source.CommitSHA != commit {
+					continue
+				}
+				source.CommitSHA = commit
+			}
+			found = append(found, DiscoveryCandidate{Name: name, Source: source, Status: "registry-source", Reason: "Smithery release source; generic review rechecks the repository and revision", Evidence: []RecipeEvidence{{Source: "smithery", Detail: "release repository metadata"}}})
+			break
+		}
+	}
+	return found, nil
 }
 
 func (c SmitheryCatalog) getSmithery(ctx context.Context, endpoint string, headers http.Header) ([]byte, error) {

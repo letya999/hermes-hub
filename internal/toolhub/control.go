@@ -149,6 +149,23 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 			return nil, err
 		}
 		source = choice.sourceURL()
+		if choice.Source.CommitSHA == "" && choice.Source.Subfolder != "" {
+			if c.SourceResolver == nil {
+				return nil, fmt.Errorf("%w: source resolver unavailable", ErrInvalid)
+			}
+			pinned, err := c.SourceResolver(ctx, choice.Source.Repository)
+			if err != nil {
+				return nil, err
+			}
+			if pinned.Repository != choice.Source.Repository || pinned.Subfolder != "" {
+				return nil, fmt.Errorf("%w: source resolution drift", ErrStale)
+			}
+			pinned.Subfolder = choice.Source.Subfolder
+			if _, err := pinned.ArchiveURL(); err != nil {
+				return nil, err
+			}
+			source = pinned.Repository + "/tree/" + pinned.CommitSHA + "/" + pinned.Subfolder
+		}
 		selected = choice.recipe
 	}
 	if source != "" {

@@ -39,10 +39,15 @@ type SourceSearchCatalog interface {
 	SearchSources(context.Context, string) ([]DiscoveryCandidate, error)
 }
 
-func searchCatalogSources(ctx context.Context, catalogs []RecipeCatalog, query string) []DiscoveryCandidate {
+func searchCatalogSources(ctx context.Context, catalogs []RecipeCatalog, query string, fallback bool) ([]DiscoveryCandidate, []string) {
 	results := make([][]DiscoveryCandidate, len(catalogs))
+	warnings := make([]string, len(catalogs))
 	var pending sync.WaitGroup
 	for i, catalog := range catalogs {
+		_, isFallback := catalog.(GitHubSearchCatalog)
+		if isFallback != fallback {
+			continue
+		}
 		searcher, ok := catalog.(SourceSearchCatalog)
 		if !ok {
 			continue
@@ -52,6 +57,8 @@ func searchCatalogSources(ctx context.Context, catalogs []RecipeCatalog, query s
 			defer pending.Done()
 			if found, err := searcher.SearchSources(ctx, query); err == nil && len(found) <= 32 {
 				results[i] = found
+			} else {
+				warnings[i] = fmt.Sprintf("%T search unavailable", catalogs[i])
 			}
 		}(i, searcher)
 	}
@@ -61,9 +68,60 @@ func searchCatalogSources(ctx context.Context, catalogs []RecipeCatalog, query s
 		found = append(found, result...)
 	}
 	slices.SortFunc(found, func(a, b DiscoveryCandidate) int {
+		if rank := discoverySourceRank(a) - discoverySourceRank(b); rank != 0 {
+			return rank
+		}
 		return strings.Compare(a.Source.Repository+"@"+a.Source.CommitSHA, b.Source.Repository+"@"+b.Source.CommitSHA)
 	})
-	return found
+	return found, slices.DeleteFunc(warnings, func(warning string) bool { return warning == "" })
+}
+
+func discoverySourceRank(candidate DiscoveryCandidate) int {
+	if len(candidate.Evidence) == 0 {
+		return 9
+	}
+	switch candidate.Evidence[0].Source {
+	case "mcp-registry":
+		return 0
+	case "toolhive":
+		return 1
+	case "docker-mcp":
+		return 2
+	case "smithery":
+		return 3
+	default:
+		return 9
+	}
+}
+
+func appendDiscovered(candidates []DiscoveryCandidate, found []DiscoveryCandidate) []DiscoveryCandidate {
+	seen := map[string]int{}
+	for i, candidate := range candidates {
+		seen[strings.ToLower(candidate.Source.Repository+"/"+candidate.Source.Subfolder)] = i
+	}
+	for _, candidate := range found {
+		if candidate.Name == "" || len(candidate.Name) > 120 || strings.ContainsAny(candidate.Name, "\x00\r\n") {
+			continue
+		}
+		if candidate.Source.CommitSHA == "" {
+			if _, err := parseGitHubRepository(candidate.Source.Repository); err != nil || !validGitHubSubfolder(candidate.Source.Subfolder) {
+				continue
+			}
+		} else if _, err := candidate.Source.ArchiveURL(); err != nil {
+			continue
+		}
+		key := strings.ToLower(candidate.Source.Repository + "/" + candidate.Source.Subfolder)
+		if i, ok := seen[key]; ok {
+			candidates[i].Evidence = append(candidates[i].Evidence, candidate.Evidence...)
+			continue
+		}
+		if len(candidates) == 5 {
+			break
+		}
+		seen[key] = len(candidates)
+		candidates = append(candidates, candidate)
+	}
+	return candidates
 }
 
 // discover never prepares, builds, enrolls credentials or creates a binding.
@@ -128,34 +186,20 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 	if len(c.RecipeCatalogs) > 0 && len(candidates) < 5 {
 		lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		seen := map[string]bool{}
-		for _, candidate := range candidates {
-			seen[strings.ToLower(candidate.Source.Repository)] = true
-		}
-		for _, candidate := range searchCatalogSources(lookupCtx, c.RecipeCatalogs, query) {
-			if len(candidates) == 5 {
-				break
-			}
-			if candidate.Name == "" || len(candidate.Name) > 120 || strings.ContainsAny(candidate.Name, "\x00\r\n") {
-				continue
-			}
-			if candidate.Source.CommitSHA == "" {
-				if _, err := parseGitHubRepository(candidate.Source.Repository); err != nil {
-					continue
-				}
-			} else if _, err := candidate.Source.ArchiveURL(); err != nil {
-				continue
-			}
-			key := strings.ToLower(candidate.Source.Repository)
-			if key == "" || seen[key] {
-				continue
-			}
-			seen[key] = true
-			candidates = append(candidates, candidate)
+		found, searchWarnings := searchCatalogSources(lookupCtx, c.RecipeCatalogs, query, false)
+		warnings = append(warnings, searchWarnings...)
+		candidates = appendDiscovered(candidates, found)
+		if len(candidates) < 5 {
+			found, searchWarnings = searchCatalogSources(lookupCtx, c.RecipeCatalogs, query, true)
+			warnings = append(warnings, searchWarnings...)
+			candidates = appendDiscovered(candidates, found)
 		}
 	}
 	if len(candidates) == 0 {
 		warnings = append(warnings, "No registry or prepared repository matched; supply an exact GitHub URL for generic source review")
+	}
+	if len(warnings) > 4 {
+		warnings = warnings[:4]
 	}
 	c.discoveryMu.Lock()
 	defer c.discoveryMu.Unlock()

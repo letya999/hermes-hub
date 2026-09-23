@@ -19,6 +19,7 @@ completed:
   - "Go gateway now keeps token-isolated stateful MCP sessions, sends list_changed on projection updates, and denies stale/cross-owner calls; focused wire and package tests pass."
   - "Serve-runtime Hermes restart watcher was removed; ToolHub process polls persisted projection changes."
   - "Pinned Hermes 0.21.0 Docker fixture observed dynamic removal/restoration, same PID/session, an active run completing through refresh, and cold ToolHub endpoint recovery."
+  - "ToolHive and GitHub fallback name search passed real public API probes; Smithery search, fallback ordering, provenance merging and adapter isolation passed fixture regressions."
 next:
   - "Test an unprepared live registry selection through the full generic lifecycle."
   - "Run two-owner Docker/Broker acceptance and live provider probes without outputting credentials or payloads."

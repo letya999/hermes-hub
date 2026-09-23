@@ -6,6 +6,12 @@ last_verified: 2026-09-23
 
 ## CHG-0037 ToolHub transport refresh
 
+ToolHive and GitHub fallback name search now return source-only candidates from
+their live public APIs; fixture tests cover Smithery Bearer-token search, prepared
+priority, deduplication, bounded warnings and a rate-limited registry. Selection
+still requires generic source review. A full unprepared registry install and
+live Smithery search have not been proven.
+
 The Go gateway now holds a stateful MCP server per authenticated owner token.
 An HTTP wire regression confirms that an open client receives
 `notifications/tools/list_changed` after disable and re-enable, retains its MCP

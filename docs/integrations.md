@@ -242,7 +242,9 @@ and `instructions` so clients can drive the phase machine without guessing.
 
 External recipe adapters are opt-in through `HUB_RECIPE_CATALOGS`, a
 comma-separated allowlist of `mcp-registry`, `toolhive`, `docker-mcp`,
-`smithery`, `docker-hub` and `ghcr`; `HUB_RECIPE_CATALOGS=all` enables all six.
+`smithery`, `docker-hub`, `ghcr` and `github-search`;
+`HUB_RECIPE_CATALOGS=all` enables all seven. GitHub search is a source-only
+fallback after registry candidates and never supplies installation authority.
 The adapters use fixed public endpoints. Smithery additionally requires the
 operator-selected environment variable named by `HUB_SMITHERY_TOKEN_ENV`
 (default `SMITHERY_API_KEY`); its bearer value is request-only. GHCR package
@@ -250,6 +252,8 @@ listing may require an operator-selected `HUB_GHCR_TOKEN_ENV`; that token is
 sent only to `api.github.com` and never enters a recipe. Docker Hub namespace
 and tag search uses the official Hub API, while image metadata is verified
 through the OCI distribution API.
+GitHub repository search can use an optional `HUB_GITHUB_SEARCH_TOKEN_ENV`;
+without it, the public API's stricter search rate limit applies.
 
 Catalog hits must correlate to the pinned repository/subfolder/commit.
 Container hits are accepted only after the OCI registry returns an immutable

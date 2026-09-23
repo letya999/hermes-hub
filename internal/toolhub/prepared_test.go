@@ -243,3 +243,76 @@ func TestRegistryNameSearchWithoutPreparedEntryUsesGenericSelection(t *testing.T
 		}
 	}
 }
+
+func TestDiscoveryKeepsPreparedFirstAndUsesGitHubOnlyAsFallback(t *testing.T) {
+	githubCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/registry":
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+		case "/search/repositories":
+			githubCalls++
+			_, _ = w.Write([]byte(`{"items":[{"full_name":"makenotion/notion-mcp-server","html_url":"https://github.com/makenotion/notion-mcp-server"},{"full_name":"acme/notion-mcp","html_url":"https://github.com/acme/notion-mcp"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []RecipeCatalog{
+		MCPRegistryCatalog{Endpoint: server.URL + "/registry", Client: server.Client()},
+		GitHubSearchCatalog{Endpoint: server.URL, Client: server.Client()},
+	}}
+	result, err := control.discover(t.Context(), aliceAuth(), "notion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := result["candidates"].([]DiscoveryCandidate)
+	warnings := result["warnings"].([]string)
+	if len(candidates) != 2 || candidates[0].PreparedID != "notion" || candidates[1].Status != "github-source" || githubCalls != 1 || len(warnings) != 2 {
+		t.Fatalf("fallback order and adapter isolation: candidates=%+v warnings=%v calls=%d", candidates, warnings, githubCalls)
+	}
+	if len(candidates[0].Evidence) != 1 || candidates[0].Evidence[0].Source != "github-search" {
+		t.Fatalf("duplicate source provenance was lost: %+v", candidates[0].Evidence)
+	}
+}
+
+func TestRegistrySelectionPinsMutableRepositoryAndPreservesSubfolder(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"servers":[{"server":{"name":"weather","repository":{"url":"https://github.com/acme/weather","subfolder":"servers/weather"}}}]}`))
+	}))
+	defer server.Close()
+	control := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []RecipeCatalog{MCPRegistryCatalog{Endpoint: server.URL, Client: server.Client()}}}
+	result, err := control.discover(t.Context(), aliceAuth(), "weather")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := result["candidates"].([]DiscoveryCandidate)[0]
+	if candidate.Source.Subfolder != "servers/weather" {
+		t.Fatalf("registry subfolder lost: %+v", candidate.Source)
+	}
+	if err := control.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+		if raw != "https://github.com/acme/weather" {
+			t.Fatalf("model-controlled source reached resolver: %s", raw)
+		}
+		return ArtifactSource{Repository: raw, CommitSHA: commit}, nil
+	}
+	control.Reviewer = func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+		if source.CommitSHA != commit || source.Subfolder != "servers/weather" {
+			t.Fatalf("selected source changed before review: %+v", source)
+		}
+		return SourceReview{}, errors.New("stopped at reviewer")
+	}
+	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID}); err == nil {
+		t.Fatal("selection skipped source review")
+	}
+	control.SourceResolver = func(context.Context, string) (ArtifactSource, error) {
+		return ArtifactSource{Repository: "https://github.com/foreign/weather", CommitSHA: commit}, nil
+	}
+	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID}); !errors.Is(err, ErrStale) {
+		t.Fatalf("registry source drift was accepted: %v", err)
+	}
+}

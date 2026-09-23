@@ -25,11 +25,14 @@ controller uses the bridge binary from the deployed Hub image.
 
 `discover` accepts `query` and returns at most five candidates: prepared matches,
 matching artifact alternatives, and source-only name matches from the enabled
-Official MCP Registry or Docker MCP Catalog. Source-only matches require the
+Official MCP Registry, ToolHive, Docker MCP Catalog or Smithery. An explicitly
+enabled `github-search` adapter fills remaining slots after registry matches.
+Source-only matches require the
 same repository review before installation; registry names and commands grant no
 installation authority. This read-only operation never creates credentials,
-bindings or workloads. ToolHive/Smithery name search and bounded GitHub fallback
-remain open in #110. Pass the selected `candidate_id` and a stable
+bindings or workloads. A failed adapter adds a bounded warning while other
+sources remain available. Full unprepared registry installation remains open in
+#110. Pass the selected `candidate_id` and a stable
 `request_key` to `prepare_source`. Candidates expire and belong to the current
 principal, context, runtime and policy. A direct GitHub `source` works with all
 registries disabled. Both paths re-resolve and review the source; an overlay

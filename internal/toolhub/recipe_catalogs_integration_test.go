@@ -34,6 +34,37 @@ func TestRealMCPRegistryNameSearch(t *testing.T) {
 	}
 }
 
+func TestRealToolHiveNameSearch(t *testing.T) {
+	if os.Getenv("HUB_REAL_REGISTRY_SEARCH") != "1" {
+		t.Skip("set HUB_REAL_REGISTRY_SEARCH=1 for public ToolHive catalog search")
+	}
+	results, err := (ToolHiveCatalog{}).SearchSources(t.Context(), "grafana")
+	if err != nil || len(results) == 0 || len(results) > 32 {
+		t.Fatalf("ToolHive catalog search: %d results, %v", len(results), err)
+	}
+	for _, result := range results {
+		if result.Source.Repository == "https://github.com/grafana/mcp-grafana" && result.Status == "registry-source" {
+			return
+		}
+	}
+	t.Fatal("ToolHive omitted Grafana's published source")
+}
+
+func TestRealGitHubFallbackNameSearch(t *testing.T) {
+	if os.Getenv("HUB_REAL_REGISTRY_SEARCH") != "1" {
+		t.Skip("set HUB_REAL_REGISTRY_SEARCH=1 for public GitHub fallback search")
+	}
+	results, err := (GitHubSearchCatalog{}).SearchSources(t.Context(), "grafana")
+	if err != nil || len(results) == 0 || len(results) > 16 {
+		t.Fatalf("GitHub fallback search: %d results, %v", len(results), err)
+	}
+	for _, result := range results {
+		if result.Status != "github-source" || result.Source.CommitSHA != "" {
+			t.Fatalf("GitHub search result was presented as installable: %+v", result)
+		}
+	}
+}
+
 func TestRealPublishedDockerCatalogImageHasExactOCIProof(t *testing.T) {
 	if os.Getenv("HUB_REAL_PUBLISHED_MCP") != "1" {
 		t.Skip("set HUB_REAL_PUBLISHED_MCP=1 for the public Docker MCP catalog acceptance")
