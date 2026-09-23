@@ -67,9 +67,15 @@ func controlToolContract(name string) (string, map[string]any) {
 	}
 	description := "ToolHub control operation " + name + ". Identity is taken from the authenticated request; owner, locator, backend and policy arguments are rejected."
 	switch name {
+	case "discover":
+		properties = map[string]any{"query": map[string]any{"type": "string", "maxLength": 256}}
+		description += " Read-only search: returns a prepared repository and up to four matching registry alternatives. Select its candidate_id with prepare_source; discovery does not install."
 	case "prepare_source":
+		properties["source"] = map[string]any{"type": "string"}
+		properties["candidate_id"] = map[string]any{"type": "string"}
+		properties["request_key"] = map[string]any{"type": "string"}
 		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first."
-	case "disable", "revoke", "remove":
+	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
 	case "status", "required_credentials":
 		description += " Pass onboarding_id, or pass definition_id to resume the latest onboarding for that connector."

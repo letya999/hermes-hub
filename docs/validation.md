@@ -35,10 +35,11 @@ treated as ToolHub control-plane or provider integration success.
 
 The local M5.3 path now has immutable GitHub source resolution, restricted build
 and preflight evidence, generic ToolHive admission, credential readiness before
-projection, one-time credential completion and durable no-restart reconnect. A
-projection revision is written to `toolhub-reconnect.request`; the serve runtime
-consumes it through Hermes' authenticated `/reload-mcp` API and the watcher test
-proves exactly-once handling for a revision. `just check` passes on the final diff
+projection, one-time credential completion and a durable reconnect request. A
+projection revision is written to `toolhub-reconnect.request`. The earlier
+`/reload-mcp` API acknowledgment was later found to be model output, not native
+reload evidence. CHG-0036 replaces it with a controlled Hermes restart from the
+same owner home and session store. `just check` passed for CHG-0027
 with 85.01% Go statement coverage, race tests, vet, staticcheck, docs checks and
 actionlint. The Docker gate also passes the production image, standalone smoke and
 pinned Hermes 0.21.0 lifecycle/API contract.

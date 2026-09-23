@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
@@ -108,7 +110,20 @@ func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			remoteServer = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusMethodNotAllowed) })}
+			mcpServer := mcp.NewServer(&mcp.Implementation{Name: "ready-fixture", Version: "1"}, nil)
+			mcpServer.AddTool(&mcp.Tool{Name: "read", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{}, nil
+			})
+			mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+			attempts := 0
+			remoteServer = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				if attempts == 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				mcpHandler.ServeHTTP(w, r)
+			})}
 			go func() { _ = remoteServer.Serve(remoteListener) }()
 			remoteID := "generic-workload-thv"
 			for i := range args {
@@ -650,5 +665,28 @@ func TestWriteWorldReadableTempLeaves0644(t *testing.T) {
 	}
 	if _, err := writeWorldReadableTemp(filepath.Join(dir, "missing"), ".proxy-*", "x"); err == nil {
 		t.Fatal("unwritable state dir accepted")
+	}
+}
+
+func TestBrokerStateMountReachesGenericFallback(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	d.Workload.Stateful = true
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DockerFallback: true, BridgeBinary: parts[0], Definition: d, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached := false
+	sentinel := errors.New("stop before Docker mutation")
+	c.command = func(context.Context, string, ...string) ([]byte, error) { reached = true; return nil, sentinel }
+	plan := genericPlan(d)
+	plan.CredentialMounts = []Mount{{Source: filepath.Join(root, "lease", "state"), Target: "/state"}}
+	if _, err := c.startDockerRemoteFallback(t.Context(), plan); err == nil || !reached {
+		t.Fatal("validated Broker state incorrectly requires another volume", err)
+	}
+	reached = false
+	plan.CredentialMounts[0].ReadOnly = true
+	if _, err := c.startDockerRemoteFallback(t.Context(), plan); err == nil || reached {
+		t.Fatal("read-only delivery mistaken for mutable state", err)
 	}
 }

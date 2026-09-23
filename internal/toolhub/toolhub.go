@@ -137,6 +137,7 @@ type ToolDefinition struct {
 	CredentialContractRevision int               `json:"credential_contract_revision,omitempty"`
 	CredentialContractEnv      map[string]string `json:"credential_contract_env,omitempty"`
 	Environment                []string          `json:"environment,omitempty"`
+	RuntimeEnvironment         map[string]string `json:"runtime_environment,omitempty"`
 	Workload                   WorkloadPolicy    `json:"workload"`
 	Execution                  ExecutionPolicy   `json:"execution"`
 	Health                     HealthProbe       `json:"health"`
@@ -264,6 +265,11 @@ func (d ToolDefinition) Validate() error {
 		seen[tool.Name] = true
 	}
 	seen = map[string]bool{}
+	for name, value := range d.RuntimeEnvironment {
+		if !credentialPattern.MatchString(name) || len(value) > 1024 || strings.ContainsAny(value, "\x00\r\n") || strings.Contains(name, "PROXY") || name == "NODE_OPTIONS" || name == "LD_PRELOAD" {
+			return fmt.Errorf("%w: invalid runtime environment", ErrInvalid)
+		}
+	}
 	for _, name := range d.Environment {
 		if !credentialPattern.MatchString(name) || seen[name] {
 			return fmt.Errorf("%w: invalid or duplicate environment parameter %q", ErrInvalid, name)
@@ -271,6 +277,9 @@ func (d ToolDefinition) Validate() error {
 		seen[name] = true
 	}
 	for _, input := range d.Credentials {
+		if _, exists := d.RuntimeEnvironment[input.Name]; exists {
+			return fmt.Errorf("%w: runtime environment overlaps credential", ErrInvalid)
+		}
 		if !credentialPattern.MatchString(input.Name) || seen[input.Name] {
 			return fmt.Errorf("%w: invalid or duplicate credential input %q", ErrInvalid, input.Name)
 		}
@@ -1477,11 +1486,18 @@ func (s *Store) Reload() error {
 	if s == nil || s.path == "" {
 		return nil
 	}
+	s.mu.Lock()
 	fresh, err := Load(s.path)
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
-	s.mu.Lock()
+	// Reads must not replace pending in-process mutations with the unchanged
+	// disk snapshot, nor race a Save and restore its older predecessor.
+	if fresh.diskDigest == s.diskDigest {
+		s.mu.Unlock()
+		return nil
+	}
 	stopped := make([]string, 0)
 	for id, old := range s.workloads {
 		if old.Status != RunningStatus && old.Status != StartingStatus {

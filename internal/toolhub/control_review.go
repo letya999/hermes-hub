@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -38,19 +39,43 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 		if err != nil {
 			return SourceReview{}, err
 		}
+		config := defaultSelfInstallConfig(source)
+		prepared, matched, err := preparedForSource(source)
+		if err != nil {
+			return SourceReview{}, err
+		}
+		if matched {
+			config = prepared.apply(config)
+			resolution.Connection = prepared.overlay(resolution.Connection)
+		}
+		config.Credentials = resolution.Connection.CredentialInputs()
+		// Only reviewed deliveries enter the Broker mapping; unrelated optional
+		// upstream settings remain metadata, not required form fields.
+		if matched {
+			for _, field := range prepared.Connection.Fields {
+				config.CredentialContractEnv[field.Name] = field.Name
+			}
+		}
 		if resolution.State == "ready" && resolution.Launch.Transport == ContainerMCP {
-			published, publishedErr := ImportPublishedArtifact(source, defaultSelfInstallConfig(source), resolution, discoverOpenAPIEgress(contextBytes))
+			egress := config.Execution.Egress
+			if len(egress) == 0 {
+				egress = discoverOpenAPIEgress(contextBytes)
+			}
+			published, publishedErr := ImportPublishedArtifact(source, config, resolution, egress)
 			if publishedErr == nil {
 				if published, _, publishedErr = PreflightPublishedArtifact(ctx, published); publishedErr == nil {
 					return SourceReview{Definition: published.Definition, Permissions: toolNames(published.Definition), Effects: effectNames(published.Definition), ReviewDigest: published.Definition.Source.ReviewDigest, Recipe: &resolution}, nil
 				}
 			}
 		}
-		imported, err := ImportGitHubArtifact(ctx, source, defaultSelfInstallConfig(source), RestrictedBuildConfig{
+		imported, err := ImportGitHubArtifact(ctx, source, config, RestrictedBuildConfig{
 			SeccompPath: seccompPath, ArtifactDirectory: artifactsDir, MaxArtifactBytes: 8 << 30,
 		})
 		if err != nil {
 			return SourceReview{}, err
+		}
+		if matched && !slices.Equal(imported.Recipe.Entrypoint, prepared.Entrypoint) {
+			return SourceReview{}, fmt.Errorf("%w: generated entrypoint differs from reviewed prepared entry", ErrStale)
 		}
 		if len(imported.Definition.Credentials) == 0 {
 			mergeConnectionForDefinition(resolution.Connection, &imported.Definition)

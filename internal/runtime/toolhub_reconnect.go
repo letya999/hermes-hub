@@ -5,24 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 type toolHubReconnectMarker struct {
 	Revision uint64 `json:"revision"`
 }
 
-// startToolHubReconnectWatcher keeps Hermes' MCP tool surface current without
-// restarting the runtime process. The marker is the durable hand-off from
-// ToolHub; Hermes' native /reload-mcp owns transport teardown, discovery and
-// cached-agent refresh.
+// The installed Hermes API treats /reload-mcp as model input. A controlled
+// runtime restart reloads MCP discovery from the same owner home and session DB.
 func startToolHubReconnectWatcher(ctx context.Context, stateDir string) {
 	if toolHubEndpoint() == "" || strings.EqualFold(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_RECONNECT")), "false") {
 		return
@@ -33,23 +28,24 @@ func startToolHubReconnectWatcher(ctx context.Context, stateDir string) {
 func watchToolHubReconnect(ctx context.Context, stateDir string) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	var handled uint64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			change, err := readToolHubReconnectMarker(stateDir)
-			if err != nil || change.Revision <= handled {
+			if err != nil {
 				continue
 			}
-			if err := requestHermesMCPReload(ctx, change.Revision); err != nil {
-				// Keep the revision pending. A cold Hermes startup or a transient
-				// API failure must not lose the reconnect request.
+			applied, err := readAppliedToolHubRevision(stateDir)
+			if err != nil || change.Revision <= applied {
+				continue
+			}
+			if err := scheduleToolHubReconnect(stateDir, change.Revision); err != nil {
 				fmt.Fprintf(os.Stderr, "ToolHub MCP reconnect revision %d pending: %v\n", change.Revision, err)
 				continue
 			}
-			handled = change.Revision
+			return
 		}
 	}
 }
@@ -66,94 +62,49 @@ func readToolHubReconnectMarker(stateDir string) (toolHubReconnectMarker, error)
 	return marker, nil
 }
 
-func requestHermesMCPReload(ctx context.Context, revision uint64) error {
+func readAppliedToolHubRevision(stateDir string) (uint64, error) {
+	body, err := os.ReadFile(filepath.Join(stateDir, "toolhub-reconnect.applied"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	revision, err := strconv.ParseUint(strings.TrimSpace(string(body)), 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid applied ToolHub revision")
+	}
+	return revision, nil
+}
+
+func scheduleToolHubReconnect(stateDir string, revision uint64) error {
 	if revision == 0 {
 		return errors.New("invalid ToolHub reconnect revision")
 	}
-	principal := os.Getenv("HUB_PRINCIPAL_ID")
-	if principal == "" {
-		principal = os.Getenv("HUB_USER_ID")
+	// The runtime's existing restart loop drains Hermes, retains /state and starts
+	// a new gateway process. The durable revision prevents a restart loop.
+	tmp, err := os.CreateTemp(stateDir, ".toolhub-applied-*")
+	if err != nil {
+		return err
 	}
-	if principal == "" {
-		return errors.New("runtime principal is unavailable")
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-	contextID := os.Getenv("HUB_CONTEXT_ID")
-	if contextID == "" {
-		contextID = principal
+	if _, err := tmp.WriteString(strconv.FormatUint(revision, 10)); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-	runtimeID := os.Getenv("HUB_RUNTIME_ID")
-	if runtimeID == "" {
-		runtimeID = principal
+	if err := tmp.Close(); err != nil {
+		return err
 	}
-	policy := os.Getenv("HUB_POLICY_VERSION")
-	if policy == "" {
-		policy = "policy-1"
+	if err := os.WriteFile(filepath.Join(stateDir, "restart.request"), nil, 0600); err != nil {
+		return err
 	}
-	conversation := os.Getenv("HUB_CONVERSATION_ID")
-	if conversation == "" {
-		conversation = "toolhub"
+	if err := os.Rename(tmp.Name(), filepath.Join(stateDir, "toolhub-reconnect.applied")); err != nil {
+		return err
 	}
-	if err := (identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: principal, ContextID: contextID, RuntimeID: runtimeID, ConversationID: conversation, DeliveryTargetID: conversation, PolicyVersion: policy}).Validate(principal, contextID, runtimeID, policy); err != nil {
-		return fmt.Errorf("runtime identity: %w", err)
-	}
-	reconnectSession := sessionIDFor(ExecuteRequest{Envelope: identity.Envelope{ContextID: contextID, ConversationID: conversation}})
-	request := ExecuteRequest{
-		Envelope:       identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: principal, ContextID: contextID, RuntimeID: runtimeID, ConversationID: conversation, DeliveryTargetID: conversation, PolicyVersion: policy},
-		JobID:          "toolhub-reconnect-" + strconv.FormatUint(revision, 10),
-		OrganizationID: os.Getenv("HUB_ORGANIZATION_ID"),
-		UserID:         principal,
-		ActorID:        principal,
-		ScopeID:        "user:" + principal,
-		Channel:        "toolhub",
-		Trigger:        "projection",
-		// The marker revision is durable across runtime generations. Bind the
-		// idempotency key to the session too, otherwise a changed SOUL/config
-		// reuses Hermes' old key with a new session and is rejected with 409.
-		IdempotencyKey: "toolhub-reconnect-" + strconv.FormatUint(revision, 10) + "-" + strings.TrimPrefix(reconnectSession, "hub-"),
-		Text:           "/reload-mcp",
-	}
-	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
-	return requestHermesMCPReloadAt(ctx, base, env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH")), request)
-}
-
-func requestHermesMCPReloadAt(ctx context.Context, base, auth string, request ExecuteRequest) error {
-	client := &http.Client{Timeout: 10 * time.Second}
-	sessionID := sessionIDFor(request)
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/api/sessions", auth, map[string]any{"id": sessionID}, nil); err != nil && !errors.Is(err, errSessionExists) {
-		return fmt.Errorf("hermes session: %w", err)
-	}
-	var admission struct {
-		RunID string `json:"run_id"`
-	}
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, map[string]any{"input": request.Text, "session_id": sessionID}, &admission, request.IdempotencyKey); err != nil {
-		return fmt.Errorf("hermes reload admission: %w", err)
-	}
-	if strings.TrimSpace(admission.RunID) == "" {
-		return errors.New("hermes reload returned no run ID")
-	}
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		var status struct {
-			Status string `json:"status"`
-			Error  string `json:"error"`
-		}
-		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+admission.RunID, auth, nil, &status); err != nil {
-			return fmt.Errorf("hermes reload status: %w", err)
-		}
-		switch status.Status {
-		case "completed":
-			return nil
-		case "failed", "cancelled", "interrupted":
-			if status.Error != "" {
-				return errors.New("hermes MCP reload failed")
-			}
-			return fmt.Errorf("hermes MCP reload ended: %s", status.Status)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
-	return errors.New("hermes MCP reload timed out")
+	signalRuntimeProcess()
+	return nil
 }

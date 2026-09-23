@@ -168,7 +168,7 @@ func ControllerAdmissionReleaserFromEnv() (func(context.Context, string) error, 
 		if err != nil {
 			return err
 		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/release", bytes.NewReader(body)) // #nosec G704 -- endpoint was restricted to private ToolHive/controller hosts above.
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(strings.TrimRight(endpoint, "/"), "/admit")+"/release", bytes.NewReader(body)) // #nosec G704 -- endpoint was restricted to private ToolHive/controller hosts above.
 		if err != nil {
 			return err
 		}

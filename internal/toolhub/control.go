@@ -7,8 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
@@ -30,19 +33,21 @@ type SourceReviewer func(context.Context, ArtifactSource) (SourceReview, error)
 type SourceResolver func(context.Context, string) (ArtifactSource, error)
 
 type ControlPlane struct {
-	Store           *Store
-	Secrets         credstore.Backend
-	Reviewer        SourceReviewer
-	SourceResolver  SourceResolver
-	RecipeCatalogs  []RecipeCatalog
-	OAuth           *oauth.Broker
-	Now             func() time.Time
-	Listen          string
-	FormOrigin      string
-	WorkloadRoot    string
-	ConfirmationTTL time.Duration
-	Ready           func(context.Context, EffectiveBinding) error
-	Broker          *credentialbroker.Config
+	Store            *Store
+	Secrets          credstore.Backend
+	Reviewer         SourceReviewer
+	SourceResolver   SourceResolver
+	RecipeCatalogs   []RecipeCatalog
+	OAuth            *oauth.Broker
+	Now              func() time.Time
+	Listen           string
+	FormOrigin       string
+	WorkloadRoot     string
+	ConfirmationTTL  time.Duration
+	Ready            func(context.Context, EffectiveBinding) error
+	Broker           *credentialbroker.Config
+	discoveryMu      sync.Mutex
+	discoveryChoices map[string]discoverySelection
 	// Release asks the workload controller to stop a running workload. Revoke
 	// and remove use it so a cut connector does not keep a materialized
 	// credential alive in a running container until the idle TTL fires.
@@ -87,6 +92,8 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
 	switch op {
+	case "discover":
+		return c.discover(ctx, auth, argString(args, "query"))
 	case "prepare_source":
 		return c.prepareSource(ctx, auth, args)
 	case "status":
@@ -97,6 +104,8 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 		return c.confirm(ctx, auth, args)
 	case "enable":
 		return c.enable(ctx, auth, args)
+	case "rotate":
+		return c.Rotate(auth, args)
 	case "disable":
 		return c.setPhase(auth, args, DisabledStatus, PhaseDisabled)
 	case "revoke":
@@ -112,6 +121,9 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	requestKey := argString(args, "request_key")
 	if requestKey != "" {
 		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok {
+			if err := c.regenerateBrokerRequest(ctx, auth, &existing); err != nil {
+				return nil, err
+			}
 			if err := c.refreshBrokerRequest(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
@@ -127,6 +139,16 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	source := argString(args, "source")
 	definitionID := argString(args, "definition_id")
 	version := argString(args, "version")
+	if candidate := argString(args, "candidate_id"); candidate != "" {
+		if source != "" || definitionID != "" || version != "" {
+			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
+		}
+		var err error
+		source, err = c.selectedRepository(auth, candidate)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if source != "" {
 		return c.prepareSelfInstall(ctx, auth, source, requestKey)
 	}
@@ -167,7 +189,7 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 	}
 	config := defaultSelfInstallConfig(source)
 	review := SourceReview{}
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); ok && c.selfInstallUsable(existing) {
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
 		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
@@ -258,7 +280,26 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 // selfInstallUsable reports whether a stored definition can proceed past the
 // broker-contract gate, so stale records predating contract binding are not
 // reused and re-registered into an eternal failure.
+func completeToolSchemas(definition ToolDefinition) bool {
+	if definition.Source.ToolContractSource != ToolContractPreflight {
+		return true
+	}
+	for _, tool := range definition.Tools {
+		if len(tool.InputSchema) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *ControlPlane) selfInstallUsable(definition ToolDefinition) bool {
+	entry, matched, err := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA, Subfolder: definition.Source.Subfolder})
+	if err != nil {
+		return false
+	}
+	if matched && (definition.Workload.Stateful != entry.Stateful || !maps.Equal(definition.RuntimeEnvironment, entry.RuntimeEnvironment) || definition.CredentialContractID != entry.ContractID || definition.CredentialContractRevision != entry.ContractRevision) {
+		return false
+	}
 	return c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 || definition.CredentialContractID != ""
 }
 
@@ -311,28 +352,30 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 		if env == nil {
 			env = map[string]string{}
 		}
-		covered := map[string]bool{}
-		for name := range env {
-			if required[name] {
-				covered[name] = true
-			}
-		}
+		delivered := map[string]bool{}
 		for _, delivery := range candidate.Deliveries {
 			target := delivery.Target
 			if delivery.Type != "env" {
 				target = delivery.EnvName
 			}
-			if target == "" || !declared[target] {
+			if target == "" {
+				continue
+			}
+			delivered[target] = true
+			if !declared[target] {
 				continue
 			}
 			if env[target] == "" {
 				env[target] = target
 			}
-			if required[target] {
-				covered[target] = true
+		}
+		covered := 0
+		for name := range required {
+			if delivered[env[name]] {
+				covered++
 			}
 		}
-		if len(covered) != len(required) {
+		if covered != len(required) {
 			continue
 		}
 		extra := len(candidate.Deliveries) - len(env)
@@ -356,6 +399,31 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 || len(definition.CredentialContractEnv) == 0 {
 		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", ErrUnauthorized, definition.DefinitionID)
 	}
+	if onboarding.BrokerRequestID == "" && onboarding.BrokerRotateCredentialID == "" {
+		if onboarding.BrokerCredentialID != "" {
+			return nil
+		}
+		c.Store.mu.RLock()
+		matches := c.Store.matchingOwnerConnectionsLocked(auth, definition)
+		c.Store.mu.RUnlock()
+		if len(matches) > 1 {
+			return fmt.Errorf("%w: ambiguous owner connection", ErrUnauthorized)
+		}
+		if len(matches) == 1 {
+			ref := matches[0].credential
+			if ref.Backend == "credential-broker" && ref.BrokerContractID == definition.CredentialContractID && ref.BrokerContractRevision == definition.CredentialContractRevision {
+				onboarding.Locator, onboarding.BrokerCredentialID = ref.Locator, ref.Locator
+				onboarding.BrokerContractID, onboarding.BrokerContractRevision = ref.BrokerContractID, ref.BrokerContractRevision
+				onboarding.Phase = PhaseAwaitingConfirm
+				onboarding.FormNonce = ""
+				onboarding.FormExpires = time.Time{}
+				onboarding.ConfirmationNonce = randomNonce()
+				onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+				onboarding.Revision++
+				return c.Store.PutOnboarding(*onboarding)
+			}
+		}
+	}
 	control, err := c.Broker.New(auth, "broker:control")
 	if err != nil {
 		return err
@@ -378,9 +446,17 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		if definition.Workload.Class == Shared {
 			ownerKind = "context"
 		}
+		connectionID := deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
+		if onboarding.BrokerRotateCredentialID != "" {
+			var credential brokerv1.Credential
+			if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(onboarding.BrokerRotateCredentialID), nil, &credential); err != nil {
+				return err
+			}
+			connectionID = credential.ConnectionID
+		}
 		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
 			ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
-			ConnectionID: deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID),
+			ConnectionID: connectionID, RotateCredentialID: onboarding.BrokerRotateCredentialID,
 			OnboardingID: onboarding.OnboardingID, IdempotencyKey: fmt.Sprintf("%s/broker-%d", onboarding.OnboardingID, onboarding.BrokerAttempts),
 			OwnerKind: ownerKind,
 		})
@@ -472,7 +548,7 @@ func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[
 // the onboarding still waits for credentials, so a dead connect link heals on
 // the next status poll instead of pinning the onboarding forever.
 func (c *ControlPlane) regenerateBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding) error {
-	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds || onboarding.BrokerRequestID == "" {
+	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds {
 		return nil
 	}
 	definition, err := c.definitionOf(*onboarding)
@@ -578,6 +654,7 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	onboarding.BindingID = binding.ToolBindingID
 	onboarding.ConnectionID = binding.ConnectionID
 	onboarding.CredentialRefID = binding.CredentialRefID
+	onboarding.BrokerRotateCredentialID = ""
 	onboarding.Phase = PhaseConfirmed
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -728,7 +805,34 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 		return nil, err
 	}
 	if c.Broker != nil && c.Broker.Enabled() {
-		return nil, fmt.Errorf("%w: rotate requires a new Credential Broker approval request", ErrUnauthorized)
+		if c.Store == nil {
+			return nil, ErrInvalid
+		}
+		onboarding, err := c.resolveOnboarding(auth, args)
+		if err != nil {
+			return nil, err
+		}
+		if onboarding.BrokerCredentialID == "" {
+			return nil, ErrNotFound
+		}
+		if onboarding.BrokerRotateCredentialID != "" && onboarding.Phase == PhaseAwaitingCreds {
+			return c.statusBody(onboarding, true), nil
+		}
+		definition, err := c.definitionOf(onboarding)
+		if err != nil {
+			return nil, err
+		}
+		onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
+		onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
+		onboarding.BrokerAttempts++
+		onboarding.Phase = PhaseAwaitingCreds
+		onboarding.ConfirmationNonce = ""
+		onboarding.ConfirmationUsed = false
+		onboarding.Revision++
+		if err := c.ensureBrokerRequest(context.Background(), auth, &onboarding, definition); err != nil {
+			return nil, err
+		}
+		return c.statusBody(onboarding, true), nil
 	}
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
@@ -829,10 +933,15 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding Onboarding) {
 }
 
 func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Envelope, onboarding Onboarding, definition ToolDefinition) (ToolBinding, error) {
-	if existing := c.Store.findBinding(auth, definition); existing != nil && existing.Status != RevokedStatus {
-		return *existing, nil
+	rotation := onboarding.BrokerRotateCredentialID != ""
+	if existing := c.Store.findBinding(auth, definition); existing != nil && existing.Status != RevokedStatus && !rotation {
+		_, ref, err := c.Store.OwnedConnection(auth, existing.ConnectionID)
+		if onboarding.Locator == "" || err == nil && ref.Locator == onboarding.Locator {
+			return *existing, nil
+		}
+		rotation = true
 	}
-	if c.Ready == nil {
+	if c.Ready == nil && !rotation {
 		binding, err := c.Store.Enable(auth, definition.DefinitionID, definition.Version)
 		if err == nil {
 			return binding, nil
@@ -856,7 +965,27 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	}
 	if len(matches) == 1 {
 		connection := matches[0].connection
+		// A per-owner workload ID is stable across credential revisions. Stop
+		// its old process before a new grant/credential can be admitted under it.
+		if definition.Transport == ContainerMCP {
+			if c.Release == nil {
+				return ToolBinding{}, fmt.Errorf("%w: rotation requires workload release", ErrIsolation)
+			}
+			workloadID := WorkloadInstanceID(definition.DefinitionID, PerUser, auth.ContextID+":"+auth.PrincipalID+":"+connection.ConnectionID, "")
+			if err := c.Release(ctx, workloadID); err != nil {
+				return ToolBinding{}, err
+			}
+		}
 		if c.Broker != nil && c.Broker.Enabled() {
+			if previous := matches[0].credential; previous.Backend == "credential-broker" && previous.BrokerGrantID != "" {
+				control, err := c.Broker.New(auth, "broker:control")
+				if err != nil {
+					return ToolBinding{}, err
+				}
+				if err := control.Do(ctx, http.MethodPost, "/v1/grants/"+url.PathEscape(previous.BrokerGrantID)+"/revoke", nil, nil); err != nil {
+					return ToolBinding{}, err
+				}
+			}
 			next := connection.Revision + 1
 			reference := CredentialReference{CredentialRefID: CredentialReferenceID(connection.ConnectionID, next), ConnectionID: connection.ConnectionID, Revision: next, Backend: "credential-broker", Locator: onboarding.Locator, Keys: credentialNames(onboarding), BrokerContractID: definition.CredentialContractID, BrokerContractRevision: definition.CredentialContractRevision, BrokerEnv: cloneMap(definition.CredentialContractEnv)}
 			candidate := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: next, CredentialRefID: reference.CredentialRefID, CredentialRevision: next, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}

@@ -319,7 +319,9 @@ func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
 		}
 		var listed struct {
 			Tools []struct {
-				Name        string `json:"name"`
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				InputSchema json.RawMessage `json:"inputSchema"`
 				Annotations struct {
 					ReadOnly    bool `json:"readOnlyHint"`
 					Destructive bool `json:"destructiveHint"`
@@ -339,7 +341,14 @@ func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
 			if tool.Annotations.ReadOnly && !tool.Annotations.Destructive {
 				effect = ReadEffect
 			}
-			tools = append(tools, ToolSpec{Name: name, Effect: effect})
+			if len(tool.InputSchema) > 65536 {
+				return nil, fmt.Errorf("%w: MCP input schema too large", ErrInvalid)
+			}
+			description := tool.Description
+			if len(description) > 1024 {
+				description = "" // Long upstream prose is optional; the full schema is not.
+			}
+			tools = append(tools, ToolSpec{Name: name, Effect: effect, Description: description, InputSchema: tool.InputSchema})
 		}
 		return tools, nil
 	}
@@ -368,6 +377,7 @@ func preflightDockerRunArgs(imported ImportedArtifact, name string, extra ...str
 		args = append(args, "--tmpfs", mount.Target+":rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m")
 	}
 	args = append(args, extra...)
+	args = append(args, runtimeEnvironmentArgs(imported.Definition)...)
 	image := imported.Definition.Source.Image
 	if imported.Definition.Source.ArchiveDigest == "" {
 		image += "@" + imported.Definition.Source.Digest
@@ -392,6 +402,10 @@ func preflightDockerRunArgs(imported ImportedArtifact, name string, extra ...str
 }
 
 func preflightCredentialArgs(imported ImportedArtifact) ([]string, func(), error) {
+	prepared, _, err := preparedForSource(ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA, Subfolder: imported.Definition.Source.Subfolder})
+	if err != nil {
+		return nil, func() {}, err
+	}
 	root := os.Getenv("HUB_STATE")
 	directory, err := os.MkdirTemp(root, "hermes-preflight-credentials-")
 	if err != nil {
@@ -399,14 +413,16 @@ func preflightCredentialArgs(imported ImportedArtifact) ([]string, func(), error
 	}
 	cleanup := func() { _ = os.RemoveAll(directory) }
 	args := []string{}
+	if prepared.StateTarget != "" {
+		args = append(args, "--tmpfs", prepared.StateTarget+":rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m")
+	}
 	for _, input := range imported.Definition.Credentials {
 		if !input.Required {
 			continue
 		}
 		value := "preflight"
-		if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") {
+		if body, ok := prepared.PreflightFiles[input.Name]; ok {
 			path := directory + string(os.PathSeparator) + input.Name + ".json"
-			body := []byte(`{"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}`)
 			if err := os.WriteFile(path, body, 0600); err != nil {
 				cleanup()
 				return nil, func() {}, err

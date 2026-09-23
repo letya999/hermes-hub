@@ -206,7 +206,7 @@ secrets as placeholders; a successful retry proves they gate server startup
 and promotes them to required onboarding inputs. Recipes are status
 metadata, not authorization or
 execution; the existing preflight `tools/list`, Credential Broker, ToolHive and
-`/reload-mcp` gates remain authoritative.
+runtime reconnect gates remain authoritative.
 
 `.mcp.json` and `.env.example` are read only for names and launch metadata;
 their values are never returned and those files are not passed to BuildKit.
@@ -264,12 +264,12 @@ from `modelcontextprotocol/servers` at commit
 `initialize` and `tools/list` returned the real sequential-thinking tool.
 
 After a projection change, ToolHub writes `toolhub-reconnect.request` under the
-absolute `HUB_STATE` directory. The serve runtime watches that marker and sends
-Hermes' authenticated `/reload-mcp` command through the pinned API, so tool
-discovery refreshes in place without a Hermes process restart. This path is enabled
+absolute `HUB_STATE` directory. The serve runtime watches that marker and
+schedules its existing controlled Hermes restart from the persistent owner home.
+It records the applied revision to avoid a restart loop. This path is enabled
 by default when ToolHub is configured; set `HUB_TOOLHUB_RECONNECT=false` to retain
-manual reconnect behavior. The marker and request carry only a monotonic revision
-and generic identity metadata, never credential values.
+manual reconnect behavior. The marker carries only a monotonic revision,
+never credential values.
 
 The stdio companion speaks newline JSON-RPC. Go SDK v1.7 first sends
 `server/discover`; servers that neither implement it nor return JSON-RPC

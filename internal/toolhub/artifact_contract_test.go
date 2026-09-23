@@ -253,3 +253,28 @@ func importedReviewPacket(t *testing.T) ImportedArtifact {
 	artifact.Definition.Source.ReviewDigest = digest
 	return artifact
 }
+
+func TestPreflightRetainsSchemaAndBoundsDescription(t *testing.T) {
+	body := `{"id":2,"result":{"tools":[{"name":"read","description":"repository read","inputSchema":{"type":"object","properties":{"owner":{"type":"string"}}}}]}}`
+	tools, err := decodeMCPToolList(strings.NewReader(body))
+	if err != nil || len(tools) != 1 || tools[0].Description != "repository read" || !strings.Contains(string(tools[0].InputSchema), `"owner"`) {
+		t.Fatalf("schema lost: %+v %v", tools, err)
+	}
+	definition := ToolDefinition{Source: DefinitionSource{ToolContractSource: ToolContractPreflight}, Tools: tools}
+	if !completeToolSchemas(definition) {
+		t.Fatal("complete schema rejected")
+	}
+	definition.Tools[0].InputSchema = nil
+	if completeToolSchemas(definition) {
+		t.Fatal("stale schema-less preflight reused")
+	}
+	body = strings.ReplaceAll(body, "repository read", strings.Repeat("x", 1025))
+	tools, err = decodeMCPToolList(strings.NewReader(body))
+	if err != nil || tools[0].Description != "" {
+		t.Fatal("long prose rejected schema")
+	}
+	body = strings.ReplaceAll(body, `"owner"`, `"`+strings.Repeat("x", 65536)+`"`)
+	if _, err = decodeMCPToolList(strings.NewReader(body)); err == nil {
+		t.Fatal("oversized schema accepted")
+	}
+}

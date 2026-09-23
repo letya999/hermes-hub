@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -24,6 +25,14 @@ func dockerBindSource(path string) string {
 		if strings.HasPrefix(path, strings.TrimSuffix(prefix, "/")+"/") {
 			return host + path[len(strings.TrimSuffix(prefix, "/")):]
 		}
+	}
+	if volume := os.Getenv("HUB_BROKER_MATERIALIZED_VOLUME"); volume != "" && strings.HasPrefix(path, "/run/broker-materialized/") {
+		mountpoint, err := exec.Command("docker", "volume", "inspect", "--format", "{{.Mountpoint}}", volume).Output()
+		root := strings.TrimSpace(string(mountpoint))
+		if err != nil || !strings.HasPrefix(root, "/") || strings.Contains(root, "\n") {
+			return "" // fail closed: the daemon must never guess the lease source
+		}
+		return strings.TrimSuffix(root, "/") + strings.TrimPrefix(path, "/run/broker-materialized")
 	}
 	return path
 }

@@ -29,15 +29,31 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 		t.Fatal(err)
 	}
 	request := brokerv1.Request{ID: "request_1", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "ready", CredentialID: "credential_1", Revision: 1, AuthorizationURL: "http://127.0.0.1/connect/request_1"}
+	requests := 0
+	grantRevocations := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			requests++
+			var input brokerv1.CreateRequest
+			if json.NewDecoder(r.Body).Decode(&input) != nil || requests > 1 && (input.RotateCredentialID != "credential_1" || input.ConnectionID != "connection_1") {
+				t.Error("rotation did not select original Broker credential/connection")
+			}
 			_ = json.NewEncoder(w).Encode(request)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
+			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", ConnectionID: "connection_1", Status: "active"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
 			_ = json.NewEncoder(w).Encode(request)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/credentials/credential_1/grants":
+			if requests > 1 && grantRevocations == 0 {
+				http.Error(w, "old workload grant remains active", http.StatusForbidden)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1", CredentialID: "credential_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", BindingID: "binding_1", WorkloadID: "work_1", Execution: "dedicated", ContractID: "github-pat", ContractRevision: 1, PolicyVersion: "policy-1", Active: true})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/grants/grant_1/revoke":
+			grantRevocations++
+			_ = json.NewEncoder(w).Encode(map[string]any{})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/leases":
 			_ = json.NewEncoder(w).Encode(brokerv1.Lease{ID: "lease_1", GrantID: "grant_1", CredentialID: "credential_1", Revision: 1})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/leases/lease_1/materialize":
@@ -97,6 +113,37 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	}
 	if err := injection.Cleanup(); err != nil {
 		t.Fatal(err)
+	}
+	reinstall, err := control.newOnboarding(auth, OnboardingCatalog, "reinstall", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.ensureBrokerRequest(t.Context(), auth, &reinstall, definition); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || reinstall.BrokerCredentialID != "credential_1" || reinstall.Phase != PhaseAwaitingConfirm {
+		t.Fatal("reinstall created new enrollment")
+	}
+	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": reinstall.ConfirmationNonce}); err != nil {
+		t.Fatal(err)
+	}
+	reinstalled, _ := store.OnboardingFor(auth, reinstall.OnboardingID)
+	if reinstalled.BindingID != stored.BindingID || len(store.connections) != 1 {
+		t.Fatal("reinstall duplicated binding/connection")
+	}
+	rotated, err := control.Rotate(auth, map[string]any{"onboarding_id": reinstall.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatal("rotation did not request Broker form")
+	}
+	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": rotated["nonce"]}); err != nil {
+		t.Fatal(err)
+	}
+	reinstalled, _ = store.OnboardingFor(auth, reinstall.OnboardingID)
+	if grantRevocations != 1 || len(store.connections) != 1 || reinstalled.ConnectionID != stored.ConnectionID || reinstalled.CredentialRefID == stored.CredentialRefID {
+		t.Fatal("rotation did not replace same connection revision")
 	}
 	if err := injection.Cleanup(); err != nil {
 		t.Fatal(err)
@@ -166,6 +213,7 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 		t.Fatal(err)
 	}
 	mode := "mount"
+	checkpointed := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -180,11 +228,20 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 				http.Error(w, `{"code":"unavailable"}`, http.StatusServiceUnavailable)
 				return
 			}
-			if mode == "mount" {
+			if mode == "state" {
+				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Mounts: []brokerv1.Mount{{Source: "/run/lease/state", Target: "/state", ReadOnly: false}}})
+			} else if mode == "mount" {
 				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Mounts: []brokerv1.Mount{{Source: "/run/secret", Target: "/secret", ReadOnly: true}}})
 			} else {
 				_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Env: map[string]string{}})
 			}
+		case "/v1/runtime/leases/lease_1/release":
+			var release brokerv1.RuntimeRelease
+			if json.NewDecoder(r.Body).Decode(&release) != nil {
+				t.Error("invalid release")
+			}
+			checkpointed = release.Checkpoint && release.Quiesced
+			_ = json.NewEncoder(w).Encode(map[string]any{})
 		default:
 			http.NotFound(w, r)
 		}
@@ -199,6 +256,27 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
 	if err != nil || len(injection.Mounts) != 1 || injection.Mounts[0].Target != "/secret" {
 		t.Fatalf("file delivery was not returned as a mount: %+v err=%v", injection, err)
+	}
+	if injection.Checkpoint != nil {
+		t.Fatal("readonly credentials got a state checkpoint")
+	}
+	mode = "state"
+	stateInjection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
+	if err != nil || stateInjection.Checkpoint == nil {
+		t.Fatal("state checkpoint unavailable", err)
+	}
+	if err := stateInjection.Checkpoint(); err != nil || !checkpointed {
+		t.Fatal("state not checkpointed after quiescence", err)
+	}
+	if err := stateInjection.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	failedInjection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failedInjection.Cleanup(); err != nil || checkpointed {
+		t.Fatal("failed call checkpointed state", err)
 	}
 	mode = "missing"
 	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil {
@@ -441,6 +519,16 @@ func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
 	if !reflect.DeepEqual(bound.CredentialContractEnv, want) {
 		t.Fatalf("bound definition was not backfilled with optional delivery: %v", bound.CredentialContractEnv)
 	}
+
+	// A stored mapping is not proof that a newer Broker revision still delivers it.
+	catalog[0].Revision = 2
+	catalog[0].Deliveries = catalog[0].Deliveries[:1]
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &bound); err != nil {
+		t.Fatal(err)
+	}
+	if bound.CredentialContractRevision != 1 {
+		t.Fatal("selected contract revision without a required delivery")
+	}
 }
 
 func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
@@ -452,9 +540,18 @@ func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
 	if err := os.WriteFile(keyPath, private, 0600); err != nil {
 		t.Fatal(err)
 	}
+	revoked := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/grants/grant_1/revoke" {
+			revoked = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/credentials/credential_2/grants" {
+			if !revoked {
+				t.Error("replacement grant preceded old grant revocation")
+			}
 			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_2", CredentialID: "credential_2", Active: true})
 			return
 		}
@@ -541,8 +638,11 @@ func TestEnableAfterRevokeAllowsNewConnection(t *testing.T) {
 func TestCredentialEgressHosts(t *testing.T) {
 	env := map[string]string{
 		"GITLAB_API_URL": "https://gitlab.example.com/api/v4",
-		"CUSTOM_PORT":    "https://self.host:8443/api",
-		"TOKEN":          "opaque-secret",
+		"CUSTOM_API_URL": "https://self.host:8443/api",
+		"SECRET_URL":     "https://secret.example.com",
+		"USERINFO_URL":   "https://user:password@userinfo.example.com",
+		"QUERY_URL":      "https://query.example.com/?token=x",
+		"TOKEN":          "https://token.example.com",
 		"INSECURE":       "http://plain.example.com",
 		"BROKEN":         "://bad",
 	}

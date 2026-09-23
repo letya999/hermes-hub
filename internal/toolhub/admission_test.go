@@ -144,7 +144,7 @@ func TestControllerAdmissionReleaserUsesAuthenticatedReleaseEndpoint(t *testing.
 	if err := release(context.Background(), "fixture-workload"); err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != "/admit/release" || gotAuth != "Bearer "+strings.Repeat("r", 32) {
+	if gotPath != "/release" || gotAuth != "Bearer "+strings.Repeat("r", 32) {
 		t.Fatalf("unexpected release request path=%q auth=%q", gotPath, gotAuth)
 	}
 	if err := release(context.Background(), ""); err == nil {

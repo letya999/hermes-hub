@@ -28,6 +28,7 @@ const (
 
 type BackendResult struct {
 	Text       string
+	Content    []mcp.Content
 	Structured any
 	IsError    bool
 	// Receipt is the provider's own mutation proof (for example a Google event
@@ -53,9 +54,12 @@ type envBackend interface {
 // so connector endpoints supplied as credentials would otherwise be denied.
 func credentialEgressHosts(env map[string]string) []string {
 	hosts := make([]string, 0, len(env))
-	for _, value := range env {
+	for name, value := range env {
+		if !strings.HasSuffix(name, "_URL") || secretName(name) {
+			continue
+		}
 		parsed, err := url.Parse(strings.TrimSpace(value))
-		if err != nil || parsed.Scheme != "https" {
+		if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 			continue
 		}
 		host := strings.ToLower(parsed.Hostname())
@@ -96,6 +100,9 @@ type CredentialInjection struct {
 	Environment map[string]string
 	Mounts      []Mount
 	Cleanup     func() error
+	// Checkpoint is called only after the backend has successfully quiesced
+	// a workload using Broker state. Cleanup on a failed call never snapshots.
+	Checkpoint func() error
 }
 
 type CredentialInjector func(context.Context, EffectiveBinding) (CredentialInjection, error)
@@ -211,15 +218,11 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		corr.ToolCallID = newToolCallID()
 	}
 	ctx = withCallCorrelation(ctx, corr)
-	if err := RejectAuthorityArguments(arguments); err != nil {
-		_ = g.audit("deny", mergeAudit(map[string]string{
-			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
-			"policy_version": auth.PolicyVersion, "outcome": "deny", "reason": "authority-argument",
-		}, corr))
-		return nil, err
-	}
 	var out *mcp.CallToolResult
 	err := g.Store.AuthorizeProjected(auth, projectedName, func(projected ProjectedTool, effective EffectiveBinding) error {
+		if err := rejectToolAuthorityArguments(projected.Tool, arguments); err != nil {
+			return err
+		}
 		if len(projected.Tool.InputSchema) > 0 {
 			var schema jsonschema.Schema
 			if json.Unmarshal(projected.Tool.InputSchema, &schema) != nil {
@@ -258,6 +261,11 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			_ = g.audit("deny", mergeAudit(auditFields(auth, projected, effective, "backend-error"), corr))
 			return callErr
 		}
+		if injection.Checkpoint != nil && !result.IsError {
+			if err := injection.Checkpoint(); err != nil {
+				return err
+			}
+		}
 		if result.Structured != nil {
 			encoded, err := json.Marshal(result.Structured)
 			if err != nil {
@@ -270,8 +278,14 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		if len(result.Text) > effective.Definition.Execution.OutputBytes {
 			return fmt.Errorf("%w: backend text output", ErrInvalid)
 		}
-		out = &mcp.CallToolResult{IsError: result.IsError, StructuredContent: result.Structured}
-		if result.Text != "" {
+		if len(result.Content) > 0 {
+			encoded, err := json.Marshal(result.Content)
+			if err != nil || len(encoded) > effective.Definition.Execution.OutputBytes {
+				return fmt.Errorf("%w: backend content output", ErrInvalid)
+			}
+		}
+		out = &mcp.CallToolResult{IsError: result.IsError, StructuredContent: result.Structured, Content: result.Content}
+		if result.Text != "" && len(out.Content) == 0 {
 			out.Content = []mcp.Content{&mcp.TextContent{Text: result.Text}}
 		}
 		fields := auditFields(auth, projected, effective, "allow")
@@ -405,6 +419,27 @@ func RejectAuthorityArguments(arguments map[string]any) error {
 		}
 		if credentialPattern.MatchString(key) {
 			return fmt.Errorf("%w: credential value argument %q", ErrUnauthorized, key)
+		}
+	}
+	return nil
+}
+
+// Provider resource owners are data only when explicitly declared by the
+// admitted tool. Runtime identity and credential selectors remain reserved.
+func rejectToolAuthorityArguments(tool ToolSpec, arguments map[string]any) error {
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	_ = json.Unmarshal(tool.InputSchema, &schema)
+	for key, value := range arguments {
+		switch key {
+		case "owner", "owner_id", "user", "user_id", "account_id":
+			if _, declared := schema.Properties[key]; declared {
+				continue
+			}
+		}
+		if err := RejectAuthorityArguments(map[string]any{key: value}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -607,8 +642,11 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 		if released || len(effective.CredentialMounts) == 0 {
 			return nil
 		}
+		if err := b.AdmissionRelease(context.Background(), receipt.WorkloadID); err != nil {
+			return err
+		}
 		released = true
-		return b.AdmissionRelease(context.Background(), receipt.WorkloadID)
+		return nil
 	}
 	defer func() { _ = release() }()
 	endpoint := ""
@@ -659,7 +697,7 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 			text.WriteString(value.Text)
 		}
 	}
-	out := BackendResult{Text: text.String(), Structured: result.StructuredContent, IsError: result.IsError}
+	out := BackendResult{Text: text.String(), Content: result.Content, Structured: result.StructuredContent, IsError: result.IsError}
 	if telegram && tool.Effect == WriteEffect && !result.IsError {
 		raw, err := json.Marshal(result.StructuredContent)
 		var receipt struct {

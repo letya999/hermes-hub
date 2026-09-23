@@ -172,8 +172,9 @@ manifest-backed exact-owner bindings and persist those bindings to the store;
 `hub-toolhub` reloads the snapshot on list/call. Organization scope may disable a
 binding and cannot enable one. Otherwise the legacy self-service path remains
 active. They cannot edit host settings or runtime-control variables. Provider content
-cannot authorize any mutation. Projection changes write `toolhub-reconnect.request`
-without restarting Hermes. `HUB_TOOLHUB_AUTOSTART=true` starts the shipped
+cannot authorize any mutation. Projection changes write `toolhub-reconnect.request`;
+the runtime restarts Hermes from the same owner home and session store.
+`HUB_TOOLHUB_AUTOSTART=true` starts the shipped
 `hub-toolhub` binary.
 
 ## Scale-to-zero operation (initial implementation)
