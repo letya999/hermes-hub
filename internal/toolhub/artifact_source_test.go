@@ -183,6 +183,41 @@ func TestArtifactAutomaticContextScopesPinnedSubfolder(t *testing.T) {
 	}
 }
 
+func TestRepositoryRecipeContextScopesPinnedSubfolderOnce(t *testing.T) {
+	commit, treeSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	dockerfile := []byte("FROM node:22\nENTRYPOINT [\"node\",\"server.js\"]\n")
+	h := sha1.New() // #nosec G401 -- fixture Git blob ID.
+	_, _ = fmt.Fprintf(h, "blob %d\x00", len(dockerfile))
+	_, _ = h.Write(dockerfile)
+	blobSHA := hex.EncodeToString(h.Sum(nil))
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/git/commits/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": commit, "tree": map[string]any{"sha": treeSHA}})
+		case strings.Contains(r.URL.Path, "/git/trees/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": treeSHA, "tree": []any{
+				map[string]any{"path": "packages/mcp/Dockerfile", "type": "blob", "mode": "100644", "sha": blobSHA, "size": len(dockerfile)},
+			}})
+		default:
+			if r.URL.Path != "/example/mcp/"+commit+"/packages/mcp/Dockerfile" {
+				t.Errorf("unexpected raw file %s", r.URL.Path)
+			}
+			_, _ = w.Write(dockerfile)
+		}
+	}))
+	defer fixture.Close()
+	client := &http.Client{Transport: calendarFixtureTransport{endpoint: fixture.URL, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	source := ArtifactSource{Repository: "https://github.com/example/mcp", Subfolder: "packages/mcp", CommitSHA: commit}
+	contextBytes, err := fetchArtifactContextMode(context.Background(), client, source, nil, 64<<20, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := (RecipeResolver{}).Resolve(context.Background(), source, contextBytes)
+	if err != nil || len(resolution.Launch.Entrypoint) != 2 || resolution.Launch.Entrypoint[0] != "node" {
+		t.Fatalf("subfolder recipe=%+v err=%v", resolution, err)
+	}
+}
+
 func TestArtifactFetchVerifiesSelectedBlobs(t *testing.T) {
 	sha, treeSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	content := []byte("print('fixture')\n")

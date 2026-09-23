@@ -227,6 +227,11 @@ func fetchArtifactContextMode(ctx context.Context, client *http.Client, source A
 				if !ok {
 					continue
 				}
+				// Recipe metadata is scoped by RecipeResolver after this fetch.
+				// Preserve repository paths here so it can apply the subfolder once.
+				if recipeMetadata {
+					outputName = entry.Path
+				}
 			}
 			if entry.Type == "tree" || outputName == "" || (!artifactContextPath(outputName) && !(recipeMetadata && recipeContextPath(outputName))) || (!recipeMetadata && !artifactAutoBuildPath(outputName)) {
 				continue

@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-16
+last_verified: 2026-09-23
 ---
 # Integration contracts
 
@@ -223,7 +223,11 @@ declarations disagree. Deliveries targeting optional declared inputs are wired
 into the workload env mapping as well, so optional values entered at onboarding
 reach the server; a definition bound before this rule is backfilled on the next
 `prepare_source` from the same contract. The operator installs contracts under
-the broker `contracts_dir`.
+the broker `contracts_dir`. Runtime materialization rejects a missing delivery
+for any referenced input, even when another input produced a file mount. A
+file-credential workload must pass admission before its binding is projected;
+writable state is checkpointed only after that workload is stopped. Cleanup
+without a completed stop does not claim quiescence.
 
 Re-onboarding the same definition rotates the single owner connection in place
 instead of opening a second one, for local and broker credentials alike; the
@@ -238,7 +242,9 @@ and `instructions` so clients can drive the phase machine without guessing.
 
 External recipe adapters are opt-in through `HUB_RECIPE_CATALOGS`, a
 comma-separated allowlist of `mcp-registry`, `toolhive`, `docker-mcp`,
-`smithery`, `docker-hub` and `ghcr`; `HUB_RECIPE_CATALOGS=all` enables all six.
+`smithery`, `docker-hub`, `ghcr` and `github-search`;
+`HUB_RECIPE_CATALOGS=all` enables all seven. GitHub search is a source-only
+fallback after registry candidates and never supplies installation authority.
 The adapters use fixed public endpoints. Smithery additionally requires the
 operator-selected environment variable named by `HUB_SMITHERY_TOKEN_ENV`
 (default `SMITHERY_API_KEY`); its bearer value is request-only. GHCR package
@@ -246,6 +252,8 @@ listing may require an operator-selected `HUB_GHCR_TOKEN_ENV`; that token is
 sent only to `api.github.com` and never enters a recipe. Docker Hub namespace
 and tag search uses the official Hub API, while image metadata is verified
 through the OCI distribution API.
+GitHub repository search can use an optional `HUB_GITHUB_SEARCH_TOKEN_ENV`;
+without it, the public API's stricter search rate limit applies.
 
 Catalog hits must correlate to the pinned repository/subfolder/commit.
 Container hits are accepted only after the OCI registry returns an immutable
@@ -263,13 +271,13 @@ from `modelcontextprotocol/servers` at commit
 `82064568802e542c3924560aef2cb421b4ce436c`, through ToolHive 0.49.0:
 `initialize` and `tools/list` returned the real sequential-thinking tool.
 
-After a projection change, ToolHub writes `toolhub-reconnect.request` under the
-absolute `HUB_STATE` directory. The serve runtime watches that marker and
-schedules its existing controlled Hermes restart from the persistent owner home.
-It records the applied revision to avoid a restart loop. This path is enabled
-by default when ToolHub is configured; set `HUB_TOOLHUB_RECONNECT=false` to retain
-manual reconnect behavior. The marker carries only a monotonic revision,
-never credential values.
+The ToolHub endpoint keeps a separate stateful MCP server for each authenticated
+owner token. Projection changes update that server and emit
+`notifications/tools/list_changed` to open sessions. The endpoint also reloads
+the persisted store, so changes made by a separate tools process reach it
+without restarting Hermes. The old serve-runtime restart watcher is removed.
+The pinned-Hermes fixture confirms remove/restore notification and an active
+run surviving refresh; #74 still requires full lifecycle and production evidence.
 
 The stdio companion speaks newline JSON-RPC. Go SDK v1.7 first sends
 `server/discover`; servers that neither implement it nor return JSON-RPC

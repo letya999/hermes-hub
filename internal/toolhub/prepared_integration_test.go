@@ -28,7 +28,7 @@ func TestPreparedLiveBuilds(t *testing.T) {
 	}
 	for _, entry := range entries {
 		t.Run(entry.ID, func(t *testing.T) {
-			review, err := DefaultSourceReviewer(filepath.Join(root, "artifacts"), seccomp)(t.Context(), entry.Source)
+			review, err := DefaultSourceReviewer(filepath.Join(root, "artifacts"), seccomp)(t.Context(), entry.Source, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

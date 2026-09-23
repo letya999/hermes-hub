@@ -22,7 +22,8 @@ ignored. No provider API is guessed by the core resolver.
 
 The shipped opt-in adapters are the official MCP Registry, ToolHive catalog,
 Docker MCP catalog, Smithery, Docker Hub and GHCR. `HUB_RECIPE_CATALOGS=all`
-enables the complete fixed set. Docker Hub namespace/tag search uses the
+also enables a source-only GitHub repository search fallback for discovery;
+that fallback has no resolver or artifact authority. Docker Hub namespace/tag search uses the
 official Hub API. GHCR package/tag search uses the official GitHub Packages
 API when the operator supplies an optional `HUB_GHCR_TOKEN_ENV`; repository
 image hints are also checked directly through the OCI distribution API.

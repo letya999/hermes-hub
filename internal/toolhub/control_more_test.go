@@ -94,7 +94,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err := store.PutGrant(Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer"); !errors.Is(err, ErrInvalid) {
+	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("nil reviewer: %v", err)
 	}
 	control.Reviewer = fixtureReviewer(userMCPDefinition())

@@ -348,6 +348,133 @@ func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
 	}
 }
 
+func TestContainerMCPFileCredentialReadinessQuiescesAndWipes(t *testing.T) {
+	definition := statefulContainerDefinition()
+	root := t.TempDir()
+	effective := EffectiveBinding{
+		Binding:    ToolBinding{ToolBindingID: "bind-file-ready", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
+		Definition: definition, Connection: &Connection{ConnectionID: "stateful", Metadata: map[string]string{}}, WorkloadID: "ready-file-workload",
+		CredentialMounts: []Mount{{Source: "/run/broker-materialized/lease/client.json", Target: "/run/mcp-secrets/client.json", ReadOnly: true}},
+	}
+	releases := 0
+	backend := MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, got EffectiveBinding) (AdmissionReceipt, error) {
+		if len(got.CredentialMounts) != 1 || got.CredentialMounts[0].Target != "/run/mcp-secrets/client.json" {
+			return AdmissionReceipt{}, errors.New("file mount was not admitted")
+		}
+		workspace, err := OpenWorkloadWorkspace(root, got, "")
+		if err != nil {
+			return AdmissionReceipt{}, err
+		}
+		data, err := os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
+		if err != nil || string(data) != "SERVICE_TOKEN=/run/mcp-secrets/client.json" {
+			return AdmissionReceipt{}, fmt.Errorf("file path was not delivered: %q: %v", data, err)
+		}
+		return AdmissionReceipt{WorkloadID: got.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+	}, AdmissionRelease: func(_ context.Context, workloadID string) error {
+		if workloadID != effective.WorkloadID {
+			return errors.New("wrong workload released")
+		}
+		releases++
+		return nil
+	}}
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); err != nil {
+		t.Fatal(err)
+	}
+	if releases != 1 {
+		t.Fatalf("file credential workload releases=%d", releases)
+	}
+	workspace, err := OpenWorkloadWorkspace(root, effective, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); !os.IsNotExist(err) {
+		t.Fatalf("file credential path retained after readiness: %v", err)
+	}
+	backend.AdmissionRelease = func(context.Context, string) error { return errors.New("release failed") }
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); err == nil {
+		t.Fatal("workload release failure accepted as ready")
+	}
+	backend.AdmissionVerifier = func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
+		return AdmissionReceipt{WorkloadID: "foreign-workload", State: "running", Enforced: true}, nil
+	}
+	backend.AdmissionRelease = func(_ context.Context, workloadID string) error {
+		if workloadID != effective.WorkloadID {
+			return errors.New("invalid receipt released another workload")
+		}
+		releases++
+		return nil
+	}
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); !errors.Is(err, ErrIsolation) || releases != 2 {
+		t.Fatalf("invalid admission proof left workload running: releases=%d err=%v", releases, err)
+	}
+	backend.AdmissionRelease = nil
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("file credential readiness without a stop path: %v", err)
+	}
+}
+
+func TestPreparedReadinessRequiresSafeProviderResult(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entries[0]
+	denied := false
+	calls := 0
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "provider-probe", Version: "1"}, nil)
+	mcpServer.AddTool(&mcp.Tool{Name: entry.ProbeTool, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		calls++
+		return &mcp.CallToolResult{IsError: denied, Content: []mcp.Content{&mcp.TextContent{Text: "private provider result"}}}, nil
+	})
+	mcpServer.AddTool(&mcp.Tool{Name: entries[1].ProbeTool, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		calls++
+		return &mcp.CallToolResult{IsError: denied}, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+	defer httpServer.Close()
+	definition := statefulContainerDefinition()
+	definition.Source.Repository, definition.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
+	definition.Tools = []ToolSpec{{Name: entry.ProbeTool, Effect: ReadEffect}}
+	effective := EffectiveBinding{
+		Binding:    ToolBinding{ToolBindingID: "bind-provider-probe", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
+		Definition: definition, Connection: &Connection{ConnectionID: "provider", Metadata: map[string]string{}}, WorkloadID: "provider-probe-workload",
+	}
+	releases := 0
+	backend := MCPBackend{Root: t.TempDir(), HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
+		return AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+	}, AdmissionRelease: func(context.Context, string) error { releases++; return nil }}
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "fixture-only"}); err != nil || calls != 1 || releases != 0 {
+		t.Fatalf("safe provider result did not prove readiness: calls=%d releases=%d err=%v", calls, releases, err)
+	}
+	denied = true
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "invalid-fixture"}); !errors.Is(err, ErrUnauthorized) || calls != 2 || releases != 1 {
+		t.Fatalf("provider denial was accepted: calls=%d releases=%d err=%v", calls, releases, err)
+	}
+	workspace, err := OpenWorkloadWorkspace(backend.Root, effective, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); !os.IsNotExist(err) {
+		t.Fatalf("probe retained an environment file: %v", err)
+	}
+	effective.Definition.Tools = nil
+	if err := backend.EnsureReady(t.Context(), effective, nil); !errors.Is(err, ErrStale) {
+		t.Fatalf("missing reviewed provider probe accepted: %v", err)
+	}
+	effective.Definition = definition
+	denied = false
+	definition.Source.Repository, definition.Source.CommitSHA = entries[1].Source.Repository, entries[1].Source.CommitSHA
+	definition.Tools = []ToolSpec{{Name: entries[1].ProbeTool, Effect: ReadEffect}}
+	effective.Definition = definition
+	effective.CredentialMounts = []Mount{{Source: "/run/broker-materialized/lease/client.json", Target: "/run/mcp-secrets/client.json", ReadOnly: true}}
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"GOOGLE_OAUTH_CREDENTIALS": "/run/mcp-secrets/client.json"}); err != nil || calls != 3 || releases != 2 {
+		t.Fatalf("file credential probe did not stop the workload before checkpoint: calls=%d releases=%d err=%v", calls, releases, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); !os.IsNotExist(err) {
+		t.Fatalf("file credential probe retained an environment file: %v", err)
+	}
+}
+
 func TestWorkloadWorkspacePersistenceAndJobCleanup(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	effective, err := store.Resolve(auth, binding.ToolBindingID)
