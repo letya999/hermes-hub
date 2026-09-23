@@ -40,6 +40,27 @@ func run() error {
 	server := &http.Server{Addr: config.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	refresher := handler.(interface{ RefreshProjection() error })
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		pending := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := refresher.RefreshProjection(); err != nil {
+					if !pending {
+						fmt.Fprintln(os.Stderr, "ToolHub projection refresh pending")
+					}
+					pending = true
+				} else {
+					pending = false
+				}
+			}
+		}
+	}()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServe() }()
 	select {

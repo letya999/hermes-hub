@@ -2,11 +2,11 @@ package toolhub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -147,7 +147,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
 	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), Broker: config.BrokerControl, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
 	if ready := readinessBackend(config.Backend); ready != nil {
-		control.Ready = func(ctx context.Context, effective EffectiveBinding) error {
+		control.Ready = func(ctx context.Context, effective EffectiveBinding) (readyErr error) {
 			if gateway.Injector == nil {
 				return ready(ctx, effective, nil)
 			}
@@ -156,20 +156,21 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 				return err
 			}
 			if injection.Cleanup != nil {
-				defer injection.Cleanup()
+				defer func() { readyErr = errors.Join(readyErr, injection.Cleanup()) }()
 			}
-			if len(injection.Mounts) > 0 {
-				// File deliveries are deliberately one-shot: the per-call path
-				// owns the Broker lease and releases the workload after the call.
-				return nil
+			effective.CredentialMounts = append([]Mount(nil), injection.Mounts...)
+			if err := ready(ctx, effective, injection.Environment); err != nil {
+				return err
 			}
-			return ready(ctx, effective, injection.Environment)
+			if injection.Checkpoint != nil {
+				return injection.Checkpoint()
+			}
+			return nil
 		}
 	}
-	stateRoot := strings.TrimSpace(os.Getenv("HUB_STATE"))
-	if store.Reconnect == nil && filepath.IsAbs(stateRoot) {
+	if store.Reconnect == nil {
 		store.Reconnect = &ReconnectController{Store: store, Auth: config.Auth, OnChange: func(change ProjectionChange) error {
-			return WriteReconnectMarker(stateRoot, change)
+			return gateway.RefreshProjection()
 		}}
 	}
 	control.SourceResolver = ResolveGitHubSource
@@ -205,8 +206,19 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			return ledger.Append(record)
 		}
 	}
-	return gateway.Handler()
+	handler, err := gateway.Handler()
+	if err != nil {
+		return nil, err
+	}
+	return &projectionEndpoint{Handler: handler, gateway: gateway}, nil
 }
+
+type projectionEndpoint struct {
+	http.Handler
+	gateway *Gateway
+}
+
+func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }
 
 func formOriginForListen(listen string) string {
 	listen = strings.TrimRight(strings.TrimSpace(listen), "/")

@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-20
+last_verified: 2026-09-23
 ---
 # Operations
 
@@ -172,8 +172,8 @@ manifest-backed exact-owner bindings and persist those bindings to the store;
 `hub-toolhub` reloads the snapshot on list/call. Organization scope may disable a
 binding and cannot enable one. Otherwise the legacy self-service path remains
 active. They cannot edit host settings or runtime-control variables. Provider content
-cannot authorize any mutation. Projection changes write `toolhub-reconnect.request`;
-the runtime restarts Hermes from the same owner home and session store.
+cannot authorize any mutation. The ToolHub endpoint reloads projection changes
+and notifies the owner's open MCP session without restarting Hermes.
 `HUB_TOOLHUB_AUTOSTART=true` starts the shipped
 `hub-toolhub` binary.
 

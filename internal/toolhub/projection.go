@@ -40,16 +40,15 @@ func (c *ReconnectController) Reconcile() (ProjectionChange, bool, error) {
 		return ProjectionChange{}, false, err
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if revision <= c.last {
-		c.mu.Unlock()
 		return ProjectionChange{}, false, nil
 	}
-	c.last = revision
-	c.mu.Unlock()
 	change := ProjectionChange{Revision: revision, Reason: "effective-binding-changed"}
 	if err := c.OnChange(change); err != nil {
 		return change, true, err
 	}
+	c.last = revision
 	return change, true, nil
 }
 

@@ -55,6 +55,7 @@ type PreparedEntry struct {
 	PreflightFiles     map[string]json.RawMessage `json:"preflight_files,omitempty"`
 	Egress             []string                   `json:"egress"`
 	ReadTools          []string                   `json:"read_tools"`
+	ProbeTool          string                     `json:"probe_tool,omitempty"`
 	Runbook            string                     `json:"runbook"`
 	Handoff            string                     `json:"handoff"`
 }
@@ -76,7 +77,7 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 	seen := map[string]bool{}
 	for _, entry := range entries {
 		_, sourceErr := entry.Source.ArchiveURL()
-		if sourceErr != nil || !identity.ValidID(entry.ID) || seen[entry.ID] || seen[entry.Source.Repository] || entry.Name == "" || entry.License == "" || entry.Runbook == "" || entry.Handoff == "" || len(entry.Entrypoint) == 0 || len(entry.ReadTools) == 0 {
+		if sourceErr != nil || !identity.ValidID(entry.ID) || seen[entry.ID] || seen[entry.Source.Repository] || entry.Name == "" || entry.License == "" || entry.Runbook == "" || entry.Handoff == "" || len(entry.Entrypoint) == 0 || len(entry.ReadTools) == 0 || entry.ProbeTool != "" && !slices.Contains(entry.ReadTools, entry.ProbeTool) {
 			return nil, fmt.Errorf("%w: incomplete or duplicate prepared entry", ErrInvalid)
 		}
 		if err := entry.Connection.Validate(); err != nil {

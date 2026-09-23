@@ -24,20 +24,45 @@ func DefaultSourceReviewer(artifactsDir, seccompPath string) SourceReviewer {
 // catalog must be supplied by a verified adapter; Resolver never guesses a
 // provider API or treats a name-only catalog hit as an artifact match.
 func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalogs []RecipeCatalog) SourceReviewer {
-	return func(ctx context.Context, source ArtifactSource) (SourceReview, error) {
+	return func(ctx context.Context, source ArtifactSource, selected *RecipeCandidate) (SourceReview, error) {
 		if !filepath.IsAbs(artifactsDir) || !filepath.IsAbs(seccompPath) {
 			return SourceReview{}, fmt.Errorf("%w: absolute artifact and seccomp paths required", ErrInvalid)
 		}
 		if _, err := os.Stat(seccompPath); err != nil {
 			return SourceReview{}, fmt.Errorf("%w: seccomp: %v", ErrInvalid, err)
 		}
+		if selected != nil && (!candidateMatches(*selected, source) || selected.Launch.Transport != ContainerMCP || !digestPattern.MatchString(selected.Launch.Digest)) {
+			return SourceReview{}, fmt.Errorf("%w: selected registry artifact does not match the exact source", ErrInvalid)
+		}
 		contextBytes, err := FetchRepositoryRecipeContext(ctx, source, 64<<20)
 		if err != nil {
 			return SourceReview{}, err
 		}
-		resolution, err := (RecipeResolver{Catalogs: catalogs}).Resolve(ctx, source, contextBytes)
+		resolverCatalogs := catalogs
+		if selected != nil {
+			resolverCatalogs = nil
+		}
+		resolution, err := (RecipeResolver{Catalogs: resolverCatalogs}).Resolve(ctx, source, contextBytes)
 		if err != nil {
 			return SourceReview{}, err
+		}
+		if selected != nil {
+			lookup, lookupErr := recipeLookup(source)
+			if lookupErr != nil {
+				return SourceReview{}, fmt.Errorf("%w: selected registry artifact does not match the exact source", ErrInvalid)
+			}
+			verified, accepted, verifyErr := verifyRecipeCandidateAt(ctx, nil, "", *selected, lookup)
+			if verifyErr != nil {
+				return SourceReview{}, verifyErr
+			}
+			if !accepted || verified.Launch.Digest != selected.Launch.Digest {
+				return SourceReview{}, fmt.Errorf("%w: selected registry artifact changed or lost OCI proof", ErrStale)
+			}
+			resolution.Launch = verified.Launch
+			resolution.Connection = mergeConnection(resolution.Connection, verified.Connection)
+			resolution.Evidence = append(resolution.Evidence, verified.Evidence...)
+			resolution.Evidence = append(resolution.Evidence, verified.Launch.Evidence...)
+			resolution.State = "ready"
 		}
 		config := defaultSelfInstallConfig(source)
 		prepared, matched, err := preparedForSource(source)
@@ -66,6 +91,9 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 				if published, _, publishedErr = PreflightPublishedArtifact(ctx, published); publishedErr == nil {
 					return SourceReview{Definition: published.Definition, Permissions: toolNames(published.Definition), Effects: effectNames(published.Definition), ReviewDigest: published.Definition.Source.ReviewDigest, Recipe: &resolution}, nil
 				}
+			}
+			if selected != nil {
+				return SourceReview{}, fmt.Errorf("%w: selected registry artifact failed preflight: %v", ErrIsolation, publishedErr)
 			}
 		}
 		imported, err := ImportGitHubArtifact(ctx, source, config, RestrictedBuildConfig{

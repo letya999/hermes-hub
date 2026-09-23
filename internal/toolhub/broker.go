@@ -35,17 +35,17 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 			return CredentialInjection{}, err
 		}
 		released := false
-		release := func(checkpoint bool) error {
+		release := func(checkpoint, quiesced bool) error {
 			if released {
 				return nil
 			}
-			err := runtime.Release(context.Background(), lease.ID, brokerv1.RuntimeRelease{Quiesced: true, Checkpoint: checkpoint})
+			err := runtime.Release(context.Background(), lease.ID, brokerv1.RuntimeRelease{Quiesced: quiesced, Checkpoint: checkpoint})
 			released = err == nil
 			return err
 		}
 		materialized, err := runtime.Materialize(ctx, lease.ID)
 		if err != nil {
-			_ = release(false)
+			_ = release(false, false)
 			return CredentialInjection{}, err
 		}
 		environment := map[string]string{}
@@ -55,8 +55,8 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 			}
 		}
 		for _, input := range effective.Credential.Keys {
-			if environment[input] == "" && len(materialized.Mounts) == 0 {
-				_ = release(false)
+			if environment[input] == "" {
+				_ = release(false, false)
 				return CredentialInjection{}, fmt.Errorf("%w: broker delivery %s", ErrIsolation, input)
 			}
 		}
@@ -65,13 +65,13 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 		for _, mount := range materialized.Mounts {
 			mounts = append(mounts, Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
 			if !mount.ReadOnly {
-				checkpoint = func() error { return release(true) }
+				checkpoint = func() error { return release(true, true) }
 			}
 		}
 		return CredentialInjection{Environment: environment, Mounts: mounts, Checkpoint: checkpoint, Cleanup: func() error {
 			clear(environment)
 			clear(materialized.Env)
-			return release(false)
+			return release(false, false)
 		}}, nil
 	}
 }
@@ -88,7 +88,13 @@ func effectiveBrokerEnvelope(effective EffectiveBinding) identity.Envelope {
 func mergeCredentialInjectors(local, broker CredentialInjector, brokerOnly bool) CredentialInjector {
 	if brokerOnly {
 		return func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
-			if effective.Credential == nil || effective.Credential.Backend != "credential-broker" {
+			if effective.Credential == nil {
+				if len(effective.Definition.Credentials) == 0 {
+					return CredentialInjection{Environment: map[string]string{}}, nil
+				}
+				return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
+			}
+			if effective.Credential.Backend != "credential-broker" {
 				return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
 			}
 			return broker(ctx, effective)

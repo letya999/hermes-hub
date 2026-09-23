@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-17
+last_verified: 2026-09-23
 ---
 # Architecture
 
@@ -42,10 +42,11 @@ and validated against the real image by the Docker gate. This is a future adapte
 surface: the capability response explicitly reports `split_runtime=false`, so tools
 would execute on the API-server host. The current Go `/v1/execute` runtime remains the
 private identity and filesystem trust boundary until a split-runtime adapter is
-implemented. When ToolHub writes a durable `toolhub-reconnect.request` projection
-marker, the serve runtime schedules a controlled Hermes restart from the same
-owner home and session store. The applied revision prevents a restart loop;
-the watcher is opt-out with `HUB_TOOLHUB_RECONNECT=false`.
+implemented. ToolHub now retains an owner-scoped MCP session and updates its tool
+list when the persisted projection changes. The Go SDK sends
+`notifications/tools/list_changed`; the serve runtime no longer restarts Hermes
+for that change. A pinned-Hermes fixture preserved the process, session and an
+active run during refresh. Full lifecycle and production acceptance remain in #74.
 
 ## Scope homes
 
@@ -243,7 +244,8 @@ bindings. Ambiguous owner connections fail closed. Organization scope may disabl
 binding (narrow) but cannot enable one (expand). The legacy `stack`/`self-services.json`
 path remains the compatibility fallback when the store is unset; no runtime route is
 switched by this stage. Each projection has a persisted monotonic revision and an
-observable, at-most-once reconnect hook that writes `toolhub-reconnect.request`.
+observable projection revision; the ToolHub endpoint polls the persisted store
+and refreshes existing MCP sessions when tools change.
 Credential-bearing onboarding can use the generic MCP readiness hook: ToolHive
 admission and its validated running receipt complete before a new binding is
 persisted and its projection is published; failed admission restores any previous

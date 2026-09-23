@@ -157,7 +157,7 @@ func TestPrepareSourcePublishesRecipeOnlyToItsOwner(t *testing.T) {
 		Launch:     LaunchRecipe{Transport: ContainerMCP, Entrypoint: []string{"/app/server"}},
 		Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "API_TOKEN", Type: "secret", Required: true, Secret: true, Delivery: "env", Target: "API_TOKEN"}}},
 	}
-	fix := newControlFixture(t, func(context.Context, ArtifactSource) (SourceReview, error) {
+	fix := newControlFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
 		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review", Recipe: recipe}, nil
 	})
 	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -23,6 +24,7 @@ type DiscoveryCandidate struct {
 	Status      string            `json:"status"`
 	Runbook     string            `json:"runbook,omitempty"`
 	Handoff     string            `json:"handoff,omitempty"`
+	recipe      *RecipeCandidate
 }
 
 type discoverySelection struct {
@@ -31,8 +33,100 @@ type discoverySelection struct {
 	Expires   time.Time
 }
 
+// SourceSearchCatalog may suggest repository URLs without installation
+// authority. prepare_source still pins and reviews the selected repository.
+type SourceSearchCatalog interface {
+	SearchSources(context.Context, string) ([]DiscoveryCandidate, error)
+}
+
+func searchCatalogSources(ctx context.Context, catalogs []RecipeCatalog, query string, fallback bool) ([]DiscoveryCandidate, []string) {
+	results := make([][]DiscoveryCandidate, len(catalogs))
+	warnings := make([]string, len(catalogs))
+	var pending sync.WaitGroup
+	for i, catalog := range catalogs {
+		_, isFallback := catalog.(GitHubSearchCatalog)
+		if isFallback != fallback {
+			continue
+		}
+		searcher, ok := catalog.(SourceSearchCatalog)
+		if !ok {
+			continue
+		}
+		pending.Add(1)
+		go func(i int, searcher SourceSearchCatalog) {
+			defer pending.Done()
+			if found, err := searcher.SearchSources(ctx, query); err == nil && len(found) <= 32 {
+				results[i] = found
+			} else {
+				warnings[i] = fmt.Sprintf("%T search unavailable", catalogs[i])
+			}
+		}(i, searcher)
+	}
+	pending.Wait()
+	var found []DiscoveryCandidate
+	for _, result := range results {
+		found = append(found, result...)
+	}
+	slices.SortFunc(found, func(a, b DiscoveryCandidate) int {
+		if rank := discoverySourceRank(a) - discoverySourceRank(b); rank != 0 {
+			return rank
+		}
+		return strings.Compare(a.Source.Repository+"@"+a.Source.CommitSHA, b.Source.Repository+"@"+b.Source.CommitSHA)
+	})
+	return found, slices.DeleteFunc(warnings, func(warning string) bool { return warning == "" })
+}
+
+func discoverySourceRank(candidate DiscoveryCandidate) int {
+	if len(candidate.Evidence) == 0 {
+		return 9
+	}
+	switch candidate.Evidence[0].Source {
+	case "mcp-registry":
+		return 0
+	case "toolhive":
+		return 1
+	case "docker-mcp":
+		return 2
+	case "smithery":
+		return 3
+	default:
+		return 9
+	}
+}
+
+func appendDiscovered(candidates []DiscoveryCandidate, found []DiscoveryCandidate) []DiscoveryCandidate {
+	seen := map[string]int{}
+	for i, candidate := range candidates {
+		seen[strings.ToLower(candidate.Source.Repository+"/"+candidate.Source.Subfolder)] = i
+	}
+	for _, candidate := range found {
+		if candidate.Name == "" || len(candidate.Name) > 120 || strings.ContainsAny(candidate.Name, "\x00\r\n") {
+			continue
+		}
+		if candidate.Source.CommitSHA == "" {
+			if _, err := parseGitHubRepository(candidate.Source.Repository); err != nil || !validGitHubSubfolder(candidate.Source.Subfolder) {
+				continue
+			}
+		} else if _, err := candidate.Source.ArchiveURL(); err != nil {
+			continue
+		}
+		key := strings.ToLower(candidate.Source.Repository + "/" + candidate.Source.Subfolder)
+		if i, ok := seen[key]; ok {
+			candidates[i].Evidence = append(candidates[i].Evidence, candidate.Evidence...)
+			continue
+		}
+		if len(candidates) == 5 {
+			break
+		}
+		seen[key] = len(candidates)
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
 // discover never prepares, builds, enrolls credentials or creates a binding.
-// Catalog lookup is bounded to repositories identified by the reviewed bundle.
+// Catalog source search is independent of the prepared bundle; exact artifact
+// matches remain bound to the prepared source and commit.
 func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, query string) (map[string]any, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" || len(query) > 256 || strings.ContainsAny(query, "\x00\r\n") {
@@ -77,15 +171,35 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 			if launchReady(alternative.Launch) {
 				status = "requires-preflight"
 			}
+			candidate := alternative
+			var selectedRecipe *RecipeCandidate
+			if status == "requires-preflight" && alternative.Launch.Transport == ContainerMCP {
+				selectedRecipe = &candidate
+			}
 			candidates = append(candidates, DiscoveryCandidate{Name: lookup.Name, Source: candidates[0].Source, Artifact: alternative.Launch.Artifact, Digest: alternative.Launch.Digest,
-				Credentials: alternative.Connection.Fields, Evidence: alternative.Evidence, Reason: "Matching registry metadata; source is re-resolved and reviewed on selection", Status: status})
+				Credentials: alternative.Connection.Fields, Evidence: alternative.Evidence, Reason: "Matching registry metadata; OCI proof is rechecked on selection", Status: status, recipe: selectedRecipe})
 		}
 		if len(alternatives) == 0 {
 			warnings = append(warnings, "Enabled registries returned no matching exact-source alternatives; prepared source remains available")
 		}
 	}
+	if len(c.RecipeCatalogs) > 0 && len(candidates) < 5 {
+		lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		found, searchWarnings := searchCatalogSources(lookupCtx, c.RecipeCatalogs, query, false)
+		warnings = append(warnings, searchWarnings...)
+		candidates = appendDiscovered(candidates, found)
+		if len(candidates) < 5 {
+			found, searchWarnings = searchCatalogSources(lookupCtx, c.RecipeCatalogs, query, true)
+			warnings = append(warnings, searchWarnings...)
+			candidates = appendDiscovered(candidates, found)
+		}
+	}
 	if len(candidates) == 0 {
-		warnings = append(warnings, "No prepared repository matched; supply an exact GitHub URL for generic source review")
+		warnings = append(warnings, "No registry or prepared repository matched; supply an exact GitHub URL for generic source review")
+	}
+	if len(warnings) > 4 {
+		warnings = warnings[:4]
 	}
 	c.discoveryMu.Lock()
 	defer c.discoveryMu.Unlock()
@@ -107,12 +221,31 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 	return map[string]any{"candidates": candidates, "warnings": warnings}, nil
 }
 
-func (c *ControlPlane) selectedRepository(auth identity.Envelope, id string) (string, error) {
+func (c *ControlPlane) selectedCandidate(auth identity.Envelope, id string) (DiscoveryCandidate, error) {
 	c.discoveryMu.Lock()
 	defer c.discoveryMu.Unlock()
 	choice, ok := c.discoveryChoices[id]
 	if !ok || !c.now().Before(choice.Expires) || choice.Owner.PrincipalID != auth.PrincipalID || choice.Owner.ContextID != auth.ContextID || choice.Owner.RuntimeID != auth.RuntimeID || choice.Owner.PolicyVersion != auth.PolicyVersion {
-		return "", fmt.Errorf("%w: discovery selection expired or unavailable", ErrUnauthorized)
+		return DiscoveryCandidate{}, fmt.Errorf("%w: discovery selection expired or unavailable", ErrUnauthorized)
 	}
-	return choice.Candidate.Source.Repository, nil
+	return choice.Candidate, nil
+}
+
+func (candidate DiscoveryCandidate) sourceURL() string {
+	source := candidate.Source
+	if source.CommitSHA == "" {
+		return source.Repository
+	}
+	if source.Subfolder != "" {
+		return source.Repository + "/tree/" + source.CommitSHA + "/" + source.Subfolder
+	}
+	return source.Repository + "/commit/" + source.CommitSHA
+}
+
+func (c *ControlPlane) selectedRepository(auth identity.Envelope, id string) (string, error) {
+	candidate, err := c.selectedCandidate(auth, id)
+	if err != nil {
+		return "", err
+	}
+	return candidate.sourceURL(), nil
 }

@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,7 +33,7 @@ func TestRecipeCatalogsFromEnvIsExplicitAndDoesNotAcceptUnknownAdapters(t *testi
 	t.Setenv("TEST_SMITHERY_TOKEN", "fixture-token")
 	t.Setenv("HUB_RECIPE_CATALOGS", "all")
 	catalogs, err = RecipeCatalogsFromEnv()
-	if err != nil || len(catalogs) != 6 {
+	if err != nil || len(catalogs) != 7 {
 		t.Fatalf("all catalog adapters: %#v %v", catalogs, err)
 	}
 	t.Setenv("HUB_RECIPE_CATALOGS", "unknown")
@@ -58,6 +59,20 @@ func TestRecipeCatalogsFromEnvIsExplicitAndDoesNotAcceptUnknownAdapters(t *testi
 	encoded, _ := json.Marshal(catalogs)
 	if strings.Contains(string(encoded), "fixture-token") {
 		t.Fatal("catalog token entered adapter metadata")
+	}
+}
+
+func TestGitHubFallbackSearchIsSourceOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search/repositories" || r.URL.Query().Get("q") != "weather mcp in:name,description" || r.URL.Query().Get("per_page") != "16" {
+			t.Errorf("unexpected GitHub search request: %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"items":[{"full_name":"acme/weather-mcp","html_url":"https://github.com/acme/weather-mcp"},{"full_name":"acme/archived","html_url":"https://github.com/acme/archived","archived":true},{"full_name":"evil/weather","html_url":"https://evil.example/weather"}]}`))
+	}))
+	defer server.Close()
+	results, err := (GitHubSearchCatalog{Endpoint: server.URL, Client: server.Client()}).SearchSources(t.Context(), "weather")
+	if err != nil || len(results) != 1 || results[0].Status != "github-source" || results[0].Source.CommitSHA != "" {
+		t.Fatalf("GitHub fallback search: %+v %v", results, err)
 	}
 }
 
@@ -146,6 +161,43 @@ func TestToolHiveCatalogHandlesNotFoundAndRepositoryMatchedRemote(t *testing.T) 
 	}
 }
 
+func TestToolHiveAndSmitheryNameSearchReturnOnlyReviewableSources(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	var smitheryAuth int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/toolhive.json":
+			_, _ = w.Write([]byte(`{"data":{"servers":[{"name":"io.github.acme/weather","title":"Weather MCP","repository":{"url":"https://github.com/acme/weather"}},{"name":"weather-evil","repository":{"url":"https://evil.example/weather"}}]}}`))
+		case "/servers":
+			if r.Header.Get("Authorization") != "Bearer fixture-token" || r.URL.Query().Get("q") != "weather" {
+				t.Error("Smithery search did not bind token and query")
+			}
+			smitheryAuth++
+			_, _ = w.Write([]byte(`{"servers":[{"qualifiedName":"acme/weather","displayName":"Weather MCP"}]}`))
+		case "/servers/acme/weather/releases":
+			if r.Header.Get("Authorization") != "Bearer fixture-token" {
+				t.Error("Smithery release omitted catalog token")
+			}
+			smitheryAuth++
+			_, _ = w.Write([]byte(`[{"commit":"` + commit + `","upstreamUrl":"https://github.com/acme/weather"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	toolhive, err := (ToolHiveCatalog{IndexEndpoint: server.URL + "/toolhive.json", Client: server.Client()}).SearchSources(t.Context(), "weather")
+	if err != nil || len(toolhive) != 1 || toolhive[0].Source.Repository != "https://github.com/acme/weather" || toolhive[0].Status != "registry-source" {
+		t.Fatalf("ToolHive source search: %+v %v", toolhive, err)
+	}
+	smithery, err := (SmitheryCatalog{Endpoint: server.URL, Token: "fixture-token", Client: server.Client()}).SearchSources(t.Context(), "weather")
+	if err != nil || len(smithery) != 1 || smithery[0].Source.Repository != toolhive[0].Source.Repository || smithery[0].Source.CommitSHA != commit || smitheryAuth != 2 {
+		t.Fatalf("Smithery source search: %+v calls=%d err=%v", smithery, smitheryAuth, err)
+	}
+	if _, err := (SmitheryCatalog{Endpoint: server.URL, Client: server.Client()}).SearchSources(t.Context(), "weather"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Smithery accepted absent token: %v", err)
+	}
+}
+
 func TestSmitheryCatalogUsesBearerOnlyForRequestsAndMatchesRelease(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	var sawAuth int
@@ -205,6 +257,31 @@ func TestInspectPublishedOCIRequiresImmutableProvenanceAndSBOM(t *testing.T) {
 	}
 	if proof.ManifestDigest != manifestDigest || proof.Source != "https://github.com/acme/weather" || proof.Revision != commit || proof.ProvenanceDigest != provenanceDigest || proof.SBOMDigest != sbomDigest || proof.Image != "ghcr.io/acme/weather" || len(proof.Entrypoint) != 1 {
 		t.Fatalf("OCI proof: %+v", proof)
+	}
+	lookup := RecipeLookup{Repository: proof.Source, CommitSHA: commit, VersionHints: []string{"1.2.3"}}
+	candidate := RecipeCandidate{Repository: proof.Source, CommitSHA: commit, Launch: LaunchRecipe{Transport: ContainerMCP, Artifact: "ghcr.io/acme/weather:1.2.3", Digest: manifestDigest}}
+	verified, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup)
+	if err != nil || !accepted || verified.Launch.Digest != manifestDigest || verified.Launch.Entrypoint[0] != "/app/server" {
+		t.Fatalf("exact OCI candidate: %+v accepted=%t err=%v", verified, accepted, err)
+	}
+	candidate.Launch.Digest = "sha256:" + strings.Repeat("e", 64)
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || !errors.Is(err, ErrStale) {
+		t.Fatalf("changed OCI digest accepted: accepted=%t err=%v", accepted, err)
+	}
+	candidate.Launch.Digest = manifestDigest
+	lookup.CommitSHA = strings.Repeat("f", 40)
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || err != nil {
+		t.Fatalf("foreign source revision accepted: accepted=%t err=%v", accepted, err)
+	}
+	lookup.CommitSHA = commit
+	lookup.VersionHints = []string{"2.0.0"}
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || err != nil {
+		t.Fatalf("unreviewed OCI version accepted: accepted=%t err=%v", accepted, err)
+	}
+	lookup.VersionHints = nil
+	candidate.CommitSHA = strings.Repeat("f", 40)
+	if _, accepted, err := verifyRecipeCandidateAt(context.Background(), server.Client(), server.URL, candidate, lookup); accepted || err != nil {
+		t.Fatalf("candidate revision drift accepted: accepted=%t err=%v", accepted, err)
 	}
 	if _, err := inspectPublishedOCIAt(context.Background(), server.Client(), server.URL, "ghcr.io/acme/weather@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err == nil {
 		t.Fatal("OCI digest drift accepted")
