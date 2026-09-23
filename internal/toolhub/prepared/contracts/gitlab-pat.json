@@ -1,0 +1,40 @@
+{
+  "id": "gitlab-pat",
+  "revision": 1,
+  "title": "GitLab PAT",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "token",
+      "label": "GitLab personal access token",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096
+    },
+    {
+      "id": "api_url",
+      "label": "GitLab API URL (self-hosted, optional)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 2048
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "token",
+      "target": "GITLAB_PERSONAL_ACCESS_TOKEN"
+    },
+    {
+      "type": "env",
+      "field": "token",
+      "target": "GITLAB_TOKEN"
+    },
+    {
+      "type": "env",
+      "field": "api_url",
+      "target": "GITLAB_API_URL"
+    }
+  ]
+}

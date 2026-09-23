@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -324,6 +325,16 @@ func TestBrowserWaitFailure(t *testing.T) {
 	}
 }
 
+func TestDisplayWaitFailure(t *testing.T) {
+	oldSleep, oldProbe := sleep, displayProbe
+	sleep = func(time.Duration) {}
+	displayProbe = func(string) error { return errors.New("display unavailable") }
+	t.Cleanup(func() { sleep, displayProbe = oldSleep, oldProbe })
+	if err := waitForDisplay(":99999"); err == nil {
+		t.Fatal("unavailable X display accepted")
+	}
+}
+
 func TestSupervisorCleansUpAfterStartFailure(t *testing.T) {
 	oldState := state
 	state = t.TempDir()
@@ -401,7 +412,7 @@ func TestSupervisorUsesConfiguredHermesAndHomeDirectories(t *testing.T) {
 func TestSupervisorBrowserShutdown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer server.Close()
-	oldState, oldCommand, oldURL := state, command, browserURL
+	oldState, oldCommand, oldURL, oldProbe := state, command, browserURL, displayProbe
 	oldNotify, oldStop := signalNotify, signalStop
 	state, browserURL = t.TempDir(), server.URL
 	command = func(string, ...string) *exec.Cmd {
@@ -409,10 +420,11 @@ func TestSupervisorBrowserShutdown(t *testing.T) {
 		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
 		return cmd
 	}
+	displayProbe = func(string) error { return nil }
 	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
 	signalStop = func(chan os.Signal) {}
 	t.Cleanup(func() {
-		state, command, browserURL = oldState, oldCommand, oldURL
+		state, command, browserURL, displayProbe = oldState, oldCommand, oldURL, oldProbe
 		signalNotify, signalStop = oldNotify, oldStop
 	})
 	t.Setenv("HUB_BROWSER", "true")

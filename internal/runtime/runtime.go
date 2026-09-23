@@ -28,6 +28,7 @@ var (
 	signalNotify = notifySignals
 	signalStop   = stopSignals
 	command      = exec.Command
+	displayProbe = func(display string) error { return exec.Command("xdpyinfo", "-display", display).Run() }
 	lookPath     = exec.LookPath
 	chown        = chownPath
 )
@@ -259,7 +260,13 @@ func superviseOnce(mode string) (bool, error) {
 		if err := os.Setenv("DISPLAY", ":99"); err != nil {
 			return false, err
 		}
-		for _, command := range [][]string{{"Xvfb", ":99", "-screen", "0", "1440x900x24", "-nolisten", "tcp"}, {"fluxbox"}, {"x11vnc", "-display", ":99", "-localhost", "-forever", "-shared", "-nopw"}, {"websockify", "--web=/usr/share/novnc", "0.0.0.0:6080", "127.0.0.1:5900"}, {"chromium", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage", "--password-store=basic", "--user-data-dir=/state/browser", "--remote-debugging-port=9222", "--remote-debugging-address=127.0.0.1", "about:blank"}} {
+		if err := start("Xvfb", ":99", "-screen", "0", "1440x900x24", "-nolisten", "tcp"); err != nil {
+			return false, err
+		}
+		if err := waitForDisplay(":99"); err != nil {
+			return false, err
+		}
+		for _, command := range [][]string{{"fluxbox"}, {"x11vnc", "-display", ":99", "-localhost", "-forever", "-shared", "-nopw"}, {"websockify", "--web=/usr/share/novnc", "0.0.0.0:6080", "127.0.0.1:5900"}, {"chromium", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage", "--password-store=basic", "--user-data-dir=/state/browser", "--remote-debugging-port=9222", "--remote-debugging-address=127.0.0.1", "about:blank"}} {
 			if err := start(command[0], command[1:]...); err != nil {
 				return false, err
 			}
@@ -397,6 +404,16 @@ func waitForBrowser() error {
 		sleep(100 * time.Millisecond)
 	}
 	return errors.New("chromium CDP did not start")
+}
+
+func waitForDisplay(display string) error {
+	for range 100 {
+		if displayProbe(display) == nil {
+			return nil
+		}
+		sleep(100 * time.Millisecond)
+	}
+	return errors.New("xvfb display did not start")
 }
 
 func copyIfExists(source, destination string, overwrite bool) error {

@@ -117,8 +117,17 @@ func TestDiscoverRepositoryHTTPSLiteralFiltersFixtures(t *testing.T) {
 	}
 }
 
-func TestCredentialEgressAddsGoogleOAuthEndpoints(t *testing.T) {
-	got := credentialEgress([]string{"www.googleapis.com"}, []CredentialInput{{Name: "GOOGLE_OAUTH_CREDENTIALS", Required: true}})
+func TestPreparedCalendarDeclaresOAuthEndpoints(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, entry := range entries {
+		if entry.ID == "google-calendar" {
+			got = entry.Egress
+		}
+	}
 	if !slices.Equal(got, []string{"accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"}) {
 		t.Fatalf("credential egress=%v", got)
 	}

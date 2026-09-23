@@ -1,0 +1,31 @@
+schema: 1
+id: CHG-0036-repository-driven-toolhub
+title: "Repository-driven ToolHub and four exact-source connectors"
+status: verified
+phase: local-acceptance-complete
+started_at: "2026-09-22"
+updated_at: "2026-09-22"
+completed:
+  - "Read project rules, README, docs index, resolver spec and existing source/Broker/build/reconnect flow."
+  - "Existing local Docker stack available; initial worktree only contains untracked hubctl.exe, preserved."
+  - "Safety doctor: required Python/Git/uv tools available; npm unavailable on host. Existing safety assets retained. pre-commit install refused existing core.hooksPath; no hooks policy overridden."
+  - "Reviewed requested issue bodies through github-guard; earlier GitLab work records pending live rotation/egress validation."
+  - "Four exact default branches resolved to commits; generated isolated Node/Go recipes and live initialize/tools/list passed without registries."
+  - "Broker-backed real Notion root/page, Calendar calendars/events, GitHub identity/repository, and GitLab whoami reads passed without logging provider content."
+  - "Notion reinstall reused one owner connection; GitLab credential rotation reused its connection and post-rotation whoami passed after VPN enabled by owner."
+  - "Owner-authorized Google OAuth token state checkpointed through Broker; no tokens entered chat."
+  - "Hermes API /v1/runs false reload acknowledgment identified and removed; owner runtime cold reconnect applied revision 42, retained session ID and returned healthy."
+  - "Hermes native MCP test connected to ToolHub, discovered 211 tools and saw all four connector families."
+  - "Generic shared Broker tmpfs volume and Docker daemon mountpoint resolution implemented in rendered stack; focused tests passed."
+  - "Broker contract selection now requires actual deliveries for each required input; regression and just check passed at 85.06% coverage."
+  - "Final just check passed at 85.05% own Go coverage; docker-check exited 0 after stack changes."
+  - "Updated ToolHub/controller dev containers passed all four live provider reads; live Calendar had one read-only and one writable mount from owner Broker tmpfs."
+  - "Live discovery returned prepared entries for all four sources and four total candidates for GitHub."
+  - "Final progress comments posted to issues 115, 116, 110, 74, 118, 40, 37 and 126 without secrets or private API URLs."
+next:
+  - "Review and integrate the local worktree; production rollout remains a separate operator action in issue 116."
+  - "Keep issue 110 open for broader name-only GitHub search beyond bounded prepared/registry discovery."
+  - "Private artifact receipts remain in .local/prepared-acceptance; do not print credential files or provider responses."
+risks:
+  - "No integration success may be inferred from mocked tests or older work logs."
+  - "Credentials and provider response content must not enter chat, tracked artifacts or logs."

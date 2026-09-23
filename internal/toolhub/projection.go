@@ -53,8 +53,8 @@ func (c *ReconnectController) Reconcile() (ProjectionChange, bool, error) {
 	return change, true, nil
 }
 
-// WriteReconnectMarker records a transport-only projection change. It does not
-// own Hermes sessions, copy homes or restart the runtime.
+// WriteReconnectMarker records a projection change for the runtime watcher.
+// The watcher restarts Hermes from its persistent owner home when needed.
 func WriteReconnectMarker(stateDir string, change ProjectionChange) error {
 	if strings.TrimSpace(stateDir) == "" || change.Revision == 0 {
 		return fmt.Errorf("%w: reconnect marker", ErrInvalid)

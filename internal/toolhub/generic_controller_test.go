@@ -92,6 +92,26 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 	if err := c.validatePlan(plan); err != nil {
 		t.Fatalf("reviewed broker mount rejected: %v", err)
 	}
+	stateDirectory := filepath.Join(mountRoot, "lease-one", "state")
+	if err := os.MkdirAll(stateDirectory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	stateMount := Mount{Source: stateDirectory, Target: "/owner-state", ReadOnly: false}
+	if err := c.validateCredentialMounts([]Mount{stateMount}); err != nil {
+		t.Fatal("Broker state directory rejected", err)
+	}
+	if !credentialMountsOK([]genericMount{{Type: "bind", Source: stateDirectory, Destination: "/owner-state", RW: true}}, []Mount{stateMount}) {
+		t.Fatal("writable state receipt rejected")
+	}
+	if credentialMountsOK([]genericMount{{Type: "bind", Source: stateDirectory, Destination: "/other-owner", RW: true}}, []Mount{stateMount}) {
+		t.Fatal("wrong state target admitted")
+	}
+	if err := c.validateCredentialMounts([]Mount{{Source: secret, Target: "/owner-state", ReadOnly: false}}); err == nil {
+		t.Fatal("writable credential file accepted")
+	}
+	if err := c.validateCredentialMounts([]Mount{{Source: filepath.Dir(stateDirectory), Target: "/owner-state", ReadOnly: false}}); err == nil {
+		t.Fatal("whole lease directory accepted")
+	}
 	plan.CredentialMounts[0].Source = filepath.Join(root, "outside")
 	if err := c.validatePlan(plan); err == nil {
 		t.Fatal("credential mount outside broker root accepted")
@@ -583,8 +603,19 @@ func TestGenericControllerHandlerDenyPaths(t *testing.T) {
 			t.Fatalf("invalid release accepted: payload=%s status=%d", payload, w.Code)
 		}
 	}
-	c.command = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	c.workloads["release-workload"] = genericWorkload{plan: genericPlan(d)}
+	c.command = func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("Docker unavailable") }
+	r = httptest.NewRequest("POST", "/release", strings.NewReader(`{"workload_id":"release-workload"}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	c.handler(token).ServeHTTP(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed stop acknowledged as release: %d", w.Code)
+	}
+	if _, ok := c.workloads["release-workload"]; !ok {
+		t.Fatal("failed stop discarded workload needed for retry")
+	}
+	c.command = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	r = httptest.NewRequest("POST", "/release", strings.NewReader(`{"workload_id":"release-workload"}`))
 	r.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()
@@ -728,5 +759,23 @@ func TestGenericControllerCapabilityGateFailsBeforeDocker(t *testing.T) {
 	}
 	if _, err := c.start(context.Background(), plan); err == nil {
 		t.Fatal("host mount accepted before capability gate")
+	}
+}
+
+func TestCredentialMountInspectionUsesDaemonPaths(t *testing.T) {
+	t.Setenv("HUB_DOCKER_HOST_ROOT", "/run/broker-materialized=/daemon/materialized")
+	declared := []Mount{{Source: "/run/broker-materialized/lease/state", Target: "/owner-state"}}
+	actual := []genericMount{{Type: "bind", Source: "/daemon/materialized/lease/state", Destination: "/owner-state", RW: true}}
+	if !credentialMountsOK(actual, declared) {
+		t.Fatal("daemon path rejected")
+	}
+	workload := genericWorkload{bridgeVol: "bridge", plan: controllerPlan{CredentialMounts: declared}}
+	mounts := append(actual, genericMount{Type: "volume", Name: "bridge", Destination: "/hermes-bridge"})
+	if !fallbackBridgeMountsOK(mounts, workload) {
+		t.Fatal("fallback daemon path rejected")
+	}
+	mounts[0].Source = "/daemon/materialized/other-owner/state"
+	if fallbackBridgeMountsOK(mounts, workload) {
+		t.Fatal("other owner state accepted")
 	}
 }

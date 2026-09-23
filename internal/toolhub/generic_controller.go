@@ -271,12 +271,12 @@ func (c *genericController) validateCredentialMounts(mounts []Mount) error {
 		return fmt.Errorf("%w: credential mount root is not configured", ErrIsolation)
 	}
 	for _, mount := range mounts {
-		if !filepath.IsAbs(mount.Source) || !validContainerMountTarget(mount.Target) || !mount.ReadOnly || !containedPath(c.config.CredentialMountRoot, mount.Source) || noSymlinkPath(mount.Source) != nil {
+		if !filepath.IsAbs(mount.Source) || !validContainerMountTarget(mount.Target) || !containedPath(c.config.CredentialMountRoot, mount.Source) || noSymlinkPath(mount.Source) != nil {
 			return fmt.Errorf("%w: unsafe credential mount", ErrIsolation)
 		}
 		info, err := os.Stat(mount.Source)
-		if err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("%w: credential mount source is not a regular file", ErrIsolation)
+		if err != nil || (mount.ReadOnly && !info.Mode().IsRegular()) || (!mount.ReadOnly && (!info.IsDir() || filepath.Base(mount.Source) != "state" || filepath.Dir(mount.Source) == filepath.Clean(c.config.CredentialMountRoot))) {
+			return fmt.Errorf("%w: credential mount must be a read-only file or lease state directory", ErrIsolation)
 		}
 	}
 	return nil
@@ -315,7 +315,11 @@ func (c *genericController) handler(token string) http.Handler {
 			}
 			c.mu.Lock()
 			if workload, ok := c.workloads[release.WorkloadID]; ok {
-				c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful)
+				if err := c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful); err != nil {
+					c.mu.Unlock()
+					http.Error(w, "workload release failed", http.StatusServiceUnavailable)
+					return
+				}
 				delete(c.workloads, release.WorkloadID)
 				c.config.Budget.Release(release.WorkloadID)
 			}
@@ -484,8 +488,13 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		toolArgs = append(toolArgs, "--tools", tool.Name)
 	}
 	for _, mount := range plan.CredentialMounts {
-		toolArgs = append(toolArgs, "--volume", dockerBindSource(mount.Source)+":"+mount.Target+":ro")
+		mode := ":ro"
+		if !mount.ReadOnly {
+			mode = ":rw"
+		}
+		toolArgs = append(toolArgs, "--volume", dockerBindSource(mount.Source)+":"+mount.Target+mode)
 	}
+	toolArgs = append(toolArgs, runtimeEnvironmentArgs(plan.Definition)...)
 	imageRef, err := c.resolveArtifactImage(ctx, plan)
 	if err != nil {
 		return genericWorkload{}, err
@@ -595,12 +604,12 @@ func credentialMountsOK(actual []genericMount, declared []Mount) bool {
 		return false
 	}
 	for _, mount := range actual {
-		if mount.Type != "bind" || mount.RW {
+		if mount.Type != "bind" {
 			return false
 		}
 		matched := false
 		for _, want := range declared {
-			if mount.Source == want.Source && mount.Destination == want.Target && want.ReadOnly {
+			if mount.Source == dockerBindSource(want.Source) && mount.Destination == want.Target && mount.RW != want.ReadOnly {
 				if matched {
 					return false
 				}
@@ -649,12 +658,12 @@ func fallbackBridgeMountsOK(mounts []genericMount, workload genericWorkload) boo
 	states := make([]bool, len(workload.stateVols))
 	for _, mount := range mounts {
 		if mount.Type != "volume" {
-			if mount.Type != "bind" || mount.RW {
+			if mount.Type != "bind" {
 				return false
 			}
 			matched := false
 			for _, declared := range workload.plan.CredentialMounts {
-				if mount.Source == declared.Source && mount.Destination == declared.Target && declared.ReadOnly {
+				if mount.Source == dockerBindSource(declared.Source) && mount.Destination == declared.Target && mount.RW != declared.ReadOnly {
 					matched = true
 					break
 				}
@@ -705,13 +714,15 @@ func (c *genericController) CleanupIdle(ctx context.Context, now time.Time) []st
 		if !ok {
 			continue
 		}
-		c.removeWorkload(ctx, workload, workload.plan.Definition.Workload.Stateful)
+		if err := c.removeWorkload(ctx, workload, workload.plan.Definition.Workload.Stateful); err != nil {
+			continue
+		}
 		delete(c.workloads, id)
 	}
 	return ids
 }
 
-func (c *genericController) removeWorkload(ctx context.Context, workload genericWorkload, keepState bool) {
+func (c *genericController) removeWorkload(ctx context.Context, workload genericWorkload, keepState bool) error {
 	if workload.remoteName != "" {
 		if workload.remoteState != "" {
 			_, _ = c.commandEnv(ctx, fallbackToolHiveEnv(workload.remoteState, nil), c.config.ToolHiveBinary, "rm", workload.remoteName)
@@ -723,7 +734,9 @@ func (c *genericController) removeWorkload(ctx context.Context, workload generic
 	if workload.relayName != "" {
 		names = append(names, workload.relayName)
 	}
-	_, _ = c.command(ctx, "docker", append([]string{"rm", "--force"}, names...)...)
+	if _, err := c.command(ctx, "docker", append([]string{"rm", "--force"}, names...)...); err != nil {
+		return err
+	}
 	_, _ = c.command(ctx, "docker", "network", "rm", "hermes-"+workload.plan.WorkloadID)
 	_, _ = c.command(ctx, "docker", "volume", "rm", workload.proxyVol)
 	if workload.bridgeVol != "" {
@@ -740,6 +753,7 @@ func (c *genericController) removeWorkload(ctx context.Context, workload generic
 	if workload.remoteState != "" {
 		_ = os.RemoveAll(workload.remoteState)
 	}
+	return nil
 }
 
 func envContainsForwardingSecret(env []string) bool {

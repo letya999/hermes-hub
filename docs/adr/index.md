@@ -6,6 +6,7 @@ last_verified: 2026-09-21
 
 | Record | Decision |
 |---|---|
+| [ADR-0024](ADR-0024-toolhive-local-vmcp.md) | Defer ToolHive local vMCP as the stable endpoint after failed dynamic-rebind evidence |
 | [ADR-0023](ADR-0023-optional-mcp-images.md) | Optional Google/Atlassian/Telegram Python MCP trees are dedicated images, not the hub runtime |
 | [ADR-0022](ADR-0022-credential-broker-boundary.md) | Keep Credential Broker as a separate opt-in Go module/process with explicit Hub adapters |
 | [ADR-0021](ADR-0021-toolhub-control-plane.md) | Control MCP, operator grants and loopback credential elicitation |

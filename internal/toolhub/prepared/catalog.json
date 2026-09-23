@@ -1,0 +1,49 @@
+[
+  {
+    "id": "notion", "name": "Notion", "license": "MIT",
+    "source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
+    "language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
+    "connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
+    "contract_id": "notion-token", "contract_revision": 1, "stateful": false,
+    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-retrieve-a-page"],
+    "runbook": "docs/prepared-connectors.md#notion",
+    "handoff": "Install https://github.com/makenotion/notion-mcp-server; reuse my existing Notion connection. Enter NOTION_TOKEN only in the protected Broker form. Verify a read of the shared root/pages; do not create or edit pages."
+  },
+  {
+    "id": "google-calendar", "name": "Google Calendar", "license": "MIT",
+    "source": {"repository": "https://github.com/nspady/google-calendar-mcp", "commit_sha": "7c788f58e8b00db66ddd0eccd81fdc3dda0ecf9b"},
+    "language": "node", "entrypoint": ["node", "/app/build/index.js"],
+    "connection": {"fields": [{"name": "GOOGLE_OAUTH_CREDENTIALS", "type": "json", "required": true, "secret": true, "delivery": "file", "target": "/run/mcp-secrets/google/client.json"}]},
+    "contract_id": "google-file-session", "contract_revision": 1, "stateful": true,
+    "state_target": "/home/mcp/.config/google-calendar",
+    "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
+    "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
+    "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"],
+    "runbook": "docs/prepared-connectors.md#google-calendar",
+    "handoff": "Install https://github.com/nspady/google-calendar-mcp; reuse my existing OAuth client and token state through Broker. Never paste OAuth JSON or tokens in chat. Verify list-calendars and list-events for my account."
+  },
+  {
+    "id": "github", "name": "GitHub", "license": "MIT",
+    "source": {"repository": "https://github.com/github/github-mcp-server", "commit_sha": "85598ba6e1256f7ebf4867b95d63b833c4549264"},
+    "language": "go", "entrypoint": ["/app/mcp-server", "stdio"],
+    "connection": {"fields": [{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITHUB_PERSONAL_ACCESS_TOKEN"}]},
+    "contract_id": "github-pat", "contract_revision": 1, "stateful": false,
+    "egress": ["api.github.com"], "read_tools": ["get_me", "get_file_contents"],
+    "runbook": "docs/prepared-connectors.md#github",
+    "handoff": "Install https://github.com/github/github-mcp-server; reuse my existing Broker token. Verify get_me and a read of an authorized repository. Build with the generated Go recipe. Do not mutate issues, pull requests or files."
+  },
+  {
+    "id": "gitlab", "name": "GitLab", "license": "MIT",
+    "source": {"repository": "https://github.com/zereight/gitlab-mcp", "commit_sha": "3e826c33a0c9a6cf4b5626450cbfa668f0984bd0"},
+    "language": "node", "entrypoint": ["node", "/app/build/index.js"],
+    "connection": {"fields": [
+      {"name": "GITLAB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITLAB_PERSONAL_ACCESS_TOKEN"},
+      {"name": "GITLAB_TOKEN", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "GITLAB_TOKEN"},
+      {"name": "GITLAB_API_URL", "type": "url", "required": false, "secret": false, "delivery": "env", "target": "GITLAB_API_URL"}
+    ]},
+    "contract_id": "gitlab-pat", "contract_revision": 1, "stateful": false,
+    "egress": ["gitlab.com"], "read_tools": ["whoami"],
+    "runbook": "docs/prepared-connectors.md#gitlab",
+    "handoff": "Install https://github.com/zereight/gitlab-mcp; reuse or rotate my existing Broker connection. Confirm the HTTPS GITLAB_API_URL in the protected form, then verify whoami on that host. Do not create another owner connection or change provider data."
+  }
+]

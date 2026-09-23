@@ -1,0 +1,2 @@
+# Content-pinned security profile must retain its reviewed bytes on Windows.
+docker/seccomp-buildkit-rootless.json text eol=lf

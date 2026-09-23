@@ -43,10 +43,9 @@ surface: the capability response explicitly reports `split_runtime=false`, so to
 would execute on the API-server host. The current Go `/v1/execute` runtime remains the
 private identity and filesystem trust boundary until a split-runtime adapter is
 implemented. When ToolHub writes a durable `toolhub-reconnect.request` projection
-marker, the serve runtime consumes it and submits Hermes' native `/reload-mcp`
-command through this API. That reconnects MCP transports and refreshes the cached
-tool surface without restarting Hermes; the watcher is opt-out with
-`HUB_TOOLHUB_RECONNECT=false`.
+marker, the serve runtime schedules a controlled Hermes restart from the same
+owner home and session store. The applied revision prevents a restart loop;
+the watcher is opt-out with `HUB_TOOLHUB_RECONNECT=false`.
 
 ## Scope homes
 

@@ -304,3 +304,36 @@ func TestAuthorizeProjectedRejectsNilAdmit(t *testing.T) {
 		t.Fatalf("nil admit error=%v", err)
 	}
 }
+
+func TestReloadUnchangedSnapshotPreservesPendingMutation(t *testing.T) {
+	store, _, _ := seededStore(t)
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := remoteDefinition()
+	definition.DefinitionID = "pending-install"
+	if err := loaded.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loaded.Definition(definition.DefinitionID, definition.Version); err != nil {
+		t.Fatal("unchanged disk discarded pending install", err)
+	}
+	if err := loaded.persist(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.Definition(definition.DefinitionID, definition.Version); err != nil {
+		t.Fatal("pending install did not persist", err)
+	}
+}
