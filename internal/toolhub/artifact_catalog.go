@@ -37,6 +37,7 @@ type ArtifactImportConfig struct {
 	CredentialContractRevision int
 	CredentialContractEnv      map[string]string
 	Environment                []string
+	RuntimeEnvironment         map[string]string
 	Workload                   WorkloadPolicy
 	Execution                  ExecutionPolicy
 	Health                     HealthProbe
@@ -58,6 +59,7 @@ type artifactReviewContract struct {
 	CredentialContractRevision int
 	CredentialContractEnv      map[string]string
 	Environment                []string
+	RuntimeEnvironment         map[string]string
 	Workload                   WorkloadPolicy
 	Execution                  ExecutionPolicy
 	Health                     HealthProbe
@@ -81,7 +83,6 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if len(config.Execution.Egress) == 0 {
 		config.Execution.Egress = discoverOpenAPIEgress(contextBytes)
 	}
-	config.Execution.Egress = credentialEgress(config.Execution.Egress, config.Credentials)
 	if len(config.Execution.Egress) == 0 {
 		config.Execution.Egress = []string{"127.0.0.1"}
 	}
@@ -115,7 +116,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 			SBOMDigest: artifact.Evidence.SBOMDigest, RecipeDigest: recipeDigest, ReviewDigest: reviewDigest,
 		},
 		Tools: append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...),
-		Workload: config.Workload, Execution: config.Execution, Health: config.Health,
+		RuntimeEnvironment: config.RuntimeEnvironment, Workload: config.Workload, Execution: config.Execution, Health: config.Health,
 	}
 	if err := definition.Validate(); err != nil {
 		return ImportedArtifact{}, err
@@ -153,7 +154,6 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 	}
 	config.Execution.Egress = append([]string(nil), egress...)
 	config.Credentials = resolution.Connection.CredentialInputs()
-	config.Execution.Egress = credentialEgress(config.Execution.Egress, config.Credentials)
 	recipe := ArtifactRecipe{Format: "published-oci-v1", Entrypoint: append([]string(nil), resolution.Launch.Entrypoint...)}
 	recipeDigest, err := publishedRecipeDigest(source, resolution)
 	if err != nil {
@@ -166,6 +166,7 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 		Tools:  append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
 	}
 	imported := ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}
+	imported.Definition.RuntimeEnvironment = config.RuntimeEnvironment
 	review, err := reviewDigestForImported(imported)
 	if err != nil {
 		return ImportedArtifact{}, err
@@ -175,25 +176,6 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 		return ImportedArtifact{}, err
 	}
 	return imported, nil
-}
-
-func credentialEgress(egress []string, credentials []CredentialInput) []string {
-	hosts := map[string]bool{}
-	for _, host := range egress {
-		hosts[host] = true
-	}
-	for _, credential := range credentials {
-		if credential.Name == "GOOGLE_OAUTH_CREDENTIALS" {
-			hosts["accounts.google.com"] = true
-			hosts["oauth2.googleapis.com"] = true
-		}
-	}
-	result := make([]string, 0, len(hosts))
-	for host := range hosts {
-		result = append(result, host)
-	}
-	slices.Sort(result)
-	return result
 }
 
 func recipeAttestationDigests(evidence []RecipeEvidence) (string, string) {
@@ -406,7 +388,7 @@ func reviewDigest(source ArtifactSource, recipe ArtifactRecipe, artifact StoredO
 		Recipe   ArtifactRecipe
 		Artifact StoredOCIArtifact
 		Contract artifactReviewContract
-	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.Workload, config.Execution, config.Health}}
+	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.RuntimeEnvironment, config.Workload, config.Execution, config.Health}}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -422,7 +404,7 @@ func reviewDigestForImported(imported ImportedArtifact) (string, error) {
 		Image: imported.Definition.Source.Image, Tools: imported.Definition.Tools,
 		Entrypoint:  append([]string{imported.Definition.Source.Command}, imported.Definition.Source.Args...),
 		Credentials: imported.Definition.Credentials, CredentialContractID: imported.Definition.CredentialContractID, CredentialContractRevision: imported.Definition.CredentialContractRevision, CredentialContractEnv: imported.Definition.CredentialContractEnv, Environment: imported.Definition.Environment,
-		Workload: imported.Definition.Workload, Execution: imported.Definition.Execution, Health: imported.Definition.Health,
+		RuntimeEnvironment: imported.Definition.RuntimeEnvironment, Workload: imported.Definition.Workload, Execution: imported.Definition.Execution, Health: imported.Definition.Health,
 	}
 	return reviewDigest(source, imported.Recipe, imported.Artifact, config)
 }

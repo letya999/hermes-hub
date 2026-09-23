@@ -35,16 +35,17 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 			return CredentialInjection{}, err
 		}
 		released := false
-		release := func() error {
+		release := func(checkpoint bool) error {
 			if released {
 				return nil
 			}
-			released = true
-			return runtime.Release(context.Background(), lease.ID, brokerv1.RuntimeRelease{Quiesced: true})
+			err := runtime.Release(context.Background(), lease.ID, brokerv1.RuntimeRelease{Quiesced: true, Checkpoint: checkpoint})
+			released = err == nil
+			return err
 		}
 		materialized, err := runtime.Materialize(ctx, lease.ID)
 		if err != nil {
-			_ = release()
+			_ = release(false)
 			return CredentialInjection{}, err
 		}
 		environment := map[string]string{}
@@ -55,18 +56,22 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 		}
 		for _, input := range effective.Credential.Keys {
 			if environment[input] == "" && len(materialized.Mounts) == 0 {
-				_ = release()
+				_ = release(false)
 				return CredentialInjection{}, fmt.Errorf("%w: broker delivery %s", ErrIsolation, input)
 			}
 		}
 		mounts := make([]Mount, 0, len(materialized.Mounts))
+		var checkpoint func() error
 		for _, mount := range materialized.Mounts {
 			mounts = append(mounts, Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
+			if !mount.ReadOnly {
+				checkpoint = func() error { return release(true) }
+			}
 		}
-		return CredentialInjection{Environment: environment, Mounts: mounts, Cleanup: func() error {
+		return CredentialInjection{Environment: environment, Mounts: mounts, Checkpoint: checkpoint, Cleanup: func() error {
 			clear(environment)
 			clear(materialized.Env)
-			return release()
+			return release(false)
 		}}, nil
 	}
 }

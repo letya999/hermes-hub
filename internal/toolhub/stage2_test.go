@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -135,6 +136,7 @@ func TestGatewayCallBoundsBackendResult(t *testing.T) {
 	}{
 		{name: "backend", err: backendError, want: backendError},
 		{name: "text limit", result: BackendResult{Text: strings.Repeat("x", MaxOutputBytes+1)}, want: ErrInvalid},
+		{name: "resource limit", result: BackendResult{Content: []mcp.Content{&mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "file:///readme", Text: strings.Repeat("x", MaxOutputBytes+1)}}}}, want: ErrInvalid},
 		{name: "structured limit", result: BackendResult{Structured: strings.Repeat("x", MaxOutputBytes+1)}, want: ErrInvalid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -193,7 +195,7 @@ func TestPrivateBackendEndpointValidation(t *testing.T) {
 func TestMCPBackendUsesPrivateMCPContract(t *testing.T) {
 	backendServer := mcp.NewServer(&mcp.Implementation{Name: "backend-fixture", Version: "1"}, nil)
 	backendServer.AddTool(&mcp.Tool{Name: "search", InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "backend result"}}}, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "backend result"}, &mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "file:///readme", Text: "repository file"}}}}, nil
 	})
 	backendHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return backendServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -213,8 +215,15 @@ func TestMCPBackendUsesPrivateMCPContract(t *testing.T) {
 	connection.Metadata = map[string]string{"mcp_endpoint": httpServer.URL + "/mcp"}
 	effective.Connection = &connection
 	result, err := (MCPBackend{HTTPClient: httpServer.Client(), Token: "backend-token"}).Call(context.Background(), effective, effective.Definition.Tools[0], map[string]any{})
-	if err != nil || result.Text != "backend result" {
+	if err != nil || result.Text != "backend result" || len(result.Content) != 2 {
 		t.Fatalf("MCP backend result=%+v err=%v", result, err)
+	}
+	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		return result, nil
+	})}
+	forwarded, err := gateway.call(t.Context(), auth, ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, effective.Definition.Tools[0].Name), map[string]any{})
+	if err != nil || len(forwarded.Content) != 2 || forwarded.Content[1].(*mcp.EmbeddedResource).Resource.Text != "repository file" {
+		t.Fatal("gateway discarded embedded resource", err)
 	}
 }
 
@@ -688,5 +697,36 @@ func TestGatewayRejectsBadAuthenticationBeforeMCP(t *testing.T) {
 		return BackendResult{}, nil
 	})}).Handler(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("short token accepted: %v", err)
+	}
+}
+
+func TestAdmittedProviderResourceOwnerDoesNotSelectAuthority(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	key := definitionKey("google-work", "1.0.0")
+	definition := store.definitions[key]
+	definition.Tools[0].InputSchema = json.RawMessage(`{"type":"object","properties":{"owner":{"type":"string"},"principal_id":{"type":"string"}}}`)
+	store.definitions[key] = definition
+	calls := 0
+	gateway := Gateway{Store: store, Backend: backendFunc(func(_ context.Context, effective EffectiveBinding, _ ToolSpec, args map[string]any) (BackendResult, error) {
+		calls++
+		if effective.Connection.Owner.ID != auth.PrincipalID || args["owner"] != "repository-org" {
+			t.Fatal("resource owner changed authority")
+		}
+		return BackendResult{Text: "ok"}, nil
+	})}
+	name := ProjectedToolName(definition.DefinitionID, definition.Version, definition.Tools[0].Name)
+	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"owner": "repository-org"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range []map[string]any{{"principal_id": "other"}, {"user": "other"}, {"credential_ref": "other"}, {"Owner": "other"}} {
+		if _, err := gateway.call(context.Background(), auth, name, args); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("authority accepted: %v", err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("backend calls=%d", calls)
+	}
+	if err := RejectAuthorityArguments(map[string]any{"owner": "repository-org"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("control-plane guard weakened")
 	}
 }

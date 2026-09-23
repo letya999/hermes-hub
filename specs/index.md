@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0028](active/SPEC-0028-repository-driven-prepared-connectors.md) | Generic exact-source catalog, Broker state, discovery and four-connector acceptance |
 | [SPEC-0027](active/SPEC-0027-toolhive-vmcp-evaluation.md) | ToolHive local vMCP acceptance boundary and no-go result |
 | [SPEC-0026](active/SPEC-0026-mcp-recipe-resolver.md) | Secret-free MCP Launch/Connection Recipe resolution over the existing M5.3 onboarding flow |
 | [SPEC-0025](active/SPEC-0025-credential-broker-boundary.md) | Credential Broker monorepo placement, opt-in process boundary and adapter gate |

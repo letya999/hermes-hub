@@ -171,6 +171,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}
 	dockerSock := M{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}
 	hostRoot := "/state=" + hostRuntimeDir
+	brokerMaterializedVolume := "hermes-hub-" + s.User + "-" + s.Environment + "-broker-materialized"
+	brokerMaterializedMount := M{"type": "volume", "source": "broker-materialized", "target": "/run/broker-materialized"}
 	brokerURL := "https://credential-broker:8787"
 	brokerCA := "/run/broker-secrets/server.crt"
 	// Broker keys and the CA certificate live in per-service named volumes: the
@@ -193,7 +195,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	cliproxy["ports"] = []string{"127.0.0.1:8317:8317"}
 	services["cliproxy"] = cliproxy
 
-	toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HOME": "/tmp", "TZ": s.Timezone}
+	toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HOME": "/tmp", "TZ": s.Timezone}
 	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
 		toolhubEnv[key] = value
 	}
@@ -207,23 +209,22 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	toolhub["entrypoint"] = []string{"toolhub"}
 	toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
 	toolhub["environment"] = toolhubEnv
-	toolhub["volumes"] = []any{stateBind, dockerSock, brokerSecrets("toolhub")}
+	toolhub["volumes"] = []any{stateBind, dockerSock, brokerSecrets("toolhub"), brokerMaterializedMount}
 	toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
 	services["toolhub"] = toolhub
 
 	controller := cloneMap(common)
 	controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
-	controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_CONTROLLER_REMOTE": "1", "HOME": "/tmp", "TZ": s.Timezone}
-	controller["volumes"] = []any{stateBind, dockerSock}
+	controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HOME": "/tmp", "TZ": s.Timezone}
+	controller["volumes"] = []any{stateBind, dockerSock, brokerMaterializedMount}
 	controller["ports"] = []string{"127.0.0.1:8545:8545"}
 	services["workload-controller"] = controller
 
 	broker := cloneMap(common)
 	broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
-	// broker-state is the migrated production volume; materialized leases stay
-	// on a container-local tmpfs because the broker requires tmpfs for them.
-	broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}}
-	broker["tmpfs"] = append(broker["tmpfs"].([]string), "/run/broker-materialized:uid=10001,gid=10001,mode=0700")
+	// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
+	// controller without exposing Broker's encrypted store to MCP workloads.
+	broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}, brokerMaterializedMount}
 	broker["ports"] = []string{"127.0.0.1:8787:8787"}
 	// Personal loopback deployment: the connect link opens the credential form
 	// directly. Remove BROKER_DIRECT_FORM to restore the trusted-channel
@@ -277,7 +278,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			delete(services, "hermes-runtime")
 		}
 	}
-	volumes := M{"communication-hub-data": M{}, "broker-state": M{"external": true, "name": "hermes-credential-broker-real-prod-20260918"}, "broker-secrets-toolhub": M{}, "broker-secrets-runtime": M{}, "broker-secrets-communication": M{}}
+	volumes := M{"communication-hub-data": M{}, "broker-state": M{"external": true, "name": "hermes-credential-broker-real-prod-20260918"}, "broker-materialized": M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}, "broker-secrets-toolhub": M{}, "broker-secrets-runtime": M{}, "broker-secrets-communication": M{}}
 	return M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 }
 
@@ -497,7 +498,7 @@ func writeToolHubFiles(dir string) error {
 		return err
 	}
 	token := strings.TrimSpace(string(key))
-	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/state/hubctl-linux-bridge", "credential_mount_root": "/state/materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800}
+	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/usr/local/bin/hubctl", "credential_mount_root": "/run/broker-materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800}
 	body, err := json.MarshalIndent(controller, "", "  ")
 	if err != nil {
 		return err

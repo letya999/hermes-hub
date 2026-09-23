@@ -10,6 +10,7 @@ last_verified: 2026-09-17
 |---|---|---|
 | [architecture.md](architecture.md) | Current components and target scale-to-zero runtime boundary | 2026-09-17 |
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-16 |
+| [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, generic lifecycle and handoffs | 2026-09-22 |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup | 2026-09-15 |
 | [operations.md](operations.md) | Deployment, runtime lifecycle, backup and recovery | 2026-09-14 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-17 |

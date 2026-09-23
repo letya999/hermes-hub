@@ -17,9 +17,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const genericBridgeListen = "0.0.0.0:8765"
@@ -48,7 +51,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 			return genericWorkload{}, fmt.Errorf("%w: Docker fallback supports only named state volumes", ErrIsolation)
 		}
 	}
-	if definition.Workload.Stateful && len(plan.Execution.Mounts) == 0 {
+	if definition.Workload.Stateful && len(plan.Execution.Mounts) == 0 && !slices.ContainsFunc(plan.CredentialMounts, func(m Mount) bool { return !m.ReadOnly }) {
 		return genericWorkload{}, fmt.Errorf("%w: stateful Docker fallback requires a named state volume", ErrIsolation)
 	}
 	bridgeBinary, err := resolveLinuxBridgeBinary(c.config.BridgeBinary)
@@ -225,8 +228,13 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		bridgeArgs = append(bridgeArgs, "--mount", mountSpec)
 	}
 	for _, mount := range plan.CredentialMounts {
-		bridgeArgs = append(bridgeArgs, "--mount", "type=bind,source="+dockerBindSource(mount.Source)+",target="+mount.Target+",readonly")
+		spec := "type=bind,source=" + dockerBindSource(mount.Source) + ",target=" + mount.Target
+		if mount.ReadOnly {
+			spec += ",readonly"
+		}
+		bridgeArgs = append(bridgeArgs, "--mount", spec)
 	}
+	bridgeArgs = append(bridgeArgs, runtimeEnvironmentArgs(definition)...)
 	bridgeArgs = append(bridgeArgs, "--mount", "type=volume,source="+bridgeVol+",target=/hermes-bridge,readonly", imageRef, "companion", "--config", "/hermes-bridge/config.json")
 	if _, err := c.command(ctx, "docker", bridgeArgs...); err != nil {
 		return genericWorkload{}, err
@@ -285,15 +293,19 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	ready, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := waitLocalWorkload(ready, func() error {
-		request, err := http.NewRequestWithContext(ready, http.MethodGet, endpoint, nil)
+		client := mcp.NewClient(&mcp.Implementation{Name: "toolhub-readiness", Version: "1"}, nil)
+		session, err := client.Connect(ready, &mcp.StreamableClientTransport{Endpoint: endpoint, DisableStandaloneSSE: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: legacyMCPRoundTripper{base: http.DefaultTransport}}}, nil)
 		if err != nil {
 			return err
 		}
-		response, err := http.DefaultClient.Do(request)
+		defer session.Close()
+		listed, err := session.ListTools(ready, nil)
 		if err != nil {
 			return err
 		}
-		response.Body.Close()
+		if len(listed.Tools) == 0 {
+			return fmt.Errorf("%w: workload tools/list is empty", ErrIsolation)
+		}
 		return nil
 	}); err != nil {
 		return genericWorkload{}, err

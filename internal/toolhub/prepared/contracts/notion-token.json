@@ -1,0 +1,6 @@
+{
+  "id": "notion-token", "revision": 1, "title": "Notion integration token", "storage": "local",
+  "fields": [{"id": "token", "label": "NOTION_TOKEN", "kind": "secret", "required": true, "max_bytes": 4096}],
+  "allow_shared": false,
+  "deliveries": [{"type": "env", "field": "token", "target": "NOTION_TOKEN"}]
+}
