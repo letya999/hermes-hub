@@ -1,6 +1,6 @@
 ---
 description: Exact-source prepared catalog, generic lifecycle and connector runbooks.
-last_verified: 2026-09-22
+last_verified: 2026-09-23
 ---
 # Prepared connectors
 
@@ -44,8 +44,9 @@ workload. A failed provider read leaves the binding unprojected; retry uses the
 same owner connection. File-credential readiness starts and then stops the
 workload before Broker checkpoints writable state. Other MCPs without a reviewed
 provider probe have MCP admission evidence only; their provider access must be
-verified separately. Projection changes request the existing Hermes runtime's
-controlled Hermes reconnect from its persistent owner home. Installing a
+verified separately. Projection changes notify the owner's open MCP session;
+a pinned-Hermes fixture confirms PID/session/active-run continuity. Full #74
+acceptance remains open. Installing a
 connector does not authorize provider writes.
 Admitted tool schemas and rich MCP content, including embedded file resources,
 are preserved with output bounds. Schema-declared provider resource owners are

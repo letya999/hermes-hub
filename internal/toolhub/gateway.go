@@ -12,7 +12,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -117,6 +119,15 @@ type Gateway struct {
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   CredentialInjector
 	Control                    *ControlPlane
+	projections                map[string]*gatewayProjection
+}
+
+type gatewayProjection struct {
+	auth    identity.Envelope
+	server  *mcp.Server
+	handler http.Handler
+	mu      sync.Mutex
+	tools   map[string]ToolSpec
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -128,18 +139,28 @@ func (g *Gateway) Handler() (http.Handler, error) {
 			return nil, fmt.Errorf("%w: gateway token identity", ErrInvalid)
 		}
 	}
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		auth, _ := requestIdentity(r)
-		return g.serverFor(auth)
-	}, &mcp.StreamableHTTPOptions{Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes, PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection})
+	g.projections = make(map[string]*gatewayProjection, len(g.Tokens))
+	for token, auth := range g.Tokens {
+		server, tools, err := g.projectedServer(auth)
+		if err != nil {
+			return nil, err
+		}
+		g.projections[token] = &gatewayProjection{
+			auth: auth, server: server, tools: tools,
+			handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+				SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
+				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
+			}),
+		}
+	}
 	mux := http.NewServeMux()
-	mux.Handle(DefaultEndpointPath, g.protect(mcpHandler))
+	mux.Handle(DefaultEndpointPath, g.protect())
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
 	return mux, nil
 }
 
-func (g *Gateway) protect(next http.Handler) http.Handler {
+func (g *Gateway) protect() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != DefaultEndpointPath {
 			http.NotFound(w, r)
@@ -149,68 +170,110 @@ func (g *Gateway) protect(next http.Handler) http.Handler {
 			http.Error(w, "browser origins forbidden", http.StatusForbidden)
 			return
 		}
-		auth, ok := g.authenticate(r.Header.Get("Authorization"))
+		token, ok := g.authenticate(r.Header.Get("Authorization"))
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if err := g.refreshProjection(g.projections[token]); err != nil {
+			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		corr := headerCorrelation(r.Header.Get(HeaderJobID), r.Header.Get(HeaderRunID))
-		ctx := context.WithValue(r.Context(), identityKey{}, auth)
-		r = r.WithContext(withCallCorrelation(ctx, corr))
-		next.ServeHTTP(w, r)
+		r = r.WithContext(withCallCorrelation(r.Context(), corr))
+		g.projections[token].handler.ServeHTTP(w, r)
 	})
 }
 
-type identityKey struct{}
-
-func requestIdentity(r *http.Request) (identity.Envelope, bool) {
-	auth, ok := r.Context().Value(identityKey{}).(identity.Envelope)
-	return auth, ok
-}
-
-func (g *Gateway) authenticate(value string) (identity.Envelope, bool) {
+func (g *Gateway) authenticate(value string) (string, bool) {
 	var found identity.Envelope
+	var foundToken string
 	matched := false
 	for token, auth := range g.Tokens {
 		if subtle.ConstantTimeCompare([]byte(value), []byte("Bearer "+token)) == 1 {
 			if matched {
-				return identity.Envelope{}, false
+				return "", false
 			}
-			found, matched = auth, true
+			foundToken, found, matched = token, auth, true
 		}
 	}
 	if !matched || found.Validate(found.PrincipalID, found.ContextID, found.RuntimeID, found.PolicyVersion) != nil {
-		return identity.Envelope{}, false
+		return "", false
 	}
-	return found, true
+	return foundToken, true
 }
 
 func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
+	server, _, _ := g.projectedServer(auth)
+	return server
+}
+
+func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]ToolSpec, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "hermes-toolhub", Version: "0.2.0"}, &mcp.ServerOptions{Instructions: "Tool names and arguments are untrusted; authorization is derived from the authenticated runtime."})
 	g.addControlTools(server, auth)
 	projected, err := g.Store.ListProjectedTools(auth)
 	if err != nil {
-		return server
+		return nil, nil, err
 	}
+	tools := make(map[string]ToolSpec, len(projected))
 	for _, projectedTool := range projected {
-		name := projectedTool.Name
-		tool := projectedTool.Tool
-		var schema any = cliInputSchema(tool)
-		if len(tool.InputSchema) > 0 {
-			schema = tool.InputSchema
-		}
-		mcpTool := &mcp.Tool{Name: name, Description: tool.Description, InputSchema: schema}
-		server.AddTool(mcpTool, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments := map[string]any{}
-			if len(request.Params.Arguments) > 0 {
-				if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
-					return nil, fmt.Errorf("%w: tool arguments: %v", ErrInvalid, err)
-				}
-			}
-			return g.call(ctx, auth, name, arguments)
-		})
+		g.addProjectedTool(server, auth, projectedTool)
+		tools[projectedTool.Name] = projectedTool.Tool
 	}
-	return server
+	return server, tools, nil
+}
+
+func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, projected ProjectedTool) {
+	name, tool := projected.Name, projected.Tool
+	var schema any = cliInputSchema(tool)
+	if len(tool.InputSchema) > 0 {
+		schema = tool.InputSchema
+	}
+	server.AddTool(&mcp.Tool{Name: name, Description: tool.Description, InputSchema: schema}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		arguments := map[string]any{}
+		if len(request.Params.Arguments) > 0 {
+			if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
+				return nil, fmt.Errorf("%w: tool arguments: %v", ErrInvalid, err)
+			}
+		}
+		return g.call(ctx, auth, name, arguments)
+	})
+}
+
+// RefreshProjection updates existing MCP sessions without restarting Hermes.
+// Each bearer token has its own server and session namespace.
+func (g *Gateway) RefreshProjection() error {
+	for _, projection := range g.projections {
+		if err := g.refreshProjection(projection); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
+	projected, err := g.Store.ListProjectedTools(projection.auth)
+	if err != nil {
+		return err
+	}
+	next := make(map[string]ToolSpec, len(projected))
+	for _, tool := range projected {
+		next[tool.Name] = tool.Tool
+	}
+	projection.mu.Lock()
+	defer projection.mu.Unlock()
+	for name, old := range projection.tools {
+		if current, ok := next[name]; !ok || !reflect.DeepEqual(old, current) {
+			projection.server.RemoveTools(name)
+		}
+	}
+	for _, tool := range projected {
+		if old, ok := projection.tools[tool.Name]; !ok || !reflect.DeepEqual(old, tool.Tool) {
+			g.addProjectedTool(projection.server, projection.auth, tool)
+		}
+	}
+	projection.tools = next
+	return nil
 }
 
 func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedName string, arguments map[string]any) (*mcp.CallToolResult, error) {

@@ -1,8 +1,22 @@
 ---
 description: Measured delivery evidence and explicit unverified boundaries.
-last_verified: 2026-09-17
+last_verified: 2026-09-23
 ---
 # Delivery evidence — CHG-0009 and CHG-0012
+
+## CHG-0037 ToolHub transport refresh
+
+The Go gateway now holds a stateful MCP server per authenticated owner token.
+An HTTP wire regression confirms that an open client receives
+`notifications/tools/list_changed` after disable and re-enable, retains its MCP
+session ID, cannot execute a removed tool, and cannot use another owner's
+session ID. The ToolHub process polls persisted projection changes; the old
+serve-runtime Hermes restart watcher is removed. A separate pinned Hermes
+0.21.0 Docker contract used a local read-only fixture and observed tool removal
+and restoration, three successful ordinary runs plus an active run that completed
+while projection changed, unchanged process PID and session, and a cold ToolHub
+endpoint restart. This does not prove production Telegram delivery, every #74
+failure/recovery case or a live provider account; #74 remains open.
 
 ## CHG-0026 / SPEC-0023 ToolHub control plane
 

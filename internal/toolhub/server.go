@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -169,10 +168,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			return nil
 		}
 	}
-	stateRoot := strings.TrimSpace(os.Getenv("HUB_STATE"))
-	if store.Reconnect == nil && filepath.IsAbs(stateRoot) {
+	if store.Reconnect == nil {
 		store.Reconnect = &ReconnectController{Store: store, Auth: config.Auth, OnChange: func(change ProjectionChange) error {
-			return WriteReconnectMarker(stateRoot, change)
+			return gateway.RefreshProjection()
 		}}
 	}
 	control.SourceResolver = ResolveGitHubSource
@@ -208,8 +206,19 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			return ledger.Append(record)
 		}
 	}
-	return gateway.Handler()
+	handler, err := gateway.Handler()
+	if err != nil {
+		return nil, err
+	}
+	return &projectionEndpoint{Handler: handler, gateway: gateway}, nil
 }
+
+type projectionEndpoint struct {
+	http.Handler
+	gateway *Gateway
+}
+
+func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }
 
 func formOriginForListen(listen string) string {
 	listen = strings.TrimRight(strings.TrimSpace(listen), "/")

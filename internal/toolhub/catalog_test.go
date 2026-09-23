@@ -57,6 +57,23 @@ func TestProjectionRevisionReconnectIsMonotonicAndQuiet(t *testing.T) {
 	}
 }
 
+func TestReconnectControllerRetriesFailedNotification(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	var calls atomic.Int32
+	controller := &ReconnectController{Store: store, Auth: auth, OnChange: func(ProjectionChange) error {
+		if calls.Add(1) == 1 {
+			return errors.New("transport unavailable")
+		}
+		return nil
+	}}
+	if _, changed, err := controller.Reconcile(); !changed || err == nil {
+		t.Fatalf("initial failure changed=%v err=%v", changed, err)
+	}
+	if _, changed, err := controller.Reconcile(); !changed || err != nil || calls.Load() != 2 {
+		t.Fatalf("failed notification was not retried: changed=%v err=%v calls=%d", changed, err, calls.Load())
+	}
+}
+
 func TestManifestCatalogReportsMissingCredentialsAndStaleConnection(t *testing.T) {
 	store := NewStore()
 	definition := remoteDefinition()

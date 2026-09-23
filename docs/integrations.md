@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-16
+last_verified: 2026-09-23
 ---
 # Integration contracts
 
@@ -267,13 +267,13 @@ from `modelcontextprotocol/servers` at commit
 `82064568802e542c3924560aef2cb421b4ce436c`, through ToolHive 0.49.0:
 `initialize` and `tools/list` returned the real sequential-thinking tool.
 
-After a projection change, ToolHub writes `toolhub-reconnect.request` under the
-absolute `HUB_STATE` directory. The serve runtime watches that marker and
-schedules its existing controlled Hermes restart from the persistent owner home.
-It records the applied revision to avoid a restart loop. This path is enabled
-by default when ToolHub is configured; set `HUB_TOOLHUB_RECONNECT=false` to retain
-manual reconnect behavior. The marker carries only a monotonic revision,
-never credential values.
+The ToolHub endpoint keeps a separate stateful MCP server for each authenticated
+owner token. Projection changes update that server and emit
+`notifications/tools/list_changed` to open sessions. The endpoint also reloads
+the persisted store, so changes made by a separate tools process reach it
+without restarting Hermes. The old serve-runtime restart watcher is removed.
+The pinned-Hermes fixture confirms remove/restore notification and an active
+run surviving refresh; #74 still requires full lifecycle and production evidence.
 
 The stdio companion speaks newline JSON-RPC. Go SDK v1.7 first sends
 `server/discover`; servers that neither implement it nor return JSON-RPC
