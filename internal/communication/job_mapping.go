@@ -204,7 +204,44 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 	if terminal {
 		mapping.TerminalAt = mapping.UpdatedAt
 	}
-	return s.writeMappingLocked(mapping)
+	if err := s.writeMappingLocked(mapping); err != nil {
+		return err
+	}
+	if !mappingHoldsContext(mapping) {
+		key := jobContextKey(mapping.PrincipalID, mapping.ContextID)
+		if s.inFlight[key] == mapping.JobID {
+			delete(s.inFlight, key)
+		}
+	}
+	return nil
+}
+
+// mappingHoldsContext reports whether a mapping keeps its context key held:
+// only an admitted run (same check as RequeueObservations) may still be
+// executing. Uncertain without an admitted run has nothing in flight, so
+// holding the key would deadlock the context forever (ADR-0025).
+func mappingHoldsContext(mapping JobMapping) bool {
+	if terminalStatus(mapping.Status) {
+		return false
+	}
+	return mapping.RunID != "" && mapping.SessionID != "" && mapping.RuntimeGeneration != ""
+}
+
+// jobContextKey mirrors the supervisor runtime key without the fixed gateway
+// runtime mode: work is serialized per (principal, context), parallel across
+// different keys (ADR-0025).
+func jobContextKey(principal, contextID string) string {
+	return principal + "\x00" + contextID
+}
+
+// releaseInFlightLocked frees the context owned by jobID; needed for jobs
+// without durable mappings, which bypass updateMappingLocked's release.
+func (s *Spool) releaseInFlightLocked(jobID string) {
+	for key, holder := range s.inFlight {
+		if holder == jobID {
+			delete(s.inFlight, key)
+		}
+	}
 }
 
 func (s *Spool) SessionFor(principal, context, conversation string) (ConversationMapping, bool, error) {

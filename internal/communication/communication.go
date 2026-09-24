@@ -121,6 +121,9 @@ type Config struct {
 	ToolHubStore       string                  `yaml:"-"`
 	AuditLedger        string                  `yaml:"-"`
 	BrokerApprove      credentialbroker.Config `yaml:"-"`
+	// Workers bounds concurrent job execution; contexts serialize per
+	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
+	Workers int `yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -267,6 +270,7 @@ func ConfigFromEnv() (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
+		config.Workers = workersFromEnv()
 		fillChannelSecrets(&config)
 		return config, nil
 	}
@@ -299,13 +303,22 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER")}
+	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv()}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 	if err != nil {
 		return Config{}, err
 	}
 	fillChannelSecrets(&config)
 	return config, nil
+}
+
+// workersFromEnv bounds the job worker pool; default 4 keeps it under the
+// supervisor's default runtime cap. Context serialization is unaffected.
+func workersFromEnv() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_WORKERS"))); err == nil && n > 0 {
+		return n
+	}
+	return 4
 }
 
 func fillChannelSecrets(config *Config) {
@@ -469,10 +482,14 @@ type Spool struct {
 	root   string
 	mu     sync.Mutex
 	secret map[string]string
+	// inFlight maps (principal, context) to the job currently allowed to run;
+	// held until the job's mapping reaches a terminal status. In-memory only,
+	// rebuilt from durable mappings on startup (ADR-0025).
+	inFlight map[string]string
 }
 
 func NewSpool(root string) (*Spool, error) {
-	s := &Spool{root: root, secret: map[string]string{}}
+	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}}
 	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
@@ -568,6 +585,9 @@ func (s *Spool) rebuildMappings() error {
 					return err
 				}
 			}
+			if mapping, err := s.loadMappingLocked(job.ID); err == nil && mappingHoldsContext(mapping) {
+				s.inFlight[jobContextKey(mapping.PrincipalID, mapping.ContextID)] = job.ID
+			}
 		}
 	}
 	return nil
@@ -660,57 +680,74 @@ func (s *Spool) findIdempotencyLocked(key string) (JobMapping, bool, error) {
 func (s *Spool) ClaimJob() (*Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	name, err := firstJSON(filepath.Join(s.root, "pending"))
-	if err != nil || name == "" {
-		return nil, err
+	if s.inFlight == nil {
+		s.inFlight = map[string]string{}
 	}
-	from, to := filepath.Join(s.root, "pending", name), filepath.Join(s.root, "running", name)
-	if err := os.Rename(from, to); err != nil {
-		return nil, err
-	}
-	b, err := os.ReadFile(to)
+	entries, err := os.ReadDir(filepath.Join(s.root, "pending"))
 	if err != nil {
 		return nil, err
 	}
-	var job Job
-	if err := json.Unmarshal(b, &job); err != nil {
-		return nil, err
-	}
-	mapping, mappingErr := s.loadMappingLocked(job.ID)
-	if mappingErr != nil && job.IdempotencyKey != "" {
-		// Routing and cancellation state must be readable before executing work.
-		return nil, mappingErr
-	}
-	if mappingErr == nil && terminalStatus(mapping.Status) {
-		dir := "failed"
-		if mapping.Status == "completed" {
-			dir = "done"
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
 		}
-		if err := os.Rename(to, filepath.Join(s.root, dir, name)); err != nil {
+		name := entry.Name()
+		pending := filepath.Join(s.root, "pending", name)
+		b, err := os.ReadFile(pending)
+		if err != nil {
 			return nil, err
 		}
-		return nil, nil
-	}
-	if mappingErr == nil && mapping.RunID != "" && mapping.SessionID != "" {
-		job.Text = ""
-	} else if job.Sensitive {
-		job.Text = s.secret[job.ID]
-		if job.Text == "" {
-			_ = os.Rename(to, filepath.Join(s.root, "failed", name))
-			return nil, errors.New("sensitive job payload unavailable after restart")
-		}
-	}
-	if strings.TrimSpace(job.IdempotencyKey) != "" {
-		if err := s.updateMappingLocked(job.ID, RunOutcome{JobID: job.ID, Status: "running", LastEvent: "job.claimed"}, "running", false); err != nil {
+		var job Job
+		if err := json.Unmarshal(b, &job); err != nil {
 			return nil, err
 		}
+		key := jobContextKey(job.PrincipalID, job.ContextID)
+		if holder, busy := s.inFlight[key]; busy && holder != job.ID {
+			continue // Context serialization is per key; other contexts stay claimable.
+		}
+		to := filepath.Join(s.root, "running", name)
+		if err := os.Rename(pending, to); err != nil {
+			return nil, err
+		}
+		mapping, mappingErr := s.loadMappingLocked(job.ID)
+		if mappingErr != nil && job.IdempotencyKey != "" {
+			// Routing and cancellation state must be readable before executing work.
+			return nil, mappingErr
+		}
+		if mappingErr == nil && terminalStatus(mapping.Status) {
+			dir := "failed"
+			if mapping.Status == "completed" {
+				dir = "done"
+			}
+			if err := os.Rename(to, filepath.Join(s.root, dir, name)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if mappingErr == nil && mapping.RunID != "" && mapping.SessionID != "" {
+			job.Text = ""
+		} else if job.Sensitive {
+			job.Text = s.secret[job.ID]
+			if job.Text == "" {
+				_ = os.Rename(to, filepath.Join(s.root, "failed", name))
+				return nil, errors.New("sensitive job payload unavailable after restart")
+			}
+		}
+		if strings.TrimSpace(job.IdempotencyKey) != "" {
+			if err := s.updateMappingLocked(job.ID, RunOutcome{JobID: job.ID, Status: "running", LastEvent: "job.claimed"}, "running", false); err != nil {
+				return nil, err
+			}
+		}
+		s.inFlight[key] = job.ID
+		return &job, nil
 	}
-	return &job, nil
+	return nil, nil
 }
 
 func (s *Spool) CompleteJob(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.releaseInFlightLocked(id)
 	if err := os.Rename(filepath.Join(s.root, "running", spoolFileID(id)+".json"), filepath.Join(s.root, "done", spoolFileID(id)+".json")); err != nil {
 		return err
 	}
@@ -727,6 +764,7 @@ func (s *Spool) FailJob(id string) error {
 	fileID := spoolFileID(id)
 	err := os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
 	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil {
+		// terminal outcomes release via updateMappingLocked; uncertain holds.
 		status := "failed"
 		if mapping.Status == "uncertain" || mapping.Status == "cancelled" || mapping.Status == "interrupted" {
 			status = "uncertain"
@@ -737,6 +775,8 @@ func (s *Spool) FailJob(id string) error {
 		if updateErr := s.updateMappingLocked(id, RunOutcome{Status: status, LastEvent: "job." + status}, status, status != "uncertain"); err == nil {
 			err = updateErr
 		}
+	} else {
+		s.releaseInFlightLocked(id)
 	}
 	return err
 }
@@ -1181,7 +1221,7 @@ type Gateway struct {
 	slack       SlackAPI
 	runner      Runner
 	restart     func(context.Context) error
-	busy        atomic.Bool
+	busy        atomic.Int32
 	now         func() time.Time
 	secrets     *secrets.Service
 	audit       *audit.Ledger
@@ -1305,11 +1345,14 @@ func openCredentialSurface(config Config) (*secrets.Service, *audit.Ledger, erro
 
 func (g *Gateway) Run(ctx context.Context) error {
 	workerCtx, cancel := context.WithCancel(ctx)
-	workerDone := make(chan struct{})
-	go func() {
-		defer close(workerDone)
-		g.worker(workerCtx)
-	}()
+	var workerWG sync.WaitGroup
+	for i := 0; i < max(1, g.config.Workers); i++ {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			g.worker(workerCtx)
+		}()
+	}
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
 	go func() {
@@ -1343,7 +1386,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}()
 	defer func() {
 		cancel()
-		<-workerDone
+		workerWG.Wait()
 		<-deliveryDone
 		<-controlDone
 	}()
@@ -1466,7 +1509,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Готово. Вы подключены к своему Hermes-пространству.")
 		case "status":
 			state := "свободен"
-			if g.busy.Load() {
+			if g.busy.Load() > 0 {
 				state = "обрабатывает сообщение"
 			}
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Hermes: "+state+".")
@@ -1574,7 +1617,7 @@ func (g *Gateway) worker(ctx context.Context) {
 			_ = g.spool.RequeueObservations(g.now().UTC())
 		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
-			g.busy.Store(true)
+			g.busy.Add(1)
 			var response string
 			var outcome RunOutcome
 			var runErr error
@@ -1585,7 +1628,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				response, runErr = g.runner.Run(ctx, *job, g.user(job.UserID))
 				outcome = RunOutcome{Text: response, Status: "completed", LastEvent: "run.completed"}
 			}
-			g.busy.Store(false)
+			g.busy.Add(-1)
 			if runErr != nil || outcome.Status == "uncertain" {
 				if mapping, found, err := g.spool.Mapping(job.ID); err == nil && found && terminalStatus(mapping.Status) {
 					outcome = RunOutcome{Text: mapping.Result, JobID: mapping.JobID, RunID: mapping.RunID, SessionID: mapping.SessionID, RuntimeGeneration: mapping.RuntimeGeneration, Status: mapping.Status, LastEvent: mapping.LastKnownEvent}
