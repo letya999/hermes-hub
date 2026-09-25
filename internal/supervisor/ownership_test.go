@@ -100,7 +100,11 @@ func TestOwnedInventoryFindsStaleGenerationAndPreservesFailedScan(t *testing.T) 
 			t.Fatalf("%s ownership mismatch accepted", field)
 		}
 	}
-	args := strings.Join(m.runArgsWithGeneration(b, runtime.Container, 19000, generation), " ")
+	runArgs, err := m.runArgsWithGeneration(b, runtime.Container, 19000, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(runArgs, " ")
 	for _, label := range []string{"hermes-hub.owner=" + m.ownerID(), "hermes-hub.context=" + key, "hermes-hub.generation=" + generation} {
 		if !strings.Contains(args, label) {
 			t.Fatalf("missing label %s", label)

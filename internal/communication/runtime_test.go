@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,11 +80,25 @@ func TestRuntimeRestartClient(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	if err := runtimeRestart(server.URL, "secret")(context.Background()); err != nil {
+	if err := runtimeRestart(server.URL, "secret", false)(context.Background(), hubruntime.ExecuteRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	if !called {
 		t.Fatal("runtime restart was not requested")
+	}
+	var body string
+	supervisedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer supervisedServer.Close()
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice"}
+	if err := runtimeRestart(supervisedServer.URL, "secret", true)(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, `"principal_id":"alice"`) {
+		t.Fatalf("supervised restart did not carry the identity payload: %q", body)
 	}
 	if !strings.Contains(ErrUncertain.Error(), "uncertain") {
 		t.Fatal("uncertain error lost its contract meaning")

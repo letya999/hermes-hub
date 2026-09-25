@@ -93,6 +93,7 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	writeHermesSources(t, ctxRoot)
 	m, err := New(Config{SpacesRoot: root, RuntimeAuth: "secret", Image: "hermes:test", WarmTTL: time.Minute, Command: wrappedCommand, Probe: probe, Now: func() time.Time { return time.Unix(100, 0) }})
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +103,15 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 
 func binding(contextRoot string) Binding {
 	return Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", UserID: "alice", OrganizationID: "personal", PolicyVersion: "policy-1", ContextRoot: contextRoot}
+}
+
+func writeHermesSources(t *testing.T, ctxRoot string) {
+	t.Helper()
+	for _, env := range []string{"dev", "prod"} {
+		if err := os.WriteFile(filepath.Join(ctxRoot, "hermes."+env+".yaml"), []byte("model: {}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestProtectedSelfEnvIsProxiedToOwnedRuntime(t *testing.T) {
@@ -137,6 +147,77 @@ func TestProtectedSelfEnvIsProxiedToOwnedRuntime(t *testing.T) {
 	m.Handler().ServeHTTP(recorder, httpRequest)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "restart_scheduled") {
 		t.Fatalf("self-env proxy status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRestartForwardsToOwnedRuntime(t *testing.T) {
+	restarted := false
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		restarted = r.URL.Path == "/v1/restart" && r.Header.Get("Authorization") == "Bearer secret"
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "restart", JobID: "restart-job", IdempotencyKey: "restart-job"}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("restart status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !restarted {
+		t.Fatal("runtime /v1/restart was not called")
+	}
+}
+
+func TestRestartRejectsBadRequests(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	for _, body := range []string{`not-json`, `{"identity_schema":9}`} {
+		httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart", strings.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer secret")
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		if recorder.Code != http.StatusBadRequest && recorder.Code != http.StatusConflict {
+			t.Fatalf("restart %q → %d, want 400/409", body, recorder.Code)
+		}
+	}
+	httpRequest := httptest.NewRequest(http.MethodGet, "/v1/restart", nil)
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /v1/restart → %d, want 405", recorder.Code)
+	}
+}
+
+func TestRestartSkipsAbsentRuntime(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "restart", JobID: "restart-job", IdempotencyKey: "restart-job"}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("restart for absent runtime must be a no-op success, got %d", recorder.Code)
+	}
+	if len(m.items) != 0 {
+		t.Fatal("restart spawned a runtime just to bounce it")
 	}
 }
 
@@ -204,6 +285,7 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	writeHermesSources(t, ctxRoot)
 	started := false
 	commands := func(_ context.Context, args ...string) ([]byte, error) {
 		if args[0] == "run" {
@@ -264,6 +346,7 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	writeHermesSources(t, ctxRoot)
 	started := false
 	commands := func(_ context.Context, args ...string) ([]byte, error) {
 		if args[0] == "run" {
@@ -363,6 +446,7 @@ func TestSupervisorJobOutcomeReplaysAfterRestart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	writeHermesSources(t, ctxRoot)
 	runs := 0
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/execute" {
@@ -802,6 +886,7 @@ func TestTypedLeasesProtectStreamsApprovalsAndPrincipalIsolation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(otherRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	writeHermesSources(t, otherRoot)
 	other := b
 	other.PrincipalID, other.ContextID, other.RuntimeID, other.ContextRoot = "bob", "bob", "bob", otherRoot
 	if _, err := m.Ensure(context.Background(), other); err != nil {
@@ -1046,18 +1131,126 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 	}
 	b := binding(root)
 	b.OrganizationRoot = org
-	args := m.runArgs(b, "hermes-context-test", 19000)
+	args, err := m.runArgs(b, "hermes-context-test", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--network hermes-hub-alice-dev_default", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 256", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "--env-file"} {
+	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 256", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("run args missing %q: %s", want, joined)
 		}
 	}
+	effective, err := os.ReadFile(filepath.Join(root, "generated", "hermes-effective.dev.yaml"))
+	if err != nil || !strings.Contains(string(effective), "http://toolhub:8090/mcp") {
+		t.Fatalf("effective config not materialized: %v %q", err, effective)
+	}
 	other := b
 	other.UserID = "bob"
-	otherArgs := strings.Join(m.runArgs(other, "hermes-context-bob", 19001), " ")
-	if !strings.Contains(otherArgs, "--network hermes-hub-bob-dev_default") || !strings.Contains(otherArgs, "src=hermes-hub-bob-dev_broker-secrets-runtime") || strings.Contains(otherArgs, "hermes-hub-alice-dev") {
-		t.Fatalf("runtime infrastructure is not owner-scoped: %s", otherArgs)
+	rawOther, err := m.runArgs(other, "hermes-context-bob", 19001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherArgs := strings.Join(rawOther, " ")
+	if !strings.Contains(otherArgs, "--network hermes-hub-runtime") || !strings.Contains(otherArgs, "src=hermes-hub-bob-dev_broker-secrets-runtime") || strings.Contains(otherArgs, "hermes-hub-alice-dev") {
+		t.Fatalf("runtime secrets are not owner-scoped: %s", otherArgs)
+	}
+}
+
+func TestRunArgsMountsHubSkills(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	if err := os.WriteFile(filepath.Join(root, "hermes.dev.yaml"), []byte("model: {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(root, "hub-skills")
+	if err := os.MkdirAll(skills, 0700); err != nil {
+		t.Fatal(err)
+	}
+	settings := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nglobal_skills_dir: " + skills + "\n"
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(settings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err := m.runArgs(binding(root), "hermes-context-test", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	if !strings.Contains(joined, "src="+skills+",dst=/opt/hub/skills,readonly") {
+		t.Fatalf("run args missing skills mount: %s", joined)
+	}
+	ctx := filepath.Join(root, "spaces", "bob")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{"runtime.auth": "HUB_RUNTIME_AUTH=secret\n", "hermes.dev.yaml": "model: {}"} {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repoSkills := filepath.Join(root, "config", "skills")
+	if err := os.MkdirAll(repoSkills, 0700); err != nil {
+		t.Fatal(err)
+	}
+	rawBob, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(rawBob, " ")
+	if !strings.Contains(joined, "src="+repoSkills+",dst=/opt/hub/skills,readonly") {
+		t.Fatalf("run args missing default skills mount: %s", joined)
+	}
+}
+
+func TestReapSweepsOrphanLeases(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	key := runtimeKey(b)
+	m.mu.Lock()
+	entry := m.items[key]
+	entry.State = Busy
+	entry.leases = map[string]Lease{
+		"lease-job":      {ID: "lease-job", Kind: LeaseJob, Owner: "job:ghost", Generation: entry.Generation},
+		"lease-gen":      {ID: "lease-gen", Kind: LeaseJob, Owner: "job:still-running", Generation: "old-generation"},
+		"lease-super":    {ID: "lease-super", Kind: LeaseStream, Owner: "supervisor", Generation: entry.Generation, ExpiresAt: m.cfg.Now().Add(-time.Minute)},
+		"lease-live-job": {ID: "lease-live-job", Kind: LeaseJob, Owner: "job:live", Generation: entry.Generation},
+	}
+	entry.Leases = 4
+	m.jobs["live"] = jobRecord{Status: "running"}
+	m.jobs["ghost"] = jobRecord{Status: "completed"}
+	m.mu.Unlock()
+	if err := m.Reap(context.Background(), m.cfg.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if entry.Leases != 2 || len(entry.leases) != 2 {
+		t.Fatalf("orphan leases not swept: leases=%v map=%v", entry.Leases, entry.leases)
+	}
+	for _, id := range []string{"lease-live-job", "lease-super"} {
+		if _, ok := entry.leases[id]; !ok {
+			t.Fatalf("live lease %s swept: %v", id, entry.leases)
+		}
+	}
+	if entry.State != Busy {
+		t.Fatalf("entry with live leases must stay busy: %s", entry.State)
+	}
+	m.jobs["live"] = jobRecord{Status: "failed"}
+	m.mu.Unlock()
+	if err := m.Reap(context.Background(), m.cfg.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	if entry.Leases != 1 || len(entry.leases) != 1 || entry.State != Busy {
+		t.Fatalf("caller-held lease must survive the job sweep: leases=%v state=%s", entry.Leases, entry.State)
+	}
+	if _, ok := entry.leases["lease-super"]; !ok {
+		t.Fatalf("caller-held lease swept: %v", entry.leases)
 	}
 }
 

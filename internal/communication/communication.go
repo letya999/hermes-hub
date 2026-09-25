@@ -31,6 +31,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -1220,7 +1221,7 @@ type Gateway struct {
 	api         TelegramAPI
 	slack       SlackAPI
 	runner      Runner
-	restart     func(context.Context) error
+	restart     func(context.Context, hubruntime.ExecuteRequest) error
 	busy        atomic.Int32
 	now         func() time.Time
 	secrets     *secrets.Service
@@ -1279,10 +1280,7 @@ func New(config Config) (*Gateway, error) {
 	if config.RuntimeURL != "" {
 		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised}
 	}
-	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth)
-	if config.Supervised {
-		restart = nil
-	}
+	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
 	secretService, ledger, err := openCredentialSurface(config)
 	if err != nil {
 		return nil, err
@@ -1709,7 +1707,10 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	_ = g.spool.CompleteDelivery(delivery.ID)
 	if delivery.JobID != "" {
 		if g.restart != nil {
-			_ = g.restart(ctx)
+			request, ok := g.restartRequest(*delivery)
+			if ok {
+				_ = g.restart(ctx, request)
+			}
 		} else {
 			user := g.userByChatID(delivery.ChatID)
 			if user.StateDir != "" {
@@ -1784,6 +1785,39 @@ func (g *Gateway) userByChatID(chatID int64) User {
 		}
 	}
 	return User{}
+}
+
+// restartRequest builds the restart call for the runtime that actually ran
+// the delivered job. Supervised gateways must address the supervisor with the
+// job's durable identity so it can route to that user's spawned runtime;
+// resident runtimes take an empty POST.
+func (g *Gateway) restartRequest(delivery Delivery) (hubruntime.ExecuteRequest, bool) {
+	if !g.config.Supervised {
+		return hubruntime.ExecuteRequest{}, true
+	}
+	mapping, ok, err := g.spool.Mapping(delivery.JobID)
+	if err != nil || !ok || mapping.PrincipalID == "" || mapping.ContextID == "" || mapping.RuntimeID == "" || mapping.PolicyVersion == "" || mapping.ExternalIdentityID == "" || mapping.ConversationID == "" || mapping.DeliveryTargetID == "" {
+		return hubruntime.ExecuteRequest{}, false
+	}
+	return supervisorRestartRequest(
+		identity.Envelope{Schema: identity.Schema, PrincipalID: mapping.PrincipalID, ExternalIdentityID: mapping.ExternalIdentityID, ContextID: mapping.ContextID, RuntimeID: mapping.RuntimeID, ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, PolicyVersion: mapping.PolicyVersion},
+		mapping.OrganizationID, mapping.UserID, mapping.ActorID, mapping.ScopeID, delivery.JobID), true
+}
+
+// supervisorRestartRequest addresses the supervisor's restart route with the
+// durable identity of the runtime that must be bounced.
+func supervisorRestartRequest(env identity.Envelope, organizationID, userID, actorID, scopeID, idempotency string) hubruntime.ExecuteRequest {
+	return hubruntime.ExecuteRequest{
+		Envelope:       env,
+		OrganizationID: organizationID,
+		UserID:         userID,
+		ActorID:        actorID,
+		ScopeID:        scopeID,
+		Channel:        "communication",
+		Trigger:        "restart",
+		JobID:          "restart-" + idempotency,
+		IdempotencyKey: "restart-" + idempotency,
+	}
 }
 
 func signalRestartAfterDelivery(stateDir string) error {

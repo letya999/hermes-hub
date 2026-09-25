@@ -1,0 +1,52 @@
+schema: 1
+id: CHG-0040-shared-toolhub-control-plane
+title: "Shared ToolHub/Broker control plane: infra flag, shared network, multi-token endpoint"
+status: done
+phase: delivered
+started_at: "2026-09-25"
+updated_at: "2026-09-25"
+completed:
+  - "stack: Settings.Infra (default true), secondary spaces render только hermes-runtime; external hermes-hub-runtime у всех"
+  - "stack: HUB_TOOLHUB_ENDPOINT default -> http://toolhub:8090/mcp; host.docker.internal убран"
+  - "stack: toolhub.service получает HUB_TOOLHUB_TOKENS_FILE + bind-mount при наличии spaces/<owner>/toolhub-tokens.json"
+  - "supervisor: spawned runtimes снова на m.cfg.Network (hermes-hub-runtime), per-user broker-secrets volume сохранён"
+  - "toolhub: EndpointConfig.TokensFile + loadTokenEnvelopes (token>=32, no CRLF, envelope.Validate, dup reject)"
+  - "spaces: test-owner-2 infra:false; удалён stray clone google-calendar-mcp и google_calendar из runtime config.yaml"
+  - "spaces: local secrets.dev.env без host.docker.internal; toolhub-tokens.json с envelope test-owner-2 (gitignored)"
+  - "render: compose.dev.yaml test-owner-2 = только hermes-runtime; local toolhub несёт TOKENS_FILE+mount"
+  - "ADR-0026 + adr/index.md + architecture.md updated"
+  - "supervisor: spawn mount-parity — /opt/hub/skills (global_skills_dir или дефолт <repo>/config/skills) биндится в spawned runtimes; без него агент терял mcp-connector-onboarding и уходил в terminal/git clone в обход ToolHub (инцидент 15:51)"
+  - "test: parallel_workers_test — воркеры дожидаются через WaitGroup (флейк TempDir cleanup под race)"
+  - "supervisor: sweepStaleLeasesLocked в Reap — сироты (generation mismatch, job terminal/missing) больше не держат runtime навечно; typed stream/approval не трогаем"
+  - "supervisor: ExpireUncertain — uncertain-джобы с истёкшим лизом резолвятся: RunID!=0 через durable cancel-control, RunID=0 (unobservable ghost) → interrupted; lease-less записи bounded по UpdatedAt+2*WarmTTL"
+  - "live: оба hermes-context впервые реально погашены Reap'ом (scale-to-zero); test-owner-2 calendar onboarding через ToolHub подтверждён стором+аудитом (bind-d91a24e38, admit+allow)"
+  - "stack: MaterializeHermesConfig/ApplyHermesConfig + ReadSelfServicesFeatures — host-материализация эффективного конфига (source + self-services + toolhub block) в generated/hermes-effective.<env>.yaml"
+  - "render+supervisor: /state/hermes/config.yaml монтируется read-only из materialized файла в compose и spawn-args; spawn fail-closed при ошибке материализации"
+  - "runtime: effectiveConfigWritable — in-container materialization пропускается при ro-маунте; legacy-путь без mount сохранён (ApplyHermesConfig in-place)"
+  - "live: test-owner-2 resident recreated на новом образе — config ro, touch → Read-only file system, hermes boots; manual spawn-check контракт подтверждён"
+  - "issue #133: true shared MCP bindings (shared creds/workloads across principals) заведён"
+  - "supervisor: /v1/restart — прокси по binding к рантайму (lease+forward, auth по runtime.auth); absent/stopped runtime → 200 noop без спавна"
+  - "comm-hub: runtimeRestart supervised-aware — строит ExecuteRequest из durable JobMapping/envelope и идёт в supervisor /v1/restart (раньше 404 + dead file-signal); credential-form restart тоже через envelope"
+  - "render: infra:false не рендерит hermes-runtime вообще (services:{} — только файлы для spawned); owner удаляет его при supervisor URL как раньше"
+  - "live: оба resident-контейнера удалены, docker ps = 0 hermes-runtime; spawn через /v1/leases с ro-конфигом подтверждён; /v1/restart 200 noop+forward; comm-hub recreated на новом бинаре"
+tests:
+  - "internal/stack: PASS (secondary-space render, infra-owner shared network, endpoint default)"
+  - "internal/supervisor: PASS (--network hermes-hub-runtime, per-user broker-secrets, /opt/hub/skills mount: explicit + default path)"
+  - "internal/toolhub: PASS (tokens-file load, 2 principals, unknown token reject, dup/malformed reject)"
+  - "internal/runtime: PASS"
+pending:
+  - "прод переустановка google-calendar-mcp через ToolHub для test-owner-2"
+live-verified:
+  - "deploy 2026-09-25: образ hermes-hub:0.3.0-dev пересобран, supervisor exe пересобран и перезапущен (8765)"
+  - "compose local (3 файла) recreate: 6/6 healthy; test-owner-2 runtime healthy на shared-сети"
+  - "ONE toolhub: MCP initialize 200 для local и test-owner-2 токенов, 401 для чужого"
+  - "изоляция: status по чужой onboarding-записи -> 'authorization denied: onboarding owner' для обоих (policy-drift у старой записи local — строгость по квартету, не баг)"
+  - "DNS в runtime test-owner-2: toolhub=172.25.0.3, credential-broker=172.25.0.4 на hermes-hub-runtime"
+  - "fix при деплое: shared-сеть переведена в external:true у ВСЕХ спейсов — pre-existing сеть без compose-меток блокировала up; broker-materialized external-дубль в override убран (generated уже пинает имя+driver)"
+  - "stray hermes-context-* (5 шт, 5-30h) на мёртвых сетях оставлены — warm garbage, можно docker rm"
+  - "spawn-parity live: test-owner-2 respawn (gen-22+) несёт ro-mount config/skills -> /opt/hub/skills; mcp-connector-onboarding/SKILL.md виден в контейнере, external_dirs в config.yaml указывает на /opt/hub/skills"
+gates:
+  - "just check: PASS (race+shuffle все пакеты, coverage 85.03% >= 85%, format/vet/staticcheck/docs/actionlint)"
+  - "git diff --check: clean"
+  - "just security: не требуется — go.mod/go.sum не менялись"
+  - "just docker-check dev: PASS (build, docker-smoke, hermes-contract: real gateway 2 users, supervisor lifecycle, 5-min idle, Hermes 0.21.0; hub-stt fixture unavailable — non-fatal)"

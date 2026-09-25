@@ -17,37 +17,42 @@ import (
 )
 
 type Settings struct {
-	ExecutionMode         string               `yaml:"-"`
-	SupervisorURL         string               `yaml:"-"`
-	NativeCron            string               `yaml:"-"`
-	Environment           string               `yaml:"-"`
-	MCP                   map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks                 map[string]any       `yaml:"hooks,omitempty"`
-	Memory                bool                 `yaml:"memory"`
-	Honcho                bool                 `yaml:"honcho,omitempty"`
-	HonchoURL             string               `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir       string               `yaml:"global_skills_dir,omitempty"`
-	Schema                int                  `yaml:"schema"`
-	User                  string               `yaml:"user"`
-	Organization          string               `yaml:"organization,omitempty"`
-	DisabledMCP           []string             `yaml:"disabled_mcp,omitempty"`
-	Model                 string               `yaml:"model"`
-	ModelURL              string               `yaml:"model_url"`
-	Timezone              string               `yaml:"timezone"`
-	Features              []string             `yaml:"features"`
-	GoogleEmail           string               `yaml:"google_email"`
-	GitLabHost            string               `yaml:"gitlab_host"`
-	DesktopURL            string               `yaml:"desktop_url"`
-	DraftsURL             string               `yaml:"drafts_url"`
-	OAuthPort             int                  `yaml:"oauth_port"`
-	BrowserPort           int                  `yaml:"browser_port"`
-	SlackEventsPort       int                  `yaml:"slack_events_port,omitempty"`
-	OrganizationDir       string               `yaml:"-"`
-	OrganizationDocsDir   string               `yaml:"-"`
-	OrganizationSkillsDir string               `yaml:"-"`
-	SpaceDir              string               `yaml:"-"`
-	OrganizationRole      string               `yaml:"-"`
-	OrgActions            []string             `yaml:"-"`
+	ExecutionMode   string               `yaml:"-"`
+	SupervisorURL   string               `yaml:"-"`
+	NativeCron      string               `yaml:"-"`
+	Environment     string               `yaml:"-"`
+	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks           map[string]any       `yaml:"hooks,omitempty"`
+	Memory          bool                 `yaml:"memory"`
+	Honcho          bool                 `yaml:"honcho,omitempty"`
+	HonchoURL       string               `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir string               `yaml:"global_skills_dir,omitempty"`
+	Schema          int                  `yaml:"schema"`
+	User            string               `yaml:"user"`
+	Organization    string               `yaml:"organization,omitempty"`
+	DisabledMCP     []string             `yaml:"disabled_mcp,omitempty"`
+	Model           string               `yaml:"model"`
+	ModelURL        string               `yaml:"model_url"`
+	Timezone        string               `yaml:"timezone"`
+	Features        []string             `yaml:"features"`
+	GoogleEmail     string               `yaml:"google_email"`
+	GitLabHost      string               `yaml:"gitlab_host"`
+	DesktopURL      string               `yaml:"desktop_url"`
+	DraftsURL       string               `yaml:"drafts_url"`
+	OAuthPort       int                  `yaml:"oauth_port"`
+	BrowserPort     int                  `yaml:"browser_port"`
+	SlackEventsPort int                  `yaml:"slack_events_port,omitempty"`
+	// Infra marks the space that renders the shared control plane (ToolHub,
+	// Credential Broker, workload-controller, cliproxy, communication-hub).
+	// Exactly one deployed space must render it; secondary spaces set
+	// `infra: false` and consume the shared services over the shared network.
+	Infra                 *bool    `yaml:"infra,omitempty"`
+	OrganizationDir       string   `yaml:"-"`
+	OrganizationDocsDir   string   `yaml:"-"`
+	OrganizationSkillsDir string   `yaml:"-"`
+	SpaceDir              string   `yaml:"-"`
+	OrganizationRole      string   `yaml:"-"`
+	OrgActions            []string `yaml:"-"`
 }
 type Feature struct {
 	Name     string   `json:"name"`
@@ -134,6 +139,11 @@ func selfEnvKeys(s Settings) []string {
 }
 
 func (s Settings) Has(name string) bool { return slices.Contains(s.Features, name) }
+
+// RendersInfra reports whether this space owns the shared control plane
+// services. Unset keeps the historical single-space render (everything in one
+// project); only explicitly secondary spaces opt out.
+func (s Settings) RendersInfra() bool { return s.Infra == nil || *s.Infra }
 func (s Settings) Validate() error {
 	if s.Schema != 1 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1 and profile a lowercase identifier")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"io/fs"
 	"net/http"
 	"os"
@@ -196,14 +197,22 @@ func superviseOnce(mode string) (bool, error) {
 			return false, err
 		}
 	}
-	if err := copyIfExists("/config/config.yaml", filepath.Join(hermesHome, "config.yaml"), true); err != nil {
-		return false, err
-	}
-	if err := applySelfServices(filepath.Join(hermesHome, "config.yaml")); err != nil {
-		return false, err
-	}
-	if err := applyToolHubConfig(filepath.Join(hermesHome, "config.yaml")); err != nil {
-		return false, err
+	// The effective Hermes config is materialized on the host and mounted
+	// read-only over the agent-writable state dir: mcp_servers cannot be
+	// mutated from inside the runtime. When it is missing (legacy mount) the
+	// runtime materializes the config itself as before.
+	configDst := filepath.Join(hermesHome, "config.yaml")
+	if effectiveConfigWritable(configDst) {
+		var configErr error
+		if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
+			configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, materializeOptionsFromEnv())
+		} else {
+			// No rendered source mount (legacy/test run): mutate in place.
+			configErr = stack.ApplyHermesConfig(configDst, materializeOptionsFromEnv())
+		}
+		if configErr != nil {
+			return false, configErr
+		}
 	}
 	if err := copyIfExists("/config/SOUL.md", filepath.Join(hermesHome, "SOUL.md"), false); err != nil {
 		return false, err
@@ -408,6 +417,22 @@ func waitForDisplay(display string) error {
 		sleep(100 * time.Millisecond)
 	}
 	return errors.New("xvfb display did not start")
+}
+
+// effectiveConfigWritable reports whether the effective Hermes config path is
+// mutable inside the container. A read-only bind mount over the file is the
+// enforced signal that the host already materialized the config; a missing
+// file on a writable directory means the runtime must materialize it itself.
+func effectiveConfigWritable(destination string) bool {
+	if f, err := os.OpenFile(destination, os.O_WRONLY, 0); err == nil {
+		_ = f.Close()
+		return true
+	}
+	if f, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE, 0660); err == nil {
+		_ = f.Close()
+		return true
+	}
+	return false
 }
 
 func copyIfExists(source, destination string, overwrite bool) error {

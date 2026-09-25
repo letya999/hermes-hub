@@ -166,32 +166,6 @@ func TestLoadSelfEnv(t *testing.T) {
 	}
 }
 
-func TestApplySelfServicesMergesMCPConfig(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["atlassian","gitlab"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	config := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(config, []byte("model: {}\nmcp_servers: {}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServices(config); err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	// Connectors are ToolHub-managed: enabling them must not inject a direct
-	// MCP definition into the Hermes config.
-	if strings.Contains(text, "mcp-atlassian") || strings.Contains(text, "mcp.atlassian.com") || strings.Contains(text, "gitlab") {
-		t.Fatal(text)
-	}
-}
-
 func TestLoadSelfServicesSetsActiveFeatures(t *testing.T) {
 	oldState := state
 	state = t.TempDir()
@@ -223,32 +197,6 @@ func TestLoadSelfServicesRejectsInvalidState(t *testing.T) {
 	}
 }
 
-func TestSelfServicesRejectsInvalidState(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	for _, body := range []string{`not-json`, `{"features":["workspace"]}`, `{"features":["gitlab","gitlab"]}`} {
-		if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := readSelfServices(); err == nil {
-			t.Fatal("invalid self-services accepted", body)
-		}
-	}
-	if err := os.Remove(filepath.Join(state, selfServicesFile)); err != nil {
-		t.Fatal(err)
-	}
-	if features, err := readSelfServices(); err != nil || features != nil {
-		t.Fatal(features, err)
-	}
-	if err := os.Mkdir(filepath.Join(state, selfServicesFile), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readSelfServices(); err == nil {
-		t.Fatal("directory self-services accepted")
-	}
-}
-
 func TestLoadSelfServicesMergesConfiguredFeatures(t *testing.T) {
 	oldState := state
 	state = t.TempDir()
@@ -271,29 +219,18 @@ func TestLoadSelfServicesMergesConfiguredFeatures(t *testing.T) {
 	}
 }
 
-func TestApplySelfServicesNoopAndConfigErrors(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	if err := applySelfServices(filepath.Join(state, "missing.yaml")); err != nil {
+func TestEffectiveConfigWritableDetection(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "config.yaml")
+	if !effectiveConfigWritable(missing) {
+		t.Fatal("missing config on writable dir must materialize")
+	}
+	ro := filepath.Join(dir, "ro.yaml")
+	if err := os.WriteFile(ro, []byte("model: {}"), 0400); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["github"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	bad := filepath.Join(state, "bad.yaml")
-	if err := os.WriteFile(bad, []byte("not: [yaml"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServices(bad); err == nil {
-		t.Fatal("invalid Hermes config accepted")
-	}
-	noServers := filepath.Join(state, "no-servers.yaml")
-	if err := os.WriteFile(noServers, []byte("model: test\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServices(noServers); err != nil {
-		t.Fatal(err)
+	if effectiveConfigWritable(ro) {
+		t.Fatal("read-only config must be treated as pre-materialized")
 	}
 }
 

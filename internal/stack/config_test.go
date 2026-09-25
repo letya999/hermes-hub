@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -447,13 +448,13 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
-	if err != nil || !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://host.docker.internal:8090/mcp") {
+	if err != nil || !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp") {
 		t.Fatalf("default ToolHub endpoint missing: %q %v", runtimeEnv, err)
 	}
 	if soul, _ := os.ReadFile(filepath.Join(d, "SOUL.md")); string(soul) != "template soul" {
 		t.Fatalf("SOUL stub not healed to template: %q", soul)
 	}
-	secrets := "OPENAI_API_KEY=model\nHUB_TOOLHUB_ENDPOINT=http://custom:9/mcp\n"
+	secrets := "OPENAI_API_KEY=model\nHUB_TOOLHUB_ENDPOINT=http://toolhub:9000/mcp\n"
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +462,7 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeEnv, _ = os.ReadFile(filepath.Join(d, "runtime.prod.env"))
-	if !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://custom:9/mcp") {
+	if !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://toolhub:9000/mcp") {
 		t.Fatalf("explicit ToolHub endpoint lost: %q", runtimeEnv)
 	}
 	secrets = "OPENAI_API_KEY=model\nHUB_TOOLHUB_ENDPOINT=\n"
@@ -483,5 +484,94 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	}
 	if soul, _ := os.ReadFile(filepath.Join(d, "SOUL.md")); string(soul) != "mine" {
 		t.Fatalf("user SOUL overwritten: %q", soul)
+	}
+}
+
+func TestSecondarySpaceRendersNoSharedInfra(t *testing.T) {
+	off := false
+	s := Settings{Schema: 1, Environment: "prod", User: "bob", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Features: []string{"telegram"}, BrowserPort: 6080, OAuthPort: 8000, Infra: &off}
+	rendered := Compose(s, "/source", "/space")
+	services := rendered["services"].(M)
+	if _, ok := services["hermes-runtime"]; ok {
+		t.Fatal("secondary space kept a resident runtime: spawned runtimes must be the only per-user containers")
+	}
+	for _, name := range []string{"toolhub", "credential-broker", "workload-controller", "cliproxy", "communication-hub"} {
+		if _, ok := services[name]; ok {
+			t.Fatalf("secondary space rendered shared service %q: port collisions return", name)
+		}
+	}
+	shared := rendered["networks"].(M)["hermes-hub-runtime"].(M)
+	if shared["external"] != true {
+		t.Fatalf("secondary space must not own the shared network: %v", shared)
+	}
+	volumes := rendered["volumes"].(M)
+	if _, ok := volumes["broker-secrets-runtime"]; !ok {
+		t.Fatal("secondary space lost its runtime broker key volume")
+	}
+	if _, ok := volumes["broker-state"]; ok {
+		t.Fatal("secondary space claimed the shared broker state volume")
+	}
+}
+
+func TestInfraRenderOwnsSharedNetwork(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Features: []string{"telegram"}, BrowserPort: 6080, OAuthPort: 8000}
+	rendered := Compose(s, "/source", "/space")
+	services := rendered["services"].(M)
+	for _, name := range []string{"toolhub", "credential-broker", "cliproxy", "communication-hub"} {
+		service, ok := services[name].(M)
+		if !ok {
+			t.Fatalf("infra service %q missing", name)
+		}
+		nets, ok := service["networks"].([]string)
+		if !ok || !slices.Contains(nets, "hermes-hub-runtime") {
+			t.Fatalf("infra service %q not reachable on the shared network: %v", name, service["networks"])
+		}
+	}
+	shared := rendered["networks"].(M)["hermes-hub-runtime"].(M)
+	if shared["name"] != "hermes-hub-runtime" || shared["external"] != true {
+		t.Fatalf("shared network must be external operator-owned with stable name: %v", shared)
+	}
+}
+
+func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model.invalid/v1"
+	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := os.ReadFile(filepath.Join(d, "generated", "hermes-effective.prod.yaml"))
+	if err != nil {
+		t.Fatal("effective config not materialized:", err)
+	}
+	if !strings.Contains(string(effective), "http://toolhub:8090/mcp") {
+		t.Fatalf("materialized config missing toolhub server: %q", effective)
+	}
+	compose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compose), "hermes-effective.prod.yaml") || !strings.Contains(string(compose), "/state/hermes/config.yaml") {
+		t.Fatalf("immutable config mount missing from compose: %q", compose)
 	}
 }

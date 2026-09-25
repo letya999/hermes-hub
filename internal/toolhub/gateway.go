@@ -537,7 +537,7 @@ func ValidateBackendEndpoint(raw string) error {
 		return fmt.Errorf("%w: private MCP backend URL", ErrInvalid)
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || host == "host.docker.internal" || host == "toolhive" || host == "vmcp" || host == "workload-controller" {
+	if host == "localhost" || host == "toolhub" || host == "toolhive" || host == "vmcp" || host == "workload-controller" {
 		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {

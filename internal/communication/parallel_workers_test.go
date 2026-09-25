@@ -2,6 +2,7 @@ package communication
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -226,9 +227,10 @@ func TestWorkerPoolRunsContextsInParallel(t *testing.T) {
 	started, release := make(chan string, 4), make(chan struct{})
 	g.runner = blockingRunner{started: started, release: release}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var wg sync.WaitGroup
 	for i := 0; i < c.Workers; i++ {
-		go g.worker(ctx)
+		wg.Add(1)
+		go func() { defer wg.Done(); g.worker(ctx) }()
 	}
 	for _, id := range []string{"pa", "pb"} {
 		user := "alice"
@@ -250,4 +252,6 @@ func TestWorkerPoolRunsContextsInParallel(t *testing.T) {
 		}
 	}
 	close(release)
+	cancel()
+	wg.Wait()
 }

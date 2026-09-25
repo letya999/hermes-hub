@@ -95,7 +95,14 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, false)["services"].(M)["hermes-runtime"].(M)
 }
 
+// sharedNetworkName is the single external-facing network shared infra and all
+// spawned runtimes join. It is created once by the infra-owning compose project
+// (name is pinned, never project-prefixed) and declared external by secondary
+// spaces. Service names like `toolhub` resolve identically for every runtime.
+const sharedNetworkName = "hermes-hub-runtime"
+
 func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
+	infra := s.RendersInfra()
 	stateVolumes := []any{
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "runtime")), "target": "/state"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes")), "target": "/state/hermes"},
@@ -109,6 +116,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+s.Environment+".yaml")), "target": "/config/config.yaml", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/state/hermes/SOUL.md", "read_only": true},
+		// The effective Hermes config is materialized on the host and mounted
+		// read-only over the agent-writable state dir: mcp_servers must come
+		// from ToolHub onboarding, never from terminal edits inside the runtime.
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
 	}
 	ports := []string{}
 	if s.Has("browser") || s.Has("meet") {
@@ -165,6 +176,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeService["environment"].(M)["GOCACHE"] = "/state/go-build"
 		runtimeService["environment"].(M)["GOMODCACHE"] = "/state/go-mod"
 	}
+	if !infra {
+		// Secondary spaces keep only their runtime; it reaches the shared
+		// control plane on the shared network where `toolhub`, `credential-broker`
+		// and `cliproxy` resolve to the single deployed instances.
+		runtimeService["networks"] = []string{"default", sharedNetworkName}
+	}
 	services := M{"hermes-runtime": runtimeService}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
@@ -189,50 +206,65 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	runtimeService["volumes"] = append(runtimeService["volumes"].([]any), brokerSecrets("runtime"))
 
-	cliproxy := cloneMap(common)
-	cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
-	cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
-	cliproxy["ports"] = []string{"127.0.0.1:8317:8317"}
-	services["cliproxy"] = cliproxy
+	// Services every spawned or secondary runtime resolves by name attach to the
+	// shared network; everything else stays on the project default.
+	sharedNetworks := []string{"default", sharedNetworkName}
+	if infra {
+		cliproxy := cloneMap(common)
+		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
+		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
+		cliproxy["ports"] = []string{"127.0.0.1:8317:8317"}
+		cliproxy["networks"] = sharedNetworks
+		services["cliproxy"] = cliproxy
 
-	toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HOME": "/tmp", "TZ": s.Timezone}
-	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
-		toolhubEnv[key] = value
+		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HOME": "/tmp", "TZ": s.Timezone}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
+			toolhubEnv[key] = value
+		}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
+			toolhubEnv[key] = value
+		}
+		toolhubVolumes := []any{stateBind, dockerSock, brokerSecrets("toolhub"), brokerMaterializedMount}
+		// Extra principal tokens for secondary spaces: one JSON map per deploy,
+		// mounted read-only. Rendered only when the operator wrote the file.
+		if _, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil {
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/run/toolhub-tokens.json", "read_only": true})
+			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
+		}
+		toolhub := cloneMap(common)
+		// Toolhub owns the build block: it is always rendered, unlike hermes-runtime
+		// which is dropped when an external supervisor URL is configured.
+		toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
+		toolhub["entrypoint"] = []string{"toolhub"}
+		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
+		toolhub["environment"] = toolhubEnv
+		toolhub["volumes"] = toolhubVolumes
+		toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
+		toolhub["networks"] = sharedNetworks
+		services["toolhub"] = toolhub
+
+		controller := cloneMap(common)
+		controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
+		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HOME": "/tmp", "TZ": s.Timezone}
+		controller["volumes"] = []any{stateBind, dockerSock, brokerMaterializedMount}
+		controller["ports"] = []string{"127.0.0.1:8545:8545"}
+		services["workload-controller"] = controller
+
+		broker := cloneMap(common)
+		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
+		// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
+		// controller without exposing Broker's encrypted store to MCP workloads.
+		broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}, brokerMaterializedMount}
+		broker["ports"] = []string{"127.0.0.1:8787:8787"}
+		broker["networks"] = sharedNetworks
+		// Personal loopback deployment: the connect link opens the credential form
+		// directly. Remove BROKER_DIRECT_FORM to restore the trusted-channel
+		// confirmation code required by the stricter spec flow.
+		broker["environment"] = M{"BROKER_DIRECT_FORM": "1"}
+		services["credential-broker"] = broker
 	}
-	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
-		toolhubEnv[key] = value
-	}
-	toolhub := cloneMap(common)
-	// Toolhub owns the build block: it is always rendered, unlike hermes-runtime
-	// which is dropped when an external supervisor URL is configured.
-	toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
-	toolhub["entrypoint"] = []string{"toolhub"}
-	toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
-	toolhub["environment"] = toolhubEnv
-	toolhub["volumes"] = []any{stateBind, dockerSock, brokerSecrets("toolhub"), brokerMaterializedMount}
-	toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
-	services["toolhub"] = toolhub
 
-	controller := cloneMap(common)
-	controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
-	controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HOME": "/tmp", "TZ": s.Timezone}
-	controller["volumes"] = []any{stateBind, dockerSock, brokerMaterializedMount}
-	controller["ports"] = []string{"127.0.0.1:8545:8545"}
-	services["workload-controller"] = controller
-
-	broker := cloneMap(common)
-	broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
-	// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
-	// controller without exposing Broker's encrypted store to MCP workloads.
-	broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}, brokerMaterializedMount}
-	broker["ports"] = []string{"127.0.0.1:8787:8787"}
-	// Personal loopback deployment: the connect link opens the credential form
-	// directly. Remove BROKER_DIRECT_FORM to restore the trusted-channel
-	// confirmation code required by the stricter spec flow.
-	broker["environment"] = M{"BROKER_DIRECT_FORM": "1"}
-	services["credential-broker"] = broker
-
-	if includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
+	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 		if s.ExecutionMode != "" {
 			supervisorURL = s.SupervisorURL
@@ -268,6 +300,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		gateway["env_file"] = gatewayEnvFiles
 		gateway["environment"] = gatewayEnvironment
+		gateway["networks"] = sharedNetworks
 		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}, brokerSecrets("communication")}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
@@ -278,8 +311,31 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			delete(services, "hermes-runtime")
 		}
 	}
-	volumes := M{"communication-hub-data": M{}, "broker-state": M{"external": true, "name": "hermes-credential-broker-real-prod-20260918"}, "broker-materialized": M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}, "broker-secrets-toolhub": M{}, "broker-secrets-runtime": M{}, "broker-secrets-communication": M{}}
-	return M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
+	if includeGateway && !infra {
+		// Secondary spaces never keep a resident runtime: their gateway jobs
+		// reach the shared supervisor over the shared network and every control
+		// call goes through it. Only file outputs (env, config, volumes) feed
+		// the supervisor's spawned runtimes.
+		delete(services, "hermes-runtime")
+	}
+	// Secondary spaces still declare broker-secrets-runtime: the supervisor
+	// mounts it by project-derived name into that user's spawned runtimes.
+	volumes := M{"broker-secrets-runtime": M{}}
+	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
+	if infra {
+		volumes["communication-hub-data"] = M{}
+		volumes["broker-state"] = M{"external": true, "name": "hermes-credential-broker-real-prod-20260918"}
+		volumes["broker-materialized"] = M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
+		volumes["broker-secrets-toolhub"] = M{}
+		volumes["broker-secrets-communication"] = M{}
+	}
+	// The shared runtime network is operator-owned infrastructure: it is
+	// created once (docker network create hermes-hub-runtime), outlives any
+	// compose project and is attached by spawned runtimes directly. Declaring
+	// it external everywhere keeps `compose down` from deleting it and avoids
+	// compose-owned label conflicts.
+	result["networks"] = M{sharedNetworkName: M{"name": sharedNetworkName, "external": true}}
+	return result
 }
 
 // PolicyVersion identifies the effective runtime policy used by transport and supervisor.
@@ -398,6 +454,9 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
+	if err = materializeHermesConfig(dir, s); err != nil {
+		return err
+	}
 	soul, err := os.ReadFile(filepath.Join(root, "config", "SOUL.md"))
 	if err != nil {
 		return err
@@ -457,6 +516,31 @@ func ensureRuntimeAuth(path string) error {
 	return f.Close()
 }
 
+// materializeHermesConfig renders the effective Hermes config host-side so the
+// runtime container mounts it read-only over the agent-writable state dir.
+// Inputs mirror what the in-container startup used to read from the env file
+// and runtime.auth produced by this same render.
+func materializeHermesConfig(dir string, s Settings) error {
+	source := filepath.Join(dir, "hermes."+s.Environment+".yaml")
+	dest := filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")
+	runtimeEnv, err := ReadSecrets(filepath.Join(dir, "runtime."+s.Environment+".env"))
+	if err != nil {
+		return err
+	}
+	auth, _ := ReadSecrets(filepath.Join(dir, "runtime.auth"))
+	tokenEnv := strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_TOKEN_ENV"])
+	if tokenEnv == "" {
+		tokenEnv = "HUB_RUNTIME_AUTH"
+	}
+	return MaterializeHermesConfig(source, dest, MaterializeOptions{
+		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
+		ToolHubTokenEnv:    tokenEnv,
+		RuntimeAuthPresent: strings.TrimSpace(auth[tokenEnv]) != "" || strings.TrimSpace(runtimeEnv[tokenEnv]) != "",
+		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_RECONNECT"]), "false"),
+		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
+	})
+}
+
 func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string) error {
 	merged := map[string]string{}
 	for key, value := range organization {
@@ -474,14 +558,13 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 			runtime[key] = value
 		}
 	}
-	// Every runtime is wired to the in-stack ToolHub by default. An explicit
-	// HUB_TOOLHUB_ENDPOINT in secrets.<env>.env overrides; an empty value opts out.
-	// The default must resolve from any runtime network: spawned contexts join a
-	// per-user project network where the compose name "toolhub" does not exist,
-	// so the shared ToolHub is reached through the host-gateway alias that both
-	// compose services and spawned containers already receive.
+	// Every runtime is wired to the single shared ToolHub by default. Spawned
+	// contexts and secondary spaces reach it on the shared "hermes-hub-runtime"
+	// network where the service name resolves to the one deployed instance. An
+	// explicit HUB_TOOLHUB_ENDPOINT in secrets.<env>.env overrides; an empty
+	// value opts out.
 	if _, ok := runtime["HUB_TOOLHUB_ENDPOINT"]; !ok {
-		runtime["HUB_TOOLHUB_ENDPOINT"] = "http://host.docker.internal:8090/mcp"
+		runtime["HUB_TOOLHUB_ENDPOINT"] = "http://toolhub:8090/mcp"
 	}
 	gateway := map[string]string{}
 	for _, key := range GatewaySecretKeys() {

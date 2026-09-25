@@ -6,6 +6,7 @@ last_verified: 2026-09-21
 
 | Record | Decision |
 |---|---|
+| [ADR-0026](ADR-0026-shared-control-plane.md) | One shared ToolHub/broker/controller on `hermes-hub-runtime`; multi-token endpoint, `infra` render split |
 | [ADR-0025](ADR-0025-context-parallel-gateway-workers.md) | Bounded worker pool; FIFO claim skips busy context keys, serial per context |
 | [ADR-0024](ADR-0024-toolhive-local-vmcp.md) | Defer ToolHive local vMCP as the stable endpoint after failed dynamic-rebind evidence |
 | [ADR-0023](ADR-0023-optional-mcp-images.md) | Optional Google/Atlassian/Telegram Python MCP trees are dedicated images, not the hub runtime |

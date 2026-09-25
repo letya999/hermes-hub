@@ -186,12 +186,24 @@ func (r HTTPRunner) client() *http.Client {
 	return &http.Client{Timeout: r.timeout() + 5*time.Second}
 }
 
-func runtimeRestart(url, auth string) func(context.Context) error {
+// runtimeRestart returns the restart hook. Unsupervised gateways restart the
+// resident runtime with an empty POST; supervised gateways must carry the
+// job's durable identity so the supervisor can route the call to the runtime
+// that actually ran the work.
+func runtimeRestart(url, auth string, supervised bool) func(context.Context, hubruntime.ExecuteRequest) error {
 	if url == "" {
 		return nil
 	}
-	return func(ctx context.Context) error {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(url, "/")+"/v1/restart", nil)
+	return func(ctx context.Context, request hubruntime.ExecuteRequest) error {
+		var body io.Reader
+		if supervised {
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				return err
+			}
+			body = bytes.NewReader(encoded)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(url, "/")+"/v1/restart", body)
 		if err != nil {
 			return err
 		}

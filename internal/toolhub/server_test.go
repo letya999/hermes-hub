@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -18,6 +19,56 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	token := strings.Repeat("t", 32)
+	backend := backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		return BackendResult{Text: "ok"}, nil
+	})
+	bob, err := json.Marshal(bobAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokensPath := filepath.Join(t.TempDir(), "tokens.json")
+	if err := os.WriteFile(tokensPath, []byte(`{"`+bobToken+`": `+string(bob)+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := EndpointConfig{Token: token, Auth: auth, TokensFile: tokensPath, Backend: backend}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	mcpConnect(t, server.URL, token)
+	mcpConnect(t, server.URL, bobToken)
+	client := mcp.NewClient(&mcp.Implementation{Name: "intruder", Version: "1"}, nil)
+	if _, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL + DefaultEndpointPath, HTTPClient: &http.Client{Transport: testBearerTransport{base: http.DefaultTransport, token: strings.Repeat("x", 32)}}}, nil); err == nil {
+		t.Fatal("unregistered token connected to the shared endpoint")
+	}
+	bad := config
+	bad.TokensFile = filepath.Join(t.TempDir(), "missing.json")
+	if _, err := NewEndpointHandler(bad, store); err == nil {
+		t.Fatal("missing tokens file accepted")
+	}
+	dupPath := filepath.Join(t.TempDir(), "dup.json")
+	if err := os.WriteFile(dupPath, []byte(`{"`+token+`": `+string(bob)+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bad.TokensFile = dupPath
+	if _, err := NewEndpointHandler(bad, store); err == nil {
+		t.Fatal("duplicate token accepted")
+	}
+	badJSON := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(badJSON, []byte(`{"`+bobToken+`": {"identity_schema": 1}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bad.TokensFile = badJSON
+	if _, err := NewEndpointHandler(bad, store); err == nil {
+		t.Fatal("invalid secondary identity accepted")
+	}
+}
 
 func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
 	store, auth, _ := seededStore(t)

@@ -718,3 +718,133 @@ func TestScheduledExecutionReauthorizesPolicyBeforeRuntimeStart(t *testing.T) {
 		t.Fatalf("revoked routine admitted: %d %+v", response.Code, m.jobs)
 	}
 }
+
+func TestExpireUncertainReconcilesExpiredLease(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", controlTestPolicy(t, root)), JobID: "uncertain-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "uncertain", Text: "private"}
+	if _, _, err = m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	m.bindJobGeneration(request, runtime.Generation)
+	outcome := hubruntime.ExecuteResponse{JobID: request.JobID, SessionID: "session", RunID: "run-1", RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+	if err = m.finishJobGeneration(request, outcome, outcome.Status, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	key := runtimeKey(b)
+	m.mu.Lock()
+	entry := m.items[key]
+	entry.State, entry.Leases = Busy, 1
+	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: entry.Generation, ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
+	m.mu.Unlock()
+	calls := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		done := outcome
+		done.Status = "completed"
+		_ = json.NewEncoder(w).Encode(done)
+	}))
+	defer api.Close()
+	m.mu.Lock()
+	m.items[key].Address = api.URL
+	m.mu.Unlock()
+	m.ExpireUncertain(context.Background(), time.Now())
+	if calls != 1 {
+		t.Fatalf("uncertain expiry did not reconcile: %d", calls)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.jobs[request.JobID].Status != "completed" {
+		t.Fatalf("uncertain job not resolved: %s", m.jobs[request.JobID].Status)
+	}
+	if len(entry.leases) != 0 {
+		t.Fatalf("resolved job still holds leases: %v", entry.leases)
+	}
+}
+
+func TestExpireUncertainInterruptsUnobservableRun(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", controlTestPolicy(t, root)), JobID: "ghost-run", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "ghost", Text: "private"}
+	if _, _, err = m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	m.bindJobGeneration(request, runtime.Generation)
+	outcome := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+	if err = m.finishJobGeneration(request, outcome, outcome.Status, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	key := runtimeKey(b)
+	m.mu.Lock()
+	entry := m.items[key]
+	entry.State, entry.Leases = Busy, 1
+	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: entry.Generation, ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
+	m.mu.Unlock()
+	m.ExpireUncertain(context.Background(), time.Now())
+	m.mu.Lock()
+	if m.jobs[request.JobID].Status != "interrupted" {
+		m.mu.Unlock()
+		t.Fatalf("unobservable run not interrupted: %s", m.jobs[request.JobID].Status)
+	}
+	m.mu.Unlock()
+	if err := m.Reap(context.Background(), m.cfg.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(entry.leases) != 0 || entry.Leases != 0 || entry.State != Idle {
+		t.Fatalf("lease not freed after interrupt: leases=%v state=%s", entry.leases, entry.State)
+	}
+}
+
+func TestExpireUncertainInterruptsLeaselessRecord(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", controlTestPolicy(t, root)), JobID: "stranded", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "stranded", Text: "private"}
+	if _, _, err = m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	m.bindJobGeneration(request, runtime.Generation)
+	outcome := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+	if err = m.finishJobGeneration(request, outcome, outcome.Status, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	record := m.jobs[request.JobID]
+	record.UpdatedAt = time.Now().Add(-3 * m.cfg.WarmTTL)
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	m.ExpireUncertain(context.Background(), time.Now())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.jobs[request.JobID].Status != "interrupted" {
+		t.Fatalf("stranded uncertain job not interrupted: %s", m.jobs[request.JobID].Status)
+	}
+}
