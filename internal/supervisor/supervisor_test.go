@@ -913,10 +913,10 @@ func TestReleaseStatusListAndBindingBoundaries(t *testing.T) {
 	if err := os.MkdirAll(org, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.normalize(Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", ContextRoot: root, OrganizationRoot: org, EnvFile: filepath.Join(root, "runtime.auth")}); err != nil {
+	if _, err := m.normalize(Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", UserID: "alice", ContextRoot: root, OrganizationRoot: org, EnvFile: filepath.Join(root, "runtime.auth")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.normalize(Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", ContextRoot: root, EnvFile: filepath.Join(filepath.Dir(root), "missing")}); err == nil {
+	if _, err := m.normalize(Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", UserID: "alice", ContextRoot: root, EnvFile: filepath.Join(filepath.Dir(root), "missing")}); err == nil {
 		t.Fatal("external env file accepted")
 	}
 }
@@ -1032,8 +1032,9 @@ func TestSupervisorServeAndHTTPErrorBranches(t *testing.T) {
 }
 
 func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
 	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	if err := os.WriteFile(filepath.Join(root, "hermes.prod.yaml"), []byte("model: {}"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "hermes.dev.yaml"), []byte("model: {}"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "SOUL.md"), []byte("soul"), 0600); err != nil {
@@ -1047,10 +1048,16 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 	b.OrganizationRoot = org
 	args := m.runArgs(b, "hermes-context-test", 19000)
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--read-only", "--cap-drop ALL", "--pids-limit 256", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "--env-file"} {
+	for _, want := range []string{"--network hermes-hub-alice-dev_default", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 256", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "--env-file"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("run args missing %q: %s", want, joined)
 		}
+	}
+	other := b
+	other.UserID = "bob"
+	otherArgs := strings.Join(m.runArgs(other, "hermes-context-bob", 19001), " ")
+	if !strings.Contains(otherArgs, "--network hermes-hub-bob-dev_default") || !strings.Contains(otherArgs, "src=hermes-hub-bob-dev_broker-secrets-runtime") || strings.Contains(otherArgs, "hermes-hub-alice-dev") {
+		t.Fatalf("runtime infrastructure is not owner-scoped: %s", otherArgs)
 	}
 }
 

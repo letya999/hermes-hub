@@ -1399,7 +1399,7 @@ func validLeaseKind(kind LeaseKind) bool {
 }
 
 func (m *Manager) normalize(binding Binding) (Binding, error) {
-	if !validID(binding.PrincipalID) || !validID(binding.ContextID) || !validID(binding.RuntimeID) {
+	if !validID(binding.PrincipalID) || !validID(binding.ContextID) || !validID(binding.RuntimeID) || !validID(binding.UserID) {
 		return Binding{}, errors.New("invalid runtime binding")
 	}
 	if binding.RuntimeMode == "" {
@@ -1486,13 +1486,20 @@ func (m *Manager) runArgs(binding Binding, container string, port int) []string 
 }
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) []string {
-	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
-	if info, err := os.Lstat(filepath.Join(binding.ContextRoot, "runtime."+envOr("HUB_ENV", "prod")+".env")); err == nil && info.Mode().IsRegular() {
-		args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+envOr("HUB_ENV", "prod")+".env"))
+	env := envOr("HUB_ENV", "prod")
+	project := "hermes-hub-" + binding.UserID + "-" + env
+	network := m.cfg.Network
+	if network == "" || network == "hermes-hub-runtime" {
+		network = project + "_default"
+	}
+	args := []string{"run", "-d", "--name", container, "--network", network, "--restart=no", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
+	if info, err := os.Lstat(filepath.Join(binding.ContextRoot, "runtime."+env+".env")); err == nil && info.Mode().IsRegular() {
+		args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+env+".env"))
 	}
 	args = append(args, "--env-file", binding.EnvFile)
+	args = append(args, "--mount", "type=volume,src="+project+"_broker-secrets-runtime,dst=/run/broker-secrets,readonly")
 	args = append(args, "--mount", "type=bind,src="+binding.ContextRoot+",dst=/scope,readonly")
-	if settings, err := stack.ReadEnvironment(binding.ContextRoot, envOr("HUB_ENV", "prod")); err == nil {
+	if settings, err := stack.ReadEnvironment(binding.ContextRoot, env); err == nil {
 		service := stack.RuntimeService(settings, "", binding.ContextRoot)
 		keys := make([]string, 0)
 		for key := range service["environment"].(stack.M) {

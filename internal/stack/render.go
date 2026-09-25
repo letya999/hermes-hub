@@ -403,7 +403,9 @@ func RenderEnvironment(dir, root, environment string) error {
 		return err
 	}
 	soulPath := filepath.Join(dir, "SOUL.md")
-	if _, err = os.Stat(soulPath); os.IsNotExist(err) {
+	// Init seeds only a stub; heal it to the global template. Real user edits
+	// differ from the stub and are never overwritten.
+	if existing, readErr := os.ReadFile(soulPath); os.IsNotExist(readErr) || string(existing) == userSoulStub {
 		if err = atomic(soulPath, soul); err != nil {
 			return err
 		}
@@ -471,6 +473,15 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 		if !GatewayOwnedSecret(key) {
 			runtime[key] = value
 		}
+	}
+	// Every runtime is wired to the in-stack ToolHub by default. An explicit
+	// HUB_TOOLHUB_ENDPOINT in secrets.<env>.env overrides; an empty value opts out.
+	// The default must resolve from any runtime network: spawned contexts join a
+	// per-user project network where the compose name "toolhub" does not exist,
+	// so the shared ToolHub is reached through the host-gateway alias that both
+	// compose services and spawned containers already receive.
+	if _, ok := runtime["HUB_TOOLHUB_ENDPOINT"]; !ok {
+		runtime["HUB_TOOLHUB_ENDPOINT"] = "http://host.docker.internal:8090/mcp"
 	}
 	gateway := map[string]string{}
 	for _, key := range GatewaySecretKeys() {

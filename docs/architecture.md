@@ -267,10 +267,14 @@ adapter disables standalone SSE because ToolHub calls are request/response only.
 For upstream servers that implement the current legacy MCP wire version (for
 example Serena 1.5.x), the backend hop pins `MCP-Protocol-Version: 2025-11-25`
 so discovery and calls remain compatible with the SDK's newer default handshake.
-Both list and call use the same current projection resolver. Setting `HUB_TOOLHUB_ENDPOINT` (or
-`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store) injects one authenticated
-ToolHub MCP entry into the copied Hermes config; unset variables leave the generated
-runtime unchanged. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
+Both list and call use the same current projection resolver. Rendered spaces default
+`HUB_TOOLHUB_ENDPOINT` to `http://host.docker.internal:8090/mcp`, so every runtime
+gets one authenticated ToolHub MCP entry in the copied Hermes config. The
+host-gateway alias resolves in spawned contexts too: they join per-user project
+networks where the compose name `toolhub` does not exist. An explicit
+`HUB_TOOLHUB_ENDPOINT` in `secrets.<env>.env` overrides and an empty value opts out.
+`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store injects the same entry
+for a runtime-local ToolHub. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
 against the existing store and never creates a second ownership registry. ToolHive v0.48.0 remains an
 external conditional backend at the pin recorded in ADR-0013 and issue #11.
 

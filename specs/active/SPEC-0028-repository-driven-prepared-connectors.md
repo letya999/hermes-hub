@@ -34,3 +34,10 @@ Extend SPEC-0026 through one generic lifecycle for the exact repositories
 9. Each connector must prove owner-scoped projection and Hermes MCP reconnect while
    preserving the running user's session. Provider mutations remain separate
    explicit actions. Full Google Workspace is outside the Calendar entry.
+10. A reviewed exact-source OAuth adapter may produce a provider authorization
+    URL after a missing-token read probe. The authorization request is bound to
+    owner, context, onboarding and a one-time state with PKCE. The loopback
+    callback exchanges the code server-side, checkpoints only the owner's Broker
+    state, then resumes confirmation and enablement. Status can reissue a lost
+    link. Existing token files cannot be replaced implicitly. Unreviewed tool
+    output cannot supply authorization URLs or token-file formats.

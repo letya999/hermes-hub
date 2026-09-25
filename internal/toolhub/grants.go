@@ -24,6 +24,7 @@ const (
 	PhaseReview           string    = "review"
 	PhaseAwaitingCreds    string    = "awaiting-credentials"
 	PhaseAwaitingConfirm  string    = "awaiting-confirm"
+	PhaseAwaitingOAuth    string    = "awaiting-oauth"
 	PhaseConfirmed        string    = "confirmed"
 	PhaseEnabled          string    = "enabled"
 	PhaseDisabled         string    = "disabled"
@@ -112,6 +113,7 @@ type Onboarding struct {
 	BrokerContractID         string            `json:"broker_contract_id,omitempty"`
 	BrokerContractRevision   int               `json:"broker_contract_revision,omitempty"`
 	BrokerAuthorizationURL   string            `json:"broker_authorization_url,omitempty"`
+	ProviderAuthorizationURL string            `json:"provider_authorization_url,omitempty"`
 	Recipe                   *RecipeResolution `json:"recipe,omitempty"`
 	Revision                 uint64            `json:"revision"`
 	CreatedAt                time.Time         `json:"created_at"`
@@ -206,7 +208,7 @@ func (o Onboarding) Validate() error {
 		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
 	}
 	switch o.Phase {
-	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseFailed:
+	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseFailed:
 	default:
 		return fmt.Errorf("%w: onboarding phase", ErrInvalid)
 	}
@@ -325,10 +327,10 @@ func (s *Store) hasCatalogAccessLocked(auth identity.Envelope, definitionID, ver
 	return false
 }
 
-func (s *Store) hasSelfInstallLocked(auth identity.Envelope) bool {
+func (s *Store) selfInstallDeniedLocked(auth identity.Envelope) bool {
 	for _, grant := range s.grants {
-		if grant.Status == ActiveStatus && grant.PrincipalID == auth.PrincipalID && grant.Kind == GrantSelfInstall {
-			return true
+		if grant.Kind == GrantSelfInstall && grant.PrincipalID == auth.PrincipalID {
+			return grant.Status != ActiveStatus
 		}
 	}
 	return false
@@ -372,7 +374,9 @@ func (s *Store) RequireSelfInstall(auth identity.Envelope) error {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if !s.hasSelfInstallLocked(auth) {
+	// Self-install is allowed for every principal by default; an operator can
+	// still withdraw it per principal with a disabled or revoked grant.
+	if s.selfInstallDeniedLocked(auth) {
 		return fmt.Errorf("%w: self-install grant", ErrUnauthorized)
 	}
 	return nil

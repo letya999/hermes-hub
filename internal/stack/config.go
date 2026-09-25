@@ -77,6 +77,10 @@ var Features = []Feature{
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
 
+// userSoulStub is the placeholder Init writes; Render upgrades it to the global
+// template while preserving any other user-edited content.
+const userSoulStub = "# User instructions\n\n"
+
 // GatewaySecretKeys stay in communication-hub. They are never injected into
 // Hermes runtime env or ToolHub connectors.
 func GatewaySecretKeys() []string {
@@ -325,7 +329,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# User instructions\n\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte(userSoulStub), 0600); err != nil {
 		return err
 	}
 	return nil

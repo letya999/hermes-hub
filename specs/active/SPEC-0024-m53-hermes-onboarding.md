@@ -5,8 +5,10 @@ title: M5.3 Hermes-mediated MCP onboarding
 # Hermes-mediated MCP onboarding
 
 Hermes, not the communication gateway, interprets an ordinary user message and
-invokes the authenticated ToolHub control MCP. A self-install grant is still
-required; the model cannot create one.
+invokes the authenticated ToolHub control MCP. Self-install is allowed for
+every principal by default; an operator can still withdraw it per principal
+with a disabled or revoked `self-install` grant, and the model cannot create
+one.
 
 `prepare_source` accepts either an exact GitHub commit URL or a canonical public
 repository URL. For a repository URL ToolHub resolves the default branch once,

@@ -39,6 +39,9 @@ type ControlPlane struct {
 	SourceResolver   SourceResolver
 	RecipeCatalogs   []RecipeCatalog
 	OAuth            *oauth.Broker
+	Injector         CredentialInjector
+	oauthMu          sync.Mutex
+	oauthFlows       map[string]*preparedOAuthFlow
 	Now              func() time.Time
 	Listen           string
 	FormOrigin       string
@@ -200,11 +203,19 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		return nil, err
 	}
 	source, err := ParseGitHubSource(sourceURL)
-	if err != nil && c.SourceResolver != nil {
+	unpinned := err != nil
+	if unpinned && c.SourceResolver != nil {
 		source, err = c.SourceResolver(ctx, sourceURL)
 	}
 	if err != nil {
 		return nil, err
+	}
+	// A bare URL means "this repository", not mutable HEAD: with a reviewed
+	// prepared entry its pinned commit is the source, never drifting code.
+	if unpinned {
+		if prepared, ok, perr := preparedForRepository(source.Repository, source.Subfolder); perr == nil && ok {
+			source = prepared.Source
+		}
 	}
 	config := defaultSelfInstallConfig(source)
 	review := SourceReview{}
@@ -551,6 +562,13 @@ func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
+	if onboarding.Phase == PhaseAwaitingOAuth {
+		definition, err := c.definitionOf(onboarding)
+		if err != nil {
+			return nil, err
+		}
+		return c.ensurePreparedOAuth(context.Background(), auth, onboarding, definition)
+	}
 	if err := c.regenerateBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		return nil, err
 	}
@@ -652,6 +670,9 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	if err := c.refreshBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
+	if onboarding.Phase == PhaseAwaitingOAuth {
+		return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
+	}
 	nonce := argString(args, "nonce")
 	if onboarding.ConfirmationUsed {
 		return nil, fmt.Errorf("%w: replayed nonce", ErrUnauthorized)
@@ -667,6 +688,11 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	}
 	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
+		if errors.Is(err, ErrUnauthorized) {
+			if entry, matched, lookupErr := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); lookupErr == nil && matched && entry.OAuth != nil {
+				return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
+			}
+		}
 		return nil, err
 	}
 	onboarding.ConfirmationUsed = true
@@ -1206,8 +1232,12 @@ func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID str
 		return err
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
-	if _, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
+	body, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce})
+	if err != nil {
 		return err
+	}
+	if body["phase"] == PhaseAwaitingOAuth {
+		return nil
 	}
 	_, err = c.enable(ctx, auth, map[string]any{"onboarding_id": onboardingID})
 	return err
@@ -1307,6 +1337,9 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 			body["authorization_url"] = onboarding.BrokerAuthorizationURL
 		}
 	}
+	if onboarding.Phase == PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
+		body["authorization_url"] = onboarding.ProviderAuthorizationURL
+	}
 	if withHints {
 		hints := make([]map[string]string, 0, len(onboarding.Required))
 		for _, hint := range onboarding.Required {
@@ -1325,6 +1358,9 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 	case PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"
 		body["instructions"] = "Call confirm with onboarding_id and the nonce from this response, then call enable. No browser action is required."
+	case PhaseAwaitingOAuth:
+		body["next_action"] = "authorize"
+		body["instructions"] = "Send authorization_url to the user. After the browser callback, call status to verify the connection."
 	case PhaseConfirmed:
 		body["next_action"] = "enable"
 		body["instructions"] = "Call enable with onboarding_id."

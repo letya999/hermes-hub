@@ -47,10 +47,11 @@ Onboarding is persisted so `status` survives process restart.
 1. **Administrator preflight catalog.** The operator imports, builds and
    reviews an MCP. A principal may `prepare_source` / `confirm` / `enable`
    that definition only with a `catalog-default` or definition grant.
-2. **User self-install.** A principal with a `self-install` grant submits a
-   public GitHub URL with an exact commit SHA. ToolHub imports, reviews
+2. **User self-install.** Any principal submits a public GitHub URL with an
+   exact commit SHA. ToolHub imports, reviews
    permissions/effects/credentials and, after `confirm`, creates only that
-   principal's binding. A principal without the grant is denied.
+   principal's binding. Self-install is allowed by default; a disabled or
+   revoked `self-install` grant denies that principal.
 
 The model cannot issue a grant. A principal cannot see or call another
 principal's binding.

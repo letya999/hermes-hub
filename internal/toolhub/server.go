@@ -138,11 +138,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	var secrets credstore.Backend
 	var injector CredentialInjector
 	var err error
-	if config.BrokerControl == nil {
-		secrets, injector, err = credentialServicesFromEnv()
-		if err != nil {
-			return nil, err
-		}
+	secrets, injector, err = credentialServicesFromEnv()
+	if err != nil {
+		return nil, err
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
 	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), Broker: config.BrokerControl, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
@@ -178,6 +176,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
+	control.Injector = gateway.Injector
 	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)

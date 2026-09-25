@@ -418,3 +418,70 @@ func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
 		t.Fatalf("hub-stt worker missing faster_whisper: %v", err)
 	}
 }
+
+func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("template soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model.invalid/v1"
+	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if err != nil || !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://host.docker.internal:8090/mcp") {
+		t.Fatalf("default ToolHub endpoint missing: %q %v", runtimeEnv, err)
+	}
+	if soul, _ := os.ReadFile(filepath.Join(d, "SOUL.md")); string(soul) != "template soul" {
+		t.Fatalf("SOUL stub not healed to template: %q", soul)
+	}
+	secrets := "OPENAI_API_KEY=model\nHUB_TOOLHUB_ENDPOINT=http://custom:9/mcp\n"
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeEnv, _ = os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://custom:9/mcp") {
+		t.Fatalf("explicit ToolHub endpoint lost: %q", runtimeEnv)
+	}
+	secrets = "OPENAI_API_KEY=model\nHUB_TOOLHUB_ENDPOINT=\n"
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeEnv, _ = os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=\n") || strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http") {
+		t.Fatalf("empty opt-out lost: %q", runtimeEnv)
+	}
+	if err := os.WriteFile(filepath.Join(d, "SOUL.md"), []byte("mine"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if soul, _ := os.ReadFile(filepath.Join(d, "SOUL.md")); string(soul) != "mine" {
+		t.Fatalf("user SOUL overwritten: %q", soul)
+	}
+}

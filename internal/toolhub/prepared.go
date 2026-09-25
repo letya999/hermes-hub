@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"slices"
+	"strings"
 
 	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -56,8 +58,20 @@ type PreparedEntry struct {
 	Egress             []string                   `json:"egress"`
 	ReadTools          []string                   `json:"read_tools"`
 	ProbeTool          string                     `json:"probe_tool,omitempty"`
+	OAuth              *PreparedOAuth             `json:"oauth,omitempty"`
 	Runbook            string                     `json:"runbook"`
 	Handoff            string                     `json:"handoff"`
+}
+
+// PreparedOAuth is reviewed source-specific token delivery, not a guess from
+// a tool's error text. The authorization-code exchange itself stays generic.
+type PreparedOAuth struct {
+	Provider     string   `json:"provider"`
+	Scopes       []string `json:"scopes"`
+	ClientInput  string   `json:"client_input"`
+	TokenFile    string   `json:"token_file"`
+	TokenAccount string   `json:"token_account"`
+	TokenFormat  string   `json:"token_format"`
 }
 
 func PreparedCatalog() ([]PreparedEntry, error) {
@@ -83,11 +97,28 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		if err := entry.Connection.Validate(); err != nil {
 			return nil, err
 		}
-		if _, err := entry.BrokerContract(); err != nil {
+		brokerContract, err := entry.BrokerContract()
+		if err != nil {
 			return nil, err
 		}
 		if entry.Stateful != (entry.StateTarget != "") || entry.Stateful && !validContainerMountTarget(entry.StateTarget) {
 			return nil, fmt.Errorf("%w: prepared state target", ErrInvalid)
+		}
+		if entry.OAuth != nil {
+			a := entry.OAuth
+			found := false
+			for _, field := range entry.Connection.Fields {
+				found = found || field.Name == a.ClientInput && field.Delivery == "file"
+			}
+			stateFile := false
+			if brokerContract.State != nil && brokerContract.State.Target == entry.StateTarget {
+				for _, file := range brokerContract.State.Files {
+					stateFile = stateFile || file.Name == a.TokenFile && file.JSON
+				}
+			}
+			if !entry.Stateful || !found || a.Provider != "google" || len(a.Scopes) != 1 || a.Scopes[0] != "https://www.googleapis.com/auth/calendar.readonly" || a.TokenFormat != "google-calendar-account-map" || a.TokenFile == "" || path.Base(a.TokenFile) != a.TokenFile || strings.ContainsAny(a.TokenFile, "\\\x00\r\n") || !stateFile || !identity.ValidID(a.TokenAccount) {
+				return nil, fmt.Errorf("%w: prepared OAuth handoff", ErrInvalid)
+			}
 		}
 		for name, body := range entry.PreflightFiles {
 			if !credentialPattern.MatchString(name) || !json.Valid(body) || len(body) > 65536 {
@@ -111,6 +142,20 @@ func preparedForSource(source ArtifactSource) (PreparedEntry, bool, error) {
 	entries, err := PreparedCatalog()
 	for _, entry := range entries {
 		if sameRepository(entry.Source.Repository, source.Repository) && entry.Source.CommitSHA == source.CommitSHA && entry.Source.Subfolder == source.Subfolder {
+			return entry, true, err
+		}
+	}
+	return PreparedEntry{}, false, err
+}
+
+// preparedForRepository finds the reviewed entry for an unpinned repository
+// request. A bare URL means "this repository", not "whatever HEAD is today":
+// the pinned commit is the only revision the overlay may cover, so it is the
+// source an unpinned request selects.
+func preparedForRepository(repository, subfolder string) (PreparedEntry, bool, error) {
+	entries, err := PreparedCatalog()
+	for _, entry := range entries {
+		if sameRepository(entry.Source.Repository, repository) && entry.Source.Subfolder == subfolder {
 			return entry, true, err
 		}
 	}
