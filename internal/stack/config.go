@@ -62,7 +62,8 @@ type Feature struct {
 
 var Features = []Feature{
 	{"workspace", nil, "Bounded workspace and read-only extracted archive; Markdown drafts"},
-	{"browser", nil, "Persistent Chromium via Playwright MCP; manual login through private noVNC"},
+	{"browser", nil, "Persistent plus anonymous Chromium via Playwright MCP; manual login through private noVNC; read and navigation tools only"},
+	{"browser_act", nil, "Adds browser mutation tools (click, type, submit, evaluate) to both browser MCP servers; requires browser and a concrete owner instruction"},
 	{"hh", nil, "Public vacancy API; applicant OAuth for resumes and explicitly requested applications"},
 	{"telegram", []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}, "Telegram bot transport into Hermes; does not grant personal Telegram access"},
 	{"slack_app", []string{"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN"}, "Slack App Events API transport into Hermes; does not grant workspace data tools"},
@@ -334,7 +335,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "workspace", "archive", "generated"} {
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "workspace", "workspace/browser", "archive", "generated"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}

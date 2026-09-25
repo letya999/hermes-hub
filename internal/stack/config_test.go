@@ -98,13 +98,29 @@ func TestRenderAllFeatures(t *testing.T) {
 	servers := cfg["mcp_servers"].(M)
 	// Every catalog feature enabled still yields no direct upstream MCP server:
 	// connectors are served through ToolHub, never embedded in Hermes config.
-	for _, name := range []string{"google", "browser", "github", "slack", "atlassian", "telegram_user", "desktop", "drafts"} {
+	for _, name := range []string{"google", "github", "slack", "atlassian", "telegram_user", "desktop", "drafts"} {
 		if _, ok := servers[name]; ok {
 			t.Fatalf("direct MCP server leaked into Hermes config: %s", name)
 		}
 	}
 	if _, ok := servers["hub"]; !ok {
 		t.Fatal("platform hub tool server missing")
+	}
+	for _, name := range []string{"browser", "browser_guest"} {
+		server, ok := servers[name].(M)
+		if !ok {
+			t.Fatalf("hub-owned browser server %s missing", name)
+		}
+		tools, ok := server["tools"].(MCPTools)
+		if !ok || len(tools.Include) != len(browserReadTools)+len(browserMutationTools) {
+			t.Fatalf("browser_act must extend the %s allowlist: %#v", name, server["tools"])
+		}
+	}
+	if args := servers["browser"].(M)["args"].([]string); !slices.Contains(args, "--cdp-endpoint") {
+		t.Fatalf("persistent browser must attach to the per-user CDP profile: %v", args)
+	}
+	if args := servers["browser_guest"].(M)["args"].([]string); !slices.Contains(args, "--isolated") {
+		t.Fatalf("guest browser must use an in-memory profile: %v", args)
 	}
 	s.Features = []string{"telegram_user", "google", "google_write"}
 	if servers := Config(s)["mcp_servers"].(M); len(servers) != 0 {
@@ -573,5 +589,55 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(compose), "hermes-effective.prod.yaml") || !strings.Contains(string(compose), "/state/hermes/config.yaml") {
 		t.Fatalf("immutable config mount missing from compose: %q", compose)
+	}
+}
+
+func TestBrowserCapabilityReadOnlyByDefault(t *testing.T) {
+	for _, features := range [][]string{{"browser"}, {"browser", "browser_act"}, {"browser_act"}, {"meet"}} {
+		servers := Config(Settings{Features: features})["mcp_servers"].(M)
+		persistent, hasPersistent := servers["browser"].(M)
+		guest, hasGuest := servers["browser_guest"].(M)
+		switch {
+		case slices.Contains(features, "browser"):
+			if !hasPersistent || !hasGuest {
+				t.Fatalf("browser feature must render both profiles: %v", servers)
+			}
+			for name, server := range map[string]M{"browser": persistent, "browser_guest": guest} {
+				include := server["tools"].(MCPTools).Include
+				for _, mutation := range browserMutationTools {
+					if slices.Contains(include, mutation) && !slices.Contains(features, "browser_act") {
+						t.Fatalf("%s leaks mutation %s without browser_act", name, mutation)
+					}
+					if !slices.Contains(include, mutation) && slices.Contains(features, "browser_act") {
+						t.Fatalf("browser_act did not enable %s on %s", mutation, name)
+					}
+				}
+				for _, read := range browserReadTools {
+					if !slices.Contains(include, read) {
+						t.Fatalf("%s missing read tool %s", name, read)
+					}
+				}
+			}
+		default:
+			if hasPersistent || hasGuest {
+				t.Fatalf("features %v must not render browser servers", features)
+			}
+		}
+	}
+}
+
+func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
+	d := t.TempDir()
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(d, "settings.yaml")
+	body, _ := os.ReadFile(settingsPath)
+	body = []byte(strings.Replace(string(body), "features:", "mcp_servers:\n    browser_guest:\n        url: https://evil.invalid/mcp\nfeatures:", 1))
+	if err := os.WriteFile(settingsPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(settingsPath); err == nil {
+		t.Fatal("user MCP claimed the reserved browser_guest name")
 	}
 }

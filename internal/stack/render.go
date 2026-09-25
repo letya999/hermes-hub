@@ -16,6 +16,48 @@ import (
 
 type M = map[string]any
 
+// browserReadTools covers navigation and observation only; none of them can
+// submit a form, execute page script or accept a dialog.
+var browserReadTools = []string{
+	"browser_navigate", "browser_navigate_back", "browser_tabs", "browser_snapshot",
+	"browser_take_screenshot", "browser_wait_for", "browser_console_messages",
+	"browser_network_requests", "browser_network_request", "browser_resize",
+	"browser_close", "browser_pdf_save", "browser_find",
+}
+
+// browserMutationTools can change state outside the runtime (form submits,
+// uploads, dialogs, arbitrary page script). They are rendered only when the
+// owner enables the explicit browser_act capability.
+var browserMutationTools = []string{
+	"browser_click", "browser_drag", "browser_drop", "browser_hover",
+	"browser_type", "browser_fill_form", "browser_press_key", "browser_select_option",
+	"browser_file_upload", "browser_handle_dialog", "browser_evaluate", "browser_run_code_unsafe",
+	"browser_mouse_click_xy", "browser_mouse_down", "browser_mouse_drag_xy",
+	"browser_mouse_move_xy", "browser_mouse_up", "browser_mouse_wheel",
+}
+
+func browserServer(guest, act bool) M {
+	args := []string{"/opt/browser/node_modules/@playwright/mcp/cli.js",
+		"--caps", "vision,pdf",
+		"--output-dir", "/workspace/browser",
+		"--output-max-size", "268435456",
+		"--block-service-workers"}
+	if guest {
+		// Isolated launches its own Chromium with an in-memory profile: it
+		// cannot reach /state/browser cookies, storage or the CDP session.
+		args = append(args, "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox")
+	} else {
+		args = append(args, "--cdp-endpoint", "http://127.0.0.1:9222")
+	}
+	include := slices.Clone(browserReadTools)
+	if act {
+		include = append(include, browserMutationTools...)
+	}
+	server := stdio("node", args, nil)
+	server["tools"] = MCPTools{Include: include}
+	return server
+}
+
 func env(names ...string) M {
 	m := M{}
 	for _, n := range names {
@@ -53,10 +95,22 @@ func Config(s Settings) M {
 		}
 		servers["hub"] = stdio("/usr/local/bin/hubctl", args, e)
 	}
+	// The browser capability is hub-owned local automation, not an upstream
+	// service connector: Playwright MCP runs inside this user's runtime against
+	// their own Chromium, so profile, cookies and downloads stay inside the
+	// per-space mounts. `browser` attaches to the persistent profile over
+	// loopback CDP; `browser_guest` launches a second Chromium with an
+	// in-memory profile, so anonymous browsing receives no authenticated
+	// state. Mutation tools exist only behind the explicit browser_act
+	// capability.
+	if s.Has("browser") {
+		servers["browser"] = browserServer(false, s.Has("browser_act"))
+		servers["browser_guest"] = browserServer(true, s.Has("browser_act"))
+	}
 	// No upstream MCP servers are embedded directly: connectors run behind the
 	// ToolHub admission boundary and are projected over its remote endpoint.
 	// Feature flags still drive ports, volumes and auth files, but never write
-	// mcp_servers entries for google/browser/github/slack/atlassian/
+	// mcp_servers entries for google/github/slack/atlassian/
 	// telegram_user/desktop/drafts.
 	for name, server := range s.MCP {
 		servers[name] = server.Config()
@@ -422,7 +476,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "skills"} {
+	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "workspace/browser", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}

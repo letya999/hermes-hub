@@ -67,6 +67,15 @@ the trusted `organization:<id>` scope and an approved organization action.
 | `spaces/<id>/generated/` | Ignored Compose, Hermes and filtered env files |
 | `communication-hub-data` | Gateway queue and delivery ledger; outside scope homes |
 
+The opt-in `browser` feature renders two hub-owned MCP servers into the Hermes
+config: `browser` attaches Playwright MCP to that user's persistent Chromium
+profile (`connections/browser`, loopback CDP only), and `browser_guest` runs an
+isolated in-memory profile with no authenticated state. Both expose navigation
+and read tools only; `browser_act` is the separate explicit capability that adds
+mutation tools. Downloads and screenshots land in `workspace/browser` and the
+runtime evicts files over the size/type policy. noVNC stays bound to the Docker
+host loopback on `browser_port`.
+
 Job and conversation lifecycle mappings are persisted beside the gateway queue. They
 contain immutable routing, idempotency and Hermes run metadata, while supervisor state
 contains runtime generations and leases; neither store receives provider credentials.

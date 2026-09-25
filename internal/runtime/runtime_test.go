@@ -547,3 +547,54 @@ func TestClearDisplayLocksRemovesStaleFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestSweepBrowserOutputEnforcesPolicy(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, size int) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), make([]byte, size), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("report.pdf", 1024)
+	write("payload.exe", 128)
+	write("run.sh", 64)
+	write("huge.bin", browserOutputFileLimit+1)
+	if err := os.Symlink("/state/hermes/config.yaml", filepath.Join(dir, "link.pdf")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	sweepBrowserOutput(dir)
+	for _, gone := range []string{"payload.exe", "run.sh", "huge.bin", "link.pdf"} {
+		if _, err := os.Lstat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("%s survived the output sweep", gone)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "report.pdf")); err != nil {
+		t.Fatalf("allowed download removed: %v", err)
+	}
+}
+
+func TestSweepBrowserOutputEvictsOldest(t *testing.T) {
+	dir := t.TempDir()
+	names := []string{"a.csv", "b.csv", "c.csv", "d.csv", "e.csv"}
+	for i, name := range names {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, make([]byte, 55<<20), 0600); err != nil {
+			t.Fatal(err)
+		}
+		stamp := time.Now().Add(time.Duration(i) * time.Hour)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepBrowserOutput(dir)
+	if _, err := os.Lstat(filepath.Join(dir, "a.csv")); !os.IsNotExist(err) {
+		t.Fatal("oldest download was not evicted first")
+	}
+	for _, name := range names[1:] {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("newer download evicted: %v", err)
+		}
+	}
+	sweepBrowserOutput(filepath.Join(dir, "missing"))
+}
