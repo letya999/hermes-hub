@@ -197,6 +197,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
 	control.Injector = gateway.Injector
+	control.PrepareDone = gateway.notifyPrepareDone
 	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)

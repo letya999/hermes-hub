@@ -42,6 +42,13 @@ the reviewed pinned commit, while an explicit `/commit/<sha>` URL keeps the
 generic path. Both paths re-resolve and review the source; an overlay applies
 only to its reviewed commit.
 
+`prepare_source` waits a bounded window for review+build (about 90 seconds) and
+then returns the durable `preparing` record instead of holding the HTTP call:
+the work continues on a detached context and the outcome — `awaiting-*` or
+`failed` — is read back with `status`. A lost connection no longer loses the
+result, and the owner's open MCP sessions receive a best-effort wake message
+when the background prepare finishes.
+
 After the generated restricted build and real MCP preflight, use
 `required_credentials` if requested. Enter credentials only in the protected
 Broker form. Compatible owner connections are reused. Call `confirm` with the

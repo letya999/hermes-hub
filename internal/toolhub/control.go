@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"net/http"
 	"net/url"
@@ -55,6 +56,14 @@ type ControlPlane struct {
 	// and remove use it so a cut connector does not keep a materialized
 	// credential alive in a running container until the idle TTL fires.
 	Release func(context.Context, string) error
+	// PrepareSyncWindow bounds how long prepare_source waits for review+build
+	// before returning the durable "preparing" record; the work then continues
+	// on a detached context and its result is read via status. Zero uses the
+	// default; negative runs the whole prepare synchronously (tests).
+	PrepareSyncWindow time.Duration
+	// PrepareDone, when set, runs after a backgrounded prepare finishes —
+	// whatever the outcome — so transports can wake open sessions.
+	PrepareDone func(context.Context, identity.Envelope, Onboarding)
 }
 
 func (c *ControlPlane) now() time.Time {
@@ -172,7 +181,7 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 		selected = choice.recipe
 	}
 	if source != "" {
-		return c.prepareSelfInstall(ctx, auth, source, requestKey, selected)
+		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, selected)
 	}
 	if definitionID != "" && version != "" {
 		return c.prepareCatalog(ctx, auth, definitionID, version, requestKey)
@@ -198,9 +207,80 @@ func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelop
 	return c.statusBody(onboarding, false), nil
 }
 
+// prepareWindow is how long a prepare_source call waits for review+build
+// before handing the caller the durable "preparing" record.
+func (c *ControlPlane) prepareWindow() time.Duration {
+	if c == nil || c.PrepareSyncWindow == 0 {
+		return 90 * time.Second
+	}
+	return c.PrepareSyncWindow
+}
+
 func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
-	if err := c.Store.RequireSelfInstall(auth); err != nil {
+	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
+	if err != nil {
 		return nil, err
+	}
+	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey)
+	if err != nil {
+		return nil, err
+	}
+	if inFlight {
+		return c.statusBody(preparing, false), nil
+	}
+	return c.finishSelfInstall(ctx, auth, preparing, source, requestKey, selected)
+}
+
+// prepareSelfInstallAsync runs review+build under a detached context: a slow or
+// lost HTTP response no longer discards the work. The caller waits
+// PrepareSyncWindow for a completed result, then receives the durable
+// "preparing" record — the outcome is read via status afterwards.
+func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
+	if window := c.prepareWindow(); window < 0 {
+		return c.prepareSelfInstall(ctx, auth, sourceURL, requestKey, selected)
+	}
+	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
+	if err != nil {
+		return nil, err
+	}
+	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey)
+	if err != nil {
+		return nil, err
+	}
+	if inFlight {
+		return c.statusBody(preparing, false), nil
+	}
+	type outcome struct {
+		body map[string]any
+		err  error
+	}
+	done := make(chan outcome, 1)
+	background, stop := context.WithTimeout(context.WithoutCancel(ctx), 35*time.Minute)
+	go func() {
+		defer stop()
+		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected)
+		latest := c.latestPrepareRecord(auth, preparing)
+		log.Printf("toolhub prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.Phase, err)
+		if c.PrepareDone != nil {
+			c.PrepareDone(background, auth, latest)
+		}
+		done <- outcome{body, err}
+	}()
+	timer := time.NewTimer(c.prepareWindow())
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.body, result.err
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	log.Printf("toolhub prepare_source: onboarding=%s still preparing; outcome continues in background", preparing.OnboardingID)
+	return c.statusBody(preparing, false), nil
+}
+
+func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identity.Envelope, sourceURL string) (ArtifactSource, ArtifactImportConfig, error) {
+	if err := c.Store.RequireSelfInstall(auth); err != nil {
+		return ArtifactSource{}, ArtifactImportConfig{}, err
 	}
 	source, err := ParseGitHubSource(sourceURL)
 	unpinned := err != nil
@@ -208,7 +288,7 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		source, err = c.SourceResolver(ctx, sourceURL)
 	}
 	if err != nil {
-		return nil, err
+		return ArtifactSource{}, ArtifactImportConfig{}, err
 	}
 	// A bare URL means "this repository", not mutable HEAD: with a reviewed
 	// prepared entry its pinned commit is the source, never drifting code.
@@ -217,9 +297,16 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 			source = prepared.Source
 		}
 	}
-	config := defaultSelfInstallConfig(source)
-	// Register a preparing record before review+build so status works mid-flight
-	// and a failed prepare leaves a durable failure instead of "record not found".
+	return source, defaultSelfInstallConfig(source), nil
+}
+
+// ensurePreparing registers a preparing record before review+build so status
+// works mid-flight and a failed prepare leaves a durable failure instead of
+// "record not found". A fresh record already in preparing means an identical
+// prepare is running — callers must not spawn a second review+build. A stub
+// older than the background deadline belongs to a crashed prepare and is
+// overwritten to retry.
+func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source ArtifactSource, config ArtifactImportConfig, requestKey string) (Onboarding, bool, error) {
 	idSeed := requestKey
 	if idSeed == "" {
 		idSeed = string(OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA
@@ -231,9 +318,35 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		DefinitionID: config.DefinitionID, DefinitionVersion: config.Version,
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 	}
-	if err := c.Store.PutOnboarding(preparing); err != nil {
-		return nil, err
+	return c.Store.ClaimPreparingOnboarding(preparing, 35*time.Minute, c.now())
+}
+
+// latestPrepareRecord resolves the onboarding a backgrounded prepare actually
+// produced: normally the stub's own record, but a patch bump can move the
+// result to a sibling id. Best effort for the wake notification.
+func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub Onboarding) Onboarding {
+	if current, err := c.Store.onboarding(stub.OnboardingID); err == nil && current.Phase != PhaseRemoved {
+		return current
 	}
+	c.Store.mu.RLock()
+	defer c.Store.mu.RUnlock()
+	latest := stub
+	for _, candidate := range c.Store.onboardings {
+		if candidate.PrincipalID != auth.PrincipalID || candidate.ContextID != auth.ContextID || candidate.RuntimeID != auth.RuntimeID || candidate.PolicyVersion != auth.PolicyVersion || candidate.Phase == PhaseRemoved {
+			continue
+		}
+		same := stub.IdempotencyKey != "" && candidate.IdempotencyKey == stub.IdempotencyKey
+		if !same && stub.IdempotencyKey == "" {
+			same = candidate.Mode == stub.Mode && candidate.SourceURL == stub.SourceURL && candidate.CommitSHA == stub.CommitSHA
+		}
+		if same && candidate.CreatedAt.After(latest.CreatedAt) {
+			latest = candidate
+		}
+	}
+	return latest
+}
+
+func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing Onboarding, source ArtifactSource, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
 	failPrepare := func(err error) (map[string]any, error) {
 		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == PhasePreparing {
 			latest.Phase = PhaseFailed
@@ -242,7 +355,8 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		return nil, err
 	}
 	review := SourceReview{}
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
+	var err error
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
 		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
@@ -284,9 +398,10 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		return failPrepare(err)
 	}
 	if onboarding.OnboardingID != preparing.OnboardingID {
-		// A patch bump shifted the deterministic key; the stub would otherwise
-		// sit in "preparing" forever.
+		// A patch bump or a reviewed definition id shifted the deterministic
+		// key; callers holding the stub id follow SupersededBy to the result.
 		preparing.Phase = PhaseRemoved
+		preparing.SupersededBy = onboarding.OnboardingID
 		_ = c.Store.PutOnboarding(preparing)
 	}
 	onboarding.Permissions = append([]string(nil), review.Permissions...)
@@ -1309,7 +1424,18 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 
 func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string]any) (Onboarding, error) {
 	if id := argString(args, "onboarding_id"); id != "" {
-		return c.Store.OnboardingFor(auth, id)
+		onboarding, err := c.Store.OnboardingFor(auth, id)
+		if err != nil {
+			return Onboarding{}, err
+		}
+		// Callers may hold a preparing stub that was superseded by the real
+		// record (patch bump or a reviewed definition id): follow the pointer.
+		if onboarding.Phase == PhaseRemoved && onboarding.SupersededBy != "" {
+			if target, err := c.Store.OnboardingFor(auth, onboarding.SupersededBy); err == nil {
+				return target, nil
+			}
+		}
+		return onboarding, nil
 	}
 	definitionID := argString(args, "definition_id")
 	version := argString(args, "version")
@@ -1381,6 +1507,12 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 		}
 	}
 	switch onboarding.Phase {
+	case PhasePreparing:
+		body["next_action"] = "poll_status"
+		body["instructions"] = "Source review and build continue in the background; call status with onboarding_id until the phase changes."
+	case PhaseFailed:
+		body["next_action"] = "retry"
+		body["instructions"] = "The prepare failed; call prepare_source again with the same request_key to retry."
 	case PhaseAwaitingCreds:
 		body["next_action"] = "submit_credentials"
 		body["instructions"] = "Ask the user to open the credential URL, submit the form, then call this tool again."

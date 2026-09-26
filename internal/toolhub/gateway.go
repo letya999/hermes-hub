@@ -251,6 +251,32 @@ func (g *Gateway) RefreshProjection() error {
 	return nil
 }
 
+// notifyPrepareDone wakes the owner's open MCP sessions after a backgrounded
+// prepare_source finishes, whichever way it ended. Best effort: clients that
+// never set a log level receive nothing — status stays the source of truth.
+func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope, onboarding Onboarding) {
+	data, err := json.Marshal(map[string]any{
+		"event":         "toolhub.prepare_done",
+		"onboarding_id": onboarding.OnboardingID,
+		"phase":         onboarding.Phase,
+		"definition_id": onboarding.DefinitionID,
+		"repository":    onboarding.SourceURL,
+	})
+	if err != nil {
+		return
+	}
+	for _, projection := range g.projections {
+		if projection.auth != auth {
+			continue
+		}
+		for session := range projection.server.Sessions() {
+			//lint:ignore SA1019 notifications/message is deprecated but remains the only
+			// server→client push channel until the tasks primitive lands.
+			_ = session.Log(ctx, &mcp.LoggingMessageParams{Level: "notice", Logger: "toolhub", Data: json.RawMessage(data)})
+		}
+	}
+}
+
 func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	projected, err := g.Store.ListProjectedTools(projection.auth)
 	if err != nil {

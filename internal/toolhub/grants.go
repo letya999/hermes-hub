@@ -114,6 +114,7 @@ type Onboarding struct {
 	BrokerContractRevision   int               `json:"broker_contract_revision,omitempty"`
 	BrokerAuthorizationURL   string            `json:"broker_authorization_url,omitempty"`
 	ProviderAuthorizationURL string            `json:"provider_authorization_url,omitempty"`
+	SupersededBy             string            `json:"superseded_by,omitempty"`
 	Recipe                   *RecipeResolution `json:"recipe,omitempty"`
 	Revision                 uint64            `json:"revision"`
 	CreatedAt                time.Time         `json:"created_at"`
@@ -269,6 +270,24 @@ func (s *Store) PutOnboarding(onboarding Onboarding) error {
 	return s.persist()
 }
 
+// ClaimPreparingOnboarding atomically reports a fresh record already in flight
+// or persists the new one under the store lock — concurrent identical prepares
+// cannot both proceed to review+build. A record stale past maxAge belongs to a
+// crashed prepare and is overwritten.
+func (s *Store) ClaimPreparingOnboarding(onboarding Onboarding, maxAge time.Duration, now time.Time) (Onboarding, bool, error) {
+	if err := onboarding.Validate(); err != nil {
+		return Onboarding{}, false, err
+	}
+	s.mu.Lock()
+	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.Phase == PhasePreparing && now.Before(existing.CreatedAt.Add(maxAge)) {
+		s.mu.Unlock()
+		return existing, true, nil
+	}
+	s.onboardings[onboarding.OnboardingID] = onboarding
+	s.mu.Unlock()
+	return onboarding, false, s.persist()
+}
+
 func (s *Store) PromoteToCatalog(definitionID, version, operator string) error {
 	if !identity.ValidID(operator) || operator == "model" || operator == "hermes" {
 		return fmt.Errorf("%w: catalog promotion issuer", ErrUnauthorized)
@@ -401,10 +420,16 @@ func (s *Store) OnboardingFor(auth identity.Envelope, id string) (Onboarding, er
 func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (Onboarding, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var removed Onboarding
+	found := false
 	for _, onboarding := range s.onboardings {
 		if onboarding.PrincipalID == auth.PrincipalID && onboarding.ContextID == auth.ContextID && onboarding.RuntimeID == auth.RuntimeID && onboarding.PolicyVersion == auth.PolicyVersion && onboarding.IdempotencyKey == key && key != "" {
+			if onboarding.Phase == PhaseRemoved {
+				removed, found = onboarding, true
+				continue
+			}
 			return onboarding, true
 		}
 	}
-	return Onboarding{}, false
+	return removed, found
 }

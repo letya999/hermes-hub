@@ -41,3 +41,9 @@ Extend SPEC-0026 through one generic lifecycle for the exact repositories
     state, then resumes confirmation and enablement. Status can reissue a lost
     link. Existing token files cannot be replaced implicitly. Unreviewed tool
     output cannot supply authorization URLs or token-file formats.
+11. `prepare_source` is asynchronous past a bounded wait window: it returns the
+    durable `preparing` onboarding record while review and build continue on a
+    detached context. Results live in the store, not the HTTP call — status
+    reports `preparing`, `awaiting-*` or `failed` after any disconnect or
+    restart, and open owner sessions are nudged when the background prepare
+    settles. Client timeouts must never abort the build or its durable record.

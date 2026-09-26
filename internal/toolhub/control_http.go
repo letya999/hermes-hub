@@ -74,7 +74,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["source"] = map[string]any{"type": "string"}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
-		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first."
+		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id."
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
 	case "status", "required_credentials":
