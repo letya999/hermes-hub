@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 )
 
@@ -35,6 +37,11 @@ func run() error {
 	if *auth == "" {
 		return errors.New("HUB_SUPERVISOR_AUTH or --auth is required")
 	}
+	stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spaces), ".local", "supervisor.log"))
+	if err != nil {
+		return err
+	}
+	defer stopLog()
 	m, err := supervisor.New(supervisor.Config{SpacesRoot: *spaces, Image: *image, RuntimeAuth: *auth, WarmTTL: *ttl, MaxConcurrent: *max})
 	if err != nil {
 		return err

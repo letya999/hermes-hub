@@ -1,0 +1,15 @@
+schema: 1
+id: CHG-0046-automatic-diagnostics
+title: Automatic bounded diagnostics
+status: in_progress
+phase: verification
+started_at: 2026-09-26
+updated_at: 2026-09-26
+completed:
+  - replaced manual export with automatic cursor-based collection
+  - added default diagnostics setting and shared ToolHub host mount
+  - added HTTP boundary and Telegram conversation logging
+  - just check passed with 85.00 percent Go statement coverage
+  - Credential Broker HTTP module cross-compiled for Linux
+pending:
+  - verify live Docker collection and Credential Broker image when Docker Engine is available

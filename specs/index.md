@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0031](active/SPEC-0031-automatic-diagnostics.md) | Automatic bounded multiuser diagnostics; supersedes SPEC-0030 export |
 | [SPEC-0030](active/SPEC-0030-diagnostics.md) | Local multiuser diagnostics and bounded Docker logs |
 | [SPEC-0029](active/SPEC-0029-build-disk-boundary.md) | Core/control image boundary and bounded rebuild storage |
 | [SPEC-0028](active/SPEC-0028-repository-driven-prepared-connectors.md) | Generic exact-source catalog, Broker state, discovery and four-connector acceptance |

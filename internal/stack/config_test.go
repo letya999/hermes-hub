@@ -381,8 +381,11 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 }
 
 func TestComposeKeepsDockerInControlImage(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}}
 	services := Compose(s, "/source", "/space")["services"].(M)
+	if !s.DiagnosticsEnabled() || services["toolhub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_DIR"] != "/diagnostics" || services["communication-hub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_ENABLED"] != "true" {
+		t.Fatal("default diagnostics not wired")
+	}
 	core := services["cliproxy"].(M)
 	control := services["toolhub"].(M)
 	for name, service := range services {
@@ -408,6 +411,15 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	coreStage, controlStage, found := strings.Cut(string(dockerfile), "FROM runtime AS control")
 	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.1-bookworm AS cliproxy_build") {
 		t.Fatal("Docker CLI or Slack MCP included in default runtime")
+	}
+}
+
+func TestDiagnosticsCanBeDisabled(t *testing.T) {
+	off := false
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}, Diagnostics: &off}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	if s.DiagnosticsEnabled() || services["toolhub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_DIR"] != nil || services["communication-hub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_ENABLED"] != "false" {
+		t.Fatal("diagnostics: false ignored")
 	}
 }
 

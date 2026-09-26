@@ -47,6 +47,7 @@ type Settings struct {
 	// Exactly one deployed space must render it; secondary spaces set
 	// `infra: false` and consume the shared services over the shared network.
 	Infra                 *bool    `yaml:"infra,omitempty"`
+	Diagnostics           *bool    `yaml:"diagnostics,omitempty"`
 	OrganizationDir       string   `yaml:"-"`
 	OrganizationDocsDir   string   `yaml:"-"`
 	OrganizationSkillsDir string   `yaml:"-"`
@@ -144,7 +145,8 @@ func (s Settings) Has(name string) bool { return slices.Contains(s.Features, nam
 // RendersInfra reports whether this space owns the shared control plane
 // services. Unset keeps the historical single-space render (everything in one
 // project); only explicitly secondary spaces opt out.
-func (s Settings) RendersInfra() bool { return s.Infra == nil || *s.Infra }
+func (s Settings) RendersInfra() bool       { return s.Infra == nil || *s.Infra }
+func (s Settings) DiagnosticsEnabled() bool { return s.Diagnostics == nil || *s.Diagnostics }
 func (s Settings) Validate() error {
 	if s.Schema != 1 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1 and profile a lowercase identifier")

@@ -57,10 +57,6 @@ docker-check target="prod":
 docker-clean flag="":
     go run ./cmd/devcheck docker-clean {{flag}}
 
-# Snapshot retained logs from every Hermes container into one Git-ignored file.
-logs-export:
-    go run ./cmd/hubctl logs-export --root .
-
 # Credential Broker is a separate Go module and process. Keep its own gates
 # intact while making the monorepo entrypoint explicit.
 credential-broker-check:

@@ -278,6 +278,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv[key] = value
 		}
 		toolhubVolumes := []any{stateBind, dockerSock, brokerSecrets("toolhub"), brokerMaterializedMount}
+		if s.DiagnosticsEnabled() {
+			toolhubEnv["HUB_DIAGNOSTICS_DIR"] = "/diagnostics"
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local")), "target": "/diagnostics"})
+		}
 		// Extra principal tokens for secondary spaces: one JSON map per deploy,
 		// mounted read-only. Rendered only when the operator wrote the file.
 		if _, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil {
@@ -325,7 +329,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_APPROVE_", "communication", "hermes-communication") {
 			gatewayEnvironment[key] = value
 		}
@@ -477,6 +481,11 @@ func RenderEnvironment(dir, root, environment string) error {
 	}
 	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "workspace/browser", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+			return err
+		}
+	}
+	if s.RendersInfra() && s.DiagnosticsEnabled() {
+		if err := os.MkdirAll(filepath.Join(root, ".local"), 0700); err != nil {
 			return err
 		}
 	}

@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
@@ -179,7 +180,7 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 	if manager == nil || strings.TrimSpace(listen) == "" {
 		return errors.New("manager and listen address are required")
 	}
-	server := &http.Server{Addr: listen, Handler: manager.Handler(), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 * 1024}
+	server := &http.Server{Addr: listen, Handler: diagnostics.HTTP("supervisor", manager.Handler()), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 * 1024}
 	go func() {
 		interval := min(manager.cfg.WarmTTL/2, 5*time.Second)
 		if interval < time.Second {

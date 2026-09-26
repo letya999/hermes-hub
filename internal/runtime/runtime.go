@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"io/fs"
@@ -312,7 +313,7 @@ func superviseOnce(mode string) (bool, error) {
 		if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
 			return false, err
 		}
-		server = &http.Server{Addr: env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), Handler: runtimeHandler()}
+		server = &http.Server{Addr: env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), Handler: diagnostics.HTTP("runtime", runtimeHandler())}
 		go func() {
 			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serverErr <- err

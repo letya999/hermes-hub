@@ -9,18 +9,26 @@ explicit legacy alias. `render` writes generated files under
 `spaces/<user>/generated/`, `up` builds and starts the selected runtime, `down` stops
 it without deleting data, and `logs` tails the selected Compose project.
 
-`just logs-export` (or `go run ./cmd/hubctl logs-export --root .`) snapshots the last
-1000 retained lines from every `hermes-*` Docker container, across users, into
-`.local/hermes-diagnostics.txt`. It replaces the previous snapshot rather than
-growing forever; `.local/` is Git-ignored. Docker must be running to export.
-Treat the file as private: it contains ordinary Telegram message text and may
-contain output from Hermes or other services. Do not attach it to an issue or
-commit it without reviewing and redacting it. The gateway excludes unknown
-senders, credential commands and intercepted `KEY=value` secrets from the
-message log. Host-run supervisor stdout is outside this Docker snapshot.
-Compose services and supervisor-spawned runtimes use Docker's rotating `local`
-logs (10 MB × 3 files per container); recreation applies this setting to
-existing Compose containers.
+Diagnostics are on by default. The shared ToolHub collects new stdout/stderr
+lines from every `hermes-*` Docker container across users every 15 seconds and
+appends them automatically to `.local/hermes-diagnostics.txt`; no export
+command is needed. The file rolls over at 100 MB, and its small cursor file
+keeps the collector from replaying lines after restart. The host supervisor
+mirrors its own request/lifecycle logs to `.local/supervisor.log` (10 MB cap),
+which is also copied into the combined file. Compose and supervised runtimes
+retain Docker's rotating `local` logs (10 MB × 3 files per container). The
+first collection of an already running container starts with its last 1000
+lines. To opt out, set `diagnostics: false` in the infra-owning space's
+`settings.yaml` and run `hubctl up` again.
+
+The gateway records authorized private Telegram input and delivered replies,
+including job IDs and user IDs where available. HTTP operations in Hermes
+runtime, ToolHub, supervisor, communication hub and Credential Broker record
+method, bounded route and duration; request bodies and query strings are not
+logged. Credential input (`KEY=value`, `/credentials`, `/broker-approve`) and
+one-time credential replies are redacted. Treat the combined file as private:
+it contains personal conversations and service output. `.local/` is ignored
+by Git; review and redact before sharing it.
 
 When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
 sender IDs from the configured allowlist to user scopes, writes durable jobs and replies

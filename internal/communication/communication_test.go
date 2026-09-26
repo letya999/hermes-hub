@@ -1277,8 +1277,17 @@ func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := g.queueDelivery(context.Background(), "telegram-5-secret", 11, "private-form-link"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.queueDelivery(context.Background(), "telegram-6-reply", 11, "normal answer"); err != nil {
+		t.Fatal(err)
+	}
+	for range 8 {
+		g.deliverOne(context.Background())
+	}
 	got := output.String()
-	if !strings.Contains(got, "ordinary question") || !strings.Contains(got, "job_id=\"telegram-1\"") || strings.Contains(got, "private-value") || strings.Contains(got, "unknown-user-text") || strings.Contains(got, "secret-code") {
+	if !strings.Contains(got, "ordinary question") || !strings.Contains(got, "normal answer") || !strings.Contains(got, "update_id=1") || strings.Contains(got, "private-value") || strings.Contains(got, "private-form-link") || strings.Contains(got, "unknown-user-text") || strings.Contains(got, "secret-code") {
 		t.Fatal(got)
 	}
 	g.recordJob(Job{ID: "telegram-1", UserID: "alice"}, RunOutcome{RunID: "run-1", Status: "completed"})
@@ -1291,6 +1300,25 @@ func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
 	}
 	var absent *Gateway
 	absent.recordJob(Job{}, RunOutcome{})
+}
+
+func TestTelegramDiagnosticsCanBeDisabled(t *testing.T) {
+	t.Setenv("HUB_DIAGNOSTICS_ENABLED", "false")
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 7, Message: &Message{MessageID: 7, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "private discussion"}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "private discussion") {
+		t.Fatal(output.String())
+	}
 }
 
 func TestGatewayRunPersistsOffset(t *testing.T) {

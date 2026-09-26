@@ -1445,6 +1445,19 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		}
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Доступ к этому боту не настроен.")
 	}
+	if os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
+		visible := text
+		if envstore.LooksLikeEnv(text) || strings.HasPrefix(strings.ToLower(text), "/credentials") || strings.HasPrefix(strings.ToLower(text), "/broker-approve") {
+			visible = "[credential input redacted]"
+		}
+		if visible == "" && (message.Voice != nil || message.Audio != nil) {
+			visible = "[voice message]"
+		}
+		if visible == "" && (message.Document != nil || len(message.Photo) > 0) {
+			visible = "[file message]"
+		}
+		log.Printf("gateway telegram-received user=%q update_id=%d chat_id=%d message_id=%d text=%q", user.ID, update.UpdateID, message.Chat.ID, message.MessageID, visible)
+	}
 	if edited {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, "Изменение сообщения не перезапускает задачу. Используйте новое сообщение или /cancel.")
 	}
@@ -1541,9 +1554,6 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, channel, id,
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, Text: text, Sensitive: false, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
-	}
-	if channel == "telegram_bot" {
-		log.Printf("gateway telegram-message user=%q job_id=%q chat_id=%d message_id=%d text=%q", user.ID, job.ID, chatID, messageID, text)
 	}
 	if channel == "telegram_bot" {
 		_ = g.api.SendChatAction(ctx, chatID, "typing")
@@ -1703,10 +1713,18 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		}
 	}
 	if sendErr != nil {
+		log.Printf("gateway delivery channel=%q job_id=%q delivery_id=%q status=uncertain", delivery.Channel, delivery.JobID, delivery.ID)
 		// A timeout may have sent the message. Keep it failed so a restart never
 		// blindly duplicates an uncertain Telegram delivery.
 		_ = g.spool.UncertainDelivery(delivery.ID)
 		return
+	}
+	if delivery.Channel == "telegram_bot" && os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
+		visible := limitTelegramText(delivery.Text)
+		if strings.HasSuffix(delivery.ID, "-secret") {
+			visible = "[credential response redacted]"
+		}
+		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d text=%q", delivery.JobID, delivery.ID, delivery.ChatID, visible)
 	}
 	_ = g.spool.CompleteDelivery(delivery.ID)
 	if delivery.JobID != "" {

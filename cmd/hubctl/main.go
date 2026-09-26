@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/companion"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -31,7 +32,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | logs-export | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -137,13 +138,6 @@ func run(ctx context.Context, args []string) error {
 		*dir = filepath.Join("spaces", *profile)
 	}
 	switch op {
-	case "logs-export":
-		path, err := exportDiagnostics(ctx, *root, dockerOutput)
-		if err != nil {
-			return err
-		}
-		fmt.Println(path)
-		return nil
 	case "execution-audit":
 		report, err := migration.AuditExecutionSpool(*spoolDir, *profile)
 		if err != nil {
@@ -156,6 +150,11 @@ func run(ctx context.Context, args []string) error {
 		if *supervisorAuth == "" {
 			return fmt.Errorf("HUB_SUPERVISOR_AUTH or --supervisor-auth is required")
 		}
+		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "supervisor.log"))
+		if err != nil {
+			return err
+		}
+		defer stopLog()
 		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
 		if err != nil {
 			return err
