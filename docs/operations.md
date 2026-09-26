@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-23
+last_verified: 2026-09-26
 ---
 # Operations
 
@@ -130,8 +130,10 @@ must not include the encryption key. Do not use `docker compose down --volumes` 
 deleting that user's data intentionally. Restore organization and user homes separately;
 never merge memories, Telegram sessions or provider credentials.
 
-The hub image is one shared runtime (apt Chromium, Hermes with the `mcp`
-extra) used by every compose service. Playwright browsers, Hermes
+The hub has a shared core runtime (apt Chromium, Hermes with the `mcp` extra)
+and a control target used only by ToolHub and the workload controller. The
+control target adds Docker CLI and ToolHive. Slack MCP is an opt-in ToolHub
+connector and is never fetched by the hub Dockerfile. Playwright browsers, Hermes
 `messaging`/`google`/`voice` extras, the Go toolchain, and the Google /
 Atlassian / Telegram-account Python trees stay out of the default image.
 Those MCP trees are `docker/telegram-account.Dockerfile`,
@@ -141,25 +143,41 @@ Dockerfile once per service. Combined with the classic builder
 (`DOCKER_BUILDKIT=0`) this materialized every stage as a separate image and
 added roughly one full copy of the image per command.
 
-Generated compose files carry a `build:` section on exactly one service
-(`toolhub`); the rest reference the shared `image:` tag. `just` recipes and
+Generated compose files carry one core `build:` section (`cliproxy`) and one
+control `build:` section (`toolhub`); other services reference those image
+tags. BuildKit shares their common layers and builds CLIProxy independently
+from the hub's Go services. Go module and compiler cache mounts survive source
+edits and are bounded by the same builder cache cap. `just` recipes and
 `hubctl build`/`up` export `DOCKER_BUILDKIT=1`, `COMPOSE_DOCKER_CLI_BUILD=1`
 and `COMPOSE_BAKE=true`, so a stale `DOCKER_BUILDKIT=0` cannot silently
-downgrade those entry points. After a successful compose build, `hubctl`
-prunes dangling images left by retagging. Intermediate BuildKit stages never
+downgrade those entry points. Before and after each compose build attempt,
+`hubctl` prunes dangling images left by retagging; the next invocation also
+recovers after a killed process. Intermediate BuildKit stages never
 materialize as extra images. Setting `DOCKER_BUILDKIT=0` globally is still
 discouraged because raw `docker compose` outside hubctl/just would use the
 classic builder.
 
 Rebuilds of the tagged hub image used to leave the superseded generation
-dangling at full unique-layer size. `just docker-clean` (also the last step of
+dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove
+stopped `hermes-hub-*` containers that pin dangling generations, prune the
+released images and cap the local BuildKit cache at 8 GB. They leave running
+containers, named volumes and other projects' containers intact; the cache
+cap applies to the selected shared Docker builder. `just docker-clean` (also the last step of
 `just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
 `spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
-dangling image layers, orphan `hermes-build-*` containers/networks/volumes and the
-local BuildKit cache. `just docker-clean --deep` additionally drops
+dangling image layers and orphan `hermes-build-*` containers/networks/volumes.
+Ordinary cleanup caps the local BuildKit cache at 8 GB; `just docker-clean --deep`
+fully prunes it and additionally drops
 `hermes-build-state-shared`, the opt-in persistent builder cache that
 `HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
 artifact build is in flight.
+
+To reclaim physical Windows disk space after Docker cleanup, double-click
+`scripts/reclaim-docker-disk.cmd` and accept the administrator prompt. It
+stops Docker Desktop and WSL, removes three previously identified temporary
+swap VHDX files by exact path, then runs `Optimize-VHD` on Docker's data VHDX.
+The Hyper-V PowerShell module must be available. The script shows free C:
+space before and after; Docker remains stopped until you start it again.
 
 Health checks prove process liveness and, where enabled, Chromium CDP readiness. They do
 not prove OAuth, model, Telegram or provider access. Live acceptance requires the

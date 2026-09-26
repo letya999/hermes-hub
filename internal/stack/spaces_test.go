@@ -42,20 +42,18 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			if _, ok := services["communication-hub"]; ok {
 				t.Fatal("gateway started without a messaging feature")
 			}
-			// Exactly one build block must exist across services: all services
-			// share the image, so repeated build sections make compose run the
-			// same multi-stage build once per service.
+			// Build the shared core once and the Docker-enabled control once.
 			builds := 0
 			for name, svc := range services {
 				if b, ok := svc.(M)["build"]; ok {
 					builds++
-					if name != "toolhub" || b.(M)["target"] != environment {
+					if (name != "toolhub" || b.(M)["target"] != environment+"-control") && (name != "cliproxy" || b.(M)["target"] != environment) {
 						t.Fatal(name, b)
 					}
 				}
 			}
-			if builds != 1 {
-				t.Fatal("expected exactly one build section, got", builds)
+			if builds != 2 {
+				t.Fatal("expected core and control build sections, got", builds)
 			}
 			if strings.Contains(strings.Join(Doctor(s, map[string]string{}), " "), "EXTERNAL_TOKEN") == false {
 				t.Fatal("missing connector secret not reported")

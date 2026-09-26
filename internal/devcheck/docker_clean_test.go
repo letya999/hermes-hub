@@ -60,6 +60,7 @@ func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
 		"rmi hermes-hub:0.2.0-dev",
 		"rm hermes-hub-local-dev-runtime-1",
 		"image prune -f",
+		"buildx prune --max-used-space 8gb -f",
 		"rm hermes-builder-aa",
 		"rm hermes-build-seed-cc",
 		"network rm hermes-build-net-dd",
@@ -100,6 +101,9 @@ func TestDockerCleanDeepRemovesSharedBuildState(t *testing.T) {
 	}
 	if !slices.Contains(calls, "volume rm hermes-build-state-shared") {
 		t.Fatalf("deep clean kept shared state: %v", calls)
+	}
+	if !slices.Contains(calls, "builder prune -a -f") {
+		t.Fatalf("deep clean kept BuildKit cache: %v", calls)
 	}
 }
 

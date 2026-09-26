@@ -119,8 +119,14 @@ func dockerClean(ctx context.Context, run dockerRunner, keep map[string]bool, de
 	if _, err := run(ctx, "image", "prune", "-f"); err != nil {
 		return fmt.Errorf("image prune failed: %w", err)
 	}
-	// Best-effort: the classic builder reports no BuildKit cache.
-	_, _ = run(ctx, "builder", "prune", "-f")
+	// Keep hot layers for the next build; deep is the explicit full reset.
+	if deep {
+		if _, err := run(ctx, "builder", "prune", "-a", "-f"); err != nil {
+			return fmt.Errorf("build cache prune failed: %w", err)
+		}
+	} else if _, err := run(ctx, "buildx", "prune", "--max-used-space", "8gb", "-f"); err != nil {
+		return fmt.Errorf("build cache limit failed: %w", err)
+	}
 	if body, err := run(ctx, "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"); err != nil {
 		return fmt.Errorf("container listing failed: %w", err)
 	} else {

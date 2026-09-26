@@ -11,6 +11,11 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
 - Add regression tests for file isolation, concurrency, authorization or HTTP-contract changes.
 - Run `just check` before delivery; own Go statement coverage must be >=85%. Run `just security` for dependency changes and
   `just docker-check` when a Docker runtime is available. Report unavailable gates honestly.
+- Build hub images through `hubctl build`/`up` or `just docker-check`, not raw `docker compose build`:
+  these paths force BuildKit. `hubctl` prunes superseded hub images before/after attempts and caps the build cache at 8 GB;
+  `just docker-check` cleans on success.
+  After any other local Docker build, run `just docker-clean`; use `--deep` only for an intentional cold-cache reset.
+  Never use broad system/volume prunes that could delete another project's data. Keep optional integrations out of the base image.
 - Significant changes use .work/in-progress/CHG-NNNN-name/{plan.md,state.yaml}.
   Update docs/specs affected by behavior. Accepted ADRs are appended, not rewritten.
 - Do not claim integration success from mock tests. Do not add a provider with a guessed API.

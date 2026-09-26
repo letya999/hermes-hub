@@ -1,0 +1,26 @@
+schema: 1
+id: CHG-0044-build-disk-control
+title: Build disk control and core/control image split
+status: in_progress
+phase: awaiting-operator-compaction
+started_at: 2026-09-26
+updated_at: 2026-09-26
+completed:
+  - traced default image and Docker consumers
+  - removed unused Slack MCP build
+  - separated core and Docker-enabled control images
+  - moved CLIProxy to an independent parallel BuildKit stage
+  - added Go module and compiler cache mounts
+  - added post-build dangling-image cleanup and bounded cache
+  - added pre-build recovery and post-attempt cleanup for failed builds
+  - added self-elevating Windows disk reclamation launcher and script
+  - targeted hubctl lifecycle regression passed after pre/post cleanup change
+  - just check passed at 85.03 percent statement coverage
+  - just security passed with no findings
+  - just docker-check prod passed; core and control smoke passed
+  - cold core build 14m40s; unchanged rebuild 4.7s
+  - Docker Desktop and WSL stopped for VHDX compaction
+pending:
+  - operator VHDX compaction with administrator rights
+  - operator removal of three stale temporary swap VHDX files blocked by local policy
+  - rerun just check with Docker available; Docker-dependent devcheck tests failed while Docker Desktop is intentionally stopped

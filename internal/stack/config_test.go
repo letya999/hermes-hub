@@ -380,6 +380,31 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 	}
 }
 
+func TestComposeKeepsDockerInControlImage(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	core := services["cliproxy"].(M)
+	control := services["toolhub"].(M)
+	if core["image"] == control["image"] || core["build"].(M)["target"] != "prod" || control["build"].(M)["target"] != "prod-control" {
+		t.Fatalf("core/control images not separated: core=%v control=%v", core["image"], control["image"])
+	}
+	if services["workload-controller"].(M)["image"] != control["image"] || services["hermes-runtime"].(M)["image"] != core["image"] {
+		t.Fatal("Docker consumers and Hermes runtime use the wrong images")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "docker", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coreStage, controlStage, found := strings.Cut(string(dockerfile), "FROM runtime AS control")
+	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.1-bookworm AS cliproxy_build") {
+		t.Fatal("Docker CLI or Slack MCP included in default runtime")
+	}
+}
+
 func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SlackEventsPort: 9091, Features: []string{"slack_app"}}
 	if err := s.Validate(); err != nil {

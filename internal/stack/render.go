@@ -205,11 +205,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.GlobalSkillsDir), "target": "/opt/hub/skills", "read_only": true})
 	}
-	// Only one service carries the build section: every service shares the same
-	// image, and duplicating build blocks makes `docker compose build` run the
-	// whole multi-stage build once per service under builders without shared
-	// cache (the legacy builder materializes each copy as separate layers).
+	// Core and control targets share BuildKit layers; only control needs Docker.
 	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}}
+	coreBuild := M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
 	runtimeService["environment"] = runtimeEnv
@@ -265,6 +263,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	sharedNetworks := []string{"default", sharedNetworkName}
 	if infra {
 		cliproxy := cloneMap(common)
+		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
 		cliproxy["ports"] = []string{"127.0.0.1:8317:8317"}
@@ -286,9 +285,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
 		}
 		toolhub := cloneMap(common)
-		// Toolhub owns the build block: it is always rendered, unlike hermes-runtime
-		// which is dropped when an external supervisor URL is configured.
-		toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
+		toolhub["image"] = "hermes-hub:0.3.0-" + s.Environment + "-control"
+		toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
 		toolhub["entrypoint"] = []string{"toolhub"}
 		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
 		toolhub["environment"] = toolhubEnv
@@ -298,6 +296,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["toolhub"] = toolhub
 
 		controller := cloneMap(common)
+		controller["image"] = toolhub["image"]
 		controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
 		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HOME": "/tmp", "TZ": s.Timezone}
 		controller["volumes"] = []any{stateBind, dockerSock, brokerMaterializedMount}

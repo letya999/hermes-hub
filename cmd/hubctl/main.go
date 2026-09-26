@@ -263,14 +263,29 @@ func run(ctx context.Context, args []string) error {
 		if os.Getenv("DOCKER_BUILDKIT") == "0" {
 			fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
 		}
+		// A previous build may have been killed before its cleanup ran.
+		if err := pruneDanglingImages(ctx, dockerOutput); err != nil {
+			return err
+		}
+		defer func() {
+			// A failed build can also leave dangling layers and stopped containers.
+			// Cleanup must not hide the original build/up error.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if cleanupErr := pruneDanglingImages(cleanupCtx, dockerOutput); cleanupErr != nil {
+				fmt.Fprintln(os.Stderr, "hubctl: Docker cleanup:", cleanupErr)
+			}
+		}()
 		if err = docker("build"); err != nil {
 			return err
 		}
-		pruneDanglingImages(ctx)
 		if op == "build" {
 			return nil
 		}
-		return docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans")
+		if err := docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"); err != nil {
+			return err
+		}
+		return nil
 	}
 	switch op {
 	case "down":
@@ -318,10 +333,39 @@ func dockerCLIEnv() []string {
 	return append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
 }
 
-func pruneDanglingImages(ctx context.Context) {
-	cmd := exec.CommandContext(ctx, "docker", "image", "prune", "-f")
+func dockerOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Env = dockerCLIEnv()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	return cmd.CombinedOutput()
+}
+
+// A stopped Compose container can pin the previous generation after its tag
+// moves. Remove only this project's stopped containers on dangling images.
+func pruneDanglingImages(ctx context.Context, run func(context.Context, ...string) ([]byte, error)) error {
+	ids, err := run(ctx, "image", "ls", "-q", "--filter", "dangling=true")
+	if err != nil {
+		return fmt.Errorf("list dangling images: %w", err)
+	}
+	for _, id := range strings.Fields(string(ids)) {
+		body, err := run(ctx, "ps", "-a", "--filter", "ancestor="+id, "--format", "{{.Names}}\t{{.Status}}")
+		if err != nil {
+			return fmt.Errorf("list containers for %s: %w", id, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+			name, status, _ := strings.Cut(line, "\t")
+			if !strings.HasPrefix(name, "hermes-hub-") || strings.HasPrefix(status, "Up") {
+				continue
+			}
+			if _, err := run(ctx, "rm", name); err != nil {
+				return fmt.Errorf("remove stale container %s: %w", name, err)
+			}
+		}
+	}
+	if _, err := run(ctx, "image", "prune", "-f"); err != nil {
+		return fmt.Errorf("prune dangling images: %w", err)
+	}
+	if _, err := run(ctx, "buildx", "prune", "--max-used-space", "8gb", "-f"); err != nil {
+		return fmt.Errorf("limit build cache: %w", err)
+	}
+	return nil
 }
