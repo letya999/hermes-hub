@@ -109,8 +109,10 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err != nil || again["onboarding_id"] != prepared["onboarding_id"] {
 		t.Fatalf("idempotent prepare=%v err=%v", again, err)
 	}
-	if status, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{}); err != nil || status["onboarding_id"] != prepared["onboarding_id"] {
-		t.Fatalf("latest status selector: status=%v err=%v", status, err)
+	// The failed self-install above leaves a durable "failed" record that the
+	// latest-onboarding selector picks; select by definition for the catalog one.
+	if status, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"definition_id": "catalog-read"}); err != nil || status["onboarding_id"] != prepared["onboarding_id"] {
+		t.Fatalf("status selector: status=%v err=%v", status, err)
 	}
 	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"})
 	if err != nil || st["onboarding_id"] != prepared["onboarding_id"] {
@@ -536,5 +538,44 @@ func TestStatusBodyExposesNextAction(t *testing.T) {
 	creds := control.statusBody(Onboarding{OnboardingID: "onboard-1", Phase: PhaseAwaitingCreds}, false)
 	if creds["next_action"] != "submit_credentials" {
 		t.Fatalf("awaiting-credentials status lacks submit hint: %v", creds)
+	}
+}
+
+func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
+	store := NewStore()
+	if err := store.PutGrant(Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: 10 * time.Minute,
+		Reviewer: func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+			<-release
+			return SourceReview{}, errors.New("build blew up")
+		}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "req-wake", nil)
+		done <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if existing, ok := store.FindOnboardingByKey(aliceAuth(), "req-wake"); ok {
+			if existing.Phase != PhasePreparing {
+				t.Fatalf("mid-flight phase=%s", existing.Phase)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := store.FindOnboardingByKey(aliceAuth(), "req-wake"); !ok {
+		t.Fatal("preparing record not visible during review/build")
+	}
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("failed review accepted")
+	}
+	existing, ok := store.FindOnboardingByKey(aliceAuth(), "req-wake")
+	if !ok || existing.Phase != PhaseFailed {
+		t.Fatalf("failed prepare left phase=%v ok=%v", existing.Phase, ok)
 	}
 }

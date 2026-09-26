@@ -123,7 +123,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	requestKey := argString(args, "request_key")
 	if requestKey != "" {
-		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok {
+		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != PhaseFailed && existing.Phase != PhaseRemoved {
 			if err := c.regenerateBrokerRequest(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
@@ -218,23 +218,46 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		}
 	}
 	config := defaultSelfInstallConfig(source)
+	// Register a preparing record before review+build so status works mid-flight
+	// and a failed prepare leaves a durable failure instead of "record not found".
+	idSeed := requestKey
+	if idSeed == "" {
+		idSeed = string(OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA
+	}
+	preparing := Onboarding{
+		Schema: SchemaVersion, OnboardingID: deterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: OnboardingSelfInstall, Phase: PhasePreparing, SourceURL: source.Repository, CommitSHA: source.CommitSHA,
+		DefinitionID: config.DefinitionID, DefinitionVersion: config.Version,
+		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
+	}
+	if err := c.Store.PutOnboarding(preparing); err != nil {
+		return nil, err
+	}
+	failPrepare := func(err error) (map[string]any, error) {
+		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == PhasePreparing {
+			latest.Phase = PhaseFailed
+			_ = c.Store.PutOnboarding(latest)
+		}
+		return nil, err
+	}
 	review := SourceReview{}
 	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
 		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
-			return nil, fmt.Errorf("%w: source reviewer unavailable", ErrInvalid)
+			return failPrepare(fmt.Errorf("%w: source reviewer unavailable", ErrInvalid))
 		}
 		review, err = c.Reviewer(ctx, source, selected)
 		if err != nil {
-			return nil, err
+			return failPrepare(err)
 		}
 	}
 	if err := c.bindReviewedContract(ctx, auth, &review.Definition); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if !c.selfInstallUsable(review.Definition) {
-		return nil, fmt.Errorf("%w: no reviewed credential broker contract covers %s credentials", ErrUnauthorized, review.Definition.DefinitionID)
+		return failPrepare(fmt.Errorf("%w: no reviewed credential broker contract covers %s credentials", ErrUnauthorized, review.Definition.DefinitionID))
 	}
 	// The produced definition may differ from an immutable record stored under
 	// the same id+version by an older pipeline (for example, without a broker
@@ -248,17 +271,23 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		review.Definition.Version = nextPatchVersion(review.Definition.Version)
 	}
 	if err := review.Definition.Validate(); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if err := c.Store.RegisterDefinition(review.Definition); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if err := c.Store.PutPublication(DefinitionPublication{DefinitionID: review.Definition.DefinitionID, Version: review.Definition.Version, Visibility: PublicationUser, OwnerPrincipalID: auth.PrincipalID}); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	onboarding, err := c.newOnboarding(auth, OnboardingSelfInstall, requestKey, review.Definition, source.Repository, source.CommitSHA)
 	if err != nil {
-		return nil, err
+		return failPrepare(err)
+	}
+	if onboarding.OnboardingID != preparing.OnboardingID {
+		// A patch bump shifted the deterministic key; the stub would otherwise
+		// sit in "preparing" forever.
+		preparing.Phase = PhaseRemoved
+		_ = c.Store.PutOnboarding(preparing)
 	}
 	onboarding.Permissions = append([]string(nil), review.Permissions...)
 	onboarding.Effects = append([]string(nil), review.Effects...)
@@ -272,10 +301,10 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 	copyDef := review.Definition
 	onboarding.Definition = &copyDef
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, review.Definition); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	return c.statusBody(onboarding, false), nil
 }
