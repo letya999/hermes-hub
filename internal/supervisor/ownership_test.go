@@ -105,6 +105,9 @@ func TestOwnedInventoryFindsStaleGenerationAndPreservesFailedScan(t *testing.T) 
 		t.Fatal(err)
 	}
 	args := strings.Join(runArgs, " ")
+	if !strings.Contains(args, "--log-driver local --log-opt max-size=10m --log-opt max-file=3") {
+		t.Fatal("unbounded supervised runtime logs", args)
+	}
 	for _, label := range []string{"hermes-hub.owner=" + m.ownerID(), "hermes-hub.context=" + key, "hermes-hub.generation=" + generation} {
 		if !strings.Contains(args, label) {
 			t.Fatalf("missing label %s", label)

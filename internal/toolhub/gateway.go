@@ -448,19 +448,18 @@ func mergeAudit(fields map[string]string, corr callCorrelation) map[string]strin
 }
 
 func (g *Gateway) audit(event string, fields map[string]string) error {
+	var err error
 	if g != nil && g.AuditWrite != nil {
-		return g.AuditWrite(event, fields)
-	}
-	if g != nil && g.Audit != nil {
+		err = g.AuditWrite(event, fields)
+	} else if g != nil && g.Audit != nil {
 		g.Audit(event, fields)
-		return nil
 	}
 	attrs := make([]any, 0, len(fields)*2)
 	for key, value := range fields {
 		attrs = append(attrs, key, value)
 	}
 	slog.Info("toolhub "+event, attrs...)
-	return nil
+	return err
 }
 
 // RoutingBackend sends bounded CLI calls to the CLI runner, provider API calls

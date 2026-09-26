@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -1542,6 +1543,9 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, channel, id,
 		return err
 	}
 	if channel == "telegram_bot" {
+		log.Printf("gateway telegram-message user=%q job_id=%q chat_id=%d message_id=%d text=%q", user.ID, job.ID, chatID, messageID, text)
+	}
+	if channel == "telegram_bot" {
 		_ = g.api.SendChatAction(ctx, chatID, "typing")
 	}
 	return nil
@@ -1744,7 +1748,15 @@ func (g *Gateway) maybeSendVoice(ctx context.Context, delivery Delivery) {
 }
 
 func (g *Gateway) recordJob(job Job, outcome RunOutcome) {
-	if g == nil || g.audit == nil {
+	if g == nil {
+		return
+	}
+	status := outcome.Status
+	if status == "" {
+		status = "completed"
+	}
+	log.Printf("gateway job user=%q job_id=%q run_id=%q status=%q", job.UserID, job.ID, outcome.RunID, status)
+	if g.audit == nil {
 		return
 	}
 	principal := job.PrincipalID
@@ -1753,10 +1765,6 @@ func (g *Gateway) recordJob(job Job, outcome RunOutcome) {
 	}
 	if principal == "" {
 		return
-	}
-	status := outcome.Status
-	if status == "" {
-		status = "completed"
 	}
 	event := audit.NewEvent("job", principal, status)
 	event.JobID = job.ID

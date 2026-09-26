@@ -174,6 +174,9 @@ func TestDockerCleanPropagatesTagScanError(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker CLI unavailable")
 	}
+	if _, err := cliDocker(context.Background(), "info", "--format", "{{.ServerVersion}}"); err != nil {
+		t.Skip("docker daemon unavailable")
+	}
 	if err := DockerClean(context.Background(), t.TempDir(), false); err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +185,9 @@ func TestDockerCleanPropagatesTagScanError(t *testing.T) {
 func TestDockerExecWrappers(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker CLI unavailable")
+	}
+	if _, err := cliDocker(context.Background(), "info", "--format", "{{.ServerVersion}}"); err != nil {
+		t.Skip("docker daemon unavailable")
 	}
 	if _, err := cliDocker(context.Background(), "version"); err != nil {
 		t.Fatal(err)

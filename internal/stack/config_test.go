@@ -385,6 +385,12 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	services := Compose(s, "/source", "/space")["services"].(M)
 	core := services["cliproxy"].(M)
 	control := services["toolhub"].(M)
+	for name, service := range services {
+		logging := service.(M)["logging"].(M)
+		if logging["driver"] != "local" || logging["options"].(M)["max-size"] != "10m" || logging["options"].(M)["max-file"] != "3" {
+			t.Fatalf("unbounded Docker logs for %s: %#v", name, logging)
+		}
+	}
 	if core["image"] == control["image"] || core["build"].(M)["target"] != "prod" || control["build"].(M)["target"] != "prod-control" {
 		t.Fatalf("core/control images not separated: core=%v control=%v", core["image"], control["image"])
 	}

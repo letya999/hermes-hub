@@ -1,10 +1,12 @@
 package communication
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1253,6 +1255,42 @@ func TestGatewayRejectsNonPrivateAndUnknownMessages(t *testing.T) {
 	if len(fake.sent) != 2 || !strings.Contains(fake.sent[0], "не настроен") {
 		t.Fatal(fake.sent)
 	}
+}
+
+func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	var output bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(old)
+	for _, update := range []Update{
+		{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "ordinary question"}},
+		{UpdateID: 2, Message: &Message{MessageID: 2, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "SECRET=private-value"}},
+		{UpdateID: 3, Message: &Message{MessageID: 3, From: &TGUser{ID: 99}, Chat: TGChat{ID: 99, Type: "private"}, Text: "unknown-user-text"}},
+		{UpdateID: 4, Message: &Message{MessageID: 4, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/credentials code secret-code"}},
+	} {
+		if err := g.handleUpdate(context.Background(), update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := output.String()
+	if !strings.Contains(got, "ordinary question") || !strings.Contains(got, "job_id=\"telegram-1\"") || strings.Contains(got, "private-value") || strings.Contains(got, "unknown-user-text") || strings.Contains(got, "secret-code") {
+		t.Fatal(got)
+	}
+	g.recordJob(Job{ID: "telegram-1", UserID: "alice"}, RunOutcome{RunID: "run-1", Status: "completed"})
+	if !strings.Contains(output.String(), "gateway job user=\"alice\" job_id=\"telegram-1\" run_id=\"run-1\"") {
+		t.Fatal(output.String())
+	}
+	g.recordJob(Job{ID: "telegram-2", UserID: "alice"}, RunOutcome{})
+	if !strings.Contains(output.String(), "gateway job user=\"alice\" job_id=\"telegram-2\" run_id=\"\" status=\"completed\"") {
+		t.Fatal(output.String())
+	}
+	var absent *Gateway
+	absent.recordJob(Job{}, RunOutcome{})
 }
 
 func TestGatewayRunPersistsOffset(t *testing.T) {

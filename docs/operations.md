@@ -9,6 +9,19 @@ explicit legacy alias. `render` writes generated files under
 `spaces/<user>/generated/`, `up` builds and starts the selected runtime, `down` stops
 it without deleting data, and `logs` tails the selected Compose project.
 
+`just logs-export` (or `go run ./cmd/hubctl logs-export --root .`) snapshots the last
+1000 retained lines from every `hermes-*` Docker container, across users, into
+`.local/hermes-diagnostics.txt`. It replaces the previous snapshot rather than
+growing forever; `.local/` is Git-ignored. Docker must be running to export.
+Treat the file as private: it contains ordinary Telegram message text and may
+contain output from Hermes or other services. Do not attach it to an issue or
+commit it without reviewing and redacting it. The gateway excludes unknown
+senders, credential commands and intercepted `KEY=value` secrets from the
+message log. Host-run supervisor stdout is outside this Docker snapshot.
+Compose services and supervisor-spawned runtimes use Docker's rotating `local`
+logs (10 MB × 3 files per container); recreation applies this setting to
+existing Compose containers.
+
 When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
 sender IDs from the configured allowlist to user scopes, writes durable jobs and replies
 under `/state/gateway`, and runs one fresh bounded Hermes process per job. The default
