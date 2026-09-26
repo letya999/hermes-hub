@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -968,6 +969,7 @@ func (m *Manager) lease(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, payload.Kind)
 	if err != nil {
+		log.Printf("acquire failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1351,7 +1353,9 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	lease, runtime, err := m.Acquire(r.Context(), binding, kind)
 	if err != nil {
 		// The job never reached a runtime: drop the record so a retry re-admits
-		// it instead of replaying a synthetic "uncertain" result.
+		// it instead of replaying a synthetic "uncertain" result. The cause is
+		// logged host-side; the caller only gets that the runtime is unavailable.
+		log.Printf("acquire failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
 		m.abandonJob(request)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
