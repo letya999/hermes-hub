@@ -1152,6 +1152,25 @@ func (m *Manager) finishJob(request hubruntime.ExecuteRequest, response hubrunti
 	m.finishJobGeneration(request, response, status, "")
 }
 
+// abandonJob removes a job that failed before dispatch. Acquire errors mean no
+// runtime ever saw the job, so a retry must re-admit it rather than replay a
+// synthetic terminal result. Records bound to a generation or already past
+// "running" are left untouched.
+func (m *Manager) abandonJob(request hubruntime.ExecuteRequest) {
+	key := executeJobKey(request)
+	if key == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.jobs[key]
+	if !ok || record.Status != "running" || record.Generation != "" || record.Response.RunID != "" {
+		return
+	}
+	delete(m.jobs, key)
+	_ = m.persistLocked()
+}
+
 func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generation string) error {
 	key := executeJobKey(request)
 	m.mu.Lock()
@@ -1331,7 +1350,9 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, kind)
 	if err != nil {
-		m.finishJob(request, hubruntime.ExecuteResponse{}, "uncertain")
+		// The job never reached a runtime: drop the record so a retry re-admits
+		// it instead of replaying a synthetic "uncertain" result.
+		m.abandonJob(request)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}
@@ -1699,7 +1720,10 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 	if m.cfg.Probe != nil {
 		return m.cfg.Probe(ctx, address, auth)
 	}
-	deadline := time.Now().Add(90 * time.Second)
+	// Cold starts include container create, browser/X session boot and Hermes
+	// gateway warmup; under host load they can exceed 90s. A longer bound keeps
+	// wake-up jobs alive instead of failing them while the runtime is booting.
+	deadline := time.Now().Add(4 * time.Minute)
 	for time.Now().Before(deadline) {
 		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, address+"/readyz", nil)

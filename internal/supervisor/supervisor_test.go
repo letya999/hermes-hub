@@ -1279,3 +1279,32 @@ func TestReapMarksDegradedOnDockerFailure(t *testing.T) {
 		t.Fatalf("state=%s", r.State)
 	}
 }
+
+func TestExecuteAbandonsJobWhenRuntimeNeverRan(t *testing.T) {
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return nil, os.ErrPermission
+	}, nil)
+	body := `{"identity_schema":1,"principal_id":"alice","external_identity_id":"telegram-1","conversation_id":"telegram-1","delivery_target_id":"telegram-1","context_id":"alice","runtime_id":"alice","policy_version":"policy-1","organization_id":"personal","user_id":"alice","actor_id":"alice","scope_id":"user:alice","channel":"telegram_bot","trigger":"message","idempotency_key":"one","job_id":"job-1","text":"hello"}`
+	post := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := post(); code != http.StatusServiceUnavailable {
+		t.Fatalf("spawn failure status=%d", code)
+	}
+	m.mu.Lock()
+	_, kept := m.jobs["job-1"]
+	m.mu.Unlock()
+	if kept {
+		t.Fatal("undispatched job recorded as terminal; a retry would replay instead of re-admitting")
+	}
+	if code := post(); code != http.StatusServiceUnavailable {
+		t.Fatalf("retried wake job status=%d", code)
+	}
+}

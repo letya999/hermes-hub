@@ -140,3 +140,36 @@ func TestSupervisorURLOverridesStaticRuntime(t *testing.T) {
 		t.Fatalf("runtime auth=%q", got)
 	}
 }
+
+func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
+	old := unavailableRetryDelay
+	unavailableRetryDelay = time.Millisecond
+	defer func() { unavailableRetryDelay = old }()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply", Status: "completed"})
+	}))
+	defer server.Close()
+	outcome, err := (HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client(), Limit: time.Minute}).RunOutcome(context.Background(), Job{Text: "hello"})
+	if err != nil || outcome.Text != "reply" {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d", calls)
+	}
+
+	calls = 0
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer dead.Close()
+	if _, err := (HTTPRunner{URL: dead.URL, Auth: "secret", HTTP: dead.Client(), Limit: time.Minute}).RunOutcome(context.Background(), Job{Text: "hello"}); err == nil || errors.Is(err, ErrUncertain) {
+		t.Fatalf("persistent unavailability must fail deterministically: %v", err)
+	}
+	if calls != 4 {
+		t.Fatalf("calls=%d", calls)
+	}
+}

@@ -419,7 +419,7 @@ var browserOutputExts = map[string]bool{
 	".xml": true, ".yml": true, ".yaml": true, ".html": true, ".htm": true,
 	".har": true, ".mhtml": true, ".pdf": true, ".png": true, ".jpg": true,
 	".jpeg": true, ".gif": true, ".webp": true, ".svg": true, ".zip": true,
-	".gz": true,
+	".gz":  true,
 	".tar": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
 	".ppt": true, ".pptx": true, ".odt": true, ".ods": true, ".odp": true,
 	".mp3": true, ".wav": true, ".ogg": true, ".mp4": true, ".webm": true,
