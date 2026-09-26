@@ -586,14 +586,14 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		m.markDegraded(key)
 		return Runtime{}, fmt.Errorf("prepare runtime launch: %w", err)
 	}
-	if _, err = m.command(ctx, args...); err != nil {
+	if out, runErr := m.command(ctx, args...); runErr != nil {
 		m.markDegraded(key)
 		// Docker may have created the container before its acknowledgement was lost.
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 		if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
 			m.releaseSlot(key)
 		}
-		return Runtime{}, fmt.Errorf("start runtime: %w", err)
+		return Runtime{}, fmt.Errorf("start runtime: %w: %s", runErr, firstLine(string(out)))
 	}
 	if err = m.ready(ctx, address, binding.runtimeAuth); err != nil {
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
@@ -1839,4 +1839,15 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 300 {
+		s = s[:300]
+	}
+	return s
 }
