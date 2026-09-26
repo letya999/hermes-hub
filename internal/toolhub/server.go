@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -18,9 +19,14 @@ import (
 )
 
 type EndpointConfig struct {
-	Listen         string
-	Token          string
-	Auth           identity.Envelope
+	Listen string
+	Token  string
+	Auth   identity.Envelope
+	// TokensFile is an optional JSON object mapping additional bearer tokens to
+	// identity envelopes, one per secondary space's runtime token. The single
+	// deployed ToolHub authenticates every principal this way; there is no
+	// per-user ToolHub instance.
+	TokensFile     string
 	Backend        ToolBackend
 	RecipeCatalogs []RecipeCatalog
 	BrokerControl  *credentialbroker.Config
@@ -90,9 +96,10 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		return EndpointConfig{}, err
 	}
 	return EndpointConfig{
-		Listen: envOr("HUB_TOOLHUB_LISTEN", "127.0.0.1:8090"),
-		Token:  token,
-		Auth:   auth,
+		Listen:     envOr("HUB_TOOLHUB_LISTEN", "127.0.0.1:8090"),
+		Token:      token,
+		Auth:       auth,
+		TokensFile: os.Getenv("HUB_TOOLHUB_TOKENS_FILE"),
 		Backend: RoutingBackend{
 			Provider: PersonalProviderBackend{},
 			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: envOr("HUB_STATE", "/state")},
@@ -131,18 +138,29 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	if (config.BrokerControl == nil) != (config.BrokerRuntime == nil) {
 		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", ErrInvalid)
 	}
+	tokens := map[string]identity.Envelope{config.Token: config.Auth}
+	if config.TokensFile != "" {
+		extra, err := loadTokenEnvelopes(config.TokensFile)
+		if err != nil {
+			return nil, err
+		}
+		for token, auth := range extra {
+			if _, dup := tokens[token]; dup {
+				return nil, fmt.Errorf("%w: duplicate ToolHub token", ErrInvalid)
+			}
+			tokens[token] = auth
+		}
+	}
 	gateway := &Gateway{
-		Store: store, Backend: config.Backend, Tokens: map[string]identity.Envelope{config.Token: config.Auth},
+		Store: store, Backend: config.Backend, Tokens: tokens,
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
 	}
 	var secrets credstore.Backend
 	var injector CredentialInjector
 	var err error
-	if config.BrokerControl == nil {
-		secrets, injector, err = credentialServicesFromEnv()
-		if err != nil {
-			return nil, err
-		}
+	secrets, injector, err = credentialServicesFromEnv()
+	if err != nil {
+		return nil, err
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
 	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), Broker: config.BrokerControl, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
@@ -178,6 +196,8 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
+	control.Injector = gateway.Injector
+	control.PrepareDone = gateway.notifyPrepareDone
 	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)
@@ -272,6 +292,30 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// loadTokenEnvelopes reads a JSON object mapping additional bearer tokens to
+// identity envelopes: {"<token>": {"identity_schema": 1, "principal_id": ...}}.
+// The endpoint holds one identity per principal; entries are checked the same
+// way as the primary env token before the gateway accepts them.
+func loadTokenEnvelopes(path string) (map[string]identity.Envelope, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ToolHub tokens file: %v", ErrInvalid, err)
+	}
+	var entries map[string]identity.Envelope
+	if err := json.Unmarshal(body, &entries); err != nil || len(entries) == 0 {
+		return nil, fmt.Errorf("%w: ToolHub tokens file must map tokens to envelopes", ErrInvalid)
+	}
+	for token, auth := range entries {
+		if len(token) < 32 || strings.ContainsAny(token, "\r\n") {
+			return nil, fmt.Errorf("%w: ToolHub tokens file token", ErrInvalid)
+		}
+		if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+			return nil, fmt.Errorf("%w: ToolHub tokens file identity: %v", ErrInvalid, err)
+		}
+	}
+	return entries, nil
 }
 
 func credentialServicesFromEnv() (credstore.Backend, CredentialInjector, error) {

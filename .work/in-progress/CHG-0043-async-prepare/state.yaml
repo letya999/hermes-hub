@@ -1,0 +1,26 @@
+change: CHG-0043-async-prepare
+status: implemented
+scope:
+  - internal/toolhub/control.go (async prepare window, detached review/build, PrepareDone)
+  - internal/toolhub/gateway.go (session wake on prepare completion)
+  - internal/toolhub/server.go (wiring)
+  - internal/toolhub/control_http.go (tool contract text)
+  - internal/toolhub/control_async_test.go (regression tests)
+  - docs/prepared-connectors.md, specs/active/SPEC-0028 (behavior notes)
+verification:
+  - go test -race ./internal/toolhub — pass
+  - just check — pass (coverage 85.06%, vet/staticcheck/docs/actionlint clean)
+  - go test -tags integration -run TestRestrictedBuildKitRealPipeline — pass on
+    warm cache (66.8s); cold-cache run exceeded the test's own 2m ctx on image
+    pulls, environmental
+  - just docker-check — pass: docker-build hermes-hub:test, docker-smoke,
+    hermes-contract (pinned Hermes 0.21.0 contract, gateway five-minute
+    lifecycle), docker-clean
+notes:
+  - Wake is best-effort notifications/message; clients without a set log level
+    see nothing — status is the source of truth.
+  - SupersededBy pointer added so a timed-out caller holding the stub id
+    resolves to the real record after a patch bump or reviewed-id shift;
+    resolveOnboarding re-checks ownership on the target.
+  - Restart durability: preparing records reload from the file store
+    (TestPreparingRecordSurvivesStoreReload).

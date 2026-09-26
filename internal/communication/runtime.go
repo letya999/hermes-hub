@@ -30,6 +30,10 @@ type HTTPRunner struct {
 
 const defaultHTTPRunTimeout = 30 * time.Minute
 
+// unavailableRetryDelay backs off between supervisor 503 retries; a var so
+// tests do not wait on the real delay.
+var unavailableRetryDelay = 20 * time.Second
+
 func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 	outcome, err := r.RunOutcome(ctx, job)
 	return outcome.Text, err
@@ -75,18 +79,33 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	if r.Resume {
 		path = "/v1/resume"
 	}
-	req, err := http.NewRequestWithContext(jobCtx, http.MethodPost, strings.TrimRight(r.URL, "/")+path, bytes.NewReader(body))
-	if err != nil {
-		return RunOutcome{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+r.Auth)
-	if r.Spool != nil {
-		req.Header.Set("Accept", hubruntime.RunStreamContentType)
-	}
-	response, err := r.client().Do(req)
-	if err != nil {
-		return RunOutcome{}, fmt.Errorf("%w: %v", ErrUncertain, err)
+	var response *http.Response
+	// A supervised runtime that is still booting answers 503 ("runtime
+	// unavailable") — the job provably never reached it, so a bounded retry is
+	// safe and keeps wake-up messages from dying on a slow cold start.
+	for attempt := 0; ; attempt++ {
+		req, reqErr := http.NewRequestWithContext(jobCtx, http.MethodPost, strings.TrimRight(r.URL, "/")+path, bytes.NewReader(body))
+		if reqErr != nil {
+			return RunOutcome{}, reqErr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+r.Auth)
+		if r.Spool != nil {
+			req.Header.Set("Accept", hubruntime.RunStreamContentType)
+		}
+		response, err = r.client().Do(req)
+		if err != nil {
+			return RunOutcome{}, fmt.Errorf("%w: %v", ErrUncertain, err)
+		}
+		if response.StatusCode != http.StatusServiceUnavailable || attempt >= 3 {
+			break
+		}
+		_ = response.Body.Close()
+		select {
+		case <-jobCtx.Done():
+			return RunOutcome{}, fmt.Errorf("%w: %v", ErrUncertain, jobCtx.Err())
+		case <-time.After(unavailableRetryDelay):
+		}
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK && response.Header.Get("Content-Type") == hubruntime.RunStreamContentType {
@@ -186,12 +205,24 @@ func (r HTTPRunner) client() *http.Client {
 	return &http.Client{Timeout: r.timeout() + 5*time.Second}
 }
 
-func runtimeRestart(url, auth string) func(context.Context) error {
+// runtimeRestart returns the restart hook. Unsupervised gateways restart the
+// resident runtime with an empty POST; supervised gateways must carry the
+// job's durable identity so the supervisor can route the call to the runtime
+// that actually ran the work.
+func runtimeRestart(url, auth string, supervised bool) func(context.Context, hubruntime.ExecuteRequest) error {
 	if url == "" {
 		return nil
 	}
-	return func(ctx context.Context) error {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(url, "/")+"/v1/restart", nil)
+	return func(ctx context.Context, request hubruntime.ExecuteRequest) error {
+		var body io.Reader
+		if supervised {
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				return err
+			}
+			body = bytes.NewReader(encoded)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(url, "/")+"/v1/restart", body)
 		if err != nil {
 			return err
 		}

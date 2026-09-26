@@ -92,7 +92,10 @@ func restrictedBuildKitCreateArgs(name, stateVolume, seccompPath, network, proxy
 			"--env", "HTTP_PROXY="+proxy, "--env", "HTTPS_PROXY="+proxy, "--env", "NO_PROXY=",
 			"--env", "http_proxy="+proxy, "--env", "https_proxy="+proxy, "--env", "no_proxy=")
 	}
-	return append(args, restrictedBuildKitImage, "--oci-worker-no-process-sandbox", "--oci-worker-snapshotter=native"), nil
+	// The shared state volume has no TTL: bound buildkitd GC so repeated
+	// artifact builds cannot grow it without limit (4 GiB keeps the warm
+	// base-image cache useful without eating the host disk).
+	return append(args, restrictedBuildKitImage, "--oci-worker-no-process-sandbox", "--oci-worker-snapshotter=native", "--oci-worker-gc-keepbytes=4294967296"), nil
 }
 
 func restrictedBuildProxyCreateArgs(name, network, configVolume string) ([]string, error) {

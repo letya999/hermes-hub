@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -196,14 +199,22 @@ func superviseOnce(mode string) (bool, error) {
 			return false, err
 		}
 	}
-	if err := copyIfExists("/config/config.yaml", filepath.Join(hermesHome, "config.yaml"), true); err != nil {
-		return false, err
-	}
-	if err := applySelfServices(filepath.Join(hermesHome, "config.yaml")); err != nil {
-		return false, err
-	}
-	if err := applyToolHubConfig(filepath.Join(hermesHome, "config.yaml")); err != nil {
-		return false, err
+	// The effective Hermes config is materialized on the host and mounted
+	// read-only over the agent-writable state dir: mcp_servers cannot be
+	// mutated from inside the runtime. When it is missing (legacy mount) the
+	// runtime materializes the config itself as before.
+	configDst := filepath.Join(hermesHome, "config.yaml")
+	if effectiveConfigWritable(configDst) {
+		var configErr error
+		if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
+			configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, materializeOptionsFromEnv())
+		} else {
+			// No rendered source mount (legacy/test run): mutate in place.
+			configErr = stack.ApplyHermesConfig(configDst, materializeOptionsFromEnv())
+		}
+		if configErr != nil {
+			return false, configErr
+		}
 	}
 	if err := copyIfExists("/config/SOUL.md", filepath.Join(hermesHome, "SOUL.md"), false); err != nil {
 		return false, err
@@ -320,8 +331,18 @@ func superviseOnce(mode string) (bool, error) {
 	signals := make(chan os.Signal, 1)
 	signalNotify(signals)
 	defer signalStop(signals)
+	var sweep <-chan time.Time
+	if browser {
+		// Playwright has no per-file/type policy; the sweep is the bounded
+		// enforcement for downloads and screenshots under /workspace/browser.
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		sweep = ticker.C
+	}
 	for {
 		select {
+		case <-sweep:
+			sweepBrowserOutput(filepath.Join(workspace, "browser"))
 		case err := <-serverErr:
 			return false, err
 		case <-signals:
@@ -385,6 +406,77 @@ func clearBrowserLocks(dir string) error {
 	return nil
 }
 
+const (
+	browserOutputTotalLimit = 256 << 20
+	browserOutputFileLimit  = 64 << 20
+	browserOutputMaxEntries = 4096
+)
+
+// browserOutputExts allows documents, images, media and in-flight download
+// partials; executables and scripts never persist in the workspace.
+var browserOutputExts = map[string]bool{
+	"": true, ".txt": true, ".md": true, ".csv": true, ".tsv": true, ".json": true,
+	".xml": true, ".yml": true, ".yaml": true, ".html": true, ".htm": true,
+	".har": true, ".mhtml": true, ".pdf": true, ".png": true, ".jpg": true,
+	".jpeg": true, ".gif": true, ".webp": true, ".svg": true, ".zip": true,
+	".gz":  true,
+	".tar": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+	".ppt": true, ".pptx": true, ".odt": true, ".ods": true, ".odp": true,
+	".mp3": true, ".wav": true, ".ogg": true, ".mp4": true, ".webm": true,
+	".mov": true, ".crdownload": true, ".part": true, ".download": true, ".tmp": true,
+}
+
+type browserOutputFile struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
+// sweepBrowserOutput enforces the download policy: symlinks, oversized files
+// and disallowed types are removed, then oldest files are evicted until the
+// directory is under the total cap. Enforcement is post-write eviction, not a
+// pre-write gate; a burst can briefly exceed the cap between sweeps.
+func sweepBrowserOutput(dir string) {
+	entries := 0
+	var kept []browserOutputFile
+	var total int64
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entries++; entries > browserOutputMaxEntries {
+			return fs.SkipAll
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || d.Type()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			_ = os.Remove(path)
+			return nil
+		}
+		if info.Size() > browserOutputFileLimit || !browserOutputExts[strings.ToLower(filepath.Ext(path))] {
+			_ = os.Remove(path)
+			return nil
+		}
+		total += info.Size()
+		kept = append(kept, browserOutputFile{path: path, size: info.Size(), modTime: info.ModTime()})
+		return nil
+	})
+	if total <= browserOutputTotalLimit {
+		return
+	}
+	slices.SortFunc(kept, func(a, b browserOutputFile) int { return a.modTime.Compare(b.modTime) })
+	for _, file := range kept {
+		if total <= browserOutputTotalLimit {
+			return
+		}
+		if err := os.Remove(file.path); err == nil {
+			total -= file.size
+		}
+	}
+}
+
 func waitForBrowser() error {
 	client := http.Client{Timeout: time.Second}
 	for range 200 {
@@ -408,6 +500,22 @@ func waitForDisplay(display string) error {
 		sleep(100 * time.Millisecond)
 	}
 	return errors.New("xvfb display did not start")
+}
+
+// effectiveConfigWritable reports whether the effective Hermes config path is
+// mutable inside the container. A read-only bind mount over the file is the
+// enforced signal that the host already materialized the config; a missing
+// file on a writable directory means the runtime must materialize it itself.
+func effectiveConfigWritable(destination string) bool {
+	if f, err := os.OpenFile(destination, os.O_WRONLY, 0); err == nil {
+		_ = f.Close()
+		return true
+	}
+	if f, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE, 0660); err == nil {
+		_ = f.Close()
+		return true
+	}
+	return false
 }
 
 func copyIfExists(source, destination string, overwrite bool) error {

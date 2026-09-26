@@ -276,6 +276,46 @@ func TestDiscoveryKeepsPreparedFirstAndUsesGitHubOnlyAsFallback(t *testing.T) {
 	}
 }
 
+func TestBareRepositoryURLSelectsPreparedPinnedCommit(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := entries[1]
+	if prepared.ID != "google-calendar" || prepared.Source.Subfolder != "" {
+		t.Fatalf("fixture entry moved: %+v", prepared.Source)
+	}
+	control := &ControlPlane{Store: NewStore(), Now: time.Now}
+	if err := control.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	drifted := ArtifactSource{Repository: prepared.Source.Repository, CommitSHA: strings.Repeat("f", 40)}
+	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+		if raw != prepared.Source.Repository {
+			t.Fatalf("unexpected resolver input: %s", raw)
+		}
+		return drifted, nil
+	}
+	var reviewed ArtifactSource
+	control.Reviewer = func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+		reviewed = source
+		return SourceReview{}, errors.New("stopped at reviewer")
+	}
+	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"source": prepared.Source.Repository}); err == nil {
+		t.Fatal("test reviewer was bypassed")
+	}
+	if reviewed != prepared.Source {
+		t.Fatalf("bare URL drifted to unreviewed commit: %+v", reviewed)
+	}
+	reviewed = ArtifactSource{}
+	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"source": prepared.Source.Repository + "/commit/" + drifted.CommitSHA}); err == nil {
+		t.Fatal("test reviewer was bypassed")
+	}
+	if reviewed != drifted {
+		t.Fatalf("explicit commit was rewritten: %+v", reviewed)
+	}
+}
+
 func TestRegistrySelectionPinsMutableRepositoryAndPreservesSubfolder(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

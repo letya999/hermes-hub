@@ -24,6 +24,7 @@ const (
 	PhaseReview           string    = "review"
 	PhaseAwaitingCreds    string    = "awaiting-credentials"
 	PhaseAwaitingConfirm  string    = "awaiting-confirm"
+	PhaseAwaitingOAuth    string    = "awaiting-oauth"
 	PhaseConfirmed        string    = "confirmed"
 	PhaseEnabled          string    = "enabled"
 	PhaseDisabled         string    = "disabled"
@@ -112,6 +113,8 @@ type Onboarding struct {
 	BrokerContractID         string            `json:"broker_contract_id,omitempty"`
 	BrokerContractRevision   int               `json:"broker_contract_revision,omitempty"`
 	BrokerAuthorizationURL   string            `json:"broker_authorization_url,omitempty"`
+	ProviderAuthorizationURL string            `json:"provider_authorization_url,omitempty"`
+	SupersededBy             string            `json:"superseded_by,omitempty"`
 	Recipe                   *RecipeResolution `json:"recipe,omitempty"`
 	Revision                 uint64            `json:"revision"`
 	CreatedAt                time.Time         `json:"created_at"`
@@ -206,7 +209,7 @@ func (o Onboarding) Validate() error {
 		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
 	}
 	switch o.Phase {
-	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseFailed:
+	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseFailed:
 	default:
 		return fmt.Errorf("%w: onboarding phase", ErrInvalid)
 	}
@@ -267,6 +270,24 @@ func (s *Store) PutOnboarding(onboarding Onboarding) error {
 	return s.persist()
 }
 
+// ClaimPreparingOnboarding atomically reports a fresh record already in flight
+// or persists the new one under the store lock — concurrent identical prepares
+// cannot both proceed to review+build. A record stale past maxAge belongs to a
+// crashed prepare and is overwritten.
+func (s *Store) ClaimPreparingOnboarding(onboarding Onboarding, maxAge time.Duration, now time.Time) (Onboarding, bool, error) {
+	if err := onboarding.Validate(); err != nil {
+		return Onboarding{}, false, err
+	}
+	s.mu.Lock()
+	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.Phase == PhasePreparing && now.Before(existing.CreatedAt.Add(maxAge)) {
+		s.mu.Unlock()
+		return existing, true, nil
+	}
+	s.onboardings[onboarding.OnboardingID] = onboarding
+	s.mu.Unlock()
+	return onboarding, false, s.persist()
+}
+
 func (s *Store) PromoteToCatalog(definitionID, version, operator string) error {
 	if !identity.ValidID(operator) || operator == "model" || operator == "hermes" {
 		return fmt.Errorf("%w: catalog promotion issuer", ErrUnauthorized)
@@ -325,10 +346,10 @@ func (s *Store) hasCatalogAccessLocked(auth identity.Envelope, definitionID, ver
 	return false
 }
 
-func (s *Store) hasSelfInstallLocked(auth identity.Envelope) bool {
+func (s *Store) selfInstallDeniedLocked(auth identity.Envelope) bool {
 	for _, grant := range s.grants {
-		if grant.Status == ActiveStatus && grant.PrincipalID == auth.PrincipalID && grant.Kind == GrantSelfInstall {
-			return true
+		if grant.Kind == GrantSelfInstall && grant.PrincipalID == auth.PrincipalID {
+			return grant.Status != ActiveStatus
 		}
 	}
 	return false
@@ -372,7 +393,9 @@ func (s *Store) RequireSelfInstall(auth identity.Envelope) error {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if !s.hasSelfInstallLocked(auth) {
+	// Self-install is allowed for every principal by default; an operator can
+	// still withdraw it per principal with a disabled or revoked grant.
+	if s.selfInstallDeniedLocked(auth) {
 		return fmt.Errorf("%w: self-install grant", ErrUnauthorized)
 	}
 	return nil
@@ -397,10 +420,16 @@ func (s *Store) OnboardingFor(auth identity.Envelope, id string) (Onboarding, er
 func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (Onboarding, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var removed Onboarding
+	found := false
 	for _, onboarding := range s.onboardings {
 		if onboarding.PrincipalID == auth.PrincipalID && onboarding.ContextID == auth.ContextID && onboarding.RuntimeID == auth.RuntimeID && onboarding.PolicyVersion == auth.PolicyVersion && onboarding.IdempotencyKey == key && key != "" {
+			if onboarding.Phase == PhaseRemoved {
+				removed, found = onboarding, true
+				continue
+			}
 			return onboarding, true
 		}
 	}
-	return Onboarding{}, false
+	return removed, found
 }

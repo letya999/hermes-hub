@@ -1,6 +1,6 @@
 ---
 description: Exact-source prepared catalog, generic lifecycle and connector runbooks.
-last_verified: 2026-09-23
+last_verified: 2026-09-24
 ---
 # Prepared connectors
 
@@ -37,8 +37,17 @@ lifecycle, while an Official MCP Registry/marketplace result has not. Pass the
 selected `candidate_id` and a stable
 `request_key` to `prepare_source`. Candidates expire and belong to the current
 principal, context, runtime and policy. A direct GitHub `source` works with all
-registries disabled. Both paths re-resolve and review the source; an overlay
-applies only to its reviewed commit.
+registries disabled; for a repository with a prepared entry a bare URL selects
+the reviewed pinned commit, while an explicit `/commit/<sha>` URL keeps the
+generic path. Both paths re-resolve and review the source; an overlay applies
+only to its reviewed commit.
+
+`prepare_source` waits a bounded window for review+build (about 90 seconds) and
+then returns the durable `preparing` record instead of holding the HTTP call:
+the work continues on a detached context and the outcome — `awaiting-*` or
+`failed` — is read back with `status`. A lost connection no longer loses the
+result, and the owner's open MCP sessions receive a best-effort wake message
+when the background prepare finishes.
 
 After the generated restricted build and real MCP preflight, use
 `required_credentials` if requested. Enter credentials only in the protected
@@ -53,6 +62,17 @@ verified separately. Projection changes notify the owner's open MCP session;
 a pinned-Hermes fixture confirms PID/session/active-run continuity. Full #74
 acceptance remains open. Installing a
 connector does not authorize provider writes.
+
+When a reviewed prepared entry declares `oauth`, a failed first provider read
+can return `awaiting_oauth` with `authorization_url`. The control tool also
+requests URL-mode elicitation; clients without it receive the URL in the tool
+response. The user opens the provider URL in a browser on the Docker host.
+ToolHub handles the one-time loopback callback, writes the upstream token
+format into that owner's Broker state lease, then repeats confirm and enable.
+`status` reissues an expired or process-lost link. An existing token file is
+never overwritten by this handoff; diagnose a failed read instead. OAuth
+metadata must be reviewed for an exact source revision, and token adapters
+remain source-specific. Tool text and arbitrary MCP URLs cannot start a flow.
 Admitted tool schemas and rich MCP content, including embedded file resources,
 are preserved with output bounds. Schema-declared provider resource owners are
 ordinary arguments; runtime identity and credential selectors remain reserved.
@@ -86,8 +106,14 @@ full Google Workspace needs a separately selected repository. Broker:
 The reviewed token path is inside the Broker state mount. File credentials are
 read-only; mutable state is checkpointed only after the writer stops. Existing
 tokens may be transferred locally with owner authorization, never through chat.
-Verify `list-calendars` and bounded `list-events`. Expired consent requires the
-account's actual authorization flow; placeholders are only for MCP preflight.
+With a client JSON but no token, confirmation returns a Google authorization
+link for the `calendar.readonly` scope. Google redirects to
+`http://127.0.0.1:8090/oauth/callback`; the browser must run on the Docker host.
+After consent, ToolHub stores the token under the upstream `normal` account
+and checks the read probe. Verify `list-calendars` and bounded `list-events`.
+An existing but expired or invalid token requires diagnosis or explicit
+rotation; placeholders are only for MCP preflight. This path has mock OAuth
+coverage but requires a real account consent for live integration evidence.
 
 Handoff: “Install https://github.com/nspady/google-calendar-mcp; reuse my OAuth
 client and token state through Broker. Verify my calendars and events.”

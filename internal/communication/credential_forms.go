@@ -304,7 +304,11 @@ func (g *Gateway) persistCredentialForm(r *http.Request, form credentialForm, va
 		}
 	}
 	if g.restart != nil {
-		return g.restart(r.Context())
+		request := hubruntime.ExecuteRequest{}
+		if g.config.Supervised {
+			request = supervisorRestartRequest(form.Envelope, g.config.OrganizationID, user.ID, user.ID, "user:"+user.ID, "credentials-"+form.OwnerID)
+		}
+		return g.restart(r.Context(), request)
 	}
 	return nil
 }

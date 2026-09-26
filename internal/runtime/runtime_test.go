@@ -166,32 +166,6 @@ func TestLoadSelfEnv(t *testing.T) {
 	}
 }
 
-func TestApplySelfServicesMergesMCPConfig(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["atlassian","gitlab"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	config := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(config, []byte("model: {}\nmcp_servers: {}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServices(config); err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	// Connectors are ToolHub-managed: enabling them must not inject a direct
-	// MCP definition into the Hermes config.
-	if strings.Contains(text, "mcp-atlassian") || strings.Contains(text, "mcp.atlassian.com") || strings.Contains(text, "gitlab") {
-		t.Fatal(text)
-	}
-}
-
 func TestLoadSelfServicesSetsActiveFeatures(t *testing.T) {
 	oldState := state
 	state = t.TempDir()
@@ -223,32 +197,6 @@ func TestLoadSelfServicesRejectsInvalidState(t *testing.T) {
 	}
 }
 
-func TestSelfServicesRejectsInvalidState(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	for _, body := range []string{`not-json`, `{"features":["workspace"]}`, `{"features":["gitlab","gitlab"]}`} {
-		if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := readSelfServices(); err == nil {
-			t.Fatal("invalid self-services accepted", body)
-		}
-	}
-	if err := os.Remove(filepath.Join(state, selfServicesFile)); err != nil {
-		t.Fatal(err)
-	}
-	if features, err := readSelfServices(); err != nil || features != nil {
-		t.Fatal(features, err)
-	}
-	if err := os.Mkdir(filepath.Join(state, selfServicesFile), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readSelfServices(); err == nil {
-		t.Fatal("directory self-services accepted")
-	}
-}
-
 func TestLoadSelfServicesMergesConfiguredFeatures(t *testing.T) {
 	oldState := state
 	state = t.TempDir()
@@ -271,29 +219,18 @@ func TestLoadSelfServicesMergesConfiguredFeatures(t *testing.T) {
 	}
 }
 
-func TestApplySelfServicesNoopAndConfigErrors(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	if err := applySelfServices(filepath.Join(state, "missing.yaml")); err != nil {
+func TestEffectiveConfigWritableDetection(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "config.yaml")
+	if !effectiveConfigWritable(missing) {
+		t.Fatal("missing config on writable dir must materialize")
+	}
+	ro := filepath.Join(dir, "ro.yaml")
+	if err := os.WriteFile(ro, []byte("model: {}"), 0400); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["github"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	bad := filepath.Join(state, "bad.yaml")
-	if err := os.WriteFile(bad, []byte("not: [yaml"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServices(bad); err == nil {
-		t.Fatal("invalid Hermes config accepted")
-	}
-	noServers := filepath.Join(state, "no-servers.yaml")
-	if err := os.WriteFile(noServers, []byte("model: test\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServices(noServers); err != nil {
-		t.Fatal(err)
+	if effectiveConfigWritable(ro) {
+		t.Fatal("read-only config must be treated as pre-materialized")
 	}
 }
 
@@ -609,4 +546,55 @@ func TestClearDisplayLocksRemovesStaleFiles(t *testing.T) {
 			t.Fatalf("stale display lock remains: %s", path)
 		}
 	}
+}
+
+func TestSweepBrowserOutputEnforcesPolicy(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, size int) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), make([]byte, size), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("report.pdf", 1024)
+	write("payload.exe", 128)
+	write("run.sh", 64)
+	write("huge.bin", browserOutputFileLimit+1)
+	if err := os.Symlink("/state/hermes/config.yaml", filepath.Join(dir, "link.pdf")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	sweepBrowserOutput(dir)
+	for _, gone := range []string{"payload.exe", "run.sh", "huge.bin", "link.pdf"} {
+		if _, err := os.Lstat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("%s survived the output sweep", gone)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "report.pdf")); err != nil {
+		t.Fatalf("allowed download removed: %v", err)
+	}
+}
+
+func TestSweepBrowserOutputEvictsOldest(t *testing.T) {
+	dir := t.TempDir()
+	names := []string{"a.csv", "b.csv", "c.csv", "d.csv", "e.csv"}
+	for i, name := range names {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, make([]byte, 55<<20), 0600); err != nil {
+			t.Fatal(err)
+		}
+		stamp := time.Now().Add(time.Duration(i) * time.Hour)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepBrowserOutput(dir)
+	if _, err := os.Lstat(filepath.Join(dir, "a.csv")); !os.IsNotExist(err) {
+		t.Fatal("oldest download was not evicted first")
+	}
+	for _, name := range names[1:] {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("newer download evicted: %v", err)
+		}
+	}
+	sweepBrowserOutput(filepath.Join(dir, "missing"))
 }

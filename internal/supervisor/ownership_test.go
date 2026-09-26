@@ -13,6 +13,28 @@ import (
 	"time"
 )
 
+func TestDockerDesktopWindowsScopePathIsExact(t *testing.T) {
+	expected := `C:\Users\User\AppData\Local\Temp\owner-a`
+	for _, source := range []string{
+		`\run\desktop\mnt\host\c\Users\User\AppData\Local\Temp\owner-a`,
+		`/run/desktop/mnt/host/C/Users/User/AppData/Local/Temp/owner-a`,
+	} {
+		if !sameWindowsDockerSource(source, expected) {
+			t.Fatalf("Docker Desktop source %q did not map to the exact owner path", source)
+		}
+	}
+	for _, source := range []string{
+		`\run\desktop\mnt\host\c\Users\User\AppData\Local\Temp\owner-b`,
+		`\run\desktop\mnt\host\..\c\Users\User\AppData\Local\Temp\owner-a`,
+		`\run\desktop\mnt\host\1\Users\User\AppData\Local\Temp\owner-a`,
+		`\other\desktop\mnt\host\c\Users\User\AppData\Local\Temp\owner-a`,
+	} {
+		if sameWindowsDockerSource(source, expected) {
+			t.Fatalf("non-matching Docker source %q was accepted", source)
+		}
+	}
+}
+
 func TestOwnedInventoryFindsStaleGenerationAndPreservesFailedScan(t *testing.T) {
 	var m *Manager
 	var generation, key string
@@ -78,7 +100,11 @@ func TestOwnedInventoryFindsStaleGenerationAndPreservesFailedScan(t *testing.T) 
 			t.Fatalf("%s ownership mismatch accepted", field)
 		}
 	}
-	args := strings.Join(m.runArgsWithGeneration(b, runtime.Container, 19000, generation), " ")
+	runArgs, err := m.runArgsWithGeneration(b, runtime.Container, 19000, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(runArgs, " ")
 	for _, label := range []string{"hermes-hub.owner=" + m.ownerID(), "hermes-hub.context=" + key, "hermes-hub.generation=" + generation} {
 		if !strings.Contains(args, label) {
 			t.Fatalf("missing label %s", label)

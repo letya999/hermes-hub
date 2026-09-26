@@ -22,6 +22,11 @@ completed:
   - "Updated ToolHub/controller dev containers passed all four live provider reads; live Calendar had one read-only and one writable mount from owner Broker tmpfs."
   - "Live discovery returned prepared entries for all four sources and four total candidates for GitHub."
   - "Final progress comments posted to issues 115, 116, 110, 74, 118, 40, 37 and 126 without secrets or private API URLs."
+  - "Bare repository URLs now select the reviewed pinned commit for prepared sources; explicit /commit/<sha> URLs stay explicit."
+  - "Rendered spaces wire HUB_TOOLHUB_ENDPOINT to the in-stack toolhub by default (explicit or empty secrets value overrides), and render heals the Init SOUL stub to the global template without touching user edits."
+  - "Self-install is allowed for every principal by default; a disabled or revoked self-install grant remains the per-principal operator deny."
+  - "Gateway-lifecycle fixture opts out of the default ToolHub endpoint (synthetic network has no toolhub); docker-check dev green, just check green at 85.01%."
+  - "Default endpoint corrected to host.docker.internal:8090: spawned contexts join per-user project networks where the compose name toolhub does not resolve, which crashed runtimes in ValidateBackendEndpoint (test-owner-2 TG 8275678764 failures 2026-09-25)."
 next:
   - "Review and integrate the local worktree; production rollout remains a separate operator action in issue 116."
   - "Keep issue 110 open for broader name-only GitHub search beyond bounded prepared/registry discovery."

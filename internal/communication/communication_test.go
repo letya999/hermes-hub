@@ -543,6 +543,32 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	}
 }
 
+func TestRestartRequestRebuildsDurableIdentityForSupervisor(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "job-restart", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-restart", Text: "hello", CreatedAt: time.Now().UTC()}
+	if accepted, err := spool.Enqueue(job); err != nil || !accepted {
+		t.Fatalf("enqueue=%v err=%v", accepted, err)
+	}
+	g := &Gateway{config: Config{Supervised: true, OrganizationID: "personal"}, spool: spool, now: time.Now}
+	request, ok := g.restartRequest(Delivery{JobID: job.ID})
+	if !ok {
+		t.Fatal("restart request not built from durable mapping")
+	}
+	if err := request.Envelope.Validate(request.PrincipalID, request.ContextID, request.RuntimeID, request.PolicyVersion); err != nil {
+		t.Fatalf("rebuilt envelope does not bind: %v", err)
+	}
+	if request.PrincipalID != "alice" || request.ContextID != "alice" || request.RuntimeID != "alice" || request.UserID != "alice" || request.ScopeID != "user:alice" || request.OrganizationID != "personal" {
+		t.Fatalf("restart request lost identity: %+v", request)
+	}
+	unsupervised := &Gateway{config: Config{Supervised: false}, spool: spool, now: time.Now}
+	if request, ok := unsupervised.restartRequest(Delivery{JobID: job.ID}); !ok || request.JobID != "" {
+		t.Fatal("unsupervised restart must stay an empty POST")
+	}
+}
+
 func TestSignalRestartAfterDeliveryRequiresPendingRequestAndSafeMarker(t *testing.T) {
 	state := t.TempDir()
 	if err := signalRestartAfterDelivery(state); err != nil {

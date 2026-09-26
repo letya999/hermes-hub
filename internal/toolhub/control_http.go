@@ -35,7 +35,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope) {
 				return nil, err
 			}
 			notifyControlProgress(ctx, request, name, true, body)
-			if name == "required_credentials" {
+			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == PhaseAwaitingOAuth {
 				if pending := pendingCredentialElicit(ctx, request, body); pending != nil {
 					return pending, nil
 				}
@@ -74,7 +74,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["source"] = map[string]any{"type": "string"}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
-		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first."
+		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id."
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
 	case "status", "required_credentials":
@@ -395,6 +395,10 @@ func credentialFieldHint(hint CredentialHint) string {
 }
 
 func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if !loopbackHTTP(r) {
 		http.Error(w, "loopback only", http.StatusForbidden)
 		return
@@ -405,7 +409,18 @@ func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	onboardingID := r.URL.Query().Get("onboarding_id")
 	if onboardingID == "" {
-		http.Error(w, "missing onboarding", http.StatusBadRequest)
+		if r.URL.Query().Get("state") == "" {
+			http.Error(w, "missing onboarding", http.StatusBadRequest)
+			return
+		}
+		if err := g.Control.completePreparedOAuth(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code")); err != nil {
+			http.Error(w, "authorization failed; return to chat and retry status", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Можно вернуться в чат. Доступ к календарю проверен."))
 		return
 	}
 	onboarding, err := g.Control.Store.onboarding(onboardingID)

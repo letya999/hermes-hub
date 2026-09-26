@@ -1,0 +1,1 @@
+CHG-0036 live installation emitted projection marker revision 38 through the existing reconnect path. Notion and GitHub tools are available through ToolHub, but handling of this exact revision by the running Hermes instance has not yet been verified. Keeping acceptance open; no integration claim is inferred from reconnect unit tests or the separate Docker native-contract fixture.

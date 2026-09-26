@@ -1,0 +1,9 @@
+change: CHG-0042-toolhub-build-resilience
+status: implemented
+scope:
+  - internal/toolhub/artifact_build.go (build mutex, stale reap, cleanup logging)
+  - internal/toolhub/control.go (preparing/failed onboarding records, retry semantics)
+verification:
+  - go test ./internal/toolhub — pass (regression: preparing record visible mid-build, failed durable, status selector updated)
+notes:
+  - MCP stream resumability and wake-message churn deferred

@@ -1,0 +1,30 @@
+schema: 1
+id: CHG-0041-browser-profiles
+title: "Harden isolated user browser profiles (issue #45)"
+status: done
+phase: delivered
+started_at: "2026-09-25"
+updated_at: "2026-09-25"
+completed:
+  - "stack: browser feature renders browser (persistent CDP) + browser_guest (--isolated, own chromium) stdio MCP servers with tools.include allowlists"
+  - "stack: browser_act feature (host-managed) extends both allowlists with mutation tools; depends_on browser; browser_guest reserved name"
+  - "stack: --output-dir /workspace/browser, --output-max-size 256MiB, --block-service-workers on both servers; workspace/browser ensured"
+  - "runtime: sweepBrowserOutput every 60s removes symlinks/non-regular/oversized(>64MiB)/disallowed-extension files and evicts oldest over 256MiB"
+  - "SOUL.md: persistent vs guest profile semantics; mutations need concrete owner instruction and browser_act"
+  - "docs: architecture.md browser capability paragraph; integrations.md Playwright row contract updated"
+  - "tests: TestBrowserCapabilityReadOnlyByDefault, TestBrowserGuestReservedAndMountsPerUser, sweep enforce/evict tests; updated all-features assertion"
+completed_more:
+  - "issue #110 CLOSED with live evidence: 2 unprepared registry candidates (hackernews-mcp, openbnb-airbnb) through discover->prepare->confirm->enable->projected->invoke->disable->remove; upstream refusals are provider-side, lifecycle held"
+  - "playwright-mcp 0.0.80 tools/list verified live in image: 31 tools, exact match to read(13)/mutation(18) allowlists"
+  - "guest mode verified live: --isolated --executable-path /usr/bin/chromium launches, browser_navigate+browser_snapshot succeed"
+  - "hubctl render on spaces/local: generated hermes-effective.{dev,prod}.yaml contain browser+browser_guest with read-only include (browser_act absent)"
+  - "just check: PASS (race+shuffle, coverage 85.05%, format/vet/staticcheck/docs/actionlint)"
+gates:
+  - "just check: PASS (race+shuffle все пакеты, coverage 85.05%, format/vet/staticcheck/docs/actionlint)"
+  - "docker-check dev: build PASS; docker-smoke PASS (runtime HUB_BROWSER=true + browser CDP health); hermes-contract PASS (flake on due-routine-wake rerun green); docker-clean PASS"
+  - "два ранних прогона contract падали на 'real due routine wake' Ч воспроизводимого фейла нет, фикстурный рантайм features=[workspace] делает дифф инертным"
+next:
+  - "включить browser_act только когда владелец €вно просит мутации браузера"
+risks:
+  - "Sweep enforces post-write eviction, not a pre-write gate; bursts may briefly exceed the cap"
+  - "Guest Chromium shares DISPLAY :99; anonymous windows are visible over the owner's loopback noVNC (intended oversight)"

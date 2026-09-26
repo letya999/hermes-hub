@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -97,13 +98,29 @@ func TestRenderAllFeatures(t *testing.T) {
 	servers := cfg["mcp_servers"].(M)
 	// Every catalog feature enabled still yields no direct upstream MCP server:
 	// connectors are served through ToolHub, never embedded in Hermes config.
-	for _, name := range []string{"google", "browser", "github", "slack", "atlassian", "telegram_user", "desktop", "drafts"} {
+	for _, name := range []string{"google", "github", "slack", "atlassian", "telegram_user", "desktop", "drafts"} {
 		if _, ok := servers[name]; ok {
 			t.Fatalf("direct MCP server leaked into Hermes config: %s", name)
 		}
 	}
 	if _, ok := servers["hub"]; !ok {
 		t.Fatal("platform hub tool server missing")
+	}
+	for _, name := range []string{"browser", "browser_guest"} {
+		server, ok := servers[name].(M)
+		if !ok {
+			t.Fatalf("hub-owned browser server %s missing", name)
+		}
+		tools, ok := server["tools"].(MCPTools)
+		if !ok || len(tools.Include) != len(browserReadTools)+len(browserMutationTools) {
+			t.Fatalf("browser_act must extend the %s allowlist: %#v", name, server["tools"])
+		}
+	}
+	if args := servers["browser"].(M)["args"].([]string); !slices.Contains(args, "--cdp-endpoint") {
+		t.Fatalf("persistent browser must attach to the per-user CDP profile: %v", args)
+	}
+	if args := servers["browser_guest"].(M)["args"].([]string); !slices.Contains(args, "--isolated") {
+		t.Fatalf("guest browser must use an in-memory profile: %v", args)
 	}
 	s.Features = []string{"telegram_user", "google", "google_write"}
 	if servers := Config(s)["mcp_servers"].(M); len(servers) != 0 {
@@ -416,5 +433,211 @@ func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
 	stt, err := os.ReadFile(filepath.Join(root, "docker", "hub-stt"))
 	if err != nil || !strings.Contains(string(stt), "faster_whisper") {
 		t.Fatalf("hub-stt worker missing faster_whisper: %v", err)
+	}
+}
+
+func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("template soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model.invalid/v1"
+	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if err != nil || !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp") {
+		t.Fatalf("default ToolHub endpoint missing: %q %v", runtimeEnv, err)
+	}
+	if soul, _ := os.ReadFile(filepath.Join(d, "SOUL.md")); string(soul) != "template soul" {
+		t.Fatalf("SOUL stub not healed to template: %q", soul)
+	}
+	secrets := "OPENAI_API_KEY=model\nHUB_TOOLHUB_ENDPOINT=http://toolhub:9000/mcp\n"
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeEnv, _ = os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http://toolhub:9000/mcp") {
+		t.Fatalf("explicit ToolHub endpoint lost: %q", runtimeEnv)
+	}
+	secrets = "OPENAI_API_KEY=model\nHUB_TOOLHUB_ENDPOINT=\n"
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeEnv, _ = os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=\n") || strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=http") {
+		t.Fatalf("empty opt-out lost: %q", runtimeEnv)
+	}
+	if err := os.WriteFile(filepath.Join(d, "SOUL.md"), []byte("mine"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if soul, _ := os.ReadFile(filepath.Join(d, "SOUL.md")); string(soul) != "mine" {
+		t.Fatalf("user SOUL overwritten: %q", soul)
+	}
+}
+
+func TestSecondarySpaceRendersNoSharedInfra(t *testing.T) {
+	off := false
+	s := Settings{Schema: 1, Environment: "prod", User: "bob", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Features: []string{"telegram"}, BrowserPort: 6080, OAuthPort: 8000, Infra: &off}
+	rendered := Compose(s, "/source", "/space")
+	services := rendered["services"].(M)
+	if _, ok := services["hermes-runtime"]; ok {
+		t.Fatal("secondary space kept a resident runtime: spawned runtimes must be the only per-user containers")
+	}
+	for _, name := range []string{"toolhub", "credential-broker", "workload-controller", "cliproxy", "communication-hub"} {
+		if _, ok := services[name]; ok {
+			t.Fatalf("secondary space rendered shared service %q: port collisions return", name)
+		}
+	}
+	shared := rendered["networks"].(M)["hermes-hub-runtime"].(M)
+	if shared["external"] != true {
+		t.Fatalf("secondary space must not own the shared network: %v", shared)
+	}
+	volumes := rendered["volumes"].(M)
+	if _, ok := volumes["broker-secrets-runtime"]; !ok {
+		t.Fatal("secondary space lost its runtime broker key volume")
+	}
+	if _, ok := volumes["broker-state"]; ok {
+		t.Fatal("secondary space claimed the shared broker state volume")
+	}
+}
+
+func TestInfraRenderOwnsSharedNetwork(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Features: []string{"telegram"}, BrowserPort: 6080, OAuthPort: 8000}
+	rendered := Compose(s, "/source", "/space")
+	services := rendered["services"].(M)
+	for _, name := range []string{"toolhub", "credential-broker", "cliproxy", "communication-hub"} {
+		service, ok := services[name].(M)
+		if !ok {
+			t.Fatalf("infra service %q missing", name)
+		}
+		nets, ok := service["networks"].([]string)
+		if !ok || !slices.Contains(nets, "hermes-hub-runtime") {
+			t.Fatalf("infra service %q not reachable on the shared network: %v", name, service["networks"])
+		}
+	}
+	shared := rendered["networks"].(M)["hermes-hub-runtime"].(M)
+	if shared["name"] != "hermes-hub-runtime" || shared["external"] != true {
+		t.Fatalf("shared network must be external operator-owned with stable name: %v", shared)
+	}
+}
+
+func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model.invalid/v1"
+	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := os.ReadFile(filepath.Join(d, "generated", "hermes-effective.prod.yaml"))
+	if err != nil {
+		t.Fatal("effective config not materialized:", err)
+	}
+	if !strings.Contains(string(effective), "http://toolhub:8090/mcp") {
+		t.Fatalf("materialized config missing toolhub server: %q", effective)
+	}
+	compose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compose), "hermes-effective.prod.yaml") || !strings.Contains(string(compose), "/state/hermes/config.yaml") {
+		t.Fatalf("immutable config mount missing from compose: %q", compose)
+	}
+}
+
+func TestBrowserCapabilityReadOnlyByDefault(t *testing.T) {
+	for _, features := range [][]string{{"browser"}, {"browser", "browser_act"}, {"browser_act"}, {"meet"}} {
+		servers := Config(Settings{Features: features})["mcp_servers"].(M)
+		persistent, hasPersistent := servers["browser"].(M)
+		guest, hasGuest := servers["browser_guest"].(M)
+		switch {
+		case slices.Contains(features, "browser"):
+			if !hasPersistent || !hasGuest {
+				t.Fatalf("browser feature must render both profiles: %v", servers)
+			}
+			for name, server := range map[string]M{"browser": persistent, "browser_guest": guest} {
+				include := server["tools"].(MCPTools).Include
+				for _, mutation := range browserMutationTools {
+					if slices.Contains(include, mutation) && !slices.Contains(features, "browser_act") {
+						t.Fatalf("%s leaks mutation %s without browser_act", name, mutation)
+					}
+					if !slices.Contains(include, mutation) && slices.Contains(features, "browser_act") {
+						t.Fatalf("browser_act did not enable %s on %s", mutation, name)
+					}
+				}
+				for _, read := range browserReadTools {
+					if !slices.Contains(include, read) {
+						t.Fatalf("%s missing read tool %s", name, read)
+					}
+				}
+			}
+		default:
+			if hasPersistent || hasGuest {
+				t.Fatalf("features %v must not render browser servers", features)
+			}
+		}
+	}
+}
+
+func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
+	d := t.TempDir()
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(d, "settings.yaml")
+	body, _ := os.ReadFile(settingsPath)
+	body = []byte(strings.Replace(string(body), "features:", "mcp_servers:\n    browser_guest:\n        url: https://evil.invalid/mcp\nfeatures:", 1))
+	if err := os.WriteFile(settingsPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(settingsPath); err == nil {
+		t.Fatal("user MCP claimed the reserved browser_guest name")
 	}
 }

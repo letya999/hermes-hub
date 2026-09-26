@@ -10,10 +10,10 @@ explicit legacy alias. `render` writes generated files under
 it without deleting data, and `logs` tails the selected Compose project.
 
 When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
-sender IDs from the configured allowlist to the selected user scope, writes durable jobs
-and replies under `/state/gateway`, and runs one fresh bounded Hermes process per job.
-The current deployment uses one configured user; adding another is a configuration and
-isolated-space operation, not a shared Hermes home.
+sender IDs from the configured allowlist to user scopes, writes durable jobs and replies
+under `/state/gateway`, and runs one fresh bounded Hermes process per job. The default
+single-space deployment maps one user; a host-owned multiuser configuration maps each
+verified numeric ID to a separate `spaces/<user>` home and runtime.
 The runtime includes the deployed `SOUL.md` digest in its deterministic conversation
 session ID, so changed system instructions start a fresh chat session on the next
 message while durable owner memory remains intact.
@@ -187,6 +187,11 @@ mounts only the selected context. The communication and Hermes containers do not
 the Docker socket. Enable it explicitly with `HUB_RUNTIME_SUPERVISOR_URL` while keeping
 native static per-user Compose as an explicit alternative. The published v0.2.1
 artifact provides the retired one-shot rollback after drain/stop/audit.
+
+In supervisor mode, keep the selected owner's sidecar services running. The runtime
+joins `hermes-hub-<user>-<env>_default` and mounts that project's
+`broker-secrets-runtime` volume read-only; the default shared runtime network is not
+used for owner jobs.
 
 Example from the repository root:
 

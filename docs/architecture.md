@@ -67,6 +67,15 @@ the trusted `organization:<id>` scope and an approved organization action.
 | `spaces/<id>/generated/` | Ignored Compose, Hermes and filtered env files |
 | `communication-hub-data` | Gateway queue and delivery ledger; outside scope homes |
 
+The opt-in `browser` feature renders two hub-owned MCP servers into the Hermes
+config: `browser` attaches Playwright MCP to that user's persistent Chromium
+profile (`connections/browser`, loopback CDP only), and `browser_guest` runs an
+isolated in-memory profile with no authenticated state. Both expose navigation
+and read tools only; `browser_act` is the separate explicit capability that adds
+mutation tools. Downloads and screenshots land in `workspace/browser` and the
+runtime evicts files over the size/type policy. noVNC stays bound to the Docker
+host loopback on `browser_port`.
+
 Job and conversation lifecycle mappings are persisted beside the gateway queue. They
 contain immutable routing, idempotency and Hermes run metadata, while supervisor state
 contains runtime generations and leases; neither store receives provider credentials.
@@ -267,10 +276,46 @@ adapter disables standalone SSE because ToolHub calls are request/response only.
 For upstream servers that implement the current legacy MCP wire version (for
 example Serena 1.5.x), the backend hop pins `MCP-Protocol-Version: 2025-11-25`
 so discovery and calls remain compatible with the SDK's newer default handshake.
-Both list and call use the same current projection resolver. Setting `HUB_TOOLHUB_ENDPOINT` (or
-`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store) injects one authenticated
-ToolHub MCP entry into the copied Hermes config; unset variables leave the generated
-runtime unchanged. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
+Both list and call use the same current projection resolver. ToolHub, the
+credential broker, the workload controller and cliproxy are shared control-plane
+services: the space whose `settings.yaml` keeps `infra: true` (the default)
+renders and owns them once, while spaces with `infra: false` render only their
+`hermes-runtime`. Shared services and every spawned runtime join the external
+`hermes-hub-runtime` network, so rendered spaces default
+`HUB_TOOLHUB_ENDPOINT` to `http://toolhub:8090/mcp` — one stable name that
+resolves identically for all users on the shared network. An explicit
+`HUB_TOOLHUB_ENDPOINT` in `secrets.<env>.env` overrides and an empty value opts
+out. One ToolHub endpoint authenticates many identities: the owning space's
+`runtime.auth`/`toolhub.auth` token plus an optional `toolhub-tokens.json`
+file (`HUB_TOOLHUB_TOKENS_FILE`) that maps additional bearer tokens to full
+identity envelopes for secondary spaces. Every token resolves to its own
+principal/context/runtime triple, so per-user bindings, workloads and
+credentials stay owner-scoped inside the single shared service.
+Spawned runtimes mount the same contract the render produces: per-user state
+binds plus the hub skills directory (`global_skills_dir`, defaulting to
+`config/skills`) read-only at `/opt/hub/skills`. Without it the
+`mcp-connector-onboarding` skill is invisible to the agent, and MCP installs
+regress to uncontrolled terminal/git operations outside ToolHub's audit.
+The effective Hermes config is materialized on the host
+(`generated/hermes-effective.<env>.yaml` — the source config plus self-service
+and ToolHub MCP entries) and mounted read-only over the agent-writable
+`/state/hermes/config.yaml` in both rendered and spawned runtimes. The agent
+cannot add `mcp_servers` entries from inside the runtime: registration of MCP
+servers goes through ToolHub onboarding only, and the in-container startup
+skips its own materialization when the file is read-only.
+
+Supervised deployments keep zero resident per-user containers. Secondary
+spaces (`infra: false`) render no `hermes-runtime` service at all — their
+compose outputs only feed spawned runtimes — and the infra owner drops it when
+`HUB_RUNTIME_SUPERVISOR_URL` is configured. Every control-plane call a gateway
+needs (`/v1/jobs`, `/v1/resume`, `/v1/control`, `/v1/self-env`, `/v1/restart`)
+is served by the supervisor and routed to the correct user's spawned runtime
+by the job's durable identity; the restart-after-delivery hook carries that
+identity so the spawned Hermes still gets bounced per turn. A restart for an
+absent or stopped runtime is a successful no-op — the next lease spawns a
+fresh container.
+`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store injects the same entry
+for a runtime-local ToolHub. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
 against the existing store and never creates a second ownership registry. ToolHive v0.48.0 remains an
 external conditional backend at the pin recorded in ADR-0013 and issue #11.
 

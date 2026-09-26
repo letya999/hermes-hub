@@ -250,6 +250,67 @@ func (m *Manager) ExpireApprovals(ctx context.Context, now time.Time) {
 	}
 }
 
+// ExpireUncertain resolves "uncertain" jobs whose lease deadline (plus one
+// warm TTL of grace) has passed. Runs that reported an ID are closed through
+// the same durable cancellation path, so the runtime reports the run's real
+// outcome before the lease can settle. Runs that never reported an ID are
+// unobservable: their record is interrupted and the lease sweep frees it.
+func (m *Manager) ExpireUncertain(ctx context.Context, now time.Time) {
+	m.mu.Lock()
+	var targets []jobRecord
+	for key, record := range m.jobs {
+		if record.Status != "uncertain" {
+			continue
+		}
+		owner := "job:" + executeJobKey(record.Request)
+		expired, hasLease := false, false
+		for _, entry := range m.items {
+			for _, lease := range entry.leases {
+				if lease.Owner != owner {
+					continue
+				}
+				hasLease = true
+				if !lease.ExpiresAt.IsZero() && now.After(lease.ExpiresAt.Add(m.cfg.WarmTTL)) {
+					expired = true
+				}
+			}
+		}
+		// A restart can strand an uncertain record whose lease is already
+		// gone: nothing else will ever resolve it, so UpdatedAt bounds it.
+		if !hasLease && now.After(record.UpdatedAt.Add(2*m.cfg.WarmTTL)) {
+			expired = true
+		}
+		if !expired {
+			continue
+		}
+		if record.Response.RunID == "" {
+			// The run never reported an ID: nothing can observe or cancel it
+			// through the durable path, so it can never settle on its own.
+			// Interrupt the record; sweepStaleLeases releases the hold.
+			record.Status = "interrupted"
+			record.UpdatedAt = now.UTC()
+			m.jobs[key] = record
+			_ = m.persistLocked()
+			continue
+		}
+		targets = append(targets, record)
+	}
+	m.mu.Unlock()
+	for _, record := range targets {
+		request := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: record.Request, RunID: record.Response.RunID, SessionID: record.Response.SessionID, RuntimeGeneration: record.Generation}, Action: "cancel"}
+		if saved, ok := record.Controls["cancel:"]; ok && saved.State == "uncertain" {
+			request.Reconcile = true
+		}
+		body, _ := json.Marshal(request)
+		callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		r, err := http.NewRequestWithContext(callCtx, http.MethodPost, "http://supervisor/v1/control", bytes.NewReader(body))
+		if err == nil {
+			m.control(&controlSink{header: make(http.Header)}, r)
+		}
+		cancel()
+	}
+}
+
 type controlSink struct{ header http.Header }
 
 func (s *controlSink) Header() http.Header       { return s.header }

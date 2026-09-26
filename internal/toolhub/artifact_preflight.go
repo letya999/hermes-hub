@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -296,23 +297,37 @@ func randomPreflightContainerName(prefix string) (string, error) {
 }
 
 func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
-	dec := json.NewDecoder(r)
-	for {
+	// MCP stdio is newline-delimited, but servers like slack-mcp-server also
+	// print startup logs as JSON ({"level":"error","error":"..."}) or
+	// plain text on stdout. Scan line by line and skip anything that is not a
+	// JSON-RPC response envelope; only the tools/list reply (id 2) counts.
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64<<10), 16<<20)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
 		var envelope struct {
 			ID     json.RawMessage `json:"id"`
 			Result json.RawMessage `json:"result"`
-			Error  *struct {
+			Error  json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			continue
+		}
+		if len(envelope.ID) == 0 && len(envelope.Result) == 0 {
+			continue
+		}
+		if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+			var rpcErr struct {
 				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := dec.Decode(&envelope); err != nil {
-			if err == io.EOF {
-				return nil, fmt.Errorf("%w: MCP tools/list empty", ErrIsolation)
 			}
-			return nil, err
-		}
-		if envelope.Error != nil {
-			return nil, fmt.Errorf("%w: MCP error %s", ErrIsolation, envelope.Error.Message)
+			_ = json.Unmarshal(envelope.Error, &rpcErr)
+			if rpcErr.Message == "" {
+				rpcErr.Message = string(envelope.Error)
+			}
+			return nil, fmt.Errorf("%w: MCP error %s", ErrIsolation, rpcErr.Message)
 		}
 		if strings.TrimSpace(string(envelope.ID)) != "2" {
 			continue
@@ -352,6 +367,10 @@ func decodeMCPToolList(r io.Reader) ([]ToolSpec, error) {
 		}
 		return tools, nil
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("%w: MCP tools/list stream: %v", ErrIsolation, err)
+	}
+	return nil, fmt.Errorf("%w: MCP tools/list empty", ErrIsolation)
 }
 
 func preflightDockerRunArgs(imported ImportedArtifact, name string, extra ...string) []string {

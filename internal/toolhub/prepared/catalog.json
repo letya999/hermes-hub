@@ -19,6 +19,7 @@
     "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
     "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
     "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"], "probe_tool": "list-calendars",
+    "oauth": {"provider": "google", "scopes": ["https://www.googleapis.com/auth/calendar.readonly"], "client_input": "GOOGLE_OAUTH_CREDENTIALS", "token_file": "runtime_session.json", "token_account": "normal", "token_format": "google-calendar-account-map"},
     "runbook": "docs/prepared-connectors.md#google-calendar",
     "handoff": "Install https://github.com/nspady/google-calendar-mcp; reuse my existing OAuth client and token state through Broker. Never paste OAuth JSON or tokens in chat. Verify list-calendars and list-events for my account."
   },
