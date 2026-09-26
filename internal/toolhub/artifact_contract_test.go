@@ -58,6 +58,30 @@ func TestDecodeMCPToolListReadsID2Payload(t *testing.T) {
 	}
 }
 
+func TestDecodeMCPToolListSkipsServerLogLines(t *testing.T) {
+	// slack-mcp-server and similar Go servers interleave structured startup
+	// logs and plain text on stdout with the real JSON-RPC stream.
+	body := `{"level":"info","msg":"starting slack-mcp-server"}
+{"level":"error","error":"SLACK_MCP_XOXC_TOKEN not set"}
+plain text startup line
+{"jsonrpc":"2.0","method":"notifications/progress","params":{}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"conversations_history","annotations":{"readOnlyHint":true}}]}}
+`
+	tools, err := decodeMCPToolList(strings.NewReader(body))
+	if err != nil || len(tools) != 1 || tools[0].Name != "conversations_history" || tools[0].Effect != ReadEffect {
+		t.Fatalf("decode with log lines: %+v %v", tools, err)
+	}
+}
+
+func TestDecodeMCPToolListReturnsRPCError(t *testing.T) {
+	body := `{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"bad request"}}
+`
+	if _, err := decodeMCPToolList(strings.NewReader(body)); err == nil || !strings.Contains(err.Error(), "bad request") {
+		t.Fatalf("expected RPC error, got %v", err)
+	}
+}
+
 func TestParseMCPHelpCredentialsUsesServerDeclaration(t *testing.T) {
 	help := `Environment Variables:
   SERVICE_TOKEN          Provider token (recommended)
