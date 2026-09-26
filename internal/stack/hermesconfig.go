@@ -46,7 +46,13 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 	if err := os.WriteFile(destPath, body, 0660); err != nil {
 		return err
 	}
-	return ApplyHermesConfig(destPath, opts)
+	if err := ApplyHermesConfig(destPath, opts); err != nil {
+		return err
+	}
+	// The rendered file is bind-mounted into the runtime container: on Linux
+	// hosts the file keeps the host uid, so it must be world-readable for the
+	// container's agent uid (10001). Contents hold endpoint names, no secrets.
+	return os.Chmod(destPath, 0644)
 }
 
 // ApplyHermesConfig rewrites the effective config in place: self-service MCP

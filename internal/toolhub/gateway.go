@@ -563,7 +563,10 @@ func ValidateBackendEndpoint(raw string) error {
 		return fmt.Errorf("%w: private MCP backend URL", ErrInvalid)
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || host == "toolhub" || host == "toolhive" || host == "vmcp" || host == "workload-controller" {
+	// host.docker.internal is a Docker-reserved name for the host gateway —
+	// private by construction like localhost, and unresolvable without Docker
+	// Desktop's DNS (Linux CI hosts), so it must not rely on LookupIP.
+	if host == "localhost" || host == "host.docker.internal" || host == "toolhub" || host == "toolhive" || host == "vmcp" || host == "workload-controller" {
 		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
