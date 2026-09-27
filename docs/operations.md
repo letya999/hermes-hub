@@ -390,3 +390,59 @@ a resident Gateway. To restore the old executor, deploy the accepted v0.2.1 arti
 after the same drain/stop/audit sequence. Its release binaries match the real Docker
 acceptance image; a selection's release name alone is not publication evidence.
 See SPEC-0016 and CHG-0018 for acceptance and current evidence.
+
+## SSH capability
+
+`ssh` in `settings.yaml` features exposes bounded SSH to owner-configured
+hosts. `ssh_write`, `ssh_shell` and `ssh_tunnel` stack on it; each requires
+`ssh`. Render fails when `connections/ssh/config.yaml` is missing or invalid;
+`doctor` reports the same gap. The directory is mounted read-only at
+`/state/ssh`, so rotate hosts/keys by editing it and running `hubctl up`.
+
+```yaml
+schema: 1
+defaults: {max_sessions: 4, max_shells: 2, max_tunnels: 4}
+hosts:
+  prod-web:
+    host: 203.0.113.10
+    port: 22
+    user: deploy
+    host_keys: ["ssh-ed25519 AAAAC3NzaC..."]   # or "sha256:<fingerprint>"
+    key_ref: "file:keys/prod-web"              # or "broker:<grant-id>"
+    certificate_ref: "file:keys/prod-web-cert.pub"  # optional
+    commands: ["systemctl status *", "docker ps", "tail -n * /var/log/*"]
+    write_commands: ["systemctl restart app"]
+    paths: ["/etc/app/*", "/var/log/app/*.log"]
+    write_paths: ["/srv/app/config/*"]
+    sudo: never                # or passwordless -> effective command via sudo -n
+    timeout_seconds: 30
+    max_output_bytes: 65536
+    tunnels:
+      db: {remote_host: 127.0.0.1, remote_port: 5432}
+```
+
+Host keys are mandatory and pinned per alias; collect them with
+`ssh-keyscan -t ed25519 <host>` on the host itself, not through the runtime.
+`file:` key refs stay inside `connections/ssh/` (regular files, <=64 KiB,
+unencrypted OpenSSH/PEM keys; use `broker:` refs for anything sensitive).
+`broker:` refs name a grant ID on a credential created through the `ssh-key`
+contract (`services/credential-broker/examples/contracts/ssh-key.json`);
+the runtime adapter acquires, materializes and releases a short-lived lease
+per dial under the `ssh-<alias>` binding, so the provisioned runtime key needs
+both `broker:control` and `broker:runtime` audiences for broker refs.
+
+Allowlists are anchored patterns where `*` is the only wildcard. Commands and
+sudo are evaluated per host: with `sudo: passwordless` a `sudo <cmd>` request
+runs `sudo -n <cmd>` only when `<cmd>` matches an allowlisted pattern. File
+reads return bounded UTF-8 text; writes are atomic temp+rename.
+
+`ssh_shell` shells and `ssh_tunnel` forwards live inside the runtime process:
+a restart or scale-to-zero stop closes them, and the reaper expires them by
+idle/lifetime bounds. Tunnel listeners bind to loopback inside the runtime and
+are reachable only by workloads sharing that runtime — they are never
+published to the host or the network. Revoking a Broker grant or deleting a
+host entry takes effect at the next dial; nothing caches keys or sessions.
+
+Every operation appends a bounded `ssh` event to the owner audit ledger under
+`spaces/<user>/runtime/audit/ssh.jsonl`; receipts carry exit codes, byte
+counts and operation names, never command output or key material.

@@ -1,0 +1,23 @@
+schema: 1
+id: CHG-0047-ssh-capability
+title: "SSH as a standard opt-in Hermes capability (issue #42)"
+status: in-progress
+phase: delivered-local-gates-green
+started_at: "2026-09-28"
+updated_at: "2026-09-28"
+completed:
+  - "internal/sshcap: config, matcher, file/broker key refs, exec, sftp, shell, tunnel, reaper, audit"
+  - "agenttools: grant-gated ssh_* tools on hub server, open/close lifecycle"
+  - "stack: ssh/ssh_write/ssh_shell/ssh_tunnel features, deps, ro mount, env, doctor/render validation"
+  - "audit kind 'ssh' added to ledger validation"
+  - "SPEC-0032, integrations/operations/architecture/validation docs, README row, broker ssh-key contract"
+  - "tests: in-process sshd E2E (pinning, exec, sftp, shell, tunnel), broker flow, gating, stack render"
+  - "just check green: race + shuffle tests, 85.05% stmt coverage (sshcap 87.0%), vet/staticcheck/docs/actionlint"
+  - "just security green: x/crypto bumped to v0.56.0 fixing GO-2026-6354/6355; govulncheck 0 vulns; npm audit clean"
+  - "just docker-check green: hermes-hub:test + test-control images, runtime smoke, pinned Hermes 0.21.0 API contract"
+next:
+  - "live acceptance: a real sshd target + provisioned broker lease (in-process sshd/fake broker only so far)"
+  - "commit/push decision for feat/issue-42-ssh-capability"
+risks:
+  - "Runtime adapter key must carry broker:control and broker:runtime audiences for broker key refs; file: refs remain the operator fallback"
+  - "Live SSH/sshd acceptance is not claimed from in-process tests"

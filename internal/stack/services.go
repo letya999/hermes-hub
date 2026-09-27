@@ -55,6 +55,8 @@ func serviceDependencies(name string) []string {
 		return []string{"google"}
 	case "telegram_write":
 		return []string{"telegram_user"}
+	case "ssh_write", "ssh_shell", "ssh_tunnel":
+		return []string{"ssh"}
 	default:
 		return nil
 	}

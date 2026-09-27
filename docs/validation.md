@@ -4,6 +4,26 @@ last_verified: 2026-09-23
 ---
 # Delivery evidence — CHG-0009 and CHG-0012
 
+## CHG-0047 SSH capability (issue #42)
+
+`internal/sshcap` tests run a real in-process `x/crypto/ssh` server with
+pubkey auth: pinned host-key verification accepts the pinned key and rejects a
+replaced one (dial fails closed), allowlisted exec returns bounded
+stdout/stderr/exit codes, `sudo` maps to `sudo -n` only on passwordless hosts,
+write commands and remote writes deny without `ssh_write`, SFTP reads/writes
+enforce path allowlists and truncation, PTY shells echo through the ring
+buffer, and managed tunnels carry TCP data to a real loopback echo target
+without publishing a listener. Broker refs are exercised against a signed
+fake broker: acquire -> materialize -> release, with release proven on failure
+paths. Stack tests assert the read-only `/state/ssh` mount, grant env wiring
+and fail-closed render; agenttools tests assert grant-gated registration.
+
+Not proven: a live remote sshd, production Credential Broker audiences for the
+runtime adapter key (`broker:control` acquire + `broker:runtime` materialize
+on `ssh-<alias>` bindings — provisioning concern), a real deployment render
+inside Docker, and restart behaviour under the supervisor. No live SSH target
+was contacted; issue #42 acceptance needs a real host on a real stack.
+
 ## CHG-0037 ToolHub transport refresh
 
 ToolHive and GitHub fallback name search now return source-only candidates from

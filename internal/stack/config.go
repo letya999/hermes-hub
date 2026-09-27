@@ -65,6 +65,10 @@ var Features = []Feature{
 	{"workspace", nil, "Bounded workspace and read-only extracted archive; Markdown drafts"},
 	{"browser", nil, "Persistent plus anonymous Chromium via Playwright MCP; manual login through private noVNC; read and navigation tools only"},
 	{"browser_act", nil, "Adds browser mutation tools (click, type, submit, evaluate) to both browser MCP servers; requires browser and a concrete owner instruction"},
+	{"ssh", nil, "SSH to owner-configured host aliases: pinned host keys, allowlisted read commands and remote file reads; keys via Credential Broker or the read-only ssh config mount"},
+	{"ssh_write", nil, "Adds allowlisted write commands and bounded remote file writes on SSH hosts; requires ssh"},
+	{"ssh_shell", nil, "Adds bounded interactive PTY shells on SSH hosts; requires ssh"},
+	{"ssh_tunnel", nil, "Adds managed loopback tunnels to pre-approved remote endpoints over SSH; requires ssh"},
 	{"hh", nil, "Public vacancy API; applicant OAuth for resumes and explicitly requested applications"},
 	{"telegram", []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}, "Telegram bot transport into Hermes; does not grant personal Telegram access"},
 	{"slack_app", []string{"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN"}, "Slack App Events API transport into Hermes; does not grant workspace data tools"},
@@ -216,6 +220,11 @@ func (s Settings) Validate() error {
 	if s.Has("google_write") && !s.Has("google") {
 		return fmt.Errorf("google_write requires google")
 	}
+	for _, sub := range []string{"ssh_write", "ssh_shell", "ssh_tunnel"} {
+		if s.Has(sub) && !s.Has("ssh") {
+			return fmt.Errorf("%s requires ssh", sub)
+		}
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
 	}
@@ -358,7 +367,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "workspace", "workspace/browser", "archive", "generated"} {
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "archive", "generated"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
@@ -435,6 +444,11 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 			if !regexp.MustCompile(`^[1-9][0-9]*$`).MatchString(strings.TrimSpace(id)) {
 				issues = append(issues, "TELEGRAM_ALLOWED_USERS must contain numeric owner IDs, never '*'")
 			}
+		}
+	}
+	if s.Has("ssh") && s.SpaceDir != "" {
+		if info, err := os.Lstat(filepath.Join(s.SpaceDir, "connections", "ssh", "config.yaml")); err != nil || !info.Mode().IsRegular() {
+			issues = append(issues, "create connections/ssh/config.yaml for ssh (see docs/operations.md)")
 		}
 	}
 	for name, server := range s.MCP {

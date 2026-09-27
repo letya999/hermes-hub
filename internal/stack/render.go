@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/letya999/hermes-hub/internal/sshcap"
 )
 
 type M = map[string]any
@@ -74,13 +76,24 @@ func Config(s Settings) M {
 		organizationSkills = filepath.Join(s.OrganizationDir, "hermes", "skills")
 	}
 	servers := M{}
-	if s.Has("workspace") || s.Has("hh") {
+	if s.Has("workspace") || s.Has("hh") || s.Has("ssh") {
 		e := env("HH_TOKEN", "HH_USER_AGENT")
 		e["HUB_HH_ENABLED"] = fmt.Sprint(s.Has("hh"))
 		e["HUB_ORG_ACTIONS"] = "${HUB_ORG_ACTIONS}"
 		e["HUB_SELF_ENV_KEYS"] = "${HUB_SELF_ENV_KEYS}"
 		e["HUB_PROTECTED_ENV_KEYS"] = "${HUB_PROTECTED_ENV_KEYS}"
 		e["HUB_STATE"] = "/state"
+		if s.Has("ssh") {
+			e["HUB_SSH_CONFIG"] = "/state/ssh/config.yaml"
+			e["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))
+			e["HUB_SSH_SHELL"] = fmt.Sprint(s.Has("ssh_shell"))
+			e["HUB_SSH_TUNNEL"] = fmt.Sprint(s.Has("ssh_tunnel"))
+			// The runtime is already a provisioned broker adapter; the tools
+			// process acquires/materializes SSH keys through the same identity.
+			for _, key := range []string{"URL", "KEY_FILE", "KEY_ID", "ISSUER", "CA_FILE"} {
+				e["HUB_CREDENTIAL_BROKER_RUNTIME_"+key] = "${HUB_CREDENTIAL_BROKER_RUNTIME_" + key + "}"
+			}
+		}
 		for _, service := range ServiceCatalog() {
 			if !service.SelfService {
 				continue
@@ -174,6 +187,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// read-only over the agent-writable state dir: mcp_servers must come
 		// from ToolHub onboarding, never from terminal edits inside the runtime.
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
+	}
+	if s.Has("ssh") {
+		// The whole SSH capability — host bindings, pinned host keys and any
+		// file: credentials — is operator-owned and read-only inside the runtime.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "ssh")), "target": "/state/ssh", "read_only": true})
 	}
 	ports := []string{}
 	if s.Has("browser") || s.Has("meet") {
@@ -477,6 +495,13 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err != nil {
 		return err
 	}
+	if s.Has("ssh") {
+		// Fail render on a broken capability config rather than shipping a
+		// runtime whose ssh tools would all deny.
+		if _, err = sshcap.Load(filepath.Join(dir, "connections", "ssh", "config.yaml")); err != nil {
+			return fmt.Errorf("ssh config: %w", err)
+		}
+	}
 	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.GlobalSkillsDir = filepath.Join(root, "config", "skills")
 		if err := os.MkdirAll(s.GlobalSkillsDir, 0755); err != nil {
@@ -494,7 +519,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "workspace/browser", "skills"} {
+	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
