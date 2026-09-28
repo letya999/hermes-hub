@@ -423,6 +423,10 @@ hosts:
 
 Host keys are mandatory and pinned per alias; collect them with
 `ssh-keyscan -t ed25519 <host>` on the host itself, not through the runtime.
+Prefer full public-key pins: they restrict the negotiated host-key algorithm
+to the pinned type, while a bare `sha256:` fingerprint matches whatever type
+the server offers — pin one fingerprint per offered key type (ed25519, rsa,
+ecdsa) or the dial fails closed with "host key is not pinned".
 `file:` key refs stay inside `connections/ssh/` (regular files, <=64 KiB,
 unencrypted OpenSSH/PEM keys; use `broker:` refs for anything sensitive).
 `broker:` refs name a grant ID on a credential created through the `ssh-key`
@@ -446,3 +450,22 @@ host entry takes effect at the next dial; nothing caches keys or sessions.
 Every operation appends a bounded `ssh` event to the owner audit ledger under
 `spaces/<user>/runtime/audit/ssh.jsonl`; receipts carry exit codes, byte
 counts and operation names, never command output or key material.
+
+### Local smoke without the full stack
+
+`hubctl tools` serves the same MCP surface over stdio, so a real sshd (for
+example `lscr.io/linuxserver/openssh-server` in Docker) is enough to exercise
+it end to end:
+
+```sh
+HUB_USER_ID=me HUB_STATE=/abs/state HUB_SSH_CONFIG=/abs/ssh/config.yaml \
+  HUB_SSH_WRITE=true HUB_SSH_SHELL=true HUB_SSH_TUNNEL=true \
+  hubctl tools --workspace /abs/ws --archive /abs/arch
+```
+
+Send `initialize`, `notifications/initialized`, then `tools/call` JSON-RPC
+lines, or attach any MCP client (Inspector, an IDE). `HUB_USER_ID` and
+`HUB_STATE` matter on a bare host: the audit ledger needs an absolute path
+and drops events whose principal is empty; the rendered runtime always sets
+both. This path exercises `file:` refs only — `broker:` refs need a running
+Credential Broker deployment.

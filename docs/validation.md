@@ -1,6 +1,6 @@
 ---
 description: Measured delivery evidence and explicit unverified boundaries.
-last_verified: 2026-09-23
+last_verified: 2026-09-28
 ---
 # Delivery evidence — CHG-0009 and CHG-0012
 
@@ -18,11 +18,20 @@ fake broker: acquire -> materialize -> release, with release proven on failure
 paths. Stack tests assert the read-only `/state/ssh` mount, grant env wiring
 and fail-closed render; agenttools tests assert grant-gated registration.
 
-Not proven: a live remote sshd, production Credential Broker audiences for the
-runtime adapter key (`broker:control` acquire + `broker:runtime` materialize
-on `ssh-<alias>` bindings — provisioning concern), a real deployment render
-inside Docker, and restart behaviour under the supervisor. No live SSH target
-was contacted; issue #42 acceptance needs a real host on a real stack.
+A real OpenSSH server (`lscr.io/linuxserver/openssh-server` in Docker) was
+also exercised through the shipped `hubctl tools` stdio MCP surface, not
+mocks: `ssh_hosts`/`ssh_exec`/`ssh_read` returned live output, `ssh_write`
+landed a real file, `ssh_shell_open` allocated a PTY, `ssh_tunnel_open`
+bound a loopback forward, non-allowlisted commands and paths were denied
+before dialing, and the owner audit ledger recorded bounded receipts for
+both allowed and denied calls.
+
+Not proven: production Credential Broker audiences for the runtime adapter
+key (`broker:control` acquire + `broker:runtime` materialize on `ssh-<alias>`
+bindings — provisioning concern), a live agent tool call on a real
+deployment, and restart behaviour under the supervisor. Issue #42 acceptance
+still needs a real host on a real stack; the Docker sshd smoke covers the
+tool surface but not the full runtime environment.
 
 ## CHG-0037 ToolHub transport refresh
 

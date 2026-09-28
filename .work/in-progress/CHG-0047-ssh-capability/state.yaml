@@ -15,9 +15,11 @@ completed:
   - "just check green: race + shuffle tests, 85.05% stmt coverage (sshcap 87.0%), vet/staticcheck/docs/actionlint"
   - "just security green: x/crypto bumped to v0.56.0 fixing GO-2026-6354/6355; govulncheck 0 vulns; npm audit clean"
   - "just docker-check green: hermes-hub:test + test-control images, runtime smoke, pinned Hermes 0.21.0 API contract"
+  - "live smoke vs real OpenSSH (linuxserver container) via shipped hubctl tools stdio MCP: exec/read/write/shell/tunnel ok, denies pre-dial, audit receipts recorded"
+  - "follow-up issues: #142 SSH CA, #143 tsnet tunnels, #144 tailscale research (M9); #145-#149 hosting/ssh-server/multiuser (M10)"
 next:
-  - "live acceptance: a real sshd target + provisioned broker lease (in-process sshd/fake broker only so far)"
-  - "commit/push decision for feat/issue-42-ssh-capability"
+  - "live acceptance: agent tool call on a real deployment + provisioned broker lease (broker: refs untested live)"
+  - "push/PR decision for feat/issue-42-ssh-capability"
 risks:
   - "Runtime adapter key must carry broker:control and broker:runtime audiences for broker key refs; file: refs remain the operator fallback"
-  - "Live SSH/sshd acceptance is not claimed from in-process tests"
+  - "Docker-sshd smoke is real but local; production sshd + supervisor restart still unverified"
