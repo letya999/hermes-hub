@@ -15,7 +15,7 @@ import (
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := PreparedCatalog()
-	if err != nil || len(entries) != 5 {
+	if err != nil || len(entries) != 7 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
@@ -24,14 +24,25 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 			if entry.ID == "notion" {
 				files["package.json"] = `{"bin":{"notion":"bin/cli.mjs"}}`
 			}
+			if entry.ID == "dbhub" {
+				files = map[string]string{"package.json": `{"bin":{"dbhub":"dist/index.js"}}`, "pnpm-lock.yaml": "{}"}
+			}
 			if entry.Language == "python" {
 				files = map[string]string{"pyproject.toml": "[project]\nname = \"mcp-atlassian\"\n\n[project.scripts]\nmcp-atlassian = \"mcp_atlassian:main\"\n"}
+			}
+			if entry.Language == "rust" {
+				files = map[string]string{"Cargo.toml": "[package]\nname = \"txttsql-mcp\"\n", "Cargo.lock": "{}", "src/main.rs": "fn main() {}"}
 			}
 			if entry.Language == "go" {
 				files = map[string]string{"go.mod": "module github.com/github/github-mcp-server\n\ngo 1.25\n", "cmd/github-mcp-server/main.go": "package main\nfunc main(){}", "cmd/helper/main.go": "package main\nfunc main(){}"}
 			}
 			for _, directive := range []string{"RUN --mount=type=cache,target=/tmp/cache echo unused", "RUN --mount=type=secret,id=key echo unused", "RUN --network=host echo unused", "ADD https://untrusted.invalid/code /app"} {
 				files["Dockerfile"] = "FROM untrusted:latest\n" + directive + "\nENTRYPOINT [\"/server/github-mcp-server\"]\nCMD [\"stdio\"]\n"
+				if entry.ID == "txttsql" {
+					// The reviewed argv includes the upstream CMD tail, which is
+					// only appended when the Dockerfile binary name matches.
+					files["Dockerfile"] = "FROM untrusted:latest\n" + directive + "\nENTRYPOINT [\"/usr/local/bin/txttsql-mcp\"]\nCMD [\"--config\",\"/app/config.toml\"]\n"
+				}
 				context := languageContext(t, files)
 				if _, err := (RecipeResolver{}).Resolve(t.Context(), entry.Source, context); err != nil {
 					t.Fatal(err)

@@ -28,6 +28,9 @@ type Config struct {
 	Transport   string `yaml:"transport,omitempty"`
 	NetworkPort int    `yaml:"network_port,omitempty"`
 	NetworkPath string `yaml:"network_path,omitempty"`
+	// TCPForwards are optional loopback listeners relayed through the
+	// workload HTTP CONNECT proxy to credential-bound host:port targets.
+	TCPForwards []TCPForwardConfig `yaml:"tcp_forwards,omitempty"`
 }
 
 func Protect(next http.Handler, token string) http.Handler {
@@ -66,6 +69,11 @@ func Run(ctx context.Context, file string) error {
 		token = os.Getenv(c.TokenEnv)
 	}
 	if err := validateCompanionAuth(c, token); err != nil {
+		return err
+	}
+	// Forwards must be listening before the child starts: the MCP process
+	// connects to the loopback endpoints during its own startup.
+	if err := startTCPForwards(ctx, c.TCPForwards); err != nil {
 		return err
 	}
 	switch strings.ToLower(c.Transport) {

@@ -175,12 +175,13 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	step = "bridge-config"
 	configBytes, err := json.Marshal(struct {
-		Listen       string   `json:"listen"`
-		TokenEnv     string   `json:"token_env"`
-		Command      []string `json:"command"`
-		AllowedTools []string `json:"allowed_tools"`
-		Transport    string   `json:"transport,omitempty"`
-	}{genericBridgeListen, "", command, definitionToolNames(definition.Tools), definition.Source.NetworkTransport})
+		Listen       string       `json:"listen"`
+		TokenEnv     string       `json:"token_env"`
+		Command      []string     `json:"command"`
+		AllowedTools []string     `json:"allowed_tools"`
+		Transport    string       `json:"transport,omitempty"`
+		TCPForwards  []TCPForward `json:"tcp_forwards,omitempty"`
+	}{genericBridgeListen, "", command, definitionToolNames(definition.Tools), definition.Source.NetworkTransport, plan.Execution.TCPForwards})
 	if err != nil {
 		return genericWorkload{}, err
 	}

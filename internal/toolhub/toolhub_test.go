@@ -546,6 +546,25 @@ func TestStrictValidationMatrix(t *testing.T) {
 	if err := (ExecutionPolicy{TimeoutSeconds: 1, OutputBytes: 1, CPUMillis: 1, MemoryMiB: 16, MaxPIDs: 1, Egress: []string{"x.example"}, Mounts: []Mount{{Source: "x", Target: "/x"}}}).validate(Shared); err == nil {
 		t.Fatal("shared host mount accepted")
 	}
+	base := ExecutionPolicy{TimeoutSeconds: 1, OutputBytes: 1, CPUMillis: 1, MemoryMiB: 16, MaxPIDs: 1, Egress: []string{"x.example"}}
+	ok := base
+	ok.TCPForwards = []TCPForward{{Listen: 15432, TargetEnv: "DB_ENDPOINT"}}
+	if err := ok.validate(PerUser); err != nil {
+		t.Fatalf("valid tcp forward rejected: %v", err)
+	}
+	for _, forwards := range [][]TCPForward{
+		{{Listen: 80, TargetEnv: "DB_ENDPOINT"}},
+		{{Listen: 70000, TargetEnv: "DB_ENDPOINT"}},
+		{{Listen: 15432, TargetEnv: "db_endpoint"}},
+		{{Listen: 15432, TargetEnv: "DB_ENDPOINT"}, {Listen: 15432, TargetEnv: "DB2_ENDPOINT"}},
+		{{Listen: 15432, TargetEnv: "DB_ENDPOINT"}, {Listen: 15433, TargetEnv: "DB_ENDPOINT"}},
+	} {
+		bad := base
+		bad.TCPForwards = forwards
+		if err := bad.validate(PerUser); err == nil {
+			t.Fatalf("invalid tcp forwards accepted: %+v", forwards)
+		}
+	}
 }
 
 func TestRecordValidationAndStoreConflicts(t *testing.T) {

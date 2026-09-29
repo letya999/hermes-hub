@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1024,6 +1025,11 @@ func preflightCredentialArgs(ctx context.Context, imported ImportedArtifact) ([]
 			value = target
 		}
 		args = append(args, "--env", input.Name+"="+value)
+	}
+	// Reviewed literals come last so they override any same-named credential
+	// placeholder; submitted secrets take the earlier branch instead.
+	for _, name := range slices.Sorted(maps.Keys(prepared.PreflightEnvironment)) {
+		args = append(args, "--env", name+"="+prepared.PreflightEnvironment[name])
 	}
 	return args, cleanup, nil
 }

@@ -790,17 +790,25 @@ func TestEnableAfterRevokeAllowsNewConnection(t *testing.T) {
 
 func TestCredentialEgressHosts(t *testing.T) {
 	env := map[string]string{
-		"GITLAB_API_URL": "https://gitlab.example.com/api/v4",
-		"CUSTOM_API_URL": "https://self.host:8443/api",
-		"SECRET_URL":     "https://secret.example.com",
-		"USERINFO_URL":   "https://user:password@userinfo.example.com",
-		"QUERY_URL":      "https://query.example.com/?token=x",
-		"TOKEN":          "https://token.example.com",
-		"INSECURE":       "http://plain.example.com",
-		"BROKEN":         "://bad",
+		"GITLAB_API_URL":    "https://gitlab.example.com/api/v4",
+		"CUSTOM_API_URL":    "https://self.host:8443/api",
+		"SECRET_URL":        "https://secret.example.com",
+		"USERINFO_URL":      "https://user:password@userinfo.example.com",
+		"QUERY_URL":         "https://query.example.com/?token=x",
+		"TOKEN":             "https://token.example.com",
+		"INSECURE":          "http://plain.example.com",
+		"BROKEN":            "://bad",
+		"DB_ENDPOINT":       "db.internal.example.com:5432",
+		"DB_ENDPOINT_2":     "10.0.0.9:5432",
+		"BAD_ENDPOINT":      "not-a-socket",
+		"IPV6_ENDPOINT":     "[::1]:5432",
+		"PLAIN_ENDPOINT":    "localhost:5432",
+		"USER_ENDPOINT":     "user@db.example.com:5432",
+		"PASSWORD_ENDPOINT": "db.example.com:5432",
+		"TOKEN_ENDPOINT":    "db.example.com:5432",
 	}
 	hosts := credentialEgressHosts(env)
-	want := map[string]bool{"gitlab.example.com": true, "self.host:8443": true}
+	want := map[string]bool{"gitlab.example.com": true, "self.host:8443": true, "db.internal.example.com:5432": true, "10.0.0.9:5432": true}
 	if len(hosts) != len(want) {
 		t.Fatalf("credentialEgressHosts=%v", hosts)
 	}
@@ -810,7 +818,7 @@ func TestCredentialEgressHosts(t *testing.T) {
 		}
 	}
 	merged := mergeEgressHosts([]string{"gitlab.com", "GITLAB.EXAMPLE.COM"}, hosts)
-	if len(merged) != 3 {
+	if len(merged) != 5 {
 		t.Fatalf("mergeEgressHosts did not dedupe: %v", merged)
 	}
 }

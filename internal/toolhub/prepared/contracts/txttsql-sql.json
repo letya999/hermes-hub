@@ -1,0 +1,121 @@
+{
+  "id": "txttsql-sql",
+  "revision": 1,
+  "title": "TXT-to-SQL database sources",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "sources",
+      "label": "Sources JSON array (id, kind, host, port, database, user/user_secret, password, allowed_schemas, allowed_tables)",
+      "kind": "json",
+      "required": true,
+      "max_bytes": 32768
+    },
+    {
+      "id": "endpoint",
+      "label": "Database endpoint host:port for the managed TCP forward (e.g. db.example.com:5432)",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 256
+    },
+    {
+      "id": "endpoint_2",
+      "label": "Second database endpoint host:port (optional)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    },
+    {
+      "id": "endpoint_3",
+      "label": "Third database endpoint host:port (optional)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    },
+    {
+      "id": "password_1",
+      "label": "Password referenced from sources as {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_1\"}",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 4096
+    },
+    {
+      "id": "password_2",
+      "label": "Password referenced from sources as {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_2\"}",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 4096
+    },
+    {
+      "id": "password_3",
+      "label": "Password referenced from sources as {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_3\"}",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 4096
+    },
+    {
+      "id": "config",
+      "label": "Full config.toml (optional; enables memory, plugins, ontology and metadata providers)",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 32768
+    },
+    {
+      "id": "ca_pem",
+      "label": "CA bundle PEM for database or metadata TLS (optional)",
+      "kind": "pem",
+      "required": false,
+      "max_bytes": 16384
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "sources",
+      "target": "TXTTSQL_SOURCES"
+    },
+    {
+      "type": "env",
+      "field": "endpoint",
+      "target": "TXTTSQL_ENDPOINT"
+    },
+    {
+      "type": "env",
+      "field": "endpoint_2",
+      "target": "TXTTSQL_ENDPOINT_2"
+    },
+    {
+      "type": "env",
+      "field": "endpoint_3",
+      "target": "TXTTSQL_ENDPOINT_3"
+    },
+    {
+      "type": "env",
+      "field": "password_1",
+      "target": "TXTTSQL_PASSWORD_1"
+    },
+    {
+      "type": "env",
+      "field": "password_2",
+      "target": "TXTTSQL_PASSWORD_2"
+    },
+    {
+      "type": "env",
+      "field": "password_3",
+      "target": "TXTTSQL_PASSWORD_3"
+    },
+    {
+      "type": "file",
+      "field": "config",
+      "target": "/app/config.toml",
+      "env_name": "TXTTSQL_CONFIG"
+    },
+    {
+      "type": "file",
+      "field": "ca_pem",
+      "target": "/run/txttsql/ca.pem",
+      "env_name": "TXTTSQL_CA_FILE"
+    }
+  ]
+}

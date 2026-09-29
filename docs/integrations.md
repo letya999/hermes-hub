@@ -392,6 +392,18 @@ Docker with `--env-file`; state is kept in per-workload named volumes. Shared
 stateful or credential-bearing MCPs stay denied. Idle cleanup keeps stateful
 volumes and deletes stateless ones. Docker inspect refuses an MCP container
 that received a forwarding secret.
+
+A definition's execution policy may also declare `tcp_forwards`: reviewed
+companion loopback listeners that relay native TCP (the PostgreSQL wire
+protocol, SSH) through the workload's CONNECT proxy to credential-bound
+`host:port` endpoints held in named environment variables. Only the
+docker-fallback path implements them — the companion runs inside the workload
+network there — so a stock ToolHive admission fails closed when forwards are
+declared instead of silently promising connectivity it cannot provide.
+Non-secret `*_ENDPOINT` and `*_ENDPOINT_<n>` credential values join the egress
+ACL at readiness the same way `*_URL` HTTPS endpoints do, so one reviewed
+destination feeds both the Squid ACL and the forwarder; the model cannot
+choose destinations through tool arguments.
 Do not label an artifact trusted on the basis of recipe validation or a claimed
 tool list alone. Track remaining evidence in
 `.work/in-progress/CHG-0025-trusted-artifacts/verification.md`.
