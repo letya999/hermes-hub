@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	diagcollect "github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -32,7 +34,12 @@ const (
 	diagMaxConcurrent = 4
 )
 
-var diagLimiter = make(chan struct{}, diagMaxConcurrent)
+var (
+	// Global bound plus a small per-principal bound so one caller's heavy
+	// scans cannot starve diagnostics for everyone else.
+	diagLimiter     = make(chan struct{}, diagMaxConcurrent)
+	diagUserLimiter sync.Map // principalID -> chan struct{} (cap 2)
+)
 
 // runtimeContainerName mirrors supervisor.containerName: the runtime
 // contract pins RuntimeMode to "gateway" (see supervisor normalize/pins).
@@ -113,33 +120,16 @@ func (c *ControlPlane) diagnosticsScope(auth identity.Envelope) diagScope {
 var (
 	diagLinePattern = regexp.MustCompile(`^(\S+)\s+\[([^\]]+)\]\s+(.*)$`)
 	// Host-side supervisor lines are logged with bracketed stamps.
-	diagHostPattern    = regexp.MustCompile(`^\[(\S+)\]\s+\[host-supervisor\]\s+(.*)$`)
-	diagSecretPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}`),
-		regexp.MustCompile(`(?i)\b(token|api[-_]?key|api[-_]?secret|secret|password|passwd|authorization|cookie|set-cookie|session|credential|private[-_]?key)\b["'\s]*[:=]["'\s]*\S+`),
-		regexp.MustCompile(`://[^/\s:@]+:[^/\s:@]+@`),                                               // user:pass@ URLs
-		regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b`),      // JWT
-		regexp.MustCompile(`\b\d{8,12}:[A-Za-z0-9_-]{30,}\b`),                                       // Telegram bot token
-		regexp.MustCompile(`\b(sk|pk|xox[baprs]|ghp|gho|github_pat|glpat|hf)_[A-Za-z0-9_-]{10,}\b`), // provider prefixes
-		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),                                                  // AWS access key
-	}
+	diagHostPattern  = regexp.MustCompile(`^\[(\S+)\]\s+\[host-supervisor\]\s+(.*)$`)
 	diagErrorPattern = regexp.MustCompile(`(?i)\b(error|panic|fatal|failed|denied|refused|unauthorized|forbidden)\b`)
 	diagWarnPattern  = regexp.MustCompile(`(?i)\b(warn|timeout|timed out|retry|restarting|backoff|unhealthy)\b`)
 )
 
+// diagRedact delegates to the shared collector redaction; it is applied again
+// at projection time so lines collected before ingest-time redaction existed
+// still get masked.
 func diagRedact(line string) string {
-	for _, pattern := range diagSecretPatterns {
-		line = pattern.ReplaceAllStringFunc(line, func(match string) string {
-			if idx := strings.IndexAny(match, "=:"); idx >= 0 && !strings.HasPrefix(match, "://") {
-				if sep := strings.IndexAny(match[idx+1:], "\"'"); sep == 0 {
-					return match[:idx+2] + "<redacted>"
-				}
-				return match[:idx+1] + "<redacted>"
-			}
-			return "<redacted>"
-		})
-	}
-	return line
+	return diagcollect.Redact(line)
 }
 
 func diagSeverityMatch(severity, message string) bool {
@@ -240,6 +230,14 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	if c.DiagnosticsDir == "" {
 		return map[string]any{"enabled": false, "detail": "diagnostics are not enabled on this hub"}, nil
 	}
+	raw, _ := diagUserLimiter.LoadOrStore(auth.PrincipalID, make(chan struct{}, 2))
+	userSem := raw.(chan struct{})
+	select {
+	case userSem <- struct{}{}:
+		defer func() { <-userSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	select {
 	case diagLimiter <- struct{}{}:
 		defer func() { <-diagLimiter }()
@@ -336,7 +334,7 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 // and reaping diagnostics stay useful without exposing other users' runtimes.
 func diagParseLine(line string, scope diagScope) (time.Time, string, string, bool) {
 	if match := diagHostPattern.FindStringSubmatch(line); match != nil {
-		if scope.runtime == "" || !strings.Contains(match[2], scope.runtime) {
+		if scope.runtime == "" || !mentionsContainer(match[2], scope.runtime) {
 			return time.Time{}, "", "", false
 		}
 		stamp, err := time.Parse(time.RFC3339Nano, match[1])
@@ -356,4 +354,16 @@ func diagParseLine(line string, scope diagScope) (time.Time, string, string, boo
 		return stamp, match[2], match[3], true
 	}
 	return time.Time{}, "", "", false
+}
+
+// mentionsContainer reports whether the line contains name as a whole token:
+// a substring match could leak lines about foreign containers that merely
+// extend the caller's container prefix (hermes-context-<hash>-extra).
+func mentionsContainer(line, name string) bool {
+	for _, field := range strings.Fields(line) {
+		if strings.Trim(field, `"',.;:()[]{}<>`) == name {
+			return true
+		}
+	}
+	return false
 }

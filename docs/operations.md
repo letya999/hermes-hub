@@ -18,8 +18,11 @@ mirrors its own request/lifecycle logs to `.local/supervisor.log` (10 MB cap),
 which is also copied into the combined file. Compose and supervised runtimes
 retain Docker's rotating `local` logs (10 MB × 3 files per container). The
 first collection of an already running container starts with its last 1000
-lines. To opt out, set `diagnostics: false` in the infra-owning space's
-`settings.yaml` and run `hubctl up` again.
+lines; later cycles take at most 5000 lines per container, and one container
+whose `docker logs` fails is skipped without stalling the others. Secrets are
+redacted at collection time, so the combined file never stores tokens or
+passwords in plaintext. To opt out, set `diagnostics: false` in the
+infra-owning space's `settings.yaml` and run `hubctl up` again.
 
 Users inspect their own diagnostics through the ToolHub `diagnostics` control
 operation. It returns the caller's connector workloads plus bounded,
@@ -29,8 +32,10 @@ tool arguments — so host logs, platform containers and other users' data stay
 invisible, and revoke/remove shrinks visibility immediately. Queries accept
 `tail` (1-500), RFC3339 `since`/`until`, a `search` substring, `severity`
 (info|warn|error) and a `workload` selector (workload, binding or definition
-ID, or `runtime`). Secrets are redacted before projection and host-supervisor
-lines appear only when they name the caller's own runtime container.
+ID, or `runtime`). Secrets are redacted again at projection and host-supervisor
+lines appear only when they name the caller's own runtime container as a whole
+token. Requests are capped per principal and globally, so a single caller
+cannot starve diagnostics for others.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes

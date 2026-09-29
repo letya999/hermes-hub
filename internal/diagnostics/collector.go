@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -13,7 +14,10 @@ import (
 	"time"
 )
 
-const maxLogBytes = 100 << 20
+const (
+	maxLogBytes      = 100 << 20
+	maxLinesPerCycle = 5000 // per-container throttle per collection
+)
 
 type DockerRun func(context.Context, ...string) ([]byte, error)
 
@@ -71,21 +75,24 @@ func Collect(ctx context.Context, path string, run DockerRun) error {
 	}
 	next := cursor{Containers: map[string]string{}, Supervisor: current.Supervisor}
 	var output bytes.Buffer
+	var failures []string
 	for _, line := range strings.Split(strings.TrimSpace(string(listed)), "\n") {
 		id, name, ok := strings.Cut(line, "\t")
 		if !ok || id == "" || (!strings.HasPrefix(name, "hermes-") && !strings.HasPrefix(name, "work-")) {
 			continue
 		}
 		last := current.Containers[id]
-		args := []string{"logs", "--timestamps"}
-		if last == "" {
-			args = append(args, "--tail", "1000")
-		} else {
+		args := []string{"logs", "--timestamps", "--tail", fmt.Sprint(maxLinesPerCycle)}
+		if last != "" {
 			args = append(args, "--since", last)
 		}
 		body, err := run(ctx, append(args, id)...)
 		if err != nil {
-			return fmt.Errorf("docker logs %s: %w", name, err)
+			// One failing container must not stall collection for the rest;
+			// keep its previous position so the next cycle retries.
+			failures = append(failures, name)
+			next.Containers[id] = last
+			continue
 		}
 		for _, entry := range strings.Split(strings.TrimSuffix(string(body), "\n"), "\n") {
 			stamp, message, ok := strings.Cut(entry, " ")
@@ -95,21 +102,30 @@ func Collect(ctx context.Context, path string, run DockerRun) error {
 			if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
 				continue
 			}
-			fmt.Fprintf(&output, "%s [%s] %s\n", stamp, name, message)
+			fmt.Fprintf(&output, "%s [%s] %s\n", stamp, name, Redact(message))
 			last = stamp
 		}
 		next.Containers[id] = last
 	}
-	if host, err := os.ReadFile(filepath.Join(filepath.Dir(path), "supervisor.log")); err == nil {
-		if current.Supervisor < 0 || current.Supervisor > len(host) {
-			next.Supervisor = 0 // host log rolled over
-		}
-		for _, line := range strings.Split(strings.TrimSuffix(string(host[next.Supervisor:]), "\n"), "\n") {
-			if line != "" {
-				fmt.Fprintf(&output, "[%s] [host-supervisor] %s\n", time.Now().UTC().Format(time.RFC3339Nano), line)
+	hostPath := filepath.Join(filepath.Dir(path), "supervisor.log")
+	if host, err := os.Open(hostPath); err == nil {
+		offset := int64(next.Supervisor)
+		if info, err := host.Stat(); err == nil {
+			if offset < 0 || offset > info.Size() {
+				offset = 0 // host log rolled over
+			}
+			if _, err := host.Seek(offset, 0); err == nil {
+				if tail, err := io.ReadAll(host); err == nil {
+					for _, line := range strings.Split(strings.TrimSuffix(string(tail), "\n"), "\n") {
+						if line != "" {
+							fmt.Fprintf(&output, "[%s] [host-supervisor] %s\n", time.Now().UTC().Format(time.RFC3339Nano), Redact(line))
+						}
+					}
+					next.Supervisor = int(info.Size())
+				}
 			}
 		}
-		next.Supervisor = len(host)
+		_ = host.Close()
 	}
 	if output.Len() > 0 {
 		data := output.Bytes()
@@ -159,5 +175,11 @@ func Collect(ctx context.Context, path string, run DockerRun) error {
 	if err := os.Remove(cursorPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return os.Rename(tmp.Name(), cursorPath)
+	if err := os.Rename(tmp.Name(), cursorPath); err != nil {
+		return err
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("docker logs failed for: %s", strings.Join(failures, ", "))
+	}
+	return nil
 }

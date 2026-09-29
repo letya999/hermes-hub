@@ -244,6 +244,103 @@ func TestFollowRecoversAfterDockerListingFailure(t *testing.T) {
 	}
 }
 
+func TestCollectRedactsSecretsAtIngest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes-diagnostics.txt")
+	dir := filepath.Dir(path)
+	if err := os.WriteFile(filepath.Join(dir, "supervisor.log"), []byte("leaked token=ghp_1234567890abcdef\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "ps" {
+			return []byte("id1\thermes-context-one\n"), nil
+		}
+		return []byte("2026-09-26T12:00:00.000000000Z auth failed ATATT3xFfGF0mNYB2nJ0srzVG0kKmVmqIlzWI\n" +
+			"2026-09-26T12:00:01.000000000Z dial postgres://alice:hunter2@db.internal:5432/app\n" +
+			"2026-09-26T12:00:02.000000000Z kept sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\n"), nil
+	}
+	if err := Collect(context.Background(), path, run); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"ghp_1234567890abcdef", "ATATT3xFfGF0", "hunter2"} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("secret %s stored unredacted:\n%s", secret, body)
+		}
+	}
+	if !strings.Contains(string(body), "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08") {
+		t.Fatalf("hex digest wrongly redacted:\n%s", body)
+	}
+}
+
+func TestCollectContinuesAfterContainerLogFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes-diagnostics.txt")
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "ps" {
+			return []byte("id1\thermes-broken\nid2\thermes-working\n"), nil
+		}
+		if args[len(args)-1] == "id1" {
+			return nil, errors.New("daemon lost")
+		}
+		return []byte("2026-09-26T12:00:00.000000000Z healthy line\n"), nil
+	}
+	err := Collect(context.Background(), path, run)
+	if err == nil || !strings.Contains(err.Error(), "hermes-broken") {
+		t.Fatalf("expected named failure, got %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(body), "healthy line") {
+		t.Fatalf("working container lost collection: %s %v", body, err)
+	}
+	// The failed container keeps its previous position: a recovering next
+	// cycle does not re-ingest or skip its backlog.
+	run = func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "ps" {
+			return []byte("id1\thermes-broken\nid2\thermes-working\n"), nil
+		}
+		if args[len(args)-1] == "id1" {
+			return []byte("2026-09-26T12:00:03.000000000Z recovered broken\n"), nil
+		}
+		return []byte(""), nil
+	}
+	if err := Collect(context.Background(), path, run); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = os.ReadFile(path)
+	if !strings.Contains(string(body), "recovered broken") || strings.Count(string(body), "healthy line") != 1 {
+		t.Fatalf("cursor drift after failure:\n%s", body)
+	}
+}
+
+func TestRedact(t *testing.T) {
+	cases := map[string]string{
+		"connect ATATT3xFfGF0mNYB2nJ0srzVG0kKmVmqIlzWI failed":                           "ATATT",
+		"key AIzaSyD4iE2xVSpkLLOXoyq2uexnEPLwDcxBNz open":                                "AIza",
+		"slack xoxe.xoxp-1-MiNTyT0kEn":                                                   "xoxe",
+		"linear lin_api_AbCdEf123456":                                                    "lin_api",
+		"stripe sk_live_51HxK2eLk":                                                       "sk_live",
+		"sendgrid SG.AbCdEfGh12345.RaNdOm123456789":                                      "SG.",
+		"bare wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY":                                    "wJalrXUtn",
+		"commit 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 pushed": "",
+		"container hermes-context-ecbc0f0382251589 ready":                                "",
+		"line without secrets at all":                                                    "",
+	}
+	for in, wantGone := range cases {
+		out := Redact(in)
+		if wantGone == "" {
+			if out != in {
+				t.Fatalf("over-redacted %q -> %q", in, out)
+			}
+			continue
+		}
+		if strings.Contains(out, wantGone) || !strings.Contains(out, "<redacted>") {
+			t.Fatalf("not redacted %q -> %q", in, out)
+		}
+	}
+}
+
 func TestDockerRunnerUsesDockerCLI(t *testing.T) {
 	bin := t.TempDir()
 	name, script := "docker", "#!/bin/sh\necho id1\n"

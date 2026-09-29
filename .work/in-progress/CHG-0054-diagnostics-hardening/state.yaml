@@ -1,0 +1,27 @@
+schema: 1
+id: CHG-0054-diagnostics-hardening
+title: Diagnostics collection and projection hardening
+status: in_progress
+phase: implementation
+started_at: 2026-09-29
+updated_at: 2026-09-29
+completed:
+  - shared Redact in internal/diagnostics applied at collection time
+  - docker logs failures skip the container instead of aborting the cycle
+  - per-container 5000-line throttle per cycle
+  - supervisor.log read via seek offset
+  - provider prefixes: ATATT, AIza, xox[a-z], lin_api, SG., github_pat + high-entropy filter
+  - host-supervisor whole-token container match
+  - per-principal diagnostics concurrency cap (2) under global (4)
+  - regression tests for ingest redaction, continue-on-error, Redact, prefix-extension
+pending:
+  - just check
+  - PR and merge
+evidence:
+  - internal/diagnostics/redact.go
+  - internal/diagnostics/collector.go
+  - internal/diagnostics/diagnostics_test.go
+  - internal/toolhub/diagnostics.go
+  - internal/toolhub/diagnostics_test.go
+  - specs/active/SPEC-0034-user-diagnostics.md
+  - docs/operations.md
