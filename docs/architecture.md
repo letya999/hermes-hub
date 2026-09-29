@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-27
+last_verified: 2026-09-28
 ---
 # Architecture
 
@@ -83,7 +83,7 @@ from `connections/ssh/config.yaml` (mounted read-only): aliases carry host,
 port, user, pinned host keys, credential references and per-host
 command/path/tunnel allowlists and bounds. Private keys resolve from the
 read-only config directory or Credential Broker leases; shells and tunnels are
-process-local, loopback-bound and reaped on expiry or restart. SPEC-0032 holds
+process-local, loopback-bound and reaped on expiry or restart. SPEC-0033 holds
 the contract.
 
 Job and conversation lifecycle mappings are persisted beside the gateway queue. They
@@ -183,7 +183,17 @@ ADR-0023), not a copy inside the hub image;
 `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN` are passed only to that process.
 
 File writes use cross-process locks, hash preconditions and atomic rename. Search/read
-are bounded UTF-8 operations. HeadHunter applications use an existing applicant resume,
+are bounded UTF-8 operations. Document extract, create, edit, and convert, image
+inspect and png/jpeg/webp convert, and opt-in image generation and edit run in that
+same `hubctl tools` process
+([ADR-0027](adr/ADR-0027-workspace-document-image-profile.md),
+[ADR-0028](adr/ADR-0028-configurable-image-capability.md),
+[ADR-0029](adr/ADR-0029-bounded-pdf-office-webp.md),
+[ADR-0030](adr/ADR-0030-cliproxy-image-routes.md)). Provider, model, and
+delivery come from the mounted `image_gen` section. The model selects the
+images endpoint or the Gemini chat image call. pdf, xlsx, and pptx are
+simple text packages in that process. They are not a separate
+service. HeadHunter applications use an existing applicant resume,
 explicit task authorization and actual HTTP receipts; unknown outcomes are not retried.
 
 ## M2 ToolHub foundation

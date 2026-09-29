@@ -1,10 +1,12 @@
 package agenttools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +18,9 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func fixture(t *testing.T) *Tools {
@@ -539,6 +543,8 @@ func TestAPINoRedirectAndTenantMismatch(t *testing.T) {
 
 }
 func TestMCPWire(t *testing.T) {
+	t.Setenv("HUB_HH_ENABLED", "false")
+	t.Setenv("HUB_HERMES_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
 	v := fixture(t)
 	ctx := context.Background()
 	a, b := mcp.NewInMemoryTransports()
@@ -553,8 +559,24 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 12 {
-		t.Fatal(list, err)
+	if err != nil || len(list.Tools) != 19 {
+		t.Fatal(len(list.Tools), err)
+	}
+	for _, name := range []string{"document_extract", "document_create", "image_inspect", "artifact_remove"} {
+		found := false
+		for _, tool := range list.Tools {
+			if tool.Name == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("missing", name)
+		}
+	}
+	for _, tool := range list.Tools {
+		if tool.Name == "image_generate" || tool.Name == "image_edit" {
+			t.Fatal("image generation published without a grant")
+		}
 	}
 	for _, tool := range list.Tools {
 		if tool.Name == "env_update" {
@@ -569,4 +591,243 @@ func TestMCPWire(t *testing.T) {
 	if err != nil || result.IsError {
 		t.Fatal(result, err)
 	}
+}
+
+func TestMediaThroughHubMCP(t *testing.T) {
+	t.Setenv("HUB_HH_ENABLED", "false")
+	v := fixture(t)
+	pngBody := hubPNG(t)
+	var sawInspect, sawGenerate atomic.Bool
+	var imageURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			sawInspect.Store(true)
+			if r.Header.Get("Authorization") != "Bearer openai-secret-value" || strings.Contains(r.Header.Get("Authorization"), "fal-secret-value") {
+				t.Errorf("inspect auth %q", r.Header.Get("Authorization"))
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"a red pixel"}}]}`))
+		case "/" + media.ImageModel:
+			sawGenerate.Store(true)
+			if r.Header.Get("Authorization") != "Key fal-secret-value" || strings.Contains(r.Header.Get("Authorization"), "openai-secret-value") {
+				t.Errorf("generate auth %q", r.Header.Get("Authorization"))
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("payload: %v", err)
+			}
+			if _, extra := payload["num_images"]; extra || payload["image_size"] != media.FalImageSize || payload["output_format"] != media.FalFormat {
+				t.Errorf("payload %#v", payload)
+			}
+			_, _ = w.Write([]byte(`{"images":[{"url":"` + imageURL + `"}]}`))
+		case "/img.png":
+			_, _ = w.Write(pngBody)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	imageURL = server.URL + "/img.png"
+	v.session().FalBase = server.URL
+	t.Setenv("OPENAI_API_KEY", "openai-secret-value")
+	t.Setenv("FAL_KEY", "fal-secret-value")
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	writeGrant := func(granted bool) {
+		t.Helper()
+		body := "model:\n  default: fixture-model\n  base_url: \"" + server.URL + "/v1\"\n"
+		if granted {
+			body += "image_gen:\n  provider: fal\n  model: " + media.ImageModel + "\n"
+		}
+		if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeGrant(false)
+	t.Setenv("HUB_HERMES_CONFIG", cfg)
+	root := v.Workspace.Name()
+	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("alpha beta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dot.png"), pngBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	client, cleanup := connectHub(t, v)
+	defer cleanup()
+	list, err := client.ListTools(ctx, nil)
+	if err != nil || len(list.Tools) != 19 {
+		t.Fatal(len(list.Tools), err)
+	}
+	for _, tool := range list.Tools {
+		if tool.Name == "image_generate" || tool.Name == "image_edit" {
+			t.Fatal("image generation published without a grant")
+		}
+		if tool.Name == "document_extract" && !strings.Contains(tool.Description, "docx") {
+			t.Fatal(tool.Description)
+		}
+	}
+	missing, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "image_generate", Arguments: map[string]any{"name": "pic", "prompt": "cat"}})
+	if err == nil && (missing == nil || !missing.IsError) {
+		t.Fatal("generated without a grant", err, missing)
+	}
+
+	extracted, body := callHub(t, client, "document_extract", map[string]any{"path": "notes.md"})
+	if extracted.IsError || body["text"] != "alpha beta" || body["format"] != "md" || body["secret_values_included"] != false {
+		t.Fatal(extracted, body)
+	}
+	created, body := callHub(t, client, "document_create", map[string]any{"name": "report", "format": "txt", "text": "created body"})
+	if created.IsError || body["path"] != "artifacts/documents/report.txt" {
+		t.Fatal(created, body)
+	}
+	reread, body := callHub(t, client, "document_extract", map[string]any{"path": "artifacts/documents/report.txt"})
+	if reread.IsError || body["text"] != "created body" {
+		t.Fatal(reread, body)
+	}
+	edited, body := callHub(t, client, "document_edit", map[string]any{"path": "artifacts/documents/report.txt", "text": "edited body"})
+	if edited.IsError || body["path"] != "artifacts/documents/report.txt" {
+		t.Fatal(edited, body)
+	}
+	reread, body = callHub(t, client, "document_extract", map[string]any{"path": "artifacts/documents/report.txt"})
+	if reread.IsError || body["text"] != "edited body" {
+		t.Fatal(reread, body)
+	}
+	converted, body := callHub(t, client, "document_convert", map[string]any{"path": "notes.md", "name": "notes", "format": "html"})
+	if converted.IsError || body["path"] != "artifacts/documents/notes.html" {
+		t.Fatal(converted, body)
+	}
+	shot, body := callHub(t, client, "image_convert", map[string]any{"path": "dot.png", "name": "shot", "format": "jpeg"})
+	if shot.IsError || body["path"] != "artifacts/images/shot.jpg" {
+		t.Fatal(shot, body)
+	}
+	seen, body := callHub(t, client, "image_inspect", map[string]any{"path": "dot.png"})
+	if seen.IsError || body["text"] != "a red pixel" || jsonNumber(body["width"]) != 2 || jsonNumber(body["height"]) != 3 || !sawInspect.Load() {
+		t.Fatal(seen, body)
+	}
+	for _, path := range []string{"../notes.md", filepath.Join(root, "notes.md"), `a\b.md`} {
+		denied, _ := callHub(t, client, "document_extract", map[string]any{"path": path})
+		if !denied.IsError {
+			t.Fatal("accepted", path)
+		}
+	}
+	removed, body := callHub(t, client, "artifact_remove", map[string]any{"path": "artifacts/documents/report.txt"})
+	if removed.IsError || body["removed"] != true {
+		t.Fatal(removed, body)
+	}
+	gone, _ := callHub(t, client, "document_extract", map[string]any{"path": "artifacts/documents/report.txt"})
+	if !gone.IsError {
+		t.Fatal("removed artifact still readable")
+	}
+	kept, err := os.ReadFile(filepath.Join(root, "notes.md"))
+	if err != nil || string(kept) != "alpha beta" {
+		t.Fatal("source document changed", err)
+	}
+
+	writeGrant(true)
+	granted, cleanupGranted := connectHub(t, v)
+	defer cleanupGranted()
+	listed, err := granted.ListTools(ctx, nil)
+	if err != nil || len(listed.Tools) != 21 {
+		t.Fatal(len(listed.Tools), err)
+	}
+	made, body := callHub(t, granted, "image_generate", map[string]any{"name": "pic", "prompt": "a red square"})
+	if made.IsError || body["path"] != "artifacts/images/pic.png" || body["model"] != media.ImageModel || !sawGenerate.Load() {
+		t.Fatal(made, body)
+	}
+	wire, err := json.Marshal(made)
+	if err != nil || strings.Contains(string(wire), imageURL) || strings.Contains(string(wire), "fal.run") {
+		t.Fatal("provider URL returned", err, string(wire))
+	}
+	stored, err := os.ReadFile(filepath.Join(root, "artifacts", "images", "pic.png"))
+	if err != nil || !bytes.Equal(stored, pngBody) || bytes.Contains(stored, []byte("fal-secret-value")) {
+		t.Fatal(err)
+	}
+	writeGrant(false)
+	revoked, _ := callHub(t, granted, "image_generate", map[string]any{"name": "later", "prompt": "cat"})
+	if !revoked.IsError || !strings.Contains(toolPlain(revoked), "grant") {
+		t.Fatal(toolPlain(revoked))
+	}
+}
+
+func connectHub(t *testing.T, v *Tools) (*mcp.ClientSession, func()) {
+	t.Helper()
+	ctx := context.Background()
+	left, right := mcp.NewInMemoryTransports()
+	server, err := v.Server().Connect(ctx, left, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, right, nil)
+	if err != nil {
+		_ = server.Close()
+		t.Fatal(err)
+	}
+	return client, func() {
+		_ = client.Close()
+		_ = server.Close()
+	}
+}
+
+func callHub(t *testing.T, client *mcp.ClientSession, name string, args map[string]any) (*mcp.CallToolResult, map[string]any) {
+	t.Helper()
+	result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatal(name, err)
+	}
+	if result == nil {
+		t.Fatal(name, "nil result")
+	}
+	plain := toolPlain(result)
+	for _, secret := range []string{"openai-secret-value", "fal-secret-value"} {
+		if strings.Contains(plain, secret) {
+			t.Fatalf("%s result included a credential", name)
+		}
+	}
+	if result.StructuredContent == nil {
+		return result, nil
+	}
+	encoded, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(string(encoded), err)
+	}
+	return result, body
+}
+
+func toolPlain(result *mcp.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func jsonNumber(value any) float64 {
+	switch n := value.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case json.Number:
+		parsed, _ := n.Float64()
+		return parsed
+	default:
+		return -1
+	}
+}
+
+func hubPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 2, 3))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

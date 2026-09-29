@@ -13,6 +13,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/letya999/hermes-hub/internal/media"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,6 +55,9 @@ type Settings struct {
 	SpaceDir              string   `yaml:"-"`
 	OrganizationRole      string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
+	// ImageGen configures the opt-in image_gen capability. Empty fields use
+	// cliproxy, that provider's default model, and workspace delivery.
+	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
 }
 type Feature struct {
 	Name     string   `json:"name"`
@@ -79,6 +83,7 @@ var Features = []Feature{
 	{"gitlab", []string{"GITLAB_TOKEN"}, "GitLab through the bundled glab CLI and personal access token"},
 	{"meet", nil, "Hermes Google Meet plugin; explicit joining and caption transcripts"},
 	{"transcription", nil, "Local faster-whisper through Hermes, downloads model on first use"},
+	{"image_gen", nil, "Opt-in image generation through the configured model endpoint or the external fal provider"},
 	{"github", []string{"GITHUB_TOKEN"}, "Official remote GitHub MCP"},
 	{"slack", []string{"SLACK_MCP_XOXP_TOKEN"}, "OAuth user token, search/read; posting opt-in per channel"},
 	{"atlassian", []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, "Direct mcp-atlassian Jira MCP; optional Confluence credentials can be added later"},
@@ -142,6 +147,9 @@ func selfEnvKeys(s Settings) []string {
 			}
 		}
 	}
+	if key := s.imageCredential(); key != "" {
+		keys[key] = true
+	}
 	if s.Has("slack") && (!s.OrgScoped() || s.AllowsOrgAction("slack.write")) {
 		keys["SLACK_MCP_ADD_MESSAGE_TOOL"] = true
 	}
@@ -166,6 +174,19 @@ func selfEnvKeys(s Settings) []string {
 }
 
 func (s Settings) Has(name string) bool { return slices.Contains(s.Features, name) }
+
+// imageCredential is FAL_KEY only for the external fal provider.
+// The cliproxy provider uses the model credential already required for chat.
+func (s Settings) imageCredential() string {
+	if !s.Has("image_gen") {
+		return ""
+	}
+	gen, err := s.ImageGen.Normalize()
+	if err != nil || gen.Provider != media.FalProvider {
+		return ""
+	}
+	return "FAL_KEY"
+}
 
 // RendersInfra reports whether this space owns the shared control plane
 // services. Unset keeps the historical single-space render (everything in one
@@ -236,6 +257,11 @@ func (s Settings) Validate() error {
 	}
 	if s.Has("drafts") && s.DraftsURL == "" {
 		return fmt.Errorf("drafts_url required")
+	}
+	if s.Has("image_gen") || s.ImageGen != (media.ImageGen{}) {
+		if _, err := s.ImageGen.Normalize(); err != nil {
+			return err
+		}
 	}
 	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {
 		return fmt.Errorf("invalid or colliding host ports")
@@ -361,7 +387,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
 		return err
 	}
-	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
+	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFAL_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
 	for _, env := range []string{"dev", "prod"} {
 		if err := os.WriteFile(filepath.Join(dir, "secrets."+env+".env"), []byte(content), 0600); err != nil {
 			return err
@@ -438,6 +464,9 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 				issues = append(issues, "set "+key+" for "+f.Name)
 			}
 		}
+	}
+	if s.imageCredential() == "FAL_KEY" && secrets["FAL_KEY"] == "" {
+		issues = append(issues, "set FAL_KEY for image_gen")
 	}
 	if s.Has("telegram") && secrets["TELEGRAM_ALLOWED_USERS"] != "" {
 		for _, id := range strings.Split(secrets["TELEGRAM_ALLOWED_USERS"], ",") {

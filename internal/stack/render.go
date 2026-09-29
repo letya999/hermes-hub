@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/media"
 	"gopkg.in/yaml.v3"
 
 	"github.com/letya999/hermes-hub/internal/sshcap"
@@ -128,7 +129,9 @@ func Config(s Settings) M {
 	for name, server := range s.MCP {
 		servers[name] = server.Config()
 	}
-	toolsets := []string{"terminal", "file", "web", "vision", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	// vision and image_gen stay off this list. The hub MCP tools are the
+	// workspace-confined profile; the native local tools are not.
+	toolsets := []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
 	if s.ExecutionMode == "supervisor" {
 		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "cronjob" })
 	}
@@ -151,7 +154,14 @@ func Config(s Settings) M {
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
 	// turns and lets the existing heartbeat notify the user while a build runs.
 	display := M{"busy_input_mode": "queue", "long_running_notifications": true}
-	return M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
+	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
+	cfg["auxiliary"] = M{"vision": M{"provider": "main", "timeout": 30, "download_timeout": 15, "max_concurrency": media.InspectConcurrency}}
+	if s.Has("image_gen") {
+		if gen, err := s.ImageGen.Normalize(); err == nil {
+			cfg["image_gen"] = M{"provider": gen.Provider, "model": gen.Model, "delivery": gen.Delivery}
+		}
+	}
+	return cfg
 }
 func Compose(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, true)
@@ -519,7 +529,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "skills"} {
+	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
@@ -540,7 +550,11 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets); err != nil {
+	omitted := []string{}
+	if s.imageCredential() != "FAL_KEY" {
+		omitted = append(omitted, "FAL_KEY")
+	}
+	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted); err != nil {
 		return err
 	}
 	if err = writeToolHubFiles(dir); err != nil {
@@ -641,7 +655,7 @@ func materializeHermesConfig(dir string, s Settings) error {
 	})
 }
 
-func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string) error {
+func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string, omit []string) error {
 	merged := map[string]string{}
 	for key, value := range organization {
 		merged[key] = value
@@ -654,9 +668,10 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 	}
 	runtime := map[string]string{}
 	for key, value := range merged {
-		if !GatewayOwnedSecret(key) {
-			runtime[key] = value
+		if GatewayOwnedSecret(key) || slices.Contains(omit, key) {
+			continue
 		}
+		runtime[key] = value
 	}
 	// Every runtime is wired to the single shared ToolHub by default. Spawned
 	// contexts and secondary spaces reach it on the shared "hermes-hub-runtime"
