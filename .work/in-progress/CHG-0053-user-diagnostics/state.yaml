@@ -1,0 +1,20 @@
+schema: 1
+id: CHG-0053-user-diagnostics
+title: User-scoped runtime diagnostics and logs
+status: in_progress
+phase: verification
+started_at: 2026-09-28
+updated_at: 2026-09-28
+completed:
+  - diagnostics control op scoped by authenticated principal, context and runtime
+  - visibility derived from live store bindings; revoked bindings excluded
+  - own runtime container resolved via supervisor container-name hash
+  - bounded tail, time window, search, severity and workload selector
+  - redaction of tokens, bearer values, credentialed URLs, JWT, provider keys
+  - host-supervisor lines projected only when naming the caller's container
+  - collector now tails work-* workload containers in addition to hermes-*
+  - diagnostics MCP tool contract, concurrency cap and cancellation
+  - seven regression tests covering isolation, redaction, bounds, revocation
+pending:
+  - just check
+evidence: []

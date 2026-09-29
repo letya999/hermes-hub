@@ -38,19 +38,22 @@ type SourceReviewer func(context.Context, ArtifactSource, *RecipeCandidate) (Sou
 type SourceResolver func(context.Context, string) (ArtifactSource, error)
 
 type ControlPlane struct {
-	Store            *Store
-	Secrets          credstore.Backend
-	Reviewer         SourceReviewer
-	SourceResolver   SourceResolver
-	RecipeCatalogs   []RecipeCatalog
-	OAuth            *oauth.Broker
-	Injector         CredentialInjector
-	oauthMu          sync.Mutex
-	oauthFlows       map[string]*preparedOAuthFlow
-	Now              func() time.Time
-	Listen           string
-	FormOrigin       string
-	WorkloadRoot     string
+	Store          *Store
+	Secrets        credstore.Backend
+	Reviewer       SourceReviewer
+	SourceResolver SourceResolver
+	RecipeCatalogs []RecipeCatalog
+	OAuth          *oauth.Broker
+	Injector       CredentialInjector
+	oauthMu        sync.Mutex
+	oauthFlows     map[string]*preparedOAuthFlow
+	Now            func() time.Time
+	Listen         string
+	FormOrigin     string
+	WorkloadRoot   string
+	// DiagnosticsDir points at the bounded operator diagnostics directory; the
+	// diagnostics control op reads only the collected log file inside it.
+	DiagnosticsDir   string
 	ConfirmationTTL  time.Duration
 	Ready            func(context.Context, EffectiveBinding) error
 	Broker           *credentialbroker.Config
@@ -132,6 +135,8 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 		return c.revoke(auth, args)
 	case "remove":
 		return c.remove(auth, args)
+	case "diagnostics":
+		return c.diagnostics(ctx, auth, args)
 	default:
 		return nil, fmt.Errorf("%w: unknown control operation", ErrInvalid)
 	}

@@ -79,6 +79,16 @@ func controlToolContract(name string) (string, map[string]any) {
 		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id."
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
+	case "diagnostics":
+		properties = map[string]any{
+			"tail":     map[string]any{"type": "integer", "description": "Newest lines to return, 1-500 (default 200).", "minimum": 1, "maximum": 500},
+			"since":    map[string]any{"type": "string", "description": "RFC3339 lower time bound."},
+			"until":    map[string]any{"type": "string", "description": "RFC3339 upper time bound."},
+			"search":   map[string]any{"type": "string", "description": "Case-insensitive substring filter.", "maxLength": 256},
+			"severity": map[string]any{"type": "string", "enum": []string{"info", "warn", "error"}},
+			"workload": map[string]any{"type": "string", "description": "Narrow to a workload_id, binding_id, definition_id, or \"runtime\" for the Hermes runtime container."},
+		}
+		description = "User-scoped runtime diagnostics. Returns health for the authenticated caller's own connector workloads plus bounded, redacted log lines from their runtime and workload containers. Host logs, other users' data, secrets and raw Docker APIs are never exposed."
 	case "status", "required_credentials":
 		description += " Pass onboarding_id, or pass definition_id to resume the latest onboarding for that connector."
 		if name == "status" {
