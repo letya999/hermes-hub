@@ -68,7 +68,7 @@
   },
   {
     "id": "txttsql", "name": "TXT-to-SQL (primary SQL)", "license": "AGPL-3.0-only",
-    "source": {"repository": "https://github.com/letya999/txttsql-mcp", "commit_sha": "75756b1e6f3917cace04ad1a8b075983cfeb3b9d"},
+    "source": {"repository": "https://github.com/letya999/txttsql-mcp", "commit_sha": "da0e9acad492ae6e27cda6659ceaf1efb9f00ba7"},
     "language": "rust", "entrypoint": ["/app/target/release/txttsql-mcp", "--config", "/app/config.toml"],
     "connection": {"fields": [
       {"name": "TXTTSQL_SOURCES", "type": "json", "required": true, "secret": true, "delivery": "env", "target": "TXTTSQL_SOURCES"},
