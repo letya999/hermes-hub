@@ -1,10 +1,10 @@
 schema: 1
 id: CHG-0054-diagnostics-hardening
 title: Diagnostics collection and projection hardening
-status: in_progress
-phase: implementation
+status: done
+phase: shipped
 started_at: 2026-09-29
-updated_at: 2026-09-29
+updated_at: 2026-09-30
 completed:
   - shared Redact in internal/diagnostics applied at collection time
   - docker logs failures skip the container instead of aborting the cycle
@@ -14,10 +14,11 @@ completed:
   - host-supervisor whole-token container match
   - per-principal diagnostics concurrency cap (2) under global (4)
   - regression tests for ingest redaction, continue-on-error, Redact, prefix-extension
-pending:
-  - just check
-  - PR and merge
+  - just check 85.08%, race tests green
+  - CI checks + containers dev/prod green on PR #158
+pending: []
 evidence:
+  - PR #158 merged into dev (squash 65c145f)
   - internal/diagnostics/redact.go
   - internal/diagnostics/collector.go
   - internal/diagnostics/diagnostics_test.go
