@@ -1,0 +1,27 @@
+schema: 1
+id: CHG-0047-document-image-tools
+title: Workspace document and image capability
+status: in_progress
+phase: verification
+started_at: 2026-09-28
+updated_at: 2026-09-28
+completed:
+  - hub MCP tools for document extract, create, edit, and convert
+  - image inspect, local png, jpeg, and webp convert, and artifact remove
+  - opt-in image_gen with provider, model, and delivery
+  - cliproxy default, Fal klein catalog body, and FAL_KEY only for provider fal
+  - bounds, workspace confinement, secret redaction, and unknown-field fail closed
+  - SPEC-0032, ADR-0027, ADR-0028, and ADR-0029
+  - simple pdf, xlsx, pptx text packages and local webp inspect/convert
+  - nativewebp v1.3.0 and golang.org/x/image v0.46.0; govulncheck reported no vulnerabilities
+  - go test -count=1 of internal/media, internal/agenttools, and internal/stack passed
+  - go build ./... passed after the x/image and x/sys bump
+  - devcheck format and devcheck docs passed
+  - live local Hermes container: create, edit, extract, and convert for txt, md, csv, html, pdf, xlsx, and pptx
+  - live CLIProxy inspect of png, jpeg, and webp, plus local conversion between them
+  - CLIProxy image calls split by model: images-endpoint ids stay on /images, Gemini image ids use /chat/completions
+  - live gemini-3.1-flash-image: create one JPEG, local png and webp conversion, inspect of all three, and edit of png, jpeg, and webp
+pending:
+  - live images-endpoint generate and edit: this CLIProxy account has no provider for those models
+  - rebuilt Hermes image so the agent launches the new hubctl; the running container root is read-only
+  - live Fal call

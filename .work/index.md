@@ -5,6 +5,7 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0047](in-progress/CHG-0047-document-image-tools/plan.md) | Workspace document and image capability; Gemini image calls use chat completions, images-endpoint models stay on /images; Fal and a rebuilt Hermes image still open |
 | [CHG-0046](in-progress/CHG-0046-automatic-diagnostics/plan.md) | Automatic bounded diagnostics across users and services |
 | [CHG-0045](in-progress/CHG-0045-diagnostics/plan.md) | Bounded multiuser Docker diagnostics and Telegram/job correlation |
 | [CHG-0044](in-progress/CHG-0044-build-disk-control/plan.md) | Separate core/control images and reclaim stale rebuild state |

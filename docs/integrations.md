@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-23
+last_verified: 2026-09-28
 ---
 # Integration contracts
 
@@ -442,9 +442,118 @@ Official contracts: [OAuth](https://docs.slack.dev/authentication/using-pkce),
 [user tokens](https://docs.slack.dev/reference/methods/oauth.v2.access/),
 [account verification](https://docs.slack.dev/reference/methods/auth.test/).
 
+## Documents and images
+
+The standard profile is hub MCP tools on `hubctl tools`. Hermes
+`869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) has no document toolset.
+Its local vision backend reads any container path, and its `image_generate`
+tool returns a remote Fal URL. Those native toolsets stay off
+`platform_toolsets`. [ADR-0027](adr/ADR-0027-workspace-document-image-profile.md),
+[ADR-0028](adr/ADR-0028-configurable-image-capability.md),
+[ADR-0029](adr/ADR-0029-bounded-pdf-office-webp.md),
+[ADR-0030](adr/ADR-0030-cliproxy-image-routes.md), and
+[SPEC-0032](../specs/active/SPEC-0032-document-image-profile.md) are the
+contract.
+
+| Effect | Tool | Formats and result | Credential |
+|---|---|---|---|
+| Read one document | `document_extract` | txt, md, csv, html, pdf, xlsx, pptx; htm is html | none |
+| Create one document | `document_create` | txt, md, csv, html, pdf, xlsx, pptx under `artifacts/documents/` | none |
+| Edit one document | `document_edit` | one existing file under `artifacts/documents/` | none |
+| Convert one document | `document_convert` | new txt, md, html, pdf, xlsx, or pptx file; csv only from xlsx | none |
+| Inspect one image | `image_inspect` | png, jpeg, webp | model endpoint, `OPENAI_API_KEY` |
+| Convert one image | `image_convert` | png, jpeg, and webp, locally, new file under `artifacts/images/` | none |
+| Generate one image | `image_generate` | grant selects provider, model, and delivery | grant credential |
+| Edit one image | `image_edit` | one workspace png, jpeg, or webp; webp is sent as png; fal has no edit | grant credential |
+| Delete one artifact | `artifact_remove` | one file under `artifacts/documents/` or `artifacts/images/` | none |
+
+Rejected documents: doc, docx, xls, ppt, odt, rtf, epub, pages. The extension
+xslx is rejected. Rejected images: gif, bmp, svg, tif, tiff, heic, avif. HTML
+extract drops well-formed script, style, noscript, and comments. HTML create
+and edit escape plain text into an article. pdf is wrapped text with an
+embedded Go Regular font. Extract reads text-showing operators and fails closed
+on an encrypted PDF. There is no OCR. xlsx is one worksheet of inline CSV text.
+pptx splits slides on a blank line. Edit of those three replaces the file.
+Conversion copies extracted text into the target. It does not render Markdown
+into a designed layout and it does not keep spreadsheet formulas. webp uses
+`github.com/HugoSmits86/nativewebp` v1.3.0. The PDF font comes from
+`golang.org/x/image` v0.46.0. `file_write` remains the draft path.
+
+Bounds fail closed. A document is at most 2 MiB and 20 pages of 3000 runes, with
+concurrency 2 and a 5 second deadline. An image is at most 5 MiB, 4096 pixels on
+an edge, and 4000000 pixels. Inspect and image conversion allow concurrency 2
+and 30 seconds. Generate and edit allow concurrency 1 and 60 seconds. A prompt
+is 1 to 2000 runes. The call does not queue.
+
+`image_gen` is off by default and is not self-service. Settings accept three
+fields. Empty fields render as provider `cliproxy`, model `gpt-image-2`, and
+delivery `workspace`.
+
+```yaml
+image_gen:
+  provider: cliproxy # cliproxy or fal
+  model: gpt-image-2 # or chat, or one allowlisted id
+  delivery: workspace # workspace or url
+```
+
+`model: chat` sends `model.default` only when that id is on the provider
+allowlist. Any other model must be listed. CLIProxy, pinned in the image at
+`ba7e55836dee959e93ec6d41395865d9ec535086`, has two calls. `gpt-image-1.5`,
+`gpt-image-2`, `grok-imagine-image`, `grok-imagine-image-quality`, and
+`grok-imagine-image-2.0` post one JSON body to
+`{model.base_url}/images/generations` with model, prompt, n 1, size
+`1024x1024`, and response_format. Edit posts one multipart body to
+`/images/edits` with those fields and one `image` file.
+`gemini-2.5-flash-image`, `gemini-3-pro-image`, `gemini-3-pro-image-preview`,
+`gemini-3.1-flash-image`, and `gemini-3.1-flash-image-preview` post one JSON
+body to `{model.base_url}/chat/completions` with the model, one user message,
+modalities `image` and `text`, and `image_config.aspect_ratio` `1:1`. Edit
+sends that message as text plus one image_url data URI. The image is read from
+`choices[0].message.images`. A data URL becomes file bytes and is not returned
+as a provider URL. A chat model such as `gemini-3.7-flash-high` is rejected
+before a request. The credential is `OPENAI_API_KEY`. The image pin above is
+unchanged.
+
+Provider `fal` allows `fal-ai/flux-2/klein/9b` only. The hub posts prompt,
+image_size `square_hd`, num_inference_steps 4, output_format png, and
+enable_safety_checker false to `https://fal.run/fal-ai/flux-2/klein/9b`.
+`num_images` is not sent. `FAL_KEY` is the credential. Fal edit is rejected.
+A new Fal model is an allowlist entry with that same catalog body, not a free
+string.
+
+Delivery `workspace` checks one image and writes `artifacts/images/`. The
+provider URL is not returned. Delivery `url` returns one provider http(s) URL
+and writes nothing; bytes alone are not published as a URL. The call still
+requires an image name. Redirects are refused. A download host other than the
+configured endpoint must be public HTTPS. An unknown provider, model, delivery,
+or field fails before a request.
+
+Enabling the feature writes the normalized section into the mounted Hermes
+config. `FAL_KEY` enters the runtime env only for provider `fal`. Disabling the
+feature, or leaving it on `cliproxy`, omits that key even if the secrets file
+still has the line. The config never contains a key value. Inspect keeps using
+the model credential. Each call rereads the mounted file. A missing provider or
+a revoked section fails the next generate or edit call. `image_generate` and
+`image_edit` leave `tools/list` on the next process start. A missing config
+does not take down the hub MCP server. Switching the running process onto
+`FAL_KEY` waits until that env is applied; the mounted file alone does not
+insert the key.
+
+Files stay in the invoking user's workspace. Another user's root, an absolute
+path, and `..` fail closed. `document_edit` refuses every path outside
+`artifacts/documents/`. Artifacts remain after the session ends. Removal is
+`artifact_remove` or a purge that confirms the same user. The work runs in the
+existing `hubctl tools` process. It is not an always-on GPU or office service.
+Word, old binary Office files, and a general office converter are not in the
+base image. The zip reader for xlsx and pptx does not create or unpack a user
+archive.
+
+An httptest double of these endpoints is not a live provider call.
+
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
+| Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0032-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |

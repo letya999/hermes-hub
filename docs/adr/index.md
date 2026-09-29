@@ -1,11 +1,15 @@
 ---
 description: Accepted architectural decisions; append new decisions when changing direction.
-last_verified: 2026-09-21
+last_verified: 2026-09-28
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0030](ADR-0030-cliproxy-image-routes.md) | CLIProxy image ids use two calls: images endpoint, or Gemini chat completions |
+| [ADR-0029](ADR-0029-bounded-pdf-office-webp.md) | Bounded pdf, xlsx, pptx, and webp stay in the hub process; Word and a user zip tool stay out |
+| [ADR-0028](ADR-0028-configurable-image-capability.md) | Image capability selects provider, model, and delivery; CLIProxy is the default, Fal stays external |
+| [ADR-0027](ADR-0027-workspace-document-image-profile.md) | Hub document and image tools; separate credentials, workspace artifacts, native vision and image_gen omitted |
 | [ADR-0026](ADR-0026-shared-control-plane.md) | One shared ToolHub/broker/controller on `hermes-hub-runtime`; multi-token endpoint, `infra` render split |
 | [ADR-0025](ADR-0025-context-parallel-gateway-workers.md) | Bounded worker pool; FIFO claim skips busy context keys, serial per context |
 | [ADR-0024](ADR-0024-toolhive-local-vmcp.md) | Defer ToolHive local vMCP as the stable endpoint after failed dynamic-rebind evidence |
