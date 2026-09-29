@@ -7,6 +7,7 @@ import (
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -54,8 +55,15 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 				environment[input] = value
 			}
 		}
+		// The contract may deliver alternative credential groups (e.g. a Jira
+		// block or a Confluence block): a complete group satisfies the member
+		// keys of the other alternatives, but never missing standalone keys.
+		if !effective.Definition.credentialsSatisfied(func(name string) bool { return environment[name] != "" }) {
+			_ = release(false, false)
+			return CredentialInjection{}, fmt.Errorf("%w: broker delivery does not satisfy %s", ErrIsolation, effective.Definition.DefinitionID)
+		}
 		for _, input := range effective.Credential.Keys {
-			if environment[input] == "" {
+			if environment[input] == "" && !groupedCredentialInput(effective.Definition, input) {
 				_ = release(false, false)
 				return CredentialInjection{}, fmt.Errorf("%w: broker delivery %s", ErrIsolation, input)
 			}
@@ -94,10 +102,15 @@ func mergeCredentialInjectors(local, broker CredentialInjector, brokerOnly bool)
 				}
 				return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
 			}
-			if effective.Credential.Backend != "credential-broker" {
-				return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
+			if strings.EqualFold(effective.Credential.Backend, "credential-broker") {
+				return broker(ctx, effective)
 			}
-			return broker(ctx, effective)
+			// A credential-gate admission has no reviewed contract. Its loopback
+			// secret stays in the local store; a contracted definition does not.
+			if effective.Definition.CredentialContractID == "" && local != nil && strings.EqualFold(effective.Credential.Backend, credstore.BackendLocal) {
+				return local(ctx, effective)
+			}
+			return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
 		}
 	}
 	if local == nil {

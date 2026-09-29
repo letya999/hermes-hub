@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -176,6 +177,52 @@ func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequ
 }
 
 func (s *runtimeHTTP) executePersistentEvents(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
+	first, sawTool := s.admitAndObserve(ctx, request, emit)
+	if !retryColdWake(first.response, first.err, first.elapsed, sawTool) {
+		return first.response, first.err
+	}
+	log.Printf("runtime retrying cold-start job=%s status=%s", request.JobID, first.response.Status)
+	retry := request
+	if retry.IdempotencyKey != "" {
+		retry.IdempotencyKey += ":wake"
+	}
+	second, _ := s.admitAndObserve(ctx, retry, emit)
+	return second.response, second.err
+}
+
+type wakeAttempt struct {
+	response ExecuteResponse
+	err      error
+	elapsed  time.Duration
+}
+
+// retryColdWake repeats one chat turn that died before any tool call while
+// the runtime was still waking. A finished answer, a long failure, or a run
+// that already called a tool is left alone.
+func retryColdWake(response ExecuteResponse, err error, elapsed time.Duration, sawTool bool) bool {
+	if err == nil || sawTool || strings.TrimSpace(response.Text) != "" || elapsed > 20*time.Second {
+		return false
+	}
+	return response.Status == "failed" || response.Status == ""
+}
+
+func (s *runtimeHTTP) admitAndObserve(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (wakeAttempt, bool) {
+	started := time.Now()
+	sawTool := false
+	wrapped := emit
+	if emit != nil {
+		wrapped = func(event ExecuteResponse) error {
+			if event.LastEvent == "tool.start" || event.LastEvent == "tool.end" {
+				sawTool = true
+			}
+			return emit(event)
+		}
+	}
+	response, err := s.admitHermesRun(ctx, request, wrapped)
+	return wakeAttempt{response: response, err: err, elapsed: time.Since(started)}, sawTool
+}
+
+func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
 	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
 	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -327,7 +374,16 @@ func toolProgressText(event nativeRunEvent) string {
 	switch {
 	case strings.HasSuffix(tool, "toolhub_prepare_source"):
 		if completed {
-			return "MCP: шаг 1/4 завершён — исходники проверены и образ собран."
+			switch toolResultPhase(event) {
+			case "preparing":
+				return "MCP: шаг 1/4 принят — сборка ещё идёт в фоне. Итог придёт отдельным сообщением."
+			case "failed":
+				return "MCP: подготовка не завершилась. Смотрю причину."
+			case "awaiting-credentials", "awaiting-confirm":
+				return "MCP: шаг 1/4 вернул ответ. Дальше статус и защищённая форма, если она нужна."
+			default:
+				return "MCP: шаг 1/4 вернул ответ. Если фаза ещё preparing, сборка продолжается в фоне."
+			}
 		}
 		return "MCP: шаг 1/4 — проверяю репозиторий и собираю изолированный образ. Обычно 2–15 минут."
 	case strings.HasSuffix(tool, "toolhub_required_credentials"):
@@ -352,6 +408,19 @@ func toolProgressText(event nativeRunEvent) string {
 	default:
 		return ""
 	}
+}
+
+func toolResultPhase(event nativeRunEvent) string {
+	parts := []string{event.Output, event.Text, string(event.Result)}
+	for _, part := range parts {
+		part = strings.ReplaceAll(part, " ", "")
+		for _, phase := range []string{"awaiting-credentials", "awaiting-confirm", "preparing", "failed", "enabled"} {
+			if strings.Contains(part, `"phase":"`+phase+`"`) {
+				return phase
+			}
+		}
+	}
+	return ""
 }
 
 func stopHermesRun(ctx context.Context, client *http.Client, base, auth, runID string) error {

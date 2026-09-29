@@ -5,6 +5,7 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0047](in-progress/CHG-0047-mcp-admission-and-wake/plan.md) | Credential-gated MCP admission, sibling ToolHub tokens, and lost first-message delivery |
 | [CHG-0046](in-progress/CHG-0046-automatic-diagnostics/plan.md) | Automatic bounded diagnostics across users and services |
 | [CHG-0045](in-progress/CHG-0045-diagnostics/plan.md) | Bounded multiuser Docker diagnostics and Telegram/job correlation |
 | [CHG-0044](in-progress/CHG-0044-build-disk-control/plan.md) | Separate core/control images and reclaim stale rebuild state |

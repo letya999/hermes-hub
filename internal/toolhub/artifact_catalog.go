@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"net/url"
 	"path"
@@ -33,11 +34,13 @@ type ArtifactImportConfig struct {
 	Image                      string
 	Tools                      []ToolSpec
 	Credentials                []CredentialInput
+	CredentialGroups           [][]string
 	CredentialContractID       string
 	CredentialContractRevision int
 	CredentialContractEnv      map[string]string
 	Environment                []string
 	RuntimeEnvironment         map[string]string
+	ProxyEnvironment           []string
 	Workload                   WorkloadPolicy
 	Execution                  ExecutionPolicy
 	Health                     HealthProbe
@@ -55,11 +58,13 @@ type artifactReviewContract struct {
 	Image                      string
 	Tools                      []ToolSpec
 	Credentials                []CredentialInput
+	CredentialGroups           [][]string
 	CredentialContractID       string
 	CredentialContractRevision int
 	CredentialContractEnv      map[string]string
 	Environment                []string
 	RuntimeEnvironment         map[string]string
+	ProxyEnvironment           []string
 	Workload                   WorkloadPolicy
 	Execution                  ExecutionPolicy
 	Health                     HealthProbe
@@ -86,6 +91,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if len(config.Execution.Egress) == 0 {
 		config.Execution.Egress = []string{"127.0.0.1"}
 	}
+	config.ProxyEnvironment = mergeProxyEnvironment(config.ProxyEnvironment, discoverProxyEnvironment(contextBytes), claimedEnvironmentNames(config))
 	recipe, generated, err := GenerateArtifactRecipe(contextBytes, config.Language, config.BaseImage, config.Entrypoint)
 	if err != nil {
 		return ImportedArtifact{}, err
@@ -115,8 +121,8 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 			ArchiveDigest: artifact.ArchiveDigest, ProvenanceDigest: artifact.Evidence.ProvenanceDigest,
 			SBOMDigest: artifact.Evidence.SBOMDigest, RecipeDigest: recipeDigest, ReviewDigest: reviewDigest,
 		},
-		Tools: append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...),
-		RuntimeEnvironment: config.RuntimeEnvironment, Workload: config.Workload, Execution: config.Execution, Health: config.Health,
+		Tools: append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialGroups: cloneStringGroups(config.CredentialGroups), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...),
+		RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: append([]string(nil), config.ProxyEnvironment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
 	}
 	if err := definition.Validate(); err != nil {
 		return ImportedArtifact{}, err
@@ -163,10 +169,11 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 	definition := ToolDefinition{
 		Schema: SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version, Transport: ContainerMCP,
 		Source: DefinitionSource{Image: config.Image, Digest: resolution.Launch.Digest, Command: firstArg(config.Entrypoint), Args: remainingArgs(config.Entrypoint), Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA, ProvenanceDigest: provenance, SBOMDigest: sbom, RecipeDigest: recipeDigest},
-		Tools:  append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
+		Tools:  append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialGroups: cloneStringGroups(config.CredentialGroups), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
 	}
 	imported := ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}
 	imported.Definition.RuntimeEnvironment = config.RuntimeEnvironment
+	imported.Definition.ProxyEnvironment = append([]string(nil), config.ProxyEnvironment...)
 	review, err := reviewDigestForImported(imported)
 	if err != nil {
 		return ImportedArtifact{}, err
@@ -267,6 +274,133 @@ func discoverOpenAPIEgress(contextBytes []byte) []string {
 		return nil
 	}
 	return result
+}
+
+// Proxy-env discovery patterns: the only accepted names end in _PROXY, so a
+// discovered candidate can only ever receive the controller-owned egress URL.
+// Worst case for a false positive is an unused env var or a visible startup
+// failure, never an unreviewed network path.
+var proxyEnvQuotedLiteral = regexp.MustCompile(`["'` + "`" + `]([A-Z][A-Z0-9_]{2,62}_PROXY)["'` + "`" + `]`)
+var proxyEnvDotAccess = regexp.MustCompile(`\b(?:process|Bun)\.env\.([A-Z][A-Z0-9_]{2,62}_PROXY)\b`)
+var proxyEnvAssignment = regexp.MustCompile(`(?m)^\s*(?:export\s+|ENV\s+)?([A-Z][A-Z0-9_]{2,62}_PROXY)\s*=`)
+
+// proxyEnvironmentStandard are already injected by the workload runtime and
+// proxyEnvironmentPlaceholder are literal noise, not real variable names.
+var proxyEnvironmentStandard = map[string]bool{
+	"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true,
+	"FTP_PROXY": true, "RSYNC_PROXY": true, "GRPC_PROXY": true,
+	"NO_PROXY": true, "no_proxy": true,
+}
+
+// discoverProxyEnvironment scans the repository source for custom proxy env
+// vars a server reads at runtime — os.Getenv("X_PROXY") in Go,
+// process.env.X_PROXY in Node, os.environ/os.getenv("X_PROXY") in Python and
+// env::var("X_PROXY") in Rust — plus .env/Dockerfile-style assignments. The
+// result feeds proxy_environment, so review sees the same names the binary
+// would otherwise hide behind a bare --help.
+func discoverProxyEnvironment(contextBytes []byte) []string {
+	reader := tar.NewReader(bytes.NewReader(contextBytes))
+	names := map[string]bool{}
+	record := func(name string) {
+		if proxyEnvironmentStandard[name] || strings.Contains(name, "NO_PROXY") {
+			return
+		}
+		for _, filler := range []string{"EXAMPLE", "PLACEHOLDER", "DUMMY", "MOCK", "SAMPLE", "TEST", "FAKE"} {
+			if strings.Contains(name, filler) {
+				return
+			}
+		}
+		names[name] = true
+	}
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || header.Typeflag != tar.TypeReg || header.Size > 4<<20 {
+			continue
+		}
+		if !proxyDiscoveryFilePath(header.Name) {
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(reader, 4<<20))
+		if readErr != nil {
+			continue
+		}
+		text := string(body)
+		for _, match := range proxyEnvQuotedLiteral.FindAllStringSubmatch(text, 16) {
+			record(match[1])
+		}
+		for _, match := range proxyEnvDotAccess.FindAllStringSubmatch(text, 16) {
+			record(match[1])
+		}
+		for _, match := range proxyEnvAssignment.FindAllStringSubmatch(text, 16) {
+			record(match[1])
+		}
+	}
+	return slices.Sorted(maps.Keys(names))
+}
+
+// proxyDiscoveryFilePath bounds the scan to plausible declaration sites:
+// source files in the runtime languages, Dockerfiles and dotenv examples.
+// Dependency trees and test fixtures are skipped for the same reason as in
+// egress discovery — their names describe vendored code, not this server.
+func proxyDiscoveryFilePath(name string) bool {
+	lower := strings.ToLower(name)
+	if egressDiscoveryFixturePath(name) {
+		return false
+	}
+	for _, marker := range []string{"vendor/", "node_modules/", "third_party/", "/deps/", ".venv/", "site-packages/"} {
+		if strings.HasPrefix(lower, marker) || strings.Contains(lower, "/"+marker) {
+			return false
+		}
+	}
+	base := path.Base(lower)
+	switch path.Ext(base) {
+	case ".go", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".rs", ".rb":
+		return true
+	}
+	return base == "dockerfile" || strings.HasSuffix(base, ".dockerfile") ||
+		base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".env")
+}
+
+// mergeProxyEnvironment unions reviewed names with discovered ones.
+// Names already claimed as user-supplied environment, credential or runtime
+// inputs stay inputs: a *_PROXY name the server expects the deployer to set
+// (like an OAuth callback proxy URL) is not a controller-injected egress var,
+// and double-claiming it would trip the disjoint-namespace definition check.
+func mergeProxyEnvironment(reviewed, discovered []string, claimed map[string]bool) []string {
+	if len(discovered) == 0 {
+		return reviewed
+	}
+	seen := map[string]bool{}
+	for _, name := range reviewed {
+		seen[name] = true
+	}
+	merged := append([]string(nil), reviewed...)
+	for _, name := range discovered {
+		if !seen[name] && !claimed[name] {
+			seen[name] = true
+			merged = append(merged, name)
+		}
+	}
+	return merged
+}
+
+// claimedEnvironmentNames collects every name the import config already
+// reserves for user-supplied inputs so proxy discovery cannot take them.
+func claimedEnvironmentNames(config ArtifactImportConfig) map[string]bool {
+	claimed := map[string]bool{}
+	for _, name := range config.Environment {
+		claimed[name] = true
+	}
+	for _, input := range config.Credentials {
+		claimed[input.Name] = true
+	}
+	for name := range config.RuntimeEnvironment {
+		claimed[name] = true
+	}
+	return claimed
 }
 
 // egressDiscoveryFixturePath skips files whose URLs are test fixtures rather
@@ -388,7 +522,7 @@ func reviewDigest(source ArtifactSource, recipe ArtifactRecipe, artifact StoredO
 		Recipe   ArtifactRecipe
 		Artifact StoredOCIArtifact
 		Contract artifactReviewContract
-	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.RuntimeEnvironment, config.Workload, config.Execution, config.Health}}
+	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialGroups, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.RuntimeEnvironment, config.ProxyEnvironment, config.Workload, config.Execution, config.Health}}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -403,8 +537,8 @@ func reviewDigestForImported(imported ImportedArtifact) (string, error) {
 		DefinitionID: imported.Definition.DefinitionID, Version: imported.Definition.Version,
 		Image: imported.Definition.Source.Image, Tools: imported.Definition.Tools,
 		Entrypoint:  append([]string{imported.Definition.Source.Command}, imported.Definition.Source.Args...),
-		Credentials: imported.Definition.Credentials, CredentialContractID: imported.Definition.CredentialContractID, CredentialContractRevision: imported.Definition.CredentialContractRevision, CredentialContractEnv: imported.Definition.CredentialContractEnv, Environment: imported.Definition.Environment,
-		RuntimeEnvironment: imported.Definition.RuntimeEnvironment, Workload: imported.Definition.Workload, Execution: imported.Definition.Execution, Health: imported.Definition.Health,
+		Credentials: imported.Definition.Credentials, CredentialGroups: imported.Definition.CredentialGroups, CredentialContractID: imported.Definition.CredentialContractID, CredentialContractRevision: imported.Definition.CredentialContractRevision, CredentialContractEnv: imported.Definition.CredentialContractEnv, Environment: imported.Definition.Environment,
+		RuntimeEnvironment: imported.Definition.RuntimeEnvironment, ProxyEnvironment: imported.Definition.ProxyEnvironment, Workload: imported.Definition.Workload, Execution: imported.Definition.Execution, Health: imported.Definition.Health,
 	}
 	return reviewDigest(source, imported.Recipe, imported.Artifact, config)
 }

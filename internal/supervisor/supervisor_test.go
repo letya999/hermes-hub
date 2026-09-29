@@ -1308,3 +1308,65 @@ func TestExecuteAbandonsJobWhenRuntimeNeverRan(t *testing.T) {
 		t.Fatalf("retried wake job status=%d", code)
 	}
 }
+
+func TestRunArgsHealsStubSoulAndEnrollsSibling(t *testing.T) {
+	t.Setenv("HUB_ENV", "prod")
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "config", "SOUL.md"), []byte("template soul\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spaces := filepath.Join(repo, "spaces")
+	alice := filepath.Join(spaces, "alice")
+	bob := filepath.Join(spaces, "bob")
+	for _, dir := range []string{alice, bob} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(alice, "settings.yaml"), "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\n")
+	write(filepath.Join(bob, "settings.yaml"), "schema: 1\nuser: bob\ntimezone: UTC\nbrowser_port: 6081\noauth_port: 8001\n")
+	write(filepath.Join(alice, "hermes.prod.yaml"), "model: {}\n")
+	ownerToken := strings.Repeat("a", 64)
+	bobToken := strings.Repeat("b", 64)
+	write(filepath.Join(alice, "runtime.auth"), "HUB_RUNTIME_AUTH="+ownerToken+"\n")
+	write(filepath.Join(bob, "runtime.auth"), "HUB_RUNTIME_AUTH="+bobToken+"\n")
+	write(filepath.Join(alice, "SOUL.md"), "# User instructions\n\n")
+	m, err := New(Config{SpacesRoot: spaces, RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) {
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := binding(alice)
+	if _, err := m.runArgs(b, "hermes-context-alice", 19000); err != nil {
+		t.Fatal(err)
+	}
+	soul, err := os.ReadFile(filepath.Join(alice, "SOUL.md"))
+	if err != nil || string(soul) != "template soul\n" {
+		t.Fatalf("stub soul=%q err=%v", soul, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(alice, "toolhub-tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), ownerToken) || !strings.Contains(string(raw), bobToken) {
+		t.Fatal("sibling enrollment missing or owner token copied")
+	}
+	write(filepath.Join(alice, "SOUL.md"), "mine\n")
+	if _, err := m.runArgs(b, "hermes-context-alice", 19000); err != nil {
+		t.Fatal(err)
+	}
+	soul, _ = os.ReadFile(filepath.Join(alice, "SOUL.md"))
+	if string(soul) != "mine\n" {
+		t.Fatalf("edited soul overwritten: %q", soul)
+	}
+}

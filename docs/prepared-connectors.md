@@ -1,6 +1,6 @@
 ---
 description: Exact-source prepared catalog, generic lifecycle and connector runbooks.
-last_verified: 2026-09-24
+last_verified: 2026-09-27
 ---
 # Prepared connectors
 
@@ -46,8 +46,10 @@ only to its reviewed commit.
 then returns the durable `preparing` record instead of holding the HTTP call:
 the work continues on a detached context and the outcome — `awaiting-*` or
 `failed` — is read back with `status`. A lost connection no longer loses the
-result, and the owner's open MCP sessions receive a best-effort wake message
-when the background prepare finishes.
+result. Open owner sessions receive a best-effort MCP log when the background
+prepare finishes, and communication-hub also delivers a channel notice plus a
+continuation job. The log is not the only wake: a client that never set a log
+level still gets the outcome in the chat.
 
 After the generated restricted build and real MCP preflight, use
 `required_credentials` if requested. Enter credentials only in the protected
@@ -145,3 +147,25 @@ do not relax egress or silently fall back to another GitLab host.
 
 Handoff: “Install https://github.com/zereight/gitlab-mcp; reuse or rotate my
 existing connection, confirm the API URL and verify whoami.”
+
+## Atlassian
+
+Source: [sooperset/mcp-atlassian](https://github.com/sooperset/mcp-atlassian).
+Generated Python image entrypoint: `/opt/venv/bin/mcp-atlassian` (stdio). The
+server registers **zero** tools until connection config exists, so review
+collects the full six-field contract instead of trusting placeholder probing.
+Broker: `atlassian-env`, delivering `JIRA_URL`, `JIRA_USERNAME`,
+`JIRA_API_TOKEN`, `CONFLUENCE_URL`, `CONFLUENCE_USERNAME` and
+`CONFLUENCE_API_TOKEN`. The products are alternatives: a complete Jira block
+or a complete Confluence block satisfies the credential groups, so the form
+marks every field optional while ToolHub rejects a submission with no full
+block. `atlassian.net`/`atlassian.com` are pinned egress; each entered URL's
+host joins egress automatically, so self-hosted Server/DC instances work
+without relaxations. The provider probe follows the delivered block —
+`jira_get_all_projects` or `confluence_list_page_templates` — because a bad
+token still passes `tools/list`; on failure rotate the same connection,
+never create a second one.
+
+Handoff: “Install https://github.com/sooperset/mcp-atlassian; reuse or rotate
+my existing connection, fill the Jira block, the Confluence block or both in
+the protected form and verify the matching read probe.”

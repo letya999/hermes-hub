@@ -91,14 +91,20 @@ func localCommand(ctx context.Context, binary string, args ...string) ([]byte, e
 }
 
 func waitLocalWorkload(ctx context.Context, check func() error) error {
+	var lastErr error
 	for {
 		if err := check(); err == nil {
 			return nil
+		} else {
+			lastErr = err
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			if lastErr != nil {
+				return fmt.Errorf("%w: %v", ctx.Err(), lastErr)
+			}
 			return ctx.Err()
 		case <-timer.C:
 		}
@@ -126,7 +132,7 @@ func (c *localController) handler(token string) http.Handler {
 		defer c.mu.Unlock()
 		receipt, err := c.inspect(r.Context())
 		if err != nil {
-			http.Error(w, "workload enforcement unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "workload enforcement unavailable: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

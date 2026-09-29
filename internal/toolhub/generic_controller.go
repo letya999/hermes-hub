@@ -222,10 +222,8 @@ func readGenericSecrets(path string, definition ToolDefinition) (map[string]stri
 		}
 		values[key] = value
 	}
-	for _, input := range definition.Credentials {
-		if input.Required && values[input.Name] == "" {
-			return nil, fmt.Errorf("%w: required runtime credential missing", ErrUnauthorized)
-		}
+	if !definition.credentialsSatisfied(func(name string) bool { return values[name] != "" }) {
+		return nil, fmt.Errorf("%w: required runtime credential missing", ErrUnauthorized)
 	}
 	return values, nil
 }
@@ -339,7 +337,7 @@ func (c *genericController) handler(token string) http.Handler {
 			return
 		}
 		if err := c.validatePlan(plan); err != nil {
-			http.Error(w, "unapproved plan", http.StatusForbidden)
+			http.Error(w, "unapproved plan: "+publicPrepareError(err), http.StatusForbidden)
 			return
 		}
 		if !c.config.DynamicDefinitions {
@@ -363,7 +361,7 @@ func (c *genericController) handler(token string) http.Handler {
 		workload, err := c.start(r.Context(), plan)
 		if err != nil {
 			c.config.Budget.Release(plan.WorkloadID)
-			http.Error(w, "workload enforcement unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "workload enforcement unavailable: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		c.workloads[plan.WorkloadID] = workload
@@ -495,6 +493,7 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		toolArgs = append(toolArgs, "--volume", dockerBindSource(mount.Source)+":"+mount.Target+mode)
 	}
 	toolArgs = append(toolArgs, runtimeEnvironmentArgs(plan.Definition)...)
+	toolArgs = append(toolArgs, proxyEnvironmentArgs(plan.Definition, "http://"+ip+":3128")...)
 	imageRef, err := c.resolveArtifactImage(ctx, plan)
 	if err != nil {
 		return genericWorkload{}, err
@@ -791,6 +790,14 @@ func genericProxyConfig(egress []string) (string, error) {
 			hostOnly, port, ok := strings.Cut(host, ":")
 			if !ok {
 				hostOnly, port = host, "443"
+			}
+			// Squid dstdomain matches an apex exactly; the ".host" form also
+			// covers subdomains, which is what a reviewed host means — an API
+			// answered by team.slack.com must not be denied by "slack.com".
+			// The registrable owner controls every subdomain, so the trust
+			// boundary is unchanged. IP literals keep exact dstdomain form.
+			if strings.Contains(hostOnly, ".") && net.ParseIP(hostOnly) == nil && !strings.HasPrefix(hostOnly, ".") {
+				hostOnly = "." + hostOnly
 			}
 			if strings.Contains(hostOnly, ".") || hostOnly == "localhost" {
 				lines = append(lines, fmt.Sprintf("acl hermes_%d dstdomain %s", i, hostOnly))

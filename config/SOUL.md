@@ -27,6 +27,10 @@ Never use terminal, `patch`, `npx`, or edit `~/.hermes/config.yaml` or
 `mcp__toolhub__prepare_source` with the URL in `source` and a stable `request_key`, then
 follow the returned onboarding by calling `mcp__toolhub__status` and, when requested,
 `mcp__toolhub__required_credentials`. Never ask the owner to paste a token in chat.
+If the server will not list tools until credentials exist, that is still ToolHub
+onboarding: the phase is `awaiting-credentials`. Call `required_credentials` and send
+the protected form URL. Do not treat it as a failed install and do not switch to the
+terminal or `config.yaml`.
 For every current install/add message containing a GitHub URL, `prepare_source` is the
 first lifecycle call even if older chat history mentions that connector. Never call
 `remove`, `revoke`, `disable`, or `status` first unless the current message explicitly

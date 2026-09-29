@@ -480,6 +480,41 @@ func TestRunIdleLoadsEnvAndStops(t *testing.T) {
 	}
 }
 
+func TestReadOnlyWriteRecognizesProtectedFiles(t *testing.T) {
+	if readOnlyWrite(nil) || !readOnlyWrite(errors.New("read-only file system")) || !readOnlyWrite(errors.New("EROFS")) || readOnlyWrite(errors.New("disk full")) {
+		t.Fatal("read-only detection")
+	}
+}
+
+func TestCopySoulUnlessEditedReplacesOnlyTheStub(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "template")
+	destination := filepath.Join(root, "SOUL.md")
+	if err := os.WriteFile(source, []byte("template soul\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("# User instructions\n\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copySoulUnlessEdited(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(destination)
+	if string(body) != "template soul\n" {
+		t.Fatalf("stub kept: %q", body)
+	}
+	if err := os.WriteFile(destination, []byte("mine\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copySoulUnlessEdited(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = os.ReadFile(destination)
+	if string(body) != "mine\n" {
+		t.Fatalf("edit overwritten: %q", body)
+	}
+}
+
 func TestCopyIfExists(t *testing.T) {
 	root := t.TempDir()
 	source, destination := filepath.Join(root, "source"), filepath.Join(root, "destination")

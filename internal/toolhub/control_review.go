@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -86,11 +87,17 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			if len(egress) == 0 {
 				egress = discoverOpenAPIEgress(contextBytes)
 			}
+			config.ProxyEnvironment = mergeProxyEnvironment(config.ProxyEnvironment, discoverProxyEnvironment(contextBytes), claimedEnvironmentNames(config))
 			published, publishedErr := ImportPublishedArtifact(source, config, resolution, egress)
 			if publishedErr == nil {
-				if published, _, publishedErr = PreflightPublishedArtifact(ctx, published); publishedErr == nil {
-					return SourceReview{Definition: published.Definition, Permissions: toolNames(published.Definition), Effects: effectNames(published.Definition), ReviewDigest: published.Definition.Source.ReviewDigest, Recipe: &resolution}, nil
+				admitted, _, probeErr := PreflightPublishedArtifact(ctx, published)
+				if probeErr == nil {
+					return SourceReview{Definition: admitted.Definition, Permissions: toolNames(admitted.Definition), Effects: effectNames(admitted.Definition), ReviewDigest: admitted.Definition.Source.ReviewDigest, Recipe: &resolution}, nil
 				}
+				if review, ok := reviewFromCredentialGate(admitted, probeErr, &resolution); ok {
+					return review, nil
+				}
+				publishedErr = probeErr
 			}
 			if selected != nil {
 				return SourceReview{}, fmt.Errorf("%w: selected registry artifact failed preflight: %v", ErrIsolation, publishedErr)
@@ -109,6 +116,9 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			mergeConnectionForDefinition(resolution.Connection, &imported.Definition)
 		}
 		imported, _, err = PreflightImportedArtifact(ctx, imported, artifactsDir)
+		if review, ok := reviewFromCredentialGate(imported, err, &resolution); ok {
+			return review, nil
+		}
 		if err != nil {
 			return SourceReview{}, err
 		}
@@ -136,6 +146,20 @@ func defaultSelfInstallConfig(source ArtifactSource) ArtifactImportConfig {
 		},
 		Health: HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
 	}
+}
+
+func reviewFromCredentialGate(imported ImportedArtifact, err error, resolution *RecipeResolution) (SourceReview, bool) {
+	var gate *CredentialGate
+	if !errors.As(err, &gate) || gate == nil || imported.Definition.DefinitionID == "" {
+		return SourceReview{}, false
+	}
+	detail := gate.Detail
+	if detail == "" {
+		detail = gate.Error()
+	}
+	return SourceReview{
+		Definition: imported.Definition, AdmissionPending: true, AdmissionDetail: detail, AdmissionGroups: gate.Groups, Recipe: resolution,
+	}, true
 }
 
 func sanitizeDefinitionID(name string) string {

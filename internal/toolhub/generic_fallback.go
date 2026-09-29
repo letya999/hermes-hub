@@ -41,6 +41,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	defer func() {
 		if step != "complete" {
 			slog.Warn("generic Docker fallback did not start", "step", step, "error", err)
+			err = fmt.Errorf("%s: %w", step, err)
 		}
 	}()
 	if definition.Workload.Class == Shared && (definition.Workload.Stateful || len(definition.Credentials) != 0 || len(plan.Execution.Mounts) != 0) {
@@ -178,7 +179,8 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		TokenEnv     string   `json:"token_env"`
 		Command      []string `json:"command"`
 		AllowedTools []string `json:"allowed_tools"`
-	}{genericBridgeListen, "", command, definitionToolNames(definition.Tools)})
+		Transport    string   `json:"transport,omitempty"`
+	}{genericBridgeListen, "", command, definitionToolNames(definition.Tools), definition.Source.NetworkTransport})
 	if err != nil {
 		return genericWorkload{}, err
 	}
@@ -235,6 +237,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		bridgeArgs = append(bridgeArgs, "--mount", spec)
 	}
 	bridgeArgs = append(bridgeArgs, runtimeEnvironmentArgs(definition)...)
+	bridgeArgs = append(bridgeArgs, proxyEnvironmentArgs(definition, "http://"+proxyIP+":3128")...)
 	bridgeArgs = append(bridgeArgs, "--mount", "type=volume,source="+bridgeVol+",target=/hermes-bridge,readonly", imageRef, "companion", "--config", "/hermes-bridge/config.json")
 	if _, err := c.command(ctx, "docker", bridgeArgs...); err != nil {
 		return genericWorkload{}, err
@@ -519,6 +522,15 @@ func (c *genericController) resolveArtifactImage(ctx context.Context, plan contr
 	if c.config.DynamicDefinitions {
 		definition = plan.Definition
 	}
+	if digest := strings.TrimSpace(definition.Source.ArchiveDigest); digest != "" && strings.TrimSpace(c.config.StateRoot) != "" {
+		// A pruned daemon image is recoverable: the verified quarantine tar
+		// under the state root is the durable copy review attested.
+		if _, err := storedArtifactLoader(ctx, filepath.Join(c.config.StateRoot, "artifacts"), digest, plan.Image, 8<<30); err == nil {
+			if id, inspectErr := c.command(ctx, "docker", "image", "inspect", plan.Image, "--format", "{{.Id}}"); inspectErr == nil && dockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
+				return plan.Image, nil
+			}
+		}
+	}
 	if definition.Source.Repository != "" && definition.Source.ArchiveDigest == "" {
 		if _, err := c.command(ctx, "docker", "pull", "--quiet", pinned); err == nil {
 			if id, inspectErr := c.command(ctx, "docker", "image", "inspect", pinned, "--format", "{{.Id}}"); inspectErr == nil && dockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
@@ -545,8 +557,11 @@ func (c *genericController) artifactCommand(ctx context.Context, imageRef string
 		definition = definitions[0]
 	}
 	if definition.Source.Command != "" {
-		command := append([]string{definition.Source.Command}, definition.Source.Args...)
-		return validateArtifactCommand(command)
+		args := definition.Source.Args
+		if definition.Source.NetworkTransport == "" {
+			args = stdioTransportArgs(args)
+		}
+		return validateArtifactCommand(append([]string{definition.Source.Command}, args...))
 	}
 	body, err := c.command(ctx, "docker", "image", "inspect", imageRef, "--format", "{{json .Config}}")
 	if err != nil {
@@ -557,6 +572,9 @@ func (c *genericController) artifactCommand(ctx context.Context, imageRef string
 		return nil, ErrIsolation
 	}
 	command := append(append([]string(nil), config.Entrypoint...), config.Cmd...)
+	if definition.Source.NetworkTransport == "" {
+		command = stdioTransportArgs(command)
+	}
 	return validateArtifactCommand(command)
 }
 

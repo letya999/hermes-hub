@@ -303,12 +303,7 @@ func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definitio
 		for _, key := range reference.Keys {
 			keys[key] = true
 		}
-		valid := true
-		for _, input := range definition.Credentials {
-			if input.Required && !keys[input.Name] {
-				valid = false
-			}
-		}
+		valid := definition.credentialsSatisfied(func(name string) bool { return keys[name] })
 		if valid {
 			matches = append(matches, ownerConnectionMatch{connection: candidate, credential: reference})
 		}

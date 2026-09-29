@@ -128,6 +128,96 @@ func TestDefinitionValidationExamplesAndStrictDecode(t *testing.T) {
 	}
 }
 
+func TestDefinitionCredentialGroupValidation(t *testing.T) {
+	for _, groups := range [][][]string{
+		{{}},
+		{{"SLACK_MCP_XOXP_TOKEN", "SLACK_MCP_XOXP_TOKEN"}},
+		{{"SLACK_MCP_XOXP_TOKEN"}, {"MISSING_TOKEN"}},
+	} {
+		d := statefulContainerDefinition()
+		d.Credentials = []CredentialInput{{Name: "SLACK_MCP_XOXP_TOKEN", Required: true}}
+		d.CredentialGroups = groups
+		if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("groups=%v accepted: %v", groups, err)
+		}
+	}
+	d := statefulContainerDefinition()
+	d.Credentials = []CredentialInput{
+		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
+		{Name: "SLACK_MCP_XOXC_TOKEN", Required: true},
+		{Name: "SLACK_MCP_XOXD_TOKEN", Required: true},
+	}
+	d.CredentialGroups = [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("valid alternatives rejected: %v", err)
+	}
+	if !d.credentialsSatisfied(func(name string) bool { return name == "SLACK_MCP_XOXP_TOKEN" }) ||
+		!d.credentialsSatisfied(func(name string) bool { return name != "SLACK_MCP_XOXP_TOKEN" }) ||
+		d.credentialsSatisfied(func(name string) bool { return name == "SLACK_MCP_XOXC_TOKEN" }) {
+		t.Fatal("credential group satisfaction mis-evaluated")
+	}
+}
+
+func TestDefinitionProxyEnvironmentValidation(t *testing.T) {
+	for _, proxy := range [][]string{
+		{"SLACK_MCP_URL"},
+		{"NO_PROXY"},
+		{"EXTERNAL_NO_PROXY"},
+		{"A_PROXY", "A_PROXY"},
+		{"B1_PROXY", "B2_PROXY", "B3_PROXY", "B4_PROXY", "B5_PROXY", "B6_PROXY", "B7_PROXY", "B8_PROXY", "B9_PROXY"},
+	} {
+		d := statefulContainerDefinition()
+		d.ProxyEnvironment = proxy
+		if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("proxy_environment=%v accepted: %v", proxy, err)
+		}
+	}
+	for _, overlap := range []func(*ToolDefinition){
+		func(d *ToolDefinition) { d.Credentials = []CredentialInput{{Name: "SLACK_MCP_PROXY", Required: true}} },
+		func(d *ToolDefinition) { d.Environment = []string{"SLACK_MCP_PROXY"} },
+		func(d *ToolDefinition) { d.RuntimeEnvironment = map[string]string{"SLACK_MCP_PROXY": "http://evil"} },
+	} {
+		d := statefulContainerDefinition()
+		d.ProxyEnvironment = []string{"SLACK_MCP_PROXY"}
+		overlap(&d)
+		if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatal("overlapping proxy environment accepted")
+		}
+	}
+	d := statefulContainerDefinition()
+	d.ProxyEnvironment = []string{"SLACK_MCP_PROXY", "UPSTREAM_PROXY"}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("valid proxy environment rejected: %v", err)
+	}
+	if args := proxyEnvironmentArgs(d, "http://10.0.0.7:3128"); len(args) != 4 || args[1] != "SLACK_MCP_PROXY=http://10.0.0.7:3128" || args[3] != "UPSTREAM_PROXY=http://10.0.0.7:3128" {
+		t.Fatalf("proxy env args=%v", args)
+	}
+}
+
+func TestDefinitionNetworkTransportValidation(t *testing.T) {
+	for _, bad := range []string{"websocket", "grpc", "SSEv2", " stdio"} {
+		d := statefulContainerDefinition()
+		d.Source.NetworkTransport = bad
+		if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("network_transport %q accepted: %v", bad, err)
+		}
+	}
+	for _, good := range []string{"sse", "http", "streamable-http"} {
+		d := statefulContainerDefinition()
+		d.Source.NetworkTransport = good
+		if err := d.Validate(); err != nil {
+			t.Fatalf("network_transport %q rejected: %v", good, err)
+		}
+	}
+	d := statefulContainerDefinition()
+	d.Transport = RemoteMCP
+	d.Source = DefinitionSource{URL: "https://mcp.example/endpoint", TLSMode: "required"}
+	d.Source.NetworkTransport = "sse"
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("network transport on %s accepted: %v", d.Transport, err)
+	}
+}
+
 func TestBoundedCLISchemaCoversScalarArgumentTypes(t *testing.T) {
 	for _, kind := range []string{"string", "integer", "number", "boolean"} {
 		definition := boundedCLIDefinition()

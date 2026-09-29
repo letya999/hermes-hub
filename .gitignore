@@ -7,6 +7,8 @@
 /dist/
 /bin/
 coverage.out
+/coverage
+/.playwright-mcp/
 **/node_modules/
 **/__pycache__/
 **/.ruff_cache/

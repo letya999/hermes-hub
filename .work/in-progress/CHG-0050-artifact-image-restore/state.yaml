@@ -1,0 +1,36 @@
+schema: 1
+id: CHG-0050-artifact-image-restore
+title: restore pruned artifact images at admission
+status: done
+phase: verified
+started_at: 2026-09-28
+updated_at: 2026-09-28
+completed:
+  - diagnosis live: notion onboarding stuck awaiting-confirm with
+    "artifact-image: reviewed artifact image unavailable"; docker-clean had
+    pruned every hermes-artifact/* image except the freshly built slack one
+  - manual recovery: docker load of /state/artifacts sha256-<archive_digest>
+    tar + docker tag for notion/github/gitlab/google-calendar images
+  - stuck onboarding unblocked end-to-end: status (fresh confirmation
+    nonce) -> confirm -> enable; phase enabled, 24 tools, workload running
+  - durable fix: resolveArtifactImage tries storedArtifactLoader against
+    <state_root>/artifacts with the definition's archive_digest before
+    registry pull / ErrIsolation; controller state_root already mounts the
+    same artifact store
+  - test TestResolveArtifactImageRestoresFromQuarantine: loader invoked with
+    correct dir/digest/image, restored image returns, missing archive still
+    fails closed
+  - just check green: -race -shuffle all packages, coverage 85.01% (>=85),
+    format/vet/staticcheck/docs/actionlint clean
+pending: []
+verified_live:
+  - hubctl up -dir spaces/local -env dev: both images rebuilt, all 5
+    containers healthy on the new binaries
+  - docker rmi hermes-artifact/notion-mcp-server (no containers using it)
+  - MCP tools/call hub-notion-mcp-server-api-get-self-4009920a as local:
+    toolhub admit -> controller restored image from
+    /state/artifacts/sha256-d41eae08...oci.tar (image ID 4a7120b0a79c,
+    identical to deleted image -> loaded from tar, not pulled) ->
+    workload work-cac8f838 up (relay+egress+notion) -> allow -> real
+    Notion API response (bot user, workspace "Artem Letyushev")
+  - total admission path ~21s incl. docker load + egress healthcheck

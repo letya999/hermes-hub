@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-26
+last_verified: 2026-09-27
 ---
 # Operations
 
@@ -79,6 +79,7 @@ An explicit owner `KEY=value` chat message is intercepted before Hermes, rejecte
 best-effort deleted; it is never persisted. The gateway returns a one-time protected
 loopback form generated from the selected connector or MCP Connection Recipe; its fields,
 types, order, delivery metadata and OAuth alternatives are derived at request time.
+Alternative groups stay separate submits of the field names the recipe or the server named. The shortest set is open and the others are collapsed. A tools/list probe speaks stdio when the image command selects sse or http, and a fresh form link is delivered even if an older notice for the same onboarding already exists. The prepare notice includes that loopback form URL. A credential-gate submit with no reviewed broker contract stores the secret in the local encrypted store and finishes confirm and enable from that store; a reviewed contract still requires a broker credential. A failure after that secret is stored says the data was saved and sends the user back to chat confirmation. When that definition version is already a user publication of another principal, the submit keeps the next free patch version and leaves the existing publication in place.
 There is no static credential form. Groups reject credential entry. Set and delete also load the ToolHub registry
 (`HUB_TOOLHUB_STORE` or `spaces/<user>/runtime/toolhub/store.json`) so rotate and
 revoke cut an already-open MCP session and stop affected workloads. Personal-terminal
@@ -236,7 +237,7 @@ Example from the repository root:
 
 ```text
 HUB_SUPERVISOR_AUTH=<host-control-token> hubctl supervisor --spaces spaces
-HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8765 hubctl render --dir spaces/alice
+HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8876 hubctl render --dir spaces/alice
 ```
 
 The runtime uses pinned Hermes `/api/sessions` and `/v1/runs` for each accepted job.
@@ -352,8 +353,8 @@ Example with a spool mounted on the Linux deployment host:
 
 ```text
 hubctl execution-audit --spool /mnt/alice-gateway --user alice
-hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.1
-hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.1 --apply
+hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8876 --native-cron disabled --compatibility-release 0.2.1
+hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8876 --native-cron disabled --compatibility-release 0.2.1 --apply
 hubctl up --dir spaces/alice --user alice --env prod
 ```
 

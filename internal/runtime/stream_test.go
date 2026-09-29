@@ -161,6 +161,14 @@ func TestToolHubProgressMessages(t *testing.T) {
 	if got := toolProgressText(nativeRunEvent{Event: "tool.completed"}); !strings.Contains(got, "завершён") {
 		t.Fatalf("completed progress=%q", got)
 	}
+	preparing := toolProgressText(nativeRunEvent{Event: "tool.completed", Tool: "mcp__toolhub__prepare_source", Output: `{"phase":"preparing"}`})
+	if strings.Contains(preparing, "образ собран") || !strings.Contains(preparing, "фоне") {
+		t.Fatalf("preparing progress=%q", preparing)
+	}
+	answered := toolProgressText(nativeRunEvent{Event: "tool.completed", Tool: "mcp__toolhub__prepare_source"})
+	if strings.Contains(answered, "образ собран") {
+		t.Fatalf("prepare completion claimed the image was built: %q", answered)
+	}
 }
 
 func TestPersistentStreamAdmissionApprovalAndTerminal(t *testing.T) {

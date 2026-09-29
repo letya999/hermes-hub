@@ -46,4 +46,10 @@ Extend SPEC-0026 through one generic lifecycle for the exact repositories
     detached context. Results live in the store, not the HTTP call — status
     reports `preparing`, `awaiting-*` or `failed` after any disconnect or
     restart, and open owner sessions are nudged when the background prepare
-    settles. Client timeouts must never abort the build or its durable record.
+    settles. That settle also delivers a channel notice and a continuation job
+    through communication-hub; the MCP log is not the only wake. Client timeouts
+    must never abort the build or its durable record. A `tools/list` that fails
+    both isolated probes while naming the secret env vars it needs does not
+    become a failed install or a guessed tool contract: onboarding collects
+    those secrets on the protected form, then lists tools with the submitted
+    values. An error that names no secret still fails the prepare.

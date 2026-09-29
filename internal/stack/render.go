@@ -270,7 +270,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		cliproxy["networks"] = sharedNetworks
 		services["cliproxy"] = cliproxy
 
-		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HOME": "/tmp", "TZ": s.Timezone}
+		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081"}
+		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
+		if s.ExecutionMode != "" {
+			supervisorURL = s.SupervisorURL
+		}
+		if supervisorURL != "" {
+			toolhubEnv["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
+			toolhubEnv["HUB_COMMUNICATION_AUTH"] = "${HUB_SUPERVISOR_AUTH}"
+		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
 			toolhubEnv[key] = value
 		}
@@ -359,6 +367,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway["environment"] = gatewayEnvironment
 		gateway["networks"] = sharedNetworks
 		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}, brokerSecrets("communication")}
+		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
+		// stays the single infra-owner fallback when the file is absent.
+		usersFile := filepath.Join(dir, "communication.users.yaml")
+		if info, err := os.Stat(usersFile); err == nil && info.Mode().IsRegular() {
+			gatewayEnvironment["HUB_COMMUNICATION_CONFIG"] = "/config/communication.users.yaml"
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(usersFile), "target": "/config/communication.users.yaml", "read_only": true})
+		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
 		}
@@ -495,6 +510,11 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
+	if s.RendersInfra() {
+		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
+			return err
+		}
+	}
 	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets); err != nil {
 		return err
 	}
@@ -519,17 +539,10 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = materializeHermesConfig(dir, s); err != nil {
 		return err
 	}
-	soul, err := os.ReadFile(filepath.Join(root, "config", "SOUL.md"))
-	if err != nil {
-		return err
-	}
-	soulPath := filepath.Join(dir, "SOUL.md")
 	// Init seeds only a stub; heal it to the global template. Real user edits
 	// differ from the stub and are never overwritten.
-	if existing, readErr := os.ReadFile(soulPath); os.IsNotExist(readErr) || string(existing) == userSoulStub {
-		if err = atomic(soulPath, soul); err != nil {
-			return err
-		}
+	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
+		return err
 	}
 	for _, p := range []string{"hermes." + environment + ".yaml", "SOUL.md"} {
 		if err = os.Chmod(filepath.Join(dir, p), 0644); err != nil {

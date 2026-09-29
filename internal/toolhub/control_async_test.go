@@ -303,13 +303,29 @@ func TestPrepareSelfInstallConcurrentCallsShareOneReview(t *testing.T) {
 	}
 	// The responses may carry different ids: the fast caller gets the finished
 	// record, the timed-out one the stub — which must resolve to the same
-	// onboarding through the superseded_by pointer.
-	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": second["onboarding_id"]})
-	if err != nil {
-		t.Fatal(err)
+	// onboarding through the superseded_by pointer. The released review runs
+	// in the background, so status is polled until the result lands.
+	var st map[string]any
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		var err error
+		st, err = control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": second["onboarding_id"]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st["phase"] == PhaseAwaitingConfirm || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if st["onboarding_id"] != a["onboarding_id"] || st["phase"] != PhaseAwaitingConfirm {
+	if st["phase"] != PhaseAwaitingConfirm {
 		t.Fatalf("stub did not resolve to finished record: status=%v", st)
+	}
+	if st["onboarding_id"] == second["onboarding_id"] && st["onboarding_id"] != a["onboarding_id"] {
+		t.Fatalf("status kept the superseded stub instead of the finished record: status=%v", st)
+	}
+	if a["phase"] == PhaseAwaitingConfirm && st["onboarding_id"] != a["onboarding_id"] {
+		t.Fatalf("concurrent callers disagree on the finished record: first=%v status=%v", a, st)
 	}
 }
 
