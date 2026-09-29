@@ -111,6 +111,9 @@ func writeHermesSources(t *testing.T, ctxRoot string) {
 		if err := os.WriteFile(filepath.Join(ctxRoot, "hermes."+env+".yaml"), []byte("model: {}"), 0600); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(ctxRoot, "runtime."+env+".env"), []byte("OPENAI_API_KEY=test-key\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

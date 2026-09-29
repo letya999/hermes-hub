@@ -1,5 +1,5 @@
 change: CHG-0009
-status: ready-for-acceptance
+status: done
 updated: 2026-09-11
 steps:
   - name: scope-paths

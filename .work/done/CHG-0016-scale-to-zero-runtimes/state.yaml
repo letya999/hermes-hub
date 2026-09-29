@@ -1,6 +1,6 @@
 change: CHG-0016
-status: in_progress
-updated: 2026-09-12
+status: done
+updated: 2026-09-15
 evidence:
   - ADR-0014, SPEC-0012 and SPEC-0013 accepted and indexed
   - GitHub issues 14-19, 33, 46 and 55 rewritten; shared open-issue context aligned
@@ -9,6 +9,7 @@ evidence:
   - just docker-check passed runtime smoke and real pinned Hermes 0.21.0 API contract
   - integration contract passed host supervisor Docker smoke: warm reuse, idle reap, cold restore and logical runtime ID
   - persistent runtime image smoke passed authenticated `/readyz` and `/healthz` with no live provider
+  - remaining steps shipped in CHG-0018 (execution migration gates) and CHG-0023 (durable routines/wake)
 steps:
   - name: contracts-and-issue-alignment
     status: done
@@ -21,6 +22,6 @@ steps:
   - name: multi-user-routing
     status: done
   - name: durable-routines-and-wake
-    status: pending
+    status: done
   - name: migration-and-real-gates
-    status: pending
+    status: done
