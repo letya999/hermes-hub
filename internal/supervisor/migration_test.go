@@ -10,6 +10,42 @@ import (
 	"testing"
 )
 
+func TestSupervisedRuntimeUsesDevEnvFile(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	m.cfg.Environment = "dev"
+	b, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--env-file "+filepath.Join(root, "runtime.dev.env")) {
+		t.Fatal("dev runtime env file missing from docker run")
+	}
+	if strings.Contains(joined, "runtime.prod.env") {
+		t.Fatal("prod runtime env selected for dev supervisor")
+	}
+	if !strings.Contains(joined, "hermes.dev.yaml") {
+		t.Fatal("dev hermes config not mounted")
+	}
+	if strings.Contains(joined, "test-key") {
+		t.Fatal("secret exposed in arguments")
+	}
+}
+
+func TestNormalizeRejectsMissingRuntimeEnvFile(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	if err := os.Remove(filepath.Join(root, "runtime.prod.env")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.normalize(binding(root)); err == nil {
+		t.Fatal("missing runtime env file accepted")
+	}
+}
+
 func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nfeatures: [workspace, browser]\nbrowser_port: 6080\n"), 0600); err != nil {

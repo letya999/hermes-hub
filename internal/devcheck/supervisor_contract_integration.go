@@ -64,6 +64,9 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if err := os.WriteFile(filepath.Join(contextRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH="+auth+"\nOPENAI_API_KEY=probe-openai-key-0123456789\nOPENAI_BASE_URL="+providerURL+"\n"), 0600); err != nil {
 		return err
 	}
+	if err := os.WriteFile(filepath.Join(contextRoot, "runtime.prod.env"), []byte("OPENAI_API_KEY=probe-openai-key-0123456789\n"), 0600); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(contextRoot, "hermes.prod.yaml"), []byte("model:\n  provider: custom\n  default: gpt-4o-mini\n  base_url: "+providerURL+"\n"), 0644); err != nil {
 		return err
 	}

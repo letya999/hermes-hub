@@ -72,6 +72,7 @@ type Config struct {
 	SpacesRoot    string
 	StateDir      string
 	RuntimeAuth   string
+	Environment   string
 	WarmTTL       time.Duration
 	MaxConcurrent int
 	CPU           string
@@ -396,7 +397,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
-	selection, selected, selectionErr := stack.ReadExecution(binding.ContextRoot, envOr("HUB_ENV", "prod"), binding.UserID)
+	selection, selected, selectionErr := stack.ReadExecution(binding.ContextRoot, m.environment(), binding.UserID)
 	if selectionErr != nil {
 		return Runtime{}, selectionErr
 	}
@@ -1568,7 +1569,11 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	for _, file := range []string{"runtime." + envOr("HUB_ENV", "prod") + ".env", "hermes." + envOr("HUB_ENV", "prod") + ".yaml", "SOUL.md"} {
+	runtimeEnv := "runtime." + m.environment() + ".env"
+	if info, err := os.Lstat(filepath.Join(abs, runtimeEnv)); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return Binding{}, errors.New("runtime env file is unavailable")
+	}
+	for _, file := range []string{"hermes." + m.environment() + ".yaml", "SOUL.md"} {
 		info, err := os.Lstat(filepath.Join(abs, file))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Binding{}, errors.New("runtime input file unavailable")
@@ -1633,7 +1638,7 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 }
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) ([]string, error) {
-	env := envOr("HUB_ENV", "prod")
+	env := m.environment()
 	m.prepareSpawnFiles(binding, env)
 	project := "hermes-hub-" + binding.UserID + "-" + env
 	// Spawned runtimes join the single shared runtime network where the shared
@@ -1690,7 +1695,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if binding.OrganizationRoot != "" {
 		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
 	}
-	for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+envOr("HUB_ENV", "prod")+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
+	for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
 		if _, err := os.Stat(file.source); err == nil {
 			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
 		}
@@ -1834,6 +1839,16 @@ func validID(value string) bool {
 	}
 	return true
 }
+func (m *Manager) environment() string {
+	if m != nil {
+		switch m.cfg.Environment {
+		case "dev", "prod":
+			return m.cfg.Environment
+		}
+	}
+	return envOr("HUB_ENV", "prod")
+}
+
 func envOr(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value

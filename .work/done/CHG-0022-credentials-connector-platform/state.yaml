@@ -1,10 +1,10 @@
 change: CHG-0022
 title: Credentials and Connector Platform (M3)
-status: in-progress
+status: done
 issues: [47, 48, 51, 27, 49, 50, 28]
 follow_ups: [73, 74]
 started: 2026-09-13
-updated: 2026-09-13
+updated: 2026-09-15
 implementation:
   ciphertext_store: done
   vault_locator_seam: done
