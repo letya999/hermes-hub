@@ -1,10 +1,10 @@
 schema: 1
 id: CHG-0053-user-diagnostics
 title: User-scoped runtime diagnostics and logs
-status: in_progress
-phase: verification
+status: done
+phase: merged
 started_at: 2026-09-28
-updated_at: 2026-09-28
+updated_at: 2026-09-29
 completed:
   - diagnostics control op scoped by authenticated principal, context and runtime
   - visibility derived from live store bindings; revoked bindings excluded
@@ -15,6 +15,14 @@ completed:
   - collector now tails work-* workload containers in addition to hermes-*
   - diagnostics MCP tool contract, concurrency cap and cancellation
   - seven regression tests covering isolation, redaction, bounds, revocation
-pending:
-  - just check
-evidence: []
+  - workload scope derived from bindings via deterministic WorkloadInstanceID
+    when no persisted controller record exists (status "inferred")
+pending: []
+evidence:
+  - internal/toolhub/diagnostics.go
+  - internal/toolhub/diagnostics_test.go
+  - internal/diagnostics/collector.go
+  - specs/active/SPEC-0034-user-diagnostics.md
+  - docs/operations.md
+  - merge eb492b8 (PR #155): initial user-scoped diagnostics
+  - merge ff7fb83 (PR #156): workload scope derivation from bindings
