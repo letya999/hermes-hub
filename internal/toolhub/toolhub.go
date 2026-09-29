@@ -245,13 +245,24 @@ type WorkloadPolicy struct {
 }
 
 type ExecutionPolicy struct {
-	TimeoutSeconds int      `json:"timeout_seconds"`
-	OutputBytes    int      `json:"output_bytes"`
-	CPUMillis      int      `json:"cpu_millis"`
-	MemoryMiB      int      `json:"memory_mib"`
-	MaxPIDs        int      `json:"max_pids"`
-	Egress         []string `json:"egress"`
-	Mounts         []Mount  `json:"mounts,omitempty"`
+	TimeoutSeconds int          `json:"timeout_seconds"`
+	OutputBytes    int          `json:"output_bytes"`
+	CPUMillis      int          `json:"cpu_millis"`
+	MemoryMiB      int          `json:"memory_mib"`
+	MaxPIDs        int          `json:"max_pids"`
+	Egress         []string     `json:"egress"`
+	TCPForwards    []TCPForward `json:"tcp_forwards,omitempty"`
+	Mounts         []Mount      `json:"mounts,omitempty"`
+}
+
+// TCPForward binds a loopback listener inside the workload to one reviewed
+// host:port destination supplied by a non-secret credential environment
+// variable. The companion relays each accepted connection through the
+// workload HTTP CONNECT proxy, so native protocols (databases, SSH) keep
+// the same reviewed egress boundary instead of bypassing it.
+type TCPForward struct {
+	Listen    int    `json:"listen"`
+	TargetEnv string `json:"target_env"`
 }
 
 type Mount struct {
@@ -492,8 +503,20 @@ func (s DefinitionSource) validate(transport Transport) error {
 }
 
 func (e ExecutionPolicy) validate(class WorkloadClass) error {
-	if e.TimeoutSeconds < 1 || e.TimeoutSeconds > MaxExecutionTimeout || e.OutputBytes < 1 || e.OutputBytes > MaxOutputBytes || e.CPUMillis < 1 || e.CPUMillis > MaxCPUMillis || e.MemoryMiB < 16 || e.MemoryMiB > MaxMemoryMiB || e.MaxPIDs < 1 || e.MaxPIDs > MaxPIDs || len(e.Egress) == 0 || len(e.Egress) > 32 || len(e.Mounts) > 8 {
+	if e.TimeoutSeconds < 1 || e.TimeoutSeconds > MaxExecutionTimeout || e.OutputBytes < 1 || e.OutputBytes > MaxOutputBytes || e.CPUMillis < 1 || e.CPUMillis > MaxCPUMillis || e.MemoryMiB < 16 || e.MemoryMiB > MaxMemoryMiB || e.MaxPIDs < 1 || e.MaxPIDs > MaxPIDs || len(e.Egress) == 0 || len(e.Egress) > 32 || len(e.Mounts) > 8 || len(e.TCPForwards) > 8 {
 		return fmt.Errorf("%w: execution limits are missing or unbounded", ErrInvalid)
+	}
+	listenPorts := map[int]bool{}
+	forwardTargets := map[string]bool{}
+	for _, forward := range e.TCPForwards {
+		// The companion runs unprivileged and listens on loopback only, so
+		// privileged ports can never bind; each listener and each target
+		// environment variable must be unique and credential-shaped.
+		if forward.Listen < 1024 || forward.Listen > 65535 || listenPorts[forward.Listen] || !credentialPattern.MatchString(forward.TargetEnv) || forwardTargets[forward.TargetEnv] {
+			return fmt.Errorf("%w: invalid tcp forward", ErrInvalid)
+		}
+		listenPorts[forward.Listen] = true
+		forwardTargets[forward.TargetEnv] = true
 	}
 	seen := map[string]bool{}
 	for _, host := range e.Egress {

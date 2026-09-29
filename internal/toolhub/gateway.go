@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,10 +57,28 @@ type envBackend interface {
 // injected credential values (for example a self-hosted API base URL collected
 // by a credential form). The workload egress ACL is fixed at definition time,
 // so connector endpoints supplied as credentials would otherwise be denied.
+// Non-secret *_ENDPOINT / *_ENDPOINT_<n> values carry bare host:port targets
+// (database servers, SSH bastions); the same value drives both the Squid ACL
+// entry and any companion TCP forward bound to that environment variable.
 func credentialEgressHosts(env map[string]string) []string {
 	hosts := make([]string, 0, len(env))
 	for name, value := range env {
-		if !strings.HasSuffix(name, "_URL") || secretName(name) {
+		if secretName(name) {
+			continue
+		}
+		if strings.HasSuffix(name, "_ENDPOINT") || strings.Contains(name, "_ENDPOINT_") {
+			host, port, err := net.SplitHostPort(strings.TrimSpace(value))
+			if err != nil || !endpointHostValid(host) {
+				continue
+			}
+			portNum, err := strconv.Atoi(port)
+			if err != nil || portNum < 1 || portNum > 65535 {
+				continue
+			}
+			hosts = append(hosts, strings.ToLower(host)+":"+port)
+			continue
+		}
+		if !strings.HasSuffix(name, "_URL") {
 			continue
 		}
 		parsed, err := url.Parse(strings.TrimSpace(value))
@@ -76,6 +95,19 @@ func credentialEgressHosts(env map[string]string) []string {
 		hosts = append(hosts, host)
 	}
 	return hosts
+}
+
+// endpointHostValid accepts dotted hostnames and IPv4 literals, the same
+// shapes the Squid dstdomain ACL understands; bare single-label names and
+// IPv6 literals stay denied.
+func endpointHostValid(host string) bool {
+	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.To4() != nil
+	}
+	return hostPattern.MatchString(host) && strings.Contains(host, ".")
 }
 
 func mergeEgressHosts(egress []string, hosts []string) []string {

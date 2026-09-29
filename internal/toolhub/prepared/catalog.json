@@ -65,5 +65,57 @@
     "probe_tools": [{"tool": "jira_get_all_projects", "env": "JIRA_URL"}, {"tool": "confluence_list_page_templates", "env": "CONFLUENCE_URL"}],
     "runbook": "docs/prepared-connectors.md#atlassian",
     "handoff": "Install https://github.com/sooperset/mcp-atlassian; reuse or rotate my existing Broker connection. Fill the Jira block, the Confluence block or both in the protected Broker form; each URL host becomes an egress destination. Verify jira_get_all_projects or confluence_list_page_templates, then do not change provider data without an explicit instruction."
+  },
+  {
+    "id": "txttsql", "name": "TXT-to-SQL (primary SQL)", "license": "AGPL-3.0-only",
+    "source": {"repository": "https://github.com/letya999/txttsql-mcp", "commit_sha": "75756b1e6f3917cace04ad1a8b075983cfeb3b9d"},
+    "language": "rust", "entrypoint": ["/app/target/release/txttsql-mcp", "--config", "/app/config.toml"],
+    "connection": {"fields": [
+      {"name": "TXTTSQL_SOURCES", "type": "json", "required": true, "secret": true, "delivery": "env", "target": "TXTTSQL_SOURCES"},
+      {"name": "TXTTSQL_ENDPOINT", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TXTTSQL_ENDPOINT"},
+      {"name": "TXTTSQL_ENDPOINT_2", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "TXTTSQL_ENDPOINT_2"},
+      {"name": "TXTTSQL_ENDPOINT_3", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "TXTTSQL_ENDPOINT_3"},
+      {"name": "TXTTSQL_PASSWORD_1", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "TXTTSQL_PASSWORD_1"},
+      {"name": "TXTTSQL_PASSWORD_2", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "TXTTSQL_PASSWORD_2"},
+      {"name": "TXTTSQL_PASSWORD_3", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "TXTTSQL_PASSWORD_3"},
+      {"name": "TXTTSQL_CONFIG", "type": "file", "required": false, "secret": true, "delivery": "file", "target": "/app/config.toml"},
+      {"name": "TXTTSQL_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/txttsql/ca.pem"}
+    ]},
+    "contract_id": "txttsql-sql", "contract_revision": 1, "stateful": false,
+    "tcp_forwards": [
+      {"listen": 15432, "target_env": "TXTTSQL_ENDPOINT"},
+      {"listen": 15433, "target_env": "TXTTSQL_ENDPOINT_2"},
+      {"listen": 15434, "target_env": "TXTTSQL_ENDPOINT_3"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["list_sources", "list_tables", "describe_table", "validate_sql", "execute_sql"],
+    "probe_tool": "list_sources",
+    "runbook": "docs/prepared-connectors.md#txt-to-sql",
+    "handoff": "Install https://github.com/letya999/txttsql-mcp as the reviewed read-only SQL engine. In the protected Broker form paste the sources JSON pointing each source at its managed forward (127.0.0.1:15432/15433/15434) and give the real host:port endpoints; database names, schemas and roles stay inside the sources JSON, not tool arguments. Verify list_sources, then do not change provider data without an explicit instruction."
+  },
+  {
+    "id": "dbhub", "name": "DBHub (fallback SQL)", "license": "MIT",
+    "source": {"repository": "https://github.com/bytebase/dbhub", "commit_sha": "8c09c868894f1ea011565ec35215ac36e5638c1f"},
+    "language": "node", "entrypoint": ["node", "/app/dist/index.js"],
+    "connection": {"fields": [
+      {"name": "DSN", "type": "string", "required": true, "secret": true, "delivery": "env", "target": "DSN"},
+      {"name": "DBHUB_ENDPOINT", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "DBHUB_ENDPOINT"},
+      {"name": "DBHUB_SSH_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "DBHUB_SSH_ENDPOINT"},
+      {"name": "SSH_HOST", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "SSH_HOST"},
+      {"name": "SSH_PORT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "SSH_PORT"},
+      {"name": "SSH_USER", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "SSH_USER"},
+      {"name": "SSH_PASSWORD", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "SSH_PASSWORD"},
+      {"name": "SSH_KEY", "type": "token", "required": false, "secret": true, "delivery": "file", "target": "/run/dbhub/id_rsa"},
+      {"name": "SSH_PASSPHRASE", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "SSH_PASSPHRASE"},
+      {"name": "DBHUB_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/dbhub/ca.pem"}
+    ]},
+    "contract_id": "dbhub-sql", "contract_revision": 1, "stateful": false,
+    "preflight_environment": {"DSN": "sqlite:///:memory:"},
+    "tcp_forwards": [
+      {"listen": 15432, "target_env": "DBHUB_ENDPOINT"},
+      {"listen": 15433, "target_env": "DBHUB_SSH_ENDPOINT"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["execute_sql", "search_objects"],
+    "runbook": "docs/prepared-connectors.md#dbhub",
+    "handoff": "Install https://github.com/bytebase/dbhub as the fallback read-only SQL engine. In the protected Broker form paste the DSN aimed at the managed forward (127.0.0.1:15432) and give the real host:port endpoint; a read-only database role is mandatory because env-mode DBHub runs without its TOML read-only policy. Verify a SELECT against the real database, then do not change provider data without an explicit instruction."
   }
 ]

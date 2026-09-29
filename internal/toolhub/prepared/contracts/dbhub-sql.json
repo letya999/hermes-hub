@@ -1,0 +1,133 @@
+{
+  "id": "dbhub-sql",
+  "revision": 1,
+  "title": "DBHub database connection",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "dsn",
+      "label": "Database DSN (postgres://user:password@127.0.0.1:15432/database when using the managed forward)",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 2048
+    },
+    {
+      "id": "endpoint",
+      "label": "Database endpoint host:port for the managed TCP forward (e.g. db.example.com:5432)",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 256
+    },
+    {
+      "id": "ssh_endpoint",
+      "label": "SSH bastion host:port for the managed forward (optional, enables the tunnel)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    },
+    {
+      "id": "ssh_host",
+      "label": "SSH host dbhub dials; 127.0.0.1 when the endpoint goes through the managed forward",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    },
+    {
+      "id": "ssh_port",
+      "label": "SSH port dbhub dials; 15433 when the endpoint goes through the managed forward",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    },
+    {
+      "id": "ssh_user",
+      "label": "SSH user (required when ssh_endpoint is set)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    },
+    {
+      "id": "ssh_password",
+      "label": "SSH password (either this or ssh_key is required for the tunnel)",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 4096
+    },
+    {
+      "id": "ssh_key",
+      "label": "SSH private key (OpenSSH/PEM); delivered as a read-only file",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 16384
+    },
+    {
+      "id": "ssh_passphrase",
+      "label": "SSH key passphrase (optional)",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 4096
+    },
+    {
+      "id": "ca_pem",
+      "label": "CA bundle PEM for database TLS (optional; reference /run/dbhub/ca.pem from the DSN)",
+      "kind": "pem",
+      "required": false,
+      "max_bytes": 16384
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "dsn",
+      "target": "DSN"
+    },
+    {
+      "type": "env",
+      "field": "endpoint",
+      "target": "DBHUB_ENDPOINT"
+    },
+    {
+      "type": "env",
+      "field": "ssh_endpoint",
+      "target": "DBHUB_SSH_ENDPOINT"
+    },
+    {
+      "type": "env",
+      "field": "ssh_host",
+      "target": "SSH_HOST"
+    },
+    {
+      "type": "env",
+      "field": "ssh_port",
+      "target": "SSH_PORT"
+    },
+    {
+      "type": "env",
+      "field": "ssh_user",
+      "target": "SSH_USER"
+    },
+    {
+      "type": "env",
+      "field": "ssh_password",
+      "target": "SSH_PASSWORD"
+    },
+    {
+      "type": "file",
+      "field": "ssh_key",
+      "target": "/run/dbhub/id_rsa",
+      "env_name": "SSH_KEY"
+    },
+    {
+      "type": "env",
+      "field": "ssh_passphrase",
+      "target": "SSH_PASSPHRASE"
+    },
+    {
+      "type": "file",
+      "field": "ca_pem",
+      "target": "/run/dbhub/ca.pem",
+      "env_name": "DBHUB_CA_FILE"
+    }
+  ]
+}
