@@ -7,4 +7,5 @@ last_verified: "2026-09-28"
 
 | Документ | Когда открывать |
 | --- | --- |
+| [Evidence](evidence.md) | multi-consumer-credentials: проверки |
 | [Несколько кредов на connection: consumer_id дискриминатор](plan.md) | Несколько кредов на connection: consumer_id дискриминатор |
