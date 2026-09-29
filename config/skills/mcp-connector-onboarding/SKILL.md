@@ -30,6 +30,10 @@ self-install request, not a request for package-management instructions.
 - Follow the returned `onboarding_id` with `mcp__toolhub__status`. If credentials are
   required, call `mcp__toolhub__required_credentials` and show the returned protected
   `form_url` or OAuth URL. Never ask the owner to paste a secret into chat.
+- A server that exits before `tools/list` until a real credential works is still this
+  flow. `awaiting-credentials` means call `required_credentials` and send the form URL.
+  It does not mean the install failed, and it is not permission to use the terminal,
+  `npx`, or `config.yaml`.
 - On a follow-up without the original URL or `onboarding_id`, call `status` with the
   connector's `definition_id` (for example `notion-mcp-server`). ToolHub resolves the
   latest onboarding for this user. If it is awaiting credentials, call

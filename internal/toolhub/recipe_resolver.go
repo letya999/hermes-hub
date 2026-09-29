@@ -355,6 +355,9 @@ func resolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 		connection = mergeConnection(connection, fields)
 	}
 	for name, data := range files {
+		if testFixturePath(name) {
+			continue
+		}
 		base := strings.ToLower(path.Base(name))
 		switch {
 		case strings.HasPrefix(base, "dockerfile"):
@@ -461,17 +464,35 @@ func connectionFieldFromEnv(line string) (ConnectionField, bool) {
 		value = strings.TrimSpace(strings.SplitN(rawValue, "#", 2)[0])
 	}
 	secret := secretName(key)
-	if value != "" && !secret {
+	placeholder := placeholderValue(value)
+	if value != "" && !secret && !placeholder {
 		return ConnectionField{}, false
 	}
 	// Heuristic sources cannot prove a non-secret knob is mandatory: an
 	// uncommented NAME= in .env.example is conventionally optional. Only
-	// secret-class names and explicit manifest isRequired flags are required.
-	field := ConnectionField{Name: key, Type: connectionType(key), Required: secret, Secret: secret, Delivery: "env", Target: key}
+	// secret-class names, explicit manifest isRequired flags, and placeholder
+	// values are required — "JIRA_URL=https://your-company.example" is the
+	// author's replace-me marker, not a usable default (mcp-atlassian lists
+	// zero tools until it is filled).
+	field := ConnectionField{Name: key, Type: connectionType(key), Required: secret || placeholder, Secret: secret, Delivery: "env", Target: key}
 	if strings.Contains(strings.ToUpper(key), "CREDENTIALS") && strings.HasSuffix(strings.ToLower(value), ".json") {
 		field.Type, field.Delivery = "json", "json"
 	}
 	return field, true
+}
+
+// placeholderValue reports whether an .env.example value is a replace-me
+// marker rather than a usable default. "https://gitlab.com" ships working
+// configuration; "https://your-company.atlassian.net" does not — the field
+// must be collected from the owner like a credential.
+func placeholderValue(value string) bool {
+	value = strings.ToLower(strings.Trim(value, `"'`))
+	for _, marker := range []string{"your-", "your_", "your.", "example.", "changeme", "change-me", "change_me", "placeholder", "xxxx", "xxx", "todo", "replace", "_here", "-here", "dummy", "insert-", "insert_", "<", ">"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func findFile(files map[string][]byte, base string) ([]byte, string) {
@@ -1145,6 +1166,21 @@ func envKey(value string) string {
 		return ""
 	}
 	return value
+}
+
+// testFixturePath reports recipe files that live under upstream test or
+// fixture directories. Their env vars configure test infrastructure (e.g. a
+// throwaway Atlassian container's DB password), not the MCP server itself, so
+// they must not become connection inputs.
+func testFixturePath(name string) bool {
+	parts := strings.Split(strings.ToLower(name), "/")
+	for _, part := range parts[:len(parts)-1] {
+		switch part {
+		case "test", "tests", "testdata", "e2e", "fixture", "fixtures", "__tests__":
+			return true
+		}
+	}
+	return false
 }
 
 // nonCredentialEnvName excludes names that can never be user-supplied

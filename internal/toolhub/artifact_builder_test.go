@@ -27,13 +27,13 @@ func TestRestrictedBuildKitProfile(t *testing.T) {
 	}
 	for _, required := range []string{
 		"moby/buildkit@sha256:93efd7f1c17f16cea080c34f68e19863b9fe541db550bf607221ce425c0ab9ef",
-		"none", "ALL", "SETUID", "SETGID", "2g", "512", "--oci-worker-no-process-sandbox", "--oci-worker-snapshotter=native",
+		"none", "ALL", "SETUID", "SETGID", "2g", "512", "--oci-worker-no-process-sandbox", "--oci-worker-snapshotter=native", "--oci-worker-gc-keepstorage=4096",
 	} {
 		if !slices.Contains(args, required) {
 			t.Fatalf("builder profile omitted %q: %v", required, args)
 		}
 	}
-	for _, forbidden := range []string{"--privileged", "host", "/var/run/docker.sock"} {
+	for _, forbidden := range []string{"--privileged", "host", "/var/run/docker.sock", "--oci-worker-gc-keepbytes"} {
 		if slices.Contains(args, forbidden) {
 			t.Fatalf("builder profile permits %q", forbidden)
 		}

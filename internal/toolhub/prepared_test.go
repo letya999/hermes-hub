@@ -15,7 +15,7 @@ import (
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := PreparedCatalog()
-	if err != nil || len(entries) != 4 {
+	if err != nil || len(entries) != 5 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
@@ -23,6 +23,9 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 			files := map[string]string{"package.json": `{"bin":{"first":"build/index.js","alias":"./build/index.js"}}`, "package-lock.json": "{}"}
 			if entry.ID == "notion" {
 				files["package.json"] = `{"bin":{"notion":"bin/cli.mjs"}}`
+			}
+			if entry.Language == "python" {
+				files = map[string]string{"pyproject.toml": "[project]\nname = \"mcp-atlassian\"\n\n[project.scripts]\nmcp-atlassian = \"mcp_atlassian:main\"\n"}
 			}
 			if entry.Language == "go" {
 				files = map[string]string{"go.mod": "module github.com/github/github-mcp-server\n\ngo 1.25\n", "cmd/github-mcp-server/main.go": "package main\nfunc main(){}", "cmd/helper/main.go": "package main\nfunc main(){}"}

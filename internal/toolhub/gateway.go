@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -114,6 +115,9 @@ type Gateway struct {
 	Store                      *Store
 	Backend                    ToolBackend
 	Tokens                     map[string]identity.Envelope
+	primaryToken               string
+	tokensFile                 string
+	mu                         sync.Mutex
 	DisableLocalhostProtection bool
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
@@ -175,17 +179,37 @@ func (g *Gateway) protect() http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if err := g.refreshProjection(g.projections[token]); err != nil {
+		projection, err := g.projectionFor(token)
+		if err != nil {
+			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := g.refreshProjection(projection); err != nil {
 			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		corr := headerCorrelation(r.Header.Get(HeaderJobID), r.Header.Get(HeaderRunID))
 		r = r.WithContext(withCallCorrelation(r.Context(), corr))
-		g.projections[token].handler.ServeHTTP(w, r)
+		projection.handler.ServeHTTP(w, r)
 	})
 }
 
 func (g *Gateway) authenticate(value string) (string, bool) {
+	if token, ok := g.matchToken(value); ok {
+		return token, true
+	}
+	// A sibling space enrolled after process start is invisible until the
+	// tokens file is read again. Reload only on a miss so the steady path
+	// stays the in-memory map.
+	if g.reloadTokens() {
+		return g.matchToken(value)
+	}
+	return "", false
+}
+
+func (g *Gateway) matchToken(value string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	var found identity.Envelope
 	var foundToken string
 	matched := false
@@ -201,6 +225,67 @@ func (g *Gateway) authenticate(value string) (string, bool) {
 		return "", false
 	}
 	return foundToken, true
+}
+
+func (g *Gateway) reloadTokens() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.tokensFile == "" {
+		return false
+	}
+	extra, err := loadTokenEnvelopes(g.tokensFile)
+	if err != nil {
+		log.Printf("toolhub token reload skipped: %v", err)
+		return false
+	}
+	primaryAuth, ok := g.Tokens[g.primaryToken]
+	if !ok || g.primaryToken == "" {
+		return false
+	}
+	next := map[string]identity.Envelope{g.primaryToken: primaryAuth}
+	for token, auth := range extra {
+		if token == g.primaryToken {
+			continue
+		}
+		if _, dup := next[token]; dup {
+			log.Printf("toolhub token reload skipped a duplicate bearer")
+			continue
+		}
+		next[token] = auth
+	}
+	g.Tokens = next
+	return true
+}
+
+func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
+	g.mu.Lock()
+	if projection, ok := g.projections[token]; ok {
+		g.mu.Unlock()
+		return projection, nil
+	}
+	auth, ok := g.Tokens[token]
+	g.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: token projection", ErrUnauthorized)
+	}
+	server, tools, err := g.projectedServer(auth)
+	if err != nil {
+		return nil, err
+	}
+	projection := &gatewayProjection{
+		auth: auth, server: server, tools: tools,
+		handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+			SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
+			PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
+		}),
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if existing, ok := g.projections[token]; ok {
+		return existing, nil
+	}
+	g.projections[token] = projection
+	return projection, nil
 }
 
 func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
@@ -243,7 +328,13 @@ func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, p
 // RefreshProjection updates existing MCP sessions without restarting Hermes.
 // Each bearer token has its own server and session namespace.
 func (g *Gateway) RefreshProjection() error {
+	g.mu.Lock()
+	list := make([]*gatewayProjection, 0, len(g.projections))
 	for _, projection := range g.projections {
+		list = append(list, projection)
+	}
+	g.mu.Unlock()
+	for _, projection := range list {
 		if err := g.refreshProjection(projection); err != nil {
 			return err
 		}
@@ -265,7 +356,14 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 	if err != nil {
 		return
 	}
+	deliverPrepareOutcome(ctx, auth, onboarding)
+	g.mu.Lock()
+	list := make([]*gatewayProjection, 0, len(g.projections))
 	for _, projection := range g.projections {
+		list = append(list, projection)
+	}
+	g.mu.Unlock()
+	for _, projection := range list {
 		if projection.auth != auth {
 			continue
 		}
@@ -609,9 +707,16 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 	if err != nil {
 		return err
 	}
-	if matched && prepared.ProbeTool != "" {
+	if matched && (prepared.ProbeTool != "" || len(prepared.ProbeTools) > 0) {
+		probeName := prepared.ProbeTool
+		for _, candidate := range prepared.ProbeTools {
+			if environment[candidate.Env] != "" {
+				probeName = candidate.Tool
+				break
+			}
+		}
 		for _, tool := range effective.Definition.Tools {
-			if tool.Name != prepared.ProbeTool {
+			if tool.Name != probeName || probeName == "" {
 				continue
 			}
 			result, probeErr := b.CallEnv(ctx, effective, tool, map[string]any{}, environment)

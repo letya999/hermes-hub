@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -248,6 +249,91 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	}
 	if len(store.bindings) != 1 || len(store.connections) != 1 {
 		t.Fatalf("retry did not reuse owner connection: bindings=%d connections=%d", len(store.bindings), len(store.connections))
+	}
+}
+
+func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "refs.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	definition := catalogReadDefinition()
+	definition.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
+	admit := false
+	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error {
+		if !admit {
+			return errors.New("controller returned 503 Service Unavailable: workload enforcement unavailable: bridge-create: required runtime credential missing")
+		}
+		return nil
+	}}
+	prepared, err := control.Invoke(t.Context(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "failure-visible"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := prepared["onboarding_id"].(string)
+	onboarding, err := store.onboarding(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": status["nonce"]}); err == nil {
+		t.Fatal("failed admission was confirmed")
+	}
+	stored, _ := store.onboarding(id)
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != PhaseAwaitingConfirm || stored.ConfirmationUsed {
+		t.Fatalf("confirm failure not recorded: %+v", stored)
+	}
+	status, err = control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || !strings.Contains(fmt.Sprint(status["instructions"]), "last confirm or enable failed") {
+		t.Fatalf("status hides the recorded failure: %v", status)
+	}
+	admit = true
+	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": status["nonce"]}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ = store.onboarding(id)
+	if stored.Error != "" || stored.Phase != PhaseConfirmed {
+		t.Fatalf("successful confirm kept stale error: %+v", stored)
+	}
+	if _, err := control.Invoke(t.Context(), auth, "disable", map[string]any{"onboarding_id": id}); err != nil {
+		t.Fatal(err)
+	}
+	admit = false
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": id}); err == nil {
+		t.Fatal("failed re-enable was accepted")
+	}
+	stored, _ = store.onboarding(id)
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != PhaseDisabled {
+		t.Fatalf("enable failure not recorded: %+v", stored)
+	}
+	admit = true
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ = store.onboarding(id)
+	if stored.Error != "" || stored.Phase != PhaseEnabled {
+		t.Fatalf("successful enable kept stale error: %+v", stored)
 	}
 }
 

@@ -55,6 +55,20 @@ func run(ctx context.Context, args []string) error {
 		}
 		return companion.RunRelay(ctx, *listen, *target, os.Getenv(*tokenEnv))
 	}
+	if op == "mcp-bridge" {
+		f := flag.NewFlagSet("mcp-bridge", flag.ContinueOnError)
+		wait := f.Duration("wait", 30*time.Second, "how long to wait for a loopback MCP listener")
+		kind := f.String("transport", "auto", "declared network transport: auto, sse or streamable-http")
+		endpointPath := f.String("path", "", "fixed MCP endpoint path (default: probe common paths)")
+		port := f.Int("port", 0, "fixed MCP listener port (default: discover from the kernel listen table)")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *wait <= 0 {
+			return fmt.Errorf("mcp-bridge accepts no positional arguments and --wait > 0")
+		}
+		return companion.RunBridge(ctx, *wait, *kind, *endpointPath, *port)
+	}
 	if op == "oauth-relay" {
 		f := flag.NewFlagSet("oauth-relay", flag.ContinueOnError)
 		listen := f.String("listen", "0.0.0.0:3500", "private OAuth callback address")
@@ -119,7 +133,7 @@ func run(ctx context.Context, args []string) error {
 	orgSource := f.String("organization-source", "", "legacy organization directory")
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
 	supervisorImage := f.String("runtime-image", "hermes-hub:0.3.0-prod", "pinned runtime image for the host supervisor")
-	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8765", "private host supervisor address")
+	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8876", "private host supervisor address")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
 	warmTTL := f.Duration("warm-ttl", 5*time.Minute, "idle runtime retention")
 	maxRuntimes := f.Int("max-runtimes", 8, "maximum running context runtimes")
@@ -254,9 +268,10 @@ func run(ctx context.Context, args []string) error {
 		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
 	}
 	prefix := []string{"compose", "-f", composePath}
+	composeEnv := supervisorComposeEnv(abs)
 	dockerCmd := func(args ...string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, "docker", args...)
-		cmd.Env = dockerCLIEnv()
+		cmd.Env = composeEnv
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -337,6 +352,24 @@ func supervisorAuthFromEnv() string {
 
 func dockerCLIEnv() []string {
 	return append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
+}
+
+// supervisorComposeEnv feeds supervisor.auth into compose variable
+// interpolation. The rendered ${HUB_SUPERVISOR_AUTH} placeholder has no value
+// otherwise; an explicit process env always wins over the file.
+func supervisorComposeEnv(dir string) []string {
+	env := dockerCLIEnv()
+	if os.Getenv("HUB_SUPERVISOR_AUTH") != "" {
+		return env
+	}
+	auth, err := stack.ReadSecrets(filepath.Join(dir, "supervisor.auth"))
+	if err != nil {
+		return env
+	}
+	if token := strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"]); token != "" {
+		env = append(env, "HUB_SUPERVISOR_AUTH="+token)
+	}
+	return env
 }
 
 func dockerOutput(ctx context.Context, args ...string) ([]byte, error) {

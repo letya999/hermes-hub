@@ -93,6 +93,27 @@ var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
 // template while preserving any other user-edited content.
 const userSoulStub = "# User instructions\n\n"
 
+// IsUserSoulStub reports the Init placeholder. Real user edits are anything else.
+func IsUserSoulStub(body []byte) bool { return string(body) == userSoulStub }
+
+// HealUserSoul copies the global template over a missing file or the Init stub.
+// Any other content is the user's own instructions and is left in place.
+func HealUserSoul(spaceDir, templatePath string) error {
+	template, err := os.ReadFile(templatePath)
+	if err != nil {
+		return err
+	}
+	soulPath := filepath.Join(spaceDir, "SOUL.md")
+	existing, readErr := os.ReadFile(soulPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	if os.IsNotExist(readErr) || IsUserSoulStub(existing) {
+		return atomic(soulPath, template)
+	}
+	return nil
+}
+
 // GatewaySecretKeys stay in communication-hub. They are never injected into
 // Hermes runtime env or ToolHub connectors.
 func GatewaySecretKeys() []string {

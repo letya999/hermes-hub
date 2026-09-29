@@ -217,7 +217,7 @@ func superviseOnce(mode string) (bool, error) {
 			return false, configErr
 		}
 	}
-	if err := copyIfExists("/config/SOUL.md", filepath.Join(hermesHome, "SOUL.md"), false); err != nil {
+	if err := copySoulUnlessEdited("/config/SOUL.md", filepath.Join(hermesHome, "SOUL.md")); err != nil {
 		return false, err
 	}
 
@@ -517,6 +517,44 @@ func effectiveConfigWritable(destination string) bool {
 		return true
 	}
 	return false
+}
+
+// copySoulUnlessEdited replaces a missing SOUL or the Init stub. Any other
+// bytes are the user's own instructions. A read-only mount of the host file
+// is already the source of truth, so a failed overwrite there is ignored.
+func copySoulUnlessEdited(source, destination string) error {
+	existing, readErr := os.ReadFile(destination)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	if readErr == nil && !stack.IsUserSoulStub(existing) {
+		return nil
+	}
+	body, err := os.ReadFile(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if readErr == nil && string(existing) == string(body) {
+		return nil
+	}
+	if err := os.WriteFile(destination, body, 0660); err != nil {
+		if readOnlyWrite(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func readOnlyWrite(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "read-only") || strings.Contains(text, "read only") || strings.Contains(text, "erofs")
 }
 
 func copyIfExists(source, destination string, overwrite bool) error {

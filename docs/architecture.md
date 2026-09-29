@@ -247,7 +247,9 @@ admission, projection and reconnect. When the Broker audience/key environment
 is configured, onboarding uses Broker requests and grants, Communication Hub
 approves the pairing code, and the runtime materializer handles the lease. With
 that environment unset, the existing encrypted store and loopback form remain
-the compatibility path. Broker file deliveries use a dynamic read-only ToolHive
+the compatibility path. A credential-gate admission whose required names are
+not covered by a reviewed contract also keeps the loopback secret in that
+store; once a contract id is bound, confirm still requires a broker credential. Broker file deliveries use a dynamic read-only ToolHive
 mount hand-off: the generic controller accepts only regular files below its
 operator-configured `credential_mount_root`, starts a one-call workload, and
 exposes `/release` to remove it before the Broker runtime lease is released.
@@ -298,9 +300,20 @@ resolves identically for all users on the shared network. An explicit
 out. One ToolHub endpoint authenticates many identities: the owning space's
 `runtime.auth`/`toolhub.auth` token plus an optional `toolhub-tokens.json`
 file (`HUB_TOOLHUB_TOKENS_FILE`) that maps additional bearer tokens to full
-identity envelopes for secondary spaces. Every token resolves to its own
+identity envelopes for secondary spaces. Render and the supervisor write each
+sibling space's `HUB_RUNTIME_AUTH` into that file in place (the same inode, so
+a running bind mount sees the update) and never copy the infra owner's own
+token. ToolHub reloads the file when a bearer misses the in-memory map, so a
+sibling enrolled after process start is accepted on the next handshake. A
+Hermes process that already parked the server still needs its runtime
+restarted before it tries again. Every token resolves to its own
 principal/context/runtime triple, so per-user bindings, workloads and
 credentials stay owner-scoped inside the single shared service.
+The shared communication gateway is one process too. When
+`spaces/<owner>/communication.users.yaml` exists, render mounts it and sets
+`HUB_COMMUNICATION_CONFIG`, and that file is the Telegram allowlist. Without
+it the gateway keeps only the infra owner's `TELEGRAM_ALLOWED_USERS` and
+answers every other chat with the not-configured reply.
 Spawned runtimes mount the same contract the render produces: per-user state
 binds plus the hub skills directory (`global_skills_dir`, defaulting to
 `config/skills`) read-only at `/opt/hub/skills`. Without it the

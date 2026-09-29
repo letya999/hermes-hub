@@ -1,6 +1,6 @@
 ---
 description: One ToolHub, one Credential Broker and one workload controller serve all spaces; per-user isolation moves from duplicated Compose projects to token-scoped identity plus a shared runtime network.
-last_verified: 2026-09-25
+last_verified: 2026-09-27
 ---
 # ADR-0026: Shared control plane, scoped compute
 
@@ -57,3 +57,12 @@ hub, scoped users" model and matches the ToolHive/vMCP gateway pattern
   is bind-mounted read-only and is covered by the existing `spaces/` gitignore.
 - Rotating a secondary token means editing one JSON key; no per-user service
   restarts beyond the owning ToolHub.
+
+## Amendment 2026-09-27
+
+Render and the supervisor enroll sibling `runtime.auth` bearers into the infra
+owner's `toolhub-tokens.json`. The write is in place so a bind-mounted file
+keeps its inode. The infra owner's own token is not an extra entry. ToolHub
+reloads that file when authentication misses the in-memory map, so a sibling
+added after process start is accepted on the next handshake. A runtime that
+already parked the MCP server still has to start again before it will retry.

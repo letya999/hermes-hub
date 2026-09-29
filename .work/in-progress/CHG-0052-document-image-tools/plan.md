@@ -3,7 +3,7 @@ description: Workspace document and image capability with a configured provider,
 last_verified: 2026-09-28
 ---
 
-# CHG-0047 Document and image tools
+# CHG-0052 Document and image tools
 
 ## Change
 

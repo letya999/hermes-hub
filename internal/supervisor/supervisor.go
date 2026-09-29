@@ -1613,8 +1613,28 @@ func (m *Manager) runArgs(binding Binding, container string, port int) ([]string
 	return m.runArgsWithGeneration(binding, container, port, "")
 }
 
+// prepareSpawnFiles heals an Init SOUL stub from the repo template and, for
+// the infra owner, enrolls sibling runtime tokens before the container mount
+// is built. A missing template or a skipped enrollment does not block spawn.
+func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
+	template := filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "SOUL.md")
+	if info, err := os.Stat(template); err == nil && info.Mode().IsRegular() {
+		if err := stack.HealUserSoul(binding.ContextRoot, template); err != nil {
+			log.Printf("supervisor soul heal skipped")
+		}
+	}
+	settings, err := stack.ReadEnvironment(binding.ContextRoot, env)
+	if err != nil || !settings.RendersInfra() {
+		return
+	}
+	if err := stack.EnrollSiblingRuntimeTokens(binding.ContextRoot, env); err != nil {
+		log.Printf("supervisor token enrollment skipped")
+	}
+}
+
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) ([]string, error) {
 	env := envOr("HUB_ENV", "prod")
+	m.prepareSpawnFiles(binding, env)
 	project := "hermes-hub-" + binding.UserID + "-" + env
 	// Spawned runtimes join the single shared runtime network where the shared
 	// control plane (toolhub, credential-broker, cliproxy, communication-hub)

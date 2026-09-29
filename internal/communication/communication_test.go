@@ -126,6 +126,12 @@ func TestConfigAndYAML(t *testing.T) {
 			t.Fatal("invalid config accepted")
 		}
 	}
+	invalidPolicy := c
+	invalidPolicy.Users = append([]User(nil), c.Users...)
+	invalidPolicy.Users[0].PolicyVersion = "policy-1 policy-1"
+	if invalidPolicy.Validate() == nil {
+		t.Fatal("invalid policy_version accepted")
+	}
 	overlap := c
 	overlap.Users = append(overlap.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: filepath.Join(filepath.Dir(c.Users[0].StateDir), "shared"), WorkspaceDir: c.Users[0].WorkspaceDir})
 	if overlap.Validate() == nil {

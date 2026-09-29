@@ -245,6 +245,32 @@ func TestComposeSupervisorModeOmitsResidentRuntime(t *testing.T) {
 	if gateway["environment"].(M)["HUB_SUPERVISOR_AUTH"] != "${HUB_SUPERVISOR_AUTH}" {
 		t.Fatal("supervisor auth placeholder missing")
 	}
+	if _, ok := gateway["environment"].(M)["HUB_COMMUNICATION_CONFIG"]; ok {
+		t.Fatal("missing users file was mounted")
+	}
+}
+
+func TestComposeMountsCommunicationUsersWhenPresent(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "communication.users.yaml"), []byte("organization_id: personal\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}}
+	gateway := Compose(s, dir, dir)["services"].(M)["communication-hub"].(M)
+	if gateway["environment"].(M)["HUB_COMMUNICATION_CONFIG"] != "/config/communication.users.yaml" {
+		t.Fatalf("users config missing: %#v", gateway["environment"])
+	}
+	mounted := false
+	for _, raw := range gateway["volumes"].([]any) {
+		volume := raw.(M)
+		if volume["target"] == "/config/communication.users.yaml" && volume["read_only"] == true && volume["type"] == "bind" {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("users file not mounted: %#v", gateway["volumes"])
+	}
 }
 
 func saveSettings(path string, settings Settings) error {

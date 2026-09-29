@@ -157,6 +157,9 @@ func (c Config) Validate() error {
 		if user.RuntimeID != "" && !idPattern.MatchString(user.RuntimeID) {
 			return fmt.Errorf("user %q has an invalid runtime_id", user.ID)
 		}
+		if user.PolicyVersion != "" && !idPattern.MatchString(user.PolicyVersion) {
+			return fmt.Errorf("user %q has an invalid policy_version", user.ID)
+		}
 		if !user.Enabled || user.StateDir == "" || user.WorkspaceDir == "" {
 			continue
 		}

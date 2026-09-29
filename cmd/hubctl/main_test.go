@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -333,5 +334,31 @@ func TestCLISupervisorLifecycle(t *testing.T) {
 	cancel()
 	if err := run(ctx, []string{"supervisor", "--spaces", root, "--supervisor-auth", "secret", "--supervisor-listen", "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSupervisorComposeEnvLoadsAuthFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "supervisor.auth"), []byte("HUB_SUPERVISOR_AUTH=file-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_SUPERVISOR_AUTH", "")
+	env := supervisorComposeEnv(dir)
+	if !slices.Contains(env, "HUB_SUPERVISOR_AUTH=file-token") {
+		t.Fatalf("supervisor.auth not loaded: %#v", env)
+	}
+	t.Setenv("HUB_SUPERVISOR_AUTH", "explicit-token")
+	env = supervisorComposeEnv(dir)
+	if slices.Contains(env, "HUB_SUPERVISOR_AUTH=file-token") {
+		t.Fatal("file token overrode explicit env")
+	}
+	if err := os.Remove(filepath.Join(dir, "supervisor.auth")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_SUPERVISOR_AUTH", "")
+	for _, entry := range supervisorComposeEnv(dir) {
+		if strings.HasPrefix(entry, "HUB_SUPERVISOR_AUTH=") && entry != "HUB_SUPERVISOR_AUTH=" {
+			t.Fatal("missing file produced a token")
+		}
 	}
 }

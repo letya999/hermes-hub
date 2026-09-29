@@ -100,12 +100,26 @@ func TestControllerAdmissionDeniesNonSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "denied", http.StatusForbidden) }))
 	defer server.Close()
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", server.URL)
+	t.Setenv("HUB_STATE", t.TempDir())
 	admit, err := ControllerAdmissionVerifierFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admit(context.Background(), EffectiveBinding{Definition: statefulContainerDefinition(), WorkloadID: "fixture-workload"}); err == nil {
-		t.Fatal("controller denial was accepted")
+	effective.Binding = ToolBinding{ToolBindingID: "fixture-binding", PrincipalID: "alice", ContextID: "alice"}
+	if _, err := admit(context.Background(), effective); err == nil || !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("controller denial was accepted: %v", err)
+	}
+	detailed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "workload enforcement unavailable: bridge-create: required runtime credential missing", http.StatusServiceUnavailable)
+	}))
+	defer detailed.Close()
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", detailed.URL)
+	admit, err = ControllerAdmissionVerifierFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admit(context.Background(), effective); err == nil || !strings.Contains(err.Error(), "required runtime credential missing") {
+		t.Fatalf("controller denial detail lost: %v", err)
 	}
 	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer server2.Close()

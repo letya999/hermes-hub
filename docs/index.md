@@ -10,9 +10,9 @@ last_verified: 2026-09-28
 |---|---|---|
 | [architecture.md](architecture.md) | Current components and target scale-to-zero runtime boundary | 2026-09-28 |
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-28 |
-| [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, generic lifecycle and handoffs | 2026-09-23 |
+| [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, generic lifecycle and handoffs | 2026-09-27 |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup | 2026-09-15 |
-| [operations.md](operations.md) | Deployment, runtime lifecycle, backup and recovery | 2026-09-26 |
+| [operations.md](operations.md) | Deployment, runtime lifecycle, backup and recovery | 2026-09-27 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-28 |
 | [toolhive-vmcp-audit.md](toolhive-vmcp-audit.md) | Issue 11 ToolHive vMCP compatibility, performance and go/no-go evidence | 2026-09-11 |
 | [threat-model.md](threat-model.md) | Scale-to-zero and future-organization trust boundaries | 2026-09-17 |

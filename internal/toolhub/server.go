@@ -153,6 +153,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	gateway := &Gateway{
 		Store: store, Backend: config.Backend, Tokens: tokens,
+		primaryToken: config.Token, tokensFile: config.TokensFile,
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
 	}
 	var secrets credstore.Backend
@@ -195,6 +196,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	control.FormOrigin = formOriginForListen(config.Listen)
 	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
+	control.AdmitWithCredentials = func(ctx context.Context, definition ToolDefinition, secrets map[string]string) (ToolDefinition, error) {
+		return admitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
+	}
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
 	control.Injector = gateway.Injector
 	control.PrepareDone = gateway.notifyPrepareDone

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -193,8 +194,16 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 			}
 		})
 	}
-	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), localBinding); err == nil {
-		t.Fatal("broker-only mode accepted local reference")
+	contractedLocal := EffectiveBinding{
+		Definition: ToolDefinition{CredentialContractID: "github-pat", Credentials: []CredentialInput{{Name: "TOKEN", Required: true}}},
+		Credential: &CredentialReference{Backend: "local"},
+	}
+	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), contractedLocal); err == nil {
+		t.Fatal("broker-only mode accepted a local reference for a contracted definition")
+	}
+	injection, err = mergeCredentialInjectors(local, broker, true)(t.Context(), localBinding)
+	if err != nil || injection.Environment["TOKEN"] != "local" {
+		t.Fatalf("credential-gate local reference: injection=%+v err=%v", injection, err)
 	}
 	injection, err = mergeCredentialInjectors(local, broker, true)(t.Context(), credentialFreeBinding)
 	if err != nil || len(injection.Environment) != 0 || injection.Cleanup != nil {
@@ -313,6 +322,71 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 	effective.WorkloadID = ""
 	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil {
 		t.Fatal("missing workload identity was accepted")
+	}
+}
+
+func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	mode := "jira"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/leases":
+			_ = json.NewEncoder(w).Encode(brokerv1.Lease{ID: "lease_1", GrantID: "grant_1", CredentialID: "credential_1"})
+		case "/v1/runtime/leases/lease_1/materialize":
+			env := map[string]string{}
+			switch mode {
+			case "jira":
+				env = map[string]string{"JIRA_URL": "x", "JIRA_USERNAME": "x", "JIRA_API_TOKEN": "x"}
+			case "confluence":
+				env = map[string]string{"CONFLUENCE_URL": "x", "CONFLUENCE_USERNAME": "x", "CONFLUENCE_API_TOKEN": "x"}
+			case "partial":
+				env = map[string]string{"JIRA_URL": "x"}
+			}
+			_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Env: env})
+		case "/v1/runtime/leases/lease_1/release":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	names := []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN", "CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"}
+	credentials := make([]CredentialInput, len(names))
+	brokerEnv := map[string]string{}
+	for index, name := range names {
+		credentials[index] = CredentialInput{Name: name, Required: true}
+		brokerEnv[name] = name
+	}
+	effective := EffectiveBinding{
+		Binding: ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Definition: ToolDefinition{DefinitionID: "atlassian", Credentials: credentials,
+			CredentialGroups: [][]string{{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, {"CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"}}},
+		Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: names, BrokerEnv: brokerEnv},
+		WorkloadID: "workload_1",
+	}
+	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
+	if err != nil || len(injection.Environment) != 3 {
+		t.Fatalf("complete jira block rejected: env=%v err=%v", injection.Environment, err)
+	}
+	mode = "confluence"
+	injection, err = brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
+	if err != nil || len(injection.Environment) != 3 {
+		t.Fatalf("complete confluence block rejected: env=%v err=%v", injection.Environment, err)
+	}
+	for _, incomplete := range []string{"partial", "empty"} {
+		mode = incomplete
+		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, ErrIsolation) {
+			t.Fatalf("incomplete alternative groups accepted (%s): %v", incomplete, err)
+		}
 	}
 }
 
@@ -545,6 +619,68 @@ func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
 	}
 	if bound.CredentialContractRevision != 1 {
 		t.Fatal("selected contract revision without a required delivery")
+	}
+}
+
+func TestBindReviewedContractKeepsPinnedRevision(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Two revisions of one contract coexist in the Broker: rev 1 (every field
+	// required) for grants already bound to it, rev 2 (optional fields) for new
+	// onboarding. Alphabetically the v1 file loads first — a prepared
+	// definition must still bind its pinned revision, not the older one.
+	fields := func(required bool) []contract.Field {
+		out := make([]contract.Field, 0, 6)
+		for i, name := range []string{"jira_url", "jira_username", "jira_api_token", "confluence_url", "confluence_username", "confluence_api_token"} {
+			kind := "string"
+			if i%3 == 2 {
+				kind = "secret"
+			}
+			out = append(out, contract.Field{ID: name, Kind: kind, Required: required, MaxBytes: 4096})
+		}
+		return out
+	}
+	deliveries := []contract.Delivery{
+		{Type: "env", Field: "jira_url", Target: "JIRA_URL"},
+		{Type: "env", Field: "jira_username", Target: "JIRA_USERNAME"},
+		{Type: "env", Field: "jira_api_token", Target: "JIRA_API_TOKEN"},
+		{Type: "env", Field: "confluence_url", Target: "CONFLUENCE_URL"},
+		{Type: "env", Field: "confluence_username", Target: "CONFLUENCE_USERNAME"},
+		{Type: "env", Field: "confluence_api_token", Target: "CONFLUENCE_API_TOKEN"},
+	}
+	catalog := []contract.Contract{
+		{ID: "atlassian-env", Revision: 1, Title: "Atlassian", Storage: "local", Fields: fields(true), Deliveries: deliveries},
+		{ID: "atlassian-env", Revision: 2, Title: "Atlassian", Storage: "local", Fields: fields(false), Deliveries: deliveries},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/contracts" {
+			_ = json.NewEncoder(w).Encode(catalog)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	definition := remoteDefinition()
+	definition.Credentials = []CredentialInput{
+		{Name: "JIRA_URL", Required: true}, {Name: "JIRA_USERNAME", Required: true}, {Name: "JIRA_API_TOKEN", Required: true},
+		{Name: "CONFLUENCE_URL", Required: true}, {Name: "CONFLUENCE_USERNAME", Required: true}, {Name: "CONFLUENCE_API_TOKEN", Required: true},
+	}
+	definition.CredentialGroups = [][]string{{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, {"CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"}}
+	definition.CredentialContractID = "atlassian-env"
+	definition.CredentialContractRevision = 2
+	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if definition.CredentialContractRevision != 2 {
+		t.Fatalf("pinned revision slid to an older contract: %+v", definition)
 	}
 }
 

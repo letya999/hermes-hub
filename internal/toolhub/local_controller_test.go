@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func localFixture(t *testing.T) *localController {
@@ -247,6 +248,11 @@ func TestLocalControllerStartFixedCommands(t *testing.T) {
 	cancel()
 	if waitLocalWorkload(ctx, func() error { return errors.New("pending") }) == nil {
 		t.Fatal("readiness cancellation ignored")
+	}
+	deadline, deadlineCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer deadlineCancel()
+	if err := waitLocalWorkload(deadline, func() error { return errors.New("bridge refused") }); err == nil || !strings.Contains(err.Error(), "context deadline exceeded") || !strings.Contains(err.Error(), "bridge refused") {
+		t.Fatalf("readiness wait hid the last check error: %v", err)
 	}
 	attempts := 0
 	if waitLocalWorkload(context.Background(), func() error {
