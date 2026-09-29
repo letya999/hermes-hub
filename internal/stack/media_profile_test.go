@@ -206,7 +206,7 @@ func TestDocumentImageProfile(t *testing.T) {
 			t.Fatal("integrations missing", phrase)
 		}
 	}
-	spec, err := os.ReadFile(filepath.Join(root, "specs", "active", "SPEC-0032-document-image-profile.md"))
+	spec, err := os.ReadFile(filepath.Join(root, "specs", "active", "SPEC-0033-document-image-profile.md"))
 	if err != nil || !strings.Contains(string(spec), media.ImageModel) || !strings.Contains(string(spec), "artifacts/documents") {
 		t.Fatal(err)
 	}
