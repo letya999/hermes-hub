@@ -72,6 +72,7 @@ func (c *ControlPlane) diagnosticsScope(auth identity.Envelope) diagScope {
 	scope := diagScope{runtime: runtimeContainerName(auth.PrincipalID, auth.ContextID)}
 	c.Store.mu.RLock()
 	defer c.Store.mu.RUnlock()
+	seen := map[string]bool{}
 	for _, binding := range c.Store.bindings {
 		if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID || binding.PolicyVersion != auth.PolicyVersion || binding.Status == RevokedStatus {
 			continue
@@ -85,6 +86,25 @@ func (c *ControlPlane) diagnosticsScope(auth identity.Envelope) diagScope {
 				entry.StartedAt = workload.StartedAt.UTC().Format(time.RFC3339)
 			}
 			scope.workloads = append(scope.workloads, entry)
+			seen[workload.WorkloadID] = true
+		}
+		// Controller records are not always persisted; the workload ID is
+		// deterministic so it can be derived from the binding the same way
+		// resolveLocked does at invocation time.
+		ownerID := auth.ContextID
+		switch binding.WorkloadClass {
+		case Shared:
+			ownerID = ""
+		case PerUser:
+			ownerID = binding.ToolBindingID
+			if binding.ConnectionID != "" {
+				ownerID = auth.ContextID + ":" + auth.PrincipalID + ":" + binding.ConnectionID
+			}
+		}
+		workloadID := WorkloadInstanceID(binding.DefinitionID, binding.WorkloadClass, ownerID, "")
+		if !seen[workloadID] {
+			seen[workloadID] = true
+			scope.workloads = append(scope.workloads, diagWorkload{WorkloadID: workloadID, BindingID: binding.ToolBindingID, DefinitionID: binding.DefinitionID, Status: "inferred"})
 		}
 	}
 	return scope

@@ -100,8 +100,13 @@ func TestDiagnosticsScopeIsolation(t *testing.T) {
 		}
 	}
 	workloads, _ := body["workloads"].([]diagWorkload)
-	if len(workloads) != 1 || workloads[0].WorkloadID != aliceWork {
+	if len(workloads) != 2 || workloads[0].WorkloadID != aliceWork {
 		t.Fatalf("workloads: %#v", body["workloads"])
+	}
+	// The inferred entry mirrors the deterministic ID resolveLocked would
+	// request for a credential-less per-user binding.
+	if derived := WorkloadInstanceID("diag-aaaaaaaa", PerUser, workloads[0].BindingID, ""); workloads[1].WorkloadID != derived || workloads[1].Status != "inferred" {
+		t.Fatalf("inferred workload: %#v", workloads[1])
 	}
 	// Bob sees only his own material.
 	bobBody, err := control.diagnostics(t.Context(), bob, map[string]any{})
