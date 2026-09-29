@@ -9,7 +9,10 @@ user-facing projection. Closes issue #125.
    arguments can narrow but never widen scope. No host path, Docker ID, raw
    Docker/system API, environment value or Broker payload is exposed.
 2. A caller sees their own runtime container plus `work-<id>` families of
-   workloads owned by their bindings in active or disabled status. Revoked or
+   workloads owned by their bindings in active or disabled status. Workload
+   scope comes from persisted controller records and, when no record exists,
+   the deterministic `WorkloadInstanceID` the controller would be asked to
+   admit for that binding (reported with status `inferred`). Revoked or
    removed bindings stop contributing workloads immediately; stale selectors
    return empty results rather than foreign data.
 3. Queries are bounded: `tail` is 1-500 lines (default 200), `search` is a
