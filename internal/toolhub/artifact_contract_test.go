@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -58,6 +59,30 @@ func TestDecodeMCPToolListReadsID2Payload(t *testing.T) {
 	}
 }
 
+func TestDecodeMCPToolListSkipsServerLogLines(t *testing.T) {
+	// slack-mcp-server and similar Go servers interleave structured startup
+	// logs and plain text on stdout with the real JSON-RPC stream.
+	body := `{"level":"info","msg":"starting slack-mcp-server"}
+{"level":"error","error":"SLACK_MCP_XOXC_TOKEN not set"}
+plain text startup line
+{"jsonrpc":"2.0","method":"notifications/progress","params":{}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"conversations_history","annotations":{"readOnlyHint":true}}]}}
+`
+	tools, err := decodeMCPToolList(strings.NewReader(body))
+	if err != nil || len(tools) != 1 || tools[0].Name != "conversations_history" || tools[0].Effect != ReadEffect {
+		t.Fatalf("decode with log lines: %+v %v", tools, err)
+	}
+}
+
+func TestDecodeMCPToolListReturnsRPCError(t *testing.T) {
+	body := `{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"bad request"}}
+`
+	if _, err := decodeMCPToolList(strings.NewReader(body)); err == nil || !strings.Contains(err.Error(), "bad request") {
+		t.Fatalf("expected RPC error, got %v", err)
+	}
+}
+
 func TestParseMCPHelpCredentialsUsesServerDeclaration(t *testing.T) {
 	help := `Environment Variables:
   SERVICE_TOKEN          Provider token (recommended)
@@ -93,7 +118,7 @@ func TestPreflightDockerRunArgsPinMCPRuntimeNotBuilder(t *testing.T) {
 	imported := importedReviewPacket(t)
 	imported.Definition.Source.Image = "hermes-artifact/serena"
 	imported.Definition.Execution.Mounts = nil
-	args := preflightDockerRunArgs(imported, "hermes-preflight-x")
+	args := preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
 	joined := strings.Join(args, "\x00")
 	for _, required := range []string{"--read-only", "--cap-drop\x00ALL", "no-new-privileges", "--network\x00none", "--user\x0010001:10001", "HOME=/tmp"} {
 		if !strings.Contains(joined, required) {
@@ -107,15 +132,129 @@ func TestPreflightDockerRunArgsPinMCPRuntimeNotBuilder(t *testing.T) {
 	}
 	imported.Definition.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
 	imported.Recipe.Entrypoint = []string{"/app/mcp-server"}
-	args = preflightDockerRunArgs(imported, "hermes-preflight-x")
+	args = preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
 	joined = strings.Join(args, "\x00")
 	if !strings.Contains(joined, "/state:rw") || args[len(args)-1] != "/state" {
 		t.Fatalf("stateful preflight must pass allowed dir: %q", args)
 	}
 	imported.Recipe.Entrypoint = []string{"/app/mcp-server", "/state"}
-	args = preflightDockerRunArgs(imported, "hermes-preflight-x")
+	args = preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
 	if args[len(args)-1] != imported.Definition.Source.Image {
 		t.Fatalf("duplicate allowed dir appended: %q", args)
+	}
+	imported.Definition.Source.Args = []string{"--transport", "sse"}
+	imported.Definition.Execution.Mounts = nil
+	args = preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
+	if !strings.Contains(strings.Join(args, " "), "--transport stdio") || strings.Contains(strings.Join(args, " "), "--transport sse") {
+		t.Fatalf("network transport was not probed over stdio: %q", args)
+	}
+}
+
+func TestNetworkTransportValue(t *testing.T) {
+	for argv, want := range map[string]string{
+		"":                                      "",
+		"--stdio":                               "",
+		"--transport sse":                       "sse",
+		"-t sse":                                "sse",
+		"--transport SSE":                       "sse",
+		"--transport http":                      "streamable-http",
+		"--transport streamable-http":           "streamable-http",
+		"--transport streamable_http":           "streamable-http",
+		"--verbose --transport sse --port 9000": "sse",
+		"--transport":                           "",
+		"--other sse":                           "",
+	} {
+		var args []string
+		if argv != "" {
+			args = strings.Fields(argv)
+		}
+		if got := networkTransportValue(args); got != want {
+			t.Fatalf("networkTransportValue(%q) = %q, want %q", argv, got, want)
+		}
+	}
+}
+
+func TestNetworkTransportFallbackMarksAndPropagates(t *testing.T) {
+	imported := importedReviewPacket(t)
+	if _, _, _, err := networkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil); err == nil || imported.Definition.Source.NetworkTransport != "" {
+		t.Fatal("fallback ran without a declared network transport")
+	}
+	imported.Definition.Source.Args = []string{"--transport", "sse"}
+	saved := networkMCPToolList
+	defer func() { networkMCPToolList = saved }()
+	networkMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+	}
+	tools, marked, list, err := networkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil)
+	if err != nil || len(tools) != 1 || marked.Definition.Source.NetworkTransport != "sse" {
+		t.Fatalf("fallback = %v %v %q", tools, err, marked.Definition.Source.NetworkTransport)
+	}
+	if list == nil {
+		t.Fatal("network probe not kept for credential promotion")
+	}
+	networkMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return nil, errors.New("no listener")
+	}
+	_, unmarked, _, err := networkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil)
+	if err == nil || !strings.Contains(err.Error(), "network transport probe") || unmarked.Definition.Source.NetworkTransport != "" {
+		t.Fatalf("failed fallback marked the definition or hid the error: %v %q", err, unmarked.Definition.Source.NetworkTransport)
+	}
+}
+
+func TestNetworkProbeToolListFailClosed(t *testing.T) {
+	bad := importedReviewPacket(t)
+	bad.Definition.Source.Image = "bad image"
+	if _, err := networkProbeToolList(context.Background(), bad); err == nil {
+		t.Fatal("invalid local image reached network preflight")
+	}
+	noTransport := importedReviewPacket(t)
+	if _, err := networkProbeToolList(context.Background(), noTransport); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("network probe ran without a declared transport: %v", err)
+	}
+	// A declared transport reaches the bridge-staging stage; without a
+	// host-visible HUB_STATE mapping it must still fail closed.
+	declared := importedReviewPacket(t)
+	declared.Definition.Source.Args = []string{"--transport", "sse"}
+	t.Setenv("HUB_STATE", t.TempDir())
+	t.Setenv("HUB_DOCKER_HOST_ROOT", "")
+	if _, err := networkProbeToolList(context.Background(), declared); err == nil {
+		t.Fatal("network probe ran without a stageable bridge binary")
+	}
+}
+
+func TestStagePreflightBridge(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HUB_STATE", dir)
+	t.Setenv("HUB_DOCKER_HOST_ROOT", "")
+	host, cleanup, err := stagePreflightBridge()
+	defer cleanup()
+	if err != nil {
+		t.Fatalf("stagePreflightBridge: %v", err)
+	}
+	if !strings.HasSuffix(host, "hubctl") {
+		t.Fatalf("host path = %q", host)
+	}
+	// The staged file must be an ELF linux binary the daemon can exec.
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("staged dir = %v", entries)
+	}
+	staged := filepath.Join(dir, entries[0].Name(), "hubctl")
+	body, err := os.ReadFile(staged)
+	if err != nil || len(body) < 4 || string(body[:4]) != "\x7fELF" {
+		t.Fatalf("staged binary not ELF: %v", err)
+	}
+	info, err := os.Stat(staged)
+	if err != nil {
+		t.Fatalf("stat staged binary: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		t.Fatalf("staged binary not executable: %v", info.Mode())
+	}
+	// Host-path translation uses the daemon-visible prefix mapping.
+	t.Setenv("HUB_DOCKER_HOST_ROOT", "/state=/host/state")
+	if got := dockerBindSource("/state/x/hubctl"); got != "/host/state/x/hubctl" {
+		t.Fatalf("dockerBindSource = %q", got)
 	}
 }
 
@@ -252,6 +391,14 @@ func importedReviewPacket(t *testing.T) ImportedArtifact {
 	}
 	artifact.Definition.Source.ReviewDigest = digest
 	return artifact
+}
+
+func TestDecodeMCPToolListKeepsAuthTextWhenNoToolsReply(t *testing.T) {
+	body := "Authentication required: Either SLACK_MCP_XOXP_TOKEN or SLACK_MCP_XOXB_TOKEN must be provided\n{\"level\":\"fatal\",\"error\":\"authentication required\"}\n"
+	_, err := decodeMCPToolList(strings.NewReader(body))
+	if err == nil || !strings.Contains(err.Error(), "SLACK_MCP_XOXP_TOKEN") || !strings.Contains(err.Error(), "authentication required") {
+		t.Fatalf("auth text dropped: %v", err)
+	}
 }
 
 func TestPreflightRetainsSchemaAndBoundsDescription(t *testing.T) {

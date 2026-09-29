@@ -18,11 +18,17 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 	if err := os.WriteFile(filepath.Join(root, "runtime.prod.env"), []byte("OPENAI_API_KEY=synthetic-only\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "hermes.prod.yaml"), []byte("model: {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	b, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
+	args, err := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"--env-file " + filepath.Join(root, "runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/scope,readonly", "dst=/state/hermes", "dst=/state/google", "dst=/state/telegram", "dst=/state/browser", "dst=/state/home", "dst=/workspace", "dst=/archive,readonly", "HUB_BROWSER=true", "HUB_FEATURES=workspace,browser", "HUB_STATE=/state", "--tmpfs /tmp:", "--add-host host.docker.internal:host-gateway"} {
 		if !strings.Contains(joined, want) {
@@ -70,6 +76,7 @@ func TestRuntimeInputSymlinkAndDirectoryAreRejected(t *testing.T) {
 	for _, name := range []string{"runtime.prod.env", "hermes.prod.yaml", "SOUL.md"} {
 		t.Run(name, func(t *testing.T) {
 			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+			_ = os.Remove(filepath.Join(root, name))
 			if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
 				t.Fatal(err)
 			}

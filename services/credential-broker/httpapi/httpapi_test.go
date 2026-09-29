@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log"
 	"math/big"
 	"mime/multipart"
 	"net/http"
@@ -37,6 +38,18 @@ import (
 )
 
 var actor = identity.Actor{PrincipalID: "alice", ContextID: "team", RuntimeID: "hermes-alice", PolicyVersion: "policy_v1"}
+
+func TestHTTPDiagnosticRouteOmitsCredentialLink(t *testing.T) {
+	f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	f.serve(f.request("GET", "/connect/private-token?code=secret", "", actor, nil))
+	if got := output.String(); !strings.Contains(got, "credential-broker http method=GET route=/connect") || strings.Contains(got, "private-token") || strings.Contains(got, "secret") {
+		t.Fatal(got)
+	}
+}
 
 type httpFixture struct {
 	s    *Server

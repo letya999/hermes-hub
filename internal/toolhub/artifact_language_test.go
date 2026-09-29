@@ -80,6 +80,58 @@ func TestGenerateArtifactRecipeSelectsPinnedBase(t *testing.T) {
 	}
 }
 
+func TestDiscoverProxyEnvironment(t *testing.T) {
+	contextBytes := languageContext(t, map[string]string{
+		"main.go":            `package main; var _ = os.Getenv("SLACK_MCP_PROXY"); _ = os.LookupEnv("HTTP_PROXY")`,
+		"src/srv.ts":         `const p = process.env.CUSTOM_PROXY; const q = process.env["TEAM_PROXY"];`,
+		"app.py":             `x = os.environ["APP_PROXY"]; y = os.getenv('OTHER_PROXY'); z = os.environ.get("NO_PROXY"); w = os.environ["MY_PROXY_VAR"]`,
+		"lib.rs":             `let v = std::env::var("RUST_PROXY"); let w = env::var_os("SECOND_RUST_PROXY");`,
+		"worker.rb":          `proxy = ENV["RUBY_PROXY"]`,
+		".env.example":       "# config\nLEGACY_PROXY=http://localhost:3128\n",
+		"Dockerfile":         "ENV BUILD_PROXY=http://proxy\n",
+		"vendor/dep/main.go": `var _ = os.Getenv("VENDORED_PROXY")`,
+		"main_test.go":       `var _ = os.Getenv("TESTBED_PROXY")`,
+		"docs/readme.txt":    `PROXY_IN_PROSE`,
+	})
+	got := discoverProxyEnvironment(contextBytes)
+	// MY_PROXY_VAR lacks the _PROXY suffix the definition validator requires;
+	// NO_PROXY and standard names are runtime-owned, not discoverable.
+	want := []string{
+		"APP_PROXY", "BUILD_PROXY", "CUSTOM_PROXY", "LEGACY_PROXY",
+		"OTHER_PROXY", "RUBY_PROXY", "RUST_PROXY", "SECOND_RUST_PROXY",
+		"SLACK_MCP_PROXY", "TEAM_PROXY",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("proxy env = %v, want %v", got, want)
+	}
+}
+
+func TestMergeProxyEnvironment(t *testing.T) {
+	if got := mergeProxyEnvironment([]string{"SLACK_MCP_PROXY"}, []string{"SLACK_MCP_PROXY", "TEAM_PROXY"}, nil); !slices.Equal(got, []string{"SLACK_MCP_PROXY", "TEAM_PROXY"}) {
+		t.Fatalf("merge = %v", got)
+	}
+	if got := mergeProxyEnvironment([]string{"A_PROXY"}, nil, nil); !slices.Equal(got, []string{"A_PROXY"}) {
+		t.Fatalf("merge without discovery = %v", got)
+	}
+}
+
+func TestMergeProxyEnvironmentSkipsClaimedNames(t *testing.T) {
+	// GITLAB_OAUTH_CALLBACK_PROXY is a user-supplied URL env in
+	// zereight/gitlab-mcp; claiming it as a controller-injected egress var
+	// duplicated the name across Environment and ProxyEnvironment and failed
+	// definition validation (onboard-7c27621482b349cb0a384607).
+	config := ArtifactImportConfig{
+		Environment:        []string{"GITLAB_OAUTH_CALLBACK_PROXY", "GITLAB_API_URL"},
+		Credentials:        []CredentialInput{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true}},
+		RuntimeEnvironment: map[string]string{"NODE_ENV": "production"},
+	}
+	claimed := claimedEnvironmentNames(config)
+	got := mergeProxyEnvironment(nil, []string{"GITLAB_OAUTH_CALLBACK_PROXY", "GITLAB_PERSONAL_ACCESS_TOKEN", "NODE_ENV", "CUSTOM_EGRESS_PROXY"}, claimed)
+	if !slices.Equal(got, []string{"CUSTOM_EGRESS_PROXY"}) {
+		t.Fatalf("merge = %v, want only CUSTOM_EGRESS_PROXY", got)
+	}
+}
+
 func TestDiscoverOpenAPIEgress(t *testing.T) {
 	contextBytes := languageContext(t, map[string]string{
 		"api/openapi.json": `{"servers":[{"url":"https://API.TestSvc.dev/v1"},{"url":"http://unsafe.example"},{"url":"https://user@unsafe.example"},{"url":"https://unsafe.example:443"},{"url":"relative"}]}`,

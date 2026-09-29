@@ -371,9 +371,10 @@ MCP backend or provider integration success.
 The stage-2 implementation adds an opt-in stateless streamable-HTTP ToolHub
 gateway, a shared projected-tool resolver for list/call, private MCP HTTP
 backend adapter, bounded direct-exec CLI runner and per-user/per-job workspace
-lifecycle. Runtime wiring is opt-in: `HUB_TOOLHUB_ENDPOINT` injects the stable
-authenticated endpoint, while `HUB_TOOLHUB_AUTOSTART=true` starts `hub-toolhub`
-against `HUB_TOOLHUB_STORE`; unset variables preserve generated direct MCP.
+lifecycle. Runtime wiring defaults to the in-stack endpoint: rendered spaces write
+`HUB_TOOLHUB_ENDPOINT=http://host.docker.internal:8090/mcp` into `runtime.<env>.env` unless the
+operator sets an explicit or empty value in `secrets.<env>.env`, while
+`HUB_TOOLHUB_AUTOSTART=true` starts `hub-toolhub` against `HUB_TOOLHUB_STORE`.
 
 Evidence completed locally:
 

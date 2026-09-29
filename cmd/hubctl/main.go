@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/companion"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -53,6 +54,20 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("relay requires --listen, --target and --token-env")
 		}
 		return companion.RunRelay(ctx, *listen, *target, os.Getenv(*tokenEnv))
+	}
+	if op == "mcp-bridge" {
+		f := flag.NewFlagSet("mcp-bridge", flag.ContinueOnError)
+		wait := f.Duration("wait", 30*time.Second, "how long to wait for a loopback MCP listener")
+		kind := f.String("transport", "auto", "declared network transport: auto, sse or streamable-http")
+		endpointPath := f.String("path", "", "fixed MCP endpoint path (default: probe common paths)")
+		port := f.Int("port", 0, "fixed MCP listener port (default: discover from the kernel listen table)")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *wait <= 0 {
+			return fmt.Errorf("mcp-bridge accepts no positional arguments and --wait > 0")
+		}
+		return companion.RunBridge(ctx, *wait, *kind, *endpointPath, *port)
 	}
 	if op == "oauth-relay" {
 		f := flag.NewFlagSet("oauth-relay", flag.ContinueOnError)
@@ -118,7 +133,7 @@ func run(ctx context.Context, args []string) error {
 	orgSource := f.String("organization-source", "", "legacy organization directory")
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
 	supervisorImage := f.String("runtime-image", "hermes-hub:0.3.0-prod", "pinned runtime image for the host supervisor")
-	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8765", "private host supervisor address")
+	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8876", "private host supervisor address")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
 	warmTTL := f.Duration("warm-ttl", 5*time.Minute, "idle runtime retention")
 	maxRuntimes := f.Int("max-runtimes", 8, "maximum running context runtimes")
@@ -149,6 +164,11 @@ func run(ctx context.Context, args []string) error {
 		if *supervisorAuth == "" {
 			return fmt.Errorf("HUB_SUPERVISOR_AUTH or --supervisor-auth is required")
 		}
+		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "supervisor.log"))
+		if err != nil {
+			return err
+		}
+		defer stopLog()
 		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
 		if err != nil {
 			return err
@@ -248,9 +268,10 @@ func run(ctx context.Context, args []string) error {
 		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
 	}
 	prefix := []string{"compose", "-f", composePath}
+	composeEnv := supervisorComposeEnv(abs)
 	dockerCmd := func(args ...string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, "docker", args...)
-		cmd.Env = dockerCLIEnv()
+		cmd.Env = composeEnv
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -263,14 +284,29 @@ func run(ctx context.Context, args []string) error {
 		if os.Getenv("DOCKER_BUILDKIT") == "0" {
 			fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
 		}
+		// A previous build may have been killed before its cleanup ran.
+		if err := pruneDanglingImages(ctx, dockerOutput); err != nil {
+			return err
+		}
+		defer func() {
+			// A failed build can also leave dangling layers and stopped containers.
+			// Cleanup must not hide the original build/up error.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if cleanupErr := pruneDanglingImages(cleanupCtx, dockerOutput); cleanupErr != nil {
+				fmt.Fprintln(os.Stderr, "hubctl: Docker cleanup:", cleanupErr)
+			}
+		}()
 		if err = docker("build"); err != nil {
 			return err
 		}
-		pruneDanglingImages(ctx)
 		if op == "build" {
 			return nil
 		}
-		return docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans")
+		if err := docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"); err != nil {
+			return err
+		}
+		return nil
 	}
 	switch op {
 	case "down":
@@ -318,10 +354,57 @@ func dockerCLIEnv() []string {
 	return append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
 }
 
-func pruneDanglingImages(ctx context.Context) {
-	cmd := exec.CommandContext(ctx, "docker", "image", "prune", "-f")
+// supervisorComposeEnv feeds supervisor.auth into compose variable
+// interpolation. The rendered ${HUB_SUPERVISOR_AUTH} placeholder has no value
+// otherwise; an explicit process env always wins over the file.
+func supervisorComposeEnv(dir string) []string {
+	env := dockerCLIEnv()
+	if os.Getenv("HUB_SUPERVISOR_AUTH") != "" {
+		return env
+	}
+	auth, err := stack.ReadSecrets(filepath.Join(dir, "supervisor.auth"))
+	if err != nil {
+		return env
+	}
+	if token := strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"]); token != "" {
+		env = append(env, "HUB_SUPERVISOR_AUTH="+token)
+	}
+	return env
+}
+
+func dockerOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Env = dockerCLIEnv()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	return cmd.CombinedOutput()
+}
+
+// A stopped Compose container can pin the previous generation after its tag
+// moves. Remove only this project's stopped containers on dangling images.
+func pruneDanglingImages(ctx context.Context, run func(context.Context, ...string) ([]byte, error)) error {
+	ids, err := run(ctx, "image", "ls", "-q", "--filter", "dangling=true")
+	if err != nil {
+		return fmt.Errorf("list dangling images: %w", err)
+	}
+	for _, id := range strings.Fields(string(ids)) {
+		body, err := run(ctx, "ps", "-a", "--filter", "ancestor="+id, "--format", "{{.Names}}\t{{.Status}}")
+		if err != nil {
+			return fmt.Errorf("list containers for %s: %w", id, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+			name, status, _ := strings.Cut(line, "\t")
+			if !strings.HasPrefix(name, "hermes-hub-") || strings.HasPrefix(status, "Up") {
+				continue
+			}
+			if _, err := run(ctx, "rm", name); err != nil {
+				return fmt.Errorf("remove stale container %s: %w", name, err)
+			}
+		}
+	}
+	if _, err := run(ctx, "image", "prune", "-f"); err != nil {
+		return fmt.Errorf("prune dangling images: %w", err)
+	}
+	if _, err := run(ctx, "buildx", "prune", "--max-used-space", "8gb", "-f"); err != nil {
+		return fmt.Errorf("limit build cache: %w", err)
+	}
+	return nil
 }

@@ -1,0 +1,59 @@
+{
+  "id": "atlassian-env",
+  "revision": 2,
+  "title": "Atlassian connection — fill the Jira block, the Confluence block, or both",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "jira_url",
+      "label": "Jira base URL (https://company.atlassian.net or self-hosted)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 2048
+    },
+    {
+      "id": "jira_username",
+      "label": "Jira username (email for Cloud)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 2048
+    },
+    {
+      "id": "jira_api_token",
+      "label": "Jira API token",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 4096
+    },
+    {
+      "id": "confluence_url",
+      "label": "Confluence base URL (https://company.atlassian.net/wiki or self-hosted)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 2048
+    },
+    {
+      "id": "confluence_username",
+      "label": "Confluence username (email for Cloud)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 2048
+    },
+    {
+      "id": "confluence_api_token",
+      "label": "Confluence API token",
+      "kind": "secret",
+      "required": false,
+      "max_bytes": 4096
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    { "type": "env", "field": "jira_url", "target": "JIRA_URL" },
+    { "type": "env", "field": "jira_username", "target": "JIRA_USERNAME" },
+    { "type": "env", "field": "jira_api_token", "target": "JIRA_API_TOKEN" },
+    { "type": "env", "field": "confluence_url", "target": "CONFLUENCE_URL" },
+    { "type": "env", "field": "confluence_username", "target": "CONFLUENCE_USERNAME" },
+    { "type": "env", "field": "confluence_api_token", "target": "CONFLUENCE_API_TOKEN" }
+  ]
+}

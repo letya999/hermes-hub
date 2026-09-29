@@ -475,6 +475,58 @@ func TestPreparedReadinessRequiresSafeProviderResult(t *testing.T) {
 	}
 }
 
+func TestPreparedProbeCandidateSelectsByDeliveredCredential(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry PreparedEntry
+	for _, candidate := range entries {
+		if candidate.ID == "atlassian" {
+			entry = candidate
+		}
+	}
+	if len(entry.ProbeTools) != 2 || len(entry.CredentialGroups) != 2 {
+		t.Fatalf("atlassian entry lost its alternatives: %+v", entry)
+	}
+	config := entry.apply(defaultSelfInstallConfig(entry.Source))
+	if len(config.CredentialGroups) != 2 {
+		t.Fatal("prepared credential groups did not reach the import config")
+	}
+	called := map[string]int{}
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "provider-probe", Version: "1"}, nil)
+	for _, candidate := range entry.ProbeTools {
+		tool := candidate.Tool
+		mcpServer.AddTool(&mcp.Tool{Name: tool, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			called[tool]++
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		})
+	}
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+	defer httpServer.Close()
+	definition := statefulContainerDefinition()
+	definition.Source.Repository, definition.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
+	definition.Tools = []ToolSpec{{Name: "jira_get_all_projects", Effect: ReadEffect}, {Name: "confluence_list_page_templates", Effect: ReadEffect}}
+	effective := EffectiveBinding{
+		Binding:    ToolBinding{ToolBindingID: "bind-atlassian-probe", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
+		Definition: definition, Connection: &Connection{ConnectionID: "provider", Metadata: map[string]string{}}, WorkloadID: "atlassian-probe-workload",
+	}
+	backend := MCPBackend{Root: t.TempDir(), HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
+		return AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+	}}
+	jiraEnv := map[string]string{"JIRA_URL": "x", "JIRA_USERNAME": "x", "JIRA_API_TOKEN": "x"}
+	if err := backend.EnsureReady(t.Context(), effective, jiraEnv); err != nil || called["jira_get_all_projects"] != 1 || called["confluence_list_page_templates"] != 0 {
+		t.Fatalf("jira block did not select the jira probe: called=%v err=%v", called, err)
+	}
+	confluenceEnv := map[string]string{"CONFLUENCE_URL": "x", "CONFLUENCE_USERNAME": "x", "CONFLUENCE_API_TOKEN": "x"}
+	if err := backend.EnsureReady(t.Context(), effective, confluenceEnv); err != nil || called["confluence_list_page_templates"] != 1 {
+		t.Fatalf("confluence block did not select the confluence probe: called=%v err=%v", called, err)
+	}
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"UNRELATED": "x"}); !errors.Is(err, ErrStale) {
+		t.Fatalf("probe without a delivered credential group was accepted: %v", err)
+	}
+}
+
 func TestWorkloadWorkspacePersistenceAndJobCleanup(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	effective, err := store.Resolve(auth, binding.ToolBindingID)

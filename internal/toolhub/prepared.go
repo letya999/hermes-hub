@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"slices"
+	"strings"
 
 	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -52,12 +54,35 @@ type PreparedEntry struct {
 	StateTarget        string                     `json:"state_target,omitempty"`
 	Environment        []string                   `json:"environment,omitempty"`
 	RuntimeEnvironment map[string]string          `json:"runtime_environment,omitempty"`
+	ProxyEnvironment   []string                   `json:"proxy_environment,omitempty"`
 	PreflightFiles     map[string]json.RawMessage `json:"preflight_files,omitempty"`
 	Egress             []string                   `json:"egress"`
+	CredentialGroups   [][]string                 `json:"credential_groups,omitempty"`
 	ReadTools          []string                   `json:"read_tools"`
 	ProbeTool          string                     `json:"probe_tool,omitempty"`
+	ProbeTools         []ProbeCandidate           `json:"probe_tools,omitempty"`
+	OAuth              *PreparedOAuth             `json:"oauth,omitempty"`
 	Runbook            string                     `json:"runbook"`
 	Handoff            string                     `json:"handoff"`
+}
+
+// ProbeCandidate names a reviewed read-only probe that applies only when its
+// credential env var was actually delivered — for connectors whose credential
+// groups are alternatives (Jira block or Confluence block, not both).
+type ProbeCandidate struct {
+	Tool string `json:"tool"`
+	Env  string `json:"env"`
+}
+
+// PreparedOAuth is reviewed source-specific token delivery, not a guess from
+// a tool's error text. The authorization-code exchange itself stays generic.
+type PreparedOAuth struct {
+	Provider     string   `json:"provider"`
+	Scopes       []string `json:"scopes"`
+	ClientInput  string   `json:"client_input"`
+	TokenFile    string   `json:"token_file"`
+	TokenAccount string   `json:"token_account"`
+	TokenFormat  string   `json:"token_format"`
 }
 
 func PreparedCatalog() ([]PreparedEntry, error) {
@@ -77,17 +102,53 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 	seen := map[string]bool{}
 	for _, entry := range entries {
 		_, sourceErr := entry.Source.ArchiveURL()
-		if sourceErr != nil || !identity.ValidID(entry.ID) || seen[entry.ID] || seen[entry.Source.Repository] || entry.Name == "" || entry.License == "" || entry.Runbook == "" || entry.Handoff == "" || len(entry.Entrypoint) == 0 || len(entry.ReadTools) == 0 || entry.ProbeTool != "" && !slices.Contains(entry.ReadTools, entry.ProbeTool) {
+		if sourceErr != nil || !identity.ValidID(entry.ID) || seen[entry.ID] || seen[entry.Source.Repository] || entry.Name == "" || entry.License == "" || entry.Runbook == "" || entry.Handoff == "" || len(entry.Entrypoint) == 0 || len(entry.ReadTools) == 0 || entry.ProbeTool != "" && !slices.Contains(entry.ReadTools, entry.ProbeTool) || entry.ProbeTool != "" && len(entry.ProbeTools) > 0 {
 			return nil, fmt.Errorf("%w: incomplete or duplicate prepared entry", ErrInvalid)
+		}
+		requiredFields := map[string]bool{}
+		for _, field := range entry.Connection.Fields {
+			requiredFields[field.Name] = field.Required
+		}
+		for _, candidate := range entry.ProbeTools {
+			if !slices.Contains(entry.ReadTools, candidate.Tool) || !requiredFields[candidate.Env] {
+				return nil, fmt.Errorf("%w: prepared probe candidate must be a reviewed read tool gated on a required field", ErrInvalid)
+			}
+		}
+		for _, group := range entry.CredentialGroups {
+			if len(group) < 2 {
+				return nil, fmt.Errorf("%w: prepared credential group needs at least two members", ErrInvalid)
+			}
+			for _, name := range group {
+				if !requiredFields[name] {
+					return nil, fmt.Errorf("%w: prepared credential group member %q is not a required input", ErrInvalid, name)
+				}
+			}
 		}
 		if err := entry.Connection.Validate(); err != nil {
 			return nil, err
 		}
-		if _, err := entry.BrokerContract(); err != nil {
+		brokerContract, err := entry.BrokerContract()
+		if err != nil {
 			return nil, err
 		}
 		if entry.Stateful != (entry.StateTarget != "") || entry.Stateful && !validContainerMountTarget(entry.StateTarget) {
 			return nil, fmt.Errorf("%w: prepared state target", ErrInvalid)
+		}
+		if entry.OAuth != nil {
+			a := entry.OAuth
+			found := false
+			for _, field := range entry.Connection.Fields {
+				found = found || field.Name == a.ClientInput && field.Delivery == "file"
+			}
+			stateFile := false
+			if brokerContract.State != nil && brokerContract.State.Target == entry.StateTarget {
+				for _, file := range brokerContract.State.Files {
+					stateFile = stateFile || file.Name == a.TokenFile && file.JSON
+				}
+			}
+			if !entry.Stateful || !found || a.Provider != "google" || len(a.Scopes) != 1 || a.Scopes[0] != "https://www.googleapis.com/auth/calendar.readonly" || a.TokenFormat != "google-calendar-account-map" || a.TokenFile == "" || path.Base(a.TokenFile) != a.TokenFile || strings.ContainsAny(a.TokenFile, "\\\x00\r\n") || !stateFile || !identity.ValidID(a.TokenAccount) {
+				return nil, fmt.Errorf("%w: prepared OAuth handoff", ErrInvalid)
+			}
 		}
 		for name, body := range entry.PreflightFiles {
 			if !credentialPattern.MatchString(name) || !json.Valid(body) || len(body) > 65536 {
@@ -97,8 +158,8 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		config := normalizeArtifactImportConfig(entry.apply(defaultSelfInstallConfig(entry.Source)))
 		definition := ToolDefinition{Schema: SchemaVersion, DefinitionID: entry.ID, Version: config.Version, Transport: ContainerMCP,
 			Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + string(bytes.Repeat([]byte("a"), 64))},
-			Credentials: config.Credentials, CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
-			Environment: config.Environment, RuntimeEnvironment: config.RuntimeEnvironment, Tools: config.Tools, Workload: config.Workload, Execution: config.Execution, Health: config.Health}
+			Credentials: config.Credentials, CredentialGroups: config.CredentialGroups, CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
+			Environment: config.Environment, RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment, Tools: config.Tools, Workload: config.Workload, Execution: config.Execution, Health: config.Health}
 		if err := definition.Validate(); err != nil {
 			return nil, fmt.Errorf("prepared %s: %w", entry.ID, err)
 		}
@@ -117,11 +178,26 @@ func preparedForSource(source ArtifactSource) (PreparedEntry, bool, error) {
 	return PreparedEntry{}, false, err
 }
 
+// preparedForRepository finds the reviewed entry for an unpinned repository
+// request. A bare URL means "this repository", not "whatever HEAD is today":
+// the pinned commit is the only revision the overlay may cover, so it is the
+// source an unpinned request selects.
+func preparedForRepository(repository, subfolder string) (PreparedEntry, bool, error) {
+	entries, err := PreparedCatalog()
+	for _, entry := range entries {
+		if sameRepository(entry.Source.Repository, repository) && entry.Source.Subfolder == subfolder {
+			return entry, true, err
+		}
+	}
+	return PreparedEntry{}, false, err
+}
+
 func (entry PreparedEntry) apply(config ArtifactImportConfig) ArtifactImportConfig {
 	config.Language = entry.Language
 	// The generator still infers the entrypoint; the reviewed value is checked
 	// against its result before preflight, not used as an alternative installer.
 	config.Credentials = entry.Connection.CredentialInputs()
+	config.CredentialGroups = cloneStringGroups(entry.CredentialGroups)
 	config.CredentialContractID, config.CredentialContractRevision = entry.ContractID, entry.ContractRevision
 	config.CredentialContractEnv = map[string]string{}
 	for _, field := range entry.Connection.Fields {
@@ -131,6 +207,7 @@ func (entry PreparedEntry) apply(config ArtifactImportConfig) ArtifactImportConf
 	}
 	config.Environment = append([]string(nil), entry.Environment...)
 	config.RuntimeEnvironment = cloneMap(entry.RuntimeEnvironment)
+	config.ProxyEnvironment = append([]string(nil), entry.ProxyEnvironment...)
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
 	config.Workload.Stateful = entry.Stateful
 	return config
@@ -153,6 +230,17 @@ func runtimeEnvironmentArgs(definition ToolDefinition) []string {
 	slices.Sort(names)
 	for _, name := range names {
 		args = append(args, "--env", name+"="+definition.RuntimeEnvironment[name])
+	}
+	return args
+}
+
+// proxyEnvironmentArgs fills the artifact's declared proxy env vars with the
+// controller-owned egress URL. Review supplies only the names, so the value
+// can never point at an unreviewed proxy.
+func proxyEnvironmentArgs(definition ToolDefinition, proxyURL string) []string {
+	var args []string
+	for _, name := range slices.Sorted(slices.Values(definition.ProxyEnvironment)) {
+		args = append(args, "--env", name+"="+proxyURL)
 	}
 	return args
 }

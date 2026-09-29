@@ -60,6 +60,7 @@ func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
 		"rmi hermes-hub:0.2.0-dev",
 		"rm hermes-hub-local-dev-runtime-1",
 		"image prune -f",
+		"buildx prune --max-used-space 8gb -f",
 		"rm hermes-builder-aa",
 		"rm hermes-build-seed-cc",
 		"network rm hermes-build-net-dd",
@@ -100,6 +101,9 @@ func TestDockerCleanDeepRemovesSharedBuildState(t *testing.T) {
 	}
 	if !slices.Contains(calls, "volume rm hermes-build-state-shared") {
 		t.Fatalf("deep clean kept shared state: %v", calls)
+	}
+	if !slices.Contains(calls, "builder prune -a -f") {
+		t.Fatalf("deep clean kept BuildKit cache: %v", calls)
 	}
 }
 
@@ -170,6 +174,9 @@ func TestDockerCleanPropagatesTagScanError(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker CLI unavailable")
 	}
+	if _, err := cliDocker(context.Background(), "info", "--format", "{{.ServerVersion}}"); err != nil {
+		t.Skip("docker daemon unavailable")
+	}
 	if err := DockerClean(context.Background(), t.TempDir(), false); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +185,9 @@ func TestDockerCleanPropagatesTagScanError(t *testing.T) {
 func TestDockerExecWrappers(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker CLI unavailable")
+	}
+	if _, err := cliDocker(context.Background(), "info", "--format", "{{.ServerVersion}}"); err != nil {
+		t.Skip("docker daemon unavailable")
 	}
 	if _, err := cliDocker(context.Background(), "version"); err != nil {
 		t.Fatal(err)

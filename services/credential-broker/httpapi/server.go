@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -90,6 +91,18 @@ func New(cfg Config) (*Server, error) {
 	return &Server{b: cfg.Broker, cfg: cfg, host: u.Host, origin: u.String(), apiHosts: cfg.APIHosts, slots: make(chan struct{}, 64), limits: newLimiter()}, nil
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	defer func() {
+		route := "/"
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) > 0 && parts[0] != "" {
+			route = "/" + parts[0]
+			if parts[0] == "v1" && len(parts) > 1 {
+				route += "/" + parts[1]
+			}
+		}
+		log.Printf("credential-broker http method=%s route=%s duration_ms=%d", r.Method, route, time.Since(started).Milliseconds())
+	}()
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

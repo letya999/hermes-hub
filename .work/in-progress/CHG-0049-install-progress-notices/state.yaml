@@ -1,0 +1,44 @@
+schema: 1
+id: CHG-0049-install-progress-notices
+title: install progress on the form and in Telegram
+status: done
+phase: verified
+started_at: 2026-09-28
+updated_at: 2026-09-28
+completed:
+  - credential form renders an indeterminate wait state with an elapsed
+    seconds counter; submit swaps inputs for the spinner while the blocking
+    POST runs, second submit prevented, disabled-attribute footgun avoided
+    (disabled inputs are dropped from the form body)
+  - per-response CSP nonce minted via randomNonce; script-src 'nonce-…'
+    added, all other directives unchanged (default-src 'none')
+  - prepare_outcome contract: event + tools fields, whitelist validation,
+    tools bounded 0..500, event notices rendered in Russian, dedup keyed by
+    event and rejection-detail hash, interim events skip the continuation job
+  - toolhub emits prepare-started, credentials-check, credentials-rejected,
+    binding-failed through the existing deliverPrepareOutcome pipeline;
+    finishAuthorization posts the enabled settle notice with tool count
+  - tests: progress-event notices, dedup per event and per rejection reason,
+    no continuation job for interim events, unknown event/eventless-phase/
+    tools-bound rejection, enabled tool-count text, form CSP nonce + wait
+    markup assertions in the existing credential-gate test
+  - just check green: -race -shuffle all packages, own Go statement coverage
+    85.01% (>=85), format/vet/staticcheck/docs/actionlint clean
+  - hubctl up -dir spaces/local -env dev: both hub images rebuilt, all five
+    containers healthy; new code verified inside deployed binaries
+  - live delivery: POST /v1/prepare-outcome with event=prepare-started as the
+    telegram principal returned 204 and communication-hub sent the real
+    Telegram message to the owner's chat (delivery_id
+    prepare-…-prepare-started-notice in gateway log)
+  - full live chain, both principals (local + telegram-8275678764), one
+    slack-mcp-server install each: prepare-started at install start,
+    awaiting-credentials with form link, credentials-check on submit,
+    enabled with 15-tool count, then real Slack queries served from the
+    workloads; store.json shows both onboardings enabled/15 tools, both
+    bindings active; zero errors in toolhub and communication logs
+  - form wait-state watched live by the owner during a real 43s probe:
+    submitted credentials, page showed progress instead of a silent hang
+pending:
+  - local-principal installs get the same Telegram chain only when the local
+    user has TelegramIDs configured (owner's local user does); a truly
+    channel-less principal still sees progress via the form and status

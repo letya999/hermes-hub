@@ -19,6 +19,7 @@
     "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
     "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
     "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"], "probe_tool": "list-calendars",
+    "oauth": {"provider": "google", "scopes": ["https://www.googleapis.com/auth/calendar.readonly"], "client_input": "GOOGLE_OAUTH_CREDENTIALS", "token_file": "runtime_session.json", "token_account": "normal", "token_format": "google-calendar-account-map"},
     "runbook": "docs/prepared-connectors.md#google-calendar",
     "handoff": "Install https://github.com/nspady/google-calendar-mcp; reuse my existing OAuth client and token state through Broker. Never paste OAuth JSON or tokens in chat. Verify list-calendars and list-events for my account."
   },
@@ -45,5 +46,24 @@
     "egress": ["gitlab.com"], "read_tools": ["whoami"], "probe_tool": "whoami",
     "runbook": "docs/prepared-connectors.md#gitlab",
     "handoff": "Install https://github.com/zereight/gitlab-mcp; reuse or rotate my existing Broker connection. Confirm the HTTPS GITLAB_API_URL in the protected form, then verify whoami on that host. Do not create another owner connection or change provider data."
+  },
+  {
+    "id": "atlassian", "name": "Atlassian (Jira + Confluence)", "license": "MIT",
+    "source": {"repository": "https://github.com/sooperset/mcp-atlassian", "commit_sha": "0a5d2427144d72f5aade07d4fabd385421cec401"},
+    "language": "python", "entrypoint": ["/opt/venv/bin/mcp-atlassian"],
+    "connection": {"fields": [
+      {"name": "JIRA_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "JIRA_URL"},
+      {"name": "JIRA_USERNAME", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "JIRA_USERNAME"},
+      {"name": "JIRA_API_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "JIRA_API_TOKEN"},
+      {"name": "CONFLUENCE_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "CONFLUENCE_URL"},
+      {"name": "CONFLUENCE_USERNAME", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "CONFLUENCE_USERNAME"},
+      {"name": "CONFLUENCE_API_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "CONFLUENCE_API_TOKEN"}
+    ]},
+    "contract_id": "atlassian-env", "contract_revision": 2, "stateful": false,
+    "credential_groups": [["JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"], ["CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"]],
+    "egress": ["atlassian.net", "atlassian.com"], "read_tools": ["jira_get_all_projects", "jira_get_user_profile", "jira_get_issue", "jira_search", "confluence_list_page_templates", "confluence_get_page", "confluence_search"],
+    "probe_tools": [{"tool": "jira_get_all_projects", "env": "JIRA_URL"}, {"tool": "confluence_list_page_templates", "env": "CONFLUENCE_URL"}],
+    "runbook": "docs/prepared-connectors.md#atlassian",
+    "handoff": "Install https://github.com/sooperset/mcp-atlassian; reuse or rotate my existing Broker connection. Fill the Jira block, the Confluence block or both in the protected Broker form; each URL host becomes an egress destination. Verify jira_get_all_projects or confluence_list_page_templates, then do not change provider data without an explicit instruction."
   }
 ]

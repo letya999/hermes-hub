@@ -16,13 +16,16 @@ import (
 const RunStreamContentType = "application/x-ndjson"
 
 type nativeRunEvent struct {
-	Event     string   `json:"event"`
-	RunID     string   `json:"run_id"`
-	Timestamp float64  `json:"timestamp"`
-	Tool      string   `json:"tool"`
-	Error     bool     `json:"error"`
-	RequestID string   `json:"request_id"`
-	Choices   []string `json:"choices"`
+	Event     string          `json:"event"`
+	RunID     string          `json:"run_id"`
+	Timestamp float64         `json:"timestamp"`
+	Tool      string          `json:"tool"`
+	Error     bool            `json:"error"`
+	RequestID string          `json:"request_id"`
+	Choices   []string        `json:"choices"`
+	Output    string          `json:"output,omitempty"`
+	Text      string          `json:"text,omitempty"`
+	Result    json.RawMessage `json:"result,omitempty"`
 }
 
 func eventID(event nativeRunEvent) string {

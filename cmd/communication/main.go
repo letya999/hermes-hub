@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/communication"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 )
 
 func main() {
@@ -22,7 +23,7 @@ func main() {
 		gateway, err = communication.New(config)
 		if err == nil {
 			if addr := strings.TrimSpace(config.ListenAddr); addr != "" {
-				server := &http.Server{Addr: addr, Handler: gateway.Handler(), ReadHeaderTimeout: 10 * time.Second}
+				server := &http.Server{Addr: addr, Handler: diagnostics.HTTP("communication", gateway.Handler()), ReadHeaderTimeout: 10 * time.Second}
 				go func() { _ = server.ListenAndServe() }()
 				defer func() {
 					shutdownCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)

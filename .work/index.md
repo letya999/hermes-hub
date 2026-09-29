@@ -5,6 +5,10 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 | Change | State |
 |---|---|
+| [CHG-0047](in-progress/CHG-0047-mcp-admission-and-wake/plan.md) | Credential-gated MCP admission, sibling ToolHub tokens, and lost first-message delivery |
+| [CHG-0046](in-progress/CHG-0046-automatic-diagnostics/plan.md) | Automatic bounded diagnostics across users and services |
+| [CHG-0045](in-progress/CHG-0045-diagnostics/plan.md) | Bounded multiuser Docker diagnostics and Telegram/job correlation |
+| [CHG-0044](in-progress/CHG-0044-build-disk-control/plan.md) | Separate core/control images and reclaim stale rebuild state |
 | [CHG-0037](in-progress/CHG-0037-toolhub-closeout/plan.md) | ToolHub closeout: Broker readiness, isolation, registry discovery, Hermes reconnect, prepared bundle and production acceptance |
 | [CHG-0036](in-progress/CHG-0036-repository-driven-toolhub/plan.md) | Repository-driven ToolHub: prepared data, discovery and four exact-source live scenarios |
 | [CHG-0035](in-progress/CHG-0035-toolhive-vmcp-audit/plan.md) | ToolHive local vMCP evaluation: no-go evidence recorded |

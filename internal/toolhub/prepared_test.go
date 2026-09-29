@@ -15,7 +15,7 @@ import (
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := PreparedCatalog()
-	if err != nil || len(entries) != 4 {
+	if err != nil || len(entries) != 5 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
@@ -23,6 +23,9 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 			files := map[string]string{"package.json": `{"bin":{"first":"build/index.js","alias":"./build/index.js"}}`, "package-lock.json": "{}"}
 			if entry.ID == "notion" {
 				files["package.json"] = `{"bin":{"notion":"bin/cli.mjs"}}`
+			}
+			if entry.Language == "python" {
+				files = map[string]string{"pyproject.toml": "[project]\nname = \"mcp-atlassian\"\n\n[project.scripts]\nmcp-atlassian = \"mcp_atlassian:main\"\n"}
 			}
 			if entry.Language == "go" {
 				files = map[string]string{"go.mod": "module github.com/github/github-mcp-server\n\ngo 1.25\n", "cmd/github-mcp-server/main.go": "package main\nfunc main(){}", "cmd/helper/main.go": "package main\nfunc main(){}"}
@@ -273,6 +276,46 @@ func TestDiscoveryKeepsPreparedFirstAndUsesGitHubOnlyAsFallback(t *testing.T) {
 	}
 	if len(candidates[0].Evidence) != 1 || candidates[0].Evidence[0].Source != "github-search" {
 		t.Fatalf("duplicate source provenance was lost: %+v", candidates[0].Evidence)
+	}
+}
+
+func TestBareRepositoryURLSelectsPreparedPinnedCommit(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := entries[1]
+	if prepared.ID != "google-calendar" || prepared.Source.Subfolder != "" {
+		t.Fatalf("fixture entry moved: %+v", prepared.Source)
+	}
+	control := &ControlPlane{Store: NewStore(), Now: time.Now}
+	if err := control.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	drifted := ArtifactSource{Repository: prepared.Source.Repository, CommitSHA: strings.Repeat("f", 40)}
+	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+		if raw != prepared.Source.Repository {
+			t.Fatalf("unexpected resolver input: %s", raw)
+		}
+		return drifted, nil
+	}
+	var reviewed ArtifactSource
+	control.Reviewer = func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+		reviewed = source
+		return SourceReview{}, errors.New("stopped at reviewer")
+	}
+	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"source": prepared.Source.Repository}); err == nil {
+		t.Fatal("test reviewer was bypassed")
+	}
+	if reviewed != prepared.Source {
+		t.Fatalf("bare URL drifted to unreviewed commit: %+v", reviewed)
+	}
+	reviewed = ArtifactSource{}
+	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"source": prepared.Source.Repository + "/commit/" + drifted.CommitSHA}); err == nil {
+		t.Fatal("test reviewer was bypassed")
+	}
+	if reviewed != drifted {
+		t.Fatalf("explicit commit was rewritten: %+v", reviewed)
 	}
 }
 

@@ -1,0 +1,17 @@
+schema: 1
+id: CHG-0045-diagnostics
+title: Local multiuser diagnostics
+status: in_progress
+phase: awaiting-live-docker-export
+started_at: 2026-09-26
+updated_at: 2026-09-26
+completed:
+  - traced Telegram, Hermes and ToolHub communication and existing audit logs
+  - added bounded Docker logs and explicit local diagnostic export
+  - added ordinary Telegram text and job correlation logs
+  - targeted communication, compose, supervisor and export tests passed
+  - lint and docs-check passed
+  - just check passed with 85.01 percent statement coverage; Docker-dependent tests skipped because daemon is stopped
+pending:
+  - run export against a live Docker daemon after operator compaction
+  - run just docker-check when Docker is available

@@ -1,10 +1,12 @@
 package communication
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -123,6 +125,12 @@ func TestConfigAndYAML(t *testing.T) {
 		if bad.Validate() == nil {
 			t.Fatal("invalid config accepted")
 		}
+	}
+	invalidPolicy := c
+	invalidPolicy.Users = append([]User(nil), c.Users...)
+	invalidPolicy.Users[0].PolicyVersion = "policy-1 policy-1"
+	if invalidPolicy.Validate() == nil {
+		t.Fatal("invalid policy_version accepted")
 	}
 	overlap := c
 	overlap.Users = append(overlap.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: filepath.Join(filepath.Dir(c.Users[0].StateDir), "shared"), WorkspaceDir: c.Users[0].WorkspaceDir})
@@ -540,6 +548,32 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	c.Users[0].PolicyDisabled = []string{"slack"}
 	if !strings.Contains(connectionList(c.Users[0]), "slack — policy-disabled") {
 		t.Fatal("policy-disabled connection was not reported")
+	}
+}
+
+func TestRestartRequestRebuildsDurableIdentityForSupervisor(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "job-restart", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-restart", Text: "hello", CreatedAt: time.Now().UTC()}
+	if accepted, err := spool.Enqueue(job); err != nil || !accepted {
+		t.Fatalf("enqueue=%v err=%v", accepted, err)
+	}
+	g := &Gateway{config: Config{Supervised: true, OrganizationID: "personal"}, spool: spool, now: time.Now}
+	request, ok := g.restartRequest(Delivery{JobID: job.ID})
+	if !ok {
+		t.Fatal("restart request not built from durable mapping")
+	}
+	if err := request.Envelope.Validate(request.PrincipalID, request.ContextID, request.RuntimeID, request.PolicyVersion); err != nil {
+		t.Fatalf("rebuilt envelope does not bind: %v", err)
+	}
+	if request.PrincipalID != "alice" || request.ContextID != "alice" || request.RuntimeID != "alice" || request.UserID != "alice" || request.ScopeID != "user:alice" || request.OrganizationID != "personal" {
+		t.Fatalf("restart request lost identity: %+v", request)
+	}
+	unsupervised := &Gateway{config: Config{Supervised: false}, spool: spool, now: time.Now}
+	if request, ok := unsupervised.restartRequest(Delivery{JobID: job.ID}); !ok || request.JobID != "" {
+		t.Fatal("unsupervised restart must stay an empty POST")
 	}
 }
 
@@ -1226,6 +1260,70 @@ func TestGatewayRejectsNonPrivateAndUnknownMessages(t *testing.T) {
 	}
 	if len(fake.sent) != 2 || !strings.Contains(fake.sent[0], "не настроен") {
 		t.Fatal(fake.sent)
+	}
+}
+
+func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	var output bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(old)
+	for _, update := range []Update{
+		{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "ordinary question"}},
+		{UpdateID: 2, Message: &Message{MessageID: 2, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "SECRET=private-value"}},
+		{UpdateID: 3, Message: &Message{MessageID: 3, From: &TGUser{ID: 99}, Chat: TGChat{ID: 99, Type: "private"}, Text: "unknown-user-text"}},
+		{UpdateID: 4, Message: &Message{MessageID: 4, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/credentials code secret-code"}},
+	} {
+		if err := g.handleUpdate(context.Background(), update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := g.queueDelivery(context.Background(), "telegram-5-secret", 11, "private-form-link"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.queueDelivery(context.Background(), "telegram-6-reply", 11, "normal answer"); err != nil {
+		t.Fatal(err)
+	}
+	for range 8 {
+		g.deliverOne(context.Background())
+	}
+	got := output.String()
+	if !strings.Contains(got, "ordinary question") || !strings.Contains(got, "normal answer") || !strings.Contains(got, "update_id=1") || strings.Contains(got, "private-value") || strings.Contains(got, "private-form-link") || strings.Contains(got, "unknown-user-text") || strings.Contains(got, "secret-code") {
+		t.Fatal(got)
+	}
+	g.recordJob(Job{ID: "telegram-1", UserID: "alice"}, RunOutcome{RunID: "run-1", Status: "completed"})
+	if !strings.Contains(output.String(), "gateway job user=\"alice\" job_id=\"telegram-1\" run_id=\"run-1\"") {
+		t.Fatal(output.String())
+	}
+	g.recordJob(Job{ID: "telegram-2", UserID: "alice"}, RunOutcome{})
+	if !strings.Contains(output.String(), "gateway job user=\"alice\" job_id=\"telegram-2\" run_id=\"\" status=\"completed\"") {
+		t.Fatal(output.String())
+	}
+	var absent *Gateway
+	absent.recordJob(Job{}, RunOutcome{})
+}
+
+func TestTelegramDiagnosticsCanBeDisabled(t *testing.T) {
+	t.Setenv("HUB_DIAGNOSTICS_ENABLED", "false")
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 7, Message: &Message{MessageID: 7, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "private discussion"}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "private discussion") {
+		t.Fatal(output.String())
 	}
 }
 

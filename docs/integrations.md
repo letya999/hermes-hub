@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-23
+last_verified: 2026-09-27
 ---
 # Integration contracts
 
@@ -179,7 +179,11 @@ from the confirmed tools without rebuilding the OCI archive. Approve
 `--review-digest` must match `ImportedReviewDigest` of that restamped packet. Registration is
 immutable and rejects review-packet or tool-contract drift. `LoadStoredOCIArtifact` imports a
 verified archive into the local Linux Docker image store without ambient Docker
-credentials. `WorkloadBudget` provides a FIFO active-process cap and idle
+credentials. Admission resolves the reviewed image the same way: when the
+pinned tag is absent from the daemon (for example after an image prune) the
+controller reloads it from `<state_root>/artifacts` by the definition's
+archive digest before falling back to a digest-pinned registry pull, and
+fails closed when no verified archive exists. `WorkloadBudget` provides a FIFO active-process cap and idle
 reclaim hook, while `RuntimeSecurityProfile` is the pre-start fail-closed
 contract for any ToolHive adapter. Credential-bearing onboarding uses the same
 generic admission path before publishing a new projection and restores the
@@ -202,8 +206,28 @@ the upstream Dockerfile remains inert metadata: its last exec-form
 packages (basename match against the selected directory or the `go.mod`
 module basename) and supply the matched binary's default arguments.
 The isolated `tools/list` preflight retries once with declared-but-optional
-secrets as placeholders; a successful retry proves they gate server startup
-and promotes them to required onboarding inputs. Recipes are status
+secrets as placeholders. A successful retry proves they gate server startup
+and promotes them to required onboarding inputs. If both probes fail and the
+server's own error names the secret env vars it needs, onboarding does not
+record an empty catalog and does not invent a tool contract: it opens the
+protected form for those names, and an either/or sentence stays alternative
+groups on that form. The groups persist on the definition as
+`credential_groups`; onboarding submits, binding resolution and workload
+admission all accept one complete group instead of demanding every declared
+required name. `tools/list` runs again only after the form is submitted,
+with the real values and with network egress on that second probe alone. An
+error that names no secret stays a hard failure — except one bounded case: a
+server that answers `tools/list` with a valid response carrying zero tools
+while the definition already declares required inputs (mcp-atlassian lists
+nothing until `JIRA_*`/`CONFLUENCE_*` config exists). That answered-empty
+result is gated on the declared required names, grouped into either/or
+PREFIX_* alternatives when several product suites are declared (Jira or
+Confluence satisfies mcp-atlassian); a process that died before answering, or
+a definition with no required inputs, still fails the review. Placeholder
+values in `.env.example`/compose env entries (`https://your-company.…`,
+`your.email@example.com`, `*_here`) mark non-secret fields as required
+onboarding inputs, so connection config the author demands can be collected;
+real defaults (`https://gitlab.com`) stay metadata. Recipes are status
 metadata, not authorization or
 execution; the existing preflight `tools/list`, Credential Broker, ToolHive and
 runtime reconnect gates remain authoritative.
@@ -213,7 +237,31 @@ their values are never returned and those files are not passed to BuildKit.
 Names that cannot be user-supplied connection credentials are excluded from
 connection fields entirely: `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`ALL_PROXY`
 are injected by the workload runtime, and `TEST_*`/`*_TEST`/`*_TEST_*` fixtures
-belong to upstream test suites. Heuristic env sources (`.env.example`, Compose
+belong to upstream test suites. Servers that ignore the standard proxy
+variables can declare their own names in the reviewed definition's
+`proxy_environment` (for example `SLACK_MCP_PROXY`): only `*_PROXY` names are
+accepted, and the workload runtime always fills them with the controller-owned
+egress proxy URL — an artifact or owner can never choose the proxy destination.
+Import also scans the repository source for custom proxy env reads
+(`os.Getenv`/`LookupEnv` in Go, `process.env.X` in Node, `os.environ`/`getenv`
+in Python, `env::var`/`var_os` in Rust, plus dotenv/Dockerfile assignments) and
+merges `*_PROXY` names into `proxy_environment`; vendored trees, test fixtures
+and placeholder names are excluded, so discovery produces review candidates —
+never values.
+A pinned entrypoint that selects a network transport (`--transport sse|http`)
+is first probed over `stdio`: servers that still answer `tools/list` keep the
+rewrite, and the companion launches them on stdio exactly as the preflight
+probe does. Servers that cannot answer stdio are re-probed over their declared
+transport — the real server runs detached with its original args while a
+`hubctl mcp-bridge` sidecar attached to its network namespace relays
+stdin/stdout MCP to the discovered loopback listener; a confirmed list marks
+`source.network_transport` (`sse`/`http`/`streamable-http`). At runtime the
+companion then spawns the child unchanged and connects as an MCP client over
+the loopback endpoint it discovers in the workload's own network namespace —
+HTTP/SSE only ever travels on loopback inside the isolated workload, the
+bridge HTTP client never honors proxy environment, and the authenticated
+companion/relay front stays the only externally visible endpoint. Heuristic env sources
+(`.env.example`, Compose
 `environment`) mark only secret-class names required; an uncommented empty
 non-secret knob stays optional, while explicit manifest `isRequired` flags are
 authoritative. Required credentials must be covered by a reviewed Credential
@@ -450,7 +498,7 @@ Official contracts: [OAuth](https://docs.slack.dev/authentication/using-pkce),
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
 | Google | Official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019); the third-party Workspace MCP is not in the default hub image | ToolHub remote read grants per product |
 | Slack | [korotovsky/slack-mcp-server](https://github.com/korotovsky/slack-mcp-server), `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
-| Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | stdio, persistent Chromium over local CDP |
+| Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | Hub-owned stdio: `browser` attaches to the per-user persistent Chromium over loopback CDP, `browser_guest` runs isolated; mutation tools exist only with the `browser_act` feature; output lands in `workspace/browser` under size/type limits |
 | GitHub | [official MCP](https://github.com/github/github-mcp-server) | https://api.githubcopilot.com/mcp/ + bearer (`GITHUB_TOKEN`) |
 | Atlassian | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian), `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | Dedicated `docker/mcp-atlassian.Dockerfile`; Jira Cloud API token via `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
 | GitLab | Debian `glab` package from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT and optional `GITLAB_HOST` |
@@ -464,10 +512,12 @@ from the generated `.hub` recipe, never the upstream Dockerfile. The two paths
 also keep separate credentials: the remote connector takes `GITHUB_TOKEN`,
 while a source install declares its own env inputs (for github-mcp-server the
 `GITHUB_PERSONAL_ACCESS_TOKEN`). Interactive OAuth inside a workload is not
-supported; instead the isolated preflight promotes a declared secret to a
-required input when `tools/list` proves startup needs it, and onboarding
-satisfies it through the existing protected form or a Credential Broker
-contract — including a broker-provisioned OAuth grant where one is reviewed.
+supported. The isolated preflight promotes a declared secret to a required
+input when `tools/list` proves startup needs it. When the server will not
+speak MCP until a real credential is present, the same protected form collects
+it and the confirming `tools/list` uses that value. A Credential Broker
+contract remains the path where one is reviewed, including a broker-provisioned
+OAuth grant.
 
 Telegram has two independent paths: `hub-communication` is the Bot API channel adapter,
 while `telegram_user` is the personal-account MCP data/action connector. Enabling one does

@@ -49,6 +49,8 @@ func ServiceCatalog() []ServiceInfo {
 
 func serviceDependencies(name string) []string {
 	switch name {
+	case "browser_act":
+		return []string{"browser"}
 	case "google_write":
 		return []string{"google"}
 	case "telegram_write":

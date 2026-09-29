@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,11 +80,25 @@ func TestRuntimeRestartClient(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	if err := runtimeRestart(server.URL, "secret")(context.Background()); err != nil {
+	if err := runtimeRestart(server.URL, "secret", false)(context.Background(), hubruntime.ExecuteRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	if !called {
 		t.Fatal("runtime restart was not requested")
+	}
+	var body string
+	supervisedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer supervisedServer.Close()
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice"}
+	if err := runtimeRestart(supervisedServer.URL, "secret", true)(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, `"principal_id":"alice"`) {
+		t.Fatalf("supervised restart did not carry the identity payload: %q", body)
 	}
 	if !strings.Contains(ErrUncertain.Error(), "uncertain") {
 		t.Fatal("uncertain error lost its contract meaning")
@@ -123,5 +138,38 @@ func TestSupervisorURLOverridesStaticRuntime(t *testing.T) {
 	}
 	if got := runtimeAuthFromEnv(); got != "supervisor-secret" {
 		t.Fatalf("runtime auth=%q", got)
+	}
+}
+
+func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
+	old := unavailableRetryDelay
+	unavailableRetryDelay = time.Millisecond
+	defer func() { unavailableRetryDelay = old }()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply", Status: "completed"})
+	}))
+	defer server.Close()
+	outcome, err := (HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client(), Limit: time.Minute}).RunOutcome(context.Background(), Job{Text: "hello"})
+	if err != nil || outcome.Text != "reply" {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d", calls)
+	}
+
+	calls = 0
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer dead.Close()
+	if _, err := (HTTPRunner{URL: dead.URL, Auth: "secret", HTTP: dead.Client(), Limit: time.Minute}).RunOutcome(context.Background(), Job{Text: "hello"}); err == nil || errors.Is(err, ErrUncertain) {
+		t.Fatalf("persistent unavailability must fail deterministically: %v", err)
+	}
+	if calls != 4 {
+		t.Fatalf("calls=%d", calls)
 	}
 }

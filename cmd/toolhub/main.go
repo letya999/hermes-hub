@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
@@ -37,9 +39,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Addr: config.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
+	server := &http.Server{Addr: config.Listen, Handler: diagnostics.HTTP("toolhub", handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
+		go diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second)
+	}
 	refresher := handler.(interface{ RefreshProjection() error })
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)

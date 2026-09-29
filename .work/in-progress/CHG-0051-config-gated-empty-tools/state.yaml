@@ -1,0 +1,108 @@
+schema: 1
+id: CHG-0051-config-gated-empty-tools
+title: config-gated empty tools/list (mcp-atlassian)
+status: in-progress
+phase: implemented-and-gated
+started_at: 2026-09-28
+updated_at: 2026-09-28
+completed:
+  - diagnosis live: onboard-b30fb395ea0bd67f0df38966 failed after ~27 min
+    build with "MCP tools/list empty: <nil>" — the server answered the probe
+    with zero tools because no JIRA_*/CONFLUENCE_* env was present
+  - verified on the built image directly: no env -> 0 tools; all six
+    connection fields set to the literal "preflight" placeholder -> 96 tools
+    (registration keys on config presence, not credential validity)
+  - connectionFieldFromEnv collects non-secret env lines whose value is a
+    placeholder (your-*, example.*, changeme, *_here, ...) as required inputs;
+    real defaults stay metadata
+  - artifact_preflight marks the answered-empty tools/list with
+    errEmptyToolList; credentialGateFrom falls back to the declared required
+    inputs and synthesizes PREFIX_* either/or groups for the gate
+  - acceptCredentialGate/credentialGateHints render every required input
+    (secrets stay masked, URLs/usernames become text fields) so config-gated
+    servers can actually collect what admission demands
+  - regression tests: placeholder env parsing, answered-empty gate with
+    prefix groups and hint typing, EOF/no-required negatives
+  - just check green (race+shuffle, coverage 85.03%)
+  - live retry onboard-d0d4c5bf2b018a1e47bb8434 passed the new placeholder
+    probe (tools/list succeeded) and failed one stage later with "no reviewed
+    credential broker contract covers mcp-atlassian credentials" — the recipe
+    was right, the curated contract was missing
+  - promoted mcp-atlassian to a prepared connector: catalog entry pins
+    sooperset/mcp-atlassian@0a5d2427, entrypoint /opt/venv/bin/mcp-atlassian,
+    six required env fields (URLs+usernames+tokens for Jira and Confluence),
+    egress atlassian.net/atlassian.com plus auto-added URL hosts, read-only
+    probe jira_get_user_profile; new broker contract atlassian-env rev 1
+    delivering all six as env
+  - seeded atlassian-env.json into the broker contracts volume and restarted
+    the broker; catalog tests cover the python pyproject.toml fixture
+  - resolveLocalRecipe skips recipe files under test/fixture directories
+    (test/tests/testdata/e2e/fixture(s)/__tests__) — mcp-atlassian's
+    tests/e2e/docker/docker-compose.yml env (CONFLUENCE_DB_PASSWORD,
+    ATL_LICENSE_KEY) configured throwaway Atlassian instances, not the MCP
+    server, and broke contract coverage as phantom required inputs
+  - live retry onboard-9ccc3cba1299a4e092c602ac reached awaiting-credentials:
+    definition mcp-atlassian v0.0.2, contract atlassian-env rev 1 bound,
+    exactly the six curated required inputs, 96 tools, egress
+    atlassian.net/atlassian.com + credential URL hosts
+  - just check green (race+shuffle, toolhub 85.7%); internal/stack flake was
+    a Windows AV false-positive on the test binary, passes standalone
+  - user report: broker form demanded all six fields (rev-1 contract marked
+    every field required) and the provider probe jira_get_user_profile always
+    fails — the tool requires a user_identifier argument, so calling it with
+    {} can never validate credentials
+  - contract bumped to rev 2: all six fields optional at broker level,
+    ToolHub enforces alternative groups — catalog credential_groups
+    {JIRA_URL,JIRA_USERNAME,JIRA_API_TOKEN} / {CONFLUENCE_URL,CONFLUENCE_USERNAME,
+    CONFLUENCE_API_TOKEN}; ArtifactImportConfig carries CredentialGroups into
+    the generated definition and review digest
+  - probe_tools: env-gated reviewed candidates — jira_get_all_projects when
+    JIRA_URL delivered, confluence_list_page_templates when CONFLUENCE_URL;
+    both are zero-arg read tools (jira_get_user_profile was invalid)
+  - brokerRuntimeInjector accepts a satisfied group instead of demanding
+    every recorded key; grouped members may stay undelivered, non-grouped
+    missing keys still fail closed
+  - broker crash-loop "state conflict": replacing atlassian-env.json rev1
+    with rev2 broke digest validation for the live grant — broker contract
+    revisions are immutable at boot replay. Recovered rev-1 verbatim from the
+    old image's embedded binary and seeded it as atlassian-env-v1.json
+    alongside rev-2; both revisions coexist (catalog key = id@revision)
+  - regression tests: env-gated probe selection (jira/confluence/neither),
+    broker injector group satisfaction (jira-only, confluence-only, partial,
+    empty), gofmt clean, just check green 85.06%
+pending:
+  - hubctl rebuild in progress; then live retry — verify the rev-2 form marks
+    fields optional, a single product block submits, the matching probe runs,
+    workload admission and enablement
+notes:
+  - broker contract files must be owner-readable only and owned by the broker
+    euid (10001): docker cp lands root:root and securefs ErrUnsafe crash-loops
+    the broker — write via `docker exec -i ... sh -c 'cat > f && chmod 0600'`
+    as the agent user, or a helper container `docker run -v <vol>:/v alpine`
+    that can chown 10001:0 (the broker container has no root user for exec)
+  - broker contracts are immutable by key id@revision: a live request/grant
+    stores the contract digest and boot replay hard-fails ("state conflict")
+    if the file content changed. Bump `revision`, keep the old revision's file
+    alongside (loader reads every *.json; embedded digest must match the old
+    revision byte-for-field, whitespace is normalized by strictjson)
+  - the placeholder probe ("NAME=preflight" for every required input) lets
+    config-presence-gated servers list their tools during review; auth is
+    still proven only at credential submit and at first real call
+  - mcp-atlassian validates tokens lazily per request, so an invalid token can
+    pass the form probe; the first real call surfaces the provider's auth
+    error instead
+  - LIVE E2E PASSED 2026-09-29: onboard-e495d929fb8a099c7f85b686 (principal
+    local / telegram 480637186) confirm → probe jira_get_all_projects (env-gated
+    ProbeCandidate) → workload admission → enable → binding
+    bind-82bbc5744a46db4c653b5f5a active, work-2dcb2226* containers running
+  - toolhub runs an overlay image (FROM hermes-hub:0.3.0-dev-control + COPY of
+    a locally cross-compiled binary) because Docker Desktop VM restarted and
+    flaky DNS keeps killing the full BuildKit build — rerun `hubctl build &&
+    hubctl up` on a stable network before considering the deployment durable
+  - bindReviewedContract now filters broker candidates by
+    definition.CredentialContractRevision: with atlassian-env@1+@2 coexisting,
+    the alphabetically-earlier v1 file was selected and selfInstallUsable
+    rejected it ("no reviewed credential broker contract covers…")
+  - caution: direct MCP test calls under a real telegram principal deliver
+    prepare_outcome notifications to that account — use test-owner-2 for
+    future live verifies

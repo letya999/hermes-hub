@@ -24,7 +24,7 @@ type MCPTools struct {
 }
 
 func validateMCP(servers map[string]MCPServer) error {
-	reserved := map[string]bool{"hub": true, "browser": true, "google": true, "telegram_user": true, "slack": true, "github": true, "atlassian": true, "desktop": true, "drafts": true}
+	reserved := map[string]bool{"hub": true, "browser": true, "browser_guest": true, "google": true, "telegram_user": true, "slack": true, "github": true, "atlassian": true, "desktop": true, "drafts": true}
 	for name, s := range servers {
 		if !idPattern.MatchString(name) || reserved[name] {
 			return fmt.Errorf("invalid or reserved MCP name %q", name)

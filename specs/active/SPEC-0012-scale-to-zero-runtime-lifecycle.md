@@ -12,9 +12,10 @@ title: Scale-to-zero Hermes runtime lifecycle
 2. Hermes home, sessions, memory, skills, hooks, plugins, workspace, artifacts,
    connection state and browser profile persist in the owning context home. Stopping
    compute never deletes or transfers them.
-3. A runtime mounts only the resolved context paths. The supervisor must not mount the
-   complete `spaces/` root into Hermes, and the communication hub must not receive
-   scope homes or provider credentials.
+3. A runtime mounts only the resolved context paths and joins only that context's
+   Compose network. It mounts that network's `broker-secrets-runtime` volume read-only.
+   The supervisor must not mount the complete `spaces/` root into Hermes, and the
+   communication hub must not receive scope homes or provider credentials.
 4. Personal and organization contexts of the same principal are separate runtime
    bindings and homes.
 
@@ -120,6 +121,9 @@ per-user runtime placement. Other requirements remain active.
 - Ownership requires matching owner/context/generation labels and an actual
   `/scope` bind from the selected context directory, checked by immutable ID.
   Copied labels cannot authorize another context mount.
+- On Windows Docker Desktop, ownership verification may translate only its
+  `/run/desktop/mnt/host/<drive>/...` bind-source form, then must compare the exact
+  selected context path; every other source remains rejected.
 - Inventory is bounded to 256 owner-labelled containers. Container name, context
   and generation identify current compute. Old generations with a known terminal
   ledger may be removed by verified immutable ID. Unknown or uncertain generations

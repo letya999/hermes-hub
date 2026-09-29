@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -18,6 +19,132 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	token := strings.Repeat("t", 32)
+	backend := backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		return BackendResult{Text: "ok"}, nil
+	})
+	bob, err := json.Marshal(bobAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokensPath := filepath.Join(t.TempDir(), "tokens.json")
+	if err := os.WriteFile(tokensPath, []byte(`{"`+bobToken+`": `+string(bob)+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := EndpointConfig{Token: token, Auth: auth, TokensFile: tokensPath, Backend: backend}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	mcpConnect(t, server.URL, token)
+	mcpConnect(t, server.URL, bobToken)
+	client := mcp.NewClient(&mcp.Implementation{Name: "intruder", Version: "1"}, nil)
+	if _, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL + DefaultEndpointPath, HTTPClient: &http.Client{Transport: testBearerTransport{base: http.DefaultTransport, token: strings.Repeat("x", 32)}}}, nil); err == nil {
+		t.Fatal("unregistered token connected to the shared endpoint")
+	}
+	bad := config
+	bad.TokensFile = filepath.Join(t.TempDir(), "missing.json")
+	if _, err := NewEndpointHandler(bad, store); err == nil {
+		t.Fatal("missing tokens file accepted")
+	}
+	dupPath := filepath.Join(t.TempDir(), "dup.json")
+	if err := os.WriteFile(dupPath, []byte(`{"`+token+`": `+string(bob)+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bad.TokensFile = dupPath
+	if _, err := NewEndpointHandler(bad, store); err == nil {
+		t.Fatal("duplicate token accepted")
+	}
+	badJSON := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(badJSON, []byte(`{"`+bobToken+`": {"identity_schema": 1}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bad.TokensFile = badJSON
+	if _, err := NewEndpointHandler(bad, store); err == nil {
+		t.Fatal("invalid secondary identity accepted")
+	}
+}
+
+func TestEndpointReloadsTokensFileOnAuthMiss(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	token := strings.Repeat("t", 32)
+	backend := backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		return BackendResult{Text: "ok"}, nil
+	})
+	carol, err := json.Marshal(identity.TelegramEnvelope("carol", 9, "runtime-carol", "policy-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokensPath := filepath.Join(t.TempDir(), "tokens.json")
+	if err := os.WriteFile(tokensPath, []byte(`{"`+strings.Repeat("c", 32)+`": `+string(carol)+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewEndpointHandler(EndpointConfig{Token: token, Auth: auth, TokensFile: tokensPath, Backend: backend}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := mcp.NewClient(&mcp.Implementation{Name: "reload", Version: "1"}, nil)
+	if _, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL + DefaultEndpointPath, HTTPClient: &http.Client{Transport: testBearerTransport{base: http.DefaultTransport, token: bobToken}}}, nil); err == nil {
+		t.Fatal("unenrolled token connected")
+	}
+	bob, err := json.Marshal(bobAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokensPath, []byte(`{"`+strings.Repeat("c", 32)+`": `+string(carol)+`,"`+bobToken+`": `+string(bob)+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mcpConnect(t, server.URL, bobToken)
+}
+
+func TestReloadTokensKeepsPrimaryWhenFileBreaks(t *testing.T) {
+	primary := strings.Repeat("p", 32)
+	auth := aliceAuth()
+	g := &Gateway{primaryToken: primary, Tokens: map[string]identity.Envelope{primary: auth}}
+	if g.reloadTokens() {
+		t.Fatal("missing tokens file reloaded")
+	}
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken.json")
+	if err := os.WriteFile(broken, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	g.tokensFile = broken
+	if g.reloadTokens() {
+		t.Fatal("broken tokens file replaced the primary")
+	}
+	if _, ok := g.Tokens[primary]; !ok {
+		t.Fatal("primary token dropped after a failed reload")
+	}
+	g.Tokens = map[string]identity.Envelope{}
+	if g.reloadTokens() {
+		t.Fatal("reload without a primary token")
+	}
+	bob, err := json.Marshal(bobAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "tokens.json")
+	body := `{"` + primary + `": ` + string(bob) + `,"` + bobToken + `": ` + string(bob) + `}`
+	if err := os.WriteFile(file, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	g.tokensFile = file
+	g.Tokens = map[string]identity.Envelope{primary: auth}
+	if !g.reloadTokens() {
+		t.Fatal("valid sibling file did not reload")
+	}
+	if _, ok := g.Tokens[primary]; !ok || g.Tokens[bobToken].PrincipalID == "" {
+		t.Fatal("reload dropped the primary or the sibling")
+	}
+}
 
 func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
 	store, auth, _ := seededStore(t)

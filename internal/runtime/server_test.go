@@ -148,6 +148,47 @@ func TestPersistentHermesPreservesFailedOutcomeMetadata(t *testing.T) {
 	}
 }
 
+func TestColdWakeRetriesOneFailedRunWithoutTools(t *testing.T) {
+	runs := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			runs++
+			w.Header().Set("Content-Type", "application/json")
+			if runs == 1 {
+				if r.Header.Get("Idempotency-Key") != "wake-key" {
+					t.Errorf("first key=%q", r.Header.Get("Idempotency-Key"))
+				}
+				_, _ = w.Write([]byte(`{"run_id":"wake-1"}`))
+				return
+			}
+			if r.Header.Get("Idempotency-Key") != "wake-key:wake" {
+				t.Errorf("retry key=%q", r.Header.Get("Idempotency-Key"))
+			}
+			_, _ = w.Write([]byte(`{"run_id":"wake-2"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/wake-1":
+			_, _ = w.Write([]byte(`{"status":"failed","error":"cold start"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/wake-2":
+			_, _ = w.Write([]byte(`{"status":"completed","output":"awake"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", IdempotencyKey: "wake-key", Text: "hello"})
+	if err != nil || result.Status != "completed" || result.Text != "awake" || result.RunID != "wake-2" || runs != 2 {
+		t.Fatalf("result=%+v err=%v runs=%d", result, err, runs)
+	}
+}
+
 func TestRuntimeHTTPIncludesPersistentFailureMetadata(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

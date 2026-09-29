@@ -306,8 +306,14 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if _, err := callControl(t, bob, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err == nil {
 		t.Fatal("bob read alice onboarding")
 	}
+	// Self-install is open by default; a revoked grant is the per-principal deny.
+	revoked := OperatorGrant(GrantSelfInstall, "bob", "", "")
+	revoked.Status = RevokedStatus
+	if err := fix.store.PutGrant(revoked); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := callControl(t, bob, "prepare_source", map[string]any{"source": githubCommitURL()}); err == nil {
-		t.Fatal("bob self-install without grant")
+		t.Fatal("bob self-install allowed despite revoked grant")
 	}
 	if _, err := callControl(t, bob, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"}); err == nil {
 		t.Fatal("bob granted admin-approved MCP without assignment")

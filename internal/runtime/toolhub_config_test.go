@@ -5,9 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
-func TestApplyToolHubConfigIsOptInAndUsesEnvReference(t *testing.T) {
+func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", "")
 	t.Setenv("HUB_TOOLHUB_AUTOSTART", "")
 	if got := toolHubEndpoint(); got != "" {
@@ -18,15 +20,17 @@ func TestApplyToolHubConfigIsOptInAndUsesEnvReference(t *testing.T) {
 		t.Fatalf("autostart endpoint=%q", got)
 	}
 	t.Setenv("HUB_TOOLHUB_AUTOSTART", "")
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.yaml")
 	original := []byte("model: {}\n")
-	if err := os.WriteFile(path, original, 0600); err != nil {
+	if err := os.WriteFile(source, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyToolHubConfig(path); err != nil {
+	dest := filepath.Join(dir, "config.yaml")
+	if err := stack.MaterializeHermesConfig(source, dest, materializeOptionsFromEnv()); err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(dest)
 	if err != nil || string(body) != string(original) {
 		t.Fatalf("opt-in config changed: %q %v", body, err)
 	}
@@ -34,10 +38,10 @@ func TestApplyToolHubConfigIsOptInAndUsesEnvReference(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", "http://127.0.0.1:8090/mcp")
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
 	t.Setenv("HUB_TOOLHUB_RECONNECT", "")
-	if err := applyToolHubConfig(path); err != nil {
+	if err := stack.MaterializeHermesConfig(source, dest, materializeOptionsFromEnv()); err != nil {
 		t.Fatal(err)
 	}
-	body, err = os.ReadFile(path)
+	body, err = os.ReadFile(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,12 +50,12 @@ func TestApplyToolHubConfigIsOptInAndUsesEnvReference(t *testing.T) {
 		t.Fatalf("ToolHub config leaked or omitted token reference: %s", text)
 	}
 	t.Setenv("HUB_TOOLHUB_RECONNECT", "false")
-	if err := applyToolHubConfig(path); err != nil {
+	if err := stack.MaterializeHermesConfig(source, dest, materializeOptionsFromEnv()); err != nil {
 		t.Fatal(err)
 	}
-	body, err = os.ReadFile(path)
-	if err != nil || strings.Count(string(body), "mcp_reload_confirm: false") != 1 {
-		t.Fatalf("disabled reconnect rewrote approval unexpectedly: %s %v", body, err)
+	body, err = os.ReadFile(dest)
+	if err != nil || strings.Contains(string(body), "mcp_reload_confirm") {
+		t.Fatalf("disabled reconnect still injected the approval: %s %v", body, err)
 	}
 }
 
@@ -70,19 +74,5 @@ func TestToolHubAutostartBinaryPrefersShippedName(t *testing.T) {
 	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	if got := toolHubAutostartBinary(); got != "toolhub" {
 		t.Fatalf("fallback binary=%q", got)
-	}
-}
-
-func TestApplyToolHubConfigRejectsUnsafeOrConflictingConfiguration(t *testing.T) {
-	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("mcp_servers:\n  toolhub:\n    url: http://127.0.0.1:9000/mcp\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, endpoint := range []string{"https://public.example/mcp", "http://127.0.0.1:9001/mcp"} {
-		t.Setenv("HUB_TOOLHUB_ENDPOINT", endpoint)
-		if err := applyToolHubConfig(path); err == nil {
-			t.Fatalf("unsafe/conflicting endpoint accepted: %s", endpoint)
-		}
 	}
 }

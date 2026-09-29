@@ -46,12 +46,14 @@ release version:
 
 docker-check target="prod":
     go run ./cmd/devcheck docker-build hermes-hub:test {{target}}
+    go run ./cmd/devcheck docker-build hermes-hub:test-control {{target}}-control
+    docker run --rm --entrypoint docker hermes-hub:test-control --version
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
     go run ./cmd/devcheck docker-clean
 
 # Reclaim superseded hermes-hub tags, dangling images and orphan build
-# resources; "just docker-clean --deep" also drops the shared BuildKit cache.
+# resources; normal mode keeps up to 8 GB of BuildKit cache. Deep drops it.
 docker-clean flag="":
     go run ./cmd/devcheck docker-clean {{flag}}
 

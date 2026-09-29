@@ -3,12 +3,14 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -35,7 +37,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope) {
 				return nil, err
 			}
 			notifyControlProgress(ctx, request, name, true, body)
-			if name == "required_credentials" {
+			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == PhaseAwaitingOAuth {
 				if pending := pendingCredentialElicit(ctx, request, body); pending != nil {
 					return pending, nil
 				}
@@ -74,7 +76,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["source"] = map[string]any{"type": "string"}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
-		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first."
+		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id."
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
 	case "status", "required_credentials":
@@ -190,14 +192,20 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		cspNonce := randomNonce()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		var b strings.Builder
 		b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение MCP</title><style>
-:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}fieldset{border:0;padding:0;margin:0}legend{font-size:18px;font-weight:750;margin-bottom:18px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
-</style><main class="panel"><h1>Подключение MCP</h1><p>Выберите готовый JSON-файл Google или введите Client ID и Client Secret отдельно. Данные сохранятся в защищённом хранилище и не попадут в чат.</p><form method="post" enctype="multipart/form-data">`)
-		b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
+:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
+</style><main class="panel"><h1>Подключение MCP</h1><p>` + html.EscapeString(credentialFormIntro(onboarding.Required)) + `</p>`)
+		hints := credentialFormHints(onboarding.Required)
+		separate := credentialHintsUseAlternatives(hints)
+		if !separate {
+			b.WriteString(`<form method="post" enctype="multipart/form-data">`)
+			b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
+		}
 		if onboarding.Recipe != nil {
 			for _, alternative := range onboarding.Recipe.Connection.Alternatives {
 				if alternative.URL == "" {
@@ -206,10 +214,16 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 				b.WriteString("<details><summary>Другой способ авторизации</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
 			}
 		}
-		for _, hint := range credentialFormHints(onboarding.Required) {
-			b.WriteString(credentialFieldMarkup(hint))
+		writeCredentialFields(&b, hints, onboarding.FormNonce)
+		if !separate {
+			b.WriteString("<button type=\"submit\">Сохранить и продолжить</button></form>")
 		}
-		b.WriteString("<button type=\"submit\">Сохранить и продолжить</button></form></main></html>")
+		// The submit blocks on a real server probe; a silent 30+ seconds reads
+		// as a refresh loop. Swap the inputs for an honest waiting state while
+		// the POST completes — the response page still carries the outcome.
+		b.WriteString(`<div class="wait" id="wait" hidden><div class="spin"></div><p class="lead">Проверяю данные и запускаю MCP…</p><p>обычно до минуты — <span id="secs">0</span> с</p></div>`)
+		b.WriteString(`<script nonce="` + cspNonce + `">var t0=Date.now();document.addEventListener('submit',function(e){var f=e.target;if(f._busy){e.preventDefault();return}f._busy=true;document.querySelectorAll('form,details').forEach(function(el){el.style.display='none'});document.getElementById('wait').hidden=false;var s=document.getElementById('secs');setInterval(function(){s.textContent=Math.floor((Date.now()-t0)/1000)},500)});</script>`)
+		b.WriteString("</main></html>")
 		_, _ = io.WriteString(w, b.String())
 		return
 	}
@@ -242,6 +256,11 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		values[key] = vs[0]
+		for _, value := range vs {
+			if strings.TrimSpace(value) != "" {
+				values[key] = value
+			}
+		}
 	}
 	if googleOAuthRequired(onboarding.Required) {
 		value, err := googleOAuthFormValue(r)
@@ -253,10 +272,11 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	applyCredentialDefaults(onboarding.Required, values)
 	if err := g.Control.AuthorizeCredentials(r.Context(), onboardingID, nonce, values); err != nil {
+		status, title, message := credentialSubmitPage(err)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = io.WriteString(w, credentialResultPage("Подключение не завершено", "Данные сохранены, но проверка запуска не прошла. ToolHub сохранит состояние; повторно вводить credentials не нужно. Вернитесь в чат — агент увидит точную причину и сможет повторить запуск."))
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, credentialResultPage(title, message))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -266,6 +286,88 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 
 func credentialResultPage(title, message string) string {
 	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>` + html.EscapeString(title) + `</h1><p>` + html.EscapeString(message) + `</p></main></html>`
+}
+
+func credentialFormIntro(hints []CredentialHint) string {
+	if googleOAuthRequired(hints) {
+		return "Выберите готовый JSON-файл Google или введите Client ID и Client Secret отдельно. Данные сохранятся в защищённом хранилище и не попадут в чат."
+	}
+	if credentialHintsUseAlternatives(hints) {
+		return "Заполните один набор. Открыт самый короткий. Остальные способы свёрнуты — их поля отправлять не нужно."
+	}
+	return "Введите запрошенные поля. Они сохранятся в защищённом хранилище и не попадут в чат."
+}
+
+func writeCredentialFields(b *strings.Builder, hints []CredentialHint, nonce string) {
+	if !credentialHintsUseAlternatives(hints) {
+		for _, hint := range hints {
+			b.WriteString(credentialFieldMarkup(hint))
+		}
+		return
+	}
+	groups := map[int][]CredentialHint{}
+	var plain []CredentialHint
+	var order []int
+	for _, hint := range hints {
+		if hint.AlternativeGroup <= 0 {
+			plain = append(plain, hint)
+			continue
+		}
+		if _, ok := groups[hint.AlternativeGroup]; !ok {
+			order = append(order, hint.AlternativeGroup)
+		}
+		groups[hint.AlternativeGroup] = append(groups[hint.AlternativeGroup], hint)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return len(groups[order[i]]) < len(groups[order[j]])
+	})
+	for index, id := range order {
+		names := make([]string, 0, len(groups[id]))
+		for _, hint := range groups[id] {
+			names = append(names, credentialFieldLabel(hint))
+		}
+		legend := strings.Join(names, ", ")
+		if index > 0 {
+			b.WriteString(`<details><summary>Другой набор: ` + html.EscapeString(legend) + `</summary>`)
+		}
+		group := append(append([]CredentialHint{}, plain...), groups[id]...)
+		b.WriteString(`<form method="post" enctype="multipart/form-data"><input type="hidden" name="nonce" value="` + html.EscapeString(nonce) + `"><fieldset><legend>`)
+		b.WriteString(html.EscapeString(legend))
+		b.WriteString("</legend>")
+		for _, hint := range group {
+			b.WriteString(credentialFieldMarkup(hint))
+		}
+		b.WriteString(`<button type="submit">Сохранить и продолжить</button></fieldset></form>`)
+		if index > 0 {
+			b.WriteString(`</details>`)
+		}
+	}
+}
+
+func credentialSubmitPage(err error) (int, string, string) {
+	if errors.Is(err, errCredentialSaved) {
+		reason := strings.TrimPrefix(credentialProbeFailure(err), errCredentialSaved.Error()+": ")
+		if reason == "" {
+			reason = "сервер не завершил привязку."
+		}
+		return http.StatusServiceUnavailable, "Подключение не завершено", "Данные сохранены. Завершить привязку из формы не удалось: " + reason + " Повторите подтверждение в чате."
+	}
+	if errors.Is(err, ErrUnauthorized) && credentialLinkRejected(err) {
+		return http.StatusUnauthorized, "Ссылка устарела", "Форма больше не действует. Данные не сохранены. Попросите в чате новую ссылку."
+	}
+	if errors.Is(err, ErrInvalid) {
+		return http.StatusBadRequest, "Форма заполнена не так", credentialFormRejection(err)
+	}
+	reason := strings.TrimPrefix(credentialProbeFailure(err), "Проверка не прошла. ")
+	if reason == "" {
+		reason = "Сервер не подтвердил вход."
+	}
+	return http.StatusServiceUnavailable, "Проверка не прошла", "Токен не сохранён. " + reason
+}
+
+func credentialLinkRejected(err error) bool {
+	text := err.Error()
+	return strings.Contains(text, "form nonce") || strings.Contains(text, "expired form") || strings.Contains(text, "credentials not expected")
 }
 
 func credentialFieldMarkup(hint CredentialHint) string {
@@ -291,10 +393,26 @@ func credentialFieldMarkup(hint CredentialHint) string {
 		return "<label>" + label + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + "</label>"
 	}
 	autocomplete := "off"
-	if inputType == "email" {
+	switch inputType {
+	case "email":
 		autocomplete = "email"
+	case "password":
+		autocomplete = "new-password"
 	}
-	return "<label>" + label + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\" required>" + credentialFieldHint(hint) + "</label>"
+	required := " required"
+	if hint.AlternativeGroup > 0 {
+		required = ""
+	}
+	return "<label>" + label + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + "</label>"
+}
+
+func credentialHintsUseAlternatives(hints []CredentialHint) bool {
+	for _, hint := range hints {
+		if hint.AlternativeGroup > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func credentialFormHints(hints []CredentialHint) []CredentialHint {
@@ -376,14 +494,8 @@ func credentialFieldHint(hint CredentialHint) string {
 		return "<small>Вставьте содержимое файла gcp-oauth.keys.json, скачанного для OAuth client ID типа Desktop app. Email, host, port и transport здесь не нужны.</small>"
 	}
 	parts := []string{}
-	if hint.Delivery != "" {
-		parts = append(parts, "delivery: "+hint.Delivery)
-	}
-	if hint.Target != "" && hint.Target != hint.Name {
-		parts = append(parts, "target: "+hint.Target)
-	}
 	if hint.Alternative != "" {
-		parts = append(parts, "alternative: "+hint.Alternative)
+		parts = append(parts, hint.Alternative)
 	}
 	if hint.Hint != "" && hint.Hint != "protected loopback form" {
 		parts = append(parts, hint.Hint)
@@ -395,6 +507,10 @@ func credentialFieldHint(hint CredentialHint) string {
 }
 
 func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if !loopbackHTTP(r) {
 		http.Error(w, "loopback only", http.StatusForbidden)
 		return
@@ -405,7 +521,18 @@ func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	onboardingID := r.URL.Query().Get("onboarding_id")
 	if onboardingID == "" {
-		http.Error(w, "missing onboarding", http.StatusBadRequest)
+		if r.URL.Query().Get("state") == "" {
+			http.Error(w, "missing onboarding", http.StatusBadRequest)
+			return
+		}
+		if err := g.Control.completePreparedOAuth(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code")); err != nil {
+			http.Error(w, "authorization failed; return to chat and retry status", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Можно вернуться в чат. Доступ к календарю проверен."))
 		return
 	}
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
