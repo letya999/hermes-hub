@@ -467,6 +467,32 @@ ToolHub/controller and Docker daemon. Without that mount root, file delivery
 fails closed. The copied source and its MIT license remain separate from Hermes'
 AGPL-3.0-only code.
 
+## SSH capability
+
+`ssh` is a hub-owned opt-in capability (issue #42, SPEC-0032), not an upstream
+MCP server. The hub tools process dials `golang.org/x/crypto/ssh` directly and
+uses `github.com/pkg/sftp` for remote files. Enabling `ssh` mounts
+`spaces/<user>/connections/ssh` read-only at `/state/ssh` and validates
+`config.yaml` at render time; a malformed or missing config fails the render.
+
+`config.yaml` binds everything the model must not choose: host aliases,
+host/port/user, pinned `host_keys` (authorized-key lines or `sha256:`
+fingerprints), `key_ref`/`certificate_ref` (`file:` under the config dir or
+`broker:` grant IDs), read/write command allowlists, read/write path
+allowlists, `sudo` (`never` or `passwordless`), timeouts, output/read bounds
+and named tunnel endpoints. The model only names an alias plus the command,
+path, shell or tunnel name.
+
+`broker:` refs are materialized per dial: the runtime adapter signs
+`broker:control` acquire and `broker:runtime` materialize/release with an
+`ssh-<alias>` binding and a short-lived lease. The runtime adapter key must
+therefore be trusted for both audiences when broker refs are used; `file:`
+refs need no broker. Privileged effects are stacked features: `ssh_write`
+(write commands + atomic file writes), `ssh_shell` (bounded PTY sessions) and
+`ssh_tunnel` (loopback-only managed forwards to configured endpoints). Each is
+denied without its feature. Operations append `ssh` audit events with a
+bounded receipt and never carry output or secret material.
+
 ## ToolHub Slack data (M5 stage 2)
 
 Use the same protected connector CLI with `--provider slack --workspace T...`
@@ -500,7 +526,7 @@ tool returns a remote Fal URL. Those native toolsets stay off
 [ADR-0028](adr/ADR-0028-configurable-image-capability.md),
 [ADR-0029](adr/ADR-0029-bounded-pdf-office-webp.md),
 [ADR-0030](adr/ADR-0030-cliproxy-image-routes.md), and
-[SPEC-0032](../specs/active/SPEC-0032-document-image-profile.md) are the
+[SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md) are the
 contract.
 
 | Effect | Tool | Formats and result | Credential |
@@ -601,7 +627,7 @@ An httptest double of these endpoints is not a live provider call.
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
-| Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0032-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
+| Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |

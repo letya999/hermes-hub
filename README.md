@@ -79,6 +79,7 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | HeadHunter | Official vacancy, personal resume and explicitly authorized application API |
 | Slack / GitHub / Atlassian | OAuth/token MCP connections; Atlassian covers Jira and Confluence with personal API-token auth |
 | GitLab | Bundled `glab` CLI with `GITLAB_TOKEN` PAT authentication |
+| SSH | Opt-in hub capability: pinned host keys, alias-bound destinations, allowlisted commands/paths, Broker keys; write/shell/tunnel are separate features |
 | Meet / audio | Native Meet caption plugin and local faster-whisper |
 | Documents and images | Hub tools for document extract, create, edit, and convert (txt, md, csv, html, pdf, xlsx, pptx); image inspect and local png, jpeg, and webp convert; opt-in `image_generate` and `image_edit`, with the model selecting the images endpoint or the Gemini chat image call |
 | Native desktop / Drafts.app | Authenticated bridge to a trusted native stdio MCP server |

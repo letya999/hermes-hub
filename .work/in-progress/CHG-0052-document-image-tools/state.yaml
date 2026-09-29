@@ -11,7 +11,7 @@ completed:
   - opt-in image_gen with provider, model, and delivery
   - cliproxy default, Fal klein catalog body, and FAL_KEY only for provider fal
   - bounds, workspace confinement, secret redaction, and unknown-field fail closed
-  - SPEC-0032, ADR-0027, ADR-0028, and ADR-0029
+  - SPEC-0033, ADR-0027, ADR-0028, and ADR-0029
   - simple pdf, xlsx, pptx text packages and local webp inspect/convert
   - nativewebp v1.3.0 and golang.org/x/image v0.46.0; govulncheck reported no vulnerabilities
   - go test -count=1 of internal/media, internal/agenttools, and internal/stack passed

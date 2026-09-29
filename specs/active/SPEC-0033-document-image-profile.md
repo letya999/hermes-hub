@@ -1,4 +1,4 @@
-# SPEC-0032: Document and image profile
+# SPEC-0033: Document and image profile
 
 Frozen: 2026-09-28. Issue 124.
 Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).

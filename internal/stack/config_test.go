@@ -60,6 +60,7 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	writeSSHConfig(t, d) // the all-features render includes ssh; it fails closed without a config
 	s, _ := Read(filepath.Join(d, "settings.yaml"))
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"

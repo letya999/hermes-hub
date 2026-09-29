@@ -55,4 +55,4 @@ end. `artifact_remove` deletes one generated file; purge of the workspace still
 requires an explicit matching user confirmation. A revoked grant fails the next
 generate call. The tool disappears from `tools/list` on the next process start.
 An httptest of this server is not a live Fal or model call. The frozen matrix
-is [SPEC-0032](../../specs/active/SPEC-0032-document-image-profile.md).
+is [SPEC-0032](../../specs/active/SPEC-0033-document-image-profile.md).

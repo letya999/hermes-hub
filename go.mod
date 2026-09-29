@@ -8,6 +8,8 @@ require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/letya999/credential-broker v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/pkg/sftp v1.13.11
+	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.46.0
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -16,6 +18,7 @@ require (
 replace github.com/letya999/credential-broker => ./services/credential-broker
 
 require (
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect

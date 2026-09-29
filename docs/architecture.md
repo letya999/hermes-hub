@@ -76,6 +76,16 @@ mutation tools. Downloads and screenshots land in `workspace/browser` and the
 runtime evicts files over the size/type policy. noVNC stays bound to the Docker
 host loopback on `browser_port`.
 
+The opt-in `ssh` feature adds hub-owned MCP tools (`ssh_hosts`, `ssh_exec`,
+`ssh_read`, plus `ssh_write`, `ssh_shell_*` and `ssh_tunnel_*` behind the
+separate `ssh_write`/`ssh_shell`/`ssh_tunnel` features). Destinations come only
+from `connections/ssh/config.yaml` (mounted read-only): aliases carry host,
+port, user, pinned host keys, credential references and per-host
+command/path/tunnel allowlists and bounds. Private keys resolve from the
+read-only config directory or Credential Broker leases; shells and tunnels are
+process-local, loopback-bound and reaped on expiry or restart. SPEC-0033 holds
+the contract.
+
 Job and conversation lifecycle mappings are persisted beside the gateway queue. They
 contain immutable routing, idempotency and Hermes run metadata, while supervisor state
 contains runtime generations and leases; neither store receives provider credentials.

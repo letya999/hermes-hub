@@ -1,6 +1,6 @@
 ---
 description: "Request, credential, grant, lease, state и независимые оси области действия."
-last_verified: "2026-09-18"
+last_verified: "2026-09-28"
 ---
 
 # Модель данных и владения
@@ -10,7 +10,7 @@ last_verified: "2026-09-18"
 | Contract | Проверенный набор fields, deliveries, state и routes; неизменяемая revision |
 | Request | Enrollment одного connection/onboarding от canonical Actor, TTL и idempotency |
 | Browser session | Hash cookie, hash pairing code, approved/consumed; не учётная запись |
-| Credential | Owner user/context, provider ref, revision, active/revoked/reauthorize/deleted |
+| Credential | Owner user/context, provider ref, revision, optional consumer_id, active/revoked/reauthorize/deleted |
 | Grant | Credential разрешён конкретным principal/context/runtime/binding/workload/policy |
 | Lease | Краткоживущий доступ к grant и точной credential revision; по умолчанию 60 секунд |
 | Materialized | Plaintext ENV и file mounts только доверенному runtime; не control DTO |
@@ -21,6 +21,10 @@ OwnerKind `user` разрешает grants только своему principal. 
 `context_manager=true` от trusted identity signer. Пользователь не может сам прислать этот флаг через форму.
 Все IDs проходят canonical regex Hermes `[a-z][a-z0-9_-]{0,39}`. Broker IDs используют отдельные
 префиксы request/credential/grant/lease, не подменяют исходные canonical IDs.
+Необязательный `consumer_id` на request/credential (ADR-0007) именует потребителя креда —
+`mcp-github`, `cli-git`, `ssh-box`; активный credential и pending request уникальны по
+`(context, connection, consumer)`, поэтому одна connection хранит несколько ключей для разных
+MCP/CLI. Consumer не является authorization: доступ определяют только grants.
 
 Grant содержит immutable `policy_version`. Изменённая policy требует нового grant: старый не начинает
 автоматически доверять новой политике. Shared workload с process-wide credential не допускает другое

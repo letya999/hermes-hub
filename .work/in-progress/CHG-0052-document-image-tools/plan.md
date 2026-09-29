@@ -27,7 +27,7 @@ last_verified: 2026-09-28
 
 ## Contract
 
-[SPEC-0032](../../../specs/active/SPEC-0032-document-image-profile.md),
+[SPEC-0033](../../../specs/active/SPEC-0033-document-image-profile.md),
 [ADR-0027](../../../docs/adr/ADR-0027-workspace-document-image-profile.md),
 [ADR-0028](../../../docs/adr/ADR-0028-configurable-image-capability.md),
 [ADR-0029](../../../docs/adr/ADR-0029-bounded-pdf-office-webp.md), and
