@@ -71,6 +71,7 @@ func TestDiagnosticsScopeIsolation(t *testing.T) {
 		diagLine("2026-09-28T10:00:04Z", "hermes-hub-local-dev-toolhub-1", "platform line"),
 		"[2026-09-28T10:00:05Z] [host-supervisor] spawned "+aliceRuntime+" generation 1",
 		"[2026-09-28T10:00:06Z] [host-supervisor] spawned "+bobRuntime+" generation 1",
+		"[2026-09-28T10:00:07Z] [host-supervisor] reaped "+aliceRuntime+"-extra generation 9",
 	)
 	control := &ControlPlane{Store: store, DiagnosticsDir: dir}
 	body, err := control.diagnostics(t.Context(), alice, map[string]any{})
@@ -97,6 +98,13 @@ func TestDiagnosticsScopeIsolation(t *testing.T) {
 	for _, banned := range []string{bobWork, bobRuntime, "hermes-hub-local-dev"} {
 		if strings.Contains(joined, banned) {
 			t.Fatalf("foreign container %s visible in %v", banned, containers)
+		}
+	}
+	// A supervisor line naming a container that merely extends alice's
+	// runtime name must not leak through a substring match.
+	for _, entry := range lines {
+		if strings.Contains(entry["message"].(string), aliceRuntime+"-extra") {
+			t.Fatalf("prefix-extension supervisor line leaked: %q", entry["message"])
 		}
 	}
 	workloads, _ := body["workloads"].([]diagWorkload)

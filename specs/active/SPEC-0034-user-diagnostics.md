@@ -22,9 +22,17 @@ user-facing projection. Closes issue #125.
    the response payload at 192 KiB and concurrency at 4.
 4. Lines are redacted before projection: bearer values, `name=value` secret
    fields, credentialed URLs, JWTs, Telegram bot tokens, provider key
-   prefixes and AWS access key IDs. Host-supervisor lines are projected only
-   when they name the caller's own runtime container, keeping restart and
-   reaping diagnostics useful without exposing other users' lifecycles.
+   prefixes, AWS access key IDs and bare high-entropy tokens (mixed-case,
+   mixed-class, length >= 32). Host-supervisor lines are projected only
+   when they name the caller's own runtime container as a whole token,
+   keeping restart and reaping diagnostics useful without exposing other
+   users' lifecycles or containers that merely extend the caller's name.
 5. When `HUB_DIAGNOSTICS_DIR` is unset the operation returns
    `{enabled: false}` rather than an error; a missing file returns an empty
    result.
+
+Amended 2026-09-29: the same redaction now runs at collection time so the
+combined file never stores plaintext secrets; each collection cycle takes at
+most 5000 lines per container; a container whose `docker logs` fails is
+skipped without stalling others; concurrent requests are bounded per
+principal (2) as well as globally (4).
