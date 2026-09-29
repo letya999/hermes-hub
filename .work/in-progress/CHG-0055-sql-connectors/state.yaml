@@ -1,0 +1,32 @@
+schema: 1
+id: CHG-0055-sql-connectors
+title: Prepared SQL connectors txttsql (primary) and dbhub (fallback)
+status: in_progress
+phase: verification
+started_at: 2026-09-29
+updated_at: 2026-09-29
+completed:
+  - branch feat/sql-connectors-41-121 off dev
+  - design: companion tcp_forwards + *_ENDPOINT TCP egress; env-only contracts
+  - txttsql-mcp upstream patch (TXTTSQL_SOURCES env, resilient start), pushed SHA 75756b1 on feat/env-sources
+  - ExecutionPolicy.tcp_forwards + validation + receipt equality + non-fallback reject
+  - companion tcp_forwards relay (loopback->CONNECT via workload proxy) + unit tests
+  - *_ENDPOINT/*_ENDPOINT_<n> host:port egress merge + tests
+  - prepared preflight_environment + tcp_forwards plumbing
+  - catalog entries txttsql+dbhub, contracts txttsql-sql+dbhub-sql, docs sections
+  - live: dbhub@8c09c86 pnpm build, tools/list + SELECT 1 + INSERT denied vs
+    docker postgres 16; sqlite:///:memory: preflight DSN verified
+  - live: real squid 6.13 CONNECT ACL (allowed dst 200, foreign host 403),
+    companion forward -> squid -> postgres wire 'R', dbhub+txttsql SELECT
+    through the tunnel (env-gated forward_live_test)
+  - txttsql: resilient no-config start verified live; guard rejects INSERT
+    ("only SELECT queries are allowed")
+  - just check green (race, 85.05% coverage), just security clean,
+    just docker-check green (images, smoke, Hermes 0.21.0 contract)
+  - git diff --check clean; secret scan shows only disposable test fixtures
+issues:
+  - txttsql-mcp pre-existing Windows test failure broker_executes_directly
+    (non-UTF8 whoami output), reproduces on clean checkout, unrelated
+  - dbhub startup banner writes to stdout; stdio clients skip non-JSON lines
+pending:
+  - commit

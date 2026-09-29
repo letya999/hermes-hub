@@ -169,3 +169,81 @@ never create a second one.
 Handoff: “Install https://github.com/sooperset/mcp-atlassian; reuse or rotate
 my existing connection, fill the Jira block, the Confluence block or both in
 the protected form and verify the matching read probe.”
+
+## TXT-to-SQL
+
+Source: [letya999/txttsql-mcp](https://github.com/letya999/txttsql-mcp), the
+reviewed primary SQL engine (AGPL-3.0-only). Generated Rust entrypoint
+`/app/target/release/txttsql-mcp` plus the upstream `--config
+/app/config.toml` tail; the repository is built into an immutable artifact
+and never mounted at runtime. Upstream `Config::resolve` keeps the long-lived
+server up without a file: an existing `config.toml` wins, otherwise
+`TXTTSQL_SOURCES` — the single-line JSON form of `[[sources]]` — configures
+databases, and a fully missing configuration degrades to a zero-source server
+that still answers `initialize`/`tools/list` and returns typed tool errors
+instead of exiting. Broker: `txttsql-sql`, delivering the sources JSON, three
+optional `TXTTSQL_PASSWORD_{1,2,3}` env values referenced from inside it
+(`{"kind":"env","name":"TXTTSQL_PASSWORD_1"}`), an optional full `config.toml`
+mounted read-only at `/app/config.toml` (per-user memory, plugins, ontology,
+metadata providers) and an optional CA bundle at `/run/txttsql/ca.pem`.
+
+PostgreSQL, CockroachDB and ClickHouse drivers do not speak HTTP CONNECT, so
+the entry declares `tcp_forwards`: companion loopback listeners `15432`,
+`15433` and `15434` inside the workload network, each relaying accepted
+connections through the workload's reviewed Squid CONNECT proxy to exactly
+one credential-bound `host:port` held in `TXTTSQL_ENDPOINT{,_2,_3}`. The same
+non-secret value joins the egress ACL at readiness, so a forward can only
+reach what admission allowed — there is no direct TCP bypass. Each
+`[[sources]]` entry in the JSON points at `127.0.0.1:<forward port>` while
+the real endpoint lives in the protected form; host, database, role and
+private destinations stay outside tool arguments. The catalog `egress`
+sentinel is `127.0.0.1`: every real destination is credential-derived. When
+TLS verifies a certificate hostname, the forward makes the server name an IP
+literal — `verify-ca` (CA validation without hostname) and per-source
+`ca_file` remain available, and `allow_insecure` stays an explicit operator
+choice.
+
+Read-only is enforced server-side by upstream read-only transactions plus
+per-source `allowed_schemas`/`allowed_tables` — not SQL string matching —
+together with `max_rows`, `timeout_seconds` and `max_connections` bounds.
+There is no write profile: mutations stay a separately granted action.
+Verify `list_sources` (the readiness probe), then `list_tables` and one
+bounded `SELECT` through the forward. Memory and ontology stay
+file-configured opt-ins on read-only mounts, not default state.
+
+Handoff: “Install https://github.com/letya999/txttsql-mcp as the reviewed
+read-only SQL engine. Fill the sources JSON and the matching endpoints in the
+protected Broker form, verify list_sources and one safe SELECT, then do not
+change provider data without an explicit instruction.”
+
+## DBHub
+
+Source: [bytebase/dbhub](https://github.com/bytebase/dbhub), the reviewed
+fallback SQL engine (MIT) — a separate prepared entry selected explicitly,
+never a silent provider failover. Generated pnpm workspace build runs
+`node /app/dist/index.js` on stdio; this entry never enables the HTTP
+transport (unauthenticated by default upstream). DBHub exits without any
+configuration, so the reviewed `preflight_environment` injects
+`DSN=sqlite:///:memory:` for the unauthenticated `tools/list` probe only —
+owner credentials always override it. This revision rejects the legacy
+`READONLY` and `MAX_ROWS` environment variables: env-mode DBHub has no TOML
+`[[tools]] readonly = true` policy, so read-only must be enforced by the
+database role named in the DSN — an explicit requirement of this contract,
+not a recommendation.
+
+Broker: `dbhub-sql` — secret `DSN`, non-secret `DBHUB_ENDPOINT` and
+`DBHUB_SSH_ENDPOINT` host:port values bound to the two `tcp_forwards`
+(database on `15432`, SSH bastion on `15433`), optional `SSH_USER`,
+`SSH_PASSWORD`, `SSH_PASSPHRASE`, an `SSH_KEY` private-key file at
+`/run/dbhub/id_rsa`, optional `SSH_HOST`/`SSH_PORT` overrides and a CA bundle
+at `/run/dbhub/ca.pem`. Direct path: the DSN targets `127.0.0.1:15432` and
+the endpoint field carries `db.example.com:5432`. Managed-tunnel path:
+`SSH_HOST=127.0.0.1`/`SSH_PORT=15433` make DBHub's ssh2 client dial the
+forwarded bastion while the DSN addresses the database as the bastion sees
+it. Verify `tools/list`, one bounded `SELECT 1` through the forward, and the
+tunnel when `DBHUB_SSH_ENDPOINT` is configured.
+
+Handoff: “Install https://github.com/bytebase/dbhub as the fallback
+read-only SQL engine. Fill the DSN and endpoint in the protected Broker form
+against a read-only database role, verify one safe SELECT, then do not change
+provider data without an explicit instruction.”

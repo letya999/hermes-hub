@@ -56,14 +56,22 @@ type PreparedEntry struct {
 	RuntimeEnvironment map[string]string          `json:"runtime_environment,omitempty"`
 	ProxyEnvironment   []string                   `json:"proxy_environment,omitempty"`
 	PreflightFiles     map[string]json.RawMessage `json:"preflight_files,omitempty"`
-	Egress             []string                   `json:"egress"`
-	CredentialGroups   [][]string                 `json:"credential_groups,omitempty"`
-	ReadTools          []string                   `json:"read_tools"`
-	ProbeTool          string                     `json:"probe_tool,omitempty"`
-	ProbeTools         []ProbeCandidate           `json:"probe_tools,omitempty"`
-	OAuth              *PreparedOAuth             `json:"oauth,omitempty"`
-	Runbook            string                     `json:"runbook"`
-	Handoff            string                     `json:"handoff"`
+	// PreflightEnvironment holds reviewed literal envs appended after the
+	// credential placeholders in the unauthenticated tools/list probe, for
+	// servers that exit without any configuration. The owner's submitted
+	// secrets always win and this map never reaches the workload.
+	PreflightEnvironment map[string]string `json:"preflight_environment,omitempty"`
+	// TCPForwards declares companion loopback forwards; each target_env must
+	// be an env-delivered connection field carrying a host:port endpoint.
+	TCPForwards      []TCPForward     `json:"tcp_forwards,omitempty"`
+	Egress           []string         `json:"egress"`
+	CredentialGroups [][]string       `json:"credential_groups,omitempty"`
+	ReadTools        []string         `json:"read_tools"`
+	ProbeTool        string           `json:"probe_tool,omitempty"`
+	ProbeTools       []ProbeCandidate `json:"probe_tools,omitempty"`
+	OAuth            *PreparedOAuth   `json:"oauth,omitempty"`
+	Runbook          string           `json:"runbook"`
+	Handoff          string           `json:"handoff"`
 }
 
 // ProbeCandidate names a reviewed read-only probe that applies only when its
@@ -155,6 +163,25 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 				return nil, fmt.Errorf("%w: prepared preflight file", ErrInvalid)
 			}
 		}
+		envFields := map[string]bool{}
+		for _, field := range entry.Connection.Fields {
+			if field.Delivery == "env" {
+				envFields[field.Name] = true
+			}
+		}
+		for _, forward := range entry.TCPForwards {
+			if !envFields[forward.TargetEnv] {
+				return nil, fmt.Errorf("%w: prepared tcp forward target is not an env connection field", ErrInvalid)
+			}
+		}
+		if len(entry.PreflightEnvironment) > 16 {
+			return nil, fmt.Errorf("%w: prepared preflight environment", ErrInvalid)
+		}
+		for name, value := range entry.PreflightEnvironment {
+			if !credentialPattern.MatchString(name) || secretName(name) || len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n") {
+				return nil, fmt.Errorf("%w: prepared preflight environment", ErrInvalid)
+			}
+		}
 		config := normalizeArtifactImportConfig(entry.apply(defaultSelfInstallConfig(entry.Source)))
 		definition := ToolDefinition{Schema: SchemaVersion, DefinitionID: entry.ID, Version: config.Version, Transport: ContainerMCP,
 			Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + string(bytes.Repeat([]byte("a"), 64))},
@@ -209,6 +236,7 @@ func (entry PreparedEntry) apply(config ArtifactImportConfig) ArtifactImportConf
 	config.RuntimeEnvironment = cloneMap(entry.RuntimeEnvironment)
 	config.ProxyEnvironment = append([]string(nil), entry.ProxyEnvironment...)
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
+	config.Execution.TCPForwards = append([]TCPForward(nil), entry.TCPForwards...)
 	config.Workload.Stateful = entry.Stateful
 	return config
 }

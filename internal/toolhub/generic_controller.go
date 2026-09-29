@@ -255,6 +255,13 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 			}
 		}
 	}
+	if len(plan.Execution.TCPForwards) != 0 && !c.config.DockerFallback {
+		// Only the Docker fallback runs the companion inside the workload
+		// network namespace; the stock ToolHive path has no forwarder, so
+		// refusing here is the difference between a bounded relay and a
+		// silently unmet connectivity promise.
+		return fmt.Errorf("%w: tcp forwards require the Docker fallback companion", ErrIsolation)
+	}
 	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
 		return err
 	}
@@ -383,6 +390,9 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	}
 	if len(plan.Execution.Mounts) != 0 && !c.config.DockerFallback {
 		return genericWorkload{}, fmt.Errorf("%w: generic host state mounts are not enabled", ErrIsolation)
+	}
+	if len(plan.Execution.TCPForwards) != 0 && !c.config.DockerFallback {
+		return genericWorkload{}, fmt.Errorf("%w: tcp forwards require the Docker fallback companion", ErrIsolation)
 	}
 	help, err := c.command(ctx, c.config.ToolHiveBinary, "run", "--help")
 	if err != nil {
@@ -819,7 +829,17 @@ func genericProxyConfig(egress []string) (string, error) {
 
 func equalStrings(a, b []string) bool { return strings.Join(a, "\x00") == strings.Join(b, "\x00") }
 func reflectExecution(a, b ExecutionPolicy) bool {
-	return a.TimeoutSeconds == b.TimeoutSeconds && a.OutputBytes == b.OutputBytes && a.CPUMillis == b.CPUMillis && a.MemoryMiB == b.MemoryMiB && a.MaxPIDs == b.MaxPIDs && equalStrings(a.Egress, b.Egress) && reflectMounts(a.Mounts, b.Mounts)
+	return a.TimeoutSeconds == b.TimeoutSeconds && a.OutputBytes == b.OutputBytes && a.CPUMillis == b.CPUMillis && a.MemoryMiB == b.MemoryMiB && a.MaxPIDs == b.MaxPIDs && equalStrings(a.Egress, b.Egress) && reflectTCPForwards(a.TCPForwards, b.TCPForwards) && reflectMounts(a.Mounts, b.Mounts)
+}
+func reflectTCPForwards(a, b []TCPForward) bool {
+	return len(a) == len(b) && func() bool {
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}()
 }
 func reflectMounts(a, b []Mount) bool {
 	return len(a) == len(b) && func() bool {
