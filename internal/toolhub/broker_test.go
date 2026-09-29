@@ -38,12 +38,12 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			requests++
 			var input brokerv1.CreateRequest
-			if json.NewDecoder(r.Body).Decode(&input) != nil || requests > 1 && (input.RotateCredentialID != "credential_1" || input.ConnectionID != "connection_1") {
-				t.Error("rotation did not select original Broker credential/connection")
+			if json.NewDecoder(r.Body).Decode(&input) != nil || input.ConsumerID != "github-work" || requests > 1 && (input.RotateCredentialID != "credential_1" || input.ConnectionID != "connection_1") {
+				t.Error("rotation did not select original Broker credential/connection/consumer")
 			}
 			_ = json.NewEncoder(w).Encode(request)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
-			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", ConnectionID: "connection_1", Status: "active"})
+			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", ConnectionID: "connection_1", ConsumerID: "github-work", Status: "active"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
 			_ = json.NewEncoder(w).Encode(request)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/credentials/credential_1/grants":

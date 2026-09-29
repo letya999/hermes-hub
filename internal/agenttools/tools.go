@@ -11,6 +11,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/sshcap"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -45,6 +46,11 @@ type Input struct {
 	Page       int    `json:"page,omitempty"`
 	Timezone   string `json:"timezone,omitempty"`
 	Expression string `json:"expression,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Command    string `json:"command,omitempty"`
+	Data       string `json:"data,omitempty"`
+	Offset     uint64 `json:"offset,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -55,6 +61,9 @@ type Tools struct {
 	StateDir                         string
 	ToolHub                          *toolhub.Store
 	ToolHubAuth                      identity.Envelope
+	SSH                              *sshcap.Service
+	SSHGrants                        sshcap.Grants
+	sshErr                           error
 	Restart                          func() error
 	CommunicationURL                 string
 	CommunicationAuth                string
@@ -108,7 +117,9 @@ func Open(workspace, archive string, organization ...string) (*Tools, error) {
 	if communicationAuth == "" {
 		communicationAuth = os.Getenv("HUB_RUNTIME_AUTH")
 	}
-	return &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	t.openSSH()
+	return t, nil
 }
 
 func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {
@@ -120,19 +131,7 @@ func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {
 	if err != nil {
 		return nil, identity.Envelope{}, fmt.Errorf("load ToolHub catalog: %w", err)
 	}
-	principal := os.Getenv("HUB_PRINCIPAL_ID")
-	if principal == "" {
-		principal = os.Getenv("HUB_USER_ID")
-	}
-	contextID := os.Getenv("HUB_CONTEXT_ID")
-	if contextID == "" {
-		contextID = principal
-	}
-	runtimeID := os.Getenv("HUB_RUNTIME_ID")
-	if runtimeID == "" {
-		runtimeID = principal
-	}
-	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: toolHubEnvOr("HUB_EXTERNAL_ID", principal), ContextID: contextID, RuntimeID: runtimeID, ConversationID: toolHubEnvOr("HUB_CONVERSATION_ID", "toolhub"), DeliveryTargetID: toolHubEnvOr("HUB_DELIVERY_TARGET_ID", "toolhub"), PolicyVersion: toolHubEnvOr("HUB_POLICY_VERSION", "policy-1")}
+	auth := runtimeEnvelope()
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return nil, identity.Envelope{}, fmt.Errorf("ToolHub identity: %w", err)
 	}
@@ -148,7 +147,28 @@ func toolHubEnvOr(name, fallback string) string {
 	}
 	return fallback
 }
+
+// runtimeEnvelope is the principal identity of this runtime process; ToolHub
+// and the SSH capability both present it to Credential Broker.
+func runtimeEnvelope() identity.Envelope {
+	principal := os.Getenv("HUB_PRINCIPAL_ID")
+	if principal == "" {
+		principal = os.Getenv("HUB_USER_ID")
+	}
+	contextID := os.Getenv("HUB_CONTEXT_ID")
+	if contextID == "" {
+		contextID = principal
+	}
+	runtimeID := os.Getenv("HUB_RUNTIME_ID")
+	if runtimeID == "" {
+		runtimeID = principal
+	}
+	return identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: toolHubEnvOr("HUB_EXTERNAL_ID", principal), ContextID: contextID, RuntimeID: runtimeID, ConversationID: toolHubEnvOr("HUB_CONVERSATION_ID", "toolhub"), DeliveryTargetID: toolHubEnvOr("HUB_DELIVERY_TARGET_ID", "toolhub"), PolicyVersion: toolHubEnvOr("HUB_POLICY_VERSION", "policy-1")}
+}
 func (t *Tools) Close() {
+	if t.SSH != nil {
+		t.SSH.Close()
+	}
 	_ = t.Workspace.Close()
 	_ = t.Archive.Close()
 	if t.Organization != nil {
@@ -801,5 +821,6 @@ func (t *Tools) Server() *mcp.Server {
 			return nil, out, err
 		})
 	}
+	t.registerSSH(s)
 	return s
 }

@@ -1,0 +1,23 @@
+{
+  "description": "Несколько кредов на connection: consumer_id дискриминатор",
+  "last_updated": "2026-09-28",
+  "done": [
+    "consumer_id на CreateRequest/Request/Credential/Event (v1 DTO)",
+    "enrollment: дедуп по (context, connection, consumer), rotate держит consumer",
+    "audit events несут consumer_id",
+    "ADR-0007, domain-model, user-flows, openapi.json regenerated",
+    "TestConsumerIDDiscriminator + integration tests ./broker ./provider ./httpapi ./app green (golang:1.25 container)",
+    "gofmt/vet clean, openapi drift check + docs-check green"
+  ],
+  "current": "Реализовано и проверено; ожидает CI-гейт",
+  "next": [
+    "полный just check на Linux-раннере (race/coverage не запускались локально)"
+  ],
+  "evidence": [
+    "evidence.md"
+  ],
+  "review": {
+    "open": [],
+    "resolved": []
+  }
+}

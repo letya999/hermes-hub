@@ -467,6 +467,32 @@ ToolHub/controller and Docker daemon. Without that mount root, file delivery
 fails closed. The copied source and its MIT license remain separate from Hermes'
 AGPL-3.0-only code.
 
+## SSH capability
+
+`ssh` is a hub-owned opt-in capability (issue #42, SPEC-0032), not an upstream
+MCP server. The hub tools process dials `golang.org/x/crypto/ssh` directly and
+uses `github.com/pkg/sftp` for remote files. Enabling `ssh` mounts
+`spaces/<user>/connections/ssh` read-only at `/state/ssh` and validates
+`config.yaml` at render time; a malformed or missing config fails the render.
+
+`config.yaml` binds everything the model must not choose: host aliases,
+host/port/user, pinned `host_keys` (authorized-key lines or `sha256:`
+fingerprints), `key_ref`/`certificate_ref` (`file:` under the config dir or
+`broker:` grant IDs), read/write command allowlists, read/write path
+allowlists, `sudo` (`never` or `passwordless`), timeouts, output/read bounds
+and named tunnel endpoints. The model only names an alias plus the command,
+path, shell or tunnel name.
+
+`broker:` refs are materialized per dial: the runtime adapter signs
+`broker:control` acquire and `broker:runtime` materialize/release with an
+`ssh-<alias>` binding and a short-lived lease. The runtime adapter key must
+therefore be trusted for both audiences when broker refs are used; `file:`
+refs need no broker. Privileged effects are stacked features: `ssh_write`
+(write commands + atomic file writes), `ssh_shell` (bounded PTY sessions) and
+`ssh_tunnel` (loopback-only managed forwards to configured endpoints). Each is
+denied without its feature. Operations append `ssh` audit events with a
+bounded receipt and never carry output or secret material.
+
 ## ToolHub Slack data (M5 stage 2)
 
 Use the same protected connector CLI with `--provider slack --workspace T...`

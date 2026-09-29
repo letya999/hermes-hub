@@ -1,6 +1,6 @@
 ---
 description: "Связь Telegram, защищённой формы, external account и MCP binding."
-last_verified: "2026-09-18"
+last_verified: "2026-09-28"
 ---
 
 # Пользовательские сценарии
@@ -12,6 +12,14 @@ Communication Hub подтверждает внешний канал и canonica
 передаёт pairing code в тот же доверенный личный канал. Approve signer подтверждает конкретный браузер.
 После submit/consent Broker сохраняет credential в выбранном provider и публикует событие.
 ToolHub автоматически продолжает durable onboarding, а не ждёт ещё одной команды «продолжай».
+
+## Несколько кредов на одном connection
+
+Одна capability может держать несколько ключей под разных потребителей: SSH-ключи под разные host
+alias, токены под разные MCP/CLI. При создании request передаётся необязательный `consumer_id`
+(например `ssh-box`, `mcp-github`, `cli-git`) — креды уникальны по `(context, connection, consumer)`,
+поэтому одна и та же connection хранит отдельный кред на каждого потребителя. Каждый кред получает
+свои grants и leases; ротация сохраняет consumer.
 
 ## Один credential, несколько MCP
 
