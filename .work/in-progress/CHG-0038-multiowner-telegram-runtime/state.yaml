@@ -1,0 +1,6 @@
+change_id: CHG-0038
+name: multiowner-telegram-runtime
+status: in_progress
+updated: 2026-09-24
+current: Private two-user Telegram mapping is active and validated. The gateway uses the host supervisor; owner2 has a distinct runtime network/home and reaches the shared model proxy. The Telegram bot token and webhook configuration are valid. Docker integration verifies two users, separate homes, isolated runtime lifecycle, and idle shutdown.
+next: Have test-owner-2 send /start and a harmless prompt from Telegram, then confirm its distinct runtime is created. Owner2 Broker client credentials and ToolHub sidecars remain a separate follow-up before Broker-backed connector calls.

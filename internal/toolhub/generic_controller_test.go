@@ -72,6 +72,53 @@ func TestGenericControllerAcceptsAuthenticatedDynamicDefinitions(t *testing.T) {
 	}
 }
 
+// Credential alternatives and proxy env names are runtime metadata, not tool
+// contract terms: a definition carrying them must keep its reviewed contract
+// digest through registration and a store reload, or admission rejects the
+// plan as stale — the exact failure this test guards.
+func TestGenericControllerAdmitsGroupAndProxyMetadataAfterStoreReload(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	storedDigest := d.Source.ToolContractDigest
+	d.Credentials = []CredentialInput{
+		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
+		{Name: "SLACK_MCP_XOXC_TOKEN", Required: true},
+		{Name: "SLACK_MCP_XOXD_TOKEN", Required: true},
+	}
+	d.CredentialGroups = [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}}
+	d.ProxyEnvironment = []string{"SLACK_MCP_PROXY"}
+	recomputed, err := confirmedToolContractDigest(ConfirmedToolContract{Source: d.Source.ToolContractSource, Tools: d.Tools})
+	if err != nil || recomputed != storedDigest {
+		t.Fatalf("metadata drifted the tool contract: stored=%s recomputed=%s err=%v", storedDigest, recomputed, err)
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	if err := store.RegisterDefinition(d); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "toolhub", "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := reloaded.Definition(d.DefinitionID, d.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DynamicDefinitions: true, MaxActive: 2, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.validatePlan(genericPlan(persisted)); err != nil {
+		t.Fatalf("persisted definition rejected at admission: %v", err)
+	}
+}
+
 func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
@@ -326,6 +373,15 @@ func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 	if _, err := genericProxyConfig([]string{"service.example.com:443", "10.0.0.0/8"}); err != nil {
 		t.Fatal(err)
 	}
+	conf, err := genericProxyConfig([]string{"slack.com", "127.0.0.1", "localhost", ".already.dotted:8443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"dstdomain .slack.com", "dstdomain 127.0.0.1", "dstdomain localhost", "dstdomain .already.dotted"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("proxy config missing %q:\n%s", want, conf)
+		}
+	}
 	for _, egress := range [][]string{nil, {"bad host"}, {"2001:db8::1"}} {
 		if _, err := genericProxyConfig(egress); err == nil {
 			t.Fatal("unsafe egress accepted")
@@ -406,6 +462,43 @@ func TestGenericSecretFileAndBudgetCleanup(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("controller did not stop")
+	}
+}
+
+func TestReadGenericSecretsCredentialGroups(t *testing.T) {
+	d, root, _ := genericDefinition(t)
+	d.Credentials = []CredentialInput{
+		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
+		{Name: "SLACK_MCP_XOXB_TOKEN", Required: true},
+		{Name: "SLACK_MCP_XOXC_TOKEN", Required: true},
+		{Name: "SLACK_MCP_XOXD_TOKEN", Required: true},
+	}
+	d.CredentialGroups = [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}}
+	file := filepath.Join(root, "credentials.env")
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"single xoxp alternative", "SLACK_MCP_XOXP_TOKEN=xoxp\n", false},
+		{"single xoxb alternative", "SLACK_MCP_XOXB_TOKEN=xoxb\n", false},
+		{"complete xoxc+xoxd pair", "SLACK_MCP_XOXC_TOKEN=x\nSLACK_MCP_XOXD_TOKEN=d\n", false},
+		{"incomplete pair only", "SLACK_MCP_XOXC_TOKEN=x\n", true},
+		{"nothing submitted", "", true},
+		{"undeclared key", "OTHER_TOKEN=x\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(file, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readGenericSecrets(file, d)
+			if tc.wantErr && err == nil {
+				t.Fatalf("%q accepted", tc.body)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("%q rejected: %v", tc.body, err)
+			}
+		})
 	}
 }
 

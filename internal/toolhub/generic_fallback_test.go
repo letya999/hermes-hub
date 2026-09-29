@@ -280,6 +280,45 @@ func TestResolveArtifactImagePullsPublishedDigestOnly(t *testing.T) {
 	}
 }
 
+// A pruned daemon image is restored from the verified quarantine tar before
+// admission fails, since /state/artifacts is the durable copy review attested.
+func TestResolveArtifactImageRestoresFromQuarantine(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := genericPlan(d)
+	loaded := false
+	prevLoader := storedArtifactLoader
+	storedArtifactLoader = func(_ context.Context, dir, digest, image string, _ int64) (string, error) {
+		loaded = true
+		if dir != filepath.Join(root, "artifacts") || digest != d.Source.ArchiveDigest || image != plan.Image {
+			t.Fatalf("loader args: dir=%q digest=%q image=%q", dir, digest, image)
+		}
+		return "sha256:" + strings.Repeat("c", 64), nil
+	}
+	defer func() { storedArtifactLoader = prevLoader }()
+	c.command = func(_ context.Context, binary string, args ...string) ([]byte, error) {
+		if binary == "docker" && len(args) >= 3 && args[0] == "image" && args[1] == "inspect" && args[2] == plan.Image && loaded {
+			return []byte("sha256:" + strings.Repeat("b", 64)), nil
+		}
+		return nil, errors.New("not present")
+	}
+	got, err := c.resolveArtifactImage(context.Background(), plan)
+	if err != nil || got != plan.Image || !loaded {
+		t.Fatalf("quarantine restore: got %q loaded=%v err=%v", got, loaded, err)
+	}
+	loaded = false
+	storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+		return "", errors.New("archive missing")
+	}
+	if _, err := c.resolveArtifactImage(context.Background(), plan); err == nil {
+		t.Fatal("missing archive accepted")
+	}
+}
+
 func TestGenericDockerFallbackRejectsWindowsBridge(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
@@ -490,6 +529,29 @@ func TestGenericFallbackHelpers(t *testing.T) {
 	if command, err := c.artifactCommand(context.Background(), d.Source.Image); err != nil || !reflect.DeepEqual(command, []string{"/app/server", "--stdio"}) {
 		t.Fatalf("source command: %v %v", command, err)
 	}
+	c.config.Definition.Source.Args = []string{"--transport", "sse"}
+	if command, err := c.artifactCommand(context.Background(), d.Source.Image); err != nil || !reflect.DeepEqual(command, []string{"/app/server", "--transport", "stdio"}) {
+		t.Fatalf("network transport not rewritten to stdio: %v %v", command, err)
+	}
+	// A marked network-transport definition keeps its declared entrypoint so
+	// the companion can reach the server's own listener.
+	c.config.Definition.Source.NetworkTransport = "sse"
+	if command, err := c.artifactCommand(context.Background(), d.Source.Image); err != nil || !reflect.DeepEqual(command, []string{"/app/server", "--transport", "sse"}) {
+		t.Fatalf("network transport definition rewritten anyway: %v %v", command, err)
+	}
+	c.config.Definition.Source.NetworkTransport = ""
+	c.config.Definition.Source.Command = ""
+	c.command = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"Entrypoint":["/app/server"],"Cmd":["--transport","http"]}`), nil
+	}
+	if command, err := c.artifactCommand(context.Background(), d.Source.Image); err != nil || !reflect.DeepEqual(command, []string{"/app/server", "--transport", "stdio"}) {
+		t.Fatalf("image network transport not rewritten to stdio: %v %v", command, err)
+	}
+	c.config.Definition.Source.NetworkTransport = "streamable-http"
+	if command, err := c.artifactCommand(context.Background(), d.Source.Image); err != nil || !reflect.DeepEqual(command, []string{"/app/server", "--transport", "http"}) {
+		t.Fatalf("network transport image config rewritten anyway: %v %v", command, err)
+	}
+	c.config.Definition.Source.NetworkTransport = ""
 	for _, command := range [][]string{nil, {"sh", "-c", "echo"}, {"/app/server", "${TOKEN"}, {"/app/server", "line\nfeed"}} {
 		if _, err := validateArtifactCommand(command); err == nil {
 			t.Fatalf("unsafe command accepted: %#v", command)

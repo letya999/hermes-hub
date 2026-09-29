@@ -2,6 +2,12 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0034](active/SPEC-0034-user-diagnostics.md) | User-scoped diagnostics projection: store-derived scope, bounded queries, redaction |
+| [SPEC-0032](active/SPEC-0032-ssh-capability.md) | Opt-in user-scoped SSH capability with pinned host keys and stacked read/write/shell/tunnel grants |
+| [SPEC-0033](active/SPEC-0033-document-image-profile.md) | Workspace document and image profile; pdf, xlsx, pptx, and webp; configurable image provider, model, and delivery |
+| [SPEC-0031](active/SPEC-0031-automatic-diagnostics.md) | Automatic bounded multiuser diagnostics; supersedes SPEC-0030 export |
+| [SPEC-0030](active/SPEC-0030-diagnostics.md) | Local multiuser diagnostics and bounded Docker logs |
+| [SPEC-0029](active/SPEC-0029-build-disk-boundary.md) | Core/control image boundary and bounded rebuild storage |
 | [SPEC-0028](active/SPEC-0028-repository-driven-prepared-connectors.md) | Generic exact-source catalog, Broker state, discovery and four-connector acceptance |
 | [SPEC-0027](active/SPEC-0027-toolhive-vmcp-evaluation.md) | ToolHive local vMCP acceptance boundary and no-go result |
 | [SPEC-0026](active/SPEC-0026-mcp-recipe-resolver.md) | Secret-free MCP Launch/Connection Recipe resolution over the existing M5.3 onboarding flow |

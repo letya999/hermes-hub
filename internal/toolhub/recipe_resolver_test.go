@@ -418,6 +418,56 @@ func TestParseExampleEnvKeepsCredentialsAndSkipsRuntimeDefaults(t *testing.T) {
 	}
 }
 
+// mcp-atlassian ships placeholders ("your-company.atlassian.net") for the
+// connection config its tools/list depends on. Those values are the author's
+// replace-me markers — the fields are required inputs even though the names
+// are not secret-shaped. Real defaults ("https://gitlab.com") stay metadata.
+func TestParseExampleEnvTreatsPlaceholderValuesAsRequiredInputs(t *testing.T) {
+	recipe := parseExampleEnv([]byte("JIRA_URL=https://your-company.atlassian.net\nJIRA_USERNAME=your.email@example.com\nJIRA_API_TOKEN=your_jira_api_token_here\nCONFLUENCE_URL=https://your-company.atlassian.net/wiki\nMCP_VERY_VERBOSE=true\nGITLAB_API_URL=https://gitlab.com\n"), ".env.example")
+	byName := map[string]ConnectionField{}
+	for _, field := range recipe.Fields {
+		byName[field.Name] = field
+	}
+	for _, name := range []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN", "CONFLUENCE_URL"} {
+		field, ok := byName[name]
+		if !ok || !field.Required {
+			t.Fatalf("placeholder field %s missing or optional: %+v", name, recipe.Fields)
+		}
+	}
+	if byName["JIRA_URL"].Secret || byName["JIRA_URL"].Type != "string" {
+		t.Fatalf("non-secret placeholder misclassified: %+v", byName["JIRA_URL"])
+	}
+	if _, ok := byName["MCP_VERY_VERBOSE"]; ok {
+		t.Fatal("runtime default became a credential field")
+	}
+	if _, ok := byName["GITLAB_API_URL"]; ok {
+		t.Fatal("usable default became a credential field")
+	}
+}
+
+// mcp-atlassian carries tests/e2e/docker/docker-compose.yml which wires
+// throwaway Atlassian containers (CONFLUENCE_DB_PASSWORD, ATL_LICENSE_KEY).
+// Those fixtures must not leak into the server's connection recipe.
+func TestResolveLocalRecipeSkipsTestFixtureFiles(t *testing.T) {
+	files := map[string][]byte{
+		".env.example":                        []byte("JIRA_URL=https://your-company.atlassian.net\nJIRA_API_TOKEN=your_jira_api_token_here\n"),
+		"tests/e2e/docker/docker-compose.yml": []byte("services:\n  confluence:\n    environment:\n      ATL_JDBC_PASSWORD: ${CONFLUENCE_DB_PASSWORD}\n      ATL_LICENSE_KEY: ${CONFLUENCE_LICENSE_KEY:-}\n"),
+		"fixtures/Dockerfile":                 []byte("FROM scratch\nENV FIXTURE_TOKEN=abc\n"),
+	}
+	_, connection, _, err := resolveLocalRecipe(files, ArtifactSource{Repository: "https://github.com/acme/mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range connection.Fields {
+		if strings.Contains(field.Name, "DB_PASSWORD") || strings.Contains(field.Name, "LICENSE") || field.Name == "FIXTURE_TOKEN" {
+			t.Fatalf("test fixture env leaked into recipe: %+v", connection.Fields)
+		}
+	}
+	if len(connection.Fields) != 2 {
+		t.Fatalf("root env fields lost: %+v", connection.Fields)
+	}
+}
+
 func TestRecipeResolverMetadataHelpersDoNotGuessValues(t *testing.T) {
 	if got := anyStringMap(map[any]any{"API_TOKEN": "x"})["API_TOKEN"]; got != "x" {
 		t.Fatalf("string map conversion: %#v", got)

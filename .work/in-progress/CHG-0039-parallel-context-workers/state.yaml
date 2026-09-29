@@ -1,0 +1,31 @@
+schema: 1
+id: CHG-0039-parallel-context-workers
+title: "Parallel per-context gateway workers: no cross-user head-of-line blocking"
+status: done
+phase: delivered
+started_at: "2026-09-24"
+updated_at: "2026-09-24"
+completed:
+  - "Воспроизведено на живом стеке: telegram-837845052/053 (test-owner-2) ждали accepted, пока worker жевал telegram-837845051 (local, MCP-онбординг)"
+  - "Диагноз: один worker + ClaimJob берёт первый pending глобально; supervisor уже допускает 8 concurrent контекстов"
+  - "Spool.inFlight + context-skip claim + release hook в updateMappingLocked (job_mapping.go)"
+  - "releaseInFlightLocked по holder-ID в CompleteJob/FailJob — покрывает mappingless джобы (найдено паникой TestSpoolDurabilityAndSecretIsolation)"
+  - "Worker pool в Gateway.Run + HUB_COMMUNICATION_WORKERS (default 4), busy -> atomic.Int32"
+  - "Restart rebuild in-flight из durable не-терминальных маппингов"
+  - "Regression tests: TestClaimJobSkipsBusyContext, TestUncertainHoldsOnlyOwnContext, TestRestartRebuildsInFlight, TestWorkerPoolRunsContextsInParallel — PASS"
+  - "Весь пакет internal/communication: PASS (8.8s)"
+  - "ADR-0025 + docs/adr/index.md + SPEC-0007 + plan.md"
+  - "just check: PASS (race+shuffle всех пакетов, coverage 85.03% >= 85%, format/vet/staticcheck/docs/actionlint)"
+  - "just docker-check dev: PASS (build, smoke, hermes-contract: real gateway 2 users, supervisor lifecycle, Hermes 0.21.0 contract; hub-stt fixture skipped — unavailable, non-fatal)"
+  - "LIVE-ИНЦИДЕНТ: после первого деплоя контекст local дедлокнулся — 5 старых uncertain-маппингов без run_id (503-окно) держали ключ вечно; RequeueObservations их никогда не рекьюит"
+  - "Фикс: контекст держит только admitted run (RunID+SessionID+Generation) — mappingHoldsContext; holder-check при release; unadmitted uncertain отпускает ключ"
+  - "Regression: TestUnadmittedUncertainReleasesContext; TestRestartRebuildsInFlight переписан под admitted-семантику (crashed job реклеймит свой ключ)"
+  - "Редеплой: rebuild hermes-hub:0.3.0-dev + recreate communication-hub — застрявшие 054/055/057 прошли, очередь пустая"
+  - "just check после фикса: PASS (coverage 85.05%)"
+  - "Старые маппинги: auto-finalize откатан (ломал fail-closed контракт uncertain); 5 мёртвых unadmitted-маппингов local вручную resolved -> failed (доказано: ранов не было, supervisor 503 до docker)"
+  - "Проверено: ни одного не-терминального маппинга не осталось"
+next:
+  - "Опционально: задать HUB_COMMUNICATION_WORKERS в generated compose при потребности != 4"
+risks:
+  - "Uncertain маппинг держит контекст до терминала — осознанный fail-closed, наблюдаем через ObservationAttempts"
+  - "Compose dev-стек не задаёт HUB_COMMUNICATION_WORKERS — действует default 4; для изменения нужен env в generated compose"

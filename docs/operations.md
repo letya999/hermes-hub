@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-23
+last_verified: 2026-09-27
 ---
 # Operations
 
@@ -9,11 +9,48 @@ explicit legacy alias. `render` writes generated files under
 `spaces/<user>/generated/`, `up` builds and starts the selected runtime, `down` stops
 it without deleting data, and `logs` tails the selected Compose project.
 
+Diagnostics are on by default. The shared ToolHub collects new stdout/stderr
+lines from every `hermes-*` and `work-*` Docker container across users every
+15 seconds and appends them automatically to `.local/hermes-diagnostics.txt`;
+no export command is needed. The file rolls over at 100 MB, and its small cursor file
+keeps the collector from replaying lines after restart. The host supervisor
+mirrors its own request/lifecycle logs to `.local/supervisor.log` (10 MB cap),
+which is also copied into the combined file. Compose and supervised runtimes
+retain Docker's rotating `local` logs (10 MB × 3 files per container). The
+first collection of an already running container starts with its last 1000
+lines; later cycles take at most 5000 lines per container, and one container
+whose `docker logs` fails is skipped without stalling the others. Secrets are
+redacted at collection time, so the combined file never stores tokens or
+passwords in plaintext. To opt out, set `diagnostics: false` in the
+infra-owning space's `settings.yaml` and run `hubctl up` again.
+
+Users inspect their own diagnostics through the ToolHub `diagnostics` control
+operation. It returns the caller's connector workloads plus bounded,
+redacted log lines from their runtime and workload containers. Scope comes
+from the authenticated principal, context and live binding state — never from
+tool arguments — so host logs, platform containers and other users' data stay
+invisible, and revoke/remove shrinks visibility immediately. Queries accept
+`tail` (1-500), RFC3339 `since`/`until`, a `search` substring, `severity`
+(info|warn|error) and a `workload` selector (workload, binding or definition
+ID, or `runtime`). Secrets are redacted again at projection and host-supervisor
+lines appear only when they name the caller's own runtime container as a whole
+token. Requests are capped per principal and globally, so a single caller
+cannot starve diagnostics for others.
+
+The gateway records authorized private Telegram input and delivered replies,
+including job IDs and user IDs where available. HTTP operations in Hermes
+runtime, ToolHub, supervisor, communication hub and Credential Broker record
+method, bounded route and duration; request bodies and query strings are not
+logged. Credential input (`KEY=value`, `/credentials`, `/broker-approve`) and
+one-time credential replies are redacted. Treat the combined file as private:
+it contains personal conversations and service output. `.local/` is ignored
+by Git; review and redact before sharing it.
+
 When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
-sender IDs from the configured allowlist to the selected user scope, writes durable jobs
-and replies under `/state/gateway`, and runs one fresh bounded Hermes process per job.
-The current deployment uses one configured user; adding another is a configuration and
-isolated-space operation, not a shared Hermes home.
+sender IDs from the configured allowlist to user scopes, writes durable jobs and replies
+under `/state/gateway`, and runs one fresh bounded Hermes process per job. The default
+single-space deployment maps one user; a host-owned multiuser configuration maps each
+verified numeric ID to a separate `spaces/<user>` home and runtime.
 The runtime includes the deployed `SOUL.md` digest in its deterministic conversation
 session ID, so changed system instructions start a fresh chat session on the next
 message while durable owner memory remains intact.
@@ -58,6 +95,7 @@ An explicit owner `KEY=value` chat message is intercepted before Hermes, rejecte
 best-effort deleted; it is never persisted. The gateway returns a one-time protected
 loopback form generated from the selected connector or MCP Connection Recipe; its fields,
 types, order, delivery metadata and OAuth alternatives are derived at request time.
+Alternative groups stay separate submits of the field names the recipe or the server named. The shortest set is open and the others are collapsed. A tools/list probe speaks stdio when the image command selects sse or http, and a fresh form link is delivered even if an older notice for the same onboarding already exists. The prepare notice includes that loopback form URL. A credential-gate submit with no reviewed broker contract stores the secret in the local encrypted store and finishes confirm and enable from that store; a reviewed contract still requires a broker credential. A failure after that secret is stored says the data was saved and sends the user back to chat confirmation. When that definition version is already a user publication of another principal, the submit keeps the next free patch version and leaves the existing publication in place.
 There is no static credential form. Groups reject credential entry. Set and delete also load the ToolHub registry
 (`HUB_TOOLHUB_STORE` or `spaces/<user>/runtime/toolhub/store.json`) so rotate and
 revoke cut an already-open MCP session and stop affected workloads. Personal-terminal
@@ -130,8 +168,10 @@ must not include the encryption key. Do not use `docker compose down --volumes` 
 deleting that user's data intentionally. Restore organization and user homes separately;
 never merge memories, Telegram sessions or provider credentials.
 
-The hub image is one shared runtime (apt Chromium, Hermes with the `mcp`
-extra) used by every compose service. Playwright browsers, Hermes
+The hub has a shared core runtime (apt Chromium, Hermes with the `mcp` extra)
+and a control target used only by ToolHub and the workload controller. The
+control target adds Docker CLI and ToolHive. Slack MCP is an opt-in ToolHub
+connector and is never fetched by the hub Dockerfile. Playwright browsers, Hermes
 `messaging`/`google`/`voice` extras, the Go toolchain, and the Google /
 Atlassian / Telegram-account Python trees stay out of the default image.
 Those MCP trees are `docker/telegram-account.Dockerfile`,
@@ -141,25 +181,41 @@ Dockerfile once per service. Combined with the classic builder
 (`DOCKER_BUILDKIT=0`) this materialized every stage as a separate image and
 added roughly one full copy of the image per command.
 
-Generated compose files carry a `build:` section on exactly one service
-(`toolhub`); the rest reference the shared `image:` tag. `just` recipes and
+Generated compose files carry one core `build:` section (`cliproxy`) and one
+control `build:` section (`toolhub`); other services reference those image
+tags. BuildKit shares their common layers and builds CLIProxy independently
+from the hub's Go services. Go module and compiler cache mounts survive source
+edits and are bounded by the same builder cache cap. `just` recipes and
 `hubctl build`/`up` export `DOCKER_BUILDKIT=1`, `COMPOSE_DOCKER_CLI_BUILD=1`
 and `COMPOSE_BAKE=true`, so a stale `DOCKER_BUILDKIT=0` cannot silently
-downgrade those entry points. After a successful compose build, `hubctl`
-prunes dangling images left by retagging. Intermediate BuildKit stages never
+downgrade those entry points. Before and after each compose build attempt,
+`hubctl` prunes dangling images left by retagging; the next invocation also
+recovers after a killed process. Intermediate BuildKit stages never
 materialize as extra images. Setting `DOCKER_BUILDKIT=0` globally is still
 discouraged because raw `docker compose` outside hubctl/just would use the
 classic builder.
 
 Rebuilds of the tagged hub image used to leave the superseded generation
-dangling at full unique-layer size. `just docker-clean` (also the last step of
+dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove
+stopped `hermes-hub-*` containers that pin dangling generations, prune the
+released images and cap the local BuildKit cache at 8 GB. They leave running
+containers, named volumes and other projects' containers intact; the cache
+cap applies to the selected shared Docker builder. `just docker-clean` (also the last step of
 `just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
 `spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
-dangling image layers, orphan `hermes-build-*` containers/networks/volumes and the
-local BuildKit cache. `just docker-clean --deep` additionally drops
+dangling image layers and orphan `hermes-build-*` containers/networks/volumes.
+Ordinary cleanup caps the local BuildKit cache at 8 GB; `just docker-clean --deep`
+fully prunes it and additionally drops
 `hermes-build-state-shared`, the opt-in persistent builder cache that
 `HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
 artifact build is in flight.
+
+To reclaim physical Windows disk space after Docker cleanup, double-click
+`scripts/reclaim-docker-disk.cmd` and accept the administrator prompt. It
+stops Docker Desktop and WSL, removes three previously identified temporary
+swap VHDX files by exact path, then runs `Optimize-VHD` on Docker's data VHDX.
+The Hyper-V PowerShell module must be available. The script shows free C:
+space before and after; Docker remains stopped until you start it again.
 
 Health checks prove process liveness and, where enabled, Chromium CDP readiness. They do
 not prove OAuth, model, Telegram or provider access. Live acceptance requires the
@@ -188,11 +244,16 @@ the Docker socket. Enable it explicitly with `HUB_RUNTIME_SUPERVISOR_URL` while 
 native static per-user Compose as an explicit alternative. The published v0.2.1
 artifact provides the retired one-shot rollback after drain/stop/audit.
 
+In supervisor mode, keep the selected owner's sidecar services running. The runtime
+joins `hermes-hub-<user>-<env>_default` and mounts that project's
+`broker-secrets-runtime` volume read-only; the default shared runtime network is not
+used for owner jobs.
+
 Example from the repository root:
 
 ```text
 HUB_SUPERVISOR_AUTH=<host-control-token> hubctl supervisor --spaces spaces
-HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8765 hubctl render --dir spaces/alice
+HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8876 hubctl render --dir spaces/alice
 ```
 
 The runtime uses pinned Hermes `/api/sessions` and `/v1/runs` for each accepted job.
@@ -308,8 +369,8 @@ Example with a spool mounted on the Linux deployment host:
 
 ```text
 hubctl execution-audit --spool /mnt/alice-gateway --user alice
-hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.1
-hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8765 --native-cron disabled --compatibility-release 0.2.1 --apply
+hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8876 --native-cron disabled --compatibility-release 0.2.1
+hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/alice-gateway --execution-mode supervisor --supervisor-url http://<private-host-address>:8876 --native-cron disabled --compatibility-release 0.2.1 --apply
 hubctl up --dir spaces/alice --user alice --env prod
 ```
 
@@ -345,3 +406,82 @@ a resident Gateway. To restore the old executor, deploy the accepted v0.2.1 arti
 after the same drain/stop/audit sequence. Its release binaries match the real Docker
 acceptance image; a selection's release name alone is not publication evidence.
 See SPEC-0016 and CHG-0018 for acceptance and current evidence.
+
+## SSH capability
+
+`ssh` in `settings.yaml` features exposes bounded SSH to owner-configured
+hosts. `ssh_write`, `ssh_shell` and `ssh_tunnel` stack on it; each requires
+`ssh`. Render fails when `connections/ssh/config.yaml` is missing or invalid;
+`doctor` reports the same gap. The directory is mounted read-only at
+`/state/ssh`, so rotate hosts/keys by editing it and running `hubctl up`.
+
+```yaml
+schema: 1
+defaults: {max_sessions: 4, max_shells: 2, max_tunnels: 4}
+hosts:
+  prod-web:
+    host: 203.0.113.10
+    port: 22
+    user: deploy
+    host_keys: ["ssh-ed25519 AAAAC3NzaC..."]   # or "sha256:<fingerprint>"
+    key_ref: "file:keys/prod-web"              # or "broker:<grant-id>"
+    certificate_ref: "file:keys/prod-web-cert.pub"  # optional
+    commands: ["systemctl status *", "docker ps", "tail -n * /var/log/*"]
+    write_commands: ["systemctl restart app"]
+    paths: ["/etc/app/*", "/var/log/app/*.log"]
+    write_paths: ["/srv/app/config/*"]
+    sudo: never                # or passwordless -> effective command via sudo -n
+    timeout_seconds: 30
+    max_output_bytes: 65536
+    tunnels:
+      db: {remote_host: 127.0.0.1, remote_port: 5432}
+```
+
+Host keys are mandatory and pinned per alias; collect them with
+`ssh-keyscan -t ed25519 <host>` on the host itself, not through the runtime.
+Prefer full public-key pins: they restrict the negotiated host-key algorithm
+to the pinned type, while a bare `sha256:` fingerprint matches whatever type
+the server offers — pin one fingerprint per offered key type (ed25519, rsa,
+ecdsa) or the dial fails closed with "host key is not pinned".
+`file:` key refs stay inside `connections/ssh/` (regular files, <=64 KiB,
+unencrypted OpenSSH/PEM keys; use `broker:` refs for anything sensitive).
+`broker:` refs name a grant ID on a credential created through the `ssh-key`
+contract (`services/credential-broker/examples/contracts/ssh-key.json`);
+the runtime adapter acquires, materializes and releases a short-lived lease
+per dial under the `ssh-<alias>` binding, so the provisioned runtime key needs
+both `broker:control` and `broker:runtime` audiences for broker refs.
+
+Allowlists are anchored patterns where `*` is the only wildcard. Commands and
+sudo are evaluated per host: with `sudo: passwordless` a `sudo <cmd>` request
+runs `sudo -n <cmd>` only when `<cmd>` matches an allowlisted pattern. File
+reads return bounded UTF-8 text; writes are atomic temp+rename.
+
+`ssh_shell` shells and `ssh_tunnel` forwards live inside the runtime process:
+a restart or scale-to-zero stop closes them, and the reaper expires them by
+idle/lifetime bounds. Tunnel listeners bind to loopback inside the runtime and
+are reachable only by workloads sharing that runtime — they are never
+published to the host or the network. Revoking a Broker grant or deleting a
+host entry takes effect at the next dial; nothing caches keys or sessions.
+
+Every operation appends a bounded `ssh` event to the owner audit ledger under
+`spaces/<user>/runtime/audit/ssh.jsonl`; receipts carry exit codes, byte
+counts and operation names, never command output or key material.
+
+### Local smoke without the full stack
+
+`hubctl tools` serves the same MCP surface over stdio, so a real sshd (for
+example `lscr.io/linuxserver/openssh-server` in Docker) is enough to exercise
+it end to end:
+
+```sh
+HUB_USER_ID=me HUB_STATE=/abs/state HUB_SSH_CONFIG=/abs/ssh/config.yaml \
+  HUB_SSH_WRITE=true HUB_SSH_SHELL=true HUB_SSH_TUNNEL=true \
+  hubctl tools --workspace /abs/ws --archive /abs/arch
+```
+
+Send `initialize`, `notifications/initialized`, then `tools/call` JSON-RPC
+lines, or attach any MCP client (Inspector, an IDE). `HUB_USER_ID` and
+`HUB_STATE` matter on a bare host: the audit ledger needs an absolute path
+and drops events whose principal is empty; the rendered runtime always sets
+both. This path exercises `file:` refs only — `broker:` refs need a running
+Credential Broker deployment.

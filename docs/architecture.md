@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-23
+last_verified: 2026-09-28
 ---
 # Architecture
 
@@ -66,6 +66,25 @@ the trusted `organization:<id>` scope and an approved organization action.
 | `spaces/<id>/archive/` | Read-only extracted archive |
 | `spaces/<id>/generated/` | Ignored Compose, Hermes and filtered env files |
 | `communication-hub-data` | Gateway queue and delivery ledger; outside scope homes |
+
+The opt-in `browser` feature renders two hub-owned MCP servers into the Hermes
+config: `browser` attaches Playwright MCP to that user's persistent Chromium
+profile (`connections/browser`, loopback CDP only), and `browser_guest` runs an
+isolated in-memory profile with no authenticated state. Both expose navigation
+and read tools only; `browser_act` is the separate explicit capability that adds
+mutation tools. Downloads and screenshots land in `workspace/browser` and the
+runtime evicts files over the size/type policy. noVNC stays bound to the Docker
+host loopback on `browser_port`.
+
+The opt-in `ssh` feature adds hub-owned MCP tools (`ssh_hosts`, `ssh_exec`,
+`ssh_read`, plus `ssh_write`, `ssh_shell_*` and `ssh_tunnel_*` behind the
+separate `ssh_write`/`ssh_shell`/`ssh_tunnel` features). Destinations come only
+from `connections/ssh/config.yaml` (mounted read-only): aliases carry host,
+port, user, pinned host keys, credential references and per-host
+command/path/tunnel allowlists and bounds. Private keys resolve from the
+read-only config directory or Credential Broker leases; shells and tunnels are
+process-local, loopback-bound and reaped on expiry or restart. SPEC-0033 holds
+the contract.
 
 Job and conversation lifecycle mappings are persisted beside the gateway queue. They
 contain immutable routing, idempotency and Hermes run metadata, while supervisor state
@@ -164,7 +183,17 @@ ADR-0023), not a copy inside the hub image;
 `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN` are passed only to that process.
 
 File writes use cross-process locks, hash preconditions and atomic rename. Search/read
-are bounded UTF-8 operations. HeadHunter applications use an existing applicant resume,
+are bounded UTF-8 operations. Document extract, create, edit, and convert, image
+inspect and png/jpeg/webp convert, and opt-in image generation and edit run in that
+same `hubctl tools` process
+([ADR-0027](adr/ADR-0027-workspace-document-image-profile.md),
+[ADR-0028](adr/ADR-0028-configurable-image-capability.md),
+[ADR-0029](adr/ADR-0029-bounded-pdf-office-webp.md),
+[ADR-0030](adr/ADR-0030-cliproxy-image-routes.md)). Provider, model, and
+delivery come from the mounted `image_gen` section. The model selects the
+images endpoint or the Gemini chat image call. pdf, xlsx, and pptx are
+simple text packages in that process. They are not a separate
+service. HeadHunter applications use an existing applicant resume,
 explicit task authorization and actual HTTP receipts; unknown outcomes are not retried.
 
 ## M2 ToolHub foundation
@@ -228,7 +257,9 @@ admission, projection and reconnect. When the Broker audience/key environment
 is configured, onboarding uses Broker requests and grants, Communication Hub
 approves the pairing code, and the runtime materializer handles the lease. With
 that environment unset, the existing encrypted store and loopback form remain
-the compatibility path. Broker file deliveries use a dynamic read-only ToolHive
+the compatibility path. A credential-gate admission whose required names are
+not covered by a reviewed contract also keeps the loopback secret in that
+store; once a contract id is bound, confirm still requires a broker credential. Broker file deliveries use a dynamic read-only ToolHive
 mount hand-off: the generic controller accepts only regular files below its
 operator-configured `credential_mount_root`, starts a one-call workload, and
 exposes `/release` to remove it before the Broker runtime lease is released.
@@ -267,10 +298,57 @@ adapter disables standalone SSE because ToolHub calls are request/response only.
 For upstream servers that implement the current legacy MCP wire version (for
 example Serena 1.5.x), the backend hop pins `MCP-Protocol-Version: 2025-11-25`
 so discovery and calls remain compatible with the SDK's newer default handshake.
-Both list and call use the same current projection resolver. Setting `HUB_TOOLHUB_ENDPOINT` (or
-`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store) injects one authenticated
-ToolHub MCP entry into the copied Hermes config; unset variables leave the generated
-runtime unchanged. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
+Both list and call use the same current projection resolver. ToolHub, the
+credential broker, the workload controller and cliproxy are shared control-plane
+services: the space whose `settings.yaml` keeps `infra: true` (the default)
+renders and owns them once, while spaces with `infra: false` render only their
+`hermes-runtime`. Shared services and every spawned runtime join the external
+`hermes-hub-runtime` network, so rendered spaces default
+`HUB_TOOLHUB_ENDPOINT` to `http://toolhub:8090/mcp` — one stable name that
+resolves identically for all users on the shared network. An explicit
+`HUB_TOOLHUB_ENDPOINT` in `secrets.<env>.env` overrides and an empty value opts
+out. One ToolHub endpoint authenticates many identities: the owning space's
+`runtime.auth`/`toolhub.auth` token plus an optional `toolhub-tokens.json`
+file (`HUB_TOOLHUB_TOKENS_FILE`) that maps additional bearer tokens to full
+identity envelopes for secondary spaces. Render and the supervisor write each
+sibling space's `HUB_RUNTIME_AUTH` into that file in place (the same inode, so
+a running bind mount sees the update) and never copy the infra owner's own
+token. ToolHub reloads the file when a bearer misses the in-memory map, so a
+sibling enrolled after process start is accepted on the next handshake. A
+Hermes process that already parked the server still needs its runtime
+restarted before it tries again. Every token resolves to its own
+principal/context/runtime triple, so per-user bindings, workloads and
+credentials stay owner-scoped inside the single shared service.
+The shared communication gateway is one process too. When
+`spaces/<owner>/communication.users.yaml` exists, render mounts it and sets
+`HUB_COMMUNICATION_CONFIG`, and that file is the Telegram allowlist. Without
+it the gateway keeps only the infra owner's `TELEGRAM_ALLOWED_USERS` and
+answers every other chat with the not-configured reply.
+Spawned runtimes mount the same contract the render produces: per-user state
+binds plus the hub skills directory (`global_skills_dir`, defaulting to
+`config/skills`) read-only at `/opt/hub/skills`. Without it the
+`mcp-connector-onboarding` skill is invisible to the agent, and MCP installs
+regress to uncontrolled terminal/git operations outside ToolHub's audit.
+The effective Hermes config is materialized on the host
+(`generated/hermes-effective.<env>.yaml` — the source config plus self-service
+and ToolHub MCP entries) and mounted read-only over the agent-writable
+`/state/hermes/config.yaml` in both rendered and spawned runtimes. The agent
+cannot add `mcp_servers` entries from inside the runtime: registration of MCP
+servers goes through ToolHub onboarding only, and the in-container startup
+skips its own materialization when the file is read-only.
+
+Supervised deployments keep zero resident per-user containers. Secondary
+spaces (`infra: false`) render no `hermes-runtime` service at all — their
+compose outputs only feed spawned runtimes — and the infra owner drops it when
+`HUB_RUNTIME_SUPERVISOR_URL` is configured. Every control-plane call a gateway
+needs (`/v1/jobs`, `/v1/resume`, `/v1/control`, `/v1/self-env`, `/v1/restart`)
+is served by the supervisor and routed to the correct user's spawned runtime
+by the job's durable identity; the restart-after-delivery hook carries that
+identity so the spawned Hermes still gets bounced per turn. A restart for an
+absent or stopped runtime is a successful no-op — the next lease spawns a
+fresh container.
+`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store injects the same entry
+for a runtime-local ToolHub. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
 against the existing store and never creates a second ownership registry. ToolHive v0.48.0 remains an
 external conditional backend at the pin recorded in ADR-0013 and issue #11.
 

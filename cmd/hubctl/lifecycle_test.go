@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -10,6 +11,37 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestPruneDanglingImagesKeepsForeignContainersAndBoundsCache(t *testing.T) {
+	var calls []string
+	run := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		switch args[0] {
+		case "image":
+			if args[1] == "ls" {
+				return []byte("old-image\n"), nil
+			}
+		case "ps":
+			return []byte("hermes-hub-local-dev-old\tExited (0)\nhermes-hub-local-dev-live\tUp 1 minute\nai-stp-api-1\tExited (0)\n"), nil
+		}
+		return nil, nil
+	}
+	if err := pruneDanglingImages(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	for _, want := range []string{"rm hermes-hub-local-dev-old", "image prune -f", "buildx prune --max-used-space 8gb -f"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s: %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "rm ai-stp") || strings.Contains(joined, "rm hermes-hub-local-dev-live") {
+		t.Fatal(joined)
+	}
+	if err := pruneDanglingImages(context.Background(), func(context.Context, ...string) ([]byte, error) { return nil, fmt.Errorf("daemon down") }); err == nil {
+		t.Fatal("accepted Docker failure")
+	}
+}
 
 func TestLifecycleAndFailurePropagation(t *testing.T) {
 	d := filepath.Join(t.TempDir(), "space with spaces")
@@ -35,7 +67,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	script := "#!/bin/sh\nprintf 'ENV DOCKER_BUILDKIT=%s COMPOSE_BAKE=%s COMPOSE_DOCKER_CLI_BUILD=%s\\n' \"$DOCKER_BUILDKIT\" \"$COMPOSE_BAKE\" \"$COMPOSE_DOCKER_CLI_BUILD\" >> \"$HUB_TEST_LOG\"\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\nif [ -n \"$HUB_FAIL_MATCH\" ]; then for arg do if [ \"$arg\" = \"$HUB_FAIL_MATCH\" ]; then exit 7; fi; done; fi\n"
 	if runtime.GOOS == "windows" {
 		name = "docker.cmd"
-		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif \"%HUB_FAIL_MATCH%\"==\"\" exit /b 0\r\necho %* | findstr /C:\"%HUB_FAIL_MATCH%\" >nul\r\nif not errorlevel 1 exit /b 7\r\n"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -56,8 +88,13 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	}
 	for _, fail := range []string{"build", "up"} {
 		t.Setenv("HUB_FAIL_MATCH", fail)
+		before, _ := os.ReadFile(log)
 		if run(context.Background(), []string{"up", "--dir", d, "--root", "../.."}) == nil {
 			t.Fatal("ignored docker error", fail)
+		}
+		after, _ := os.ReadFile(log)
+		if strings.Count(string(after), "image prune -f")-strings.Count(string(before), "image prune -f") != 2 {
+			t.Fatal("expected cleanup before and after failed", fail, "build")
 		}
 	}
 	t.Setenv("HUB_FAIL_MATCH", "")

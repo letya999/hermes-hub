@@ -49,10 +49,14 @@ func ServiceCatalog() []ServiceInfo {
 
 func serviceDependencies(name string) []string {
 	switch name {
+	case "browser_act":
+		return []string{"browser"}
 	case "google_write":
 		return []string{"google"}
 	case "telegram_write":
 		return []string{"telegram_user"}
+	case "ssh_write", "ssh_shell", "ssh_tunnel":
+		return []string{"ssh"}
 	default:
 		return nil
 	}

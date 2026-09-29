@@ -70,7 +70,9 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), []byte(settings), 0600); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS="+strconv.Itoa(21+i)+"\n"), 0600); err != nil {
+		// The synthetic network has no toolhub service; opt the fixture out of
+		// the default endpoint so cold start does not depend on it.
+		if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS="+strconv.Itoa(21+i)+"\nHUB_TOOLHUB_ENDPOINT=\n"), 0600); err != nil {
 			return err
 		}
 		if err := stack.RenderEnvironment(dir, ".", "prod"); err != nil {

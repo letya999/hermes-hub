@@ -2,7 +2,16 @@
 
 ## Unreleased
 
-## 0.3.0 — M1 native execution — 2026-09-12
+- Added a workspace document and image capability on the hub MCP profile:
+  extract, create, edit, and convert for txt, md, csv, html, pdf, xlsx, and
+  pptx; inspect and local png, jpeg, and webp conversion; opt-in image
+  generation and edit with a configured provider, model, and delivery. pdf,
+  xlsx, and pptx are simple text packages. doc and docx stay unsupported.
+  CLIProxy image models use two calls: the images-endpoint ids stay on
+  `/images/generations` and `/images/edits`, and the Gemini image ids use
+  `/chat/completions`. The default model stays `gpt-image-2`.
+
+## 0.3.0 ï¿½ M1 native execution ï¿½ 2026-09-12
 
 - Removed the `hermes -z` executor and persistent-mode toggle after publication
   and real-runtime acceptance of the v0.2.1 compatibility artifacts.

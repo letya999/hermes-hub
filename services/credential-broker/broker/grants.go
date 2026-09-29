@@ -225,6 +225,7 @@ func (b *Broker) RevokeCredential(a identity.Actor, id string) error {
 	ev := b.audit("credential.revoked", a)
 	ev.CredentialID = id
 	ev.ConnectionID = c.View.ConnectionID
+	ev.ConsumerID = c.View.ConsumerID
 	if _, e := b.commit(mutation{Audit: ev, Credential: &c}); e != nil {
 		return e
 	}

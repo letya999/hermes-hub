@@ -1,0 +1,40 @@
+schema: 1
+id: CHG-0047-mcp-admission-and-wake
+title: MCP admission, sibling tokens, and lost first message
+status: in_progress
+phase: verified
+started_at: 2026-09-27
+updated_at: 2026-09-28
+completed:
+  - credential gate defers tools/list until the protected form submits real secrets
+  - sibling runtime tokens are enrolled in place and reloaded on an auth miss
+  - stub SOUL is healed without overwriting an edited file
+  - cold-start chat turns retry once and prepare completion reaches the channel
+  - just check passed at 85.04% statement coverage
+  - dev token file for spaces/local now includes the sibling runtime; the stub SOUL was replaced from the template
+  - local dev stack recreated with hubctl up on hermes-hub:0.3.0-dev and hermes-hub:0.3.0-dev-control
+  - live prepare of slack-mcp-server reached awaiting-credentials; tools were not registered; the loopback form offers the Slack token alternatives
+  - prepare-outcome notice and the continuation reply with the form link were delivered to the local Telegram chat
+  - sibling principals telegram-8275678764 and test-owner-2 are in the running ToolHub token file
+  - communication.users.yaml is mounted into the recreated local gateway; the 17:48 denial happened because that file was not loaded
+  - the second user's later message was accepted; their slack onboarding is onboard-ed44af3dcd982a89d0ab2c25
+  - the credential page lists the field names from the server or its connection recipe; Slack token labels are not hardcoded
+  - the shortest alternative set is the open form; longer sets stay collapsed
+  - a credential probe overrides sse/http image arguments to stdio and removes the preflight container
+  - a new credential-form URL is delivered when an older prepare notice for the same onboarding already exists
+  - Slack onboardings started for local and telegram-8275678764 were removed; no Slack connection, credential, binding, or workload remains
+  - a credential-gate secret with no reviewed broker contract stays in the local store, and confirm no longer demands a broker credential for it
+  - a second principal's admit takes the next patch version instead of replacing the first user's publication
+  - a form error after the secret is stored no longer says the link expired or that the data was discarded
+  - Slack-shaped either/or credential alternatives persist on the definition as credential_groups and satisfy binding resolution, owner matching, and the generic controller env-file check; one complete group is enough instead of every required name
+  - generic Docker fallback errors carry the failing step (bridge-create) and controller 503 bodies carry the real cause instead of a fixed string; ToolHub propagates that body text to the caller
+  - just check passed at 85.16% statement coverage including credential-group, admission-body and draft-persistence regressions
+  - reviewed definitions may declare proxy_environment names (e.g. SLACK_MCP_PROXY); the runtime injects the controller-owned egress URL and never an artifact-chosen value
+  - waitLocalWorkload now reports the last underlying readiness error instead of a bare context deadline
+  - a pinned network transport (--transport sse|http) is rewritten to stdio at launch, matching the preflight probe
+  - squid dstdomain entries emit the ".host" suffix form so reviewed domains cover their own subdomains (neuralabtech.slack.com under slack.com)
+  - hubctl compose invocations feed supervisor.auth into ${HUB_SUPERVISOR_AUTH} interpolation; supervisor-mode gateway no longer crashes on missing auth
+  - live verify: both slack-mcp-server onboardings (local + telegram-8275678764) confirmed and enabled; 15 tools projected per binding; bridge authenticated through the egress proxy and cached 367 users / 247 channels
+  - just check passed at 85.17% statement coverage including stdio-rewrite, egress-subdomain and supervisor-env regressions
+pending:
+  - the owner walks both Telegram users through install and the form themselves

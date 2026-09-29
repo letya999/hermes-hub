@@ -1,0 +1,35 @@
+{
+  "id": "ssh-key",
+  "revision": 1,
+  "title": "SSH private key (+ optional certificate)",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "private_key",
+      "label": "OpenSSH/PEM private key",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 16384
+    },
+    {
+      "id": "certificate",
+      "label": "OpenSSH user certificate (optional)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 16384
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "private_key",
+      "target": "SSH_PRIVATE_KEY"
+    },
+    {
+      "type": "env",
+      "field": "certificate",
+      "target": "SSH_CERTIFICATE"
+    }
+  ]
+}

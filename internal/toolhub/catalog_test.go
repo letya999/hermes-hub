@@ -354,3 +354,21 @@ func TestReloadUnchangedSnapshotPreservesPendingMutation(t *testing.T) {
 		t.Fatal("pending install did not persist", err)
 	}
 }
+
+func TestSelfInstallAllowedByDefaultAndRevocable(t *testing.T) {
+	store := NewStore()
+	if err := store.RequireSelfInstall(aliceAuth()); err != nil {
+		t.Fatalf("self-install denied without a grant: %v", err)
+	}
+	grant := OperatorGrant(GrantSelfInstall, "alice", "", "")
+	grant.Status = RevokedStatus
+	if err := store.PutGrant(grant); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked self-install grant allowed: %v", err)
+	}
+	if err := store.RequireSelfInstall(bobAuth()); err != nil {
+		t.Fatalf("revocation leaked to another principal: %v", err)
+	}
+}

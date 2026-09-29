@@ -1,0 +1,51 @@
+schema: 1
+id: CHG-0048-network-transport-and-proxy-discovery
+title: network-transport fallback and proxy-env discovery
+status: done
+phase: verified
+started_at: 2026-09-28
+updated_at: 2026-09-28
+completed:
+  - companion network mode: config transport field, child spawned with original
+    args, loopback listener discovery via /proc/net/tcp{,6}, MCP client
+    session over SSE or streamable-http with a proxy-disabled HTTP client
+  - hubctl mcp-bridge: raw stdin/stdout<->network JSON-RPC pump for the
+    preflight side of the fallback
+  - source.network_transport field with ContainerMCP-only validation
+  - generic fallback keeps the declared entrypoint when marked and writes
+    transport into the companion config
+  - preflight two-container network probe (detached server + netns-attached
+    mcp-bridge), wired into local/published/credential-submit probe paths
+  - discoverProxyEnvironment scans Go/Node/Python/Rust/Ruby call-sites and
+    dotenv/Dockerfile assignments for *_PROXY names, merged into
+    proxy_environment at import and published-recipe review
+  - unit tests for listener parsing, transport selection, fallback marking,
+    validation, command args, proxy-env discovery, pumpBridge relay,
+    connectNetwork live-SSE handshake, fail-closed probe paths and
+    stagePreflightBridge
+  - per-attempt connect bound moved to ResponseHeaderTimeout: Connect ctx
+    owns the established stream lifetime, so cancelling it on success killed
+    SSE connections ~4s in (caught by TestConnectNetworkLiveSSE)
+  - just check green: -race -shuffle all packages, own Go statement coverage
+    85.00% (>=85), format/vet/staticcheck/docs/actionlint clean
+  - GitHub issue #141 filed for the hermes-admin diagnostics principal
+  - live manual probe: hardened slack-mcp-server container on default bridge
+    with real credstore env-file ran --transport sse (127.0.0.1:13080/sse);
+    mcp-bridge in a netns-shared container discovered the listener via
+    /proc scan, connected over SSE, initialize + tools/list returned all 14
+    Slack tools
+  - hubctl up on spaces/local --env dev: both images rebuilt, all containers
+    healthy; MCP status for the enabled slack onboarding returns phase
+    enabled with 15 projected tools on the new binary
+  - bugfix found live via gitlab-mcp prepare (onboard-7c27621482b349cb0a384607
+    failed): zereight/gitlab-mcp reads GITLAB_OAUTH_CALLBACK_PROXY — a
+    user-supplied OAuth callback URL, not an egress var. It landed in both
+    Environment and ProxyEnvironment and failed definition validation as a
+    duplicate. mergeProxyEnvironment now takes claimed names (Environment +
+    Credentials + RuntimeEnvironment); user-supplied inputs win over
+    controller-injected proxy claims. Test
+    TestMergeProxyEnvironmentSkipsClaimedNames; just check green (85.02%)
+pending:
+  - automatic fallback not exercised live: slack's stdio probe succeeds so
+    networkTransportFallback is skipped by design; a genuinely network-only
+    artifact is needed to see the full automatic chain

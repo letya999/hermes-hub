@@ -131,7 +131,7 @@ func validate(event Event) error {
 		return fmt.Errorf("%w: required fields", ErrInvalid)
 	}
 	switch event.Kind {
-	case "tool-call", "credential-change", "terminal-exposure", "oauth", "job":
+	case "tool-call", "credential-change", "terminal-exposure", "oauth", "job", "ssh":
 	default:
 		return fmt.Errorf("%w: kind", ErrInvalid)
 	}

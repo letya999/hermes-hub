@@ -126,21 +126,30 @@ func (o OwnerRef) Matches(e identity.Envelope) bool {
 }
 
 type ToolDefinition struct {
-	Schema                     int               `json:"schema"`
-	DefinitionID               string            `json:"definition_id"`
-	Version                    string            `json:"version"`
-	Transport                  Transport         `json:"transport"`
-	Source                     DefinitionSource  `json:"source"`
-	Tools                      []ToolSpec        `json:"tools"`
-	Credentials                []CredentialInput `json:"credentials,omitempty"`
+	Schema       int               `json:"schema"`
+	DefinitionID string            `json:"definition_id"`
+	Version      string            `json:"version"`
+	Transport    Transport         `json:"transport"`
+	Source       DefinitionSource  `json:"source"`
+	Tools        []ToolSpec        `json:"tools"`
+	Credentials  []CredentialInput `json:"credentials,omitempty"`
+	// CredentialGroups names OR alternatives: a definition is satisfied when
+	// every member of at least one group is present. Empty means every
+	// required input must be present individually.
+	CredentialGroups           [][]string        `json:"credential_groups,omitempty"`
 	CredentialContractID       string            `json:"credential_contract_id,omitempty"`
 	CredentialContractRevision int               `json:"credential_contract_revision,omitempty"`
 	CredentialContractEnv      map[string]string `json:"credential_contract_env,omitempty"`
 	Environment                []string          `json:"environment,omitempty"`
 	RuntimeEnvironment         map[string]string `json:"runtime_environment,omitempty"`
-	Workload                   WorkloadPolicy    `json:"workload"`
-	Execution                  ExecutionPolicy   `json:"execution"`
-	Health                     HealthProbe       `json:"health"`
+	// ProxyEnvironment names env vars the artifact expects to carry its
+	// outbound proxy URL. The runtime fills each with the audited egress
+	// proxy; neither the definition nor the owner supplies the value, so a
+	// reviewed name can never redirect egress off the allowlisted proxy.
+	ProxyEnvironment []string        `json:"proxy_environment,omitempty"`
+	Workload         WorkloadPolicy  `json:"workload"`
+	Execution        ExecutionPolicy `json:"execution"`
+	Health           HealthProbe     `json:"health"`
 }
 
 type DefinitionSource struct {
@@ -160,6 +169,11 @@ type DefinitionSource struct {
 	ReviewDigest       string   `json:"review_digest,omitempty"`
 	ToolContractDigest string   `json:"tool_contract_digest,omitempty"`
 	ToolContractSource string   `json:"tool_contract_source,omitempty"`
+	// NetworkTransport is set by preflight when the artifact's entrypoint
+	// declares an HTTP/SSE transport and the server proved it cannot speak
+	// stdio. Runtime then launches the original entrypoint and the companion
+	// bridges it as an MCP client instead of rewriting args to stdio.
+	NetworkTransport string `json:"network_transport,omitempty"`
 }
 
 type ToolSpec struct {
@@ -184,6 +198,42 @@ type CredentialInput struct {
 	Name       string `json:"name"`
 	Required   bool   `json:"required"`
 	PerRequest bool   `json:"per_request"`
+}
+
+// groupedCredentialInput reports whether the credential name is a member of an
+// either/or group — such members may legitimately stay undelivered when a
+// different group was satisfied.
+func groupedCredentialInput(d ToolDefinition, name string) bool {
+	for _, group := range d.CredentialGroups {
+		if slices.Contains(group, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialsSatisfied reports whether the required credential inputs are met
+// by the present set. A required input is met when present itself, or when it
+// belongs to an OR group and at least one complete group is present.
+func (d ToolDefinition) credentialsSatisfied(present func(string) bool) bool {
+	inGroup := map[string]bool{}
+	groupComplete := false
+	for _, group := range d.CredentialGroups {
+		complete := len(group) > 0
+		for _, name := range group {
+			inGroup[name] = true
+			if !present(name) {
+				complete = false
+			}
+		}
+		groupComplete = groupComplete || complete
+	}
+	for _, input := range d.Credentials {
+		if input.Required && !present(input.Name) && !(inGroup[input.Name] && groupComplete) {
+			return false
+		}
+	}
+	return true
 }
 
 type WorkloadPolicy struct {
@@ -288,6 +338,27 @@ func (d ToolDefinition) Validate() error {
 		}
 		seen[input.Name] = true
 	}
+	if len(d.ProxyEnvironment) > 8 {
+		return fmt.Errorf("%w: too many proxy environment parameters", ErrInvalid)
+	}
+	for _, name := range d.ProxyEnvironment {
+		if !credentialPattern.MatchString(name) || !strings.HasSuffix(name, "_PROXY") || strings.Contains(name, "NO_PROXY") || seen[name] {
+			return fmt.Errorf("%w: invalid or duplicate proxy environment parameter %q", ErrInvalid, name)
+		}
+		seen[name] = true
+	}
+	for _, group := range d.CredentialGroups {
+		if len(group) == 0 {
+			return fmt.Errorf("%w: empty credential group", ErrInvalid)
+		}
+		members := map[string]bool{}
+		for _, name := range group {
+			if members[name] || !slices.ContainsFunc(d.Credentials, func(input CredentialInput) bool { return input.Name == name && input.Required }) {
+				return fmt.Errorf("%w: invalid credential group member %q", ErrInvalid, name)
+			}
+			members[name] = true
+		}
+	}
 	if d.CredentialContractID != "" {
 		if !identity.ValidID(d.CredentialContractID) || d.CredentialContractRevision < 1 || d.CredentialContractRevision > 100000 {
 			return fmt.Errorf("%w: invalid credential broker contract", ErrInvalid)
@@ -298,7 +369,7 @@ func (d ToolDefinition) Validate() error {
 			}
 		}
 		for _, input := range d.Credentials {
-			if input.Required && d.CredentialContractEnv[input.Name] == "" {
+			if input.Required && d.CredentialContractEnv[input.Name] == "" && !d.credentialsSatisfied(func(name string) bool { return d.CredentialContractEnv[name] != "" }) {
 				return fmt.Errorf("%w: missing credential broker delivery for %s", ErrInvalid, input.Name)
 			}
 		}
@@ -368,6 +439,9 @@ func (s DefinitionSource) validate(transport Transport) error {
 	} else if s.Subfolder != "" {
 		return fmt.Errorf("%w: source subfolder requires a repository", ErrInvalid)
 	}
+	if s.NetworkTransport != "" && transport != ContainerMCP {
+		return fmt.Errorf("%w: network transport requires a container MCP", ErrInvalid)
+	}
 	values := 0
 	if s.URL != "" {
 		values++
@@ -396,6 +470,11 @@ func (s DefinitionSource) validate(transport Transport) error {
 		}
 		if s.Command != "" && !validCommand(s.Command) {
 			return fmt.Errorf("%w: invalid container command", ErrInvalid)
+		}
+		switch s.NetworkTransport {
+		case "", "sse", "http", "streamable-http":
+		default:
+			return fmt.Errorf("%w: unknown container network transport", ErrInvalid)
 		}
 	case BoundedCLI:
 		if s.Command == "" || values != 1 || s.Image != "" || s.URL != "" || s.Digest != "" || s.TLSMode != "" || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" || !validCommand(s.Command) {
@@ -1184,10 +1263,8 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (Effecti
 		for _, key := range reference.Keys {
 			keys[key] = true
 		}
-		for _, input := range definition.Credentials {
-			if input.Required && !keys[input.Name] {
-				return EffectiveBinding{}, fmt.Errorf("%w: missing credential input", ErrUnauthorized)
-			}
+		if !definition.credentialsSatisfied(func(name string) bool { return keys[name] }) {
+			return EffectiveBinding{}, fmt.Errorf("%w: missing credential input", ErrUnauthorized)
 		}
 		effective.Credential = &reference
 	}

@@ -21,7 +21,7 @@ func (b *Broker) CreateRequest(ctx context.Context, a identity.Actor, in v1.Crea
 	if !b.live() {
 		return v1.Request{}, ErrUnavailable
 	}
-	if !a.Valid() || !identity.ValidID(in.ConnectionID) || !identity.ValidID(in.OnboardingID) || !validIdempotency(in.IdempotencyKey) || in.OwnerKind != "user" && in.OwnerKind != "context" || in.OwnerKind == "context" && !a.ContextManager {
+	if !a.Valid() || !identity.ValidID(in.ConnectionID) || !identity.ValidID(in.OnboardingID) || !validIdempotency(in.IdempotencyKey) || in.OwnerKind != "user" && in.OwnerKind != "context" || in.OwnerKind == "context" && !a.ContextManager || in.ConsumerID != "" && !identity.ValidID(in.ConsumerID) {
 		return v1.Request{}, ErrInvalid
 	}
 	ck := key(in.ContractID, in.ContractRevision)
@@ -48,23 +48,23 @@ func (b *Broker) CreateRequest(ctx context.Context, a identity.Actor, in v1.Crea
 	}
 	if in.RotateCredentialID != "" {
 		existing, ok := b.credentials[in.RotateCredentialID]
-		if !ok || !managedBy(a, existing) || existing.View.Status == "deleted" || existing.ContractKey != ck || existing.View.ConnectionID != in.ConnectionID || existing.View.OwnerKind != in.OwnerKind {
+		if !ok || !managedBy(a, existing) || existing.View.Status == "deleted" || existing.ContractKey != ck || existing.View.ConnectionID != in.ConnectionID || existing.View.OwnerKind != in.OwnerKind || existing.View.ConsumerID != in.ConsumerID {
 			return v1.Request{}, ErrDenied
 		}
 	} else {
 		for _, existing := range b.credentials {
-			if existing.View.ContextID == a.ContextID && existing.View.ConnectionID == in.ConnectionID && existing.View.Status != "deleted" {
+			if existing.View.ContextID == a.ContextID && existing.View.ConnectionID == in.ConnectionID && existing.View.ConsumerID == in.ConsumerID && existing.View.Status != "deleted" {
 				return v1.Request{}, ErrConflict
 			}
 		}
 	}
 	for _, prior := range b.requests {
-		if prior.View.ConnectionID == in.ConnectionID && prior.Actor.ContextID == a.ContextID && (prior.View.Status == "pending" || prior.View.Status == "authorizing" || prior.View.Status == "exchanging") && b.now().Before(prior.View.ExpiresAt) {
+		if prior.View.ConnectionID == in.ConnectionID && prior.View.ConsumerID == in.ConsumerID && prior.Actor.ContextID == a.ContextID && (prior.View.Status == "pending" || prior.View.Status == "authorizing" || prior.View.Status == "exchanging") && b.now().Before(prior.View.ExpiresAt) {
 			return v1.Request{}, ErrConflict
 		}
 	}
 	id := newID("r")
-	view := v1.Request{ID: id, ContractID: c.ID, ContractRevision: c.Revision, ConnectionID: in.ConnectionID, OnboardingID: in.OnboardingID, Status: "pending", AuthorizationURL: b.cfg.PublicOrigin + "/connect/" + id, ExpiresAt: b.now().Add(15 * time.Minute)}
+	view := v1.Request{ID: id, ContractID: c.ID, ContractRevision: c.Revision, ConnectionID: in.ConnectionID, OnboardingID: in.OnboardingID, ConsumerID: in.ConsumerID, Status: "pending", AuthorizationURL: b.cfg.PublicOrigin + "/connect/" + id, ExpiresAt: b.now().Add(15 * time.Minute)}
 	r := requestRecord{View: view, Actor: a, OwnerKind: in.OwnerKind, ContractKey: ck, ContractDigest: c.Digest(), Idempotency: idem, Fingerprint: fingerprint, RotateID: in.RotateCredentialID, ExternalAlias: in.ExternalAlias}
 	if in.RotateCredentialID != "" {
 		r.ExpectedRevision = b.credentials[in.RotateCredentialID].View.Revision
@@ -93,6 +93,7 @@ func (b *Broker) CreateRequest(ctx context.Context, a identity.Actor, in v1.Crea
 	e.RequestID = id
 	e.ConnectionID = in.ConnectionID
 	e.OnboardingID = in.OnboardingID
+	e.ConsumerID = in.ConsumerID
 	if _, err := b.commit(mutation{Audit: e, Request: &r}); err != nil {
 		return v1.Request{}, err
 	}
@@ -247,7 +248,7 @@ func (b *Broker) ready(r *requestRecord, ref provider.Ref, managed bool, s *sess
 		}
 		rev = old.View.Revision + 1
 	}
-	c := credentialRecord{View: v1.Credential{ID: id, OwnerKind: r.OwnerKind, PrincipalID: r.Actor.PrincipalID, ContextID: r.Actor.ContextID, ConnectionID: r.View.ConnectionID, Revision: rev, Status: "active", Provider: ref.Provider}, ContractKey: r.ContractKey, ContractDigest: r.ContractDigest, Ref: ref, Managed: managed, TokenRevision: 1}
+	c := credentialRecord{View: v1.Credential{ID: id, OwnerKind: r.OwnerKind, PrincipalID: r.Actor.PrincipalID, ContextID: r.Actor.ContextID, ConnectionID: r.View.ConnectionID, ConsumerID: r.View.ConsumerID, Revision: rev, Status: "active", Provider: ref.Provider}, ContractKey: r.ContractKey, ContractDigest: r.ContractDigest, Ref: ref, Managed: managed, TokenRevision: 1}
 	if old, ok := b.credentials[id]; ok {
 		c.OwnedRefs = append(c.OwnedRefs, old.OwnedRefs...)
 	}
@@ -267,6 +268,7 @@ func (b *Broker) ready(r *requestRecord, ref provider.Ref, managed bool, s *sess
 	ev.RequestID = r.View.ID
 	ev.ConnectionID = r.View.ConnectionID
 	ev.OnboardingID = r.View.OnboardingID
+	ev.ConsumerID = r.View.ConsumerID
 	ev.CredentialID = id
 	if _, e := b.commit(mutation{Audit: ev, Request: r, Credential: &c, Session: s}); e != nil {
 		return credentialRecord{}, e

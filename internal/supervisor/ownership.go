@@ -76,13 +76,44 @@ func (m *Manager) verifyScopeMount(ctx context.Context, item Runtime) error {
 		if mount.Destination != "/scope" {
 			continue
 		}
-		source := filepath.Clean(mount.Source)
-		if mount.Type != "bind" || (source != expected && !(runtime.GOOS == "windows" && strings.EqualFold(source, expected))) {
+		if mount.Type != "bind" || !sameHostMountPath(mount.Source, expected) {
 			return errors.New("runtime scope mount mismatch")
 		}
 		return nil
 	}
 	return errors.New("runtime scope mount missing")
+}
+
+func sameHostMountPath(source, expected string) bool {
+	source, expected = filepath.Clean(source), filepath.Clean(expected)
+	if source == expected {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	return sameWindowsDockerSource(source, expected)
+}
+
+func sameWindowsDockerSource(source, expected string) bool {
+	if strings.EqualFold(source, expected) {
+		return true
+	}
+	translated, ok := dockerDesktopWindowsSource(source)
+	return ok && strings.EqualFold(filepath.Clean(translated), expected)
+}
+
+func dockerDesktopWindowsSource(source string) (string, bool) {
+	const prefix = "/run/desktop/mnt/host/"
+	normalized := strings.ReplaceAll(source, `\`, "/")
+	if !strings.HasPrefix(strings.ToLower(normalized), prefix) {
+		return "", false
+	}
+	rest := normalized[len(prefix):]
+	if len(rest) < 3 || rest[1] != '/' || !((rest[0] >= 'a' && rest[0] <= 'z') || (rest[0] >= 'A' && rest[0] <= 'Z')) {
+		return "", false
+	}
+	return strings.ToUpper(rest[:1]) + `:\` + strings.ReplaceAll(rest[2:], "/", `\`), true
 }
 
 func (m *Manager) ownedContainerID(ctx context.Context, runtime Runtime) (string, error) {

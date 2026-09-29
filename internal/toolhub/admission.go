@@ -125,7 +125,8 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusOK {
-			return AdmissionReceipt{}, fmt.Errorf("controller returned %s", response.Status)
+			detail, _ := io.ReadAll(io.LimitReader(response.Body, 4*1024))
+			return AdmissionReceipt{}, fmt.Errorf("controller returned %s: %s", response.Status, strings.TrimSpace(string(detail)))
 		}
 		if response.StatusCode == http.StatusNoContent {
 			return AdmissionReceipt{}, fmt.Errorf("controller returned no enforcement receipt")

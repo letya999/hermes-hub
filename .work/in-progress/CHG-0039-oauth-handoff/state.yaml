@@ -1,0 +1,24 @@
+schema: 1
+id: CHG-0039-oauth-handoff
+title: "OAuth handoff for prepared MCP connections"
+status: in-progress
+phase: verification
+started_at: "2026-09-24"
+updated_at: "2026-09-24"
+completed:
+  - "Traced Broker form, ToolHub readiness, MCP callback and existing relay; reviewed MCP OAuth and URL elicitation references."
+  - "Implemented exact-source OAuth handoff, URL elicitation fallback, one-time callback and Broker state checkpoint for Google Calendar."
+  - "Added OAuth callback, restart, concurrency and adapter validation tests; focused Go tests pass."
+  - "just check passed with 85.02% Go statement coverage."
+  - "Docker image build and standalone smoke passed."
+  - "Removed the one pending Google Calendar onboarding and deleted two owner-matched Broker credentials on 2026-09-25; Downloads OAuth client JSON was preserved."
+  - "Recreated only local-dev ToolHub from hermes-hub:oauth-handoff-staged-20260925; endpoint returned expected unauthenticated 401 and no active Calendar onboarding remained."
+  - "Built hermes-hub:oauth-handoff-20260925, passed standalone Docker smoke, and recreated only local-dev ToolHub on digest sha256:052979df6fd3e78fc80af76daa25e8f7ff289f4aaf5fb0b54cc4a30b1196cced."
+  - "Verified running image digest, OAuth code presence, authenticated endpoint protection, zero active Calendar onboarding/connections/refs, and preserved Downloads JSON."
+next:
+  - "Run a fresh Google Calendar enrollment and live consent only after a separate account-login instruction."
+risks:
+  - "Provider OAuth scopes and token-file format are exact-source reviewed; new providers require their own reviewed token adapter."
+  - "Loopback callback requires the browser on the Docker host; remote browser needs a separate reachable HTTPS origin."
+  - "just docker-check stopped at gateway lifecycle Alice cold start timeout; isolated retry failed the same way."
+  - "Automatic approval policy rejected removal of a temporary non-secret cleanup binary from the runtime/toolhub directory and .work; remove it by an approved file operation."

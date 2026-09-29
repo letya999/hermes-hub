@@ -21,6 +21,13 @@ type Config struct {
 	TokenEnv     string   `yaml:"token_env"`
 	Command      []string `yaml:"command"`
 	AllowedTools []string `yaml:"allowed_tools"`
+	// Transport is empty for stdio children. "sse", "http" or
+	// "streamable-http" means the child only speaks a network transport: it
+	// is spawned unchanged and reached through a loopback MCP client inside
+	// the workload's own network namespace.
+	Transport   string `yaml:"transport,omitempty"`
+	NetworkPort int    `yaml:"network_port,omitempty"`
+	NetworkPath string `yaml:"network_path,omitempty"`
 }
 
 func Protect(next http.Handler, token string) http.Handler {
@@ -61,6 +68,11 @@ func Run(ctx context.Context, file string) error {
 	if err := validateCompanionAuth(c, token); err != nil {
 		return err
 	}
+	switch strings.ToLower(c.Transport) {
+	case "", "sse", "http", "streamable-http":
+	default:
+		return fmt.Errorf("unknown companion transport %q", c.Transport)
+	}
 	cmd := exec.CommandContext(ctx, c.Command[0], c.Command[1:]...)
 	cmd.Stderr = os.Stderr
 	for _, e := range os.Environ() {
@@ -70,7 +82,12 @@ func Run(ctx context.Context, file string) error {
 		cmd.Env = append(cmd.Env, e)
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "hub-companion", Version: "0.1.0"}, nil)
-	session, err := client.Connect(ctx, stdioMCPTransport(cmd), nil)
+	var session *mcp.ClientSession
+	if c.Transport == "" {
+		session, err = client.Connect(ctx, stdioMCPTransport(cmd), nil)
+	} else {
+		session, err = connectNetworkChild(ctx, client, cmd, c)
+	}
 	if err != nil {
 		return err
 	}

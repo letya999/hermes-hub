@@ -13,41 +13,51 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/letya999/hermes-hub/internal/media"
 	"gopkg.in/yaml.v3"
 )
 
 type Settings struct {
-	ExecutionMode         string               `yaml:"-"`
-	SupervisorURL         string               `yaml:"-"`
-	NativeCron            string               `yaml:"-"`
-	Environment           string               `yaml:"-"`
-	MCP                   map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks                 map[string]any       `yaml:"hooks,omitempty"`
-	Memory                bool                 `yaml:"memory"`
-	Honcho                bool                 `yaml:"honcho,omitempty"`
-	HonchoURL             string               `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir       string               `yaml:"global_skills_dir,omitempty"`
-	Schema                int                  `yaml:"schema"`
-	User                  string               `yaml:"user"`
-	Organization          string               `yaml:"organization,omitempty"`
-	DisabledMCP           []string             `yaml:"disabled_mcp,omitempty"`
-	Model                 string               `yaml:"model"`
-	ModelURL              string               `yaml:"model_url"`
-	Timezone              string               `yaml:"timezone"`
-	Features              []string             `yaml:"features"`
-	GoogleEmail           string               `yaml:"google_email"`
-	GitLabHost            string               `yaml:"gitlab_host"`
-	DesktopURL            string               `yaml:"desktop_url"`
-	DraftsURL             string               `yaml:"drafts_url"`
-	OAuthPort             int                  `yaml:"oauth_port"`
-	BrowserPort           int                  `yaml:"browser_port"`
-	SlackEventsPort       int                  `yaml:"slack_events_port,omitempty"`
-	OrganizationDir       string               `yaml:"-"`
-	OrganizationDocsDir   string               `yaml:"-"`
-	OrganizationSkillsDir string               `yaml:"-"`
-	SpaceDir              string               `yaml:"-"`
-	OrganizationRole      string               `yaml:"-"`
-	OrgActions            []string             `yaml:"-"`
+	ExecutionMode   string               `yaml:"-"`
+	SupervisorURL   string               `yaml:"-"`
+	NativeCron      string               `yaml:"-"`
+	Environment     string               `yaml:"-"`
+	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks           map[string]any       `yaml:"hooks,omitempty"`
+	Memory          bool                 `yaml:"memory"`
+	Honcho          bool                 `yaml:"honcho,omitempty"`
+	HonchoURL       string               `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir string               `yaml:"global_skills_dir,omitempty"`
+	Schema          int                  `yaml:"schema"`
+	User            string               `yaml:"user"`
+	Organization    string               `yaml:"organization,omitempty"`
+	DisabledMCP     []string             `yaml:"disabled_mcp,omitempty"`
+	Model           string               `yaml:"model"`
+	ModelURL        string               `yaml:"model_url"`
+	Timezone        string               `yaml:"timezone"`
+	Features        []string             `yaml:"features"`
+	GoogleEmail     string               `yaml:"google_email"`
+	GitLabHost      string               `yaml:"gitlab_host"`
+	DesktopURL      string               `yaml:"desktop_url"`
+	DraftsURL       string               `yaml:"drafts_url"`
+	OAuthPort       int                  `yaml:"oauth_port"`
+	BrowserPort     int                  `yaml:"browser_port"`
+	SlackEventsPort int                  `yaml:"slack_events_port,omitempty"`
+	// Infra marks the space that renders the shared control plane (ToolHub,
+	// Credential Broker, workload-controller, cliproxy, communication-hub).
+	// Exactly one deployed space must render it; secondary spaces set
+	// `infra: false` and consume the shared services over the shared network.
+	Infra                 *bool    `yaml:"infra,omitempty"`
+	Diagnostics           *bool    `yaml:"diagnostics,omitempty"`
+	OrganizationDir       string   `yaml:"-"`
+	OrganizationDocsDir   string   `yaml:"-"`
+	OrganizationSkillsDir string   `yaml:"-"`
+	SpaceDir              string   `yaml:"-"`
+	OrganizationRole      string   `yaml:"-"`
+	OrgActions            []string `yaml:"-"`
+	// ImageGen configures the opt-in image_gen capability. Empty fields use
+	// cliproxy, that provider's default model, and workspace delivery.
+	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
 }
 type Feature struct {
 	Name     string   `json:"name"`
@@ -57,7 +67,12 @@ type Feature struct {
 
 var Features = []Feature{
 	{"workspace", nil, "Bounded workspace and read-only extracted archive; Markdown drafts"},
-	{"browser", nil, "Persistent Chromium via Playwright MCP; manual login through private noVNC"},
+	{"browser", nil, "Persistent plus anonymous Chromium via Playwright MCP; manual login through private noVNC; read and navigation tools only"},
+	{"browser_act", nil, "Adds browser mutation tools (click, type, submit, evaluate) to both browser MCP servers; requires browser and a concrete owner instruction"},
+	{"ssh", nil, "SSH to owner-configured host aliases: pinned host keys, allowlisted read commands and remote file reads; keys via Credential Broker or the read-only ssh config mount"},
+	{"ssh_write", nil, "Adds allowlisted write commands and bounded remote file writes on SSH hosts; requires ssh"},
+	{"ssh_shell", nil, "Adds bounded interactive PTY shells on SSH hosts; requires ssh"},
+	{"ssh_tunnel", nil, "Adds managed loopback tunnels to pre-approved remote endpoints over SSH; requires ssh"},
 	{"hh", nil, "Public vacancy API; applicant OAuth for resumes and explicitly requested applications"},
 	{"telegram", []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}, "Telegram bot transport into Hermes; does not grant personal Telegram access"},
 	{"slack_app", []string{"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN"}, "Slack App Events API transport into Hermes; does not grant workspace data tools"},
@@ -68,6 +83,7 @@ var Features = []Feature{
 	{"gitlab", []string{"GITLAB_TOKEN"}, "GitLab through the bundled glab CLI and personal access token"},
 	{"meet", nil, "Hermes Google Meet plugin; explicit joining and caption transcripts"},
 	{"transcription", nil, "Local faster-whisper through Hermes, downloads model on first use"},
+	{"image_gen", nil, "Opt-in image generation through the configured model endpoint or the external fal provider"},
 	{"github", []string{"GITHUB_TOKEN"}, "Official remote GitHub MCP"},
 	{"slack", []string{"SLACK_MCP_XOXP_TOKEN"}, "OAuth user token, search/read; posting opt-in per channel"},
 	{"atlassian", []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, "Direct mcp-atlassian Jira MCP; optional Confluence credentials can be added later"},
@@ -76,6 +92,31 @@ var Features = []Feature{
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
+
+// userSoulStub is the placeholder Init writes; Render upgrades it to the global
+// template while preserving any other user-edited content.
+const userSoulStub = "# User instructions\n\n"
+
+// IsUserSoulStub reports the Init placeholder. Real user edits are anything else.
+func IsUserSoulStub(body []byte) bool { return string(body) == userSoulStub }
+
+// HealUserSoul copies the global template over a missing file or the Init stub.
+// Any other content is the user's own instructions and is left in place.
+func HealUserSoul(spaceDir, templatePath string) error {
+	template, err := os.ReadFile(templatePath)
+	if err != nil {
+		return err
+	}
+	soulPath := filepath.Join(spaceDir, "SOUL.md")
+	existing, readErr := os.ReadFile(soulPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	if os.IsNotExist(readErr) || IsUserSoulStub(existing) {
+		return atomic(soulPath, template)
+	}
+	return nil
+}
 
 // GatewaySecretKeys stay in communication-hub. They are never injected into
 // Hermes runtime env or ToolHub connectors.
@@ -106,6 +147,9 @@ func selfEnvKeys(s Settings) []string {
 			}
 		}
 	}
+	if key := s.imageCredential(); key != "" {
+		keys[key] = true
+	}
 	if s.Has("slack") && (!s.OrgScoped() || s.AllowsOrgAction("slack.write")) {
 		keys["SLACK_MCP_ADD_MESSAGE_TOOL"] = true
 	}
@@ -130,6 +174,25 @@ func selfEnvKeys(s Settings) []string {
 }
 
 func (s Settings) Has(name string) bool { return slices.Contains(s.Features, name) }
+
+// imageCredential is FAL_KEY only for the external fal provider.
+// The cliproxy provider uses the model credential already required for chat.
+func (s Settings) imageCredential() string {
+	if !s.Has("image_gen") {
+		return ""
+	}
+	gen, err := s.ImageGen.Normalize()
+	if err != nil || gen.Provider != media.FalProvider {
+		return ""
+	}
+	return "FAL_KEY"
+}
+
+// RendersInfra reports whether this space owns the shared control plane
+// services. Unset keeps the historical single-space render (everything in one
+// project); only explicitly secondary spaces opt out.
+func (s Settings) RendersInfra() bool       { return s.Infra == nil || *s.Infra }
+func (s Settings) DiagnosticsEnabled() bool { return s.Diagnostics == nil || *s.Diagnostics }
 func (s Settings) Validate() error {
 	if s.Schema != 1 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1 and profile a lowercase identifier")
@@ -178,6 +241,11 @@ func (s Settings) Validate() error {
 	if s.Has("google_write") && !s.Has("google") {
 		return fmt.Errorf("google_write requires google")
 	}
+	for _, sub := range []string{"ssh_write", "ssh_shell", "ssh_tunnel"} {
+		if s.Has(sub) && !s.Has("ssh") {
+			return fmt.Errorf("%s requires ssh", sub)
+		}
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
 	}
@@ -189,6 +257,11 @@ func (s Settings) Validate() error {
 	}
 	if s.Has("drafts") && s.DraftsURL == "" {
 		return fmt.Errorf("drafts_url required")
+	}
+	if s.Has("image_gen") || s.ImageGen != (media.ImageGen{}) {
+		if _, err := s.ImageGen.Normalize(); err != nil {
+			return err
+		}
 	}
 	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {
 		return fmt.Errorf("invalid or colliding host ports")
@@ -314,18 +387,18 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
 		return err
 	}
-	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
+	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFAL_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
 	for _, env := range []string{"dev", "prod"} {
 		if err := os.WriteFile(filepath.Join(dir, "secrets."+env+".env"), []byte(content), 0600); err != nil {
 			return err
 		}
 	}
-	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "workspace", "archive", "generated"} {
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "archive", "generated"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# User instructions\n\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte(userSoulStub), 0600); err != nil {
 		return err
 	}
 	return nil
@@ -392,11 +465,19 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 			}
 		}
 	}
+	if s.imageCredential() == "FAL_KEY" && secrets["FAL_KEY"] == "" {
+		issues = append(issues, "set FAL_KEY for image_gen")
+	}
 	if s.Has("telegram") && secrets["TELEGRAM_ALLOWED_USERS"] != "" {
 		for _, id := range strings.Split(secrets["TELEGRAM_ALLOWED_USERS"], ",") {
 			if !regexp.MustCompile(`^[1-9][0-9]*$`).MatchString(strings.TrimSpace(id)) {
 				issues = append(issues, "TELEGRAM_ALLOWED_USERS must contain numeric owner IDs, never '*'")
 			}
+		}
+	}
+	if s.Has("ssh") && s.SpaceDir != "" {
+		if info, err := os.Lstat(filepath.Join(s.SpaceDir, "connections", "ssh", "config.yaml")); err != nil || !info.Mode().IsRegular() {
+			issues = append(issues, "create connections/ssh/config.yaml for ssh (see docs/operations.md)")
 		}
 	}
 	for name, server := range s.MCP {

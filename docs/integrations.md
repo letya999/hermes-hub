@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-23
+last_verified: 2026-09-28
 ---
 # Integration contracts
 
@@ -179,7 +179,11 @@ from the confirmed tools without rebuilding the OCI archive. Approve
 `--review-digest` must match `ImportedReviewDigest` of that restamped packet. Registration is
 immutable and rejects review-packet or tool-contract drift. `LoadStoredOCIArtifact` imports a
 verified archive into the local Linux Docker image store without ambient Docker
-credentials. `WorkloadBudget` provides a FIFO active-process cap and idle
+credentials. Admission resolves the reviewed image the same way: when the
+pinned tag is absent from the daemon (for example after an image prune) the
+controller reloads it from `<state_root>/artifacts` by the definition's
+archive digest before falling back to a digest-pinned registry pull, and
+fails closed when no verified archive exists. `WorkloadBudget` provides a FIFO active-process cap and idle
 reclaim hook, while `RuntimeSecurityProfile` is the pre-start fail-closed
 contract for any ToolHive adapter. Credential-bearing onboarding uses the same
 generic admission path before publishing a new projection and restores the
@@ -202,8 +206,28 @@ the upstream Dockerfile remains inert metadata: its last exec-form
 packages (basename match against the selected directory or the `go.mod`
 module basename) and supply the matched binary's default arguments.
 The isolated `tools/list` preflight retries once with declared-but-optional
-secrets as placeholders; a successful retry proves they gate server startup
-and promotes them to required onboarding inputs. Recipes are status
+secrets as placeholders. A successful retry proves they gate server startup
+and promotes them to required onboarding inputs. If both probes fail and the
+server's own error names the secret env vars it needs, onboarding does not
+record an empty catalog and does not invent a tool contract: it opens the
+protected form for those names, and an either/or sentence stays alternative
+groups on that form. The groups persist on the definition as
+`credential_groups`; onboarding submits, binding resolution and workload
+admission all accept one complete group instead of demanding every declared
+required name. `tools/list` runs again only after the form is submitted,
+with the real values and with network egress on that second probe alone. An
+error that names no secret stays a hard failure — except one bounded case: a
+server that answers `tools/list` with a valid response carrying zero tools
+while the definition already declares required inputs (mcp-atlassian lists
+nothing until `JIRA_*`/`CONFLUENCE_*` config exists). That answered-empty
+result is gated on the declared required names, grouped into either/or
+PREFIX_* alternatives when several product suites are declared (Jira or
+Confluence satisfies mcp-atlassian); a process that died before answering, or
+a definition with no required inputs, still fails the review. Placeholder
+values in `.env.example`/compose env entries (`https://your-company.…`,
+`your.email@example.com`, `*_here`) mark non-secret fields as required
+onboarding inputs, so connection config the author demands can be collected;
+real defaults (`https://gitlab.com`) stay metadata. Recipes are status
 metadata, not authorization or
 execution; the existing preflight `tools/list`, Credential Broker, ToolHive and
 runtime reconnect gates remain authoritative.
@@ -213,7 +237,31 @@ their values are never returned and those files are not passed to BuildKit.
 Names that cannot be user-supplied connection credentials are excluded from
 connection fields entirely: `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`ALL_PROXY`
 are injected by the workload runtime, and `TEST_*`/`*_TEST`/`*_TEST_*` fixtures
-belong to upstream test suites. Heuristic env sources (`.env.example`, Compose
+belong to upstream test suites. Servers that ignore the standard proxy
+variables can declare their own names in the reviewed definition's
+`proxy_environment` (for example `SLACK_MCP_PROXY`): only `*_PROXY` names are
+accepted, and the workload runtime always fills them with the controller-owned
+egress proxy URL — an artifact or owner can never choose the proxy destination.
+Import also scans the repository source for custom proxy env reads
+(`os.Getenv`/`LookupEnv` in Go, `process.env.X` in Node, `os.environ`/`getenv`
+in Python, `env::var`/`var_os` in Rust, plus dotenv/Dockerfile assignments) and
+merges `*_PROXY` names into `proxy_environment`; vendored trees, test fixtures
+and placeholder names are excluded, so discovery produces review candidates —
+never values.
+A pinned entrypoint that selects a network transport (`--transport sse|http`)
+is first probed over `stdio`: servers that still answer `tools/list` keep the
+rewrite, and the companion launches them on stdio exactly as the preflight
+probe does. Servers that cannot answer stdio are re-probed over their declared
+transport — the real server runs detached with its original args while a
+`hubctl mcp-bridge` sidecar attached to its network namespace relays
+stdin/stdout MCP to the discovered loopback listener; a confirmed list marks
+`source.network_transport` (`sse`/`http`/`streamable-http`). At runtime the
+companion then spawns the child unchanged and connects as an MCP client over
+the loopback endpoint it discovers in the workload's own network namespace —
+HTTP/SSE only ever travels on loopback inside the isolated workload, the
+bridge HTTP client never honors proxy environment, and the authenticated
+companion/relay front stays the only externally visible endpoint. Heuristic env sources
+(`.env.example`, Compose
 `environment`) mark only secret-class names required; an uncommented empty
 non-secret knob stays optional, while explicit manifest `isRequired` flags are
 authoritative. Required credentials must be covered by a reviewed Credential
@@ -419,6 +467,32 @@ ToolHub/controller and Docker daemon. Without that mount root, file delivery
 fails closed. The copied source and its MIT license remain separate from Hermes'
 AGPL-3.0-only code.
 
+## SSH capability
+
+`ssh` is a hub-owned opt-in capability (issue #42, SPEC-0032), not an upstream
+MCP server. The hub tools process dials `golang.org/x/crypto/ssh` directly and
+uses `github.com/pkg/sftp` for remote files. Enabling `ssh` mounts
+`spaces/<user>/connections/ssh` read-only at `/state/ssh` and validates
+`config.yaml` at render time; a malformed or missing config fails the render.
+
+`config.yaml` binds everything the model must not choose: host aliases,
+host/port/user, pinned `host_keys` (authorized-key lines or `sha256:`
+fingerprints), `key_ref`/`certificate_ref` (`file:` under the config dir or
+`broker:` grant IDs), read/write command allowlists, read/write path
+allowlists, `sudo` (`never` or `passwordless`), timeouts, output/read bounds
+and named tunnel endpoints. The model only names an alias plus the command,
+path, shell or tunnel name.
+
+`broker:` refs are materialized per dial: the runtime adapter signs
+`broker:control` acquire and `broker:runtime` materialize/release with an
+`ssh-<alias>` binding and a short-lived lease. The runtime adapter key must
+therefore be trusted for both audiences when broker refs are used; `file:`
+refs need no broker. Privileged effects are stacked features: `ssh_write`
+(write commands + atomic file writes), `ssh_shell` (bounded PTY sessions) and
+`ssh_tunnel` (loopback-only managed forwards to configured endpoints). Each is
+denied without its feature. Operations append `ssh` audit events with a
+bounded receipt and never carry output or secret material.
+
 ## ToolHub Slack data (M5 stage 2)
 
 Use the same protected connector CLI with `--provider slack --workspace T...`
@@ -442,15 +516,124 @@ Official contracts: [OAuth](https://docs.slack.dev/authentication/using-pkce),
 [user tokens](https://docs.slack.dev/reference/methods/oauth.v2.access/),
 [account verification](https://docs.slack.dev/reference/methods/auth.test/).
 
+## Documents and images
+
+The standard profile is hub MCP tools on `hubctl tools`. Hermes
+`869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) has no document toolset.
+Its local vision backend reads any container path, and its `image_generate`
+tool returns a remote Fal URL. Those native toolsets stay off
+`platform_toolsets`. [ADR-0027](adr/ADR-0027-workspace-document-image-profile.md),
+[ADR-0028](adr/ADR-0028-configurable-image-capability.md),
+[ADR-0029](adr/ADR-0029-bounded-pdf-office-webp.md),
+[ADR-0030](adr/ADR-0030-cliproxy-image-routes.md), and
+[SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md) are the
+contract.
+
+| Effect | Tool | Formats and result | Credential |
+|---|---|---|---|
+| Read one document | `document_extract` | txt, md, csv, html, pdf, xlsx, pptx; htm is html | none |
+| Create one document | `document_create` | txt, md, csv, html, pdf, xlsx, pptx under `artifacts/documents/` | none |
+| Edit one document | `document_edit` | one existing file under `artifacts/documents/` | none |
+| Convert one document | `document_convert` | new txt, md, html, pdf, xlsx, or pptx file; csv only from xlsx | none |
+| Inspect one image | `image_inspect` | png, jpeg, webp | model endpoint, `OPENAI_API_KEY` |
+| Convert one image | `image_convert` | png, jpeg, and webp, locally, new file under `artifacts/images/` | none |
+| Generate one image | `image_generate` | grant selects provider, model, and delivery | grant credential |
+| Edit one image | `image_edit` | one workspace png, jpeg, or webp; webp is sent as png; fal has no edit | grant credential |
+| Delete one artifact | `artifact_remove` | one file under `artifacts/documents/` or `artifacts/images/` | none |
+
+Rejected documents: doc, docx, xls, ppt, odt, rtf, epub, pages. The extension
+xslx is rejected. Rejected images: gif, bmp, svg, tif, tiff, heic, avif. HTML
+extract drops well-formed script, style, noscript, and comments. HTML create
+and edit escape plain text into an article. pdf is wrapped text with an
+embedded Go Regular font. Extract reads text-showing operators and fails closed
+on an encrypted PDF. There is no OCR. xlsx is one worksheet of inline CSV text.
+pptx splits slides on a blank line. Edit of those three replaces the file.
+Conversion copies extracted text into the target. It does not render Markdown
+into a designed layout and it does not keep spreadsheet formulas. webp uses
+`github.com/HugoSmits86/nativewebp` v1.3.0. The PDF font comes from
+`golang.org/x/image` v0.46.0. `file_write` remains the draft path.
+
+Bounds fail closed. A document is at most 2 MiB and 20 pages of 3000 runes, with
+concurrency 2 and a 5 second deadline. An image is at most 5 MiB, 4096 pixels on
+an edge, and 4000000 pixels. Inspect and image conversion allow concurrency 2
+and 30 seconds. Generate and edit allow concurrency 1 and 60 seconds. A prompt
+is 1 to 2000 runes. The call does not queue.
+
+`image_gen` is off by default and is not self-service. Settings accept three
+fields. Empty fields render as provider `cliproxy`, model `gpt-image-2`, and
+delivery `workspace`.
+
+```yaml
+image_gen:
+  provider: cliproxy # cliproxy or fal
+  model: gpt-image-2 # or chat, or one allowlisted id
+  delivery: workspace # workspace or url
+```
+
+`model: chat` sends `model.default` only when that id is on the provider
+allowlist. Any other model must be listed. CLIProxy, pinned in the image at
+`ba7e55836dee959e93ec6d41395865d9ec535086`, has two calls. `gpt-image-1.5`,
+`gpt-image-2`, `grok-imagine-image`, `grok-imagine-image-quality`, and
+`grok-imagine-image-2.0` post one JSON body to
+`{model.base_url}/images/generations` with model, prompt, n 1, size
+`1024x1024`, and response_format. Edit posts one multipart body to
+`/images/edits` with those fields and one `image` file.
+`gemini-2.5-flash-image`, `gemini-3-pro-image`, `gemini-3-pro-image-preview`,
+`gemini-3.1-flash-image`, and `gemini-3.1-flash-image-preview` post one JSON
+body to `{model.base_url}/chat/completions` with the model, one user message,
+modalities `image` and `text`, and `image_config.aspect_ratio` `1:1`. Edit
+sends that message as text plus one image_url data URI. The image is read from
+`choices[0].message.images`. A data URL becomes file bytes and is not returned
+as a provider URL. A chat model such as `gemini-3.7-flash-high` is rejected
+before a request. The credential is `OPENAI_API_KEY`. The image pin above is
+unchanged.
+
+Provider `fal` allows `fal-ai/flux-2/klein/9b` only. The hub posts prompt,
+image_size `square_hd`, num_inference_steps 4, output_format png, and
+enable_safety_checker false to `https://fal.run/fal-ai/flux-2/klein/9b`.
+`num_images` is not sent. `FAL_KEY` is the credential. Fal edit is rejected.
+A new Fal model is an allowlist entry with that same catalog body, not a free
+string.
+
+Delivery `workspace` checks one image and writes `artifacts/images/`. The
+provider URL is not returned. Delivery `url` returns one provider http(s) URL
+and writes nothing; bytes alone are not published as a URL. The call still
+requires an image name. Redirects are refused. A download host other than the
+configured endpoint must be public HTTPS. An unknown provider, model, delivery,
+or field fails before a request.
+
+Enabling the feature writes the normalized section into the mounted Hermes
+config. `FAL_KEY` enters the runtime env only for provider `fal`. Disabling the
+feature, or leaving it on `cliproxy`, omits that key even if the secrets file
+still has the line. The config never contains a key value. Inspect keeps using
+the model credential. Each call rereads the mounted file. A missing provider or
+a revoked section fails the next generate or edit call. `image_generate` and
+`image_edit` leave `tools/list` on the next process start. A missing config
+does not take down the hub MCP server. Switching the running process onto
+`FAL_KEY` waits until that env is applied; the mounted file alone does not
+insert the key.
+
+Files stay in the invoking user's workspace. Another user's root, an absolute
+path, and `..` fail closed. `document_edit` refuses every path outside
+`artifacts/documents/`. Artifacts remain after the session ends. Removal is
+`artifact_remove` or a purge that confirms the same user. The work runs in the
+existing `hubctl tools` process. It is not an always-on GPU or office service.
+Word, old binary Office files, and a general office converter are not in the
+base image. The zip reader for xlsx and pptx does not create or unpack a user
+archive.
+
+An httptest double of these endpoints is not a live provider call.
+
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
+| Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
 | Google | Official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019); the third-party Workspace MCP is not in the default hub image | ToolHub remote read grants per product |
 | Slack | [korotovsky/slack-mcp-server](https://github.com/korotovsky/slack-mcp-server), `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
-| Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | stdio, persistent Chromium over local CDP |
+| Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | Hub-owned stdio: `browser` attaches to the per-user persistent Chromium over loopback CDP, `browser_guest` runs isolated; mutation tools exist only with the `browser_act` feature; output lands in `workspace/browser` under size/type limits |
 | GitHub | [official MCP](https://github.com/github/github-mcp-server) | https://api.githubcopilot.com/mcp/ + bearer (`GITHUB_TOKEN`) |
 | Atlassian | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian), `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | Dedicated `docker/mcp-atlassian.Dockerfile`; Jira Cloud API token via `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
 | GitLab | Debian `glab` package from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT and optional `GITLAB_HOST` |
@@ -464,10 +647,12 @@ from the generated `.hub` recipe, never the upstream Dockerfile. The two paths
 also keep separate credentials: the remote connector takes `GITHUB_TOKEN`,
 while a source install declares its own env inputs (for github-mcp-server the
 `GITHUB_PERSONAL_ACCESS_TOKEN`). Interactive OAuth inside a workload is not
-supported; instead the isolated preflight promotes a declared secret to a
-required input when `tools/list` proves startup needs it, and onboarding
-satisfies it through the existing protected form or a Credential Broker
-contract — including a broker-provisioned OAuth grant where one is reviewed.
+supported. The isolated preflight promotes a declared secret to a required
+input when `tools/list` proves startup needs it. When the server will not
+speak MCP until a real credential is present, the same protected form collects
+it and the confirming `tools/list` uses that value. A Credential Broker
+contract remains the path where one is reviewed, including a broker-provisioned
+OAuth grant.
 
 Telegram has two independent paths: `hub-communication` is the Bot API channel adapter,
 while `telegram_user` is the personal-account MCP data/action connector. Enabling one does

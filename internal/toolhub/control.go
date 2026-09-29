@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -22,27 +24,36 @@ import (
 )
 
 type SourceReview struct {
-	Definition   ToolDefinition
-	Permissions  []string
-	Effects      []string
-	ReviewDigest string
-	Recipe       *RecipeResolution
+	Definition       ToolDefinition
+	Permissions      []string
+	Effects          []string
+	ReviewDigest     string
+	Recipe           *RecipeResolution
+	AdmissionPending bool
+	AdmissionDetail  string
+	AdmissionGroups  [][]string
 }
 
 type SourceReviewer func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error)
 type SourceResolver func(context.Context, string) (ArtifactSource, error)
 
 type ControlPlane struct {
-	Store            *Store
-	Secrets          credstore.Backend
-	Reviewer         SourceReviewer
-	SourceResolver   SourceResolver
-	RecipeCatalogs   []RecipeCatalog
-	OAuth            *oauth.Broker
-	Now              func() time.Time
-	Listen           string
-	FormOrigin       string
-	WorkloadRoot     string
+	Store          *Store
+	Secrets        credstore.Backend
+	Reviewer       SourceReviewer
+	SourceResolver SourceResolver
+	RecipeCatalogs []RecipeCatalog
+	OAuth          *oauth.Broker
+	Injector       CredentialInjector
+	oauthMu        sync.Mutex
+	oauthFlows     map[string]*preparedOAuthFlow
+	Now            func() time.Time
+	Listen         string
+	FormOrigin     string
+	WorkloadRoot   string
+	// DiagnosticsDir points at the bounded operator diagnostics directory; the
+	// diagnostics control op reads only the collected log file inside it.
+	DiagnosticsDir   string
 	ConfirmationTTL  time.Duration
 	Ready            func(context.Context, EffectiveBinding) error
 	Broker           *credentialbroker.Config
@@ -52,6 +63,18 @@ type ControlPlane struct {
 	// and remove use it so a cut connector does not keep a materialized
 	// credential alive in a running container until the idle TTL fires.
 	Release func(context.Context, string) error
+	// PrepareSyncWindow bounds how long prepare_source waits for review+build
+	// before returning the durable "preparing" record; the work then continues
+	// on a detached context and its result is read via status. Zero uses the
+	// default; negative runs the whole prepare synchronously (tests).
+	PrepareSyncWindow time.Duration
+	// PrepareDone, when set, runs after a backgrounded prepare finishes —
+	// whatever the outcome — so transports can wake open sessions.
+	PrepareDone func(context.Context, identity.Envelope, Onboarding)
+	// AdmitWithCredentials re-runs tools/list with owner-submitted secrets
+	// after a server refused MCP until those secrets existed. Nil means a
+	// deferred admission cannot be completed.
+	AdmitWithCredentials func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error)
 }
 
 func (c *ControlPlane) now() time.Time {
@@ -112,6 +135,8 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 		return c.revoke(auth, args)
 	case "remove":
 		return c.remove(auth, args)
+	case "diagnostics":
+		return c.diagnostics(ctx, auth, args)
 	default:
 		return nil, fmt.Errorf("%w: unknown control operation", ErrInvalid)
 	}
@@ -120,7 +145,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	requestKey := argString(args, "request_key")
 	if requestKey != "" {
-		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok {
+		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != PhaseFailed && existing.Phase != PhaseRemoved {
 			if err := c.regenerateBrokerRequest(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
@@ -169,7 +194,7 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 		selected = choice.recipe
 	}
 	if source != "" {
-		return c.prepareSelfInstall(ctx, auth, source, requestKey, selected)
+		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, selected)
 	}
 	if definitionID != "" && version != "" {
 		return c.prepareCatalog(ctx, auth, definitionID, version, requestKey)
@@ -195,35 +220,177 @@ func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelop
 	return c.statusBody(onboarding, false), nil
 }
 
+// prepareWindow is how long a prepare_source call waits for review+build
+// before handing the caller the durable "preparing" record.
+func (c *ControlPlane) prepareWindow() time.Duration {
+	if c == nil || c.PrepareSyncWindow == 0 {
+		return 90 * time.Second
+	}
+	return c.PrepareSyncWindow
+}
+
 func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
-	if err := c.Store.RequireSelfInstall(auth); err != nil {
-		return nil, err
-	}
-	source, err := ParseGitHubSource(sourceURL)
-	if err != nil && c.SourceResolver != nil {
-		source, err = c.SourceResolver(ctx, sourceURL)
-	}
+	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
 	if err != nil {
 		return nil, err
 	}
-	config := defaultSelfInstallConfig(source)
+	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey)
+	if err != nil {
+		return nil, err
+	}
+	if inFlight {
+		return c.statusBody(preparing, false), nil
+	}
+	return c.finishSelfInstall(ctx, auth, preparing, source, requestKey, selected)
+}
+
+// prepareSelfInstallAsync runs review+build under a detached context: a slow or
+// lost HTTP response no longer discards the work. The caller waits
+// PrepareSyncWindow for a completed result, then receives the durable
+// "preparing" record — the outcome is read via status afterwards.
+func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
+	if window := c.prepareWindow(); window < 0 {
+		return c.prepareSelfInstall(ctx, auth, sourceURL, requestKey, selected)
+	}
+	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
+	if err != nil {
+		return nil, err
+	}
+	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey)
+	if err != nil {
+		return nil, err
+	}
+	if inFlight {
+		return c.statusBody(preparing, false), nil
+	}
+	type outcome struct {
+		body map[string]any
+		err  error
+	}
+	done := make(chan outcome, 1)
+	background, stop := context.WithTimeout(context.WithoutCancel(ctx), 35*time.Minute)
+	go func() {
+		defer stop()
+		deliverPrepareEvent(background, auth, preparing, "prepare-started")
+		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected)
+		latest := c.latestPrepareRecord(auth, preparing)
+		log.Printf("toolhub prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.Phase, err)
+		if c.PrepareDone != nil {
+			c.PrepareDone(background, auth, latest)
+		}
+		done <- outcome{body, err}
+	}()
+	timer := time.NewTimer(c.prepareWindow())
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.body, result.err
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	log.Printf("toolhub prepare_source: onboarding=%s still preparing; outcome continues in background", preparing.OnboardingID)
+	return c.statusBody(preparing, false), nil
+}
+
+func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identity.Envelope, sourceURL string) (ArtifactSource, ArtifactImportConfig, error) {
+	if err := c.Store.RequireSelfInstall(auth); err != nil {
+		return ArtifactSource{}, ArtifactImportConfig{}, err
+	}
+	source, err := ParseGitHubSource(sourceURL)
+	unpinned := err != nil
+	if unpinned && c.SourceResolver != nil {
+		source, err = c.SourceResolver(ctx, sourceURL)
+	}
+	if err != nil {
+		return ArtifactSource{}, ArtifactImportConfig{}, err
+	}
+	// A bare URL means "this repository", not mutable HEAD: with a reviewed
+	// prepared entry its pinned commit is the source, never drifting code.
+	if unpinned {
+		if prepared, ok, perr := preparedForRepository(source.Repository, source.Subfolder); perr == nil && ok {
+			source = prepared.Source
+		}
+	}
+	return source, defaultSelfInstallConfig(source), nil
+}
+
+// ensurePreparing registers a preparing record before review+build so status
+// works mid-flight and a failed prepare leaves a durable failure instead of
+// "record not found". A fresh record already in preparing means an identical
+// prepare is running — callers must not spawn a second review+build. A stub
+// older than the background deadline belongs to a crashed prepare and is
+// overwritten to retry.
+func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source ArtifactSource, config ArtifactImportConfig, requestKey string) (Onboarding, bool, error) {
+	idSeed := requestKey
+	if idSeed == "" {
+		idSeed = string(OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA
+	}
+	preparing := Onboarding{
+		Schema: SchemaVersion, OnboardingID: deterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: OnboardingSelfInstall, Phase: PhasePreparing, SourceURL: source.Repository, CommitSHA: source.CommitSHA,
+		DefinitionID: config.DefinitionID, DefinitionVersion: config.Version,
+		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
+	}
+	return c.Store.ClaimPreparingOnboarding(preparing, 35*time.Minute, c.now())
+}
+
+// latestPrepareRecord resolves the onboarding a backgrounded prepare actually
+// produced: normally the stub's own record, but a patch bump can move the
+// result to a sibling id. Best effort for the wake notification.
+func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub Onboarding) Onboarding {
+	if current, err := c.Store.onboarding(stub.OnboardingID); err == nil && current.Phase != PhaseRemoved {
+		return current
+	}
+	c.Store.mu.RLock()
+	defer c.Store.mu.RUnlock()
+	latest := stub
+	for _, candidate := range c.Store.onboardings {
+		if candidate.PrincipalID != auth.PrincipalID || candidate.ContextID != auth.ContextID || candidate.RuntimeID != auth.RuntimeID || candidate.PolicyVersion != auth.PolicyVersion || candidate.Phase == PhaseRemoved {
+			continue
+		}
+		same := stub.IdempotencyKey != "" && candidate.IdempotencyKey == stub.IdempotencyKey
+		if !same && stub.IdempotencyKey == "" {
+			same = candidate.Mode == stub.Mode && candidate.SourceURL == stub.SourceURL && candidate.CommitSHA == stub.CommitSHA
+		}
+		if same && candidate.CreatedAt.After(latest.CreatedAt) {
+			latest = candidate
+		}
+	}
+	return latest
+}
+
+func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing Onboarding, source ArtifactSource, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
+	failPrepare := func(err error) (map[string]any, error) {
+		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == PhasePreparing {
+			latest.Phase = PhaseFailed
+			if persistErr := c.persistFailure(latest, publicPrepareError(err), err); persistErr != err {
+				return nil, persistErr
+			}
+		}
+		return nil, err
+	}
 	review := SourceReview{}
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, config.DefinitionID, config.Version); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
+	var err error
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
 		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
-			return nil, fmt.Errorf("%w: source reviewer unavailable", ErrInvalid)
+			return failPrepare(fmt.Errorf("%w: source reviewer unavailable", ErrInvalid))
 		}
 		review, err = c.Reviewer(ctx, source, selected)
 		if err != nil {
-			return nil, err
+			return failPrepare(err)
 		}
 	}
+	if review.AdmissionPending {
+		return c.acceptCredentialGate(auth, preparing, review)
+	}
 	if err := c.bindReviewedContract(ctx, auth, &review.Definition); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if !c.selfInstallUsable(review.Definition) {
-		return nil, fmt.Errorf("%w: no reviewed credential broker contract covers %s credentials", ErrUnauthorized, review.Definition.DefinitionID)
+		return failPrepare(fmt.Errorf("%w: no reviewed credential broker contract covers %s credentials", ErrUnauthorized, review.Definition.DefinitionID))
 	}
 	// The produced definition may differ from an immutable record stored under
 	// the same id+version by an older pipeline (for example, without a broker
@@ -237,17 +404,26 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 		review.Definition.Version = nextPatchVersion(review.Definition.Version)
 	}
 	if err := review.Definition.Validate(); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if err := c.Store.RegisterDefinition(review.Definition); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if err := c.Store.PutPublication(DefinitionPublication{DefinitionID: review.Definition.DefinitionID, Version: review.Definition.Version, Visibility: PublicationUser, OwnerPrincipalID: auth.PrincipalID}); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	onboarding, err := c.newOnboarding(auth, OnboardingSelfInstall, requestKey, review.Definition, source.Repository, source.CommitSHA)
 	if err != nil {
-		return nil, err
+		return failPrepare(err)
+	}
+	if onboarding.OnboardingID != preparing.OnboardingID {
+		// A patch bump or a reviewed definition id shifted the deterministic
+		// key; callers holding the stub id follow SupersededBy to the result.
+		preparing.Phase = PhaseRemoved
+		preparing.SupersededBy = onboarding.OnboardingID
+		if err := c.Store.PutOnboarding(preparing); err != nil {
+			log.Printf("toolhub: superseded onboarding stub %s not recorded: %v", preparing.OnboardingID, err)
+		}
 	}
 	onboarding.Permissions = append([]string(nil), review.Permissions...)
 	onboarding.Effects = append([]string(nil), review.Effects...)
@@ -261,12 +437,332 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 	copyDef := review.Definition
 	onboarding.Definition = &copyDef
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
-		return nil, err
+		return failPrepare(err)
 	}
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, review.Definition); err != nil {
+		return failPrepare(err)
+	}
+	return c.statusBody(onboarding, false), nil
+}
+
+func (c *ControlPlane) acceptCredentialGate(auth identity.Envelope, preparing Onboarding, review SourceReview) (map[string]any, error) {
+	definition := review.Definition
+	if len(requiredSecretNames(definition)) == 0 {
+		return nil, fmt.Errorf("%w: credential gate named no secrets", ErrInvalid)
+	}
+	names := requiredCredentialNames(definition)
+	hints := credentialGateHints(names, review.AdmissionGroups)
+	if len(hints) == 0 {
+		return nil, fmt.Errorf("%w: credential gate named no secrets", ErrInvalid)
+	}
+	if len(definition.CredentialGroups) == 0 {
+		known := map[string]bool{}
+		for _, name := range names {
+			known[name] = true
+		}
+		for _, group := range review.AdmissionGroups {
+			var members []string
+			for _, name := range group {
+				if known[name] {
+					members = append(members, name)
+				}
+			}
+			if len(members) > 0 {
+				definition.CredentialGroups = append(definition.CredentialGroups, members)
+			}
+		}
+		if len(definition.CredentialGroups) < 2 {
+			definition.CredentialGroups = nil
+		}
+	}
+	onboarding := preparing
+	if latest, err := c.Store.onboarding(preparing.OnboardingID); err == nil {
+		onboarding = latest
+	}
+	// The draft is not a tool contract. Placeholder import tools must not be
+	// listed or registered until tools/list succeeds with the submitted secrets.
+	definition.Tools = nil
+	definition.Source.ToolContractDigest = ""
+	definition.Source.ToolContractSource = ""
+	onboarding.Phase = PhaseAwaitingCreds
+	onboarding.Required = hints
+	onboarding.AdmissionPending = true
+	onboarding.Error = publicPrepareError(errors.New(review.AdmissionDetail))
+	onboarding.Permissions = nil
+	onboarding.Effects = nil
+	onboarding.Definition = &definition
+	if definition.DefinitionID != "" {
+		onboarding.DefinitionID = definition.DefinitionID
+	}
+	if definition.Version != "" {
+		onboarding.DefinitionVersion = definition.Version
+	}
+	onboarding.ReviewDigest = ""
+	onboarding.FormNonce = randomNonce()
+	onboarding.FormExpires = c.now().Add(c.ttl())
+	onboarding.ConfirmationNonce = ""
+	onboarding.ConfirmationUsed = false
+	onboarding.Revision++
+	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil
+}
+
+func requiredSecretNames(definition ToolDefinition) []string {
+	names := make([]string, 0, len(definition.Credentials))
+	for _, input := range definition.Credentials {
+		if input.Required && secretName(input.Name) {
+			names = append(names, input.Name)
+		}
+	}
+	return names
+}
+
+func credentialGateHints(names []string, groups [][]string) []CredentialHint {
+	groupOf := map[string]int{}
+	for index, group := range groups {
+		for _, name := range group {
+			groupOf[name] = index + 1
+		}
+	}
+	hints := make([]CredentialHint, 0, len(names))
+	for _, name := range names {
+		hints = append(hints, CredentialHint{
+			Name: name, Type: connectionType(name), Secret: secretName(name),
+			Delivery: "env", Target: name, Hint: "protected loopback form",
+			AlternativeGroup: groupOf[name],
+		})
+	}
+	return hints
+}
+
+func filterSubmittedCredentials(hints []CredentialHint, values map[string]string) (map[string]string, error) {
+	alternatives := map[int][]CredentialHint{}
+	filtered := map[string]string{}
+	for _, hint := range hints {
+		if hint.AlternativeGroup > 0 {
+			alternatives[hint.AlternativeGroup] = append(alternatives[hint.AlternativeGroup], hint)
+			continue
+		}
+		value := strings.TrimSpace(values[hint.Name])
+		if value == "" {
+			return nil, fmt.Errorf("%w: missing %s", ErrInvalid, hint.Name)
+		}
+		filtered[hint.Name] = value
+	}
+	if len(alternatives) == 0 {
+		return filtered, nil
+	}
+	matched := 0
+	partial := false
+	var missingNames []string
+	var chosen map[string]string
+	completeGroups := []map[string]string{}
+	for _, group := range alternatives {
+		filled := map[string]string{}
+		missing := false
+		for _, hint := range group {
+			value := strings.TrimSpace(values[hint.Name])
+			if value == "" {
+				missing = true
+				continue
+			}
+			filled[hint.Name] = value
+		}
+		if missing {
+			if len(filled) > 0 {
+				partial = true
+				for _, hint := range group {
+					if strings.TrimSpace(values[hint.Name]) == "" {
+						missingNames = append(missingNames, hint.Name)
+					}
+				}
+			}
+			continue
+		}
+		if len(filled) > 0 {
+			matched++
+			chosen = filled
+			completeGroups = append(completeGroups, filled)
+		}
+	}
+	if matched != 1 {
+		if picked, ok := pickDuplicatedAlternative(completeGroups); ok {
+			chosen = picked
+			matched = 1
+		}
+	}
+	if matched == 0 && partial {
+		return nil, fmt.Errorf("%w: incomplete credential alternative: %s", ErrInvalid, strings.Join(missingNames, ","))
+	}
+	if matched != 1 {
+		return nil, fmt.Errorf("%w: choose one credential alternative", ErrInvalid)
+	}
+	for name, value := range chosen {
+		filtered[name] = value
+	}
+	return filtered, nil
+}
+
+// pickDuplicatedAlternative keeps one group when the same secret was copied
+// into every alternative. The kept group is the one whose env name contains
+// that secret's prefix, the text before the first "-" or "_".
+func pickDuplicatedAlternative(groups []map[string]string) (map[string]string, bool) {
+	if len(groups) < 2 {
+		return nil, false
+	}
+	uniq := map[string]struct{}{}
+	for _, group := range groups {
+		for _, value := range group {
+			uniq[value] = struct{}{}
+		}
+	}
+	if len(uniq) != 1 {
+		return nil, false
+	}
+	var only string
+	for value := range uniq {
+		only = value
+	}
+	prefix := only
+	if i := strings.IndexAny(prefix, "-_"); i > 0 {
+		prefix = prefix[:i]
+	}
+	if len(prefix) < 3 || len(prefix) > 12 {
+		return nil, false
+	}
+	var hits []map[string]string
+	needle := strings.ToUpper(prefix)
+	for _, group := range groups {
+		for name := range group {
+			if strings.Contains(strings.ToUpper(name), needle) {
+				hits = append(hits, group)
+				break
+			}
+		}
+	}
+	if len(hits) != 1 {
+		return nil, false
+	}
+	return hits[0], true
+}
+
+func (c *ControlPlane) noteFormRejection(onboarding Onboarding, err error) {
+	if c == nil || c.Store == nil || err == nil || !errors.Is(err, ErrInvalid) {
+		return
+	}
+	onboarding.Error = credentialFormRejection(err)
+	onboarding.Revision++
+	if persistErr := c.Store.PutOnboarding(onboarding); persistErr != nil {
+		log.Printf("toolhub: form rejection on %s not recorded: %v", onboarding.OnboardingID, persistErr)
+	}
+}
+
+func credentialFormRejection(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	switch {
+	case strings.Contains(text, "incomplete credential alternative"):
+		if missing := missingAlternativeNames(text); missing != "" {
+			return "В выбранном наборе заполнены не все поля. Не заполнено: " + missing + "."
+		}
+		return "В выбранном наборе заполнены не все поля."
+	case strings.Contains(text, "choose one credential alternative"):
+		return "Нужен один полный набор полей."
+	case strings.Contains(text, "unrecognized credential alternative"):
+		return "Это поле не входит в рецепт сервера."
+	case strings.Contains(text, "missing "):
+		return "Не заполнено обязательное поле."
+	default:
+		return publicPrepareError(err)
+	}
+}
+
+func missingAlternativeNames(text string) string {
+	const marker = "incomplete credential alternative:"
+	index := strings.Index(text, marker)
+	if index < 0 {
+		return ""
+	}
+	var labels []string
+	for _, part := range strings.Split(text[index+len(marker):], ",") {
+		name := strings.TrimSpace(part)
+		if name == "" || strings.ContainsAny(name, " \t") {
+			break
+		}
+		labels = append(labels, credentialFieldLabel(CredentialHint{Name: name}))
+	}
+	return strings.Join(labels, ", ")
+}
+
+// credentialProbeFailure is the text shown on the form and stored for the
+// channel. It keeps the server's message and drops stack traces.
+func credentialProbeFailure(err error) string {
+	text := publicPrepareError(err)
+	if text == "" {
+		return ""
+	}
+	var messages []string
+	rest := text
+	const marker = `"message":"`
+	for {
+		index := strings.Index(rest, marker)
+		if index < 0 {
+			break
+		}
+		rest = rest[index+len(marker):]
+		end := strings.Index(rest, `"`)
+		if end <= 0 || end > 180 {
+			break
+		}
+		messages = append(messages, rest[:end])
+		rest = rest[end+1:]
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		lower := strings.ToLower(messages[i])
+		if strings.Contains(lower, "fail") || strings.Contains(lower, "invalid") || strings.Contains(lower, "error") || strings.Contains(lower, "denied") {
+			return messages[i]
+		}
+	}
+	if strings.Contains(text, "tools/list empty") {
+		return "Сервер не ответил списком инструментов."
+	}
+	if len(messages) > 0 {
+		return messages[len(messages)-1]
+	}
+	if len(text) > 240 {
+		text = text[:240]
+	}
+	return text
+}
+
+func publicPrepareError(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := secretValuePattern.ReplaceAllString(err.Error(), "[redacted]")
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 400 {
+		text = text[:400]
+	}
+	return text
+}
+
+var secretValuePattern = regexp.MustCompile(`(?i)\b(xox[baprs]-[A-Za-z0-9-]{8,}|sk-[A-Za-z0-9]{16,}|[A-Fa-f0-9]{32,})\b`)
+
+// persistFailure records the public failure reason on the onboarding before
+// returning the original error. A failed state write is folded into the
+// returned error instead of silently dropping both cause and state update.
+func (c *ControlPlane) persistFailure(onboarding Onboarding, errorText string, cause error) error {
+	onboarding.Error = errorText
+	onboarding.Revision++
+	if err := c.Store.PutOnboarding(onboarding); err != nil {
+		return fmt.Errorf("%w (recording failure state failed: %v)", cause, err)
+	}
+	return cause
 }
 
 func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey string, definition ToolDefinition, sourceURL, commit string) (Onboarding, error) {
@@ -364,6 +860,11 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 		if bound != "" && candidate.ID != bound {
 			continue
 		}
+		// A definition that already pins a reviewed revision must not slide to
+		// an older revision of the same contract still present in the broker.
+		if definition.CredentialContractRevision > 0 && candidate.Revision != definition.CredentialContractRevision {
+			continue
+		}
 		if definition.Workload.Class == Shared && !candidate.AllowShared {
 			continue
 		}
@@ -388,13 +889,7 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 				env[target] = target
 			}
 		}
-		covered := 0
-		for name := range required {
-			if delivered[env[name]] {
-				covered++
-			}
-		}
-		if covered != len(required) {
+		if !definition.credentialsSatisfied(func(name string) bool { return delivered[env[name]] }) {
 			continue
 		}
 		extra := len(candidate.Deliveries) - len(env)
@@ -466,16 +961,18 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			ownerKind = "context"
 		}
 		connectionID := deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
+		consumerID := definition.DefinitionID
 		if onboarding.BrokerRotateCredentialID != "" {
 			var credential brokerv1.Credential
 			if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(onboarding.BrokerRotateCredentialID), nil, &credential); err != nil {
 				return err
 			}
 			connectionID = credential.ConnectionID
+			consumerID = credential.ConsumerID
 		}
 		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
 			ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
-			ConnectionID: connectionID, RotateCredentialID: onboarding.BrokerRotateCredentialID,
+			ConnectionID: connectionID, ConsumerID: consumerID, RotateCredentialID: onboarding.BrokerRotateCredentialID,
 			OnboardingID: onboarding.OnboardingID, IdempotencyKey: fmt.Sprintf("%s/broker-%d", onboarding.OnboardingID, onboarding.BrokerAttempts),
 			OwnerKind: ownerKind,
 		})
@@ -551,6 +1048,13 @@ func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
+	if onboarding.Phase == PhaseAwaitingOAuth {
+		definition, err := c.definitionOf(onboarding)
+		if err != nil {
+			return nil, err
+		}
+		return c.ensurePreparedOAuth(context.Background(), auth, onboarding, definition)
+	}
 	if err := c.regenerateBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		return nil, err
 	}
@@ -568,6 +1072,12 @@ func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[
 // the next status poll instead of pinning the onboarding forever.
 func (c *ControlPlane) regenerateBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding) error {
 	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds {
+		return nil
+	}
+	// A credential gate has no confirmed tool contract and usually no reviewed
+	// broker contract. The protected loopback form is the path; asking the
+	// broker for a contract that cannot exist yet would fail status polling.
+	if onboarding.AdmissionPending {
 		return nil
 	}
 	definition, err := c.definitionOf(*onboarding)
@@ -652,6 +1162,9 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	if err := c.refreshBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
+	if onboarding.Phase == PhaseAwaitingOAuth {
+		return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
+	}
 	nonce := argString(args, "nonce")
 	if onboarding.ConfirmationUsed {
 		return nil, fmt.Errorf("%w: replayed nonce", ErrUnauthorized)
@@ -667,13 +1180,19 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	}
 	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, ErrUnauthorized) {
+			if entry, matched, lookupErr := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); lookupErr == nil && matched && entry.OAuth != nil {
+				return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
+			}
+		}
+		return nil, c.persistFailure(onboarding, publicPrepareError(err), err)
 	}
 	onboarding.ConfirmationUsed = true
 	onboarding.BindingID = binding.ToolBindingID
 	onboarding.ConnectionID = binding.ConnectionID
 	onboarding.CredentialRefID = binding.CredentialRefID
 	onboarding.BrokerRotateCredentialID = ""
+	onboarding.Error = ""
 	onboarding.Phase = PhaseConfirmed
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -727,7 +1246,7 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		}
 		binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 		if err != nil {
-			return nil, err
+			return nil, c.persistFailure(onboarding, publicPrepareError(err), err)
 		}
 		onboarding.BindingID = binding.ToolBindingID
 		onboarding.ConnectionID = binding.ConnectionID
@@ -748,12 +1267,13 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 			binding, err = c.Store.Enable(auth, definition.DefinitionID, definition.Version)
 		}
 		if err != nil {
-			return nil, err
+			return nil, c.persistFailure(onboarding, publicPrepareError(err), err)
 		}
 		onboarding.BindingID = binding.ToolBindingID
 		onboarding.ConnectionID = binding.ConnectionID
 		onboarding.CredentialRefID = binding.CredentialRefID
 	}
+	onboarding.Error = ""
 	onboarding.Phase = PhaseEnabled
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -878,7 +1398,9 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	_ = c.Store.SetBindingStatus(onboarding.BindingID, RevokedStatus)
+	if err := c.Store.SetBindingStatus(onboarding.BindingID, RevokedStatus); err != nil && !errors.Is(err, ErrRevoked) && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
 	onboarding.CredentialRefID = next.CredentialRefID
 	onboarding.Phase = PhaseRevoked
 	onboarding.Revision++
@@ -895,7 +1417,9 @@ func (c *ControlPlane) cutAuthorization(onboarding Onboarding) error {
 		}
 	}
 	if onboarding.ConnectionID != "" {
-		_ = c.Store.SetConnectionStatus(onboarding.ConnectionID, RevokedStatus)
+		if err := c.Store.SetConnectionStatus(onboarding.ConnectionID, RevokedStatus); err != nil && !errors.Is(err, ErrRevoked) && !errors.Is(err, ErrNotFound) {
+			return err
+		}
 	}
 	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
@@ -1010,7 +1534,7 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 				return ToolBinding{}, err
 			}
 		}
-		if c.Broker != nil && c.Broker.Enabled() {
+		if c.brokerCredentialRequired(definition, onboarding) {
 			if previous := matches[0].credential; previous.Backend == "credential-broker" && previous.BrokerGrantID != "" {
 				control, err := c.Broker.New(auth, "broker:control")
 				if err != nil {
@@ -1052,7 +1576,7 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	}
 	connectionID := deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
 	reference := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: credstore.BackendLocal, Locator: onboarding.Locator, Keys: credentialNames(onboarding), Status: ActiveStatus}
-	if c.Broker != nil && c.Broker.Enabled() {
+	if c.brokerCredentialRequired(definition, onboarding) {
 		reference.Backend = "credential-broker"
 		reference.BrokerContractID = definition.CredentialContractID
 		reference.BrokerContractRevision = definition.CredentialContractRevision
@@ -1081,6 +1605,13 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
 	}
 	return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+}
+
+// brokerCredentialRequired is true when the definition is bound to a reviewed
+// broker contract or the onboarding already holds a broker credential. A
+// credential-gate admission has neither, so its loopback secret stays local.
+func (c *ControlPlane) brokerCredentialRequired(definition ToolDefinition, onboarding Onboarding) bool {
+	return c != nil && c.Broker != nil && c.Broker.Enabled() && (definition.CredentialContractID != "" || onboarding.BrokerCredentialID != "")
 }
 
 func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Envelope, definition ToolDefinition, onboarding Onboarding, binding ToolBinding) (string, error) {
@@ -1118,6 +1649,17 @@ func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Enve
 	return grant.ID, nil
 }
 
+func cloneStringGroups(groups [][]string) [][]string {
+	if groups == nil {
+		return nil
+	}
+	out := make([][]string, len(groups))
+	for i, group := range groups {
+		out[i] = append([]string(nil), group...)
+	}
+	return out
+}
+
 func cloneMap(values map[string]string) map[string]string {
 	if len(values) == 0 {
 		return nil
@@ -1146,20 +1688,56 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	if onboarding.Phase != PhaseAwaitingCreds && onboarding.Phase != PhaseAwaitingConfirm {
 		return fmt.Errorf("%w: credentials not expected", ErrUnauthorized)
 	}
-	filtered := map[string]string{}
-	for _, hint := range onboarding.Required {
-		value := strings.TrimSpace(values[hint.Name])
-		if value == "" {
-			return fmt.Errorf("%w: missing %s", ErrInvalid, hint.Name)
+	filtered, err := filterSubmittedCredentials(onboarding.Required, values)
+	if err != nil {
+		c.noteFormRejection(onboarding, err)
+		return err
+	}
+	authEnv := onboardingEnvelope(onboarding)
+	if onboarding.AdmissionPending {
+		definition, defErr := c.definitionOf(onboarding)
+		if defErr != nil {
+			return defErr
 		}
-		filtered[hint.Name] = value
+		if c.AdmitWithCredentials == nil {
+			return fmt.Errorf("%w: credential admission probe is not configured", ErrInvalid)
+		}
+		onboarding.Error = "Проверяю поля у сервера."
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(onboarding); err != nil {
+			return err
+		}
+		// The admission probe below can hold the form POST for tens of
+		// seconds; tell the channel a real check is running, not a hang.
+		deliverPrepareEvent(context.Background(), authEnv, onboarding, "credentials-check")
+		admitted, admitErr := c.AdmitWithCredentials(context.Background(), definition, filtered)
+		if admitErr != nil {
+			failure := "Проверка не прошла. " + credentialProbeFailure(admitErr)
+			if persistErr := c.persistFailure(onboarding, failure, admitErr); persistErr != admitErr {
+				return persistErr
+			}
+			rejected := onboarding
+			rejected.Error = failure
+			deliverPrepareEvent(context.Background(), authEnv, rejected, "credentials-rejected")
+			return fmt.Errorf("%w: %s", ErrIsolation, failure)
+		}
+		if regErr := c.registerAdmittedDefinition(&admitted, onboarding.PrincipalID); regErr != nil {
+			return c.persistFailure(onboarding, credentialProbeFailure(regErr), regErr)
+		}
+		onboarding.Definition = &admitted
+		onboarding.DefinitionID = admitted.DefinitionID
+		onboarding.DefinitionVersion = admitted.Version
+		onboarding.Permissions = toolNames(admitted)
+		onboarding.Effects = effectNames(admitted)
+		onboarding.ReviewDigest = admitted.Source.ReviewDigest
+		onboarding.AdmissionPending = false
+		onboarding.Error = ""
 	}
 	locator := onboarding.Locator
 	owner := onboarding.PrincipalID
 	shared := false
 	c.Store.mu.RLock()
-	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
-	if policy := c.Store.sharedPolicyLocked(auth, onboarding.DefinitionID); policy != nil {
+	if policy := c.Store.sharedPolicyLocked(authEnv, onboarding.DefinitionID); policy != nil {
 		locator = policy.Locator
 		owner = policy.StoreOwner
 		onboarding.CredentialOwner = policy.StoreOwner
@@ -1191,13 +1769,61 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	return c.Store.PutOnboarding(onboarding)
 }
 
+// errCredentialSaved marks a failure after the loopback secret is already stored.
+var errCredentialSaved = errors.New("credential saved")
+
 // AuthorizeCredentials treats the protected form submission as the user's
 // confirmation and completes the binding without another model round-trip.
 func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, nonce string, values map[string]string) error {
 	if err := c.SubmitCredentials(onboardingID, nonce, values); err != nil {
 		return err
 	}
-	return c.finishAuthorization(ctx, onboardingID)
+	if err := c.finishAuthorization(ctx, onboardingID); err != nil {
+		if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
+			notify := latest
+			notify.Error = err.Error()
+			deliverPrepareEvent(ctx, onboardingEnvelope(latest), notify, "binding-failed")
+		}
+		return fmt.Errorf("%w: %w", errCredentialSaved, err)
+	}
+	return nil
+}
+
+// registerAdmittedDefinition stores a credential-gate manifest. An immutable
+// record that differs, or a user publication owned by someone else, takes the
+// next patch version instead of replacing the existing publication.
+func (c *ControlPlane) registerAdmittedDefinition(definition *ToolDefinition, principalID string) error {
+	if c == nil || c.Store == nil || definition == nil {
+		return fmt.Errorf("%w: admitted definition", ErrInvalid)
+	}
+	for i := 0; i < 100; i++ {
+		stored, err := c.Store.Definition(definition.DefinitionID, definition.Version)
+		if err != nil {
+			break
+		}
+		owner, userOwned := c.Store.userPublicationOwner(definition.DefinitionID, definition.Version)
+		if definitionsEqual(stored, *definition) && (!userOwned || owner == principalID) {
+			break
+		}
+		definition.Version = nextPatchVersion(definition.Version)
+	}
+	if err := definition.Validate(); err != nil {
+		return err
+	}
+	if err := c.Store.RegisterDefinition(*definition); err != nil {
+		return err
+	}
+	owner, userOwned := c.Store.userPublicationOwner(definition.DefinitionID, definition.Version)
+	if userOwned {
+		if owner != principalID {
+			return fmt.Errorf("%w: user definition owner", ErrUnauthorized)
+		}
+		return nil
+	}
+	if _, published := c.Store.storedPublication(definition.DefinitionID, definition.Version); published {
+		return nil
+	}
+	return c.Store.PutPublication(DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: PublicationUser, OwnerPrincipalID: principalID})
 }
 
 func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID string) error {
@@ -1205,12 +1831,28 @@ func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID str
 	if err != nil {
 		return err
 	}
-	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
-	if _, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
+	auth := onboardingEnvelope(onboarding)
+	body, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce})
+	if err != nil {
 		return err
 	}
-	_, err = c.enable(ctx, auth, map[string]any{"onboarding_id": onboardingID})
-	return err
+	if body["phase"] == PhaseAwaitingOAuth {
+		return nil
+	}
+	if _, err = c.enable(ctx, auth, map[string]any{"onboarding_id": onboardingID}); err != nil {
+		return err
+	}
+	// The form submit drove this enable out-of-band; without a channel
+	// notice the owner sees the form's success page but never the chat
+	// confirmation, tools included.
+	if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
+		postPrepareNotice(ctx, auth, latest, "", len(latest.Permissions))
+	}
+	return nil
+}
+
+func onboardingEnvelope(onboarding Onboarding) identity.Envelope {
+	return identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 }
 
 func (c *ControlPlane) StartOAuth(auth identity.Envelope, onboardingID, redirect string) (oauth.StartResult, error) {
@@ -1250,7 +1892,18 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 
 func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string]any) (Onboarding, error) {
 	if id := argString(args, "onboarding_id"); id != "" {
-		return c.Store.OnboardingFor(auth, id)
+		onboarding, err := c.Store.OnboardingFor(auth, id)
+		if err != nil {
+			return Onboarding{}, err
+		}
+		// Callers may hold a preparing stub that was superseded by the real
+		// record (patch bump or a reviewed definition id): follow the pointer.
+		if onboarding.Phase == PhaseRemoved && onboarding.SupersededBy != "" {
+			if target, err := c.Store.OnboardingFor(auth, onboarding.SupersededBy); err == nil {
+				return target, nil
+			}
+		}
+		return onboarding, nil
 	}
 	definitionID := argString(args, "definition_id")
 	version := argString(args, "version")
@@ -1307,6 +1960,9 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 			body["authorization_url"] = onboarding.BrokerAuthorizationURL
 		}
 	}
+	if onboarding.Phase == PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
+		body["authorization_url"] = onboarding.ProviderAuthorizationURL
+	}
 	if withHints {
 		hints := make([]map[string]string, 0, len(onboarding.Required))
 		for _, hint := range onboarding.Required {
@@ -1319,17 +1975,44 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 		}
 	}
 	switch onboarding.Phase {
+	case PhasePreparing:
+		body["next_action"] = "poll_status"
+		body["instructions"] = "Source review and build continue in the background; call status with onboarding_id until the phase changes."
+	case PhaseFailed:
+		body["next_action"] = "retry"
+		body["instructions"] = "The prepare failed; call prepare_source again with the same request_key to retry."
 	case PhaseAwaitingCreds:
 		body["next_action"] = "submit_credentials"
 		body["instructions"] = "Ask the user to open the credential URL, submit the form, then call this tool again."
+		if onboarding.AdmissionPending {
+			body["tools_confirmed"] = false
+			body["instructions"] = "The server did not answer tools/list until credentials exist. The channel notice already contains the loopback form URL on this host at 127.0.0.1:8090. Do not send a second link. Do not invent a CORS, browser-host, or blocked-port failure. Do not ask for a token in chat. The form lists the field names from the server or its connection recipe. The shortest set is open; submit only that set unless the user opens another. tools/list runs after a successful submit."
+			switch {
+			case strings.HasPrefix(onboarding.Error, "Проверяю поля"):
+				body["instructions"] = "A credential submit is being checked with the server. Tell the user to wait. Do not repeat an older form error and do not ask for a token in chat."
+			case strings.Contains(onboarding.Error, "набор") || strings.Contains(onboarding.Error, "Не заполнено") || strings.Contains(onboarding.Error, "рецепт"):
+				body["instructions"] = "The previous form submit was rejected before the server was contacted. Read error and tell the user that text. Send the current form URL from required_credentials. Do not invent a network, CORS, or host failure, and do not ask for a token in chat."
+			case strings.HasPrefix(onboarding.Error, "Проверка не прошла"):
+				body["instructions"] = "The credential check already ran. Read error and tell the user that text. Do not repeat an older rejection and do not ask for a token in chat. The form remains available from required_credentials."
+			}
+		}
 	case PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"
 		body["instructions"] = "Call confirm with onboarding_id and the nonce from this response, then call enable. No browser action is required."
+		if onboarding.Error != "" {
+			body["instructions"] = "The last confirm or enable failed; read error and tell the user that text verbatim. Do not invent a runtime restart, controller outage, or network cause. Retry confirm with the nonce only after the recorded cause is addressed or looks transient; do not poll in a loop."
+		}
+	case PhaseAwaitingOAuth:
+		body["next_action"] = "authorize"
+		body["instructions"] = "Send authorization_url to the user. After the browser callback, call status to verify the connection."
 	case PhaseConfirmed:
 		body["next_action"] = "enable"
 		body["instructions"] = "Call enable with onboarding_id."
 	case PhaseEnabled:
 		body["next_action"] = "ready"
+	}
+	if onboarding.Error != "" {
+		body["error"] = onboarding.Error
 	}
 	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
 		body["nonce"] = onboarding.ConfirmationNonce
@@ -1360,6 +2043,21 @@ func (s *Store) publicationFor(definition ToolDefinition) DefinitionPublication 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.publicationLocked(definition)
+}
+
+func (s *Store) storedPublication(id, version string) (DefinitionPublication, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	pub, ok := s.publications[definitionKey(id, version)]
+	return pub, ok
+}
+
+func (s *Store) userPublicationOwner(id, version string) (string, bool) {
+	pub, ok := s.storedPublication(id, version)
+	if !ok || pub.Visibility != PublicationUser {
+		return "", false
+	}
+	return pub.OwnerPrincipalID, true
 }
 
 func (s *Store) onboarding(id string) (Onboarding, error) {
@@ -1457,6 +2155,12 @@ func rejectEscalation(definition ToolDefinition, args map[string]any) error {
 }
 
 func credentialHints(definition ToolDefinition) []CredentialHint {
+	groupOf := map[string]int{}
+	for index, group := range definition.CredentialGroups {
+		for _, name := range group {
+			groupOf[name] = index + 1
+		}
+	}
 	hints := make([]CredentialHint, 0, len(definition.Credentials))
 	for _, input := range definition.Credentials {
 		upper := strings.ToUpper(input.Name)
@@ -1471,7 +2175,7 @@ func credentialHints(definition ToolDefinition) []CredentialHint {
 		if strings.Contains(upper, "CREDENTIALS") {
 			kind, delivery = "json", "json"
 		}
-		hints = append(hints, CredentialHint{Name: input.Name, Type: kind, Secret: true, Delivery: delivery, Target: input.Name, Hint: "protected loopback form"})
+		hints = append(hints, CredentialHint{Name: input.Name, Type: kind, Secret: true, Delivery: delivery, Target: input.Name, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
 	}
 	return hints
 }
@@ -1487,9 +2191,6 @@ func credentialHintsForRecipe(definition ToolDefinition, recipe ConnectionRecipe
 			typ = "secret"
 		}
 		hint := "protected loopback form"
-		if field.Delivery != "" {
-			hint += "; delivery: " + field.Delivery
-		}
 		hints = append(hints, CredentialHint{
 			Name: field.Name, Type: typ, Secret: field.Secret, Delivery: field.Delivery,
 			Target: field.Target, Alternative: field.Alternative, Hint: hint,

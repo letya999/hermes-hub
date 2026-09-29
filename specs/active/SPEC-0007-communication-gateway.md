@@ -56,6 +56,8 @@ context and user-state isolation.
 # Out of scope
 
 The first release does not provide Slack or group adapters, Authentik/OIDC/SAML login,
-account linking, RBAC administration, multiple organizations, multiple concurrent
-workers, one container or Firecracker guest per user, always-on Hermes instances, or
-a general adapter/plugin framework.
+account linking, RBAC administration, multiple organizations, one container or
+Firecracker guest per user, always-on Hermes instances, or a general adapter/plugin
+framework. Per ADR-0025 the gateway runs a bounded worker pool with serialization
+kept per `(principal_id, context_id)`; concurrent workers inside one context remain
+out of scope.

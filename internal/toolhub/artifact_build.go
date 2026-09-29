@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +27,11 @@ type RestrictedBuildConfig struct {
 }
 
 type artifactDockerRun func(context.Context, io.Reader, ...string) ([]byte, error)
+
+// restrictedBuildMu serializes restricted builds: with HUB_BUILD_CACHE=1 every
+// buildkitd mounts the same state volume, and a second daemon dies instantly on
+// buildkitd.lock. Even without the cache, parallel builds thrash the host.
+var restrictedBuildMu sync.Mutex
 
 // BuildRestrictedOCI builds one verified recipe in the pinned rootless BuildKit
 // topology and publishes only a provenance/SBOM-bearing OCI archive to the
@@ -70,8 +77,11 @@ func buildRestrictedOCI(ctx context.Context, recipe ArtifactRecipe, contextBytes
 	if run == nil {
 		return StoredOCIArtifact{}, ErrInvalid
 	}
+	restrictedBuildMu.Lock()
+	defer restrictedBuildMu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
 	defer cancel()
+	reapStaleBuildResources(ctx, run)
 	host, err := run(ctx, nil, "context", "inspect", "--format", "{{(index .Endpoints \"docker\").Host}}")
 	if err != nil || (!strings.HasPrefix(strings.TrimSpace(string(host)), "npipe://") && !strings.HasPrefix(strings.TrimSpace(string(host)), "unix://")) {
 		return StoredOCIArtifact{}, fmt.Errorf("%w: local Docker context required", ErrIsolation)
@@ -98,18 +108,25 @@ func buildRestrictedOCI(ctx context.Context, recipe ArtifactRecipe, contextBytes
 		stateVolume = "hermes-build-state-shared"
 	}
 	volumes := []string{stateVolume, "hermes-build-proxy-config-" + suffix, "hermes-build-context-" + suffix, "hermes-build-output-" + suffix}
+	log.Printf("toolhub build start: dockerfile=%s context=%dB builder=%s", recipe.Dockerfile, len(contextBytes), builder)
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 20*time.Second)
 		defer stop()
 		for _, name := range []string{builder, proxy, seed} {
-			_, _ = run(cleanup, nil, "rm", "-f", name)
+			if _, err := run(cleanup, nil, "rm", "-f", name); err != nil {
+				log.Printf("toolhub build cleanup: remove container %s: %v", name, err)
+			}
 		}
-		_, _ = run(cleanup, nil, "network", "rm", network)
+		if _, err := run(cleanup, nil, "network", "rm", network); err != nil {
+			log.Printf("toolhub build cleanup: remove network %s: %v", network, err)
+		}
 		for _, volume := range volumes {
 			if persistentState && volume == stateVolume {
 				continue
 			}
-			_, _ = run(cleanup, nil, "volume", "rm", volume)
+			if _, err := run(cleanup, nil, "volume", "rm", volume); err != nil {
+				log.Printf("toolhub build cleanup: remove volume %s: %v", volume, err)
+			}
 		}
 	}()
 	if _, err := run(ctx, nil, "network", "create", "--internal", "--label", "hermes-hub.role=artifact-build", network); err != nil {
@@ -296,4 +313,39 @@ func verifyRestrictedBuildContainers(ctx context.Context, run artifactDockerRun,
 		}
 	}
 	return nil
+}
+
+// reapStaleBuildResources removes leftover containers, networks and volumes
+// from earlier restricted builds. A crashed ToolHub can leave a builder whose
+// buildkitd still holds the shared-state lock, failing every later build.
+// Callers must hold restrictedBuildMu. Best effort: failures are logged, the
+// build itself verifies its own topology afterwards.
+func reapStaleBuildResources(ctx context.Context, run artifactDockerRun) {
+	out, err := run(ctx, nil, "ps", "-aq", "--filter", "label=hermes-hub.role=artifact-builder", "--filter", "label=hermes-hub.role=artifact-build-egress", "--filter", "label=hermes-hub.role=artifact-build-seed")
+	if err == nil {
+		for _, id := range strings.Fields(string(out)) {
+			if _, err := run(ctx, nil, "rm", "-f", id); err != nil {
+				log.Printf("toolhub stale build reap: remove container %s: %v", id, err)
+			}
+		}
+	}
+	out, err = run(ctx, nil, "network", "ls", "-q", "--filter", "label=hermes-hub.role=artifact-build")
+	if err == nil {
+		for _, id := range strings.Fields(string(out)) {
+			if _, err := run(ctx, nil, "network", "rm", id); err != nil {
+				log.Printf("toolhub stale build reap: remove network %s: %v", id, err)
+			}
+		}
+	}
+	out, err = run(ctx, nil, "volume", "ls", "-q", "--filter", "name=hermes-build-")
+	if err == nil {
+		for _, id := range strings.Fields(string(out)) {
+			if id == "hermes-build-state-shared" {
+				continue
+			}
+			if _, err := run(ctx, nil, "volume", "rm", id); err != nil {
+				log.Printf("toolhub stale build reap: remove volume %s: %v", id, err)
+			}
+		}
+	}
 }

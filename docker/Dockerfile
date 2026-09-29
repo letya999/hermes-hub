@@ -5,16 +5,17 @@ FROM golang:1.27.1-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY services/credential-broker ./services/credential-broker
-RUN go mod download
-RUN git init /slack && cd /slack && git remote add origin https://github.com/korotovsky/slack-mcp-server.git && git fetch --depth 1 origin b88c0de3f706f4f07337c9eda7133c736d1c9524 && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /slack-mcp-server ./cmd/slack-mcp-server
-RUN git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && git fetch --depth 1 origin ba7e55836dee959e93ec6d41395865d9ec535086 && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hubctl ./cmd/hubctl
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-runtime ./cmd/runtime
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /toolhub ./cmd/toolhub
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub ./cmd/communication
-RUN cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hubctl ./cmd/hubctl
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-runtime ./cmd/runtime
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /toolhub ./cmd/toolhub
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub ./cmd/communication
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
+
+FROM golang:1.27.1-bookworm AS cliproxy_build
+RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && git fetch --depth 1 origin ba7e55836dee959e93ec6d41395865d9ec535086 && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
 FROM debian:13.6 AS sqlite_build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*
@@ -48,20 +49,25 @@ WORKDIR /opt/hermes
 RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp && uv pip install --python .venv/bin/python aiohttp==3.14.3 && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY docker/browser/package*.json /opt/browser/
 RUN cd /opt/browser && npm ci --ignore-scripts && npm cache clean --force
-COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /slack-mcp-server /cli-proxy-api /usr/local/bin/
-COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=toolhive /ko-app/thv /usr/local/bin/thv
+COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /usr/local/bin/
+COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/
 COPY docker/hub-stt /usr/local/bin/hub-stt
 RUN chmod 0755 /usr/local/bin/hub-stt
 RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub && ln -s /usr/local/bin/credential-broker /usr/local/bin/hub-credential-broker
-COPY --from=go_build /slack/LICENSE /usr/share/licenses/slack-mcp-server/LICENSE
 ENV PATH="/opt/hermes/.venv/bin:${PATH}" DISPLAY=:99 HERMES_HOME=/state/hermes HOME=/state/home MCPGODEBUG=allowsessionsinstateless=1
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace /archive && chown 10001:10001 /state /workspace /archive
 WORKDIR /workspace
 USER 10001:10001
 ENTRYPOINT ["hub-runtime"]
 CMD ["idle"]
+
+# Only ToolHub and the workload controller need Docker and ToolHive.
+FROM runtime AS control
+USER 0:0
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=toolhive /ko-app/thv /usr/local/bin/thv
+USER 10001:10001
 
 # Immutable deployment target; no source tree or Go compiler.
 FROM runtime AS prod
@@ -71,6 +77,14 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 # The Go toolchain stays on the host; copying it into every service image
 # duplicated ~280MB on each rebuild.
 FROM runtime AS dev
+USER 0:0
+RUN mkdir /src && chown 10001:10001 /src
+USER 10001:10001
+
+FROM control AS prod-control
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+
+FROM control AS dev-control
 USER 0:0
 RUN mkdir /src && chown 10001:10001 /src
 USER 10001:10001

@@ -1,6 +1,6 @@
 ---
 description: Exact-source prepared catalog, generic lifecycle and connector runbooks.
-last_verified: 2026-09-23
+last_verified: 2026-09-27
 ---
 # Prepared connectors
 
@@ -37,8 +37,19 @@ lifecycle, while an Official MCP Registry/marketplace result has not. Pass the
 selected `candidate_id` and a stable
 `request_key` to `prepare_source`. Candidates expire and belong to the current
 principal, context, runtime and policy. A direct GitHub `source` works with all
-registries disabled. Both paths re-resolve and review the source; an overlay
-applies only to its reviewed commit.
+registries disabled; for a repository with a prepared entry a bare URL selects
+the reviewed pinned commit, while an explicit `/commit/<sha>` URL keeps the
+generic path. Both paths re-resolve and review the source; an overlay applies
+only to its reviewed commit.
+
+`prepare_source` waits a bounded window for review+build (about 90 seconds) and
+then returns the durable `preparing` record instead of holding the HTTP call:
+the work continues on a detached context and the outcome — `awaiting-*` or
+`failed` — is read back with `status`. A lost connection no longer loses the
+result. Open owner sessions receive a best-effort MCP log when the background
+prepare finishes, and communication-hub also delivers a channel notice plus a
+continuation job. The log is not the only wake: a client that never set a log
+level still gets the outcome in the chat.
 
 After the generated restricted build and real MCP preflight, use
 `required_credentials` if requested. Enter credentials only in the protected
@@ -53,6 +64,17 @@ verified separately. Projection changes notify the owner's open MCP session;
 a pinned-Hermes fixture confirms PID/session/active-run continuity. Full #74
 acceptance remains open. Installing a
 connector does not authorize provider writes.
+
+When a reviewed prepared entry declares `oauth`, a failed first provider read
+can return `awaiting_oauth` with `authorization_url`. The control tool also
+requests URL-mode elicitation; clients without it receive the URL in the tool
+response. The user opens the provider URL in a browser on the Docker host.
+ToolHub handles the one-time loopback callback, writes the upstream token
+format into that owner's Broker state lease, then repeats confirm and enable.
+`status` reissues an expired or process-lost link. An existing token file is
+never overwritten by this handoff; diagnose a failed read instead. OAuth
+metadata must be reviewed for an exact source revision, and token adapters
+remain source-specific. Tool text and arbitrary MCP URLs cannot start a flow.
 Admitted tool schemas and rich MCP content, including embedded file resources,
 are preserved with output bounds. Schema-declared provider resource owners are
 ordinary arguments; runtime identity and credential selectors remain reserved.
@@ -86,8 +108,14 @@ full Google Workspace needs a separately selected repository. Broker:
 The reviewed token path is inside the Broker state mount. File credentials are
 read-only; mutable state is checkpointed only after the writer stops. Existing
 tokens may be transferred locally with owner authorization, never through chat.
-Verify `list-calendars` and bounded `list-events`. Expired consent requires the
-account's actual authorization flow; placeholders are only for MCP preflight.
+With a client JSON but no token, confirmation returns a Google authorization
+link for the `calendar.readonly` scope. Google redirects to
+`http://127.0.0.1:8090/oauth/callback`; the browser must run on the Docker host.
+After consent, ToolHub stores the token under the upstream `normal` account
+and checks the read probe. Verify `list-calendars` and bounded `list-events`.
+An existing but expired or invalid token requires diagnosis or explicit
+rotation; placeholders are only for MCP preflight. This path has mock OAuth
+coverage but requires a real account consent for live integration evidence.
 
 Handoff: “Install https://github.com/nspady/google-calendar-mcp; reuse my OAuth
 client and token state through Broker. Verify my calendars and events.”
@@ -119,3 +147,25 @@ do not relax egress or silently fall back to another GitLab host.
 
 Handoff: “Install https://github.com/zereight/gitlab-mcp; reuse or rotate my
 existing connection, confirm the API URL and verify whoami.”
+
+## Atlassian
+
+Source: [sooperset/mcp-atlassian](https://github.com/sooperset/mcp-atlassian).
+Generated Python image entrypoint: `/opt/venv/bin/mcp-atlassian` (stdio). The
+server registers **zero** tools until connection config exists, so review
+collects the full six-field contract instead of trusting placeholder probing.
+Broker: `atlassian-env`, delivering `JIRA_URL`, `JIRA_USERNAME`,
+`JIRA_API_TOKEN`, `CONFLUENCE_URL`, `CONFLUENCE_USERNAME` and
+`CONFLUENCE_API_TOKEN`. The products are alternatives: a complete Jira block
+or a complete Confluence block satisfies the credential groups, so the form
+marks every field optional while ToolHub rejects a submission with no full
+block. `atlassian.net`/`atlassian.com` are pinned egress; each entered URL's
+host joins egress automatically, so self-hosted Server/DC instances work
+without relaxations. The provider probe follows the delivered block —
+`jira_get_all_projects` or `confluence_list_page_templates` — because a bad
+token still passes `tools/list`; on failure rotate the same connection,
+never create a second one.
+
+Handoff: “Install https://github.com/sooperset/mcp-atlassian; reuse or rotate
+my existing connection, fill the Jira block, the Confluence block or both in
+the protected form and verify the matching read probe.”
