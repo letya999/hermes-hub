@@ -13,4 +13,5 @@ last_verified: "2026-09-18"
 | [ADR-0004: Однопроцессный encrypted journal](0004.md) | Однопроцессный encrypted journal. |
 | [ADR-0005: Ограниченный OAuth и отсутствие runtime платформ](0005.md) | Ограниченный OAuth и отсутствие runtime платформ. |
 | [ADR-0006: Адаптация medium memory bank](0006.md) | Адаптация medium memory bank. |
+| [ADR-0007: consumer_id — дискриминатор нескольких кредов на connection](0007.md) | consumer_id разделяет несколько кредов на одном connection по потребителю. |
 | [Шаблон ADR](template.md) | Какие вопросы закрывает новое архитектурное решение. |

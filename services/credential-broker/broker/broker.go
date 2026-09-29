@@ -200,6 +200,7 @@ func (b *Broker) CancelRequest(a identity.Actor, id string) error {
 	e := b.audit("request.canceled", a)
 	e.RequestID = id
 	e.ConnectionID = r.View.ConnectionID
+	e.ConsumerID = r.View.ConsumerID
 	_, err := b.commit(mutation{Audit: e, Request: &r})
 	return err
 }

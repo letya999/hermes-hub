@@ -956,16 +956,18 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			ownerKind = "context"
 		}
 		connectionID := deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
+		consumerID := definition.DefinitionID
 		if onboarding.BrokerRotateCredentialID != "" {
 			var credential brokerv1.Credential
 			if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(onboarding.BrokerRotateCredentialID), nil, &credential); err != nil {
 				return err
 			}
 			connectionID = credential.ConnectionID
+			consumerID = credential.ConsumerID
 		}
 		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
 			ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
-			ConnectionID: connectionID, RotateCredentialID: onboarding.BrokerRotateCredentialID,
+			ConnectionID: connectionID, ConsumerID: consumerID, RotateCredentialID: onboarding.BrokerRotateCredentialID,
 			OnboardingID: onboarding.OnboardingID, IdempotencyKey: fmt.Sprintf("%s/broker-%d", onboarding.OnboardingID, onboarding.BrokerAttempts),
 			OwnerKind: ownerKind,
 		})

@@ -614,3 +614,69 @@ func TestDirectFormSkipsChannelApproval(t *testing.T) {
 		t.Fatal(rr, e)
 	}
 }
+
+func TestConsumerIDDiscriminator(t *testing.T) {
+	f := newFixture(t)
+	create := func(consumer, idem string) (v1.Request, error) {
+		return f.b.CreateRequest(testCtx, alice, v1.CreateRequest{ContractID: "pat", ContractRevision: 1, ConnectionID: "ssh", OnboardingID: "onboard_1", IdempotencyKey: idem, OwnerKind: "user", ConsumerID: consumer})
+	}
+	enrollReq := func(r v1.Request) v1.Credential {
+		f.t.Helper()
+		cookie := f.pair(alice, r)
+		if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("k")}); e != nil {
+			f.t.Fatal(e)
+		}
+		rr, e := f.b.GetRequest(alice, r.ID)
+		if e != nil || rr.Status != "ready" {
+			f.t.Fatal(e)
+		}
+		c, e := f.b.GetCredential(alice, rr.CredentialID)
+		if e != nil {
+			f.t.Fatal(e)
+		}
+		return c
+	}
+	r1, e := create("ssh-box", "consumer_a")
+	if e != nil {
+		t.Fatal(e)
+	}
+	box := enrollReq(r1)
+	if box.ConsumerID != "ssh-box" {
+		t.Fatal(box.ConsumerID)
+	}
+	r2, e := create("ssh-git", "consumer_b")
+	if e != nil {
+		t.Fatal(e)
+	}
+	git := enrollReq(r2)
+	if git.ConsumerID != "ssh-git" || git.ID == box.ID {
+		t.Fatal("second consumer credential not distinct", git, box)
+	}
+	if _, e := create("ssh-box", "consumer_c"); !errors.Is(e, ErrConflict) {
+		t.Fatal("same consumer must conflict", e)
+	}
+	r3, e := create("", "consumer_d")
+	if e != nil {
+		t.Fatal(e)
+	}
+	def := enrollReq(r3)
+	if def.ConsumerID != "" {
+		t.Fatal(def.ConsumerID)
+	}
+	if _, e := create("", "consumer_e"); !errors.Is(e, ErrConflict) {
+		t.Fatal("second unlabeled credential must conflict", e)
+	}
+	if _, e := f.b.CreateRequest(testCtx, alice, v1.CreateRequest{ContractID: "pat", ContractRevision: 1, ConnectionID: "ssh", OnboardingID: "onboard_1", IdempotencyKey: "consumer_bad", OwnerKind: "user", ConsumerID: "Bad ID!"}); !errors.Is(e, ErrInvalid) {
+		t.Fatal("consumer must pass canonical ID", e)
+	}
+	if _, e := f.b.CreateRequest(testCtx, alice, v1.CreateRequest{ContractID: "pat", ContractRevision: 1, ConnectionID: "ssh", OnboardingID: "onboard_1", IdempotencyKey: "consumer_rot", OwnerKind: "user", ConsumerID: "ssh-git", RotateCredentialID: box.ID}); !errors.Is(e, ErrDenied) {
+		t.Fatal("rotate must not retarget a different consumer", e)
+	}
+	r, e := f.b.CreateRequest(testCtx, alice, v1.CreateRequest{ContractID: "pat", ContractRevision: 1, ConnectionID: "ssh", OnboardingID: "onboard_1", IdempotencyKey: "consumer_rot2", OwnerKind: "user", ConsumerID: "ssh-box", RotateCredentialID: box.ID})
+	if e != nil {
+		t.Fatal("rotate with matching consumer must pass", e)
+	}
+	if r.ConsumerID != "ssh-box" {
+		t.Fatal(r.ConsumerID)
+	}
+}

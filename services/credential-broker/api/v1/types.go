@@ -14,7 +14,8 @@ type CreateRequest struct {
 	ConnectionID       string `json:"connection_id"`
 	OnboardingID       string `json:"onboarding_id"`
 	IdempotencyKey     string `json:"idempotency_key"`
-	OwnerKind          string `json:"owner_kind"` // user or context
+	OwnerKind          string `json:"owner_kind"`            // user or context
+	ConsumerID         string `json:"consumer_id,omitempty"` // which MCP/CLI/tool consumes it
 	ExternalAlias      string `json:"external_alias,omitempty"`
 	RotateCredentialID string `json:"rotate_credential_id,omitempty"`
 }
@@ -24,6 +25,7 @@ type Request struct {
 	ContractRevision int       `json:"contract_revision"`
 	ConnectionID     string    `json:"connection_id"`
 	OnboardingID     string    `json:"onboarding_id"`
+	ConsumerID       string    `json:"consumer_id,omitempty"`
 	Status           string    `json:"status"`
 	CredentialID     string    `json:"credential_id,omitempty"`
 	Revision         uint64    `json:"revision,omitempty"`
@@ -78,6 +80,7 @@ type Credential struct {
 	PrincipalID  string `json:"principal_id"`
 	ContextID    string `json:"context_id"`
 	ConnectionID string `json:"connection_id"`
+	ConsumerID   string `json:"consumer_id,omitempty"`
 	Revision     uint64 `json:"revision"`
 	Status       string `json:"status"`
 	Provider     string `json:"provider"`
@@ -91,6 +94,7 @@ type Event struct {
 	RequestID     string    `json:"request_id,omitempty"`
 	ConnectionID  string    `json:"connection_id,omitempty"`
 	OnboardingID  string    `json:"onboarding_id,omitempty"`
+	ConsumerID    string    `json:"consumer_id,omitempty"`
 	CredentialID  string    `json:"credential_id,omitempty"`
 	GrantID       string    `json:"grant_id,omitempty"`
 	LeaseID       string    `json:"lease_id,omitempty"`

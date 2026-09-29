@@ -325,6 +325,9 @@
           "owner_kind": {
             "type": "string"
           },
+          "consumer_id": {
+            "type": "string"
+          },
           "external_alias": {
             "type": "string"
           },
@@ -357,6 +360,9 @@
             "type": "string"
           },
           "onboarding_id": {
+            "type": "string"
+          },
+          "consumer_id": {
             "type": "string"
           },
           "status": {
@@ -577,6 +583,9 @@
           "connection_id": {
             "type": "string"
           },
+          "consumer_id": {
+            "type": "string"
+          },
           "revision": {
             "type": "integer"
           },
@@ -625,6 +634,9 @@
             "type": "string"
           },
           "onboarding_id": {
+            "type": "string"
+          },
+          "consumer_id": {
             "type": "string"
           },
           "credential_id": {
