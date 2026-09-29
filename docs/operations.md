@@ -10,9 +10,9 @@ explicit legacy alias. `render` writes generated files under
 it without deleting data, and `logs` tails the selected Compose project.
 
 Diagnostics are on by default. The shared ToolHub collects new stdout/stderr
-lines from every `hermes-*` Docker container across users every 15 seconds and
-appends them automatically to `.local/hermes-diagnostics.txt`; no export
-command is needed. The file rolls over at 100 MB, and its small cursor file
+lines from every `hermes-*` and `work-*` Docker container across users every
+15 seconds and appends them automatically to `.local/hermes-diagnostics.txt`;
+no export command is needed. The file rolls over at 100 MB, and its small cursor file
 keeps the collector from replaying lines after restart. The host supervisor
 mirrors its own request/lifecycle logs to `.local/supervisor.log` (10 MB cap),
 which is also copied into the combined file. Compose and supervised runtimes
@@ -20,6 +20,17 @@ retain Docker's rotating `local` logs (10 MB × 3 files per container). The
 first collection of an already running container starts with its last 1000
 lines. To opt out, set `diagnostics: false` in the infra-owning space's
 `settings.yaml` and run `hubctl up` again.
+
+Users inspect their own diagnostics through the ToolHub `diagnostics` control
+operation. It returns the caller's connector workloads plus bounded,
+redacted log lines from their runtime and workload containers. Scope comes
+from the authenticated principal, context and live binding state — never from
+tool arguments — so host logs, platform containers and other users' data stay
+invisible, and revoke/remove shrinks visibility immediately. Queries accept
+`tail` (1-500), RFC3339 `since`/`until`, a `search` substring, `severity`
+(info|warn|error) and a `workload` selector (workload, binding or definition
+ID, or `runtime`). Secrets are redacted before projection and host-supervisor
+lines appear only when they name the caller's own runtime container.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes

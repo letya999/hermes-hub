@@ -73,7 +73,7 @@ func Collect(ctx context.Context, path string, run DockerRun) error {
 	var output bytes.Buffer
 	for _, line := range strings.Split(strings.TrimSpace(string(listed)), "\n") {
 		id, name, ok := strings.Cut(line, "\t")
-		if !ok || id == "" || !strings.HasPrefix(name, "hermes-") {
+		if !ok || id == "" || (!strings.HasPrefix(name, "hermes-") && !strings.HasPrefix(name, "work-")) {
 			continue
 		}
 		last := current.Containers[id]
