@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Added a prepared DataLens connector (issue #120): exact-source entry for the
+  official `datalens-tech/datalens-mcp` @96b3d6b (MIT). Five-tool gateway with
+  server-side OpenAPI `x-mcp-scope` enforcement — read/write/privileged stay
+  distinct effects; org scope is env-pinned outside model arguments. Broker
+  contract `datalens-auth` (organization ID + Authorization header, optional
+  API URL override whose host extends egress). Fixed envs select static auth
+  (no `yc` in the image), bound responses, and `NODE_USE_ENV_PROXY=1` so Node
+  fetch honors the workload Squid ACL.
+- Added reviewed `preflight_network` catalog flag: a prepared entry whose
+  server must reach its API before answering `tools/list` (remote schema fetch
+  at startup) runs the unauthenticated probe with egress and placeholder
+  credentials. Unprepared sources keep `--network none`.
 - Added a workspace document and image capability on the hub MCP profile:
   extract, create, edit, and convert for txt, md, csv, html, pdf, xlsx, and
   pptx; inspect and local png, jpeg, and webp conversion; opt-in image

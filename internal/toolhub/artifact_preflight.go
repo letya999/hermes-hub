@@ -30,6 +30,9 @@ func PreflightImportedArtifact(ctx context.Context, imported ImportedArtifact, a
 	}
 	listCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+	if prepared, ok, _ := preparedForSource(ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA, Subfolder: imported.Definition.Source.Subfolder}); ok && prepared.PreflightNetwork {
+		listCtx = withProbeOptions(listCtx, probeOptions{allowNetwork: true})
+	}
 	list := localMCPToolList
 	tools, err := list(listCtx, imported)
 	if err != nil {

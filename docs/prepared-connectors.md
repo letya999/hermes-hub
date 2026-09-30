@@ -1,6 +1,6 @@
 ---
 description: Exact-source prepared catalog, generic lifecycle and connector runbooks.
-last_verified: 2026-09-27
+last_verified: 2026-09-30
 ---
 # Prepared connectors
 
@@ -11,7 +11,12 @@ not provider branches. `context_sources` merges another exact-pinned GitHub
 repository into the build context under a declared prefix — the reviewed
 equivalent of an upstream Makefile vendoring step, with the same blob
 verification and path safety as the primary source; overlay pins are stamped on
-the definition and bound into the review digest. Live evidence is tracked in
+the definition and bound into the review digest. A reviewed entry may declare
+`preflight_network` when the server must reach its API before it can answer
+`tools/list` at all (a remote schema fetched at startup): the unauthenticated
+probe then runs with egress and placeholder credentials, matching what the
+credentialed probe already does. Unprepared sources keep `--network none`.
+Live evidence is tracked in
 [CHG-0036](../.work/in-progress/CHG-0036-repository-driven-toolhub/plan.md).
 
 Reviewed Broker contracts ship in `internal/toolhub/prepared/contracts/` and
@@ -58,8 +63,8 @@ level still gets the outcome in the chat.
 After the generated restricted build and real MCP preflight, use
 `required_credentials` if requested. Enter credentials only in the protected
 Broker form. Compatible owner connections are reused. Call `confirm` with the
-returned nonce, then `enable`. For these four exact-source entries, confirmation
-also invokes the reviewed zero-argument `probe_tool` through the Broker-backed
+returned nonce, then `enable`. For prepared entries that name a reviewed
+zero-argument `probe_tool`, confirmation invokes it through the Broker-backed
 workload. A failed provider read leaves the binding unprojected; retry uses the
 same owner connection. File-credential readiness starts and then stops the
 workload before Broker checkpoints writable state. Other MCPs without a reviewed
@@ -318,3 +323,51 @@ Handoff: “Install https://github.com/bytebase/dbhub as the fallback
 read-only SQL engine. Fill the DSN and endpoint in the protected Broker form
 against a read-only database role, verify one safe SELECT, then do not change
 provider data without an explicit instruction.”
+
+## DataLens
+
+Source: [datalens-tech/datalens-mcp](https://github.com/datalens-tech/datalens-mcp),
+the vendor-org server the Yandex Cloud documentation links to (MIT), pinned to
+the reviewed commit. Generated Node entrypoint `node /app/dist/index.js` from
+`npm ci` + `npm run build` (tsc). The server is a five-tool gateway over the
+public API: `list_commands` and `describe_commands` (discovery),
+`invoke_read_command`, `invoke_write_command` and `invoke_privileged_command`.
+Every API operation's `x-mcp-scope` from the live OpenAPI schema is enforced
+server-side before the call runs — a write command named through
+`invoke_read_command` is rejected by the server, not by the model. ToolHub
+effects come from upstream annotations: the two discovery tools and
+`invoke_read_command` are `read`, write and privileged invocation are `write`.
+The live schema at `api.datalens.tech/json/` was verified fully classified
+(51 read / 24 write / 41 privileged, none unclassified); a schema with no
+classified commands fails startup, so the gateway can never expose an
+unclassified operation.
+
+Broker: `datalens-auth`, delivering `DATALENS_ORG_ID` (the `x-dl-org-id` tenant
+pin — env, never a model argument), `DATALENS_API_AUTH_HEADER` (the complete
+Authorization value) and optional `DATALENS_API_URL`. Cloud installs send
+`Bearer <iam-token>`; IAM tokens expire in 12h, so rotation via the `rotate`
+operation is a routine action, not an exception. Internal installations point
+`DATALENS_API_URL` at their HTTPS endpoint — its host joins the egress ACL at
+readiness — and authenticate with `OAuth <token>` in the same header field.
+Folder and workbook boundaries stay on the provider side: the IAM/OAuth
+account's permissions decide what reads return.
+
+Fixed envs: `DATALENS_YC_STATIC_AUTH=1` (the image carries no `yc` CLI),
+`DATALENS_MAX_RESPONSE_CHARS=100000` (bounded responses; hard upstream caps
+stay 10 MiB API / 20 MiB schema) and `NODE_USE_ENV_PROXY=1` so Node's `fetch`
+honors the injected `HTTP(S)_PROXY` and every call crosses the workload's Squid
+ACL (`api.datalens.tech` plus `registry.npmjs.org` for the bounded,
+credential-free upgrade notice). The server fetches the OpenAPI schema before
+it speaks MCP, so this entry declares `preflight_network`: the unauthenticated
+tools/list probe runs with egress and placeholder credentials. Verify
+`list_commands` (the readiness probe — it also proves the schema fetch), then
+one real read such as `invoke_read_command` with `command_name`
+`getWorkbooksList`. Workbook, dashboard, dataset and permission changes are
+write/privileged effects — a separate explicit instruction.
+
+Handoff: “Install https://github.com/datalens-tech/datalens-mcp; reuse or
+rotate my existing Broker connection. In the protected Broker form give the
+organization ID and the Authorization header value — Bearer <iam-token> for
+cloud (IAM tokens expire in 12h) or OAuth <token> with an API URL override for
+an internal installation. Verify list_commands and one read through
+invoke_read_command, for example getWorkbooksList.”

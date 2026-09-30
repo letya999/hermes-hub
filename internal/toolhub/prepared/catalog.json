@@ -159,5 +159,22 @@
     "probe_tool": "list_targets",
     "runbook": "docs/prepared-connectors.md#prometheus",
     "handoff": "Install https://github.com/prometheus/prometheus-mcp with my Prometheus endpoint. In the protected Broker form give the Prometheus base URL and, for a plain-HTTP target, the real host:port endpoint with the URL set to the managed forward http://127.0.0.1:19090. Verify list_targets and a bounded query; TSDB admin tools stay disabled."
+  },
+  {
+    "id": "datalens", "name": "DataLens", "license": "MIT",
+    "source": {"repository": "https://github.com/datalens-tech/datalens-mcp", "commit_sha": "96b3d6baf8839c4ff5ef4adb4c10a720c5c00e74"},
+    "language": "node", "entrypoint": ["node", "/app/dist/index.js"],
+    "connection": {"fields": [
+      {"name": "DATALENS_ORG_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "DATALENS_ORG_ID"},
+      {"name": "DATALENS_API_AUTH_HEADER", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "DATALENS_API_AUTH_HEADER"},
+      {"name": "DATALENS_API_URL", "type": "url", "required": false, "secret": false, "delivery": "env", "target": "DATALENS_API_URL"}
+    ]},
+    "contract_id": "datalens-auth", "contract_revision": 1, "stateful": false,
+    "preflight_network": true,
+    "runtime_environment": {"DATALENS_YC_STATIC_AUTH": "1", "DATALENS_MAX_RESPONSE_CHARS": "100000", "NODE_USE_ENV_PROXY": "1"},
+    "egress": ["api.datalens.tech", "registry.npmjs.org"],
+    "read_tools": ["list_commands", "describe_commands", "invoke_read_command"], "probe_tool": "list_commands",
+    "runbook": "docs/prepared-connectors.md#datalens",
+    "handoff": "Install https://github.com/datalens-tech/datalens-mcp; reuse or rotate my existing Broker connection. In the protected Broker form give the organization ID and the Authorization header value — Bearer <iam-token> for cloud (IAM tokens expire in 12h) or OAuth <token> with an API URL override for an internal installation. Verify list_commands and one read through invoke_read_command, for example getWorkbooksList. Workbook, dashboard and entry changes stay a separate explicit instruction."
   }
 ]

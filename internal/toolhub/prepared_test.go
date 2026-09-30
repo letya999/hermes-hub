@@ -15,7 +15,7 @@ import (
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := PreparedCatalog()
-	if err != nil || len(entries) != 9 {
+	if err != nil || len(entries) != 10 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
@@ -26,6 +26,9 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 			}
 			if entry.ID == "dbhub" {
 				files = map[string]string{"package.json": `{"bin":{"dbhub":"dist/index.js"}}`, "pnpm-lock.yaml": "{}"}
+			}
+			if entry.ID == "datalens" {
+				files["package.json"] = `{"bin":{"datalens-mcp":"dist/index.js"},"scripts":{"build":"tsc"}}`
 			}
 			if entry.Language == "python" {
 				files = map[string]string{"pyproject.toml": "[project]\nname = \"mcp-atlassian\"\n\n[project.scripts]\nmcp-atlassian = \"mcp_atlassian:main\"\n"}
@@ -378,5 +381,42 @@ func TestRegistrySelectionPinsMutableRepositoryAndPreservesSubfolder(t *testing.
 	}
 	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID}); !errors.Is(err, ErrStale) {
 		t.Fatalf("registry source drift was accepted: %v", err)
+	}
+}
+
+func TestPreparedPreflightNetworkAppliesToDeclaringEntryOnly(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalLoader, originalList := storedArtifactLoader, localMCPToolList
+	defer func() { storedArtifactLoader, localMCPToolList = originalLoader, originalList }()
+	storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+		return "loaded", nil
+	}
+	allowNetwork := false
+	localMCPToolList = func(ctx context.Context, _ ImportedArtifact) ([]ToolSpec, error) {
+		allowNetwork = probeOptionsFrom(ctx).allowNetwork
+		return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+	}
+	declared := 0
+	for _, entry := range entries {
+		definition := statefulContainerDefinition()
+		definition.Source.Repository = entry.Source.Repository
+		definition.Source.CommitSHA = entry.Source.CommitSHA
+		definition.Source.Subfolder = entry.Source.Subfolder
+		packet := ImportedArtifact{Definition: definition, Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
+		if _, _, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir()); err != nil {
+			t.Fatalf("%s preflight: %v", entry.ID, err)
+		}
+		if allowNetwork != entry.PreflightNetwork {
+			t.Fatalf("%s probe network=%v, catalog declares %v", entry.ID, allowNetwork, entry.PreflightNetwork)
+		}
+		if entry.PreflightNetwork {
+			declared++
+		}
+	}
+	if declared == 0 {
+		t.Fatal("no prepared entry exercises preflight_network")
 	}
 }
