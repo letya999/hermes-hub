@@ -1,0 +1,63 @@
+schema: 1
+id: CHG-0056-observability-connectors
+title: Prepared observability connectors grafana + prometheus (issue 43)
+status: done
+phase: implementation
+started_at: 2026-09-30
+updated_at: 2026-09-30
+completed:
+  - branch feat/observability-connectors-43 off dev
+  - catalog entries grafana+prometheus (pinned commits, contracts grafana-sat +
+    prometheus-url, tcp_forwards for plain-HTTP endpoints, fixed runtime envs)
+  - catalog + generated-recipe unit coverage extended (9 entries)
+  - docker/observability compose: prometheus, elasticsearch, grafana
+    (provisioned datasources+dashboard), FastAPI mockapi, spammer, ES shipper,
+    Grafana service-account bootstrap
+  - obs stack up, traffic and datasource verification
+  - contracts provisioned into the running broker volume
+  - generic context_sources overlay: pinned second repo merged into build
+    context, stamped on definition + bound into review digest (prometheus
+    docs embed at cmd/prometheus-mcp/external/docs)
+  - source fetch skips non-regular tree entries + binary assets in discover
+    mode (raw.githubusercontent HTTP/2 truncation on large blobs)
+  - onboarding phase gate: required non-secret (url) fields enter
+    awaiting-credentials instead of deadlocking at confirm
+  - credentialHints covers all required non-per-request inputs, not only
+    secret-looking names
+  - selfInstallContractIntact: stored defs whose confirmed tool contract no
+    longer verifies are re-reviewed instead of reused (drift -> fresh review)
+  - selfInstallUsable now compares reviewed entrypoint argv (command+args)
+    so catalog gating flags force re-review
+  - broker credential liveness check before connection reuse: a credential
+    revoked at the broker is skipped and a fresh request is created instead
+    of inheriting a dead grant (403 at confirm)
+  - prometheus live lifecycle end-to-end: prepare -> overlay fetch -> restricted
+    build -> awaiting-credentials -> broker form -> confirm -> enable -> 12
+    read tools only -> real reads (list_targets, query rate(http_requests_total))
+  - prometheus reconnect after toolhub restart + two-user isolation verified
+  - grafana live lifecycle end-to-end: prepare -> creds -> confirm -> enable ->
+    list_datasources + search_dashboards real reads (Prometheus+Elasticsearch
+    datasources, MockAPI dashboard)
+  - grafana read-only gating: reviewed entrypoint argv
+    --enabled-tools=search,datasource,dashboard,folder,alerting,prometheus,loki
+    --disable-write
+  - GenerateArtifactRecipe: reviewed catalog entrypoint may extend the inferred
+    argv (prefix equality enforced, ErrStale on binary/arg mismatch);
+    PreparedEntry.apply feeds catalog argv into the import config
+  - brokerGrantReusable: reusing a connection on a definition upgrade mints a
+    fresh binding-scoped grant (old grant revoked first, credref revision
+    advances, superseded binding goes stale via existing revision checks)
+  - grafana gated re-review live: mcp-grafana@0.0.4 admitted 25 read tools
+    (was 81 ungated) via --enabled-tools + --disable-write; confirm -> enable
+    -> real reads (list_datasources, search_dashboards, query_prometheus
+    1.97 req/s live spammer traffic through the managed TCP forward)
+  - lifecycle ops verified live on grafana: rotate (broker form -> status
+    refresh -> confirm -> new binding bind-465cbc83), disable (tools
+    de-projected), revoke, remove (tombstone), reconnect (toolhub restart
+    re-projects), two-user isolation (test-owner-2 sees no connector tools,
+    status denied), zero token leakage in toolhub logs
+pending: []
+issues:
+  - docker.io anonymous pull rate limit exhausted by today's repeated hub
+    and artifact builds; restricted builder manifest resolve returns 429
+    (resolved once the rolling window freed; rebuild succeeded)

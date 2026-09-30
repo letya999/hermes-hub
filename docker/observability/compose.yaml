@@ -1,0 +1,103 @@
+name: hermes-obs
+
+# Local demo backend for the prepared grafana/prometheus connectors (issue #43).
+# Throwaway fixture: publishes on loopback only, never carries real data.
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=3d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [obs]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.2
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false" # ponytail: demo fixture on a private network; enabling TLS+auth buys nothing here.
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [obs]
+
+  grafana:
+    image: grafana/grafana:12.2.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: obs-admin
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3300:3000"
+    depends_on:
+      prometheus: {condition: service_started}
+      elasticsearch: {condition: service_healthy}
+    networks: [obs]
+
+  logs-init:
+    build: ./mockapi
+    entrypoint: ["chmod", "0777", "/logs"]
+    user: "0:0"
+    volumes:
+      - obs-logs:/logs
+    restart: "no"
+    networks: [obs]
+
+  mockapi:
+    build: ./mockapi
+    volumes:
+      - obs-logs:/logs
+    ports:
+      - "127.0.0.1:8088:8000"
+    depends_on:
+      logs-init: {condition: service_completed_successfully}
+    networks: [obs]
+
+  spammer:
+    build: ./mockapi
+    command: ["python", "spammer.py"]
+    environment:
+      TARGET: http://mockapi:8000
+    depends_on:
+      mockapi: {condition: service_started}
+    networks: [obs]
+
+  shipper:
+    build: ./mockapi
+    command: ["python", "shipper.py"]
+    environment:
+      ELASTIC_URL: http://elasticsearch:9200
+      LOG_FILE: /logs/mockapi.jsonl
+    volumes:
+      - obs-logs:/logs:ro
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+    networks: [obs]
+
+  bootstrap:
+    build: ./mockapi
+    command: ["python", "bootstrap.py"]
+    environment:
+      GRAFANA_URL: http://grafana:3000
+      GRAFANA_USER: admin
+      GRAFANA_PASSWORD: obs-admin
+    volumes:
+      - ./.secrets:/secrets
+    depends_on:
+      grafana: {condition: service_started}
+    restart: "no"
+    networks: [obs]
+
+networks:
+  obs: {}
+
+volumes:
+  obs-logs: {}

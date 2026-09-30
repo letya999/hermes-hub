@@ -117,5 +117,47 @@
     "egress": ["127.0.0.1"], "read_tools": ["execute_sql", "search_objects"],
     "runbook": "docs/prepared-connectors.md#dbhub",
     "handoff": "Install https://github.com/bytebase/dbhub as the fallback read-only SQL engine. In the protected Broker form paste the DSN aimed at the managed forward (127.0.0.1:15432) and give the real host:port endpoint; a read-only database role is mandatory because env-mode DBHub runs without its TOML read-only policy. Verify a SELECT against the real database, then do not change provider data without an explicit instruction."
+  },
+  {
+    "id": "grafana", "name": "Grafana", "license": "Apache-2.0",
+    "source": {"repository": "https://github.com/grafana/mcp-grafana", "commit_sha": "45cfa5d0288fbe0a26a01d7129b9a641ca738546"},
+    "language": "go", "entrypoint": ["/app/mcp-server", "--enabled-tools=search,datasource,dashboard,folder,alerting,prometheus,loki", "--disable-write"],
+    "connection": {"fields": [
+      {"name": "GRAFANA_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "GRAFANA_URL"},
+      {"name": "GRAFANA_SERVICE_ACCOUNT_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GRAFANA_SERVICE_ACCOUNT_TOKEN"},
+      {"name": "GRAFANA_ORG_ID", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GRAFANA_ORG_ID"},
+      {"name": "GRAFANA_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GRAFANA_ENDPOINT"}
+    ]},
+    "contract_id": "grafana-sat", "contract_revision": 1, "stateful": false,
+    "environment": ["GRAFANA_SOCKS5_PROXY"],
+    "runtime_environment": {"GRAFANA_USAGE_STATS": "disabled", "GRAFANA_LOKI_GUARDRAIL_MODE": "enforce"},
+    "tcp_forwards": [
+      {"listen": 13000, "target_env": "GRAFANA_ENDPOINT"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["list_datasources", "search_dashboards", "get_dashboard_by_uid", "get_dashboard_summary", "list_dashboard_versions", "list_alert_groups", "query_prometheus", "query_loki_logs"],
+    "probe_tool": "list_datasources",
+    "runbook": "docs/prepared-connectors.md#grafana",
+    "handoff": "Install https://github.com/grafana/mcp-grafana with my existing Grafana service account. In the protected Broker form give the Grafana base URL and service account token, optionally the organization ID; for a plain-HTTP Grafana also give the real host:port endpoint and set the URL to the managed forward http://127.0.0.1:13000. Verify list_datasources and a bounded read; dashboard or datasource changes stay a separate explicit instruction."
+  },
+  {
+    "id": "prometheus", "name": "Prometheus", "license": "Apache-2.0",
+    "source": {"repository": "https://github.com/prometheus/prometheus-mcp", "commit_sha": "cd0e5527617abd4cd8ec360ad901c002304ab247"},
+    "language": "go", "entrypoint": ["/app/mcp-server"],
+    "connection": {"fields": [
+      {"name": "MCP_SERVER_PROMETHEUS_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "MCP_SERVER_PROMETHEUS_URL"},
+      {"name": "PROMETHEUS_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PROMETHEUS_ENDPOINT"}
+    ]},
+    "contract_id": "prometheus-url", "contract_revision": 2, "stateful": false,
+    "context_sources": [
+      {"source": {"repository": "https://github.com/prometheus/docs", "commit_sha": "bd8a3f4fe92454ea0709895d6d9c771b8e86e710"}, "into": "cmd/prometheus-mcp/external/docs"}
+    ],
+    "runtime_environment": {"MCP_SERVER_DOCS_AUTO_UPDATE": "false", "MCP_SERVER_PROMETHEUS_TRUNCATION_LIMIT": "500", "MCP_SERVER_MCP_TOOLS": "list_targets"},
+    "tcp_forwards": [
+      {"listen": 19090, "target_env": "PROMETHEUS_ENDPOINT"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["query", "range_query", "metric_metadata", "label_names", "label_values", "series", "list_targets", "docs_list", "docs_read", "docs_search", "runbooks_list", "runbooks_read"],
+    "probe_tool": "list_targets",
+    "runbook": "docs/prepared-connectors.md#prometheus",
+    "handoff": "Install https://github.com/prometheus/prometheus-mcp with my Prometheus endpoint. In the protected Broker form give the Prometheus base URL and, for a plain-HTTP target, the real host:port endpoint with the URL set to the managed forward http://127.0.0.1:19090. Verify list_targets and a bounded query; TSDB admin tools stay disabled."
   }
 ]

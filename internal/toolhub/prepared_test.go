@@ -15,7 +15,7 @@ import (
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := PreparedCatalog()
-	if err != nil || len(entries) != 7 {
+	if err != nil || len(entries) != 9 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
@@ -36,6 +36,12 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 			if entry.Language == "go" {
 				files = map[string]string{"go.mod": "module github.com/github/github-mcp-server\n\ngo 1.25\n", "cmd/github-mcp-server/main.go": "package main\nfunc main(){}", "cmd/helper/main.go": "package main\nfunc main(){}"}
 			}
+			if entry.ID == "grafana" {
+				files = map[string]string{"go.mod": "module github.com/grafana/mcp-grafana\n\ngo 1.25\n", "cmd/mcp-grafana/main.go": "package main\nfunc main(){}", "cmd/linters/jsonschema/main.go": "package main\nfunc main(){}", "cmd/linters/openapi/main.go": "package main\nfunc main(){}"}
+			}
+			if entry.ID == "prometheus" {
+				files = map[string]string{"go.mod": "module github.com/prometheus/prometheus-mcp\n\ngo 1.27\n", "cmd/prometheus-mcp/main.go": "package main\nfunc main(){}"}
+			}
 			for _, directive := range []string{"RUN --mount=type=cache,target=/tmp/cache echo unused", "RUN --mount=type=secret,id=key echo unused", "RUN --network=host echo unused", "ADD https://untrusted.invalid/code /app"} {
 				files["Dockerfile"] = "FROM untrusted:latest\n" + directive + "\nENTRYPOINT [\"/server/github-mcp-server\"]\nCMD [\"stdio\"]\n"
 				if entry.ID == "txttsql" {
@@ -47,7 +53,11 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 				if _, err := (RecipeResolver{}).Resolve(t.Context(), entry.Source, context); err != nil {
 					t.Fatal(err)
 				}
-				recipe, generated, err := GenerateArtifactRecipe(context, "", "", nil)
+				inferred, _, err := GenerateArtifactRecipe(context, "", "", nil)
+				if err != nil || len(inferred.Entrypoint) > len(entry.Entrypoint) || !slices.Equal(inferred.Entrypoint, entry.Entrypoint[:len(inferred.Entrypoint)]) {
+					t.Fatalf("inferred entrypoint %v %v", inferred.Entrypoint, err)
+				}
+				recipe, generated, err := GenerateArtifactRecipe(context, "", "", entry.Entrypoint)
 				if err != nil || !slices.Equal(recipe.Entrypoint, entry.Entrypoint) {
 					t.Fatalf("recipe %v %v", recipe.Entrypoint, err)
 				}

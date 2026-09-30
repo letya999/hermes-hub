@@ -61,7 +61,7 @@ func TestArtifactAutomaticContextUsesVerifiedRawFiles(t *testing.T) {
 	h := sha1.New() // #nosec G401 -- fixture Git object ID.
 	_, _ = fmt.Fprintf(h, "blob %d\x00%s", len(content), content)
 	blobSHA := hex.EncodeToString(h.Sum(nil))
-	for _, scenario := range []string{"ok", "drift", "oversized", "status", "redirect", "symlink", "submodule", "duplicate", "empty"} {
+	for _, scenario := range []string{"ok", "drift", "oversized", "status", "redirect", "symlink", "submodule", "duplicate", "empty", "extra-symlink", "asset"} {
 		t.Run(scenario, func(t *testing.T) {
 			requests := 0
 			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +81,12 @@ func TestArtifactAutomaticContextUsesVerifiedRawFiles(t *testing.T) {
 						entry["type"] = "commit"
 					}
 					entries := []any{entry, map[string]any{"path": ".env", "type": "blob", "mode": "100644", "sha": treeSHA, "size": 1000}, map[string]any{"path": "src", "type": "tree", "mode": "040000", "sha": treeSHA}}
+					if scenario == "extra-symlink" {
+						entries = append(entries, map[string]any{"path": "assets", "type": "blob", "mode": "120000", "sha": blobSHA, "size": 14})
+					}
+					if scenario == "asset" {
+						entries = append(entries, map[string]any{"path": "images/demo.gif", "type": "blob", "mode": "100644", "sha": blobSHA, "size": len(content)})
+					}
 					if scenario == "duplicate" {
 						entries = append(entries, entry)
 					}
@@ -112,8 +118,8 @@ func TestArtifactAutomaticContextUsesVerifiedRawFiles(t *testing.T) {
 			}))
 			defer fixture.Close()
 			client := &http.Client{Transport: calendarFixtureTransport{endpoint: fixture.URL, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-			data, err := fetchArtifactContextMode(context.Background(), client, ArtifactSource{Repository: "https://github.com/example/mcp", CommitSHA: sha}, nil, 64<<20, true, false)
-			if scenario != "ok" {
+			data, err := fetchArtifactContextMode(context.Background(), client, ArtifactSource{Repository: "https://github.com/example/mcp", CommitSHA: sha}, nil, 64<<20, true, false, false)
+			if scenario != "ok" && scenario != "extra-symlink" && scenario != "asset" {
 				if err == nil || data != nil {
 					t.Fatal("unsafe automatic source accepted")
 				}
@@ -166,7 +172,7 @@ func TestArtifactAutomaticContextScopesPinnedSubfolder(t *testing.T) {
 	}))
 	defer fixture.Close()
 	client := &http.Client{Transport: calendarFixtureTransport{endpoint: fixture.URL, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	data, err := fetchArtifactContextMode(context.Background(), client, ArtifactSource{Repository: "https://github.com/example/mcp", Subfolder: "packages/mcp", CommitSHA: sha}, nil, 64<<20, true, false)
+	data, err := fetchArtifactContextMode(context.Background(), client, ArtifactSource{Repository: "https://github.com/example/mcp", Subfolder: "packages/mcp", CommitSHA: sha}, nil, 64<<20, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +214,7 @@ func TestRepositoryRecipeContextScopesPinnedSubfolderOnce(t *testing.T) {
 	defer fixture.Close()
 	client := &http.Client{Transport: calendarFixtureTransport{endpoint: fixture.URL, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	source := ArtifactSource{Repository: "https://github.com/example/mcp", Subfolder: "packages/mcp", CommitSHA: commit}
-	contextBytes, err := fetchArtifactContextMode(context.Background(), client, source, nil, 64<<20, true, true)
+	contextBytes, err := fetchArtifactContextMode(context.Background(), client, source, nil, 64<<20, true, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +355,119 @@ func TestArtifactFetchVerifiesSelectedBlobs(t *testing.T) {
 	}
 	if _, err := FetchArtifactContext(context.Background(), ArtifactSource{Repository: "https://github.com/example/mcp", CommitSHA: "main"}, []string{"server.py"}, 100); err == nil {
 		t.Fatal("mutable source attempted fetch")
+	}
+}
+
+func TestOverlayArtifactContextMergesPinnedTree(t *testing.T) {
+	sha, treeSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	guide, readme := []byte("# Guide\n"), []byte("docs repo\n")
+	blobSHA := func(content []byte) string {
+		h := sha1.New() // #nosec G401 -- fixture Git blob ID.
+		_, _ = fmt.Fprintf(h, "blob %d\x00", len(content))
+		_, _ = h.Write(content)
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/git/commits/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "tree": map[string]any{"sha": treeSHA}})
+		case strings.Contains(r.URL.Path, "/git/trees/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": treeSHA, "tree": []any{
+				map[string]any{"path": "docs/guide.md", "type": "blob", "mode": "100644", "sha": blobSHA(guide), "size": len(guide)},
+				map[string]any{"path": "README.md", "type": "blob", "mode": "100644", "sha": blobSHA(readme), "size": len(readme)},
+				map[string]any{"path": ".env", "type": "blob", "mode": "100644", "sha": blobSHA(readme), "size": len(readme)},
+				map[string]any{"path": "link", "type": "blob", "mode": "120000", "sha": blobSHA(readme), "size": len(readme)},
+			}})
+		default:
+			// docs/ is pruned from primary build contexts; the overlay's full
+			// tree mode must still fetch it.
+			if r.URL.Path == "/example/docs/"+sha+"/docs/guide.md" {
+				_, _ = w.Write(guide)
+				return
+			}
+			if r.URL.Path == "/example/docs/"+sha+"/README.md" {
+				_, _ = w.Write(readme)
+				return
+			}
+			t.Errorf("unexpected raw file %s", r.URL.Path)
+		}
+	}))
+	defer fixture.Close()
+	client := &http.Client{Transport: calendarFixtureTransport{endpoint: fixture.URL, base: http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	source := ArtifactSource{Repository: "https://github.com/example/docs", CommitSHA: sha}
+	var base bytes.Buffer
+	w := tar.NewWriter(&base)
+	_ = w.WriteHeader(&tar.Header{Name: "go.mod", Mode: 0644, Size: 9, Typeflag: tar.TypeReg})
+	_, _ = w.Write([]byte("module x\n"))
+	_ = w.WriteHeader(&tar.Header{Name: "main.go", Mode: 0644, Size: 7, Typeflag: tar.TypeReg})
+	_, _ = w.Write([]byte("package"))
+	_ = w.Close()
+
+	merged, err := overlayArtifactContext(context.Background(), client, source, "cmd/x/external/docs", base.Bytes(), 64<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string][]byte{}
+	var order []string
+	r := tar.NewReader(bytes.NewReader(merged))
+	for {
+		h, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(r)
+		names[h.Name] = data
+		order = append(order, h.Name)
+	}
+	for _, want := range []string{"go.mod", "main.go", "cmd/x/external/docs/docs/guide.md", "cmd/x/external/docs/README.md"} {
+		if _, ok := names[want]; !ok {
+			t.Fatalf("merged context missing %q: %v", want, order)
+		}
+	}
+	if !bytes.Equal(names["cmd/x/external/docs/docs/guide.md"], guide) {
+		t.Fatal("overlay file content changed")
+	}
+	if _, ok := names["cmd/x/external/docs/.env"]; ok {
+		t.Fatal("sensitive overlay file admitted")
+	}
+	if _, ok := names["cmd/x/external/docs/link"]; ok {
+		t.Fatal("overlay symlink admitted")
+	}
+	if order[0] != "go.mod" || order[1] != "main.go" {
+		t.Fatalf("overlay shadowed primary context order: %v", order)
+	}
+	if _, err := overlayArtifactContext(context.Background(), client, source, "cmd/x/external/docs", base.Bytes(), 64<<20); err != nil {
+		t.Fatal("deterministic overlay merge failed")
+	}
+
+	var colliding bytes.Buffer
+	w = tar.NewWriter(&colliding)
+	_ = w.WriteHeader(&tar.Header{Name: "cmd/x/external/docs/README.md", Mode: 0644, Size: 4, Typeflag: tar.TypeReg})
+	_, _ = w.Write([]byte("base"))
+	_ = w.Close()
+	for _, tc := range []struct {
+		into     string
+		base     []byte
+		maxBytes int64
+	}{
+		{"", base.Bytes(), 64 << 20},
+		{"../x", base.Bytes(), 64 << 20},
+		{".hub/x", base.Bytes(), 64 << 20},
+		{"a//b", base.Bytes(), 64 << 20},
+		{"docs/secrets", base.Bytes(), 64 << 20},
+		{"cmd/x/external/docs", nil, 64 << 20},
+		{"cmd/x/external/docs", colliding.Bytes(), 64 << 20},
+		{"cmd/x/external/docs", base.Bytes(), 1},
+	} {
+		if _, err := overlayArtifactContext(context.Background(), client, source, tc.into, tc.base, tc.maxBytes); err == nil {
+			t.Fatalf("accepted unsafe overlay %+v", tc)
+		}
+	}
+	if _, err := OverlayArtifactContext(context.Background(), ArtifactSource{Repository: "https://github.com/example/docs", CommitSHA: "main"}, "x", base.Bytes(), 64<<20); err == nil {
+		t.Fatal("mutable overlay ref accepted")
 	}
 }
 

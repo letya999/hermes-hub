@@ -174,6 +174,9 @@ type DefinitionSource struct {
 	// stdio. Runtime then launches the original entrypoint and the companion
 	// bridges it as an MCP client instead of rewriting args to stdio.
 	NetworkTransport string `json:"network_transport,omitempty"`
+	// ContextSources records the reviewed overlay pins merged into the source
+	// build context; re-review recomputes the digest from the same records.
+	ContextSources []ArtifactOverlay `json:"context_sources,omitempty"`
 }
 
 type ToolSpec struct {

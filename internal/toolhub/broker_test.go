@@ -752,6 +752,155 @@ func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
 	}
 }
 
+// A connection whose broker credential was revoked (e.g. its onboarding was
+// removed after a failed confirm) must not be reused: adopting its dead grant
+// would fail credential materialization at confirm. The reuse check verifies
+// the credential at the broker and falls back to a fresh request.
+func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
+	for _, scenario := range []string{"active", "revoked"} {
+		t.Run(scenario, func(t *testing.T) {
+			_, private, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+			if err := os.WriteFile(keyPath, private, 0600); err != nil {
+				t.Fatal(err)
+			}
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
+					_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", ConnectionID: "conn-existing", Status: scenario})
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+					requests++
+					_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_2", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "conn-existing", Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_2"})
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_2":
+					_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_2", ContractID: "github-pat", ContractRevision: 1, Status: "pending"})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			auth := aliceAuth()
+			definition := remoteDefinition()
+			definition.DefinitionID = "github-work"
+			definition.CredentialContractID = "github-pat"
+			definition.CredentialContractRevision = 1
+			definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+			store := NewStore()
+			if err := store.RegisterDefinition(definition); err != nil {
+				t.Fatal(err)
+			}
+			old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+			if err := store.PutCredentialReference(old); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+			control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
+			onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "reinstall", definition, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := control.ensureBrokerRequest(t.Context(), auth, &onboarding, definition); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "active" {
+				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Phase != PhaseAwaitingConfirm {
+					t.Fatalf("live credential was not reused: requests=%d onboarding=%+v", requests, onboarding)
+				}
+				return
+			}
+			if requests != 1 || onboarding.BrokerRequestID != "request_2" || onboarding.BrokerCredentialID == "credential_1" || onboarding.Phase == PhaseAwaitingConfirm {
+				t.Fatalf("revoked credential was reused: requests=%d onboarding=%+v", requests, onboarding)
+			}
+		})
+	}
+}
+
+// Reusing a connection across a definition upgrade keeps the credential but
+// must re-mint the broker grant: the grant is scoped to the deterministic
+// binding ID, which folds in the definition version. The previous code took
+// the locator-equal fast path and presented the stale grant at admission —
+// the broker denied Acquire (403) because the new binding ID did not match.
+func TestMaterializeBindingRegrantsForNewDefinitionVersion(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var revoked, granted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/grants/grant_1/revoke":
+			revoked = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/credentials/credential_1/grants":
+			granted = true
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_2", CredentialID: "credential_1", Active: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	auth := aliceAuth()
+	stale := remoteDefinition()
+	stale.DefinitionID = "github-work"
+	stale.Version = "1.0.0"
+	stale.CredentialContractID = "github-pat"
+	stale.CredentialContractRevision = 1
+	stale.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GOOGLE_TOKEN"}
+	upgraded := stale
+	upgraded.Version = "1.0.1"
+	store := NewStore()
+	if err := store.RegisterDefinition(stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterDefinition(upgraded); err != nil {
+		t.Fatal(err)
+	}
+	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+	if err := store.PutCredentialReference(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: stale.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: stale.DefinitionID, DefinitionVersion: stale.Version, ConnectionID: "conn-existing", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: stale.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error { return nil }}
+	onboarding := Onboarding{OnboardingID: "onboard-upgrade", Locator: "credential_1", BrokerCredentialID: "credential_1", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	next, err := control.materializeBinding(t.Context(), auth, onboarding, upgraded)
+	if err != nil {
+		t.Fatalf("upgrade materialization rejected: %v", err)
+	}
+	if !revoked || !granted {
+		t.Fatalf("grant was not re-minted for the new binding: revoked=%v granted=%v", revoked, granted)
+	}
+	if next.DefinitionVersion != "1.0.1" || next.CredentialRevision != 2 || next.ConnectionID != "conn-existing" {
+		t.Fatalf("unexpected upgraded binding: %+v", next)
+	}
+	reference := store.credentials[next.CredentialRefID]
+	if reference.BrokerGrantID != "grant_2" || reference.Locator != "credential_1" {
+		t.Fatalf("new binding kept stale grant: %+v", reference)
+	}
+}
+
 func TestEnableAfterRevokeAllowsNewConnection(t *testing.T) {
 	store := NewStore()
 	auth := aliceAuth()

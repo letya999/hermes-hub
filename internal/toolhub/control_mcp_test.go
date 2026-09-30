@@ -110,6 +110,13 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 	definition.Version = "0.0.2"
 	definition.Source.Repository = "https://github.com/example/mcp"
 	definition.Source.CommitSHA = "0123456789abcdef0123456789abcdef01234567"
+	// Reuse requires an intact confirmed tool contract; stamp a consistent one.
+	definition.Source.ToolContractSource = ToolContractReviewManifest
+	digest, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractReviewManifest, Tools: definition.Tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.Source.ToolContractDigest = digest
 	fix := newControlFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
 		t.Fatal("retry rebuilt an immutable source instead of reusing it")
 		return SourceReview{}, nil

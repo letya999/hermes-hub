@@ -134,7 +134,7 @@ func FetchRepositoryArtifactContext(ctx context.Context, source ArtifactSource, 
 	transport.Proxy = nil
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, false)
+	return fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, false, false)
 }
 
 // FetchRepositoryRecipeContext includes only the two additional metadata
@@ -145,14 +145,17 @@ func FetchRepositoryRecipeContext(ctx context.Context, source ArtifactSource, ma
 	transport.Proxy = nil
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, true)
+	return fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, true, false)
 }
 
 func fetchArtifactContext(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64) ([]byte, error) {
-	return fetchArtifactContextMode(ctx, client, source, files, maxBytes, false, false)
+	return fetchArtifactContextMode(ctx, client, source, files, maxBytes, false, false, false)
 }
 
-func fetchArtifactContextMode(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64, discover, recipeMetadata bool) ([]byte, error) {
+// fetchArtifactContextMode walks the verified commit tree. full admits every
+// safe path, including documentation trees that artifactAutoBuildPath prunes
+// for the primary source — used for declared overlay sources only.
+func fetchArtifactContextMode(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64, discover, recipeMetadata, full bool) ([]byte, error) {
 	if _, err := source.ArchiveURL(); err != nil {
 		return nil, err
 	}
@@ -233,7 +236,10 @@ func fetchArtifactContextMode(ctx context.Context, client *http.Client, source A
 					outputName = entry.Path
 				}
 			}
-			if entry.Type == "tree" || outputName == "" || (!artifactContextPath(outputName) && !(recipeMetadata && recipeContextPath(outputName))) || (!recipeMetadata && !artifactAutoBuildPath(outputName)) {
+			// Only fetchable regular blobs are admitted automatically. Symlinks,
+			// gitlinks and other special entries cannot contribute content to the
+			// build context; explicitly declared files still fail closed below.
+			if entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") || outputName == "" || (!artifactContextPath(outputName) && !(recipeMetadata && recipeContextPath(outputName))) || (!recipeMetadata && !full && !artifactAutoBuildPath(outputName)) || (!recipeMetadata && artifactBinaryAssetPath(outputName)) {
 				continue
 			}
 			if wanted[entry.Path] || len(files) >= 4096 {
@@ -278,18 +284,34 @@ func fetchArtifactContextMode(ctx context.Context, client *http.Client, source A
 				segments[i] = url.PathEscape(segments[i])
 			}
 			endpoint := "https://raw.githubusercontent.com/" + strings.TrimPrefix(source.Repository, "https://github.com/") + "/" + source.CommitSHA + "/" + strings.Join(segments, "/")
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-			if err != nil {
-				return nil, err
+			// Large blobs occasionally arrive truncated under parallel workers;
+			// a bounded retry keeps real mismatches fail-closed while absorbing
+			// transient stalls. The digest check below verifies every body anyway.
+			var last error
+			for attempt := 0; attempt < 3; attempt++ {
+				request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+				if err != nil {
+					return nil, err
+				}
+				response, err := client.Do(request)
+				if err != nil {
+					last = fmt.Errorf("artifact source request failed")
+					continue
+				}
+				data, err = io.ReadAll(io.LimitReader(response.Body, entry.size+1))
+				status := response.StatusCode
+				_ = response.Body.Close()
+				if status == http.StatusOK && err == nil && int64(len(data)) == entry.size {
+					last = nil
+					break
+				}
+				last = fmt.Errorf("%w: source file %s status=%d got=%d want=%d", ErrInvalid, name, status, len(data), entry.size)
+				if ctx.Err() != nil {
+					return nil, last
+				}
 			}
-			response, err := client.Do(request)
-			if err != nil {
-				return nil, fmt.Errorf("artifact source request failed")
-			}
-			data, err = io.ReadAll(io.LimitReader(response.Body, entry.size+1))
-			_ = response.Body.Close()
-			if response.StatusCode != http.StatusOK || err != nil || int64(len(data)) != entry.size {
-				return nil, fmt.Errorf("%w: source file status or size mismatch", ErrInvalid)
+			if last != nil {
+				return nil, last
 			}
 		} else {
 			var blob struct {
@@ -387,6 +409,25 @@ func artifactAutoBuildPath(name string) bool {
 	return len(parts) == 0 || (parts[0] != "docs" && parts[0] != "documentation")
 }
 
+// artifactBinaryAssetPath marks binary asset extensions. They are never
+// compile inputs, and large blobs are the files most likely to stall
+// mid-body over raw.githubusercontent.com. Discover-mode fetches (generated
+// contexts and pinned overlays) skip them; explicitly declared files still
+// fetch and verify.
+func artifactBinaryAssetPath(name string) bool {
+	switch path.Ext(strings.ToLower(name)) {
+	case ".gif", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".bmp", ".tiff",
+		".mp4", ".webm", ".mov", ".avi", ".mp3", ".wav",
+		".pdf", ".epub",
+		".woff", ".woff2", ".ttf", ".otf", ".eot",
+		".zip", ".gz", ".xz", ".bz2", ".7z", ".tar", ".rar",
+		".jar", ".war", ".bin", ".exe", ".dll", ".so", ".dylib", ".wasm",
+		".sqlite", ".db":
+		return true
+	}
+	return false
+}
+
 // CopyArtifactContext exports only explicitly reviewed regular files. It never
 // extracts upstream paths onto the host and rejects links/devices even when a
 // recipe asks for them. Caller supplies a decompressed, bounded source archive.
@@ -434,4 +475,65 @@ func CopyArtifactContext(dst io.Writer, src io.Reader, prefix string, files []st
 		return fmt.Errorf("%w: declared context files missing", ErrInvalid)
 	}
 	return w.Close()
+}
+
+// OverlayArtifactContext fetches a second pinned repository and merges it into
+// an existing build context under a clean prefix. Prepared entries declare it
+// for upstream vendoring steps a plain tree fetch cannot reproduce — embedded
+// documentation trees, generated assets — with the same commit pinning, blob
+// verification and context-path safety as the primary source.
+func OverlayArtifactContext(ctx context.Context, source ArtifactSource, into string, base []byte, maxBytes int64) ([]byte, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return overlayArtifactContext(ctx, client, source, into, base, maxBytes)
+}
+
+func overlayArtifactContext(ctx context.Context, client *http.Client, source ArtifactSource, into string, base []byte, maxBytes int64) ([]byte, error) {
+	if into == "" || !validGitHubSubfolder(into) || into == ".hub" || strings.HasPrefix(into, ".hub/") || len(base) == 0 || len(base) > 128<<20 || maxBytes < 1 || maxBytes > 64<<20 {
+		return nil, fmt.Errorf("%w: unsafe context overlay", ErrInvalid)
+	}
+	overlay, err := fetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, false, true)
+	if err != nil {
+		return nil, err
+	}
+	var merged bytes.Buffer
+	w := tar.NewWriter(&merged)
+	seen := map[string]bool{}
+	remaining := maxBytes
+	copyFrom := func(data []byte, prefix string) error {
+		r := tar.NewReader(bytes.NewReader(data))
+		for {
+			h, err := r.Next()
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("%w: malformed context archive", ErrInvalid)
+			}
+			name := prefix + h.Name
+			if h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > remaining || !artifactContextPath(name) || seen[name] {
+				return fmt.Errorf("%w: duplicate, non-regular or oversized context file", ErrInvalid)
+			}
+			seen[name] = true
+			remaining -= h.Size
+			if err := w.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: h.Size, Typeflag: tar.TypeReg}); err != nil {
+				return err
+			}
+			if _, err := io.CopyN(w, r, h.Size); err != nil {
+				return err
+			}
+		}
+	}
+	if err := copyFrom(base, ""); err != nil {
+		return nil, err
+	}
+	if err := copyFrom(overlay, into+"/"); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return merged.Bytes(), nil
 }
