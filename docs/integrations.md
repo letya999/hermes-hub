@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-28
+last_verified: 2026-09-30
 ---
 # Integration contracts
 
@@ -215,7 +215,10 @@ groups on that form. The groups persist on the definition as
 `credential_groups`; onboarding submits, binding resolution and workload
 admission all accept one complete group instead of demanding every declared
 required name. `tools/list` runs again only after the form is submitted,
-with the real values and with network egress on that second probe alone. An
+with the real values and with network egress on that second probe — plus,
+for a reviewed prepared entry that declares `preflight_network`, on the
+placeholder-only first probe when the server must reach its API (a remote
+schema fetch at startup) before it can answer `tools/list` at all. An
 error that names no secret stays a hard failure — except one bounded case: a
 server that answers `tools/list` with a valid response carrying zero tools
 while the definition already declares required inputs (mcp-atlassian lists

@@ -61,6 +61,11 @@ type PreparedEntry struct {
 	// servers that exit without any configuration. The owner's submitted
 	// secrets always win and this map never reaches the workload.
 	PreflightEnvironment map[string]string `json:"preflight_environment,omitempty"`
+	// PreflightNetwork lets a reviewed entry run the unauthenticated
+	// tools/list probe with egress: some servers must fetch a remote schema
+	// before they can speak MCP at all. The credentialed probe already runs
+	// with network; unprepared sources keep --network none.
+	PreflightNetwork bool `json:"preflight_network,omitempty"`
 	// ContextSources merges additional pinned repositories into the build
 	// context — the reviewed equivalent of a Makefile vendoring step.
 	ContextSources []ArtifactOverlay `json:"context_sources,omitempty"`

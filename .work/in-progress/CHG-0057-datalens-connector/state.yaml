@@ -1,0 +1,20 @@
+schema: 1
+id: CHG-0057-datalens-connector
+title: Prepared DataLens connector (issue 120)
+status: in_progress
+phase: implementation
+started_at: 2026-09-30
+updated_at: 2026-09-30
+completed:
+  - branch feat/datalens-connector-120 off dev
+  - candidate comparison; selected datalens-tech/datalens-mcp @96b3d6b (MIT,
+    official org, live OpenAPI schema has full x-mcp-scope classification)
+pending:
+  - generic preflight_network flag for reviewed prepared entries
+  - catalog entry + datalens-iam broker contract
+  - catalog/recipe unit coverage (10 entries)
+  - docs: prepared-connectors runbook, integrations.md probe note, SPEC-0028
+  - just check
+deferred:
+  - live lifecycle evidence (build, initialize, real read, reconnect, rotate,
+    revoke, upgrade, two-user isolation) — needs Docker + real DataLens creds
