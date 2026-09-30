@@ -14,5 +14,6 @@ coverage.out
 **/.ruff_cache/
 .env
 secrets.env
+docker/observability/.secrets/
 *.log
 .DS_Store

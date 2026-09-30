@@ -44,6 +44,15 @@ type ArtifactImportConfig struct {
 	Workload                   WorkloadPolicy
 	Execution                  ExecutionPolicy
 	Health                     HealthProbe
+	// ContextSources merges additional pinned repositories into the build
+	// context for upstream vendoring steps a tree fetch cannot reproduce.
+	ContextSources []ArtifactOverlay
+}
+
+// ArtifactOverlay is a reviewed second source merged under a clean prefix.
+type ArtifactOverlay struct {
+	Source ArtifactSource `json:"source"`
+	Into   string         `json:"into"`
 }
 
 type ImportedArtifact struct {
@@ -68,6 +77,7 @@ type artifactReviewContract struct {
 	Workload                   WorkloadPolicy
 	Execution                  ExecutionPolicy
 	Health                     HealthProbe
+	ContextSources             []ArtifactOverlay
 }
 
 // ImportGitHubArtifact performs the complete source→recipe→isolated OCI path.
@@ -84,6 +94,11 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	contextBytes, err := FetchRepositoryArtifactContext(ctx, source, 64<<20)
 	if err != nil {
 		return ImportedArtifact{}, err
+	}
+	for _, overlay := range config.ContextSources {
+		if contextBytes, err = OverlayArtifactContext(ctx, overlay.Source, overlay.Into, contextBytes, 64<<20); err != nil {
+			return ImportedArtifact{}, err
+		}
 	}
 	if len(config.Execution.Egress) == 0 {
 		config.Execution.Egress = discoverOpenAPIEgress(contextBytes)
@@ -120,6 +135,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 			Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA,
 			ArchiveDigest: artifact.ArchiveDigest, ProvenanceDigest: artifact.Evidence.ProvenanceDigest,
 			SBOMDigest: artifact.Evidence.SBOMDigest, RecipeDigest: recipeDigest, ReviewDigest: reviewDigest,
+			ContextSources: append([]ArtifactOverlay(nil), config.ContextSources...),
 		},
 		Tools: append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialGroups: cloneStringGroups(config.CredentialGroups), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...),
 		RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: append([]string(nil), config.ProxyEnvironment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
@@ -522,7 +538,7 @@ func reviewDigest(source ArtifactSource, recipe ArtifactRecipe, artifact StoredO
 		Recipe   ArtifactRecipe
 		Artifact StoredOCIArtifact
 		Contract artifactReviewContract
-	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialGroups, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.RuntimeEnvironment, config.ProxyEnvironment, config.Workload, config.Execution, config.Health}}
+	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialGroups, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.RuntimeEnvironment, config.ProxyEnvironment, config.Workload, config.Execution, config.Health, config.ContextSources}}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -539,6 +555,7 @@ func reviewDigestForImported(imported ImportedArtifact) (string, error) {
 		Entrypoint:  append([]string{imported.Definition.Source.Command}, imported.Definition.Source.Args...),
 		Credentials: imported.Definition.Credentials, CredentialGroups: imported.Definition.CredentialGroups, CredentialContractID: imported.Definition.CredentialContractID, CredentialContractRevision: imported.Definition.CredentialContractRevision, CredentialContractEnv: imported.Definition.CredentialContractEnv, Environment: imported.Definition.Environment,
 		RuntimeEnvironment: imported.Definition.RuntimeEnvironment, ProxyEnvironment: imported.Definition.ProxyEnvironment, Workload: imported.Definition.Workload, Execution: imported.Definition.Execution, Health: imported.Definition.Health,
+		ContextSources: append([]ArtifactOverlay(nil), imported.Definition.Source.ContextSources...),
 	}
 	return reviewDigest(source, imported.Recipe, imported.Artifact, config)
 }

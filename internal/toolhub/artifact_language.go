@@ -232,12 +232,19 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		lines = append(lines, "RUN "+runPrefix+"cargo build --release --locked")
 		automatic = [][]string{{"/app/target/release/" + name}}
 	}
+	inferred := automatic
+	if len(inferred) == 1 {
+		inferred = [][]string{upstreamEntrypointArgs(files, append([]string(nil), inferred[0]...), goMainBase)}
+	}
 	if len(entrypoint) == 0 {
-		if len(automatic) != 1 {
+		if len(inferred) != 1 {
 			return ArtifactRecipe{}, nil, fmt.Errorf("%w: ambiguous MCP entrypoint; select literal argv", ErrInvalid)
 		}
-		entrypoint = append([]string(nil), automatic[0]...)
-		entrypoint = upstreamEntrypointArgs(files, entrypoint, goMainBase)
+		entrypoint = inferred[0]
+	} else {
+		if len(inferred) != 1 || len(inferred[0]) > len(entrypoint) || !slices.Equal(inferred[0], entrypoint[:len(inferred[0])]) {
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: reviewed entrypoint argv must extend the inferred one", ErrStale)
+		}
 	}
 	argv, _ := json.Marshal(entrypoint)
 	lines = append(lines, "USER 10001:10001", "CMD []", "ENTRYPOINT "+string(argv))
