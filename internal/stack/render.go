@@ -156,6 +156,9 @@ func Config(s Settings) M {
 	display := M{"busy_input_mode": "queue", "long_running_notifications": true}
 	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 	cfg["auxiliary"] = M{"vision": M{"provider": "main", "timeout": 30, "download_timeout": 15, "max_concurrency": media.InspectConcurrency}}
+	if web := s.Web.config(); len(web) > 0 {
+		cfg["web"] = web
+	}
 	if s.Has("image_gen") {
 		if gen, err := s.ImageGen.Normalize(); err == nil {
 			cfg["image_gen"] = M{"provider": gen.Provider, "model": gen.Model, "delivery": gen.Delivery}

@@ -639,10 +639,66 @@ archive.
 
 An httptest double of these endpoints is not a live provider call.
 
+## Web search and research
+
+The web capability is the upstream Hermes `web` toolset (`web_search`,
+`web_extract`), configured — not reimplemented — by the hub. Provider code
+lives upstream in `plugins/web/<vendor>/provider.py`; the hub never embeds a
+search vendor client or an HTML extractor.
+
+`settings.yaml` `web:` selects providers and policy; every field is optional
+and only set fields reach the rendered config:
+
+```yaml
+web:
+  backend: ""              # shared provider, e.g. tavily
+  search_backend: ""       # search override: tavily, exa, parallel,
+                           # perplexity, firecrawl, searxng, brave-free,
+                           # ddgs, keenable, xai, nous
+  extract_backend: ""      # extract override: tavily, exa, parallel,
+                           # perplexity, firecrawl, keenable
+  keyless_fallback: true   # anonymous free-tier ring as last resort
+  keyless_rescue: true     # one-shot keyless retry of a failed keyed call
+  extract_char_limit: 15000
+  provider_tier: {}        # exa/parallel/firecrawl/keenable: free|paid
+  cache_enabled: true
+  cache_ttl_minutes: 20
+  cache_exempt_hosts: []   # exact, *.wildcard, or domain suffix
+  research:                # bounds the web-deep-research skill reads
+    max_rounds: 2          # ceiling 4
+    queries_per_round: 3   # ceiling 5
+    pages_per_round: 4     # ceiling 8
+    max_pages: 12          # ceiling 24
+    deadline_minutes: 10   # ceiling 30
+```
+
+Provider keys and endpoints are runtime secrets: `secrets.<env>.env` or the
+protected self-env form delivers `TAVILY_API_KEY`, `EXA_API_KEY`,
+`PARALLEL_API_KEY`, `PERPLEXITY_API_KEY`, `FIRECRAWL_API_KEY`,
+`FIRECRAWL_API_URL`, `BRAVE_SEARCH_API_KEY`, `KEENABLE_API_KEY`,
+`SEARXNG_URL`, `XAI_API_KEY` (plus optional `TAVILY_BASE_URL`,
+`PERPLEXITY_BASE_URL`). They never appear in prompts, tool arguments, or
+results; `hubctl doctor` names a missing required env for `searxng` and
+`firecrawl`. With no key at all, `ddgs` and the keyless ring keep search and
+extraction working anonymously; no browser profile participates.
+
+The bundled `web-deep-research` skill (`config/skills/`) is the bounded
+research workflow: brief → capped rounds of `web_search` → `web_extract` →
+distilled per-source notes in `research/<slug>/notes.md` → a cited report with
+`Sources` and an explicit `Limitations` section. Bounds come from
+`web.research` and can only tighten the ceilings. Pages and snippets are
+untrusted data: instructions inside them are never executed, URLs carrying
+credential-like parameters are refused, and private-network targets,
+redirected payloads, oversized or binary bodies, and unsupported schemes fail
+closed upstream. The anonymous `browser_guest` profile is the documented
+fallback only when extraction cannot satisfy a needed source.
+[SPEC-0035](../specs/active/SPEC-0035-web-research.md) is the contract.
+
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
+| Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `web-deep-research` skill |
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |

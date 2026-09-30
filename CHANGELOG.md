@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added the standard web capability (issue #123): `settings.yaml` `web:` now
+  configures the upstream Hermes `web_search`/`web_extract` providers
+  (tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs,
+  keenable, xai, nous) with validated backend names, provider tiers, keyless
+  and cache policy. Provider keys reach the runtime through secrets env or the
+  protected self-env form, never prompts. Added the bundled
+  `web-deep-research` skill: a bounded brief → search/extract rounds → notes →
+  cited report loop whose `web.research` limits can only tighten the ceilings
+  (4 rounds / 24 pages / 30 minutes).
 - Added a prepared DataLens connector (issue #120): exact-source entry for the
   official `datalens-tech/datalens-mcp` @96b3d6b (MIT). Five-tool gateway with
   server-side OpenAPI `x-mcp-scope` enforcement — read/write/privileged stay

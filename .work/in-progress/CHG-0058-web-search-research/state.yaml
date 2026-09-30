@@ -1,0 +1,23 @@
+schema: 1
+id: CHG-0058-web-search-research
+title: Web search and bounded deep research (issue 123)
+status: in_progress
+phase: implementation
+started_at: 2026-10-01
+updated_at: 2026-10-01
+completed:
+  - branch feat/web-research-123 off dev
+  - web settings block with upstream provider catalog validation
+    (search/extract capability split, tiered providers, research ceilings)
+  - rendered web: config section + self-env allowlist for configured keys
+  - web-deep-research skill: brief -> bounded rounds -> notes -> cited report
+    with explicit Limitations; reads bounds from mounted config
+  - doctor hints for providers with no anonymous path; secrets template keys
+  - SPEC-0035, specs index, integrations.md section, architecture.md pointer,
+    CHANGELOG
+  - just check green (race, coverage 85.06%, format, vet, staticcheck, docs,
+    actionlint)
+  - just docker-check green (both images, smoke, pinned 0.21.0 API contract)
+deferred:
+  - live provider smoke (keyed search/extract, fallback, partial failure) —
+    needs real provider credentials; anonymous ddgs path is upstream-tested
