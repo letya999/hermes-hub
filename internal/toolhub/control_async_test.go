@@ -62,6 +62,90 @@ func TestPrepareSelfInstallAsyncReturnsPreparingThenCompletes(t *testing.T) {
 	}
 }
 
+func TestPrepareSelfInstallURLContractStillAwaitsCredentials(t *testing.T) {
+	// A required URL field is not secret-named, so credentialHints returns
+	// nothing and newOnboarding picks awaiting-confirm; the recipe overwrite
+	// then repopulates Required. The phase must follow the final Required set
+	// or confirm deadlocks on a locator that can never be submitted.
+	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+		definition := userMCPDefinition()
+		definition.Credentials = []CredentialInput{{Name: "UPSTREAM_URL", Required: true}}
+		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review",
+			Recipe: &RecipeResolution{Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "UPSTREAM_URL", Type: "url", Required: true, Secret: false, Delivery: "env", Target: "UPSTREAM_URL"}}}}}, nil
+	})
+	control.PrepareSyncWindow = -1
+	body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "url-contract"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["phase"] != PhaseAwaitingCreds {
+		t.Fatalf("url-only contract skipped credentials phase: %v", body["phase"])
+	}
+	onboarding, ok := control.Store.FindOnboardingByKey(aliceAuth(), "url-contract")
+	if !ok || onboarding.Phase != PhaseAwaitingCreds || len(onboarding.Required) != 1 || onboarding.ConfirmationNonce != "" {
+		t.Fatalf("deadlocked onboarding persisted: %+v", onboarding)
+	}
+}
+
+func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
+	// A stored definition whose confirmed tool contract no longer verifies
+	// (for example, stamped by an older pipeline) must not be reused: it can
+	// only fail admission with a digest-drift error. Reuse skips re-review, so
+	// the intact check has to happen before the reuse decision.
+	stored := ToolDefinition{
+		Schema: SchemaVersion, DefinitionID: "mcp", Version: "0.0.2", Transport: ContainerMCP,
+		Source: DefinitionSource{
+			Repository:         "https://github.com/example/mcp",
+			CommitSHA:          "0123456789abcdef0123456789abcdef01234567",
+			Image:              "hermes-artifact/mcp",
+			Digest:             "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ToolContractSource: ToolContractPreflight,
+		},
+		Tools:     []ToolSpec{{Name: "search", Effect: ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		Workload:  WorkloadPolicy{Class: PerUser, Rationale: "user self-install", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+		Execution: ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}},
+		Health:    HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
+	}
+	for _, scenario := range []string{"intact", "drifted"} {
+		t.Run(scenario, func(t *testing.T) {
+			definition := stored
+			if scenario == "intact" {
+				digest, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractPreflight, Tools: definition.Tools})
+				if err != nil {
+					t.Fatal(err)
+				}
+				definition.Source.ToolContractDigest = digest
+			} else {
+				definition.Source.ToolContractDigest = "sha256:" + strings.Repeat("0", 64)
+			}
+			var calls atomic.Int32
+			control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+				calls.Add(1)
+				return SourceReview{Definition: userMCPDefinition()}, nil
+			})
+			if err := control.Store.RegisterDefinition(definition); err != nil {
+				t.Fatal(err)
+			}
+			if err := control.Store.PutPublication(DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
+				t.Fatal(err)
+			}
+			body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "reuse-" + scenario})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "intact" {
+				if calls.Load() != 0 || body["phase"] != PhaseAwaitingConfirm {
+					t.Fatalf("intact contract not reused: calls=%d phase=%v", calls.Load(), body["phase"])
+				}
+				return
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("drifted contract reused instead of re-review: calls=%d", calls.Load())
+			}
+		})
+	}
+}
+
 func TestPrepareSelfInstallAsyncFailureIsDurable(t *testing.T) {
 	release := make(chan struct{})
 	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {

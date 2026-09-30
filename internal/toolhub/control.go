@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -372,7 +374,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	}
 	review := SourceReview{}
 	var err error
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) {
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) {
 		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
@@ -433,6 +435,17 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		copyRecipe := *review.Recipe
 		onboarding.Recipe = &copyRecipe
 		onboarding.Required = credentialHintsForRecipe(review.Definition, review.Recipe.Connection)
+	}
+	// Recipe hints can name required inputs the secret-name heuristic missed —
+	// a URL-only contract needs no token. The phase must reflect the final
+	// Required set or the onboarding deadlocks: confirm rejects a missing
+	// locator while the broker URL only surfaces in awaiting-credentials.
+	if len(onboarding.Required) > 0 && onboarding.Locator == "" && onboarding.Phase == PhaseAwaitingConfirm {
+		onboarding.Phase = PhaseAwaitingCreds
+		onboarding.FormNonce = randomNonce()
+		onboarding.FormExpires = c.now().Add(c.ttl())
+		onboarding.ConfirmationNonce = ""
+		onboarding.ConfirmationExpires = time.Time{}
 	}
 	copyDef := review.Definition
 	onboarding.Definition = &copyDef
@@ -807,12 +820,20 @@ func completeToolSchemas(definition ToolDefinition) bool {
 	return true
 }
 
+// selfInstallContractIntact rejects stored records whose confirmed tool
+// contract no longer verifies. Reuse skips re-review, so a record stamped by
+// an older pipeline would otherwise reach admission and fail there with a
+// digest-drift error. Failing closed here forces a fresh review instead.
+func selfInstallContractIntact(definition ToolDefinition) bool {
+	return verifyDefinitionToolContract(definition) == nil
+}
+
 func (c *ControlPlane) selfInstallUsable(definition ToolDefinition) bool {
 	entry, matched, err := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA, Subfolder: definition.Source.Subfolder})
 	if err != nil {
 		return false
 	}
-	if matched && (definition.Workload.Stateful != entry.Stateful || !maps.Equal(definition.RuntimeEnvironment, entry.RuntimeEnvironment) || definition.CredentialContractID != entry.ContractID || definition.CredentialContractRevision != entry.ContractRevision) {
+	if matched && (definition.Workload.Stateful != entry.Stateful || !maps.Equal(definition.RuntimeEnvironment, entry.RuntimeEnvironment) || definition.CredentialContractID != entry.ContractID || definition.CredentialContractRevision != entry.ContractRevision || definition.Source.Command != entry.Entrypoint[0] || !slices.Equal(definition.Source.Args, entry.Entrypoint[1:])) {
 		return false
 	}
 	return c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 || definition.CredentialContractID != ""
@@ -913,6 +934,10 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 || len(definition.CredentialContractEnv) == 0 {
 		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", ErrUnauthorized, definition.DefinitionID)
 	}
+	control, err := c.Broker.New(auth, "broker:control")
+	if err != nil {
+		return err
+	}
 	if onboarding.BrokerRequestID == "" && onboarding.BrokerRotateCredentialID == "" {
 		if onboarding.BrokerCredentialID != "" {
 			return nil
@@ -925,7 +950,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		}
 		if len(matches) == 1 {
 			ref := matches[0].credential
-			if ref.Backend == "credential-broker" && ref.BrokerContractID == definition.CredentialContractID && ref.BrokerContractRevision == definition.CredentialContractRevision {
+			if ref.Backend == "credential-broker" && ref.BrokerContractID == definition.CredentialContractID && ref.BrokerContractRevision == definition.CredentialContractRevision && brokerCredentialActive(ctx, control, ref.Locator) {
 				onboarding.Locator, onboarding.BrokerCredentialID = ref.Locator, ref.Locator
 				onboarding.BrokerContractID, onboarding.BrokerContractRevision = ref.BrokerContractID, ref.BrokerContractRevision
 				onboarding.Phase = PhaseAwaitingConfirm
@@ -937,10 +962,6 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 				return c.Store.PutOnboarding(*onboarding)
 			}
 		}
-	}
-	control, err := c.Broker.New(auth, "broker:control")
-	if err != nil {
-		return err
 	}
 	if onboarding.BrokerRequestID != "" {
 		// A dead link must not pin the onboarding forever: expired or canceled
@@ -991,6 +1012,20 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		}
 	}
 	return c.refreshBrokerRequest(ctx, auth, onboarding)
+}
+
+// brokerCredentialActive verifies a stored broker credential is still live
+// before a new onboarding reuses it. Revocation happens at the broker, so the
+// toolhub connection record alone cannot prove the credential works.
+func brokerCredentialActive(ctx context.Context, control *brokerclient.Client, id string) bool {
+	if id == "" {
+		return false
+	}
+	var credential brokerv1.Credential
+	if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(id), nil, &credential); err != nil {
+		return false
+	}
+	return credential.Status == "active"
 }
 
 func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding) error {
@@ -1516,7 +1551,12 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		return ToolBinding{}, fmt.Errorf("%w: ambiguous owner connection", ErrUnauthorized)
 	}
 	if len(matches) == 1 {
-		if !rotation && matches[0].credential.Locator == onboarding.Locator {
+		// A reused credential keeps the broker grant minted for the binding it
+		// was issued under. The grant pins the deterministic binding ID — which
+		// includes the definition version — plus the admitting policy epoch, so
+		// a version upgrade must re-mint it through the rotation path instead of
+		// presenting a grant the new binding cannot acquire.
+		if !rotation && matches[0].credential.Locator == onboarding.Locator && (!c.brokerCredentialRequired(definition, onboarding) || c.Store.brokerGrantReusable(auth, definition, matches[0])) {
 			if c.Ready != nil {
 				return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
 			}
@@ -2080,6 +2120,23 @@ func (s *Store) binding(id string) (ToolBinding, error) {
 	return binding, nil
 }
 
+// brokerGrantReusable reports whether the broker grant stored on a reused
+// credential still authorizes the binding this enable would run under. A grant
+// is minted for the deterministic binding ID — which folds in the definition
+// version and credential reference — and pins the admitting policy epoch. A
+// stored binding that still resolves to that identity proves the grant covers
+// it; any version or epoch change requires a fresh grant.
+func (s *Store) brokerGrantReusable(auth identity.Envelope, definition ToolDefinition, match ownerConnectionMatch) bool {
+	if match.credential.BrokerGrantID == "" {
+		return false
+	}
+	id := DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, match.connection.ConnectionID, match.credential.CredentialRefID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	binding, ok := s.bindings[id]
+	return ok && binding.Status != RevokedStatus && binding.PolicyVersion == auth.PolicyVersion
+}
+
 func (s *Store) findBinding(auth identity.Envelope, definition ToolDefinition) *ToolBinding {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2164,18 +2221,19 @@ func credentialHints(definition ToolDefinition) []CredentialHint {
 	hints := make([]CredentialHint, 0, len(definition.Credentials))
 	for _, input := range definition.Credentials {
 		upper := strings.ToUpper(input.Name)
-		if !input.Required || !secretName(input.Name) && !strings.Contains(upper, "OAUTH") && !strings.Contains(upper, "CLIENT_ID") {
+		// Every required stored input gates onboarding, not only secret-named
+		// ones — a URL-only contract otherwise skips the credentials phase and
+		// deadlocks at confirm on a locator that was never collected. Per-request
+		// inputs are supplied at call time, not stored during onboarding.
+		if !input.Required || input.PerRequest {
 			continue
 		}
-		kind := "secret"
+		kind := connectionType(input.Name)
 		delivery := "env"
-		if strings.Contains(upper, "OAUTH") {
-			kind = "oauth"
-		}
 		if strings.Contains(upper, "CREDENTIALS") {
 			kind, delivery = "json", "json"
 		}
-		hints = append(hints, CredentialHint{Name: input.Name, Type: kind, Secret: true, Delivery: delivery, Target: input.Name, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
+		hints = append(hints, CredentialHint{Name: input.Name, Type: kind, Secret: secretName(input.Name), Delivery: delivery, Target: input.Name, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
 	}
 	return hints
 }

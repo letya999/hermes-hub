@@ -1,0 +1,35 @@
+{
+  "id": "prometheus-url",
+  "revision": 2,
+  "title": "Prometheus HTTP endpoint",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "url",
+      "label": "Prometheus base URL (for example https://prometheus.example.com)",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 2048
+    },
+    {
+      "id": "endpoint",
+      "label": "Managed forward target host:port for plain-HTTP Prometheus (optional; HTTPS URLs need no endpoint)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "url",
+      "target": "MCP_SERVER_PROMETHEUS_URL"
+    },
+    {
+      "type": "env",
+      "field": "endpoint",
+      "target": "PROMETHEUS_ENDPOINT"
+    }
+  ]
+}

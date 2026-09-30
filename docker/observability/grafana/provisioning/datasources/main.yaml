@@ -1,0 +1,19 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+  - name: Elasticsearch
+    uid: Elasticsearch
+    type: elasticsearch
+    access: proxy
+    url: http://elasticsearch:9200
+    jsonData:
+      index: "mockapi-*"
+      timeField: "@timestamp"
+      esVersion: "8.19.2"
+      logMessageField: path
+      logLevelField: status

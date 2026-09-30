@@ -61,6 +61,9 @@ type PreparedEntry struct {
 	// servers that exit without any configuration. The owner's submitted
 	// secrets always win and this map never reaches the workload.
 	PreflightEnvironment map[string]string `json:"preflight_environment,omitempty"`
+	// ContextSources merges additional pinned repositories into the build
+	// context — the reviewed equivalent of a Makefile vendoring step.
+	ContextSources []ArtifactOverlay `json:"context_sources,omitempty"`
 	// TCPForwards declares companion loopback forwards; each target_env must
 	// be an env-delivered connection field carrying a host:port endpoint.
 	TCPForwards      []TCPForward     `json:"tcp_forwards,omitempty"`
@@ -174,6 +177,14 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 				return nil, fmt.Errorf("%w: prepared tcp forward target is not an env connection field", ErrInvalid)
 			}
 		}
+		if len(entry.ContextSources) > 4 {
+			return nil, fmt.Errorf("%w: too many prepared context sources", ErrInvalid)
+		}
+		for _, overlay := range entry.ContextSources {
+			if _, overlayErr := overlay.Source.ArchiveURL(); overlayErr != nil || overlay.Into == "" || !validGitHubSubfolder(overlay.Into) || overlay.Into == ".hub" || strings.HasPrefix(overlay.Into, ".hub/") {
+				return nil, fmt.Errorf("%w: unsafe prepared context source", ErrInvalid)
+			}
+		}
 		if len(entry.PreflightEnvironment) > 16 {
 			return nil, fmt.Errorf("%w: prepared preflight environment", ErrInvalid)
 		}
@@ -184,7 +195,7 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		}
 		config := normalizeArtifactImportConfig(entry.apply(defaultSelfInstallConfig(entry.Source)))
 		definition := ToolDefinition{Schema: SchemaVersion, DefinitionID: entry.ID, Version: config.Version, Transport: ContainerMCP,
-			Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + string(bytes.Repeat([]byte("a"), 64))},
+			Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + string(bytes.Repeat([]byte("a"), 64)), ContextSources: append([]ArtifactOverlay(nil), entry.ContextSources...)},
 			Credentials: config.Credentials, CredentialGroups: config.CredentialGroups, CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
 			Environment: config.Environment, RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment, Tools: config.Tools, Workload: config.Workload, Execution: config.Execution, Health: config.Health}
 		if err := definition.Validate(); err != nil {
@@ -221,8 +232,10 @@ func preparedForRepository(repository, subfolder string) (PreparedEntry, bool, e
 
 func (entry PreparedEntry) apply(config ArtifactImportConfig) ArtifactImportConfig {
 	config.Language = entry.Language
-	// The generator still infers the entrypoint; the reviewed value is checked
-	// against its result before preflight, not used as an alternative installer.
+	// The generator still infers the binary and upstream argv tail; the
+	// reviewed argv may only extend that inferred prefix (read-only flags and
+	// similar gates), never point the launch at a different binary.
+	config.Entrypoint = append([]string(nil), entry.Entrypoint...)
 	config.Credentials = entry.Connection.CredentialInputs()
 	config.CredentialGroups = cloneStringGroups(entry.CredentialGroups)
 	config.CredentialContractID, config.CredentialContractRevision = entry.ContractID, entry.ContractRevision
@@ -235,6 +248,7 @@ func (entry PreparedEntry) apply(config ArtifactImportConfig) ArtifactImportConf
 	config.Environment = append([]string(nil), entry.Environment...)
 	config.RuntimeEnvironment = cloneMap(entry.RuntimeEnvironment)
 	config.ProxyEnvironment = append([]string(nil), entry.ProxyEnvironment...)
+	config.ContextSources = append([]ArtifactOverlay(nil), entry.ContextSources...)
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
 	config.Execution.TCPForwards = append([]TCPForward(nil), entry.TCPForwards...)
 	config.Workload.Stateful = entry.Stateful

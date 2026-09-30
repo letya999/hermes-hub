@@ -1,0 +1,59 @@
+{
+  "id": "grafana-sat",
+  "revision": 1,
+  "title": "Grafana service account token",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "url",
+      "label": "Grafana base URL (for example https://grafana.example.com)",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 2048
+    },
+    {
+      "id": "token",
+      "label": "Grafana service account token",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096
+    },
+    {
+      "id": "org_id",
+      "label": "Grafana organization ID (optional; pins all API calls to that org)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 32
+    },
+    {
+      "id": "endpoint",
+      "label": "Managed forward target host:port for plain-HTTP Grafana (optional; HTTPS URLs need no endpoint)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "url",
+      "target": "GRAFANA_URL"
+    },
+    {
+      "type": "env",
+      "field": "token",
+      "target": "GRAFANA_SERVICE_ACCOUNT_TOKEN"
+    },
+    {
+      "type": "env",
+      "field": "org_id",
+      "target": "GRAFANA_ORG_ID"
+    },
+    {
+      "type": "env",
+      "field": "endpoint",
+      "target": "GRAFANA_ENDPOINT"
+    }
+  ]
+}

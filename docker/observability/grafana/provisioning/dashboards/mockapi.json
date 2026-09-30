@@ -1,0 +1,28 @@
+{
+  "uid": "mockapi-main",
+  "title": "MockAPI overview",
+  "schemaVersion": 39,
+  "timezone": "utc",
+  "refresh": "15s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Requests / sec",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "sum by (route, status) (rate(http_requests_total{job=\"mockapi\"}[1m]))", "refId": "A"}]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "p95 latency",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (route, le) (rate(http_request_duration_seconds_bucket{job=\"mockapi\"}[5m])))", "refId": "A"}]
+    },
+    {
+      "id": 3, "type": "logs", "title": "Access log",
+      "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+      "datasource": {"type": "elasticsearch", "uid": "Elasticsearch"},
+      "targets": [{"query": "*", "refId": "A", "metrics": [{"type": "logs"}]}]
+    }
+  ]
+}

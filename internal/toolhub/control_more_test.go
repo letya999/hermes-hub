@@ -287,8 +287,8 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	hints := credentialHints(ToolDefinition{Credentials: []CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}}})
-	if len(hints) != 1 || hints[0].Type != "oauth" {
+	hints := credentialHints(ToolDefinition{Credentials: []CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}, {Name: "CALL_TOKEN", Required: true, PerRequest: true}}})
+	if len(hints) != 2 || hints[0].Type != "oauth" || hints[1].Type != "string" || hints[1].Secret {
 		t.Fatalf("hints=%v", hints)
 	}
 	if argInt(map[string]any{"cpu_millis": int64(3)}, "cpu_millis") != 3 || argInt(map[string]any{"cpu_millis": 4}, "cpu_millis") != 4 {

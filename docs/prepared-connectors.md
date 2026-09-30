@@ -7,7 +7,11 @@ last_verified: 2026-09-27
 The reviewed [catalog](../internal/toolhub/prepared/catalog.json) records exact
 commits, licenses, inferred entrypoints, credential overlays, Broker contracts,
 runtime settings, egress, read tools and user handoffs. New entries require data,
-not provider branches. Live evidence is tracked in
+not provider branches. `context_sources` merges another exact-pinned GitHub
+repository into the build context under a declared prefix — the reviewed
+equivalent of an upstream Makefile vendoring step, with the same blob
+verification and path safety as the primary source; overlay pins are stamped on
+the definition and bound into the review digest. Live evidence is tracked in
 [CHG-0036](../.work/in-progress/CHG-0036-repository-driven-toolhub/plan.md).
 
 Reviewed Broker contracts ship in `internal/toolhub/prepared/contracts/` and
@@ -215,6 +219,73 @@ Handoff: “Install https://github.com/letya999/txttsql-mcp as the reviewed
 read-only SQL engine. Fill the sources JSON and the matching endpoints in the
 protected Broker form, verify list_sources and one safe SELECT, then do not
 change provider data without an explicit instruction.”
+
+## Grafana
+
+Source: [grafana/mcp-grafana](https://github.com/grafana/mcp-grafana), pinned to
+the reviewed commit (Apache-2.0). Generated Go entrypoint `/app/mcp-server`
+on stdio; upstream's HTTP/SSE transports are never enabled — the review
+keeps transport server auth and Grafana credentials disjoint. Broker:
+`grafana-sat`, delivering `GRAFANA_URL`, `GRAFANA_SERVICE_ACCOUNT_TOKEN`,
+optional `GRAFANA_ORG_ID` and non-secret `GRAFANA_ENDPOINT`. For `https://`
+Grafana the URL host joins the egress ACL automatically (mcp-grafana honours
+the standard `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` set). For a plain-HTTP
+Grafana — like the local demo stack — the contract carries the real
+`host:port` in `GRAFANA_ENDPOINT`, a companion `tcp_forwards` listener on
+workload loopback `13000` relays it through Squid CONNECT, and the URL field
+stays `http://127.0.0.1:13000`: the destination lives in the protected form,
+never in tool arguments.
+
+`GRAFANA_SOCKS5_PROXY` is claimed as a deployer-owned environment name on
+purpose: source scanning detects the `*_PROXY` name and would inject the
+HTTP Squid URL into a slot that only accepts `socks5://`/`socks5h://` and
+fails closed otherwise. Upstream usage
+statistics are disabled and the Loki cost guardrail is set to `enforce`
+(`GRAFANA_USAGE_STATS`, `GRAFANA_LOKI_GUARDRAIL_MODE`). The reviewed
+entrypoint argv extends the inferred binary with upstream's own gates —
+`--enabled-tools=search,datasource,dashboard,folder,alerting,prometheus,loki`
+keeps only the read categories and `--disable-write` drops the mutation
+tools inside them, so the projected contract carries no create/update/delete
+and no `grafana_api_request` escape hatch. Verify `list_datasources` (the
+readiness probe), then a bounded `search_dashboards` or `query_prometheus`.
+Rotate by issuing a new service-account token and calling `rotate` on the
+same connection.
+
+Handoff: "Install https://github.com/grafana/mcp-grafana with my existing
+Grafana service account. In the protected Broker form give the Grafana base
+URL and service account token, optionally the organization ID; for a
+plain-HTTP Grafana also give the real host:port endpoint and set the URL to
+the managed forward http://127.0.0.1:13000. Verify list_datasources and a
+bounded read; dashboard or datasource changes stay a separate explicit
+instruction."
+
+## Prometheus
+
+Source: [prometheus/prometheus-mcp](https://github.com/prometheus/prometheus-mcp),
+pinned to the reviewed commit (Apache-2.0). The binary embeds a
+`prometheus/docs` snapshot via `go:embed` that upstream's `make docs` vendors
+before compiling; the entry reproduces it with a reviewed `context_sources`
+overlay — `prometheus/docs` pinned to the Makefile's `DOCS_VERSION` commit,
+merged under `cmd/prometheus-mcp/external/docs`. Generated Go entrypoint
+`/app/mcp-server`; transport stays `stdio`. Broker: `prometheus-url`,
+delivering `MCP_SERVER_PROMETHEUS_URL` (the binary's real env prefix is
+`MCP_SERVER_`) and non-secret `PROMETHEUS_ENDPOINT` for the same
+managed-forward pattern on loopback `19090` (`http://127.0.0.1:19090` in
+the URL field when the target is plain HTTP). The entry registers only
+the read toolset — `MCP_SERVER_MCP_TOOLS=list_targets` keeps the core
+read tools (query, range/metadata/labels/series, docs, runbooks) plus the
+target probe, so dangerous TSDB admin tools are never advertised; the
+`MCP_SERVER_DANGEROUS_ENABLE_TSDB_ADMIN_TOOLS` escape hatch is never set.
+Docs auto-update is off and result truncation is bounded
+(`MCP_SERVER_PROMETHEUS_TRUNCATION_LIMIT=500`). Verify `list_targets`
+(the readiness probe) and one bounded `query`. Remote-write and admin
+operations are a separate grant.
+
+Handoff: "Install https://github.com/prometheus/prometheus-mcp against my
+Prometheus. In the protected Broker form give the base URL; for a
+plain-HTTP Prometheus also give the real host:port endpoint and set the
+URL to the managed forward http://127.0.0.1:19090. Verify list_targets
+and one bounded query; TSDB admin tools stay disabled."
 
 ## DBHub
 
