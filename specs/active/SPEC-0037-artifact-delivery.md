@@ -1,0 +1,33 @@
+# SPEC-0037: Run artifact delivery to chat
+
+Frozen: 2026-10-06. Issue 172.
+
+1. `workspace/artifacts/documents` and `workspace/artifacts/images` are the
+   deliverable area: hub tools place generated files there by contract. On a
+   `completed` run the runtime lists regular, non-symlink files under that
+   root modified inside the run window (mtime >= run start - 2 s), bounded
+   to 8 files of <= 8 MiB each, and attaches `{name, path, mime, size}` refs
+   to the terminal `ExecuteResponse`. Observed/recovered runs without a
+   run-start timestamp list nothing.
+
+2. `POST /v1/artifact` on the runtime serves exactly one file by relative
+   path: two segments, root ∈ {documents, images}, clean basename, Lstat
+   rejects symlinks and non-regular files, `EvalSymlinks` containment is
+   re-verified, size within bounds. The supervisor owns the same path and
+   forwards it to the runtime bound to the request envelope (lookup only, no
+   lease — the gateway asks while the runtime is answering). No user home or
+   workspace is mounted into the communication gateway.
+
+3. The gateway fetches artifact bytes before persisting the terminal
+   delivery receipt, staging them in `outbox/blobs/<delivery-file-id>/`.
+   Each ref on the durable `Delivery` record carries either a `blob` name or
+   an explicit `error`; a file that was generated but never crossed the
+   contract is never silently dropped.
+
+4. `deliverOne` sends artifacts after all text parts, in order, with
+   `sent_artifacts` persisted per artifact — the same sent-boundary semantics
+   as multi-part text. Telegram sends `image/png` and `image/jpeg` via
+   `sendPhoto` with a `sendDocument` fallback, everything else via
+   `sendDocument`. Slack gets one explicit notice line per artifact until a
+   Slack file-upload surface exists. `CompleteDelivery` removes the staged
+   blob directory.

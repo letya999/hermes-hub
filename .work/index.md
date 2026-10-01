@@ -8,7 +8,8 @@ and #74 (Hermes reconnect).
 
 | Change | State |
 |---|---|
-| [CHG-0059](in-progress/CHG-0059-channel-rendering/plan.md) | Issue 166: per-channel Markdown rendering and lossless multi-part replies |
+| [CHG-0060](in-progress/CHG-0060-artifact-delivery/plan.md) | Issue 172: run artifact handoff and chat delivery |
+| [CHG-0059](in-progress/CHG-0059-channel-rendering/plan.md) | Issue 166: per-channel Markdown rendering and lossless multi-part replies — committed, live smoke pending |
 | [CHG-0058](in-progress/CHG-0058-web-search-research/plan.md) | Issue 123: web search and bounded deep research — merged to dev |
 | [CHG-0054](done/CHG-0054-diagnostics-hardening/plan.md) | Diagnostics hardening: ingest redaction, failure isolation, throttles, per-principal caps — shipped (PR #158) |
 | [CHG-0053](done/CHG-0053-user-diagnostics/plan.md) | Issue 125: user-scoped diagnostics control op — shipped (PR #155, #156) |

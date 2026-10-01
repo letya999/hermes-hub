@@ -40,16 +40,19 @@ func TestOpenCredentialSurfaceSkipsLocalStoreWhenBrokerApprovalIsConfigured(t *t
 }
 
 type fakeAPI struct {
-	mu       sync.Mutex
-	updates  []Update
-	sent     []string
-	modes    []string
-	docs     []string
-	voices   []string
-	deleted  []int
-	fileSize int64
-	err      error
-	failOn   int // fail the failOn-th SendMessage call (1-based; 0 = never)
+	mu        sync.Mutex
+	updates   []Update
+	sent      []string
+	modes     []string
+	docs      []string
+	photos    []string
+	voices    []string
+	deleted   []int
+	fileSize  int64
+	err       error
+	failOn    int // fail the failOn-th SendMessage call (1-based; 0 = never)
+	failDocOn int // fail the failOn-th SendDocument call (1-based; 0 = never)
+	photoErr  error
 }
 
 func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
@@ -73,7 +76,22 @@ func (f *fakeAPI) SendMessage(_ context.Context, _ int64, text, parseMode string
 func (f *fakeAPI) SendDocument(_ context.Context, _ int64, name, caption string, data []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	if f.failDocOn > 0 && len(f.docs)+1 == f.failDocOn {
+		return errors.New("document send failed")
+	}
 	f.docs = append(f.docs, name+"\x00"+string(data))
+	return nil
+}
+func (f *fakeAPI) SendPhoto(_ context.Context, _ int64, name, caption string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.photoErr != nil {
+		return f.photoErr
+	}
+	f.photos = append(f.photos, name+"\x00"+string(data))
 	return f.err
 }
 func (f *fakeAPI) DeleteMessage(_ context.Context, _ int64, id int) error {
@@ -667,6 +685,28 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	}
 	if err := files.SendChatAction(context.Background(), 11, "typing"); err != nil {
 		t.Fatal(err)
+	}
+	uploads := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path != "/bottoken/sendPhoto" && r.URL.Path != "/bottoken/sendDocument" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer uploads.Close()
+	upload := newTelegramAPI(uploads.URL, "token", time.Second)
+	if err := upload.SendPhoto(context.Background(), 7, "a.png", "cap", []byte("png-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := upload.SendDocument(context.Background(), 7, "a.md", "", []byte("doc-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := upload.SendPhoto(context.Background(), 7, "a.png", "", nil); err == nil {
+		t.Fatal("empty photo accepted")
 	}
 	config := testConfig(t)
 	runner := HermesRunner{Command: filepath.Join(t.TempDir(), "missing")}
@@ -1382,6 +1422,9 @@ func (r *runAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, erro
 }
 func (r *runAPI) SendMessage(context.Context, int64, string, string) error { return nil }
 func (r *runAPI) SendDocument(context.Context, int64, string, string, []byte) error {
+	return nil
+}
+func (r *runAPI) SendPhoto(context.Context, int64, string, string, []byte) error {
 	return nil
 }
 func (r *runAPI) DeleteMessage(context.Context, int64, int) error { return nil }

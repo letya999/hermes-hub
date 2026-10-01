@@ -1,0 +1,41 @@
+change: CHG-0060-artifact-delivery
+issue: 172
+branch: feat/message-rendering-166
+status: implemented-local
+done:
+  - runtime: run-start timestamp captured on admission; completed terminal
+    event lists artifacts under workspace/artifacts/{documents,images}
+    modified inside the run window (mtime >= start-2s), <=8 files, <=8MiB,
+    regular non-symlink only (scanArtifacts, SPEC-0037)
+  - runtime: POST /v1/artifact serves one artifact after strict path
+    validation (two segments, documents|images root, basename only,
+    Lstat no-symlink, EvalSymlinks containment, size bounds)
+  - supervisor: /v1/artifact forwards to the envelope-bound running runtime
+    (lookup only, no lease; absent runtime -> 404)
+  - gateway: attachArtifacts fetches bytes into outbox/blobs/<delivery-id>
+    before the terminal receipt persists; fetch failure -> explicit
+    ArtifactRef.error, never silent
+  - Delivery carries artifacts + sent_artifacts; deliverOne sends them after
+    text parts with durable per-artifact progress; Telegram png/jpeg ->
+    sendPhoto with sendDocument fallback, rest -> sendDocument; Slack ->
+    explicit notice line (upload deferred); CompleteDelivery removes blobs
+  - tests: runtime scan window/safety + endpoint auth/traversal/symlink/
+    missing/serve; gateway staging, ordered doc+photo send, partial-failure
+    boundary + resume, error-ref notice; supervisor forward/binding/auth/404
+  - SPEC-0037 + index, architecture.md note, CHANGELOG, work index
+done_extra:
+  - fixed pre-existing toolhub flake: intact-contract reuse test now uses
+    PrepareSyncWindow=-1 so the sync assertion cannot race the 50ms window
+gates:
+  - just check green (coverage 85.06%, race+shuffle on)
+  - just security not re-run: no dependency changes since 90c9e90 (goldmark,
+    already scanned)
+  - docker-check deferred: no Docker runtime on this host (unchanged)
+in_progress:
+  - commit
+deferred:
+  - Slack file upload (files.getUploadURLExternal)
+  - artifact fetch for recovered/observed runs (no run-start attribution)
+  - parallel-context attribution: contexts share one workspace, a file created
+    by another context inside the window may ride this run's delivery
+  - live Telegram photo/document + Slack notice smoke (deployment acceptance)

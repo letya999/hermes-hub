@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Artifact delivery to chat (issue #172): a completed run attaches refs for
+  files written under `workspace/artifacts/{documents,images}` during the run
+  window; the gateway fetches bytes through the new bounded `POST /v1/artifact`
+  runtime endpoint (envelope-routed at the supervisor) into `outbox/blobs`, and
+  `deliverOne` sends them after the text parts as Telegram photos/documents
+  with durable `sent_artifacts` progress. Slack receives an explicit
+  per-artifact notice until a Slack file-upload surface exists. Fetched
+  failures produce an explicit notice — a generated file is never silently
+  lost. Staged blobs are removed when the delivery completes.
 - Channel-specific rendering for model replies (issue #166): Markdown is
   parsed once and rendered per channel — Telegram `sendMessage` now uses
   `parse_mode=HTML` and Slack gets mrkdwn — so `###`/`**`/backticks no longer

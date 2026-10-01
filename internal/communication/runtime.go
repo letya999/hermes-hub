@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -119,6 +120,11 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 					return err
 				}
 			}
+			// Artifact bytes are fetched while the runtime is still answering;
+			// the persisted receipt then carries staged blobs or explicit errors.
+			if event.Status == "completed" && len(event.Artifacts) > 0 {
+				r.attachArtifacts(jobCtx, job, &event)
+			}
 			if err := r.Spool.RecordStreamEvent(job, event); err != nil {
 				return err
 			}
@@ -162,6 +168,9 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		}
 		var persistErr error
 		if terminalStatus(result.Status) && result.RunID != "" && result.SessionID != "" && result.RuntimeGeneration != "" {
+			if result.Status == "completed" && len(result.Artifacts) > 0 {
+				r.attachArtifacts(jobCtx, job, &result)
+			}
 			if r.Resume {
 				mapping, ok, err := r.Spool.Mapping(job.ID)
 				if err != nil || !ok {
@@ -189,6 +198,69 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		return outcomeFromEvent(result), errors.New("hermes run ended without completion")
 	}
 	return RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent}, nil
+}
+
+// attachArtifacts stages each terminal-event artifact in the spool under the
+// delivery's stable ID. Fetch failures become explicit per-file errors so a
+// generated file that never crossed the contract is still surfaced in chat.
+func (r HTTPRunner) attachArtifacts(ctx context.Context, job Job, event *hubruntime.ExecuteResponse) {
+	if r.Spool == nil {
+		for i := range event.Artifacts {
+			event.Artifacts[i].Error = "artifact staging unavailable"
+		}
+		return
+	}
+	deliveryID := "job-" + job.ID + "-response"
+	for i := range event.Artifacts {
+		ref := &event.Artifacts[i]
+		data, err := r.fetchArtifact(ctx, job, ref.Path)
+		if err != nil {
+			ref.Error = "artifact unavailable: " + err.Error()
+			continue
+		}
+		blob, err := r.Spool.WriteDeliveryBlob(deliveryID, fmt.Sprintf("%d-%s", i, filepath.Base(ref.Name)), data)
+		if err != nil {
+			ref.Error = "artifact staging failed"
+			continue
+		}
+		ref.Blob = blob
+	}
+}
+
+// fetchArtifact requests one artifact from the runtime that ran the job. The
+// supervisor resolves the envelope to that runtime; a resident runtime ignores
+// it. The job's own identity keeps the file bound to its owner.
+func (r HTTPRunner) fetchArtifact(ctx context.Context, job Job, name string) ([]byte, error) {
+	body, err := json.Marshal(hubruntime.ArtifactRequest{ExecuteRequest: hubruntime.ExecuteRequest{
+		Envelope: job.Envelope, JobID: job.ID, OrganizationID: job.OrganizationID,
+		UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID,
+		Channel: job.Channel, Trigger: job.Trigger, IdempotencyKey: job.IdempotencyKey,
+	}, Name: name})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(r.URL, "/")+"/v1/artifact", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+r.Auth)
+	response, err := r.client().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("artifact fetch returned HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, mediaSizeLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > mediaSizeLimit {
+		return nil, errors.New("artifact size outside delivery bounds")
+	}
+	return data, nil
 }
 
 func (r HTTPRunner) timeout() time.Duration {

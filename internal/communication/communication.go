@@ -482,11 +482,15 @@ type Delivery struct {
 	// PartCount/SentParts persist multi-part progress so a mid-sequence failure
 	// leaves an uncertain delivery with an exact sent boundary; SourceSent marks
 	// the optional raw-source document part of the same ordered sequence.
-	PartCount  int       `json:"part_count,omitempty"`
-	SentParts  int       `json:"sent_parts,omitempty"`
-	SourceSent bool      `json:"source_sent,omitempty"`
-	Attempts   int       `json:"attempts"`
-	CreatedAt  time.Time `json:"created_at"`
+	PartCount  int  `json:"part_count,omitempty"`
+	SentParts  int  `json:"sent_parts,omitempty"`
+	SourceSent bool `json:"source_sent,omitempty"`
+	// Artifacts are run-generated files fetched into outbox/blobs while the
+	// runtime was answering; SentArtifacts is their durable send boundary.
+	Artifacts     []hubruntime.ArtifactRef `json:"artifacts,omitempty"`
+	SentArtifacts int                      `json:"sent_artifacts,omitempty"`
+	Attempts      int                      `json:"attempts"`
+	CreatedAt     time.Time                `json:"created_at"`
 }
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
@@ -883,7 +887,40 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 	return &d, nil
 }
 
-func (s *Spool) CompleteDelivery(id string) error { return s.move("outbox/sending", "outbox/done", id) }
+func (s *Spool) CompleteDelivery(id string) error {
+	err := s.move("outbox/sending", "outbox/done", id)
+	// Artifact bytes have reached the channel by now; the workspace original
+	// remains authoritative, so the spool copy is dropped.
+	_ = os.RemoveAll(filepath.Join(s.root, "outbox", "blobs", spoolFileID(id)))
+	return err
+}
+
+// WriteDeliveryBlob stages one fetched artifact for a not-yet-created delivery
+// under a stable directory derived from the delivery ID.
+func (s *Spool) WriteDeliveryBlob(deliveryID, name string, data []byte) (string, error) {
+	if len(data) == 0 || len(data) > mediaSizeLimit {
+		return "", errors.New("invalid artifact blob")
+	}
+	base := filepath.Base(name)
+	if base == "" || base == "." || base == ".." || !spoolIDPattern.MatchString(base) {
+		return "", errors.New("invalid artifact name")
+	}
+	dir := filepath.Join(s.root, "outbox", "blobs", spoolFileID(deliveryID))
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, base), data, 0600); err != nil {
+		return "", err
+	}
+	return base, nil
+}
+
+func (s *Spool) ReadDeliveryBlob(deliveryID, blob string) ([]byte, error) {
+	if blob == "" || blob == "." || blob == ".." || !spoolIDPattern.MatchString(blob) {
+		return nil, errors.New("invalid artifact blob")
+	}
+	return os.ReadFile(filepath.Join(s.root, "outbox", "blobs", spoolFileID(deliveryID), blob))
+}
 
 // UpdateSending rewrites a claimed delivery's durable record so part progress
 // survives a restart between parts of the same message.
@@ -1002,6 +1039,7 @@ type TelegramAPI interface {
 	GetUpdates(context.Context, int64, int) ([]Update, error)
 	SendMessage(context.Context, int64, string, string) error
 	SendDocument(context.Context, int64, string, string, []byte) error
+	SendPhoto(context.Context, int64, string, string, []byte) error
 	DeleteMessage(context.Context, int64, int) error
 	SendChatAction(context.Context, int64, string) error
 	GetFile(context.Context, string) (TelegramFile, error)
@@ -1105,6 +1143,37 @@ func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, capt
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendDocument", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return t.callRequest(req, nil)
+}
+func (t *telegramAPI) SendPhoto(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+	if len(data) == 0 || len(data) > mediaSizeLimit || name == "" {
+		return errors.New("invalid Telegram photo")
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if caption != "" {
+		if err := form.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := form.CreateFormFile("photo", name)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := form.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendPhoto", &body)
 	if err != nil {
 		return err
 	}
@@ -1714,7 +1783,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}
 			g.recordJob(*job, outcome)
@@ -1759,6 +1828,9 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 				g.maybeSendVoice(ctx, *delivery)
 			}
 		}
+	}
+	if sendErr == nil && delivery.SentArtifacts < len(delivery.Artifacts) {
+		sendErr = g.sendDeliveryArtifacts(ctx, delivery)
 	}
 	if sendErr != nil {
 		log.Printf("gateway delivery channel=%q job_id=%q delivery_id=%q status=uncertain", delivery.Channel, delivery.JobID, delivery.ID)
@@ -1827,6 +1899,49 @@ func (g *Gateway) sendTelegramMarkdown(ctx context.Context, delivery *Delivery) 
 	}
 	g.maybeSendVoice(ctx, *delivery)
 	return nil
+}
+
+// sendDeliveryArtifacts ships staged run artifacts after the text parts, in
+// order, with a durable boundary. A ref with Error still produces one explicit
+// notice: a generated file that never arrives is never silent.
+func (g *Gateway) sendDeliveryArtifacts(ctx context.Context, delivery *Delivery) error {
+	for i := delivery.SentArtifacts; i < len(delivery.Artifacts); i++ {
+		if err := g.sendArtifact(ctx, delivery, delivery.Artifacts[i]); err != nil {
+			_ = g.spool.UpdateSending(*delivery)
+			return err
+		}
+		delivery.SentArtifacts = i + 1
+		if err := g.spool.UpdateSending(*delivery); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Gateway) sendArtifact(ctx context.Context, delivery *Delivery, ref hubruntime.ArtifactRef) error {
+	if delivery.Channel == "slack_app" {
+		if g.slack == nil {
+			return errors.New("slack delivery is not configured")
+		}
+		note := "Файл готов: " + ref.Name + " — сохранён в workspace, доставка файлов в Slack пока не поддерживается"
+		if ref.Error != "" {
+			note = "Файл не удалось доставить: " + ref.Name
+		}
+		return g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, note)
+	}
+	if ref.Error != "" {
+		return g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText("Файл не удалось доставить: "+ref.Name), "")
+	}
+	data, err := g.spool.ReadDeliveryBlob(delivery.ID, ref.Blob)
+	if err != nil {
+		return err
+	}
+	if ref.Mime == "image/png" || ref.Mime == "image/jpeg" {
+		if err := g.api.SendPhoto(ctx, delivery.ChatID, ref.Name, "", data); err == nil {
+			return nil
+		}
+	}
+	return g.api.SendDocument(ctx, delivery.ChatID, ref.Name, "", data)
 }
 
 func (g *Gateway) maybeSendVoice(ctx context.Context, delivery Delivery) {

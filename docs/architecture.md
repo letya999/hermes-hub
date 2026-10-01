@@ -113,7 +113,12 @@ rejected rather than overridden.
 file queue and reply delivery. It mounts only `communication-hub-data` and receives
 the bot token. Model-authored replies render per channel at delivery (Telegram HTML,
 Slack mrkdwn) and split on block boundaries inside the channel limit with durable
-per-part outbox progress (SPEC-0036); hub-authored notices stay plain text. `hermes-runtime` owns the selected scope homes, provider credentials
+per-part outbox progress (SPEC-0036); hub-authored notices stay plain text.
+Files generated under `workspace/artifacts/{documents,images}` during a run
+cross the private contract through `POST /v1/artifact` while the runtime is
+answering, stage into the outbox and reach the chat as Telegram
+photos/documents with durable per-artifact progress (SPEC-0037).
+`hermes-runtime` owns the selected scope homes, provider credentials
 and configuration. Rollback mode runs one Hermes process per job; target mode keeps
 one pinned Gateway warm per active context. It is not published on a public host port.
 

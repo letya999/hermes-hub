@@ -123,6 +123,9 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 				calls.Add(1)
 				return SourceReview{Definition: userMCPDefinition()}, nil
 			})
+			// The reuse decision must resolve synchronously: the default 50ms
+			// async window can expire before the goroutine runs on a slow host.
+			control.PrepareSyncWindow = -1
 			if err := control.Store.RegisterDefinition(definition); err != nil {
 				t.Fatal(err)
 			}

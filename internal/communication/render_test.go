@@ -8,8 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 func tgUTF16Len(s string) int { return len(utf16.Encode([]rune(s))) }
@@ -154,6 +157,46 @@ func TestRenderSlackFormatsMrkdwn(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
 		}
+	}
+}
+
+func TestRenderTelegramImageAltAndNestedList(t *testing.T) {
+	src := "Фото: ![альт текст](https://e.example/pic.png)\n\n- внешний\n  - вложенный\n    - глубже\n- назад\n"
+	parts, degraded := renderTelegram(src)
+	if degraded {
+		t.Fatal("plain image alt must not degrade")
+	}
+	got := strings.Join(parts, "\n")
+	for _, want := range []string{"альт текст", "• внешний", "вложенный", "глубже", "• назад"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestRenderSlackTableQuoteAndHTMLBlock(t *testing.T) {
+	src := "| A | B |\n|---|---|\n| 1 | 2 |\n\n> строка\n> ещё\n\n<div>x</div>\n"
+	parts := renderSlack(src)
+	got := strings.Join(parts, "\n")
+	for _, want := range []string{"```", "A", "> строка", "> ещё", "<div>x</div>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestJobMappingMatchesJob(t *testing.T) {
+	job := Job{ID: "j1", IdempotencyKey: "k1", UserID: "u", Channel: "telegram",
+		Trigger: "message", OrganizationID: "org", ActorID: "actor", ScopeID: "scope",
+		Envelope: identity.Envelope{Schema: 1, PrincipalID: "p", ExternalIdentityID: "ext",
+			ContextID: "ctx", RuntimeID: "rt", ConversationID: "conv",
+			DeliveryTargetID: "dt", PolicyVersion: "v1"}}
+	m := mappingFromJob(job, time.Now())
+	if !m.MatchesJob(job) {
+		t.Fatal("own mapping rejected")
+	}
+	if m.MatchesJob(Job{ID: "j2"}) {
+		t.Fatal("foreign job matched")
 	}
 }
 

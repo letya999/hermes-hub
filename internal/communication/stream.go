@@ -27,7 +27,7 @@ func terminalStatus(status string) bool {
 }
 
 func outcomeFromEvent(event hubruntime.ExecuteResponse) RunOutcome {
-	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text}
+	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text, Artifacts: event.Artifacts}
 }
 
 func ownsStreamMapping(job Job, mapping JobMapping) bool {
@@ -137,6 +137,9 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, CreatedAt: time.Now().UTC()}
 			if markdown {
 				receipt.Delivery.Format = formatMarkdown
+			}
+			if event.Status == "completed" {
+				receipt.Delivery.Artifacts = event.Artifacts
 			}
 			if event.Status != "completed" {
 				receipt.Delivery.JobID = ""

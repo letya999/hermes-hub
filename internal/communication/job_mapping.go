@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // RunOutcome is the small result envelope shared by the gateway and supervisor.
@@ -24,6 +25,9 @@ type RunOutcome struct {
 	RuntimeGeneration string
 	Status            string
 	LastEvent         string
+	// Artifacts carry generated files already fetched into the spool; Blob is
+	// set on success, Error records the explicit failure reason otherwise.
+	Artifacts []hubruntime.ArtifactRef
 }
 
 // JobMapping is durable routing/lifecycle metadata. Binding fields are copied

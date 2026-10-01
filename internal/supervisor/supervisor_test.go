@@ -224,6 +224,62 @@ func TestRestartSkipsAbsentRuntime(t *testing.T) {
 	}
 }
 
+func TestArtifactForwardReachesOwningRuntime(t *testing.T) {
+	var gotName, gotAuth string
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/artifact" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var request hubruntime.ArtifactRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotName = request.Name
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("pdf-bytes"))
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Busy}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	request := hubruntime.ArtifactRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", JobID: "job-1", IdempotencyKey: "job-1"}, Name: "documents/report.pdf"}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(target, auth string, body []byte) *httptest.ResponseRecorder {
+		httpRequest := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer "+auth)
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		return recorder
+	}
+	recorder := call("/v1/artifact", "secret", body)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "pdf-bytes" || gotName != "documents/report.pdf" || gotAuth != "Bearer secret" {
+		t.Fatalf("forward status=%d name=%q auth=%q body=%q", recorder.Code, gotName, gotAuth, recorder.Body.String())
+	}
+	if recorder := call("/v1/artifact", "wrong", body); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", recorder.Code)
+	}
+	foreign := hubruntime.ArtifactRequest{ExecuteRequest: request.ExecuteRequest, Name: "../escape"}
+	foreign.UserID = "bob"
+	foreignBody, _ := json.Marshal(foreign)
+	if recorder := call("/v1/artifact", "secret", foreignBody); recorder.Code != http.StatusConflict {
+		t.Fatalf("foreign binding=%d", recorder.Code)
+	}
+	m.mu.Lock()
+	delete(m.items, runtimeKey(normalized))
+	m.mu.Unlock()
+	if recorder := call("/v1/artifact", "secret", body); recorder.Code != http.StatusNotFound {
+		t.Fatalf("absent runtime=%d", recorder.Code)
+	}
+}
+
 func TestEnsureDeduplicatesAndReusesWarmRuntime(t *testing.T) {
 	var mu sync.Mutex
 	runs := 0

@@ -54,16 +54,17 @@ type SelfEnvRequest struct {
 }
 
 type ExecuteResponse struct {
-	Text              string   `json:"text"`
-	JobID             string   `json:"job_id,omitempty"`
-	SessionID         string   `json:"session_id,omitempty"`
-	RunID             string   `json:"run_id,omitempty"`
-	RuntimeGeneration string   `json:"runtime_generation,omitempty"`
-	Status            string   `json:"status,omitempty"`
-	LastEvent         string   `json:"last_event,omitempty"`
-	EventID           string   `json:"event_id,omitempty"`
-	ApprovalID        string   `json:"approval_id,omitempty"`
-	ApprovalChoices   []string `json:"approval_choices,omitempty"`
+	Text              string        `json:"text"`
+	JobID             string        `json:"job_id,omitempty"`
+	SessionID         string        `json:"session_id,omitempty"`
+	RunID             string        `json:"run_id,omitempty"`
+	RuntimeGeneration string        `json:"runtime_generation,omitempty"`
+	Status            string        `json:"status,omitempty"`
+	LastEvent         string        `json:"last_event,omitempty"`
+	EventID           string        `json:"event_id,omitempty"`
+	ApprovalID        string        `json:"approval_id,omitempty"`
+	ApprovalChoices   []string      `json:"approval_choices,omitempty"`
+	Artifacts         []ArtifactRef `json:"artifacts,omitempty"`
 }
 
 type runtimeHTTP struct{}
@@ -100,6 +101,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.restart(w, r)
 	case "/v1/self-env":
 		s.selfEnv(w, r)
+	case "/v1/artifact":
+		s.artifact(w, r)
 	default:
 		writeRuntimeError(w, http.StatusNotFound, "not found")
 	}
@@ -233,6 +236,7 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 	var admission struct {
 		RunID string `json:"run_id"`
 	}
+	runStart := time.Now()
 	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, map[string]any{"input": request.Text, "session_id": sessionID}, &admission, request.IdempotencyKey); err != nil {
 		return ExecuteResponse{}, err
 	}
@@ -240,10 +244,14 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 		return ExecuteResponse{}, errors.New("hermes returned no run ID")
 	}
 	known := ExecuteResponse{JobID: request.JobID, SessionID: sessionID, RunID: admission.RunID, RuntimeGeneration: os.Getenv("HUB_RUNTIME_GENERATION"), Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
-	return s.observeHermesRun(ctx, known, emit)
+	return s.observeHermesRunWindow(ctx, known, emit, runStart)
 }
 
 func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
+	return s.observeHermesRunWindow(ctx, known, emit, time.Time{})
+}
+
+func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error, runStart time.Time) (ExecuteResponse, error) {
 	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
 	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -295,7 +303,9 @@ func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteRespons
 			}
 		case "completed":
 			if strings.TrimSpace(status.Output) != "" {
-				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: strings.TrimSpace(status.Output)}, nil
+				final := ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: strings.TrimSpace(status.Output)}
+				final.Artifacts = scanArtifacts(runStart)
+				return final, nil
 			}
 			// Session history can contain a reply from an earlier run. Without
 			// run-correlated output it cannot safely stand in for this final.
