@@ -13,9 +13,14 @@ done:
   - tests: readiness matrix (unset/missing binary/resolvable/upload-parked),
     /voice on warning, unconfigured-STT reply without a job
   - SPEC-0038 added, SPEC-0021 cross-referenced, index/CHANGELOG updated
+done_extra:
+  - root cause of live STT failure fixed: hub-stt existed but faster-whisper
+    was absent from the image — now installed (faster-whisper==1.2.1, voice
+    extra still excluded)
+  - hub-tts added (espeak-ng -> ffmpeg -> OGG/Opus stdout); transcription
+    feature exports HUB_TTS_COMMAND — /voice can actually become ready
 deferred:
-  - live Telegram voice round-trip evidence (needs a real account + image with
-    hub-stt/TTS workers) — recorded as the exact unavailable gate in
-    docs/validation.md
-  - documented local TTS option for the shipped image (no suitable non-bloating
-    command contract yet)
+  - live Telegram voice round-trip evidence — needs image rebuild + deploy +
+    real account; recorded as the exact gate in docs/validation.md
+  - higher-quality TTS voice (piper-class) if espeak-ng quality proves too
+    poor — deliberate small-footprint choice for now

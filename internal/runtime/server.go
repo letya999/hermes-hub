@@ -302,9 +302,9 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 				lastApproval = update.ApprovalID
 			}
 		case "completed":
-			if strings.TrimSpace(status.Output) != "" {
-				final := ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: strings.TrimSpace(status.Output)}
-				final.Artifacts = scanArtifacts(runStart)
+			if text, mediaRefs := extractMediaArtifacts(status.Output); strings.TrimSpace(text) != "" || len(mediaRefs) > 0 {
+				final := ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: text}
+				final.Artifacts = mergeArtifacts(scanArtifacts(runStart), mediaRefs)
 				return final, nil
 			}
 			// Session history can contain a reply from an earlier run. Without

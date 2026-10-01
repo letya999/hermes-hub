@@ -26,6 +26,10 @@ done:
 done_extra:
   - fixed pre-existing toolhub flake: intact-contract reuse test now uses
     PrepareSyncWindow=-1 so the sync assertion cannot race the 50ms window
+  - MEDIA:<path> reply markers (live-observed gap): runtime strips markers
+    from visible text, stages workspace-contained files into
+    artifacts/images|documents (copy when written elsewhere), emits error
+    refs for unusable ones; works on recovered runs (no window needed)
 gates:
   - just check green (coverage 85.06%, race+shuffle on)
   - just security not re-run: no dependency changes since 90c9e90 (goldmark,

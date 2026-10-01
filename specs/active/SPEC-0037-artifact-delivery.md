@@ -8,7 +8,15 @@ Frozen: 2026-10-06. Issue 172.
    root modified inside the run window (mtime >= run start - 2 s), bounded
    to 8 files of <= 8 MiB each, and attaches `{name, path, mime, size}` refs
    to the terminal `ExecuteResponse`. Observed/recovered runs without a
-   run-start timestamp list nothing.
+   run-start timestamp list nothing by the window scan alone.
+1a. Upstream `MEDIA:<path>` reply markers are a second, explicit source: the
+   runtime strips marker lines from the visible text, resolves each path
+   inside the workspace (EvalSymlinks containment, regular file, 0 < size <=
+   8 MiB), stages it under `artifacts/images|documents` — copied there when a
+   tool wrote it elsewhere, e.g. the workspace root — and attaches a ref. A
+   marker pointing at an unusable file yields a ref with `error`, never a
+   silent drop. This source needs no run-start window, so recovered runs
+   still deliver named files.
 
 2. `POST /v1/artifact` on the runtime serves exactly one file by relative
    path: two segments, root ∈ {documents, images}, clean basename, Lstat

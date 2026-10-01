@@ -106,6 +106,51 @@ func TestArtifactEndpointValidationAndServing(t *testing.T) {
 	}
 }
 
+func TestExtractMediaArtifactsStagesWorkspaceFiles(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	png := writeArtifact(t, dir, "dandelion.png", "png-bytes")
+	writeArtifact(t, artifactRoot(), "documents/plain.md", "already")
+	text := "MEDIA:" + png + "\n\nОдуванчик готов.\n\nMEDIA: artifacts/documents/plain.md\nMEDIA: " + filepath.Join(dir, "..", "escape.txt") + "\nMEDIA: missing.bin\n"
+	clean, refs := extractMediaArtifacts(text)
+	if strings.Contains(clean, "MEDIA:") || clean != "Одуванчик готов." {
+		t.Fatalf("markers leaked into text: %q", clean)
+	}
+	if len(refs) != 4 {
+		t.Fatalf("refs=%+v", refs)
+	}
+	if refs[0].Path != "images/dandelion.png" || refs[0].Mime != "image/png" || refs[0].Size != 9 {
+		t.Fatalf("staged ref=%+v", refs[0])
+	}
+	staged, err := os.ReadFile(filepath.Join(artifactRoot(), "images", "dandelion.png"))
+	if err != nil || string(staged) != "png-bytes" {
+		t.Fatalf("staged bytes: %v %q", err, staged)
+	}
+	if refs[1].Path != "documents/plain.md" {
+		t.Fatalf("in-place ref=%+v", refs[1])
+	}
+	if refs[2].Error == "" || refs[3].Error == "" || refs[3].Name != "missing.bin" {
+		t.Fatalf("unusable media must surface as error refs: %+v", refs[2:])
+	}
+}
+
+func TestExtractMediaArtifactsDropsEmptyAndDupes(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	writeArtifact(t, dir, "a.txt", "a")
+	text, refs := extractMediaArtifacts("MEDIA:a.txt\nMEDIA: a.txt\nMEDIA:\n")
+	if len(refs) != 1 || refs[0].Path != "documents/a.txt" {
+		t.Fatalf("refs=%+v", refs)
+	}
+	if text != "" {
+		t.Fatalf("marker-only text must clean to empty, got %q", text)
+	}
+}
+
 func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

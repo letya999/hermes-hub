@@ -497,6 +497,9 @@ func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
 	if env["HUB_STT_COMMAND"] != "/usr/local/bin/hub-stt" {
 		t.Fatalf("HUB_STT_COMMAND=%v", env["HUB_STT_COMMAND"])
 	}
+	if env["HUB_TTS_COMMAND"] != "/usr/local/bin/hub-tts" {
+		t.Fatalf("HUB_TTS_COMMAND=%v", env["HUB_TTS_COMMAND"])
+	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("caller")

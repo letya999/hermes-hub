@@ -185,11 +185,18 @@ usable TTS records the opt-in but warns that replies stay textual, and voice
 input on a host without STT gets an explicit "not configured" reply without
 downloading the attachment. Covered by unit tests over the readiness matrix.
 
+The image itself was the real blocker: `hub-stt` shipped in the image but
+`faster-whisper` was deliberately excluded from the pip extras, so a
+configured `HUB_STT_COMMAND` always failed at import. The image now installs
+`faster-whisper==1.2.1` alone (not the whole `voice` extra) and ships
+`hub-tts` (espeak-ng → ffmpeg → OGG/Opus), which the `transcription` feature
+exports as `HUB_TTS_COMMAND`.
+
 Live Telegram evidence is **not** claimed: this host has no Docker runtime and
 no real bot account, so the end-to-end voice note → transcript → text answer →
-`sendVoice` round-trip stays unproven. The exact gate to run on a deployed
-host: image with the `transcription` feature (`/usr/local/bin/hub-stt`) plus a
-`HUB_TTS_COMMAND` binary, a real Telegram DM voice note, `/voice on`, and a
+`sendVoice` round-trip stays unproven until a rebuild + deploy. The exact
+gate to run on a deployed host: image rebuilt with faster-whisper,
+`transcription` feature on, a real Telegram DM voice note, `/voice on`, and a
 reply — record model/provider, language, latency and file size.
 
 ## CHG-0023 personal assistant experience

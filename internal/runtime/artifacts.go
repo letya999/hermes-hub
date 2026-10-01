@@ -85,6 +85,128 @@ func scanArtifacts(since time.Time) []ArtifactRef {
 	return found
 }
 
+// extractMediaArtifacts lifts upstream "MEDIA:<path>" marker lines out of the
+// reply text. Each file resolving inside the workspace is staged under
+// artifacts/documents|images (copied there when the tool wrote it elsewhere,
+// e.g. the workspace root) and returned as a ref; a marker pointing at an
+// unusable file still yields a ref with Error so delivery stays explicit.
+// Marker lines are always stripped — they are routing metadata, not prose.
+func extractMediaArtifacts(text string) (string, []ArtifactRef) {
+	var kept []string
+	var refs []ArtifactRef
+	seen := map[string]bool{}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "MEDIA:") {
+			kept = append(kept, line)
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "MEDIA:"))
+		if seen[raw] {
+			continue
+		}
+		seen[raw] = true
+		ref, ok := stageMediaArtifact(raw)
+		if !ok {
+			name := filepath.Base(filepath.FromSlash(raw))
+			if name == "." || name == string(filepath.Separator) || name == "" {
+				continue
+			}
+			refs = append(refs, ArtifactRef{Name: name, Error: "media file unavailable"})
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), refs
+}
+
+// stageMediaArtifact resolves a workspace path and copies the file into the
+// matching artifacts bucket when it does not already live under
+// artifacts/documents|images. Containment, regular-file and size checks are
+// the same contract the artifact endpoint enforces.
+func stageMediaArtifact(raw string) (ArtifactRef, bool) {
+	if raw == "" || len(raw) > 1024 || strings.ContainsRune(raw, 0) {
+		return ArtifactRef{}, false
+	}
+	root := workspace
+	candidate := raw
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, filepath.FromSlash(candidate))
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return ArtifactRef{}, false
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil || resolved != resolvedRoot && !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
+		return ArtifactRef{}, false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > artifactMaxBytes {
+		return ArtifactRef{}, false
+	}
+	mime := artifactMimes[strings.ToLower(filepath.Ext(resolved))]
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	if artRoot, err := filepath.EvalSymlinks(artifactRoot()); err == nil {
+		if rel, err := filepath.Rel(artRoot, resolved); err == nil && validArtifactRel(rel) {
+			return ArtifactRef{Name: filepath.Base(resolved), Path: filepath.ToSlash(rel), Mime: mime, Size: info.Size()}, true
+		}
+	}
+	bucket := "documents"
+	if strings.HasPrefix(mime, "image/") {
+		bucket = "images"
+	}
+	dest := filepath.Join(artifactRoot(), bucket, filepath.Base(resolved))
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return ArtifactRef{}, false
+	}
+	if err := copyBounded(resolved, dest, info.Size()); err != nil {
+		return ArtifactRef{}, false
+	}
+	return ArtifactRef{Name: filepath.Base(dest), Path: bucket + "/" + filepath.Base(dest), Mime: mime, Size: info.Size()}, true
+}
+
+func copyBounded(src, dst string, size int64) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.CopyN(out, in, size); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	return out.Close()
+}
+
+// mergeArtifacts combines window-scanned and MEDIA-referenced files, keeping
+// the first ref for each artifact path.
+func mergeArtifacts(groups ...[]ArtifactRef) []ArtifactRef {
+	seen := map[string]bool{}
+	var out []ArtifactRef
+	for _, group := range groups {
+		for _, ref := range group {
+			key := ref.Path
+			if key == "" {
+				key = "error:" + ref.Name + ":" + ref.Error
+			}
+			if seen[key] || len(out) >= artifactMaxCount {
+				continue
+			}
+			seen[key] = true
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
 func validArtifactRel(rel string) bool {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	return len(parts) == 2 && (parts[0] == "documents" || parts[0] == "images") && parts[1] != "" && parts[1] == filepath.Base(parts[1]) && parts[1] != "." && parts[1] != ".."

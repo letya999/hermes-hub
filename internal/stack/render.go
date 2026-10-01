@@ -422,6 +422,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
 		if s.Has("transcription") {
 			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
+			gatewayEnvironment["HUB_TTS_COMMAND"] = "/usr/local/bin/hub-tts"
 			gatewayEnvironment["HF_HOME"] = "/data/hf"
 			gatewayEnvironment["XDG_CACHE_HOME"] = "/data/cache"
 		}

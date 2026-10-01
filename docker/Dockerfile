@@ -29,16 +29,17 @@ FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_LINK_MODE=copy
 COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends glab
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep ffmpeg chromium xvfb fluxbox x11vnc novnc websockify && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep ffmpeg espeak-ng chromium xvfb fluxbox x11vnc novnc websockify && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlite_build /opt/sqlite-fixed/lib/ /usr/local/lib/
 RUN ldconfig && python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 WORKDIR /opt/hermes
-# mcp extra only: messaging/google/voice pull Discord, a second Google client,
-# faster-whisper and a second Chromium that the hub does not use. Browser CDP
-# uses apt Chromium; Meet/STT stay out of the default image.
+# mcp extra only: messaging/google/voice pull Discord, a second Google client
+# and a second Chromium that the hub does not use. Browser CDP uses apt
+# Chromium. faster-whisper alone is installed (not the whole voice extra):
+# it backs /usr/local/bin/hub-stt, the documented local STT path.
 # Google Workspace, Atlassian and Telegram-account Python trees are dedicated
 # images (docker/telegram-account.Dockerfile, docker/mcp-atlassian.Dockerfile)
 # and ToolHub artifacts, not copies inside every hub service.
@@ -46,14 +47,14 @@ WORKDIR /opt/hermes
 # slack / matrix extras, but the gateway api_server adapter (the hub's session
 # API on :8642) needs it even when messaging platforms stay in the Go
 # communication hub.
-RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp && uv pip install --python .venv/bin/python aiohttp==3.14.3 && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
+RUN git init && git remote add origin https://github.com/nousresearch/hermes-agent.git && git fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp && uv pip install --python .venv/bin/python aiohttp==3.14.3 faster-whisper==1.2.1 && .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY docker/browser/package*.json /opt/browser/
 RUN cd /opt/browser && npm ci --ignore-scripts && npm cache clean --force
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/
-COPY docker/hub-stt /usr/local/bin/hub-stt
-RUN chmod 0755 /usr/local/bin/hub-stt
+COPY docker/hub-stt docker/hub-tts /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/hub-stt /usr/local/bin/hub-tts
 RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub && ln -s /usr/local/bin/credential-broker /usr/local/bin/hub-credential-broker
 ENV PATH="/opt/hermes/.venv/bin:${PATH}" DISPLAY=:99 HERMES_HOME=/state/hermes HOME=/state/home MCPGODEBUG=allowsessionsinstateless=1
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace /archive && chown 10001:10001 /state /workspace /archive

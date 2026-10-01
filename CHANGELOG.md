@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Working voice path (issue #170): the image now actually carries the STT
+  backend — `faster-whisper==1.2.1` is installed into the runtime venv (the
+  `voice` pip extra is still excluded) and `hub-tts` (espeak-ng → ffmpeg →
+  OGG/Opus) ships as the local TTS worker; the `transcription` feature now
+  exports both `HUB_STT_COMMAND` and `HUB_TTS_COMMAND` to the gateway.
+- `MEDIA:` artifact markers (issue #172): upstream reply lines
+  `MEDIA:<workspace-path>` are extracted by the runtime — never shown to the
+  user — and the named file is staged into `artifacts/images|documents`
+  (copied when a tool wrote it to the workspace root) and delivered through
+  the normal artifact pipeline. Works for recovered runs too since it needs
+  no run-start window; unusable references surface as explicit error notices.
 - Voice readiness honesty (issue #170): `/voice` now reports incoming STT and
   outgoing TTS availability separately — a direction reads "available" only
   when the worker command is configured *and* resolvable, and a parked
