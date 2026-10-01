@@ -1174,13 +1174,24 @@ func TestRunArgsMountsHubSkills(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(settings), 0600); err != nil {
 		t.Fatal(err)
 	}
+	gated := filepath.Join(skills, "deep-research-embedded")
+	if err := os.MkdirAll(gated, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("# gated"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	rawArgs, err := m.runArgs(binding(root), "hermes-context-test", 19000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(rawArgs, " ")
-	if !strings.Contains(joined, "src="+skills+",dst=/opt/hub/skills,readonly") {
-		t.Fatalf("run args missing skills mount: %s", joined)
+	generated := filepath.Join(root, "generated", "skills")
+	if !strings.Contains(joined, "src="+generated+",dst=/opt/hub/skills,readonly") {
+		t.Fatalf("run args missing filtered skills mount: %s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(generated, "deep-research-embedded")); !os.IsNotExist(err) {
+		t.Fatal("spawn mounted gated skill without the deep_research feature")
 	}
 	ctx := filepath.Join(root, "spaces", "bob")
 	for _, name := range []string{"runtime", "hermes", "workspace"} {
@@ -1202,8 +1213,9 @@ func TestRunArgsMountsHubSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined = strings.Join(rawBob, " ")
-	if !strings.Contains(joined, "src="+repoSkills+",dst=/opt/hub/skills,readonly") {
-		t.Fatalf("run args missing default skills mount: %s", joined)
+	bobGenerated := filepath.Join(ctx, "generated", "skills")
+	if !strings.Contains(joined, "src="+bobGenerated+",dst=/opt/hub/skills,readonly") {
+		t.Fatalf("run args missing default filtered skills mount: %s", joined)
 	}
 }
 

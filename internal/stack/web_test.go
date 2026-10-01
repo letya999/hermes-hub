@@ -148,7 +148,7 @@ func TestGatedSkillExcludedFromMaterializedMount(t *testing.T) {
 	space := t.TempDir()
 	s := validSettings()
 	s.GlobalSkillsDir = src
-	if err := materializeGlobalSkills(space, s); err != nil {
+	if err := MaterializeGlobalSkills(space, s); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(space, "generated", "skills", "deep-research-embedded")); !os.IsNotExist(err) {
@@ -158,7 +158,7 @@ func TestGatedSkillExcludedFromMaterializedMount(t *testing.T) {
 		t.Fatalf("ungated skill not copied: %v", err)
 	}
 	s.Features = []string{"web", "deep_research"}
-	if err := materializeGlobalSkills(space, s); err != nil {
+	if err := MaterializeGlobalSkills(space, s); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(space, "generated", "skills", "deep-research-embedded", "SKILL.md")); err != nil {

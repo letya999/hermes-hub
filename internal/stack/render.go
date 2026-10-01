@@ -256,7 +256,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// The mounted dir is the per-space filtered copy materialized by
 		// Render: feature-gated bundled skills are absent entirely when the
 		// feature is off, so they cannot be read or followed by prompt.
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(generatedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
 	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
@@ -603,7 +603,7 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = materializeHermesConfig(dir, s); err != nil {
 		return err
 	}
-	if err = materializeGlobalSkills(dir, s); err != nil {
+	if err = MaterializeGlobalSkills(dir, s); err != nil {
 		return err
 	}
 	// Init seeds only a stub; heal it to the global template. Real user edits
@@ -683,20 +683,22 @@ func materializeHermesConfig(dir string, s Settings) error {
 	})
 }
 
-func generatedSkillsDir(dir string) string {
+// GeneratedSkillsDir is the per-space filtered skills tree materialized by
+// MaterializeGlobalSkills and mounted at /opt/hub/skills.
+func GeneratedSkillsDir(dir string) string {
 	return filepath.Join(dir, "generated", "skills")
 }
 
-// materializeGlobalSkills mirrors the shared GlobalSkillsDir into the space's
+// MaterializeGlobalSkills mirrors the shared GlobalSkillsDir into the space's
 // generated/skills mount, dropping bundled skills whose gating feature is
 // disabled. The container then sees exactly the skills this space may run;
 // skills.disabled in the rendered config blocks the same names as a fallback.
-func materializeGlobalSkills(dir string, s Settings) error {
+func MaterializeGlobalSkills(dir string, s Settings) error {
 	src := strings.TrimSpace(s.GlobalSkillsDir)
 	if src == "" {
 		return nil
 	}
-	dest := generatedSkillsDir(dir)
+	dest := GeneratedSkillsDir(dir)
 	if filepath.Clean(src) == filepath.Clean(dest) {
 		return nil
 	}

@@ -1673,15 +1673,20 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// onboarding rules) must be readable at /opt/hub/skills, matching
 	// external_dirs in the generated Hermes config. Without them the agent
 	// improvises installs through terminal instead of ToolHub control ops.
-	skillsDir := ""
-	if settings, err := stack.Read(filepath.Join(binding.ContextRoot, "settings.yaml")); err == nil {
-		skillsDir = strings.TrimSpace(settings.GlobalSkillsDir)
+	// The mount is the per-space filtered copy materialized at spawn so
+	// feature gating applies even when Render was not rerun after a toggle.
+	spawnSettings, serr := stack.ReadEnvironment(binding.ContextRoot, env)
+	if serr != nil {
+		spawnSettings = stack.Settings{}
 	}
-	if skillsDir == "" {
-		skillsDir = filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills")
+	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
+		spawnSettings.GlobalSkillsDir = filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills")
 	}
-	if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
-		args = append(args, "--mount", "type=bind,src="+skillsDir+",dst=/opt/hub/skills,readonly")
+	if err := stack.MaterializeGlobalSkills(binding.ContextRoot, spawnSettings); err != nil {
+		log.Printf("supervisor skills materialization skipped: %v", err)
+	}
+	if info, err := os.Stat(stack.GeneratedSkillsDir(binding.ContextRoot)); err == nil && info.IsDir() {
+		args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/opt/hub/skills,readonly")
 	}
 	// Materialize the effective Hermes config host-side and mount it read-only
 	// over the agent-writable state dir: mcp_servers must come from ToolHub
