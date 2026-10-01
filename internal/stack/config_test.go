@@ -57,6 +57,9 @@ func TestRenderAllFeatures(t *testing.T) {
 	root := t.TempDir()
 	_ = os.Mkdir(filepath.Join(root, "config"), 0700)
 	_ = os.WriteFile(filepath.Join(root, "config/SOUL.md"), []byte("original"), 0600)
+	gated := filepath.Join(root, "config", "skills", "deep-research-embedded")
+	_ = os.MkdirAll(gated, 0755)
+	_ = os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("name: deep-research-embedded"), 0600)
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +87,11 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatalf("default global skills mount missing: %v %s", err, generatedConfig)
 	}
 	generatedCompose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(root, "config", "skills"))) {
-		t.Fatalf("default global skills source missing: %v %s", err, generatedCompose)
+	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(d, "generated", "skills"))) {
+		t.Fatalf("filtered global skills source missing: %v %s", err, generatedCompose)
+	}
+	if _, err := os.Stat(filepath.Join(d, "generated", "skills", "deep-research-embedded", "SKILL.md")); err != nil {
+		t.Fatalf("bundled deep-research skill not materialized: %v", err)
 	}
 	cfg := Config(s)
 	display, ok := cfg["display"].(M)

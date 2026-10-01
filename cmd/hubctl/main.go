@@ -164,12 +164,25 @@ func run(ctx context.Context, args []string) error {
 		if *supervisorAuth == "" {
 			return fmt.Errorf("HUB_SUPERVISOR_AUTH or --supervisor-auth is required")
 		}
+		// -env defaults to "prod" for render/up commands, but the supervisor
+		// must honor HUB_ENV when the flag is absent: leaving Environment
+		// empty lets Manager.environment() fall back to it.
+		supervisorEnv := *environment
+		envSet := false
+		f.Visit(func(fl *flag.Flag) {
+			if fl.Name == "env" {
+				envSet = true
+			}
+		})
+		if !envSet {
+			supervisorEnv = ""
+		}
 		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "supervisor.log"))
 		if err != nil {
 			return err
 		}
 		defer stopLog()
-		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: *environment, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
+		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
 		if err != nil {
 			return err
 		}

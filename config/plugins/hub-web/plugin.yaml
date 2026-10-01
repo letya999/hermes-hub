@@ -1,0 +1,8 @@
+name: hub-web
+version: 1.0.0
+description: "Hub-managed multi-provider web search: web_providers lists the configured search engines and web_search_multi fans one query out to one or many of them in parallel. Mounted read-only into /opt/hermes/plugins by the hub when the space's web feature is enabled."
+author: hermes-hub
+kind: backend
+provides_tools:
+  - web_providers
+  - web_search_multi

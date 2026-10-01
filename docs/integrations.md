@@ -639,10 +639,117 @@ archive.
 
 An httptest double of these endpoints is not a live provider call.
 
+## Web search and research
+
+The web capability is the upstream Hermes `web` toolset (`web_search`,
+`web_extract`), configured — not reimplemented — by the hub. Provider code
+lives upstream in `plugins/web/<vendor>/provider.py`; the hub never embeds a
+search vendor client or an HTML extractor.
+
+Two features control it per space (`settings.yaml` `features`, removable per
+org through `scope.yaml`; both are init defaults):
+
+- `web` — enables the toolset and mounts the `hub-web` plugin. Without it
+  `web_search`/`web_extract` do not exist in the runtime at all —
+  `agent.disabled_toolsets: [web]` additionally strips them from platforms
+  whose toolset falls back to an upstream composite (e.g. `api_server`) —
+  provider env keys leave the self-env allowlist, the plugin is not mounted,
+  and a `web:` settings block is a validation error.
+- `deep_research` — requires `web`; mounts the bundled
+  `deep-research-embedded` skill into the space's `generated/skills` and
+  removes it from `skills.disabled`. Without it the skill is absent from the
+  runtime, not merely hidden.
+
+`settings.yaml` `web:` selects providers and policy; every field is optional
+and only set fields reach the rendered config:
+
+```yaml
+web:
+  backend: ""              # shared provider, e.g. tavily
+  search_backend: ""       # search override (the default engine): tavily,
+                           # exa, parallel, perplexity, firecrawl, searxng,
+                           # brave-free, ddgs, keenable, xai, nous
+  extract_backend: ""      # extract override: tavily, exa, parallel,
+                           # perplexity, firecrawl, keenable
+  search_providers: []     # engines web_search_multi may fan out to; the
+                           # default search_backend is always allowed
+  keyless_fallback: true   # anonymous free-tier ring as last resort
+  keyless_rescue: true     # one-shot keyless retry of a failed keyed call
+  extract_char_limit: 15000
+  provider_tier: {}        # exa/parallel/firecrawl/keenable: free|paid
+  cache_enabled: true
+  cache_ttl_minutes: 20
+  cache_exempt_hosts: []   # exact, *.wildcard, or domain suffix
+  research:                # bounds the deep-research-embedded skill reads
+    max_rounds: 2          # ceiling 16
+    queries_per_round: 3   # ceiling 5
+    pages_per_round: 4     # ceiling 8
+    max_pages: 12          # ceiling 100
+    max_pages_per_host: 3  # ceiling 10; source diversity cap
+    deadline_minutes: 10   # ceiling 240; ≥60 or an explicit long/deep
+                           # request runs durably via hub routines —
+                           # one bounded round per wake, resuming from
+                           # research/<slug>/state.json across restarts
+```
+
+When `web` is enabled the hub also mounts `config/plugins/hub-web` read-only
+at `/opt/hermes/plugins/hub-web`, an upstream backend plugin that adds three
+tools to the `web` toolset (so the same feature gate and
+`agent.disabled_toolsets` cover them):
+
+- `web_providers` — answers "which search engines exist here": every
+  registered provider with availability (keyed/keyless), which are in
+  `search_providers`, and which is the default.
+- `web_search_multi` — `query` plus optional `providers` list and `limit`
+  (per-provider cap 10). No `providers` runs the default `search_backend`;
+  `["all"]` or a list fans out to those configured engines in parallel
+  (bounded: 8 providers, 60 s wall clock). Results are tagged with every
+  provider that returned them and deduplicated by normalized URL; providers
+  that fail are named in `providers_failed` without failing the call —
+  `partial_failure` marks the mixed case. Names outside `search_providers`
+  are rejected, so a prompt cannot steer queries to unapproved vendors.
+- `web_cache` — `status`/`prune`/`clear` for the on-disk `web_extract` cache
+  (`$HERMES_HOME/cache/web`, i.e. `spaces/<user>/hermes/cache/web` on the
+  host). Upstream TTL-gates reads but never deletes files; prune drops
+  expired/missing/out-of-root index entries plus orphaned `*.cache.md`
+  files, clear wipes it. Search answers are in-memory only and need nothing.
+  Tool-output spillover (`cache/spillover`) is already reaped hourly by
+  upstream housekeeping at 24h; deep-research state lives in the owner's
+  `workspace/research/<slug>/` and is deleted like any workspace file.
+
+Provider keys and endpoints are runtime secrets: `secrets.<env>.env` or the
+protected self-env form delivers `TAVILY_API_KEY`, `EXA_API_KEY`,
+`PARALLEL_API_KEY`, `PERPLEXITY_API_KEY`, `FIRECRAWL_API_KEY`,
+`FIRECRAWL_API_URL`, `BRAVE_SEARCH_API_KEY`, `KEENABLE_API_KEY`,
+`SEARXNG_URL`, `XAI_API_KEY` (plus optional `TAVILY_BASE_URL`,
+`PERPLEXITY_BASE_URL`). They never appear in prompts, tool arguments, or
+results; `hubctl doctor` names a missing required env for `searxng` and
+`firecrawl`. With no key at all, `ddgs` and the keyless ring keep search and
+extraction working anonymously; no browser profile participates.
+
+The bundled `deep-research-embedded` skill (`config/skills/`) is the bounded
+research workflow — a state machine on disk under `research/<slug>/`:
+perspective-driven `plan.yaml`, a `sources.yaml` URL registry, distilled
+`notes/` (every claim with its URL), a `gaps.md` queue that drives the next
+round's queries, then outline → per-section drafts → a cited `report.md`
+with `Sources` and an explicit `Limitations` section, followed by a verify
+pass that marks unsourced claims. Each round reconstructs state from disk
+rather than accumulating pages in context, so depth scales without context
+rot; long runs execute one round per durable hub-routine wake and resume
+cold from `state.json`. Bounds come from `web.research` and can only tighten
+the ceilings. Pages and snippets are untrusted data: instructions inside
+them are never executed, URLs carrying credential-like parameters are
+refused, and private-network targets, redirected payloads, oversized or
+binary bodies, and unsupported schemes fail closed upstream. The anonymous
+`browser_guest` profile is the documented fallback only when extraction
+cannot satisfy a needed source.
+[SPEC-0035](../specs/active/SPEC-0035-web-research.md) is the contract.
+
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
+| Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai; hub `hub-web` plugin adds `web_providers` + `web_search_multi` fan-out + `web_cache` cleanup | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |

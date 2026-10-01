@@ -34,7 +34,11 @@ space initialization, strict configuration, organization policy resolution, Dock
 lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
-using files and tools.
+using files and tools; web retrieval uses the Hermes `web` toolset with
+operator-configured providers, a hub-shipped plugin adding provider listing
+and bounded parallel fan-out (`web_providers`/`web_search_multi`), and the
+bounded `deep-research-embedded` skill
+([SPEC-0035](../specs/active/SPEC-0035-web-research.md)).
 
 The pinned Hermes artifact also contains an opt-in authenticated HTTP API server. Its
 `/api/sessions` and `/v1/runs` contract is recorded in [SPEC-0011](../specs/active/SPEC-0011-hermes-api-contract.md)

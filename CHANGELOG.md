@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Added the standard web capability (issue #123), feature-gated per space:
+  `features: [web]` enables the upstream Hermes `web_search`/`web_extract`
+  toolset — without it the tools do not exist in the runtime
+  (`agent.disabled_toolsets` also strips them from upstream composite
+  fallbacks such as api_server) and `web:` settings are a validation error —
+  while `features: [deep_research]` (requires `web`) mounts the bundled
+  `deep-research-embedded` skill into the space's filtered `generated/skills`
+  and keeps it out of `skills.disabled`. Both are init defaults and
+  org-removable via `scope.yaml`. `settings.yaml` `web:` configures providers
+  (tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs,
+  keenable, xai, nous) with validated backend names, provider tiers, keyless
+  and cache policy; keys reach the runtime through secrets env or the
+  protected self-env form, never prompts. `web.search_backend` is the default
+  engine and `web.search_providers` allowlists engines for parallel fan-out:
+  the hub-shipped `hub-web` plugin (mounted read-only at
+  `/opt/hermes/plugins/hub-web` only while `web` is on) adds `web_providers`
+  (list engines, availability, default) and `web_search_multi` (one query to a
+  named subset, `all`, or the default — parallel, bounded to 8 providers/60 s,
+  URL-deduplicated, per-provider failure reporting; names outside the
+  allowlist are rejected). The skill is a bounded state machine on disk
+  (perspective plan, source registry, gap-driven rounds, distilled notes,
+  outline → sections → cited report with a verify pass) whose `web.research`
+  limits can only tighten the ceilings (16 rounds / 100 pages / 10 pages per
+  host / 240 minutes); long runs continue across durable hub-routine wakes and
+  resume cold from `state.json`.
+- Fixed `hubctl supervisor` ignoring `HUB_ENV`: the shared `-env` flag
+  defaults to `prod` for render/up, so an unset flag silently forced prod
+  mounts on spawned runtimes; the supervisor now falls back to `HUB_ENV`
+  unless `-env` is passed explicitly.
 - Added a prepared DataLens connector (issue #120): exact-source entry for the
   official `datalens-tech/datalens-mcp` @96b3d6b (MIT). Five-tool gateway with
   server-side OpenAPI `x-mcp-scope` enforcement — read/write/privileged stay
