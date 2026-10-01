@@ -5,10 +5,12 @@ title: Standalone STT/TTS media services (issue #170)
 
 # Media sidecars
 
-1. Speech work runs outside the gateway in two independently deployable Go
-   services built from one binary: `hub-media` with `HUB_MEDIA_ROLE=stt` or
-   `tts`. Each has its own data volume, restart policy and scaling; the
-   gateway talks to them over authenticated HTTP.
+1. Speech work runs outside the gateway in two independent services with
+   separate binaries and images: `cmd/hub-stt` (`docker/Dockerfile.stt`) and
+   `cmd/hub-tts` (`docker/Dockerfile.tts`), sharing the `internal/mediasvc`
+   library. Each has its own data volume, restart policy and scaling; the
+   gateway talks to them over authenticated HTTP. STT keeps the heavier ML
+   toolchain (faster-whisper); TTS stays thin (espeak-ng + ffmpeg).
 
 2. The HTTP surface is the OpenAI audio contract —
    `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`,
@@ -20,11 +22,16 @@ title: Standalone STT/TTS media services (issue #170)
    `HUB_MEDIA_DATA`, requeue after restart and expire by `HUB_MEDIA_JOB_TTL`.
 
 3. Engines are swappable via `HUB_MEDIA_ENGINE`:
-   - `command` — local worker binaries (`hub-stt`: faster-whisper,
-     `hub-tts`: espeak-ng + ffmpeg to OGG/Opus); the shipped default.
+   - `command` — local worker binaries (`stt-worker`: faster-whisper,
+     `tts-worker`: espeak-ng + ffmpeg to OGG/Opus); the shipped default.
    - `remote` — proxies to any OpenAI-compatible speech server
-     (`HUB_MEDIA_UPSTREAM`/`HUB_MEDIA_UPSTREAM_KEY`), e.g. speaches or a
-     bespoke model host. This is the "bring your own model" adapter.
+     (`HUB_MEDIA_UPSTREAM`/`HUB_MEDIA_UPSTREAM_KEY`). This is the "bring
+     your own model/provider" adapter: Groq
+     (`https://api.groq.com/openai/v1`, whisper-large-v3 incl. Russian),
+     OpenAI, Speaches, a self-hosted whisperx-asr-service with pyannote
+     diarization (`diarize=true` is forwarded), or NVIDIA NIM behind its
+     OpenAI-compatible front. Bare hosts get `/v1` appended; bases already
+     ending in `/v1` are used as-is. Readiness probes `/v1/models`.
    - `sherpa` — native sherpa-onnx (whisper/paraformer STT incl. Russian,
      vits/piper/kokoro TTS, pyannote segmentation + speaker-embedding
      diarization). Requires building with `-tags sherpa` and the sherpa-onnx
@@ -50,9 +57,9 @@ title: Standalone STT/TTS media services (issue #170)
    and win over `HUB_STT_COMMAND`/`HUB_TTS_COMMAND`, which stay as the
    documented embedded fallback. `/voice` readiness probes the sidecar
    `/healthz`; a dead sidecar reads "недоступно". TTS failure never eats the
-   canonical text answer. Compose renders `hub-media-stt`/`hub-media-tts`
+   canonical text answer. Compose renders `hub-stt`/`hub-tts`
    with the `transcription` feature on infra deployments, built from
-   `docker/Dockerfile.media`.
+   `docker/Dockerfile.stt` and `docker/Dockerfile.tts` respectively.
 
 # Acceptance
 

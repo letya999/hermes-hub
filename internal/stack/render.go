@@ -421,8 +421,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
 		if s.Has("transcription") {
-			gatewayEnvironment["HUB_STT_URL"] = "http://hub-media-stt:8090"
-			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-media-tts:8090"
+			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
+			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-tts:8090"
 			// The embedded command workers stay configured as the documented
 			// fallback; when the URL is set the sidecar wins at selection time.
 			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
@@ -459,27 +459,29 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			delete(services, "hermes-runtime")
 		}
 
-		// Standalone speech sidecars: independent lifecycle and scaling from
-		// the gateway, shared bearer auth, durable job data on their own
-		// volumes. They reach the gateway's network only — never the docker
-		// socket, broker mounts or user spaces.
+		// Standalone speech services: two separate binaries and images
+		// (hub-stt, hub-tts), independent lifecycle and scaling, shared
+		// bearer auth, durable job data on their own volumes. They reach
+		// the gateway's network only — never the docker socket, broker
+		// mounts or user spaces. HUB_MEDIA_ENGINE=remote with
+		// HUB_MEDIA_UPSTREAM points a service at any OpenAI-compatible
+		// upstream (Groq, Speaches, a self-hosted whisperx, NVIDIA NIM).
 		if s.Has("transcription") {
 			mediaAuth := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"}}
 			for _, role := range []string{"stt", "tts"} {
-				name := "hub-media-" + role
+				name := "hub-" + role
 				svc := cloneMap(common)
-				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile.media"}
-				svc["entrypoint"] = []string{"hub-media"}
+				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile." + role}
 				svc["environment"] = M{
-					"HUB_MEDIA_ROLE": role, "HUB_MEDIA_LISTEN": "0.0.0.0:8090",
-					"HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "/usr/local/bin/hub-" + role,
+					"HUB_MEDIA_LISTEN": "0.0.0.0:8090",
+					"HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "/usr/local/bin/" + role + "-worker",
 					"HUB_MEDIA_DATA": "/data", "HUB_MEDIA_WORKERS": "2",
 					"HUB_MEDIA_INPUT_ROOT": "/inputs",
 					"HF_HOME":              "/data/hf", "XDG_CACHE_HOME": "/data/cache",
 					"HOME": "/tmp", "TZ": s.Timezone,
 				}
 				svc["env_file"] = mediaAuth
-				svc["volumes"] = []any{M{"type": "volume", "source": "hub-media-" + role + "-data", "target": "/data"}}
+				svc["volumes"] = []any{M{"type": "volume", "source": "hub-" + role + "-data", "target": "/data"}}
 				svc["networks"] = sharedNetworks
 				svc["restart"] = "unless-stopped"
 				services[name] = svc
@@ -504,8 +506,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
 		if s.Has("transcription") {
-			volumes["hub-media-stt-data"] = M{}
-			volumes["hub-media-tts-data"] = M{}
+			volumes["hub-stt-data"] = M{}
+			volumes["hub-tts-data"] = M{}
 		}
 	}
 	// The shared runtime network is operator-owned infrastructure: it is

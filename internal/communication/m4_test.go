@@ -576,8 +576,8 @@ func TestServiceURLBeatsCommandSelection(t *testing.T) {
 		t.Fatal("empty tts url did not fall back to command")
 	}
 	c := testConfig(t)
-	c.STTURL = "http://hub-media-stt:8090"
-	c.TTSURL = "http://hub-media-tts:8090"
+	c.STTURL = "http://hub-stt:8090"
+	c.TTSURL = "http://hub-tts:8090"
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)

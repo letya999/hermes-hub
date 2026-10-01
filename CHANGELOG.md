@@ -2,17 +2,20 @@
 
 ## Unreleased
 
-- Standalone media sidecars (issue #170): speech work moved out of the
-  gateway into two independently deployable Go services — `hub-media-stt` and
-  `hub-media-tts`, one binary with `HUB_MEDIA_ROLE` selecting the surface.
+- Standalone media services (issue #170): speech work moved out of the
+  gateway into two independent services with separate binaries and images —
+  `hub-stt` (`docker/Dockerfile.stt`, faster-whisper toolchain) and
+  `hub-tts` (`docker/Dockerfile.tts`, espeak-ng+ffmpeg), sharing
+  `internal/mediasvc`.
   OpenAI-compatible API (`/v1/audio/transcriptions`, `/v1/audio/speech`) plus
   a durable async job API (`/v1/jobs`) that ingests uploads, mounted user
   storage and presigned https sources, decodes via ffmpeg, transcribes
   hour-long recordings in 30 s windows and supports engine diarization.
   Engines are swappable (`command`/`remote`/`sherpa`); remote proxies to any
-  OpenAI-compatible model server, sherpa needs `-tags sherpa`. Gateway uses
+  OpenAI-compatible upstream — Groq, OpenAI, Speaches, whisperx with
+  diarization, NVIDIA NIM. Gateway uses
   `HUB_STT_URL`/`HUB_TTS_URL` (command workers stay as fallback); `/voice`
-  probes sidecar `/healthz`. Compose renders both services with per-role
+  probes sidecar `/healthz`. Compose renders both services with per-service
   volumes and a shared `media.auth` bearer when `transcription` is on.
 - Working voice path (issue #170): the image now actually carries the STT
   backend — `faster-whisper==1.2.1` is installed into the runtime venv (the

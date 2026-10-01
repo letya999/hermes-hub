@@ -1,8 +1,9 @@
-// Package mediasvc implements the hub's standalone speech services: one
-// binary serves either an STT role or a TTS role (HUB_MEDIA_ROLE) so the two
-// scale and restart independently. The HTTP surface is the OpenAI audio
-// contract (transcriptions/speech) plus an async job API for long recordings
-// fetched from user storage, presigned URLs or uploads.
+// Package mediasvc is the shared core of the hub's two standalone speech
+// services: cmd/hub-stt serves transcription (sync + async jobs for long
+// recordings), cmd/hub-tts serves synthesis — separate binaries, separate
+// images, separate scaling. The HTTP surface is the OpenAI audio contract
+// (transcriptions/speech) plus an async job API for long recordings fetched
+// from user storage, presigned URLs or uploads.
 package mediasvc
 
 import (
@@ -44,11 +45,12 @@ type Config struct {
 	MaxSource    int64         // async source cap
 }
 
-// ConfigFromEnv keeps every knob in one place; empty means the service is
-// deliberately unconfigured rather than guessing.
-func ConfigFromEnv() (Config, error) {
+// ConfigFromEnv keeps every knob in one place; the role is fixed by the
+// binary (hub-stt vs hub-tts), not an env var — an empty value means the
+// service is deliberately unconfigured rather than guessing.
+func ConfigFromEnv(role string) (Config, error) {
 	c := Config{
-		Role:         envOr("HUB_MEDIA_ROLE", RoleSTT),
+		Role:         role,
 		ListenAddr:   envOr("HUB_MEDIA_LISTEN", "0.0.0.0:8090"),
 		Auth:         os.Getenv("HUB_MEDIA_AUTH"),
 		DataDir:      envOr("HUB_MEDIA_DATA", "/data/media"),
@@ -57,7 +59,7 @@ func ConfigFromEnv() (Config, error) {
 		Workers:      envInt("HUB_MEDIA_WORKERS", 2),
 		Engine:       envOr("HUB_MEDIA_ENGINE", "command"),
 		Command:      os.Getenv("HUB_MEDIA_COMMAND"),
-		Upstream:     strings.TrimRight(os.Getenv("HUB_MEDIA_UPSTREAM"), "/"),
+		Upstream:     normalizeUpstream(os.Getenv("HUB_MEDIA_UPSTREAM")),
 		UpstreamKey:  os.Getenv("HUB_MEDIA_UPSTREAM_KEY"),
 		ModelDir:     envOr("HUB_MEDIA_MODEL_DIR", "/data/models"),
 		STTModel:     envOr("HUB_STT_MODEL", "whisper-tiny"),
@@ -70,7 +72,7 @@ func ConfigFromEnv() (Config, error) {
 		MaxSource:    2 << 30,
 	}
 	if c.Role != RoleSTT && c.Role != RoleTTS {
-		return c, fmt.Errorf("HUB_MEDIA_ROLE must be %q or %q", RoleSTT, RoleTTS)
+		return c, fmt.Errorf("role must be %q or %q", RoleSTT, RoleTTS)
 	}
 	if c.Auth == "" {
 		return c, errors.New("HUB_MEDIA_AUTH is required")
@@ -102,6 +104,13 @@ func ConfigFromEnv() (Config, error) {
 		c.InputRoot = root
 	}
 	return c, nil
+}
+
+// normalizeUpstream accepts both bare hosts (http://speaches:8000) and full
+// API bases (https://api.groq.com/openai/v1); endpoints append the
+// OpenAI-style path themselves.
+func normalizeUpstream(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
 func envOr(key, fallback string) string {

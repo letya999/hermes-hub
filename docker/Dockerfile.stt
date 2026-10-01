@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# Standalone STT service (hub-stt). Dedicated image: STT scales, restarts and
+# carries its own model toolchain separately from hub-tts. Default engine is
+# `command` (stt-worker → faster-whisper); `remote` proxies to any
+# OpenAI-compatible upstream (Groq, Speaches, whisperx, NVIDIA NIM via
+# gateway); `sherpa` needs the -tags sherpa build with the native library.
+FROM golang:1.27-bookworm@sha256:a58ef1bdf40835a04cca75896cfb8f9e3ee10a6d264dd91d91e4497cc34e75f7 AS go_build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod go mod download
+COPY cmd/hub-stt ./cmd/hub-stt
+COPY internal/mediasvc ./internal/mediasvc
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-stt ./cmd/hub-stt
+
+FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+# faster-whisper alone: the command STT engine; no messaging/voice extras.
+RUN pip install --no-cache-dir faster-whisper==1.2.1
+COPY --from=go_build /hub-stt /usr/local/bin/hub-stt
+COPY docker/media/stt-worker /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/stt-worker
+RUN useradd -r -u 10002 -m stt && mkdir -p /data && chown 10002:10002 /data
+USER 10002:10002
+ENTRYPOINT ["hub-stt"]

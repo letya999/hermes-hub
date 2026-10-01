@@ -8,12 +8,12 @@ done:
     refusal + input-root containment; durable job store with requeue on
     restart and TTL sweep; 30s chunking; diarization-aware segment merge;
     text/json/srt outputs
-  - cmd/hub-media: env-configured service entrypoint, graceful shutdown
+  - cmd/hub-stt + cmd/hub-tts: separate service entrypoints, graceful shutdown
   - gateway: HUB_STT_URL/HUB_TTS_URL pick HTTP sidecar clients; command
     workers remain fallback; /voice readiness probes /healthz
-  - docker/Dockerfile.media + docker/media/hub-stt + hub-tts (command engine
+  - docker/Dockerfile.stt + Dockerfile.tts + docker/media/{stt,tts}-worker (command engine
     inside the sidecar: faster-whisper STT, espeak+ffmpeg TTS)
-  - stack render: hub-media-stt/hub-media-tts compose services with per-role
+  - stack render: hub-stt/hub-tts compose services with per-service
     volumes and shared bearer via media.auth; only when feature
     "transcription" and infra
 tests:

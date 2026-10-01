@@ -29,43 +29,43 @@ func setEnv(t *testing.T, kv map[string]string) {
 func TestConfigFromEnvValidation(t *testing.T) {
 	// Role must be one of the two valid values.
 	setEnv(t, map[string]string{
-		"HUB_MEDIA_ROLE": "nope", "HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "y",
+		"HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "y",
 	})
-	if _, err := ConfigFromEnv(); err == nil {
+	if _, err := ConfigFromEnv("nope"); err == nil {
 		t.Fatal("invalid role accepted")
 	}
 	// Auth is mandatory.
-	setEnv(t, map[string]string{"HUB_MEDIA_ROLE": "stt", "HUB_MEDIA_AUTH": ""})
-	if _, err := ConfigFromEnv(); err == nil {
+	setEnv(t, map[string]string{"HUB_MEDIA_AUTH": ""})
+	if _, err := ConfigFromEnv(RoleSTT); err == nil {
 		t.Fatal("missing auth accepted")
 	}
 	// Remote engine requires an upstream.
 	setEnv(t, map[string]string{
-		"HUB_MEDIA_ROLE": "stt", "HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "remote", "HUB_MEDIA_UPSTREAM": "",
+		"HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "remote", "HUB_MEDIA_UPSTREAM": "",
 	})
-	if _, err := ConfigFromEnv(); err == nil {
+	if _, err := ConfigFromEnv(RoleSTT); err == nil {
 		t.Fatal("remote engine without upstream accepted")
 	}
 	// Command engine requires a command.
 	setEnv(t, map[string]string{
-		"HUB_MEDIA_ROLE": "stt", "HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "",
+		"HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "",
 	})
-	if _, err := ConfigFromEnv(); err == nil {
+	if _, err := ConfigFromEnv(RoleSTT); err == nil {
 		t.Fatal("command engine without command accepted")
 	}
 	// Unknown engine refused.
 	setEnv(t, map[string]string{
-		"HUB_MEDIA_ROLE": "stt", "HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "wat",
+		"HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "wat",
 	})
-	if _, err := ConfigFromEnv(); err == nil {
+	if _, err := ConfigFromEnv(RoleSTT); err == nil {
 		t.Fatal("unknown engine accepted")
 	}
 	// Sherpa without the native build refuses.
 	setEnv(t, map[string]string{
-		"HUB_MEDIA_ROLE": "stt", "HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "sherpa",
+		"HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "sherpa",
 		"HUB_MEDIA_MODEL_DIR": t.TempDir(), "HUB_MEDIA_DATA": t.TempDir(),
 	})
-	if _, err := ConfigFromEnv(); err != nil {
+	if _, err := ConfigFromEnv(RoleSTT); err != nil {
 		t.Fatalf("config parse: %v", err)
 	}
 	if _, err := sttEngine(Config{Engine: "sherpa"}); err == nil {
@@ -74,18 +74,29 @@ func TestConfigFromEnvValidation(t *testing.T) {
 	if _, err := ttsEngine(Config{Engine: "sherpa"}); err == nil {
 		t.Fatal("sherpa tts available without the native build")
 	}
-	// Full valid config parses all knobs.
+	// Full valid config parses all knobs; a Groq-style upstream base keeps
+	// its /v1 suffix instead of getting a second one.
 	setEnv(t, map[string]string{
-		"HUB_MEDIA_ROLE": "tts", "HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "command",
+		"HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "command",
 		"HUB_MEDIA_COMMAND": "/bin/tts", "HUB_MEDIA_WORKERS": "4", "HUB_MEDIA_JOB_TTL": "2h",
 		"HUB_MEDIA_FETCH_HOSTS": "a.com, b.com", "HUB_MEDIA_LISTEN": ":9999",
+		"HUB_MEDIA_UPSTREAM": "https://api.groq.com/openai/v1/",
 	})
-	c, err := ConfigFromEnv()
+	c, err := ConfigFromEnv(RoleTTS)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.Role != "tts" || c.Workers != 4 || c.JobTTL != 2*time.Hour || len(c.FetchHosts) != 2 || c.ListenAddr != ":9999" {
 		t.Fatalf("config fields: %+v", c)
+	}
+	if c.Upstream != "https://api.groq.com/openai/v1" {
+		t.Fatalf("upstream normalization: %q", c.Upstream)
+	}
+	if got := apiURL(c.Upstream, "/audio/speech"); got != "https://api.groq.com/openai/v1/audio/speech" {
+		t.Fatalf("apiURL: %q", got)
+	}
+	if got := apiURL("http://speaches:8000", "/models"); got != "http://speaches:8000/v1/models" {
+		t.Fatalf("apiURL bare host: %q", got)
 	}
 }
 
@@ -153,7 +164,7 @@ func TestRemoteEnginesAgainstUpstream(t *testing.T) {
 			})
 		case "/v1/audio/speech":
 			_, _ = w.Write([]byte("upstream-audio"))
-		case "/healthz":
+		case "/v1/models":
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -296,15 +307,18 @@ func TestServeRequeuesOrphanedJobs(t *testing.T) {
 	}
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	deadline := time.Now().Add(3 * time.Second)
+	// The requeued job then actually runs (and fails: `true` prints nothing),
+	// so wait for a terminal state — leaving mid-flight would race TempDir
+	// cleanup on Windows.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if got, err := store.get("job-orphan"); err == nil && got.Status != "running" {
+		if got, err := store.get("job-orphan"); err == nil && (got.Status == "done" || got.Status == "failed") {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	got, _ := store.get("job-orphan")
-	t.Fatalf("orphan job never requeued: %s", got.Status)
+	t.Fatalf("orphan job never requeued to completion: %s", got.Status)
 }
 
 func TestLongAudioChunksAndOffsets(t *testing.T) {

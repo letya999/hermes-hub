@@ -8,7 +8,7 @@ No changes are in progress. Follow-ups live as GitHub issues #73 (live ToolHive/
 
 | Change | State |
 |---|---|
-| [CHG-0062](in-progress/CHG-0062-media-sidecars/plan.md) | Issue 170 redo: standalone hub-media STT/TTS sidecars, swappable engines, async long-audio jobs |
+| [CHG-0062](in-progress/CHG-0062-media-sidecars/plan.md) | Issue 170 redo: standalone hub-stt/hub-tts services (separate images), swappable engines, async long-audio jobs |
 | [CHG-0061](in-progress/CHG-0061-voice-readiness/plan.md) | Issue 170: separate STT/TTS readiness in `/voice`, honest unavailable state |
 | [CHG-0060](in-progress/CHG-0060-artifact-delivery/plan.md) | Issue 172: run artifact handoff and chat delivery — committed, live smoke pending |
 | [CHG-0059](in-progress/CHG-0059-channel-rendering/plan.md) | Issue 166: per-channel Markdown rendering and lossless multi-part replies — committed, live smoke pending |

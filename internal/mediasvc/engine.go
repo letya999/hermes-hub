@@ -126,16 +126,21 @@ func (e remoteSTT) Transcribe(ctx context.Context, wav string, opts TranscribeOp
 		return nil, err
 	}
 	_ = form.WriteField("response_format", "verbose_json")
+	_ = form.WriteField("timestamp_granularities[]", "segment")
 	if opts.Model != "" {
 		_ = form.WriteField("model", opts.Model)
 	}
 	if opts.Language != "" {
 		_ = form.WriteField("language", opts.Language)
 	}
+	if opts.Diarize {
+		// whisperx-style upstreams honor this; OpenAI/Groq/Speaches ignore it.
+		_ = form.WriteField("diarize", "true")
+	}
 	if err := form.Close(); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.base+"/v1/audio/transcriptions", &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/audio/transcriptions"), &body)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +185,7 @@ func (e remoteSTT) Transcribe(ctx context.Context, wav string, opts TranscribeOp
 }
 
 func (e remoteSTT) Ready(ctx context.Context) bool {
-	return probe(ctx, e.client, e.base+"/healthz", e.key)
+	return probe(ctx, e.client, apiURL(e.base, "/models"), e.key)
 }
 
 type remoteTTS struct {
@@ -198,7 +203,7 @@ func (e remoteTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.base+"/v1/audio/speech", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/audio/speech"), bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +227,16 @@ func (e remoteTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, 
 }
 
 func (e remoteTTS) Ready(ctx context.Context) bool {
-	return probe(ctx, e.client, e.base+"/healthz", e.key)
+	return probe(ctx, e.client, apiURL(e.base, "/models"), e.key)
+}
+
+// apiURL joins a configured upstream (bare host or a base already ending in
+// /v1, e.g. https://api.groq.com/openai/v1) with an OpenAI-style path.
+func apiURL(base, tail string) string {
+	if strings.HasSuffix(base, "/v1") {
+		return base + tail
+	}
+	return base + "/v1" + tail
 }
 
 func probe(ctx context.Context, client *http.Client, url, key string) bool {

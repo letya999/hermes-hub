@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -400,5 +401,101 @@ func TestJobIDValidation(t *testing.T) {
 	}
 	if !validJobID("job-123-abc") {
 		t.Fatal("valid id rejected")
+	}
+}
+
+func TestMiscCoverageBranches(t *testing.T) {
+	dir := t.TempDir()
+	j := &Job{ID: "job-x", Text: "готово", Segments: []Segment{{Start: -1, End: 1.2, Text: "seg", Speaker: "speaker-0"}}}
+	if err := writeJobResult(dir, j); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"result.txt", "result.json", "result.srt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("missing %s", name)
+		}
+	}
+	if srtTime(-5) != "00:00:00,000" {
+		t.Fatal("negative srt time")
+	}
+	// saveBounded: over-limit body and pre-existing destination both fail.
+	big := filepath.Join(dir, "big.bin")
+	if err := saveBounded(big, strings.NewReader("0123456789"), 4); err == nil {
+		t.Fatal("oversized body saved")
+	}
+	if err := saveBounded(filepath.Join(dir, "result.txt"), strings.NewReader("x"), 10); err == nil {
+		t.Fatal("existing destination overwritten")
+	}
+	// Serve refuses a bad engine instead of starting half-wired.
+	cfg := testConfig(t)
+	cfg.Engine = "nope"
+	if _, err := Serve(cfg); err == nil {
+		t.Fatal("Serve accepted an unknown engine")
+	}
+	// jobsRoot: malformed JSON body is a 400, not a panic.
+	s := newTestService(t, testConfig(t))
+	s.stt = &fakeSTT{ready: true}
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/jobs", strings.NewReader("{bad"))
+	authReq(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad json: %d", resp.StatusCode)
+	}
+	// jobsRoot: no source is a 400.
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/jobs", strings.NewReader("{}"))
+	authReq(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty job: %d", resp.StatusCode)
+	}
+}
+
+func TestWavAndExtEdges(t *testing.T) {
+	good := filepath.Join(t.TempDir(), "ok.wav")
+	if err := os.WriteFile(good, writeTestWav(t, 2.0), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := wavDuration(good); err != nil || d < 1.9 || d > 2.1 {
+		t.Fatalf("wavDuration=%v %v", d, err)
+	}
+	if _, err := wavDuration(filepath.Join(t.TempDir(), "missing.wav")); err == nil {
+		t.Fatal("missing file parsed")
+	}
+	bad := filepath.Join(t.TempDir(), "bad.wav")
+	if err := os.WriteFile(bad, []byte("not a wav"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wavDuration(bad); err == nil {
+		t.Fatal("garbage parsed as wav")
+	}
+	truncated := writeTestWav(t, 0.5)
+	truncated[3] = 'X' // still RIFF? no — corrupt the magic instead
+	copy(truncated[0:4], "NOPE")
+	if err := os.WriteFile(bad, truncated, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wavDuration(bad); err == nil {
+		t.Fatal("bad magic parsed as wav")
+	}
+	u, _ := url.Parse("https://x.com/file")
+	u.Path = ""
+	if ext := extensionFromResponse(nil, u); ext != ".bin" {
+		t.Fatalf("ext=%q", ext)
+	}
+	u.Path = "/a/b/meeting.mp3"
+	if ext := extensionFromResponse(nil, u); ext != ".mp3" {
+		t.Fatalf("ext=%q", ext)
 	}
 }
