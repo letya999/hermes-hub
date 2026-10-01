@@ -16,6 +16,13 @@ done:
   - stack render: hub-stt/hub-tts compose services with per-service
     volumes and shared bearer via media.auth; only when feature
     "transcription" and infra
+  - tts-worker multi-backend: silero v5_5_ru (torch CPU, baked into image,
+    auto-stress+homographs) -> piper voices (irina/ruslan/dmitri) -> espeak;
+    request voice via HUB_TTS_REQUEST_VOICE, voice names/lang map,
+    HUB_TTS_DEVICE cpu|cuda, HUB_TTS_BACKENDS ordering
+  - elevenlabs engine (xi-api-key, /v1/text-to-speech, /v1/user readiness,
+    model_id via HUB_TTS_MODEL); remote engine covers OpenAI-compatible TTS
+  - HUB_TTS_VOICES advertises a multi-voice catalog via /v1/voices
 tests:
   - sync transcription in text/json/verbose_json/srt formats
   - bearer auth enforced on all endpoints
@@ -33,11 +40,13 @@ tests:
     enforced, authenticated TTS->STT roundtrip over service DNS (OGG speech
     in, transcript out), async /v1/jobs lifecycle done with txt/json/srt
     results; empty-signal input fails honestly (no fake transcript)
+  - e2e tts->stt: silero xenia "Привет! Это проверка новой модели синтеза
+    русской речи на сервере." -> whisper-small returned the same text
+    verbatim; eugene voice live-tested over the HTTP API
 pending:
-  - full image rebuild finishing in background (slow debian mirror); running
-    hub-stt container carries patched worker layer until then
-  - russian transcription quality is whisper-tiny-int8 grade; for real voice
-    notes consider remote engine (Groq large-v3-turbo) or bigger local model
+  - live Telegram voice roundtrip with silero voice (bot delivers OGG; user
+    listening check is the remaining human acceptance)
   - sherpa engine needs the sherpa-onnx C lib + models; stub build rejects
     the engine name until then
-  - live Telegram voice roundtrip on a real deploy (external acceptance)
+  - elevenlabs untested against real API (no key); adapter contract covered
+    by stub tests only

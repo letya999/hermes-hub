@@ -347,8 +347,18 @@ func TestSpeechEndpointAndVoices(t *testing.T) {
 	var v map[string]any
 	json.NewDecoder(resp.Body).Decode(&v)
 	resp.Body.Close()
-	if v["default"] != "ru-RU-dmitri" {
+	if v["default"] != "ru-RU-dmitri" || len(v["voices"].([]any)) != 1 {
 		t.Fatalf("voices: %v", v)
+	}
+	// A configured voice catalog is advertised as-is.
+	s.cfg.Voices = []string{"xenia", "piper/irina"}
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/v1/voices", nil)
+	authReq(req)
+	resp, _ = http.DefaultClient.Do(req)
+	json.NewDecoder(resp.Body).Decode(&v)
+	resp.Body.Close()
+	if len(v["voices"].([]any)) != 2 || v["voices"].([]any)[1] != "piper/irina" {
+		t.Fatalf("voices catalog: %v", v)
 	}
 
 	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/audio/speech", strings.NewReader(`{"input":""}`))

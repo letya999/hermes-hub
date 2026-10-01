@@ -184,7 +184,11 @@ func (s *service) voices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"voices": []string{s.cfg.Voice}, "default": s.cfg.Voice})
+	voices := s.cfg.Voices
+	if len(voices) == 0 {
+		voices = []string{s.cfg.Voice}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"voices": voices, "default": s.cfg.Voice})
 }
 
 // jobRequest is the async API body; SourceURL/SourcePath are materialized

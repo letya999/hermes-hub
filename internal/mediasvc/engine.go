@@ -58,6 +58,12 @@ func ttsEngine(c Config) (TTSEngine, error) {
 	switch c.Engine {
 	case "remote":
 		return remoteTTS{base: c.Upstream, key: c.UpstreamKey, voice: c.Voice, client: &http.Client{Timeout: 2 * time.Minute}}, nil
+	case "elevenlabs":
+		base := c.Upstream
+		if base == "" {
+			base = "https://api.elevenlabs.io"
+		}
+		return elevenlabsTTS{base: base, key: c.UpstreamKey, voice: c.Voice, model: c.TTSModel, client: &http.Client{Timeout: 2 * time.Minute}}, nil
 	case "command":
 		return commandTTS{command: c.Command}, nil
 	case "sherpa":
@@ -89,6 +95,12 @@ type commandTTS struct{ command string }
 
 func (e commandTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, e.command)
+	// The requested voice rides in env, not argv: keeps the worker argv
+	// contract untouched and lets multi-voice workers (tts-worker) map it
+	// onto backends (silero/piper) or speakers.
+	if strings.TrimSpace(voice) != "" {
+		cmd.Env = append(os.Environ(), "HUB_TTS_REQUEST_VOICE="+voice)
+	}
 	cmd.Stdin = strings.NewReader(text)
 	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
@@ -228,6 +240,71 @@ func (e remoteTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, 
 
 func (e remoteTTS) Ready(ctx context.Context) bool {
 	return probe(ctx, e.client, apiURL(e.base, "/models"), e.key)
+}
+
+// ---- ElevenLabs engine: native REST API, not OpenAI-compatible.
+// HUB_MEDIA_UPSTREAM_KEY carries xi-api-key, HUB_TTS_VOICE the voice_id,
+// HUB_TTS_MODEL the model_id (eleven_multilingual_v2 handles Russian).
+
+type elevenlabsTTS struct {
+	base   string
+	key    string
+	voice  string
+	model  string
+	client *http.Client
+}
+
+func (e elevenlabsTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, error) {
+	if voice == "" {
+		voice = e.voice
+	}
+	if voice == "" {
+		return nil, errors.New("elevenlabs voice id is not configured")
+	}
+	model := e.model
+	if model == "" {
+		model = "eleven_multilingual_v2"
+	}
+	payload, err := json.Marshal(map[string]string{"text": text, "model_id": model})
+	if err != nil {
+		return nil, err
+	}
+	url := strings.TrimRight(e.base, "/") + "/v1/text-to-speech/" + voice + "?output_format=mp3_44100_64"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("xi-api-key", e.key)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK || len(out) == 0 {
+		return nil, fmt.Errorf("elevenlabs tts %d", resp.StatusCode)
+	}
+	return out, nil
+}
+
+func (e elevenlabsTTS) Ready(ctx context.Context) bool {
+	// /v1/user is the authenticated self-check; no audio is generated.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(e.base, "/")+"/v1/user", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("xi-api-key", e.key)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // apiURL joins a configured upstream (bare host or a base already ending in

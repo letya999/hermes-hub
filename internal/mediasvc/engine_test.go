@@ -74,6 +74,25 @@ func TestConfigFromEnvValidation(t *testing.T) {
 	if _, err := ttsEngine(Config{Engine: "sherpa"}); err == nil {
 		t.Fatal("sherpa tts available without the native build")
 	}
+	// ElevenLabs engine needs a key and only serves TTS.
+	setEnv(t, map[string]string{
+		"HUB_MEDIA_AUTH": "x", "HUB_MEDIA_ENGINE": "elevenlabs", "HUB_MEDIA_UPSTREAM_KEY": "",
+	})
+	if _, err := ConfigFromEnv(RoleTTS); err == nil {
+		t.Fatal("elevenlabs without key accepted")
+	}
+	setEnv(t, map[string]string{"HUB_MEDIA_UPSTREAM_KEY": "xi-key"})
+	if _, err := ConfigFromEnv(RoleSTT); err == nil {
+		t.Fatal("elevenlabs accepted for the stt role")
+	}
+	setEnv(t, map[string]string{"HUB_TTS_VOICES": "v1,v2", "HUB_TTS_VOICE": "v1"})
+	el, err := ConfigFromEnv(RoleTTS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if el.Engine != "elevenlabs" || len(el.Voices) != 2 || el.Voices[1] != "v2" || el.Voice != "v1" {
+		t.Fatalf("elevenlabs config: %+v", el)
+	}
 	// Full valid config parses all knobs; a Groq-style upstream base keeps
 	// its /v1 suffix instead of getting a second one.
 	setEnv(t, map[string]string{
@@ -145,6 +164,14 @@ func TestCommandEngines(t *testing.T) {
 	}
 	if _, err := (commandTTS{command: bad}).Synthesize(ctx, "hi", ""); err == nil {
 		t.Fatal("failing command synthesized")
+	}
+	// The requested voice reaches the worker through env, never argv.
+	voiced := scriptFile(t, "voiced",
+		"#!/bin/sh\ncat >/dev/null\nprintf \"$HUB_TTS_REQUEST_VOICE\"\n",
+		"@echo off\r\nmore\r\necho %HUB_TTS_REQUEST_VOICE%\r\n")
+	out, err := (commandTTS{command: voiced}).Synthesize(ctx, "hi", "xenia")
+	if err != nil || !strings.Contains(string(out), "xenia") {
+		t.Fatalf("voice env: %q %v", out, err)
 	}
 }
 
@@ -223,6 +250,77 @@ func TestRemoteEnginesAgainstUpstream(t *testing.T) {
 	}
 	if _, err := (remoteTTS{base: errUp.URL, client: http.DefaultClient}).Synthesize(ctx, "x", ""); err == nil {
 		t.Fatal("500 upstream synthesized")
+	}
+}
+
+func TestElevenLabsEngine(t *testing.T) {
+	var sawKey, sawVoice string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawKey = r.Header.Get("xi-api-key")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/text-to-speech/"):
+			sawVoice = strings.TrimPrefix(r.URL.Path, "/v1/text-to-speech/")
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["model_id"] != "eleven_multilingual_v2" {
+				t.Errorf("model_id=%q", body["model_id"])
+			}
+			_, _ = w.Write([]byte("mp3-bytes"))
+		case r.URL.Path == "/v1/user":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer up.Close()
+
+	tts, err := ttsEngine(Config{Engine: "elevenlabs", Upstream: up.URL, UpstreamKey: "xi-key", Voice: "voice-default", TTSModel: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audio, err := tts.Synthesize(context.Background(), "привет", "")
+	if err != nil || string(audio) != "mp3-bytes" {
+		t.Fatalf("elevenlabs synth: %v", err)
+	}
+	if sawKey != "xi-key" || sawVoice != "voice-default" {
+		t.Fatalf("headers/voice: %q %q", sawKey, sawVoice)
+	}
+	if !tts.Ready(context.Background()) {
+		t.Fatal("elevenlabs unready against live stub")
+	}
+	// Request-level voice wins over configured default.
+	if _, err := tts.Synthesize(context.Background(), "x", "voice-override"); err != nil || sawVoice != "voice-override" {
+		t.Fatalf("voice override: %v %q", err, sawVoice)
+	}
+	// Missing voice id fails instead of calling the API.
+	if _, err := (elevenlabsTTS{base: up.URL, key: "k", client: http.DefaultClient}).Synthesize(context.Background(), "x", ""); err == nil {
+		t.Fatal("empty voice id synthesized")
+	}
+	// Non-200 upstream fails the call and is not ready.
+	errUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer errUp.Close()
+	bad := elevenlabsTTS{base: errUp.URL, key: "k", voice: "v", client: http.DefaultClient}
+	if _, err := bad.Synthesize(context.Background(), "x", ""); err == nil {
+		t.Fatal("429 upstream synthesized")
+	}
+	if bad.Ready(context.Background()) {
+		t.Fatal("429 upstream reported ready")
+	}
+	// ttsEngine falls back to the public API base when Upstream is empty.
+	if e, err := ttsEngine(Config{Engine: "elevenlabs", UpstreamKey: "k", Voice: "v"}); err != nil {
+		t.Fatal(err)
+	} else if got := e.(elevenlabsTTS).base; got != "https://api.elevenlabs.io" {
+		t.Fatalf("default base %q", got)
+	}
+	// A malformed base fails request construction and readiness.
+	broken := elevenlabsTTS{base: "http://a b", key: "k", voice: "v", client: http.DefaultClient}
+	if _, err := broken.Synthesize(context.Background(), "x", ""); err == nil {
+		t.Fatal("malformed base synthesized")
+	}
+	if broken.Ready(context.Background()) {
+		t.Fatal("malformed base reported ready")
 	}
 }
 

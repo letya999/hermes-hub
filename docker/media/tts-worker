@@ -1,42 +1,142 @@
 #!/usr/local/bin/python3
 """TTS worker for the hub-tts command engine: text on stdin, OGG/Opus out.
 
-Prefers piper (neural voice) when the model file is present; falls back to
-espeak-ng. Model/voice selection: HUB_TTS_MODEL (piper voice name under
-HUB_TTS_VOICE_DIR), HUB_TTS_LANG/HUB_TTS_VOICE (espeak fallback).
+Backends (ordered by HUB_TTS_BACKENDS, default "silero,piper,espeak"):
+  silero — snakers4 Silero TTS (torch.hub, baked into the image): the best
+           offline Russian quality; auto-stress + homographs on v5_5_ru.
+  piper  — rhasspy piper ONNX voices under HUB_TTS_VOICE_DIR.
+  espeak — espeak-ng, the always-available robotic floor.
+
+Voice selection: request voice arrives as HUB_TTS_REQUEST_VOICE (set by the
+Go engine), else HUB_TTS_VOICE, else "xenia". Names: bare silero speakers
+(aidar, baya, kseniya, xenia, eugene), bare piper names (irina, ruslan,
+dmitri, or the file stem), explicit "silero/<speaker>" / "piper/<name>",
+"espeak". Bare language codes resolve through HUB_TTS_LANG_VOICES
+("ru:xenia,en:amy"). HUB_TTS_DEVICE=cpu|cuda steers silero and piper.
 """
 import os
 import subprocess
 import sys
 import tempfile
 
+SILERO_SPEAKERS = ("aidar", "baya", "kseniya", "xenia", "eugene")
 
-def synthesize_wav(text: str, wav: str) -> bool:
-    piper = os.environ.get("HUB_TTS_PIPER", "/opt/piper/piper")
-    model = os.environ.get("HUB_TTS_MODEL", "ru_RU-dmitri-medium")
-    onnx = os.path.join(os.environ.get("HUB_TTS_VOICE_DIR", "/voices"), model + ".onnx")
-    if os.path.exists(piper) and os.path.exists(onnx):
-        r = subprocess.run(
-            [piper, "--model", onnx, "--output_file", wav],
-            input=text.encode(), capture_output=True, timeout=60)
-        if r.returncode == 0 and os.path.exists(wav):
-            return True
-    lang = os.environ.get("HUB_TTS_LANG", "ru")
-    variant = os.environ.get("HUB_TTS_VOICE", "+f3")
+
+def env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+
+def lang_voices() -> dict:
+    out = {}
+    for kv in env("HUB_TTS_LANG_VOICES").split(","):
+        if ":" in kv:
+            lang, voice = kv.split(":", 1)
+            if lang.strip() and voice.strip():
+                out[lang.strip()] = voice.strip()
+    return out
+
+
+def piper_model(name: str):
+    d = env("HUB_TTS_VOICE_DIR", "/voices")
+    for cand in ("ru_RU-" + name + "-medium", "ru_RU-" + name, name):
+        p = os.path.join(d, cand + ".onnx")
+        if os.path.exists(p):
+            return p
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.endswith(".onnx") and name and name in f:
+                return os.path.join(d, f)
+    return None
+
+
+def resolve(voice: str):
+    """voice -> (backend, detail): silero speaker / piper onnx path / espeak voice."""
+    backends = [b.strip() for b in env("HUB_TTS_BACKENDS", "silero,piper,espeak").split(",") if b.strip()]
+    v = (voice or env("HUB_TTS_VOICE") or "xenia").strip()
+    v = lang_voices().get(v, v)
+    for prefix, backend in (("silero/", "silero"), ("piper/", "piper")):
+        if v.startswith(prefix) and backend in backends:
+            name = v.split("/", 1)[1]
+            if backend == "piper":
+                m = piper_model(name)
+                return ("piper", m) if m else ("espeak", "")
+            return "silero", name or "xenia"
+    if "silero" in backends and v in SILERO_SPEAKERS:
+        return "silero", v
+    if "piper" in backends:
+        m = piper_model(v)
+        if m:
+            return "piper", m
+    return "espeak", ""
+
+
+def silero_wav(text: str, speaker: str, wav: str) -> bool:
+    try:
+        import torch
+        model, _ = torch.hub.load(
+            repo_or_dir="snakers4/silero-models", model="silero_tts",
+            language="ru", speaker=env("HUB_TTS_SILERO_MODEL", "v5_5_ru"),
+            trust_repo=True, verbose=False)
+        model.to(torch.device(env("HUB_TTS_DEVICE", "cpu")))
+        audio = model.apply_tts(text=text, speaker=speaker or "xenia", sample_rate=48000)
+    except Exception as e:
+        print("silero failed:", e, file=sys.stderr)
+        return False
+    import array
+    import wave
+    pcm = audio.cpu().clamp(-1, 1).mul(32767).to(torch.int16).tolist()
+    with wave.open(wav, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(array.array("h", pcm).tobytes())
+    return True
+
+
+def piper_wav(text: str, onnx: str, wav: str) -> bool:
+    piper = env("HUB_TTS_PIPER", "/opt/piper/piper")
+    if not (os.path.exists(piper) and onnx and os.path.exists(onnx)):
+        return False
+    args = [piper, "--model", onnx, "--output_file", wav]
+    if env("HUB_TTS_DEVICE") == "cuda":
+        args.append("--cuda")
+    r = subprocess.run(args, input=text.encode(), capture_output=True, timeout=60)
+    if r.returncode != 0 or not os.path.exists(wav):
+        print("piper failed:", r.stderr.decode(errors="replace")[-300:], file=sys.stderr)
+        return False
+    return True
+
+
+def espeak_wav(text: str, wav: str) -> bool:
+    lang = env("HUB_TTS_LANG", "ru")
+    variant = env("HUB_TTS_ESPEAK_VOICE", "+f3")
     r = subprocess.run(
         ["espeak-ng", "-v", lang + variant, "-s", "150", "--stdin", "-w", wav],
         input=text.encode(), capture_output=True, timeout=25)
     return r.returncode == 0 and os.path.exists(wav)
 
 
+def synthesize_wav(text: str, voice: str, wav: str) -> bool:
+    backend, detail = resolve(voice)
+    if backend == "silero" and silero_wav(text, detail, wav):
+        return True
+    if backend == "piper" and piper_wav(text, detail, wav):
+        return True
+    fallback = piper_model(env("HUB_TTS_MODEL", "ru_RU-irina-medium").removeprefix("piper/"))
+    if fallback and piper_wav(text, fallback, wav):
+        return True
+    return espeak_wav(text, wav)
+
+
 def main() -> int:
     text = sys.stdin.read().strip()
     if not text:
         return 1
+    voice = env("HUB_TTS_REQUEST_VOICE")
     with tempfile.TemporaryDirectory() as tmp:
         wav = os.path.join(tmp, "voice.wav")
         ogg = os.path.join(tmp, "voice.ogg")
-        if not synthesize_wav(text, wav):
+        if not synthesize_wav(text, voice, wav):
             return 1
         encode = subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-i", wav, "-c:a", "libopus", "-b:a", "32k", ogg],

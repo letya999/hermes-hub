@@ -634,3 +634,13 @@ closed against this control-plane evidence; #47 stays open for M3 secret storage
   `just docker-check` passed the prod image, standalone smoke and pinned Hermes
   contract/lifecycle. The pre-existing `/usr/local/bin/hub-stt` fixture warning
   remains unrelated.
+- hub-tts voice upgrade: Silero `v5_5_ru` (snakers4, MIT) baked into the
+  image on CPU torch — auto-stress + homographs for Russian; piper voices
+  irina/ruslan/dmitri and espeak remain as fallbacks. Voice routing:
+  request `voice` picks a silero speaker, `piper/<name>` or `espeak`;
+  `HUB_TTS_LANG_VOICES` maps bare language codes to a primary voice;
+  `HUB_TTS_DEVICE` switches cpu/cuda; `HUB_TTS_BACKENDS` orders fallbacks.
+  External vendors: `remote` engine covers OpenAI-compatible TTS; new
+  `elevenlabs` engine (HUB_MEDIA_UPSTREAM_KEY + voice id) calls the native
+  ElevenLabs API. E2E verified on the live stack: silero xenia synthesized
+  a Russian sentence which whisper-small then transcribed verbatim.

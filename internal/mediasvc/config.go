@@ -40,6 +40,7 @@ type Config struct {
 	DiarizeModel string        // pyannote segmentation model (sherpa)
 	EmbedModel   string        // speaker embedding model (sherpa)
 	Voice        string        // default TTS voice id
+	Voices       []string      // advertised TTS voice ids (HUB_TTS_VOICES)
 	JobTTL       time.Duration // finished job retention
 	MaxUpload    int64         // sync upload cap
 	MaxSource    int64         // async source cap
@@ -66,7 +67,8 @@ func ConfigFromEnv(role string) (Config, error) {
 		TTSModel:     envOr("HUB_TTS_MODEL", "vits-piper-ru_RU-dmitri"),
 		DiarizeModel: os.Getenv("HUB_DIARIZE_MODEL"),
 		EmbedModel:   os.Getenv("HUB_EMBED_MODEL"),
-		Voice:        envOr("HUB_TTS_VOICE", "ru-RU-dmitri"),
+		Voice:        envOr("HUB_TTS_VOICE", "xenia"),
+		Voices:       splitEnv("HUB_TTS_VOICES"),
 		JobTTL:       envDur("HUB_MEDIA_JOB_TTL", 24*time.Hour),
 		MaxUpload:    64 << 20,
 		MaxSource:    2 << 30,
@@ -93,8 +95,15 @@ func ConfigFromEnv(role string) (Config, error) {
 		if c.ModelDir == "" {
 			return c, errors.New("HUB_MEDIA_MODEL_DIR is required for the sherpa engine")
 		}
+	case "elevenlabs":
+		if c.Role != RoleTTS {
+			return c, errors.New("HUB_MEDIA_ENGINE=elevenlabs is a TTS engine")
+		}
+		if c.UpstreamKey == "" {
+			return c, errors.New("HUB_MEDIA_UPSTREAM_KEY is required for the elevenlabs engine")
+		}
 	default:
-		return c, fmt.Errorf("HUB_MEDIA_ENGINE must be remote, command or sherpa, not %q", c.Engine)
+		return c, fmt.Errorf("HUB_MEDIA_ENGINE must be remote, command, sherpa or elevenlabs, not %q", c.Engine)
 	}
 	if c.InputRoot != "" {
 		root, err := filepath.Abs(c.InputRoot)
