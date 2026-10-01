@@ -468,18 +468,25 @@ type Job struct {
 }
 
 type Delivery struct {
-	ID               string    `json:"id"`
-	JobID            string    `json:"job_id"`
-	IdempotencyKey   string    `json:"idempotency_key,omitempty"`
-	ConversationID   string    `json:"conversation_id"`
-	DeliveryTargetID string    `json:"delivery_target_id"`
-	Channel          string    `json:"channel,omitempty"`
-	ChatID           int64     `json:"chat_id"`
-	SlackChannel     string    `json:"slack_channel,omitempty"`
-	SlackThread      string    `json:"slack_thread,omitempty"`
-	Text             string    `json:"text"`
-	Attempts         int       `json:"attempts"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               string `json:"id"`
+	JobID            string `json:"job_id"`
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
+	ConversationID   string `json:"conversation_id"`
+	DeliveryTargetID string `json:"delivery_target_id"`
+	Channel          string `json:"channel,omitempty"`
+	ChatID           int64  `json:"chat_id"`
+	SlackChannel     string `json:"slack_channel,omitempty"`
+	SlackThread      string `json:"slack_thread,omitempty"`
+	Text             string `json:"text"`
+	Format           string `json:"format,omitempty"`
+	// PartCount/SentParts persist multi-part progress so a mid-sequence failure
+	// leaves an uncertain delivery with an exact sent boundary; SourceSent marks
+	// the optional raw-source document part of the same ordered sequence.
+	PartCount  int       `json:"part_count,omitempty"`
+	SentParts  int       `json:"sent_parts,omitempty"`
+	SourceSent bool      `json:"source_sent,omitempty"`
+	Attempts   int       `json:"attempts"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
@@ -787,6 +794,9 @@ func (s *Spool) FailJob(id string) error {
 }
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
+	if d.Format != "" && d.Format != formatMarkdown {
+		return errors.New("invalid delivery identity")
+	}
 	if d.Channel == "" {
 		d.Channel = "telegram_bot"
 	}
@@ -874,6 +884,20 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 }
 
 func (s *Spool) CompleteDelivery(id string) error { return s.move("outbox/sending", "outbox/done", id) }
+
+// UpdateSending rewrites a claimed delivery's durable record so part progress
+// survives a restart between parts of the same message.
+func (s *Spool) UpdateSending(d Delivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.root, "outbox", "sending", spoolFileID(d.ID)+".json")
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return atomicJSON(path, d)
+}
 func (s *Spool) UncertainDelivery(id string) error {
 	return s.move("outbox/sending", "outbox/failed", id)
 }
@@ -976,7 +1000,8 @@ type TelegramFile struct {
 
 type TelegramAPI interface {
 	GetUpdates(context.Context, int64, int) ([]Update, error)
-	SendMessage(context.Context, int64, string) error
+	SendMessage(context.Context, int64, string, string) error
+	SendDocument(context.Context, int64, string, string, []byte) error
 	DeleteMessage(context.Context, int64, int) error
 	SendChatAction(context.Context, int64, string) error
 	GetFile(context.Context, string) (TelegramFile, error)
@@ -1045,36 +1070,46 @@ func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int)
 	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message"}}, &result)
 	return result, err
 }
-func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text string) error {
+func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text, parseMode string) error {
 	if !utf8.ValidString(text) || text == "" || len(text) > 2*1024*1024 {
 		return errors.New("invalid Telegram output")
 	}
-	if utf8.RuneCountInString(text) > 4096 {
-		// Preserve the complete bounded result in one delivery, without a
-		// partially sent multi-message sequence that cannot safely be retried.
-		var body bytes.Buffer
-		form := multipart.NewWriter(&body)
-		if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
-			return err
-		}
-		part, err := form.CreateFormFile("document", "response.txt")
-		if err != nil {
-			return err
-		}
-		if _, err := io.WriteString(part, text); err != nil {
-			return err
-		}
-		if err := form.Close(); err != nil {
-			return err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendDocument", &body)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", form.FormDataContentType())
-		return t.callRequest(req, nil)
+	payload := map[string]any{"chat_id": chatID, "text": text}
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
 	}
-	return t.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text}, nil)
+	return t.call(ctx, "sendMessage", payload, nil)
+}
+func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+	if len(data) == 0 || len(data) > mediaSizeLimit || name == "" {
+		return errors.New("invalid Telegram document")
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if caption != "" {
+		if err := form.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := form.CreateFormFile("document", name)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := form.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendDocument", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return t.callRequest(req, nil)
 }
 func (t *telegramAPI) DeleteMessage(ctx context.Context, chatID int64, messageID int) error {
 	return t.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": messageID}, nil)
@@ -1679,7 +1714,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}
 			g.recordJob(*job, outcome)
@@ -1708,11 +1743,21 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			sendErr = errors.New("slack delivery is not configured")
 			break
 		}
-		sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
+		if delivery.Format == formatMarkdown {
+			sendErr = g.sendParts(delivery, renderSlack(delivery.Text), func(part string) error {
+				return g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, part)
+			})
+		} else {
+			sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
+		}
 	default:
-		sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text))
-		if sendErr == nil {
-			g.maybeSendVoice(ctx, *delivery)
+		if delivery.Format == formatMarkdown {
+			sendErr = g.sendTelegramMarkdown(ctx, delivery)
+		} else {
+			sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text), "")
+			if sendErr == nil {
+				g.maybeSendVoice(ctx, *delivery)
+			}
 		}
 	}
 	if sendErr != nil {
@@ -1743,6 +1788,45 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// sendParts delivers ordered message parts, persisting the sent boundary after
+// each part so a failure never silently loses or blindly resends earlier parts.
+func (g *Gateway) sendParts(delivery *Delivery, parts []string, send func(string) error) error {
+	for i := delivery.SentParts; i < len(parts); i++ {
+		if err := send(parts[i]); err != nil {
+			_ = g.spool.UpdateSending(*delivery)
+			return err
+		}
+		delivery.SentParts, delivery.PartCount = i+1, len(parts)
+		if err := g.spool.UpdateSending(*delivery); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendTelegramMarkdown renders a model-authored delivery to Telegram HTML parts
+// and appends the raw source as a document when rendering degraded content.
+func (g *Gateway) sendTelegramMarkdown(ctx context.Context, delivery *Delivery) error {
+	parts, degraded := renderTelegram(delivery.Text)
+	err := g.sendParts(delivery, parts, func(part string) error {
+		return g.api.SendMessage(ctx, delivery.ChatID, part, "HTML")
+	})
+	if err != nil {
+		return err
+	}
+	if degraded && !delivery.SourceSent {
+		if err := g.api.SendDocument(ctx, delivery.ChatID, "answer.md", "", []byte(delivery.Text)); err != nil {
+			return err
+		}
+		delivery.SourceSent = true
+		if err := g.spool.UpdateSending(*delivery); err != nil {
+			return err
+		}
+	}
+	g.maybeSendVoice(ctx, *delivery)
+	return nil
 }
 
 func (g *Gateway) maybeSendVoice(ctx context.Context, delivery Delivery) {

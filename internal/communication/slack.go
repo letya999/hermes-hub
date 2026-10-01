@@ -28,6 +28,13 @@ var slackThreadTS = regexp.MustCompile(`^[0-9]{10,16}\.[0-9]{1,6}$`)
 func validSlackIMChannel(id string) bool { return slackIMChannel.MatchString(id) }
 func validSlackThread(ts string) bool    { return ts == "" || slackThreadTS.MatchString(ts) }
 
+func limitSlackText(text string) string {
+	if r := []rune(text); len(r) > slackPartLimit {
+		return string(r[:slackPartLimit])
+	}
+	return text
+}
+
 const slackTimestampSkew = 5 * time.Minute
 
 type SlackAPI interface {
@@ -48,7 +55,7 @@ func (s *slackAPI) PostMessage(ctx context.Context, channel, thread, text string
 	if !validSlackIMChannel(channel) || strings.TrimSpace(text) == "" || !validSlackThread(thread) {
 		return errors.New("invalid slack delivery")
 	}
-	payload := map[string]string{"channel": channel, "text": limitTelegramText(text)}
+	payload := map[string]string{"channel": channel, "text": limitSlackText(text)}
 	if thread != "" {
 		payload["thread_ts"] = thread
 	}

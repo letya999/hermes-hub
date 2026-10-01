@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Channel-specific rendering for model replies (issue #166): Markdown is
+  parsed once and rendered per channel — Telegram `sendMessage` now uses
+  `parse_mode=HTML` and Slack gets mrkdwn — so `###`/`**`/backticks no longer
+  reach users raw. Replies longer than the channel limit split on block
+  boundaries (4000 UTF-16 units Telegram, 39000 runes Slack) with durable
+  per-part progress in the outbox record; a mid-sequence failure leaves an
+  uncertain delivery with the exact sent boundary instead of a blind resend.
+  Tables and raw model HTML degrade to monospace grids plus a one-time
+  `answer.md` source document on Telegram. Hub-authored command/error replies
+  stay plain text. `SendDocument` is now an explicit API surface; the hidden
+  4096→document fallback inside `SendMessage` is removed.
 - Added the standard web capability (issue #123), feature-gated per space:
   `features: [web]` enables the upstream Hermes `web_search`/`web_extract`
   toolset — without it the tools do not exist in the runtime

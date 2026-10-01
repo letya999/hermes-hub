@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0036](active/SPEC-0036-channel-rendering.md) | Per-channel Markdown rendering, lossless multi-part replies, source document for degraded output |
 | [SPEC-0035](active/SPEC-0035-web-research.md) | Configured web search/extract providers, runtime-secret keys, bounded deep-research skill |
 | [SPEC-0034](active/SPEC-0034-user-diagnostics.md) | User-scoped diagnostics projection: store-derived scope, bounded queries, redaction |
 | [SPEC-0032](active/SPEC-0032-ssh-capability.md) | Opt-in user-scoped SSH capability with pinned host keys and stacked read/write/shell/tunnel grants |

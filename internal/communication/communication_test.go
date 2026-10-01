@@ -43,10 +43,13 @@ type fakeAPI struct {
 	mu       sync.Mutex
 	updates  []Update
 	sent     []string
+	modes    []string
+	docs     []string
 	voices   []string
 	deleted  []int
 	fileSize int64
 	err      error
+	failOn   int // fail the failOn-th SendMessage call (1-based; 0 = never)
 }
 
 func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
@@ -54,10 +57,23 @@ func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
 	defer f.mu.Unlock()
 	return f.updates, f.err
 }
-func (f *fakeAPI) SendMessage(_ context.Context, _ int64, text string) error {
+func (f *fakeAPI) SendMessage(_ context.Context, _ int64, text, parseMode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	if f.failOn > 0 && len(f.sent)+1 == f.failOn {
+		return errors.New("telegram send failed")
+	}
 	f.sent = append(f.sent, text)
+	f.modes = append(f.modes, parseMode)
+	return nil
+}
+func (f *fakeAPI) SendDocument(_ context.Context, _ int64, name, caption string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.docs = append(f.docs, name+"\x00"+string(data))
 	return f.err
 }
 func (f *fakeAPI) DeleteMessage(_ context.Context, _ int64, id int) error {
@@ -611,7 +627,7 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	if updates, err := api.GetUpdates(context.Background(), 1, 1); err != nil || len(updates) != 0 {
 		t.Fatal(updates, err)
 	}
-	if err := api.SendMessage(context.Background(), 1, "hi"); err != nil {
+	if err := api.SendMessage(context.Background(), 1, "hi", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := api.DeleteMessage(context.Background(), 1, 2); err != nil {
@@ -1364,8 +1380,11 @@ func (r *runAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, erro
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (r *runAPI) SendMessage(context.Context, int64, string) error { return nil }
-func (r *runAPI) DeleteMessage(context.Context, int64, int) error  { return nil }
+func (r *runAPI) SendMessage(context.Context, int64, string, string) error { return nil }
+func (r *runAPI) SendDocument(context.Context, int64, string, string, []byte) error {
+	return nil
+}
+func (r *runAPI) DeleteMessage(context.Context, int64, int) error { return nil }
 func (r *runAPI) SendChatAction(context.Context, int64, string) error {
 	return nil
 }

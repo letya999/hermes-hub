@@ -111,7 +111,9 @@ rejected rather than overridden.
 
 `communication-hub` owns Telegram transport, external identity mapping, the bounded
 file queue and reply delivery. It mounts only `communication-hub-data` and receives
-the bot token. `hermes-runtime` owns the selected scope homes, provider credentials
+the bot token. Model-authored replies render per channel at delivery (Telegram HTML,
+Slack mrkdwn) and split on block boundaries inside the channel limit with durable
+per-part outbox progress (SPEC-0036); hub-authored notices stay plain text. `hermes-runtime` owns the selected scope homes, provider credentials
 and configuration. Rollback mode runs one Hermes process per job; target mode keeps
 one pinned Gateway warm per active context. It is not published on a public host port.
 
