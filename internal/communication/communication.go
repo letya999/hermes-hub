@@ -118,6 +118,8 @@ type Config struct {
 	TTSAuth            string                  `yaml:"-"`
 	TTSVoice           string                  `yaml:"-"`
 	TTSUploadURL       string                  `yaml:"-"`
+	STTTimeout         time.Duration           `yaml:"-"`
+	MediaMaxDuration   int                     `yaml:"-"`
 	SpoolDir           string                  `yaml:"spool_dir"`
 	RuntimeURL         string                  `yaml:"-"`
 	RuntimeAuth        string                  `yaml:"-"`
@@ -313,13 +315,29 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv()}
+	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit)}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 	if err != nil {
 		return Config{}, err
 	}
 	fillChannelSecrets(&config)
 	return config, nil
+}
+
+// durationSecondsFromEnv reads a seconds-valued duration (HUB_STT_TIMEOUT).
+func durationSecondsFromEnv(name string, fallback time.Duration) time.Duration {
+	if n := intFromEnv(name, 0); n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return fallback
+}
+
+// intFromEnv reads a positive integer env (HUB_MEDIA_MAX_DURATION).
+func intFromEnv(name string, fallback int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil && n > 0 {
+		return n
+	}
+	return fallback
 }
 
 // workersFromEnv bounds the job worker pool; default 4 keeps it under the
@@ -1403,7 +1421,7 @@ func New(config Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand), synthesizer: serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand), forms: map[string]credentialForm{}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand), forms: map[string]credentialForm{}}
 	if config.SlackBotToken != "" {
 		g.slack = newSlackAPI(config.SlackBotToken)
 	}
@@ -2010,13 +2028,16 @@ func (g *Gateway) maybeSendVoice(ctx context.Context, delivery Delivery) {
 	}
 	audio, _, synthErr := g.synthesizer.Synthesize(ctx, delivery.Text)
 	if synthErr != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
+		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, synthErr, len(audio))
 		return
 	}
 	if strings.TrimSpace(g.config.TTSUploadURL) != "" {
 		// Third-party upload is skipped unless a future explicit upload worker is configured.
 		return
 	}
-	_ = g.api.SendVoice(ctx, delivery.ChatID, audio, "")
+	if err := g.api.SendVoice(ctx, delivery.ChatID, audio, ""); err != nil {
+		log.Printf("gateway voice send failed delivery_id=%q err=%v", delivery.ID, err)
+	}
 }
 
 func (g *Gateway) recordJob(job Job, outcome RunOutcome) {

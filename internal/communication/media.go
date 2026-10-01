@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	mediaSizeLimit     = 8 << 20
-	mediaDurationLimit = 120
-	sttTimeout         = 60 * time.Second
+	mediaSizeLimit = 8 << 20
+	// Defaults; both are configurable on the gateway via HUB_STT_TIMEOUT and
+	// HUB_MEDIA_MAX_DURATION (seconds) — limits are policy, not constants.
+	defaultMediaDurationLimit = 120
+	defaultSTTTimeout         = 180 * time.Second
 )
 
 // MediaEnvelope is the bounded voice/file record. Canonical job text stays text.
@@ -42,13 +44,6 @@ type Synthesizer interface {
 	Synthesize(ctx context.Context, text string) ([]byte, string, error)
 }
 
-func commandTranscriber(command string) Transcriber {
-	if strings.TrimSpace(command) == "" {
-		return nil
-	}
-	return CommandTranscriber{Command: command, Timeout: sttTimeout}
-}
-
 func commandSynthesizer(command string) Synthesizer {
 	if strings.TrimSpace(command) == "" {
 		return nil
@@ -58,11 +53,17 @@ func commandSynthesizer(command string) Synthesizer {
 
 // serviceTranscriber prefers the standalone STT service when its URL is
 // configured; the embedded command worker stays as the fallback path.
-func serviceTranscriber(base, auth, command string) Transcriber {
-	if strings.TrimSpace(base) != "" {
-		return HTTPTranscriber{Base: strings.TrimRight(base, "/"), Auth: auth, Timeout: sttTimeout}
+func serviceTranscriber(base, auth, command string, timeout time.Duration) Transcriber {
+	if timeout <= 0 {
+		timeout = defaultSTTTimeout
 	}
-	return commandTranscriber(command)
+	if strings.TrimSpace(base) != "" {
+		return HTTPTranscriber{Base: strings.TrimRight(base, "/"), Auth: auth, Timeout: timeout}
+	}
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	return CommandTranscriber{Command: command, Timeout: timeout}
 }
 
 func serviceSynthesizer(base, auth, voice, command string) Synthesizer {
@@ -93,7 +94,7 @@ func (c CommandTranscriber) Transcribe(ctx context.Context, path, mime string) (
 		return "", errors.New("stt is not configured")
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = sttTimeout
+		c.Timeout = defaultSTTTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
@@ -144,7 +145,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 		media = message.Audio
 	}
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
-	if err := rejectMedia(envelope); err != nil {
+	if err := rejectMedia(envelope, g.config.MediaMaxDuration); err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, "Голосовое сообщение отклонено: слишком большое, длинное или неподдерживаемый тип.")
 	}
 	if g.transcriber == nil {
@@ -201,14 +202,17 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	return g.enqueueChannelJob(ctx, user, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, user.envelope(message.From.ID))
 }
 
-func rejectMedia(e MediaEnvelope) error {
+func rejectMedia(e MediaEnvelope, maxDuration int) error {
+	if maxDuration <= 0 {
+		maxDuration = defaultMediaDurationLimit
+	}
 	if e.FileID == "" {
 		return errors.New("missing file")
 	}
 	if e.Size > mediaSizeLimit {
 		return errors.New("too large")
 	}
-	if e.Duration > mediaDurationLimit {
+	if e.Duration > maxDuration {
 		return errors.New("too long")
 	}
 	if e.MIME != "" && !allowedAudioMIME(e.MIME) {
@@ -231,7 +235,7 @@ func (c HTTPTranscriber) Transcribe(ctx context.Context, path, mime string) (str
 		return "", errors.New("stt is not configured")
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = sttTimeout
+		c.Timeout = defaultSTTTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()

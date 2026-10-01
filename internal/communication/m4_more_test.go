@@ -349,7 +349,7 @@ func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 	if err := g.handleUpdate(context.Background(), Update{UpdateID: 203, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "v", MimeType: "video/unknown", FileSize: 12, Duration: 1}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rejectMedia(MediaEnvelope{}); err == nil {
+	if err := rejectMedia(MediaEnvelope{}, 0); err == nil {
 		t.Fatal("empty media accepted")
 	}
 	if _, err := (CommandTranscriber{Command: "false", Timeout: time.Nanosecond}).Transcribe(context.Background(), "x", "audio/ogg"); err == nil {

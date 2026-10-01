@@ -483,6 +483,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					"HF_HOME":              "/data/hf", "XDG_CACHE_HOME": "/data/cache",
 					"HOME": "/tmp", "TZ": s.Timezone,
 				}
+				// whisper-tiny transcribes Russian poorly; "small" is the sane
+				// local default. Host env can override either model name.
+				if role == "stt" {
+					svc["environment"].(M)["HUB_STT_MODEL"] = "${HUB_STT_MODEL:-small}"
+				} else {
+					svc["environment"].(M)["HUB_TTS_LANG"] = "${HUB_TTS_LANG:-ru}"
+				}
 				svc["env_file"] = mediaAuth
 				svc["volumes"] = []any{M{"type": "volume", "source": "hub-" + role + "-data", "target": "/data"}}
 				svc["networks"] = sharedNetworks

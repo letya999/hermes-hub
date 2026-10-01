@@ -174,7 +174,7 @@ func TestVoiceLimitsAndSTTErrorStayText(t *testing.T) {
 	if err := g.handleUpdate(context.Background(), Update{UpdateID: 52, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "big", MimeType: "audio/ogg", FileSize: mediaSizeLimit + 1, Duration: 1}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(context.Background(), Update{UpdateID: 53, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "long", MimeType: "video/mp4", FileSize: 12, Duration: mediaDurationLimit + 1}}}); err != nil {
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 53, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "long", MimeType: "video/mp4", FileSize: 12, Duration: defaultMediaDurationLimit + 1}}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -569,7 +569,7 @@ func TestHTTPTranscriberAndSynthesizerHitSidecar(t *testing.T) {
 }
 
 func TestServiceURLBeatsCommandSelection(t *testing.T) {
-	if _, ok := serviceTranscriber("http://x", "a", "missing-binary").(HTTPTranscriber); !ok {
+	if _, ok := serviceTranscriber("http://x", "a", "missing-binary", 0).(HTTPTranscriber); !ok {
 		t.Fatal("stt url did not select the sidecar client")
 	}
 	if _, ok := serviceSynthesizer("", "", "", "cmd").(CommandSynthesizer); !ok {
