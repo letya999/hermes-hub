@@ -1,25 +1,42 @@
 #!/usr/local/bin/python3
-"""TTS worker for the hub-tts command engine: text on stdin, OGG/Opus out."""
+"""TTS worker for the hub-tts command engine: text on stdin, OGG/Opus out.
+
+Prefers piper (neural voice) when the model file is present; falls back to
+espeak-ng. Model/voice selection: HUB_TTS_MODEL (piper voice name under
+HUB_TTS_VOICE_DIR), HUB_TTS_LANG/HUB_TTS_VOICE (espeak fallback).
+"""
 import os
 import subprocess
 import sys
 import tempfile
 
 
+def synthesize_wav(text: str, wav: str) -> bool:
+    piper = os.environ.get("HUB_TTS_PIPER", "/opt/piper/piper")
+    model = os.environ.get("HUB_TTS_MODEL", "ru_RU-dmitri-medium")
+    onnx = os.path.join(os.environ.get("HUB_TTS_VOICE_DIR", "/voices"), model + ".onnx")
+    if os.path.exists(piper) and os.path.exists(onnx):
+        r = subprocess.run(
+            [piper, "--model", onnx, "--output_file", wav],
+            input=text.encode(), capture_output=True, timeout=60)
+        if r.returncode == 0 and os.path.exists(wav):
+            return True
+    lang = os.environ.get("HUB_TTS_LANG", "ru")
+    variant = os.environ.get("HUB_TTS_VOICE", "+f3")
+    r = subprocess.run(
+        ["espeak-ng", "-v", lang + variant, "-s", "150", "--stdin", "-w", wav],
+        input=text.encode(), capture_output=True, timeout=25)
+    return r.returncode == 0 and os.path.exists(wav)
+
+
 def main() -> int:
     text = sys.stdin.read().strip()
     if not text:
         return 1
-    lang = os.environ.get("HUB_TTS_LANG", "ru")
-    variant = os.environ.get("HUB_TTS_VOICE", "+f3")
-    voice = lang + variant
     with tempfile.TemporaryDirectory() as tmp:
         wav = os.path.join(tmp, "voice.wav")
         ogg = os.path.join(tmp, "voice.ogg")
-        render = subprocess.run(
-            ["espeak-ng", "-v", voice, "-s", "150", "--stdin", "-w", wav],
-            input=text.encode(), capture_output=True, timeout=25)
-        if render.returncode != 0 or not os.path.exists(wav):
+        if not synthesize_wav(text, wav):
             return 1
         encode = subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-i", wav, "-c:a", "libopus", "-b:a", "32k", ogg],

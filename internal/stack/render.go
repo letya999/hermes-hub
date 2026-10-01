@@ -489,6 +489,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					svc["environment"].(M)["HUB_STT_MODEL"] = "${HUB_STT_MODEL:-small}"
 				} else {
 					svc["environment"].(M)["HUB_TTS_LANG"] = "${HUB_TTS_LANG:-ru}"
+					svc["environment"].(M)["HUB_TTS_MODEL"] = "${HUB_TTS_MODEL:-ru_RU-dmitri-medium}"
 				}
 				svc["env_file"] = mediaAuth
 				svc["volumes"] = []any{M{"type": "volume", "source": "hub-" + role + "-data", "target": "/data"}}
