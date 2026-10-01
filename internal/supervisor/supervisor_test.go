@@ -1219,6 +1219,62 @@ func TestRunArgsMountsHubSkills(t *testing.T) {
 	}
 }
 
+func TestRunArgsMountsHubPlugins(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	// runArgs derives the repo root as the context's grandparent, so stage the
+	// space under <root>/spaces/<user> and the repo plugin under
+	// <root>/config/plugins.
+	ctx := filepath.Join(root, "spaces", "alice")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{"runtime.auth": "HUB_RUNTIME_AUTH=secret\n", "hermes.dev.yaml": "model: {}"} {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plugin := filepath.Join(root, "config", "plugins", "hub-web")
+	if err := os.MkdirAll(plugin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plugin, "plugin.yaml"), []byte("name: hub-web\nkind: backend\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	settings := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\n"
+	if err := os.WriteFile(filepath.Join(ctx, "settings.yaml"), []byte(settings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-alice", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(rawArgs, " "); strings.Contains(joined, "/opt/hermes/plugins/hub-web") {
+		t.Fatalf("hub plugin mounted without web feature: %s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(ctx, "generated", "plugins", "hub-web")); !os.IsNotExist(err) {
+		t.Fatal("gated plugin materialized without web feature")
+	}
+	settings = "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [web]\n"
+	if err := os.WriteFile(filepath.Join(ctx, "settings.yaml"), []byte(settings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err = m.runArgs(binding(ctx), "hermes-context-alice", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	src := filepath.Join(ctx, "generated", "plugins", "hub-web")
+	if !strings.Contains(joined, "src="+src+",dst=/opt/hermes/plugins/hub-web,readonly") {
+		t.Fatalf("run args missing hub plugin mount: %s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(src, "plugin.yaml")); err != nil {
+		t.Fatalf("plugin not materialized at spawn: %v", err)
+	}
+}
+
 func TestReapSweepsOrphanLeases(t *testing.T) {
 	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	b := binding(root)

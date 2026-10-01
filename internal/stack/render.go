@@ -177,6 +177,13 @@ func Config(s Settings) M {
 		if web := s.Web.config(); len(web) > 0 {
 			cfg["web"] = web
 		}
+	} else {
+		// api_server and other platforms not named in platform_toolsets fall
+		// back to upstream composites that include the core web tools, so the
+		// explicit-list gate alone leaks web_search/web_extract there. Upstream
+		// applies agent.disabled_toolsets at tool granularity last, which
+		// subtracts them from every platform including composite fallbacks.
+		cfg["agent"] = M{"disabled_toolsets": []string{"web"}}
 	}
 	if s.Has("image_gen") {
 		if gen, err := s.ImageGen.Normalize(); err == nil {
@@ -257,6 +264,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// Render: feature-gated bundled skills are absent entirely when the
 		// feature is off, so they cannot be read or followed by prompt.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
+	}
+	for name, feature := range hubGatedPlugins {
+		if !s.Has(feature) {
+			continue
+		}
+		// Hub plugins mount read-only into upstream's bundled plugins dir:
+		// source "bundled" + kind "backend" auto-loads them, and the agent
+		// cannot tamper with tool code the way it could in its own
+		// /state/hermes/plugins dir.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(GeneratedPluginsDir(dir), name)), "target": "/opt/hermes/plugins/" + name, "read_only": true})
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
 	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
@@ -606,6 +623,9 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = MaterializeGlobalSkills(dir, s); err != nil {
 		return err
 	}
+	if err = MaterializeHubPlugins(dir, root, s); err != nil {
+		return err
+	}
 	// Init seeds only a stub; heal it to the global template. Real user edits
 	// differ from the stub and are never overwritten.
 	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
@@ -687,6 +707,79 @@ func materializeHermesConfig(dir string, s Settings) error {
 // MaterializeGlobalSkills and mounted at /opt/hub/skills.
 func GeneratedSkillsDir(dir string) string {
 	return filepath.Join(dir, "generated", "skills")
+}
+
+// GeneratedPluginsDir is the per-space filtered hub-plugin tree materialized
+// by MaterializeHubPlugins; each gated plugin mounts read-only at
+// /opt/hermes/plugins/<name>, which upstream discovers as a bundled backend.
+func GeneratedPluginsDir(dir string) string {
+	return filepath.Join(dir, "generated", "plugins")
+}
+
+// MaterializeHubPlugins mirrors the repo's config/plugins tree into the
+// space's generated/plugins mount, dropping plugins whose gating feature is
+// disabled. The runtime then sees exactly the plugins this space may load.
+func MaterializeHubPlugins(dir, root string, s Settings) error {
+	src := filepath.Join(root, "config", "plugins")
+	if _, err := os.Stat(src); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		src = ""
+	}
+	dest := GeneratedPluginsDir(dir)
+	if src != "" && filepath.Clean(src) == filepath.Clean(dest) {
+		return nil
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	// Every enabled gated plugin gets a dir even when the repo copy is absent:
+	// the compose/supervisor mount expects the source path to exist; an empty
+	// dir holds no plugin.yaml, so nothing loads.
+	for name, feature := range hubGatedPlugins {
+		if s.Has(feature) {
+			if err := os.MkdirAll(filepath.Join(dest, name), 0755); err != nil {
+				return err
+			}
+		}
+	}
+	if src == "" {
+		return nil
+	}
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "__pycache__" {
+				return fs.SkipDir
+			}
+			// A plugin directory is <name>/plugin.yaml; gated names skip wholesale.
+			if rel != "." {
+				if feature, gated := hubGatedPlugins[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+					return fs.SkipDir
+				}
+			}
+			return os.MkdirAll(filepath.Join(dest, rel), 0755)
+		}
+		if strings.HasSuffix(d.Name(), ".pyc") {
+			return nil
+		}
+		body, err := os.ReadFile(path) // #nosec G304 -- operator-owned plugins dir
+		if err != nil {
+			return err
+		}
+		mode := fs.FileMode(0644)
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			mode = info.Mode().Perm()
+		}
+		return os.WriteFile(filepath.Join(dest, rel), body, mode)
+	})
 }
 
 // MaterializeGlobalSkills mirrors the shared GlobalSkillsDir into the space's

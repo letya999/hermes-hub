@@ -76,7 +76,7 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | Personal Telegram | Separate pinned Telegram MCP source, server-enforced read-only default; not the bot transport |
 | Google Workspace | Read-only Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth; writes opt-in |
 | Internet / LinkedIn | Persistent Chromium + Playwright MCP; optional native search providers |
-| Web search / deep research | `web` feature: `web_search`/`web_extract` with configured providers (anonymous keyless tier needs no key); `deep_research` feature adds the bounded `deep-research-embedded` skill — gap-driven rounds, on-disk state, durable long runs via routines |
+| Web search / deep research | `web` feature: `web_search`/`web_extract` with configured providers (anonymous keyless tier needs no key) plus `web_providers` and `web_search_multi` — parallel fan-out across the `web.search_providers` allowlist with `search_backend` as default; `deep_research` feature adds the bounded `deep-research-embedded` skill — gap-driven rounds, on-disk state, durable long runs via routines |
 | HeadHunter | Official vacancy, personal resume and explicitly authorized application API |
 | Slack / GitHub / Atlassian | OAuth/token MCP connections; Atlassian covers Jira and Confluence with personal API-token auth |
 | GitLab | Bundled `glab` CLI with `GITLAB_TOKEN` PAT authentication |

@@ -1688,6 +1688,22 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if info, err := os.Stat(stack.GeneratedSkillsDir(binding.ContextRoot)); err == nil && info.IsDir() {
 		args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/opt/hub/skills,readonly")
 	}
+	// Same contract for hub plugins: materialize the feature-filtered copy at
+	// spawn and mount each plugin read-only into upstream's bundled plugins
+	// dir, where kind=backend manifests auto-load. A disabled feature leaves
+	// the dir unmounted, so the plugin is never discovered.
+	if err := stack.MaterializeHubPlugins(binding.ContextRoot, filepath.Dir(filepath.Dir(binding.ContextRoot)), spawnSettings); err != nil {
+		log.Printf("supervisor plugins materialization skipped: %v", err)
+	}
+	if entries, err := os.ReadDir(stack.GeneratedPluginsDir(binding.ContextRoot)); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			src := filepath.Join(stack.GeneratedPluginsDir(binding.ContextRoot), entry.Name())
+			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
+		}
+	}
 	// Materialize the effective Hermes config host-side and mount it read-only
 	// over the agent-writable state dir: mcp_servers must come from ToolHub
 	// onboarding, never from terminal edits inside the runtime.

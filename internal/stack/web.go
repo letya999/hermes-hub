@@ -11,9 +11,13 @@ import (
 // defaults apply; names that upstream does not know are rejected here instead
 // of failing at the first web_search/web_extract call.
 type WebSettings struct {
-	Backend          string            `yaml:"backend,omitempty"`
-	SearchBackend    string            `yaml:"search_backend,omitempty"`
-	ExtractBackend   string            `yaml:"extract_backend,omitempty"`
+	Backend        string `yaml:"backend,omitempty"`
+	SearchBackend  string `yaml:"search_backend,omitempty"`
+	ExtractBackend string `yaml:"extract_backend,omitempty"`
+	// SearchProviders is the allowlist of search engines the hub-web plugin's
+	// web_search_multi tool may fan out to. search_backend stays the default
+	// for plain web_search and for multi calls that name no provider.
+	SearchProviders  []string          `yaml:"search_providers,omitempty"`
 	KeylessFallback  *bool             `yaml:"keyless_fallback,omitempty"`
 	KeylessRescue    *bool             `yaml:"keyless_rescue,omitempty"`
 	ExtractCharLimit int               `yaml:"extract_char_limit,omitempty"`
@@ -29,10 +33,17 @@ type WebSettings struct {
 // skill physically does not exist (and `skills.disabled` blocks it too).
 var webGatedSkills = map[string]string{"deep-research-embedded": "deep_research"}
 
+// hubGatedPlugins maps bundled plugins in config/plugins to the feature that
+// mounts them into /opt/hermes/plugins/<name>. A space without the feature has
+// no mount at all: the plugin is never discovered, so its tools cannot load
+// (and agent.disabled_toolsets strips the `web` toolset name as a fallback).
+var hubGatedPlugins = map[string]string{"hub-web": "web"}
+
 // empty reports whether no web field is set, so validation can reject a
 // `web:` block on a space whose `web` feature is disabled.
 func (w WebSettings) empty() bool {
 	return w.Backend == "" && w.SearchBackend == "" && w.ExtractBackend == "" &&
+		len(w.SearchProviders) == 0 &&
 		w.KeylessFallback == nil && w.KeylessRescue == nil && w.ExtractCharLimit == 0 &&
 		len(w.ProviderTier) == 0 && w.CacheEnabled == nil && w.CacheTTLMinutes == 0 &&
 		len(w.CacheExemptHosts) == 0 && w.Research == (WebResearchBounds{})
@@ -130,6 +141,13 @@ func (w WebSettings) backends() []string {
 			out = append(out, name)
 		}
 	}
+	for _, name := range w.SearchProviders {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
 	return out
 }
 
@@ -150,6 +168,20 @@ func (w WebSettings) validate() error {
 		if capability == "backend" && !webExtractProviders[name] && strings.ToLower(strings.TrimSpace(w.ExtractBackend)) == "" {
 			return fmt.Errorf("web.backend: provider %q is search-only; set web.extract_backend too", name)
 		}
+	}
+	seenProviders := map[string]bool{}
+	for _, name := range w.SearchProviders {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			return fmt.Errorf("web.search_providers: empty provider name")
+		}
+		if _, ok := webProviderEnv[name]; !ok {
+			return fmt.Errorf("web.search_providers: unknown provider %q", name)
+		}
+		if seenProviders[name] {
+			return fmt.Errorf("web.search_providers: duplicate provider %q", name)
+		}
+		seenProviders[name] = true
 	}
 	for provider, tier := range w.ProviderTier {
 		if !webTieredProviders[strings.ToLower(strings.TrimSpace(provider))] || (tier != "free" && tier != "paid") {
@@ -212,6 +244,13 @@ func (w WebSettings) config() M {
 	}
 	if w.ExtractBackend != "" {
 		out["extract_backend"] = strings.ToLower(strings.TrimSpace(w.ExtractBackend))
+	}
+	if len(w.SearchProviders) > 0 {
+		names := make([]string, 0, len(w.SearchProviders))
+		for _, name := range w.SearchProviders {
+			names = append(names, strings.ToLower(strings.TrimSpace(name)))
+		}
+		out["search_providers"] = names
 	}
 	if w.KeylessFallback != nil {
 		out["keyless_fallback"] = *w.KeylessFallback

@@ -46,14 +46,29 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if err := exec.CommandContext(ctx, "docker", "network", "create", network).Run(); err != nil {
 		return err
 	}
-	contextRoot := filepath.Join(root, userID)
+	// Layout mirrors production: <root>/spaces/<user> so that
+	// Dir(Dir(ContextRoot)) resolves to this root and hub plugin materialization
+	// finds root/config/plugins — the web feature exercises the real mount.
+	contextRoot := filepath.Join(root, "spaces", userID)
 	for _, name := range []string{"runtime", "hermes", "workspace", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "archive"} {
 		if err := os.MkdirAll(filepath.Join(contextRoot, name), 0777); err != nil {
 			return err
 		}
 	}
+	pluginFixture := filepath.Join(root, "config", "plugins", "hub-web")
+	for rel, body := range map[string]string{
+		"plugin.yaml": "name: hub-web\nkind: backend\nversion: '1'\n",
+		"__init__.py": "def register(ctx):\n    pass\n",
+	} {
+		if err := os.MkdirAll(pluginFixture, 0777); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(pluginFixture, rel), []byte(body), 0644); err != nil {
+			return err
+		}
+	}
 	auth := "context-auth-0123456789abcdef0123456789abcdef"
-	if err := os.WriteFile(filepath.Join(contextRoot, "settings.yaml"), []byte("schema: 1\nuser: "+userID+"\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace]\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(contextRoot, "settings.yaml"), []byte("schema: 1\nuser: "+userID+"\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, web]\n"), 0600); err != nil {
 		return err
 	}
 	settings, err := stack.ReadEnvironment(contextRoot, "prod")
@@ -97,7 +112,7 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	}); err != nil {
 		return err
 	}
-	cfg := supervisor.Config{SpacesRoot: root, Image: image, Network: network, RuntimeAuth: control, WarmTTL: time.Second, PortBase: 28000}
+	cfg := supervisor.Config{SpacesRoot: filepath.Join(root, "spaces"), Image: image, Network: network, RuntimeAuth: control, WarmTTL: time.Second, PortBase: 28000}
 	var starts atomic.Int32
 	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
 		if len(args) != 0 && args[0] == "run" {
@@ -149,6 +164,9 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	}
 	if body, err := os.ReadFile(marker); err != nil || strings.TrimSpace(string(body)) != "keep" {
 		return fmt.Errorf("context state was not preserved: %v", err)
+	}
+	if err := smokeWebPluginIsolation(ctx, m, cold, contextRoot); err != nil {
+		return err
 	}
 	streamLease, _, err := m.Acquire(ctx, binding, supervisor.LeaseStream)
 	if err != nil {
@@ -405,6 +423,69 @@ func smokeWaitIdle(ctx context.Context, m *supervisor.Manager, binding superviso
 			return runtime, err
 		}
 	}
+}
+
+type smokeMount struct {
+	Type        string
+	Source      string
+	Destination string
+	RW          bool
+}
+
+// smokeBindSource normalizes the Source Docker reports for a bind mount:
+// Docker Desktop sometimes hands back the translated Linux view
+// (/run/desktop/mnt/host/c/...) instead of the Windows path verbatim.
+func smokeBindSource(src string) string {
+	s := filepath.ToSlash(src)
+	if rest, ok := strings.CutPrefix(s, "/run/desktop/mnt/host/"); ok && len(rest) > 2 && rest[1] == '/' {
+		s = strings.ToUpper(rest[:1]) + ":" + rest[1:]
+	}
+	return s
+}
+
+// smokeWebPluginIsolation inspects the real spawned container: with the web
+// feature on, the per-space materialized hub-web plugin must be mounted
+// read-only from inside this space's own generated dir, and the Hermes state
+// dir (which carries the web extract cache and tool spillover artifacts) must
+// bind to this space's state, never a shared or foreign path.
+func smokeWebPluginIsolation(ctx context.Context, m *supervisor.Manager, runtime supervisor.Runtime, contextRoot string) error {
+	id, err := smokeOwnedContainerID(ctx, m, runtime)
+	if err != nil {
+		return err
+	}
+	raw, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .Mounts}}", id).Output()
+	if err != nil {
+		return fmt.Errorf("runtime mount inspection failed: %w", err)
+	}
+	var mounts []smokeMount
+	if err := json.Unmarshal(raw, &mounts); err != nil {
+		return fmt.Errorf("runtime mount inspection parse failed: %w", err)
+	}
+	wantPlugin := filepath.ToSlash(filepath.Join(contextRoot, "generated", "plugins", "hub-web"))
+	wantHermes := filepath.ToSlash(filepath.Join(contextRoot, "hermes"))
+	pluginOK, hermesOK := false, false
+	for _, mt := range mounts {
+		src := smokeBindSource(mt.Source)
+		switch mt.Destination {
+		case "/opt/hermes/plugins/hub-web":
+			if mt.RW {
+				return fmt.Errorf("hub-web plugin mount is writable")
+			}
+			if !strings.EqualFold(src, wantPlugin) {
+				return fmt.Errorf("hub-web plugin mount source %s is not this space's materialized copy %s", src, wantPlugin)
+			}
+			pluginOK = true
+		case "/state/hermes":
+			hermesOK = strings.EqualFold(src, wantHermes)
+		}
+	}
+	if !pluginOK {
+		return fmt.Errorf("web feature on but spawned runtime lacks the hub-web plugin mount")
+	}
+	if !hermesOK {
+		return fmt.Errorf("/state/hermes does not bind to this space's hermes dir %s", wantHermes)
+	}
+	return nil
 }
 
 func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, binding supervisor.Binding, runner communication.HTTPRunner, template communication.Job, root, image, nativeAuth string, starts *atomic.Int32) error {

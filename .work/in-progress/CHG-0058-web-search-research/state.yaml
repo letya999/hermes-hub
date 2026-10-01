@@ -24,6 +24,40 @@ completed:
   - just check green (race, coverage 85.06%, format, vet, staticcheck, docs,
     actionlint)
   - just docker-check green (both images, smoke, pinned 0.21.0 API contract)
+  - live keenable key verified: web_search/web_extract real responses in-image
+  - supervisor spawn mounts filtered generated/skills (commit be2594b)
+  - web.search_providers fan-out allowlist + validation + env key plumbing
+  - agent.disabled_toolsets [web] when web off closes the api_server composite
+    fallback leak
+  - config/plugins/hub-web: web_providers + web_search_multi plugin, mounted
+    read-only into /opt/hermes/plugins on web-enabled spaces; verified
+    in-image: provider listing, default selection, disallowed-name rejection,
+    real parallel fan-out (keenable+exa+tavily, URL dedup, per-provider errors)
+  - all 10 upstream engines configured in search_providers; fan-out
+    pre-filters unusable ones into providers_skipped (no wasted calls)
+  - hub-web plugin registers system prompt section hub-web-providers: model
+    answers provider questions from the rendered table, not from memory —
+    verified live (quoted keenable default + all 10 with honest statuses)
+  - supervisor HUB_ENV fix deployed: spawned runtimes mount dev config;
+    live /v1/execute turn used web_providers + web_search_multi for real
+  - hub-web plugin gains web_cache (status/prune/clear): upstream extract
+    cache TTL-gates reads but never deletes; prune drops expired, missing-file
+    and out-of-root index entries plus orphan *.cache.md; clear wipes it;
+    verified in-image incl. a traversal-trap entry that must not unlink
+    outside cache/web
+  - supervisor contract smoke extended (integration): synthetic space now
+    lives at <root>/spaces/<user> with a config/plugins/hub-web fixture and
+    features [workspace, web]; asserts on the real spawned container that
+    /opt/hermes/plugins/hub-web is read-only and sourced from that space's
+    generated/plugins, and that /state/hermes (extract cache + spillover)
+    binds to the space's own dir
+  - SPEC-0035/integrations.md now state the artifact map: search memo in
+    process, extract cache + spillover under spaces/<user>/hermes/cache,
+    research under spaces/<user>/workspace/research — plus cleanup paths
+  - deep-research skill documents owner/agent deletion of research/<slug>
+in_progress:
+  - none — hermes-contract integration e2e passed with the new mount
+    assertions (real spawned container); just check green, coverage 85.06%
 deferred:
   - live provider smoke (keyed search/extract, fallback, partial failure) —
     needs real provider credentials; anonymous ddgs path is upstream-tested

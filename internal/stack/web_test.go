@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -108,7 +109,8 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "deep_research requires web") {
 		t.Fatalf("deep_research without web must fail: %v", err)
 	}
-	// No feature: no web toolset, no web config, gated skill disabled.
+	// No feature: no web toolset, no web config, gated skill disabled, and the
+	// api_server composite fallback is disarmed via agent.disabled_toolsets.
 	cfg := Config(validSettings())
 	cli := cfg["platform_toolsets"].(M)["cli"].([]string)
 	if slices.Contains(cli, "web") {
@@ -121,7 +123,11 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if !slices.Contains(disabled, "deep-research-embedded") {
 		t.Fatal("deep-research-embedded not disabled without deep_research feature")
 	}
-	// Feature on: toolset present, gated skill enabled (no disabled entry).
+	agent, ok := cfg["agent"].(M)
+	if !ok || !slices.Contains(agent["disabled_toolsets"].([]string), "web") {
+		t.Fatal("agent.disabled_toolsets missing web without web feature")
+	}
+	// Feature on: toolset present, gated skill enabled, no toolset stripping.
 	s = validSettings()
 	s.Features = []string{"web", "deep_research"}
 	cfg = Config(s)
@@ -131,6 +137,102 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	}
 	if disabled, ok := cfg["skills"].(M)["disabled"]; ok && slices.Contains(disabled.([]string), "deep-research-embedded") {
 		t.Fatal("deep-research-embedded disabled despite deep_research feature")
+	}
+	if _, ok := cfg["agent"]; ok {
+		t.Fatal("agent.disabled_toolsets rendered despite web feature")
+	}
+}
+
+func TestWebSearchProvidersValidation(t *testing.T) {
+	for _, modify := range []func(*WebSettings){
+		func(w *WebSettings) { w.SearchProviders = []string{"keenable", "guessed-engine"} },
+		func(w *WebSettings) { w.SearchProviders = []string{"ddgs", "ddgs"} },
+		func(w *WebSettings) { w.SearchProviders = []string{""} },
+	} {
+		s := webSettings(validSettings())
+		modify(&s.Web)
+		if err := s.Validate(); err == nil {
+			t.Fatalf("invalid search_providers accepted: %#v", s.Web.SearchProviders)
+		}
+	}
+	s := validSettings()
+	s.Features = []string{"web"}
+	s.Web = WebSettings{SearchBackend: "keenable", SearchProviders: []string{"Keenable", " DDGS "}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("valid search_providers rejected: %v", err)
+	}
+	web := Config(s)["web"].(M)
+	providers := web["search_providers"].([]string)
+	if !slices.Equal(providers, []string{"keenable", "ddgs"}) {
+		t.Fatalf("search_providers not normalized/rendered: %#v", providers)
+	}
+	// Provider env keys for every listed engine reach the runtime allowlist,
+	// not only the default backend's.
+	keys := selfEnvKeys(s)
+	if !slices.Contains(keys, "KEENABLE_API_KEY") {
+		t.Fatal("default provider key missing from self-env allowlist")
+	}
+	s.Web = WebSettings{SearchBackend: "keenable", SearchProviders: []string{"keenable", "xai"}}
+	if !slices.Contains(selfEnvKeys(s), "XAI_API_KEY") {
+		t.Fatal("search_providers engine key missing from self-env allowlist")
+	}
+}
+
+func TestGatedPluginExcludedFromMaterializedMount(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "config", "plugins")
+	for _, name := range []string{"hub-web", "other-plugin"} {
+		dir := filepath.Join(src, name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte("name: "+name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	space := t.TempDir()
+	s := validSettings()
+	if err := MaterializeHubPlugins(space, root, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(space, "generated", "plugins", "hub-web")); !os.IsNotExist(err) {
+		t.Fatal("gated plugin materialized without web feature")
+	}
+	if _, err := os.Stat(filepath.Join(space, "generated", "plugins", "other-plugin", "plugin.yaml")); err != nil {
+		t.Fatalf("ungated plugin not copied: %v", err)
+	}
+	s.Features = []string{"web"}
+	if err := MaterializeHubPlugins(space, root, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(space, "generated", "plugins", "hub-web", "plugin.yaml")); err != nil {
+		t.Fatalf("gated plugin missing with web enabled: %v", err)
+	}
+}
+
+func TestWebPluginMountedOnlyWithFeature(t *testing.T) {
+	space := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	volumes := RuntimeService(s, "", space)["volumes"].([]any)
+	for _, v := range volumes {
+		if m, ok := v.(M); ok && strings.HasPrefix(fmt.Sprint(m["target"]), "/opt/hermes/plugins") {
+			t.Fatal("hub plugin mounted without web feature")
+		}
+	}
+	s.Features = []string{"web"}
+	volumes = RuntimeService(s, "", space)["volumes"].([]any)
+	found := false
+	for _, v := range volumes {
+		if m, ok := v.(M); ok && m["target"] == "/opt/hermes/plugins/hub-web" {
+			found = true
+			if m["read_only"] != true {
+				t.Fatal("hub plugin mount is not read-only")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("hub-web plugin mount missing with web feature")
 	}
 }
 

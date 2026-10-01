@@ -47,7 +47,9 @@ write the report with what exists — that is normal completion, not failure.
 ## Workspace
 
 All state lives under `research/<slug>/` in the workspace (create it). Never
-read or write another user's research directory.
+read or write another user's research directory. Artifacts are plain files:
+the owner may delete `research/<slug>/` at any point (or ask the agent to) —
+removal is safe in any phase.
 
 | file            | contents |
 |-----------------|----------|

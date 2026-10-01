@@ -28,6 +28,17 @@ last_verified: 2026-10-01
   search/extract rounds → notes file → cited report with a `Limitations`
   section for failed/blocked sources. Browser only when extraction cannot
   satisfy a needed source (anonymous `browser_guest`, never the login profile).
+- `web.search_providers` names the engines eligible for parallel fan-out;
+  `web.search_backend` stays the default used when a call names none.
+- New hub plugin `config/plugins/hub-web` (mounted read-only into
+  `/opt/hermes/plugins/hub-web` only when `web` is enabled): `web_providers`
+  lists every registered engine with availability/default/configured flags,
+  `web_search_multi` fans one query out to the configured providers in
+  parallel, tags results by provider, dedupes by normalized URL and reports
+  per-provider failures. Provider names are validated against the configured
+  allowlist — arbitrary names are rejected.
+- When `web` is off, `agent.disabled_toolsets: [web]` is rendered so the
+  api_server composite fallback cannot leak `web_search`/`web_extract`.
 - Init secrets template and docs list every upstream provider env name.
 
 ## Contract
