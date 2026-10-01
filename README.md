@@ -76,6 +76,7 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | Personal Telegram | Separate pinned Telegram MCP source, server-enforced read-only default; not the bot transport |
 | Google Workspace | Read-only Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth; writes opt-in |
 | Internet / LinkedIn | Persistent Chromium + Playwright MCP; optional native search providers |
+| Web search / deep research | `web` feature: `web_search`/`web_extract` with configured providers (anonymous keyless tier needs no key); `deep_research` feature adds the bounded `deep-research-embedded` skill — gap-driven rounds, on-disk state, durable long runs via routines |
 | HeadHunter | Official vacancy, personal resume and explicitly authorized application API |
 | Slack / GitHub / Atlassian | OAuth/token MCP connections; Atlassian covers Jira and Confluence with personal API-token auth |
 | GitLab | Bundled `glab` CLI with `GITLAB_TOKEN` PAT authentication |
@@ -85,7 +86,7 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | Native desktop / Drafts.app | Authenticated bridge to a trusted native stdio MCP server |
 | Other services | Arbitrary configured stdio/HTTP MCP; external services remain external |
 
-Default features are workspace, browser and hh. Image generation is the separate opt-in `image_gen` feature: provider, model, and delivery are configured there. Delivery `workspace` keeps the file in that user's workspace; delivery `url` returns the provider URL. All account integrations are opt-in.
+Default features are workspace, browser, hh, web and deep_research. Image generation is the separate opt-in `image_gen` feature: provider, model, and delivery are configured there. Delivery `workspace` keeps the file in that user's workspace; delivery `url` returns the provider URL. All account integrations are opt-in.
 Hermes works without CareerGo and JobFetch. If you run an external MCP service, add
 its URL and token reference under mcp_servers; see [connections](docs/integrations.md).
 An explicit owner message containing connector `KEY=value` lines is intercepted

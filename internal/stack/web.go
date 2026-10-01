@@ -24,7 +24,21 @@ type WebSettings struct {
 	Research         WebResearchBounds `yaml:"research,omitempty"`
 }
 
-// WebResearchBounds are hub policy for the web-deep-research skill, read from
+// webGatedSkills maps bundled skills in config/skills to the feature that
+// mounts them; a space without the feature gets a skills directory where the
+// skill physically does not exist (and `skills.disabled` blocks it too).
+var webGatedSkills = map[string]string{"deep-research-embedded": "deep_research"}
+
+// empty reports whether no web field is set, so validation can reject a
+// `web:` block on a space whose `web` feature is disabled.
+func (w WebSettings) empty() bool {
+	return w.Backend == "" && w.SearchBackend == "" && w.ExtractBackend == "" &&
+		w.KeylessFallback == nil && w.KeylessRescue == nil && w.ExtractCharLimit == 0 &&
+		len(w.ProviderTier) == 0 && w.CacheEnabled == nil && w.CacheTTLMinutes == 0 &&
+		len(w.CacheExemptHosts) == 0 && w.Research == (WebResearchBounds{})
+}
+
+// WebResearchBounds are hub policy for the deep-research-embedded skill, read from
 // the mounted read-only config; upstream Hermes ignores this sub-map. Zero
 // values fall back to the skill defaults; configured values may only tighten
 // the ceilings below.

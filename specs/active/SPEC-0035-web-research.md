@@ -4,13 +4,19 @@ Frozen: 2026-10-01. Issue 123.
 Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).
 
 1. Web search and extraction are the upstream Hermes `web` toolset
-   (`web_search`, `web_extract`), enabled in `platform_toolsets`. The hub does
-   not reimplement fetch, extraction, SSRF policy, truncation, caching, or
-   provider fallback; it configures them. Anonymous use works without keys:
-   `ddgs` needs no credential, and the upstream keyless ring (exa, parallel,
-   firecrawl, keenable free tiers) is the last resort unless
-   `keyless_fallback: false` disables it. No persistent browser profile is
-   involved.
+   (`web_search`, `web_extract`), present in `platform_toolsets` only when the
+   space `features` list enables `web`. The hub does not reimplement fetch,
+   extraction, SSRF policy, truncation, caching, or provider fallback; it
+   configures them. Anonymous use works without keys: `ddgs` needs no
+   credential, and the upstream keyless ring (exa, parallel, firecrawl,
+   keenable free tiers) is the last resort unless `keyless_fallback: false`
+   disables it. No persistent browser profile is involved. The bundled
+   `deep-research-embedded` skill additionally requires the `deep_research`
+   feature (which itself requires `web`): a space without it mounts a
+   `generated/skills` copy where the skill does not exist and renders
+   `skills.disabled` for the name. A `web:` settings block on a space without
+   `web` is a validation error. Both features are init defaults and are
+   org-removable through `scope.yaml` like any other feature.
 
 2. Provider selection is operator configuration, not hardcoded. `settings.yaml`
    `web:` renders into the Hermes `web:` section: `backend` (shared),
@@ -34,7 +40,7 @@ Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).
    names the missing env for a configured `searxng` or `firecrawl` backend;
    keyless-capable choices never warn.
 
-4. Deep research is the bundled `web-deep-research` skill: a bounded state
+4. Deep research is the bundled `deep-research-embedded` skill: a bounded state
    machine on disk under `research/<slug>/` — `brief.md` (north star),
    `plan.yaml` (perspective-driven sub-topics), `sources.yaml` (URL registry
    with per-URL status), `notes/` (distilled claims, each with its URL),

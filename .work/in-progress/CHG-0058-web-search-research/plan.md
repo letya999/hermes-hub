@@ -19,12 +19,12 @@ last_verified: 2026-10-01
   `free`/`paid` on exa, parallel, firecrawl, keenable.
 - `web.research` carries bounded deep-research limits (max_rounds, queries_per_round,
   pages_per_round, max_pages, deadline_minutes) with hard ceilings; the
-  `web-deep-research` skill reads them from the mounted read-only config.
+  `deep-research-embedded` skill reads them from the mounted read-only config.
 - Provider credentials stay out of prompts: `secrets.<env>.env` already delivers
   every non-gateway key to the runtime env; the self-env allowlist gains the env
   names of configured providers so the protected chat form can deliver them.
   `Doctor` warns when a configured provider's required env is missing.
-- New bundled skill `config/skills/web-deep-research`: brief → bounded
+- New bundled skill `config/skills/deep-research-embedded`: brief → bounded
   search/extract rounds → notes file → cited report with a `Limitations`
   section for failed/blocked sources. Browser only when extraction cannot
   satisfy a needed source (anonymous `browser_guest`, never the login profile).

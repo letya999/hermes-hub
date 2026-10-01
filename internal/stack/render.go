@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -132,6 +133,11 @@ func Config(s Settings) M {
 	// vision and image_gen stay off this list. The hub MCP tools are the
 	// workspace-confined profile; the native local tools are not.
 	toolsets := []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	if !s.Has("web") {
+		// No web toolset at all: web_search/web_extract do not exist for this
+		// space, so disabled web cannot be reached by prompting either.
+		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "web" })
+	}
 	if s.ExecutionMode == "supervisor" {
 		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "cronjob" })
 	}
@@ -149,6 +155,17 @@ func Config(s Settings) M {
 	if len(external) > 0 {
 		skills["external_dirs"] = external
 	}
+	// Defense in depth: the filtered /opt/hub/skills mount already excludes
+	// gated skills; disabled additionally blocks a same-named org skill.
+	var disabled []string
+	for skill, feature := range webGatedSkills {
+		if !s.Has(feature) {
+			disabled = append(disabled, skill)
+		}
+	}
+	if len(disabled) > 0 {
+		skills["disabled"] = disabled
+	}
 	memory := M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}
 	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
@@ -156,8 +173,10 @@ func Config(s Settings) M {
 	display := M{"busy_input_mode": "queue", "long_running_notifications": true}
 	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 	cfg["auxiliary"] = M{"vision": M{"provider": "main", "timeout": 30, "download_timeout": 15, "max_concurrency": media.InspectConcurrency}}
-	if web := s.Web.config(); len(web) > 0 {
-		cfg["web"] = web
+	if s.Has("web") {
+		if web := s.Web.config(); len(web) > 0 {
+			cfg["web"] = web
+		}
 	}
 	if s.Has("image_gen") {
 		if gen, err := s.ImageGen.Normalize(); err == nil {
@@ -234,7 +253,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
 	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.GlobalSkillsDir), "target": "/opt/hub/skills", "read_only": true})
+		// The mounted dir is the per-space filtered copy materialized by
+		// Render: feature-gated bundled skills are absent entirely when the
+		// feature is off, so they cannot be read or followed by prompt.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(generatedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
 	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
@@ -581,6 +603,9 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = materializeHermesConfig(dir, s); err != nil {
 		return err
 	}
+	if err = materializeGlobalSkills(dir, s); err != nil {
+		return err
+	}
 	// Init seeds only a stub; heal it to the global template. Real user edits
 	// differ from the stub and are never overwritten.
 	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
@@ -655,6 +680,55 @@ func materializeHermesConfig(dir string, s Settings) error {
 		RuntimeAuthPresent: strings.TrimSpace(auth[tokenEnv]) != "" || strings.TrimSpace(runtimeEnv[tokenEnv]) != "",
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
+	})
+}
+
+func generatedSkillsDir(dir string) string {
+	return filepath.Join(dir, "generated", "skills")
+}
+
+// materializeGlobalSkills mirrors the shared GlobalSkillsDir into the space's
+// generated/skills mount, dropping bundled skills whose gating feature is
+// disabled. The container then sees exactly the skills this space may run;
+// skills.disabled in the rendered config blocks the same names as a fallback.
+func materializeGlobalSkills(dir string, s Settings) error {
+	src := strings.TrimSpace(s.GlobalSkillsDir)
+	if src == "" {
+		return nil
+	}
+	dest := generatedSkillsDir(dir)
+	if filepath.Clean(src) == filepath.Clean(dest) {
+		return nil
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// A skill directory is <name>/SKILL.md; gated names skip wholesale.
+			if rel != "." {
+				if feature, gated := webGatedSkills[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+					return fs.SkipDir
+				}
+			}
+			return os.MkdirAll(filepath.Join(dest, rel), 0755)
+		}
+		body, err := os.ReadFile(path) // #nosec G304 -- operator-owned skills dir
+		if err != nil {
+			return err
+		}
+		mode := fs.FileMode(0644)
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			mode = info.Mode().Perm()
+		}
+		return os.WriteFile(filepath.Join(dest, rel), body, mode)
 	})
 }
 

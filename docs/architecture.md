@@ -35,7 +35,7 @@ lifecycle, communication routing, durable routine schedules, bounded file/HH MCP
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
 using files and tools; web retrieval uses the Hermes `web` toolset with
-operator-configured providers and the bounded `web-deep-research` skill
+operator-configured providers and the bounded `deep-research-embedded` skill
 ([SPEC-0035](../specs/active/SPEC-0035-web-research.md)).
 
 The pinned Hermes artifact also contains an opt-in authenticated HTTP API server. Its

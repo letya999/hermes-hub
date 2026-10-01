@@ -10,10 +10,14 @@ completed:
   - web settings block with upstream provider catalog validation
     (search/extract capability split, tiered providers, research ceilings)
   - rendered web: config section + self-env allowlist for configured keys
-  - web-deep-research skill: stateful deep-research engine on disk
+  - deep-research-embedded skill: stateful deep-research engine on disk
     (perspective plan, sources registry, gap-driven rounds, notes, outline,
     sections, verify pass); long mode via durable hub routines resuming from
     state.json; ceilings 16 rounds / 100 pages / 10 per host / 240 min
+  - feature gating: `web` feature owns the toolset/provider config/env keys;
+    `deep_research` (requires web) mounts the skill into per-space filtered
+    generated/skills plus upstream skills.disabled fallback; both are init
+    defaults, org-removable via scope.yaml
   - doctor hints for providers with no anonymous path; secrets template keys
   - SPEC-0035, specs index, integrations.md section, architecture.md pointer,
     CHANGELOG

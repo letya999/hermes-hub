@@ -646,6 +646,17 @@ The web capability is the upstream Hermes `web` toolset (`web_search`,
 lives upstream in `plugins/web/<vendor>/provider.py`; the hub never embeds a
 search vendor client or an HTML extractor.
 
+Two features control it per space (`settings.yaml` `features`, removable per
+org through `scope.yaml`; both are init defaults):
+
+- `web` — enables the toolset. Without it `web_search`/`web_extract` do not
+  exist in the runtime at all, provider env keys leave the self-env
+  allowlist, and a `web:` settings block is a validation error.
+- `deep_research` — requires `web`; mounts the bundled
+  `deep-research-embedded` skill into the space's `generated/skills` and
+  removes it from `skills.disabled`. Without it the skill is absent from the
+  runtime, not merely hidden.
+
 `settings.yaml` `web:` selects providers and policy; every field is optional
 and only set fields reach the rendered config:
 
@@ -664,7 +675,7 @@ web:
   cache_enabled: true
   cache_ttl_minutes: 20
   cache_exempt_hosts: []   # exact, *.wildcard, or domain suffix
-  research:                # bounds the web-deep-research skill reads
+  research:                # bounds the deep-research-embedded skill reads
     max_rounds: 2          # ceiling 16
     queries_per_round: 3   # ceiling 5
     pages_per_round: 4     # ceiling 8
@@ -686,7 +697,7 @@ results; `hubctl doctor` names a missing required env for `searxng` and
 `firecrawl`. With no key at all, `ddgs` and the keyless ring keep search and
 extraction working anonymously; no browser profile participates.
 
-The bundled `web-deep-research` skill (`config/skills/`) is the bounded
+The bundled `deep-research-embedded` skill (`config/skills/`) is the bounded
 research workflow — a state machine on disk under `research/<slug>/`:
 perspective-driven `plan.yaml`, a `sources.yaml` URL registry, distilled
 `notes/` (every claim with its URL), a `gaps.md` queue that drives the next
@@ -708,7 +719,7 @@ cannot satisfy a needed source.
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
-| Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `web-deep-research` skill |
+| Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |

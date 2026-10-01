@@ -71,6 +71,8 @@ type Feature struct {
 
 var Features = []Feature{
 	{"workspace", nil, "Bounded workspace and read-only extracted archive; Markdown drafts"},
+	{"web", nil, "Web search and page extraction via configured providers; anonymous keyless tier needs no key"},
+	{"deep_research", nil, "Bundled deep-research skill: bounded multi-round research on disk; requires web"},
 	{"browser", nil, "Persistent plus anonymous Chromium via Playwright MCP; manual login through private noVNC; read and navigation tools only"},
 	{"browser_act", nil, "Adds browser mutation tools (click, type, submit, evaluate) to both browser MCP servers; requires browser and a concrete owner instruction"},
 	{"ssh", nil, "SSH to owner-configured host aliases: pinned host keys, allowlisted read commands and remote file reads; keys via Credential Broker or the read-only ssh config mount"},
@@ -151,8 +153,10 @@ func selfEnvKeys(s Settings) []string {
 			}
 		}
 	}
-	for _, key := range s.Web.envKeys() {
-		keys[key] = true
+	if s.Has("web") {
+		for _, key := range s.Web.envKeys() {
+			keys[key] = true
+		}
 	}
 	if key := s.imageCredential(); key != "" {
 		keys[key] = true
@@ -252,6 +256,12 @@ func (s Settings) Validate() error {
 		if s.Has(sub) && !s.Has("ssh") {
 			return fmt.Errorf("%s requires ssh", sub)
 		}
+	}
+	if s.Has("deep_research") && !s.Has("web") {
+		return fmt.Errorf("deep_research requires web")
+	}
+	if !s.Has("web") && !s.Web.empty() {
+		return fmt.Errorf("web: settings require the web feature")
 	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
@@ -382,7 +392,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 			return err
 		}
 	}
-	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
+	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh", "web", "deep_research"}, OAuthPort: 8000, BrowserPort: 6080}
 	b, err := yaml.Marshal(s)
 	if err != nil {
 		return err
@@ -478,7 +488,9 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 	if s.imageCredential() == "FAL_KEY" && secrets["FAL_KEY"] == "" {
 		issues = append(issues, "set FAL_KEY for image_gen")
 	}
-	issues = append(issues, s.Web.doctorIssues(secrets)...)
+	if s.Has("web") {
+		issues = append(issues, s.Web.doctorIssues(secrets)...)
+	}
 	if s.Has("telegram") && secrets["TELEGRAM_ALLOWED_USERS"] != "" {
 		for _, id := range strings.Split(secrets["TELEGRAM_ALLOWED_USERS"], ",") {
 			if !regexp.MustCompile(`^[1-9][0-9]*$`).MatchString(strings.TrimSpace(id)) {
