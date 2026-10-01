@@ -505,3 +505,85 @@ func TestCommandTranscriberAndSynthesizerRejectEmpty(t *testing.T) {
 		t.Fatalf("tts worker: %q %s %v", audio, mime, err)
 	}
 }
+
+func TestVoiceReadinessReportedSeparately(t *testing.T) {
+	ctx := context.Background()
+	voiceUpd := func(id int, text string) Update {
+		return Update{UpdateID: id, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: text}}
+	}
+	ask := func(t *testing.T, c Config, texts ...string) []string {
+		t.Helper()
+		g, err := New(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fake := &fakeAPI{}
+		g.api = fake
+		for i, text := range texts {
+			if err := g.handleUpdate(ctx, voiceUpd(i+1, text)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for range len(texts) + 2 {
+			g.deliverOne(ctx)
+		}
+		return fake.sent
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Neither worker configured: both directions read unavailable and
+	// /voice on warns instead of promising spoken replies.
+	sent := ask(t, testConfig(t), "/voice", "/voice on")
+	if !strings.Contains(sent[0], "STT): недоступно") || !strings.Contains(sent[0], "TTS): недоступно") {
+		t.Fatalf("bare status: %q", sent[0])
+	}
+	if !strings.Contains(sent[1], "останутся текстовыми") {
+		t.Fatalf("voice on without tts promised voice: %q", sent[1])
+	}
+
+	// Resolvable STT binary only: incoming ready, outgoing still unavailable.
+	c := testConfig(t)
+	c.STTCommand = self
+	sent = ask(t, c, "/voice")
+	if !strings.Contains(sent[0], "STT): доступно") || !strings.Contains(sent[0], "TTS): недоступно") {
+		t.Fatalf("stt-only status: %q", sent[0])
+	}
+
+	// Resolvable TTS binary: outgoing ready; a parked upload URL reverts it.
+	c = testConfig(t)
+	c.TTSCommand = self
+	sent = ask(t, c, "/voice on")
+	if !strings.Contains(sent[0], "TTS): доступно") || strings.Contains(sent[0], "останутся текстовыми") {
+		t.Fatalf("tts status: %q", sent[0])
+	}
+	c = testConfig(t)
+	c.TTSCommand = self
+	c.TTSUploadURL = "https://example.invalid/upload"
+	sent = ask(t, c, "/voice")
+	if !strings.Contains(sent[0], "TTS): недоступно") {
+		t.Fatalf("parked upload must read unavailable: %q", sent[0])
+	}
+
+	// Unconfigured STT replies "not configured" without consuming a job.
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	if err := g.handleUpdate(ctx, Update{UpdateID: 9, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "v1", MimeType: "audio/ogg", FileSize: 12, Duration: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	if job, _ := g.spool.ClaimJob(); job != nil {
+		t.Fatal("unconfigured stt enqueued a job")
+	}
+	for range 3 {
+		g.deliverOne(ctx)
+	}
+	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "не настроено") {
+		t.Fatalf("unconfigured stt reply: %v", fake.sent)
+	}
+}

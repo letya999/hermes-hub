@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Voice readiness honesty (issue #170): `/voice` now reports incoming STT and
+  outgoing TTS availability separately — a direction reads "available" only
+  when the worker command is configured *and* resolvable, and a parked
+  `HUB_TTS_UPLOAD_URL` still counts as unavailable. `/voice on` without usable
+  TTS warns that replies stay textual instead of promising voice, and voice
+  input on a host without STT gets an explicit "not configured" reply without
+  downloading the attachment. Live Telegram voice evidence remains a
+  deployment gate; the unavailable state is recorded in docs/validation.md.
 - Artifact delivery to chat (issue #172): a completed run attaches refs for
   files written under `workspace/artifacts/{documents,images}` during the run
   window; the gateway fetches bytes through the new bounded `POST /v1/artifact`

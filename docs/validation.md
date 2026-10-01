@@ -175,6 +175,23 @@ Hermes execution. Delivery records bind the normalized conversation to the numer
 Telegram audience, and spool restart tests preserve runtime and policy identity.
 Effective configuration produces one policy digest shared by gateway and runtime.
 
+## CHG-0061 voice readiness (issue #170)
+
+`/voice` now reports incoming STT and outgoing TTS readiness separately. A
+direction reads "available" only when its worker command is configured *and*
+resolves to a runnable binary; a parked `HUB_TTS_UPLOAD_URL` still reads TTS
+unavailable because `sendVoice` is skipped on that path. `/voice on` without
+usable TTS records the opt-in but warns that replies stay textual, and voice
+input on a host without STT gets an explicit "not configured" reply without
+downloading the attachment. Covered by unit tests over the readiness matrix.
+
+Live Telegram evidence is **not** claimed: this host has no Docker runtime and
+no real bot account, so the end-to-end voice note → transcript → text answer →
+`sendVoice` round-trip stays unproven. The exact gate to run on a deployed
+host: image with the `transcription` feature (`/usr/local/bin/hub-stt`) plus a
+`HUB_TTS_COMMAND` binary, a real Telegram DM voice note, `/voice on`, and a
+reply — record model/provider, language, latency and file size.
+
 ## CHG-0023 personal assistant experience
 
 M4 keeps Telegram Bot API and Slack App as communication-hub ingress/delivery.

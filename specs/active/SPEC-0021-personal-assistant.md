@@ -29,7 +29,8 @@ title: Personal assistant channels, voice, routines and context lifecycle
    path. Feature `transcription` sets communication-hub `HUB_STT_COMMAND` to
    `/usr/local/bin/hub-stt` on the same image. TTS is opt-in per conversation
    or explicit request and falls back to text. Third-party voice upload does
-   not occur unless explicitly configured.
+   not occur unless explicitly configured. `/voice` reports STT and TTS
+   readiness separately per SPEC-0038.
 6. Hub-owned schedules follow SPEC-0013. `routine_create`/`list`/`update`/
    `pause`/`delete` enforce server-side ownership. Occurrences are ordinary
    idempotent jobs keyed by schedule id, time and revision. Native Hermes cron

@@ -51,6 +51,17 @@ func commandSynthesizer(command string) Synthesizer {
 	return CommandSynthesizer{Command: command, Timeout: 30 * time.Second}
 }
 
+// commandAvailable reports whether the configured worker binary can actually
+// run: an empty command or an unresolvable path both mean "not available".
+func commandAvailable(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	_, err := exec.LookPath(command)
+	return err == nil
+}
+
 type CommandTranscriber struct {
 	Command string
 	Timeout time.Duration
@@ -114,6 +125,9 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if err := rejectMedia(envelope); err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, "Голосовое сообщение отклонено: слишком большое, длинное или неподдерживаемый тип.")
+	}
+	if g.transcriber == nil {
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, "Распознавание речи не настроено на этом сервере. Отправьте текст.")
 	}
 	path, err := g.downloadTelegramMedia(ctx, media.FileID)
 	if path != "" {

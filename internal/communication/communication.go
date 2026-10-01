@@ -1677,28 +1677,49 @@ func (g *Gateway) sessionStatus(user User, sender int64) string {
 	return "Сессия: " + mapping.SessionID + "."
 }
 
+// voiceReadiness reports incoming STT and outgoing TTS availability separately:
+// a configured-but-unresolvable worker binary or a parked upload URL still mean
+// "unavailable", so /voice never promises a channel that cannot send.
+func (g *Gateway) voiceReadiness() (sttReady, ttsReady bool) {
+	sttReady = g.transcriber != nil && commandAvailable(g.config.STTCommand)
+	ttsReady = g.synthesizer != nil && commandAvailable(g.config.TTSCommand) && strings.TrimSpace(g.config.TTSUploadURL) == ""
+	return
+}
+
+func readyWord(ready bool) string {
+	if ready {
+		return "доступно"
+	}
+	return "недоступно"
+}
+
 func (g *Gateway) voiceCommand(user User, sender int64, text string) string {
 	fields := strings.Fields(text)
 	conversation := user.envelope(sender).ConversationID
+	sttReady, ttsReady := g.voiceReadiness()
+	status := "Распознавание голосовых (STT): " + readyWord(sttReady) + ". Озвучка ответов (TTS): " + readyWord(ttsReady) + "."
 	if len(fields) >= 2 {
 		switch strings.ToLower(fields[1]) {
 		case "on", "enable":
 			if err := g.spool.SetConversationVoice(user.ID, user.ID, conversation, true); err != nil {
 				return "Не удалось включить голосовые ответы."
 			}
-			return "Голосовые ответы включены для этого разговора. Текст остаётся канонической записью."
+			if !ttsReady {
+				return "Голосовые ответы включены для этого разговора, но озвучка сейчас недоступна — ответы останутся текстовыми. " + status
+			}
+			return "Голосовые ответы включены для этого разговора. Текст остаётся канонической записью. " + status
 		case "off", "disable":
 			if err := g.spool.SetConversationVoice(user.ID, user.ID, conversation, false); err != nil {
 				return "Не удалось выключить голосовые ответы."
 			}
-			return "Голосовые ответы выключены."
+			return "Голосовые ответы выключены. " + status
 		}
 	}
 	enabled, _ := g.spool.ConversationVoice(user.ID, user.ID, conversation)
 	if enabled {
-		return "Голосовые ответы включены. Каноническая доставка — текст. /voice off чтобы выключить."
+		return "Голосовые ответы включены. " + status + " Каноническая доставка — текст. /voice off чтобы выключить."
 	}
-	return "Голосовые ответы выключены по умолчанию. /voice on чтобы включить для этого разговора."
+	return "Голосовые ответы выключены по умолчанию. " + status + " /voice on чтобы включить для этого разговора."
 }
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID int64, messageID int, text string) error {

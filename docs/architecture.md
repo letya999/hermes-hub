@@ -135,7 +135,8 @@ channel sender (Telegram Bot API or Slack App Events API) to the configured user
 `/state/gateway`, and run one bounded invocation at a time. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
 media envelope, transcribe through the replaceable STT worker, and submit text to the
-same Hermes session. Spoken replies are opt-in. Native Hermes memory, profile and
+same Hermes session. Spoken replies are opt-in; `/voice` reports incoming-STT and
+outgoing-TTS readiness separately so a missing worker is never promised (SPEC-0038). Native Hermes memory, profile and
 skills remain in the owning home; Honcho is an official opt-in config file. The initial deployment
 has one configured user; the job envelope and per-user paths keep the expansion point for
 multiple users, organizations and channels explicit without adding external IAM today.
