@@ -4,9 +4,10 @@
 # `remote` proxies to any OpenAI-compatible TTS upstream (Speaches
 # piper/kokoro, OpenAI, bespoke model servers); `sherpa` needs the
 # -tags sherpa build with the native library.
-FROM golang:1.27-bookworm@sha256:a58ef1bdf40835a04cca75896cfb8f9e3ee10a6d264dd91d91e4497cc34e75f7 AS go_build
+FROM golang:1.27.1-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY services/credential-broker ./services/credential-broker
 RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod go mod download
 COPY cmd/hub-tts ./cmd/hub-tts
 COPY internal/mediasvc ./internal/mediasvc
@@ -18,6 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg espeak-n
 COPY --from=go_build /hub-tts /usr/local/bin/hub-tts
 COPY docker/media/tts-worker /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/tts-worker
-RUN useradd -r -u 10003 -m tts && mkdir -p /data && chown 10003:10003 /data
-USER 10003:10003
+RUN useradd -r -u 10001 -m tts && mkdir -p /data && chown 10001:10001 /data
+USER 10001:10001
 ENTRYPOINT ["hub-tts"]

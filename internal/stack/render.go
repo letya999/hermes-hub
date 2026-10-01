@@ -471,6 +471,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			for _, role := range []string{"stt", "tts"} {
 				name := "hub-" + role
 				svc := cloneMap(common)
+				// Dedicated image tag: sharing the hub tag would let the
+				// last build overwrite the image other services run.
+				svc["image"] = "hermes-hub-" + role + ":0.3.0-" + s.Environment
 				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile." + role}
 				svc["environment"] = M{
 					"HUB_MEDIA_LISTEN": "0.0.0.0:8090",

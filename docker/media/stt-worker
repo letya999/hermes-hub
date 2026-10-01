@@ -2,6 +2,23 @@
 """STT worker for the hub-stt command engine (path, mime argv)."""
 import os
 import sys
+import wave
+
+
+def load_samples(path: str):
+    """Read a 16 kHz mono wav into float32 samples for faster-whisper.
+
+    Feeding an ndarray skips faster-whisper's own av-based decoder, which
+    broke with av>=16 — the sidecar already normalizes input to canonical
+    wav via ffmpeg anyway.
+    """
+    import numpy as np
+
+    with wave.open(path, "rb") as w:
+        if w.getnchannels() != 1 or w.getsampwidth() != 2:
+            raise SystemExit("input must be 16-bit mono wav")
+        pcm = w.readframes(w.getnframes())
+    return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def main() -> int:
@@ -13,7 +30,7 @@ def main() -> int:
     from faster_whisper import WhisperModel
 
     model = WhisperModel(os.environ.get("HUB_STT_MODEL", "tiny"), device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(path, beam_size=1)
+    segments, _ = model.transcribe(load_samples(path), beam_size=1)
     text = "".join(segment.text for segment in segments).strip()
     if not text:
         return 1

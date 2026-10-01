@@ -1,7 +1,7 @@
 change: CHG-0062-media-sidecars
 issue: 170
 branch: feat/message-rendering-166
-status: implemented-local
+status: verified-local-stack
 done:
   - internal/mediasvc: one package, one binary, two roles (stt/tts); engines
     command/remote/sherpa(-tags sherpa stub); fetch allowlist + private-IP
@@ -27,8 +27,17 @@ tests:
   - gateway HTTP clients: auth header, file field, health probe, dead sidecar
   - race x3 clean; Windows rename-over-existing flake fixed with retry+direct
     write fallback in jobStore.put
+  - faster-whisper av>=16 breakage fixed: worker decodes normalized wav to
+    numpy itself instead of av file decode
+  - live local stack verified (hermes-hub-local-dev): /healthz ok, bearer
+    enforced, authenticated TTS->STT roundtrip over service DNS (OGG speech
+    in, transcript out), async /v1/jobs lifecycle done with txt/json/srt
+    results; empty-signal input fails honestly (no fake transcript)
 pending:
-  - docker-check on a host with Docker (unavailable here)
+  - full image rebuild finishing in background (slow debian mirror); running
+    hub-stt container carries patched worker layer until then
+  - russian transcription quality is whisper-tiny-int8 grade; for real voice
+    notes consider remote engine (Groq large-v3-turbo) or bigger local model
   - sherpa engine needs the sherpa-onnx C lib + models; stub build rejects
     the engine name until then
   - live Telegram voice roundtrip on a real deploy (external acceptance)
