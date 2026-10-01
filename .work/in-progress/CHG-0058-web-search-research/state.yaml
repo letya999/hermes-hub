@@ -10,8 +10,10 @@ completed:
   - web settings block with upstream provider catalog validation
     (search/extract capability split, tiered providers, research ceilings)
   - rendered web: config section + self-env allowlist for configured keys
-  - web-deep-research skill: brief -> bounded rounds -> notes -> cited report
-    with explicit Limitations; reads bounds from mounted config
+  - web-deep-research skill: stateful deep-research engine on disk
+    (perspective plan, sources registry, gap-driven rounds, notes, outline,
+    sections, verify pass); long mode via durable hub routines resuming from
+    state.json; ceilings 16 rounds / 100 pages / 10 per host / 240 min
   - doctor hints for providers with no anonymous path; secrets template keys
   - SPEC-0035, specs index, integrations.md section, architecture.md pointer,
     CHANGELOG

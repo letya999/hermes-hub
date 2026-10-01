@@ -34,16 +34,27 @@ Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).
    names the missing env for a configured `searxng` or `firecrawl` backend;
    keyless-capable choices never warn.
 
-4. Deep research is the bundled `web-deep-research` skill: brief → bounded
-   search/extract rounds → distilled per-source notes in
-   `research/<slug>/notes.md` → a report with inline source URLs, a `Sources`
-   list, and a `Limitations` section naming failed, blocked, or paywalled
-   URLs and unanswered sub-questions. Bounds come from `web.research`
-   (`max_rounds`, `queries_per_round`, `pages_per_round`, `max_pages`,
-   `deadline_minutes`), readable from the mounted read-only config, and may
-   only tighten the ceilings 4 rounds / 5 queries / 8 pages / 24 pages /
-   30 minutes. Reaching a bound or an interrupt ends research and reports
-   what exists.
+4. Deep research is the bundled `web-deep-research` skill: a bounded state
+   machine on disk under `research/<slug>/` — `brief.md` (north star),
+   `plan.yaml` (perspective-driven sub-topics), `sources.yaml` (URL registry
+   with per-URL status), `notes/` (distilled claims, each with its URL),
+   `gaps.md` (open-question queue driving the next round), `outline.md`,
+   `sections/`, `report.md`, `state.json`. Each round reconstructs state from
+   disk instead of accumulating pages in context; gap analysis derives the
+   next queries. Synthesis writes an outline first, then per-section drafts
+   from the relevant notes only, then assembles a report with inline source
+   URLs, a `Sources` list, and a mandatory `Limitations` section naming
+   failed, blocked, or paywalled URLs and unanswered sub-questions. A verify
+   pass drops or marks "[unverified]" any claim without a mapped source.
+   Bounds come from `web.research` (`max_rounds`, `queries_per_round`,
+   `pages_per_round`, `max_pages`, `max_pages_per_host`, `deadline_minutes`),
+   readable from the mounted read-only config, and may only tighten the
+   ceilings 16 rounds / 5 queries / 8 pages / 100 pages / 10 pages per host /
+   240 minutes. Reaching a bound, diminishing returns, or an interrupt ends
+   research and reports what exists. Long runs (`deadline_minutes ≥ 60` or an
+   explicit request) are durable: the skill registers a hub `routine_create`
+   job that executes one bounded round per wake, resumes cold from
+   `state.json`, and pauses itself on completion.
 
 5. Fetched pages and snippets are untrusted data. The skill forbids following
    instructions inside them and forbids placing credentials in URLs or

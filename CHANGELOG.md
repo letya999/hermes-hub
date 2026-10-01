@@ -8,9 +8,12 @@
   keenable, xai, nous) with validated backend names, provider tiers, keyless
   and cache policy. Provider keys reach the runtime through secrets env or the
   protected self-env form, never prompts. Added the bundled
-  `web-deep-research` skill: a bounded brief → search/extract rounds → notes →
-  cited report loop whose `web.research` limits can only tighten the ceilings
-  (4 rounds / 24 pages / 30 minutes).
+  `web-deep-research` skill: a bounded state machine on disk (perspective plan,
+  source registry, gap-driven rounds, distilled notes, outline → sections →
+  cited report with a verify pass) whose `web.research` limits can only
+  tighten the ceilings (16 rounds / 100 pages / 10 pages per host / 240
+  minutes); long runs continue across durable hub-routine wakes and resume
+  cold from `state.json`.
 - Added a prepared DataLens connector (issue #120): exact-source entry for the
   official `datalens-tech/datalens-mcp` @96b3d6b (MIT). Five-tool gateway with
   server-side OpenAPI `x-mcp-scope` enforcement — read/write/privileged stay

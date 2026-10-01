@@ -33,17 +33,21 @@ type WebResearchBounds struct {
 	QueriesPerRound int `yaml:"queries_per_round,omitempty"`
 	PagesPerRound   int `yaml:"pages_per_round,omitempty"`
 	MaxPages        int `yaml:"max_pages,omitempty"`
+	MaxPagesPerHost int `yaml:"max_pages_per_host,omitempty"`
 	DeadlineMinutes int `yaml:"deadline_minutes,omitempty"`
 }
 
 // Hard ceilings the operator config can only tighten. They keep a deep
-// research run a bounded workflow rather than an autonomous crawler.
+// research run a bounded workflow rather than an autonomous crawler: at most
+// ~4 hours, 100 extracted pages and 16 search rounds even when the owner asks
+// for a long deep-research run.
 const (
-	webMaxRoundsCeiling       = 4
+	webMaxRoundsCeiling       = 16
 	webQueriesPerRoundCeiling = 5
 	webPagesPerRoundCeiling   = 8
-	webMaxPagesCeiling        = 24
-	webDeadlineMinutesCeiling = 30
+	webMaxPagesCeiling        = 100
+	webMaxPagesPerHostCeiling = 10
+	webDeadlineMinutesCeiling = 240
 	webExtractCharLimitMax    = 200000
 	webCacheTTLMax            = 1440
 )
@@ -162,6 +166,7 @@ func (w WebSettings) validate() error {
 		{"queries_per_round", r.QueriesPerRound, webQueriesPerRoundCeiling},
 		{"pages_per_round", r.PagesPerRound, webPagesPerRoundCeiling},
 		{"max_pages", r.MaxPages, webMaxPagesCeiling},
+		{"max_pages_per_host", r.MaxPagesPerHost, webMaxPagesPerHostCeiling},
 		{"deadline_minutes", r.DeadlineMinutes, webDeadlineMinutesCeiling},
 	} {
 		if bound.value < 0 || bound.value > bound.ceiling {
@@ -229,6 +234,7 @@ func (w WebSettings) config() M {
 			{"queries_per_round", w.Research.QueriesPerRound},
 			{"pages_per_round", w.Research.PagesPerRound},
 			{"max_pages", w.Research.MaxPages},
+			{"max_pages_per_host", w.Research.MaxPagesPerHost},
 			{"deadline_minutes", w.Research.DeadlineMinutes},
 		} {
 			if field.value > 0 {

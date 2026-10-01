@@ -20,7 +20,7 @@ func webSettings(base Settings) Settings {
 		ProviderTier:     map[string]string{"exa": "paid"},
 		CacheTTLMinutes:  30,
 		CacheExemptHosts: []string{"internal.example.com", "*.preview.dev"},
-		Research:         WebResearchBounds{MaxRounds: 3, QueriesPerRound: 4, PagesPerRound: 5, MaxPages: 16, DeadlineMinutes: 15},
+		Research:         WebResearchBounds{MaxRounds: 3, QueriesPerRound: 4, PagesPerRound: 5, MaxPages: 16, MaxPagesPerHost: 3, DeadlineMinutes: 15},
 	}
 	return base
 }
@@ -68,8 +68,10 @@ func TestWebValidationRejectsBadInput(t *testing.T) {
 		func(w *WebSettings) { w.ExtractCharLimit = 200001 },
 		func(w *WebSettings) { w.CacheTTLMinutes = 1441 },
 		func(w *WebSettings) { w.CacheExemptHosts = []string{"https://evil.example", "ok.example"} },
-		func(w *WebSettings) { w.Research.MaxRounds = 5 },
-		func(w *WebSettings) { w.Research.MaxPages = 25 },
+		func(w *WebSettings) { w.Research.MaxRounds = 17 },
+		func(w *WebSettings) { w.Research.MaxPages = 101 },
+		func(w *WebSettings) { w.Research.MaxPagesPerHost = 11 },
+		func(w *WebSettings) { w.Research.DeadlineMinutes = 241 },
 		func(w *WebSettings) { w.Research.DeadlineMinutes = -1 },
 	} {
 		s := webSettings(validSettings())

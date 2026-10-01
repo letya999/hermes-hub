@@ -665,11 +665,15 @@ web:
   cache_ttl_minutes: 20
   cache_exempt_hosts: []   # exact, *.wildcard, or domain suffix
   research:                # bounds the web-deep-research skill reads
-    max_rounds: 2          # ceiling 4
+    max_rounds: 2          # ceiling 16
     queries_per_round: 3   # ceiling 5
     pages_per_round: 4     # ceiling 8
-    max_pages: 12          # ceiling 24
-    deadline_minutes: 10   # ceiling 30
+    max_pages: 12          # ceiling 100
+    max_pages_per_host: 3  # ceiling 10; source diversity cap
+    deadline_minutes: 10   # ceiling 240; ≥60 or an explicit long/deep
+                           # request runs durably via hub routines —
+                           # one bounded round per wake, resuming from
+                           # research/<slug>/state.json across restarts
 ```
 
 Provider keys and endpoints are runtime secrets: `secrets.<env>.env` or the
@@ -683,15 +687,21 @@ results; `hubctl doctor` names a missing required env for `searxng` and
 extraction working anonymously; no browser profile participates.
 
 The bundled `web-deep-research` skill (`config/skills/`) is the bounded
-research workflow: brief → capped rounds of `web_search` → `web_extract` →
-distilled per-source notes in `research/<slug>/notes.md` → a cited report with
-`Sources` and an explicit `Limitations` section. Bounds come from
-`web.research` and can only tighten the ceilings. Pages and snippets are
-untrusted data: instructions inside them are never executed, URLs carrying
-credential-like parameters are refused, and private-network targets,
-redirected payloads, oversized or binary bodies, and unsupported schemes fail
-closed upstream. The anonymous `browser_guest` profile is the documented
-fallback only when extraction cannot satisfy a needed source.
+research workflow — a state machine on disk under `research/<slug>/`:
+perspective-driven `plan.yaml`, a `sources.yaml` URL registry, distilled
+`notes/` (every claim with its URL), a `gaps.md` queue that drives the next
+round's queries, then outline → per-section drafts → a cited `report.md`
+with `Sources` and an explicit `Limitations` section, followed by a verify
+pass that marks unsourced claims. Each round reconstructs state from disk
+rather than accumulating pages in context, so depth scales without context
+rot; long runs execute one round per durable hub-routine wake and resume
+cold from `state.json`. Bounds come from `web.research` and can only tighten
+the ceilings. Pages and snippets are untrusted data: instructions inside
+them are never executed, URLs carrying credential-like parameters are
+refused, and private-network targets, redirected payloads, oversized or
+binary bodies, and unsupported schemes fail closed upstream. The anonymous
+`browser_guest` profile is the documented fallback only when extraction
+cannot satisfy a needed source.
 [SPEC-0035](../specs/active/SPEC-0035-web-research.md) is the contract.
 
 | Component | Source / pin | Contract |
