@@ -110,7 +110,11 @@ rejected rather than overridden.
 ## Service boundary
 
 `communication-hub` owns Telegram transport, external identity mapping, the bounded
-file queue and reply delivery. It mounts only `communication-hub-data` and receives
+file queue and reply delivery. Speech is delegated to standalone `hub-media-stt` /
+`hub-media-tts` sidecars (OpenAI-compatible API + durable async jobs; swappable
+command/remote/sherpa engines) reached over bearer-auth HTTP — see
+[SPEC-0039](../specs/active/SPEC-0039-media-sidecars.md). The gateway mounts only
+`communication-hub-data` and receives
 the bot token. Model-authored replies render per channel at delivery (Telegram HTML,
 Slack mrkdwn) and split on block boundaries inside the channel limit with durable
 per-part outbox progress (SPEC-0036); hub-authored notices stay plain text.

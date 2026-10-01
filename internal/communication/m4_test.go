@@ -506,6 +506,115 @@ func TestCommandTranscriberAndSynthesizerRejectEmpty(t *testing.T) {
 	}
 }
 
+func TestHTTPTranscriberAndSynthesizerHitSidecar(t *testing.T) {
+	var gotAuth, gotFile bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization") == "Bearer tok"
+		switch r.URL.Path {
+		case "/v1/audio/transcriptions":
+			file, _, err := r.FormFile("file")
+			if err == nil {
+				gotFile = true
+				file.Close()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"text":"расшифровка"}`))
+		case "/v1/audio/speech":
+			w.Header().Set("Content-Type", "audio/ogg")
+			_, _ = w.Write([]byte("opus-bytes"))
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	wav := filepath.Join(dir, "v.ogg")
+	if err := os.WriteFile(wav, []byte("audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stt := HTTPTranscriber{Base: upstream.URL, Auth: "tok"}
+	text, err := stt.Transcribe(context.Background(), wav, "audio/ogg")
+	if err != nil || text != "расшифровка" {
+		t.Fatalf("sidecar stt: %q %v", text, err)
+	}
+	if !gotAuth || !gotFile {
+		t.Fatalf("auth=%v file=%v", gotAuth, gotFile)
+	}
+	if !stt.Healthy(context.Background()) {
+		t.Fatal("healthy sidecar reported unready")
+	}
+
+	tts := HTTPSynthesizer{Base: upstream.URL, Auth: "tok", Voice: "ru"}
+	audio, mime, err := tts.Synthesize(context.Background(), "привет")
+	if err != nil || mime != "audio/ogg" || string(audio) != "opus-bytes" {
+		t.Fatalf("sidecar tts: %v", err)
+	}
+	if !tts.Healthy(context.Background()) {
+		t.Fatal("healthy tts sidecar reported unready")
+	}
+
+	dead := HTTPTranscriber{Base: "http://127.0.0.1:1", Auth: "tok", Timeout: time.Second}
+	if _, err := dead.Transcribe(context.Background(), wav, "audio/ogg"); err == nil {
+		t.Fatal("dead sidecar transcribed")
+	}
+	if dead.Healthy(context.Background()) {
+		t.Fatal("dead sidecar reported ready")
+	}
+	if _, _, err := (HTTPSynthesizer{Base: "http://127.0.0.1:1", Timeout: time.Second}).Synthesize(context.Background(), "hi"); err == nil {
+		t.Fatal("dead tts synthesized")
+	}
+}
+
+func TestServiceURLBeatsCommandSelection(t *testing.T) {
+	if _, ok := serviceTranscriber("http://x", "a", "missing-binary").(HTTPTranscriber); !ok {
+		t.Fatal("stt url did not select the sidecar client")
+	}
+	if _, ok := serviceSynthesizer("", "", "", "cmd").(CommandSynthesizer); !ok {
+		t.Fatal("empty tts url did not fall back to command")
+	}
+	c := testConfig(t)
+	c.STTURL = "http://hub-media-stt:8090"
+	c.TTSURL = "http://hub-media-tts:8090"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.transcriber.(HTTPTranscriber); !ok {
+		t.Fatalf("transcriber=%T", g.transcriber)
+	}
+	if _, ok := g.synthesizer.(HTTPSynthesizer); !ok {
+		t.Fatalf("synthesizer=%T", g.synthesizer)
+	}
+}
+
+func TestVoiceReadinessWithSidecarURL(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer up.Close()
+	if !mediaReady(HTTPTranscriber{Base: up.URL, Timeout: time.Second}, "", up.URL) {
+		t.Fatal("healthy sidecar reported unready")
+	}
+	if mediaReady(HTTPTranscriber{Base: "http://127.0.0.1:1", Timeout: 500 * time.Millisecond}, "", "http://127.0.0.1:1") {
+		t.Fatal("dead sidecar reported ready")
+	}
+	// URL configured but the impl is nil means not ready at all.
+	if mediaReady(nil, "", up.URL) {
+		t.Fatal("nil impl reported ready")
+	}
+	// Command mode unchanged: binary must resolve.
+	if mediaReady(CommandTranscriber{Command: "missing-binary-xyz"}, "missing-binary-xyz", "") {
+		t.Fatal("missing command reported ready")
+	}
+}
+
 func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	ctx := context.Background()
 	voiceUpd := func(id int, text string) Update {

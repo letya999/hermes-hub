@@ -1,8 +1,13 @@
 package communication
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +54,22 @@ func commandSynthesizer(command string) Synthesizer {
 		return nil
 	}
 	return CommandSynthesizer{Command: command, Timeout: 30 * time.Second}
+}
+
+// serviceTranscriber prefers the standalone STT service when its URL is
+// configured; the embedded command worker stays as the fallback path.
+func serviceTranscriber(base, auth, command string) Transcriber {
+	if strings.TrimSpace(base) != "" {
+		return HTTPTranscriber{Base: strings.TrimRight(base, "/"), Auth: auth, Timeout: sttTimeout}
+	}
+	return commandTranscriber(command)
+}
+
+func serviceSynthesizer(base, auth, voice, command string) Synthesizer {
+	if strings.TrimSpace(base) != "" {
+		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Timeout: 30 * time.Second}
+	}
+	return commandSynthesizer(command)
 }
 
 // commandAvailable reports whether the configured worker binary can actually
@@ -194,6 +215,160 @@ func rejectMedia(e MediaEnvelope) error {
 		return errors.New("unsupported type")
 	}
 	return nil
+}
+
+// HTTPTranscriber posts the downloaded media file to the STT sidecar's
+// OpenAI-compatible endpoint and reads back plain text.
+type HTTPTranscriber struct {
+	Base    string
+	Auth    string
+	Timeout time.Duration
+	client  *http.Client
+}
+
+func (c HTTPTranscriber) Transcribe(ctx context.Context, path, mime string) (string, error) {
+	if c.Base == "" {
+		return "", errors.New("stt is not configured")
+	}
+	if c.Timeout <= 0 {
+		c.Timeout = sttTimeout
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("file", filepath.Base(path))
+	if err != nil {
+		return "", err
+	}
+	in, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	if _, err := io.Copy(part, in); err != nil {
+		return "", err
+	}
+	_ = form.WriteField("response_format", "json")
+	if err := form.Close(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(jobCtx, http.MethodPost, c.Base+"/v1/audio/transcriptions", &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	if c.Auth != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Auth)
+	}
+	resp, err := c.http().Do(req)
+	if err != nil {
+		if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+			return "", errors.New("stt timed out")
+		}
+		return "", errors.New("stt failed")
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return "", errors.New("stt failed")
+	}
+	var parsed struct {
+		Text string `json:"text"`
+	}
+	text := strings.TrimSpace(string(payload))
+	if err := json.Unmarshal(payload, &parsed); err == nil && parsed.Text != "" {
+		text = parsed.Text
+	}
+	if text == "" {
+		return "", errors.New("empty transcript")
+	}
+	return text, nil
+}
+
+func (c HTTPTranscriber) http() *http.Client {
+	if c.client != nil {
+		return c.client
+	}
+	return &http.Client{Timeout: c.Timeout}
+}
+
+// Healthy probes the sidecar's health endpoint; auth is sent because the
+// endpoint may sit behind the same bearer check as the API.
+func (c HTTPTranscriber) Healthy(ctx context.Context) bool {
+	return probeHealth(ctx, c.http(), c.Base, c.Auth)
+}
+
+// HTTPSynthesizer posts text to the TTS sidecar and expects ogg/opus audio.
+type HTTPSynthesizer struct {
+	Base    string
+	Auth    string
+	Voice   string
+	Timeout time.Duration
+	client  *http.Client
+}
+
+func (c HTTPSynthesizer) Synthesize(ctx context.Context, text string) ([]byte, string, error) {
+	if c.Base == "" || strings.TrimSpace(text) == "" {
+		return nil, "", errors.New("tts is not configured")
+	}
+	if c.Timeout <= 0 {
+		c.Timeout = 30 * time.Second
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	payload, err := json.Marshal(map[string]string{"model": "tts-1", "voice": c.Voice, "input": text, "response_format": "opus"})
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(jobCtx, http.MethodPost, c.Base+"/v1/audio/speech", bytes.NewReader(payload))
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.Auth != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Auth)
+	}
+	resp, err := c.http().Do(req)
+	if err != nil {
+		return nil, "", errors.New("tts failed")
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, mediaSizeLimit+1))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil, "", errors.New("tts failed")
+	}
+	if len(out) == 0 || len(out) > mediaSizeLimit {
+		return nil, "", errors.New("tts output rejected")
+	}
+	return out, "audio/ogg", nil
+}
+
+func (c HTTPSynthesizer) http() *http.Client {
+	if c.client != nil {
+		return c.client
+	}
+	return &http.Client{Timeout: c.Timeout}
+}
+
+func (c HTTPSynthesizer) Healthy(ctx context.Context) bool {
+	return probeHealth(ctx, c.http(), c.Base, c.Auth)
+}
+
+func probeHealth(ctx context.Context, client *http.Client, base, auth string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", nil)
+	if err != nil {
+		return false
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", "Bearer "+auth)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func allowedAudioMIME(mime string) bool {

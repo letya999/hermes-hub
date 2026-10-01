@@ -112,6 +112,11 @@ type Config struct {
 	NativeCron         string                  `yaml:"-"`
 	STTCommand         string                  `yaml:"-"`
 	TTSCommand         string                  `yaml:"-"`
+	STTURL             string                  `yaml:"-"`
+	STTAuth            string                  `yaml:"-"`
+	TTSURL             string                  `yaml:"-"`
+	TTSAuth            string                  `yaml:"-"`
+	TTSVoice           string                  `yaml:"-"`
 	TTSUploadURL       string                  `yaml:"-"`
 	SpoolDir           string                  `yaml:"spool_dir"`
 	RuntimeURL         string                  `yaml:"-"`
@@ -339,6 +344,11 @@ func fillChannelSecrets(config *Config) {
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
 	config.STTCommand = os.Getenv("HUB_STT_COMMAND")
 	config.TTSCommand = os.Getenv("HUB_TTS_COMMAND")
+	config.STTURL = os.Getenv("HUB_STT_URL")
+	config.STTAuth = envOr("HUB_STT_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
+	config.TTSURL = os.Getenv("HUB_TTS_URL")
+	config.TTSAuth = envOr("HUB_TTS_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
+	config.TTSVoice = os.Getenv("HUB_TTS_VOICE")
 	config.TTSUploadURL = os.Getenv("HUB_TTS_UPLOAD_URL")
 }
 
@@ -1393,7 +1403,7 @@ func New(config Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: commandTranscriber(config.STTCommand), synthesizer: commandSynthesizer(config.TTSCommand), forms: map[string]credentialForm{}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand), synthesizer: serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand), forms: map[string]credentialForm{}}
 	if config.SlackBotToken != "" {
 		g.slack = newSlackAPI(config.SlackBotToken)
 	}
@@ -1678,12 +1688,33 @@ func (g *Gateway) sessionStatus(user User, sender int64) string {
 }
 
 // voiceReadiness reports incoming STT and outgoing TTS availability separately:
-// a configured-but-unresolvable worker binary or a parked upload URL still mean
-// "unavailable", so /voice never promises a channel that cannot send.
+// a configured-but-unresolvable worker binary, a sidecar that does not answer
+// /healthz, or a parked upload URL all still mean "unavailable", so /voice
+// never promises a channel that cannot send.
 func (g *Gateway) voiceReadiness() (sttReady, ttsReady bool) {
-	sttReady = g.transcriber != nil && commandAvailable(g.config.STTCommand)
-	ttsReady = g.synthesizer != nil && commandAvailable(g.config.TTSCommand) && strings.TrimSpace(g.config.TTSUploadURL) == ""
+	sttReady = mediaReady(g.transcriber, g.config.STTCommand, g.config.STTURL)
+	ttsReady = mediaReady(g.synthesizer, g.config.TTSCommand, g.config.TTSURL) && strings.TrimSpace(g.config.TTSUploadURL) == ""
 	return
+}
+
+// mediaReady resolves readiness for either an embedded command worker (binary
+// must exist) or a URL-configured sidecar (health endpoint must answer).
+func mediaReady(impl any, command, url string) bool {
+	if impl == nil {
+		return false
+	}
+	if strings.TrimSpace(url) == "" {
+		return commandAvailable(command)
+	}
+	type healthchecker interface {
+		Healthy(context.Context) bool
+	}
+	if h, ok := impl.(healthchecker); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return h.Healthy(ctx)
+	}
+	return true
 }
 
 func readyWord(ready bool) string {

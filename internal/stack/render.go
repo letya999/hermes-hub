@@ -421,10 +421,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
 		if s.Has("transcription") {
+			gatewayEnvironment["HUB_STT_URL"] = "http://hub-media-stt:8090"
+			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-media-tts:8090"
+			// The embedded command workers stay configured as the documented
+			// fallback; when the URL is set the sidecar wins at selection time.
 			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
 			gatewayEnvironment["HUB_TTS_COMMAND"] = "/usr/local/bin/hub-tts"
 			gatewayEnvironment["HF_HOME"] = "/data/hf"
 			gatewayEnvironment["XDG_CACHE_HOME"] = "/data/cache"
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
 		}
 		if s.ExecutionMode != "" {
 			gatewayEnvironment["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
@@ -453,6 +458,33 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			delete(services, "hermes-runtime")
 		}
+
+		// Standalone speech sidecars: independent lifecycle and scaling from
+		// the gateway, shared bearer auth, durable job data on their own
+		// volumes. They reach the gateway's network only — never the docker
+		// socket, broker mounts or user spaces.
+		if s.Has("transcription") {
+			mediaAuth := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"}}
+			for _, role := range []string{"stt", "tts"} {
+				name := "hub-media-" + role
+				svc := cloneMap(common)
+				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile.media"}
+				svc["entrypoint"] = []string{"hub-media"}
+				svc["environment"] = M{
+					"HUB_MEDIA_ROLE": role, "HUB_MEDIA_LISTEN": "0.0.0.0:8090",
+					"HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "/usr/local/bin/hub-" + role,
+					"HUB_MEDIA_DATA": "/data", "HUB_MEDIA_WORKERS": "2",
+					"HUB_MEDIA_INPUT_ROOT": "/inputs",
+					"HF_HOME":              "/data/hf", "XDG_CACHE_HOME": "/data/cache",
+					"HOME": "/tmp", "TZ": s.Timezone,
+				}
+				svc["env_file"] = mediaAuth
+				svc["volumes"] = []any{M{"type": "volume", "source": "hub-media-" + role + "-data", "target": "/data"}}
+				svc["networks"] = sharedNetworks
+				svc["restart"] = "unless-stopped"
+				services[name] = svc
+			}
+		}
 	}
 	if includeGateway && !infra {
 		// Secondary spaces never keep a resident runtime: their gateway jobs
@@ -471,6 +503,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["broker-materialized"] = M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
+		if s.Has("transcription") {
+			volumes["hub-media-stt-data"] = M{}
+			volumes["hub-media-tts-data"] = M{}
+		}
 	}
 	// The shared runtime network is operator-owned infrastructure: it is
 	// created once (docker network create hermes-hub-runtime), outlives any
@@ -588,6 +624,11 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
+	if s.Has("transcription") {
+		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
+			return err
+		}
+	}
 	if s.RendersInfra() {
 		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
 			return err
@@ -677,6 +718,29 @@ func ensureRuntimeAuth(path string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// ensureMediaAuth provisions the shared bearer token between communication-hub
+// and the media sidecars. One file, three mounts: gateway reads it for
+// HUB_STT_AUTH/HUB_TTS_AUTH, sidecars read HUB_MEDIA_AUTH from the same file.
+func ensureMediaAuth(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("media auth must be a regular file")
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	value := make([]byte, 32)
+	if _, err = rand.Read(value); err != nil {
+		return err
+	}
+	token := hex.EncodeToString(value)
+	content := []byte("HUB_MEDIA_AUTH=" + token + "\nHUB_STT_AUTH=" + token + "\nHUB_TTS_AUTH=" + token + "\n")
+	return os.WriteFile(path, content, 0600)
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the

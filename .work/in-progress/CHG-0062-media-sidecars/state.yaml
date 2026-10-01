@@ -1,0 +1,34 @@
+change: CHG-0062-media-sidecars
+issue: 170
+branch: feat/message-rendering-166
+status: implemented-local
+done:
+  - internal/mediasvc: one package, one binary, two roles (stt/tts); engines
+    command/remote/sherpa(-tags sherpa stub); fetch allowlist + private-IP
+    refusal + input-root containment; durable job store with requeue on
+    restart and TTL sweep; 30s chunking; diarization-aware segment merge;
+    text/json/srt outputs
+  - cmd/hub-media: env-configured service entrypoint, graceful shutdown
+  - gateway: HUB_STT_URL/HUB_TTS_URL pick HTTP sidecar clients; command
+    workers remain fallback; /voice readiness probes /healthz
+  - docker/Dockerfile.media + docker/media/hub-stt + hub-tts (command engine
+    inside the sidecar: faster-whisper STT, espeak+ffmpeg TTS)
+  - stack render: hub-media-stt/hub-media-tts compose services with per-role
+    volumes and shared bearer via media.auth; only when feature
+    "transcription" and infra
+tests:
+  - sync transcription in text/json/verbose_json/srt formats
+  - bearer auth enforced on all endpoints
+  - async job lifecycle incl. speaker labels in text and srt, result files,
+    delete
+  - local source traversal/symlink/size guards, fetch allowlist + private IP
+    refusal
+  - speech endpoint + voices + empty-input rejection; healthz reflects engine
+  - gateway HTTP clients: auth header, file field, health probe, dead sidecar
+  - race x3 clean; Windows rename-over-existing flake fixed with retry+direct
+    write fallback in jobStore.put
+pending:
+  - docker-check on a host with Docker (unavailable here)
+  - sherpa engine needs the sherpa-onnx C lib + models; stub build rejects
+    the engine name until then
+  - live Telegram voice roundtrip on a real deploy (external acceptance)

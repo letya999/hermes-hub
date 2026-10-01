@@ -324,3 +324,22 @@ func TestMarkdownDeliverySendsSourceDocWhenDegraded(t *testing.T) {
 		t.Fatalf("source doc missing: %v", fake.docs)
 	}
 }
+
+func TestQuoteWithNestedListAndBreak(t *testing.T) {
+	// Blockquote children flatten to plain lines — exercises blockPlainText's
+	// list/table/hr branches instead of silently dropping the structure.
+	src := "> тезис\n>\n> - один\n> - два\n>\n> ---\n"
+	parts, degraded := renderTelegram(src)
+	if degraded || len(parts) != 1 {
+		t.Fatalf("parts=%d degraded=%v", len(parts), degraded)
+	}
+	for _, want := range []string{"тезис", "один", "два"} {
+		if !strings.Contains(parts[0], want) {
+			t.Fatalf("quote lost %q: %s", want, parts[0])
+		}
+	}
+	sparts := renderSlack(src)
+	if !strings.Contains(sparts[0], "один") {
+		t.Fatalf("slack quote: %v", sparts)
+	}
+}
