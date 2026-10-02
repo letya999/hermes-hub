@@ -121,7 +121,7 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 		g.deliverOne(context.Background())
 	}
 	joined := strings.Join(fake.sent, "\n")
-	if strings.Contains(joined, secret) || !strings.Contains(joined, "не настроен") || !strings.Contains(joined, "Голосовые ответы включены") {
+	if strings.Contains(joined, secret) || !strings.Contains(joined, "не настроен") || !strings.Contains(joined, "Распознавание голосовых") {
 		t.Fatalf("sent=%v", fake.sent)
 	}
 	env := strings.Join(processEnv(map[string]string{"TELEGRAM_BOT_TOKEN": "bot-secret", "SLACK_SIGNING_SECRET": "slack-secret", "OPENAI_API_KEY": "k"}), "\n")
@@ -179,7 +179,7 @@ func TestVoiceLimitsAndSTTErrorStayText(t *testing.T) {
 	}
 }
 
-func TestTTSOptInFallbackAndNoDefaultVoice(t *testing.T) {
+func TestVoiceMarkerDeliveryAndFallback(t *testing.T) {
 	c := testConfig(t)
 	g, err := New(c)
 	if err != nil {
@@ -187,45 +187,30 @@ func TestTTSOptInFallbackAndNoDefaultVoice(t *testing.T) {
 	}
 	fake := &fakeAPI{}
 	g.api = fake
-	g.synthesizer = stubTTS{err: errors.New("tts down")}
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-text-response", JobID: "job-text", Channel: "telegram_bot", ChatID: 11, Text: "canonical"}); err != nil {
-		t.Fatal(err)
-	}
-	g.deliverOne(context.Background())
-	if len(fake.sent) != 1 || fake.sent[0] != "canonical" {
-		t.Fatalf("text default broken: %v", fake.sent)
-	}
-	if err := g.spool.SetConversationVoice("alice", "alice", "telegram-11", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-response", JobID: "job-voice", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "spoken"}); err != nil {
-		t.Fatal(err)
-	}
-	g.deliverOne(context.Background())
-	if len(fake.sent) != 2 || fake.sent[1] != "spoken" {
-		t.Fatalf("tts failure must still deliver text: %v", fake.sent)
-	}
-	if len(fake.voices) != 0 {
-		t.Fatalf("failed tts still uploaded voice: %v", fake.voices)
-	}
 	g.synthesizer = stubTTS{audio: []byte("ogg-bytes")}
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-ok", JobID: "job-voice-ok", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "spoken-ok"}); err != nil {
+	// A legacy voice_replies flag left in a stored conversation mapping is
+	// dead data: without a VOICE: marker the reply stays text.
+	convFile := g.spool.conversationPath("alice", "alice", "telegram-11")
+	if err := os.MkdirAll(filepath.Dir(convFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"principal_id":"alice","context_id":"alice","conversation_id":"telegram-11","session_id":"s1","voice_replies":true}`
+	if err := os.WriteFile(convFile, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-text-response", JobID: "job-text", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "canonical"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	// /voice on delivers the reply as a voice message INSTEAD of text.
-	if len(fake.voices) != 1 || fake.voices[0] != "ogg-bytes" || len(fake.sent) != 2 {
-		t.Fatalf("opt-in tts must replace text with voice: sent=%v voices=%v", fake.sent, fake.voices)
+	if len(fake.sent) != 1 || fake.sent[0] != "canonical" || len(fake.voices) != 0 {
+		t.Fatalf("stored voice flag must not produce voice: sent=%v voices=%v", fake.sent, fake.voices)
 	}
-	// An upstream VOICE: marker speaks its payload even without the flag.
-	if err := g.spool.SetConversationVoice("alice", "alice", "telegram-11", false); err != nil {
-		t.Fatal(err)
-	}
+	// An upstream VOICE: marker speaks its payload — marker-only is voice-only.
 	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-marker", JobID: "job-marker", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Voice: "сказано голосом"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.voices) != 2 || len(fake.sent) != 2 {
+	if len(fake.voices) != 1 || fake.voices[0] != "ogg-bytes" || len(fake.sent) != 1 {
 		t.Fatalf("marker-only reply must be voice-only: sent=%v voices=%v", fake.sent, fake.voices)
 	}
 	// Marker plus visible text sends text first, then the spoken payload.
@@ -233,7 +218,7 @@ func TestTTSOptInFallbackAndNoDefaultVoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.voices) != 3 || fake.sent[len(fake.sent)-1] != "читай тут" {
+	if len(fake.voices) != 2 || fake.sent[len(fake.sent)-1] != "читай тут" {
 		t.Fatalf("marker+text must send both: sent=%v voices=%v", fake.sent, fake.voices)
 	}
 	// Marker-only reply with a broken synthesizer still delivers as text.
@@ -246,15 +231,12 @@ func TestTTSOptInFallbackAndNoDefaultVoice(t *testing.T) {
 		t.Fatalf("broken tts must fall back to the spoken payload as text: %v", fake.sent)
 	}
 	g.synthesizer = stubTTS{audio: []byte("ogg-bytes")}
-	if err := g.spool.SetConversationVoice("alice", "alice", "telegram-11", true); err != nil {
-		t.Fatal(err)
-	}
 	g.config.TTSUploadURL = "https://example.invalid/upload"
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-upload", JobID: "job-voice-upload", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "no-upload"}); err != nil {
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-upload", JobID: "job-voice-upload", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Voice: "no-upload"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.voices) != 3 {
+	if len(fake.voices) != 2 {
 		t.Fatalf("third-party upload path must not send voice locally: %v", fake.voices)
 	}
 	// Blocked upload in voice-only mode still delivers the text fallback.
@@ -680,14 +662,14 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Neither worker configured: both directions read unavailable and
-	// /voice on warns instead of promising spoken replies.
+	// Neither worker configured: both directions read unavailable. There is
+	// no voice mode anymore — /voice (with any args) only reports readiness.
 	sent := ask(t, testConfig(t), "/voice", "/voice on")
 	if !strings.Contains(sent[0], "STT): недоступно") || !strings.Contains(sent[0], "TTS): недоступно") {
 		t.Fatalf("bare status: %q", sent[0])
 	}
-	if !strings.Contains(sent[1], "останутся текстовыми") {
-		t.Fatalf("voice on without tts promised voice: %q", sent[1])
+	if !strings.Contains(sent[1], "TTS): недоступно") || !strings.Contains(sent[1], "ответь голосовым") {
+		t.Fatalf("voice on must not set a mode: %q", sent[1])
 	}
 
 	// Resolvable STT binary only: incoming ready, outgoing still unavailable.
@@ -701,8 +683,8 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	// Resolvable TTS binary: outgoing ready; a parked upload URL reverts it.
 	c = testConfig(t)
 	c.TTSCommand = self
-	sent = ask(t, c, "/voice on")
-	if !strings.Contains(sent[0], "TTS): доступно") || strings.Contains(sent[0], "останутся текстовыми") {
+	sent = ask(t, c, "/voice")
+	if !strings.Contains(sent[0], "TTS): доступно") {
 		t.Fatalf("tts status: %q", sent[0])
 	}
 	c = testConfig(t)

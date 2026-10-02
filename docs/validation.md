@@ -180,19 +180,19 @@ Effective configuration produces one policy digest shared by gateway and runtime
 `/voice` now reports incoming STT and outgoing TTS readiness separately. A
 direction reads "available" only when its worker command is configured *and*
 resolves to a runnable binary; a parked `HUB_TTS_UPLOAD_URL` still reads TTS
-unavailable because `sendVoice` is skipped on that path. `/voice on` without
-usable TTS records the opt-in but warns that replies stay textual, and voice
-input on a host without STT gets an explicit "not configured" reply without
-downloading the attachment. Covered by unit tests over the readiness matrix.
+unavailable because `sendVoice` is skipped on that path. Voice input on a
+host without STT gets an explicit "not configured" reply without downloading
+the attachment. Covered by unit tests over the readiness matrix.
 
-Delivery semantics tightened after live use: `/voice on` sends voice *instead
-of* text (no text+voice duplicate), and a `VOICE:` marker line in the model
-reply requests speech per message — marker-only replies are voice-only,
-visible text plus a marker sends both. Failed synthesis or a parked upload
-URL falls back to sending the spoken payload as text. Generated audio is
-held in memory and sent directly to Telegram; it is never written to the
-spool, workspace or the TTS sidecar `/data`, so it needs no TTL — the spoken
-text remains the durable content.
+Delivery semantics tightened after live use: the per-conversation
+`/voice on|off` mode was removed entirely — speech is a per-reply tool. A
+`VOICE:` marker line in the model reply requests speech: marker-only replies
+are voice-only, visible text plus a marker sends both. Failed synthesis or a
+parked upload URL falls back to sending the spoken payload as text.
+Generated audio is held in memory and sent directly to Telegram; it is never
+written to the spool, workspace or the TTS sidecar `/data`, so it needs no
+TTL — the spoken text remains the durable content. Stored `voice_replies`
+flags in old conversation mappings are dead data and ignored.
 
 The image itself was the real blocker: `hub-stt` shipped in the image but
 `faster-whisper` was deliberately excluded from the pip extras, so a

@@ -1668,7 +1668,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		case "session":
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.sessionStatus(user, message.From.ID))
 		case "voice":
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.voiceCommand(user, message.From.ID, text))
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.voiceCommand())
 		case "routine":
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.routineCommand(user, message.From.ID, message.Chat.ID, text))
 		}
@@ -1745,33 +1745,10 @@ func readyWord(ready bool) string {
 	return "недоступно"
 }
 
-func (g *Gateway) voiceCommand(user User, sender int64, text string) string {
-	fields := strings.Fields(text)
-	conversation := user.envelope(sender).ConversationID
+func (g *Gateway) voiceCommand() string {
 	sttReady, ttsReady := g.voiceReadiness()
 	status := "Распознавание голосовых (STT): " + readyWord(sttReady) + ". Озвучка ответов (TTS): " + readyWord(ttsReady) + "."
-	if len(fields) >= 2 {
-		switch strings.ToLower(fields[1]) {
-		case "on", "enable":
-			if err := g.spool.SetConversationVoice(user.ID, user.ID, conversation, true); err != nil {
-				return "Не удалось включить голосовые ответы."
-			}
-			if !ttsReady {
-				return "Голосовые ответы включены для этого разговора, но озвучка сейчас недоступна — ответы останутся текстовыми. " + status
-			}
-			return "Голосовые ответы включены для этого разговора — ответы приходят голосовыми сообщениями вместо текста. " + status
-		case "off", "disable":
-			if err := g.spool.SetConversationVoice(user.ID, user.ID, conversation, false); err != nil {
-				return "Не удалось выключить голосовые ответы."
-			}
-			return "Голосовые ответы выключены. " + status
-		}
-	}
-	enabled, _ := g.spool.ConversationVoice(user.ID, user.ID, conversation)
-	if enabled {
-		return "Голосовые ответы включены — ответы приходят голосом, текст не дублируется. " + status + " /voice off чтобы выключить."
-	}
-	return "Голосовые ответы выключены по умолчанию. Можно просто попросить ответить голосовым — " + status + " /voice on чтобы получать голосом каждый ответ."
+	return status + " Отдельного режима нет: попросите в сообщении ответить голосовым — например, «ответь голосовым» — и придёт голосовое сообщение."
 }
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID int64, messageID int, text string) error {
@@ -2029,9 +2006,9 @@ func (g *Gateway) sendArtifact(ctx context.Context, delivery *Delivery, ref hubr
 }
 
 // voicePlan decides what is spoken and whether the voice message replaces
-// text delivery. An upstream VOICE: marker requests speech for its payload
-// (marker-only replies are voice-only); the /voice per-conversation flag
-// speaks whole replies INSTEAD of text — never both by default.
+// text delivery. Speech is a per-reply tool: only an upstream VOICE: marker
+// requests it (marker-only replies are voice-only, text+marker sends both).
+// There is no conversation-level voice mode.
 func (g *Gateway) voicePlan(delivery Delivery) (speak string, voiceOnly bool) {
 	if delivery.Channel == "slack_app" {
 		return "", false
@@ -2039,18 +2016,7 @@ func (g *Gateway) voicePlan(delivery Delivery) (speak string, voiceOnly bool) {
 	if speak = strings.TrimSpace(delivery.Voice); speak != "" {
 		return speak, strings.TrimSpace(delivery.Text) == ""
 	}
-	if delivery.JobID == "" {
-		return "", false
-	}
-	user := g.userByChatID(delivery.ChatID)
-	if user.ID == "" {
-		return "", false
-	}
-	enabled, err := g.spool.ConversationVoice(user.ID, user.ID, delivery.ConversationID)
-	if err != nil || !enabled {
-		return "", false
-	}
-	return delivery.Text, true
+	return "", false
 }
 
 // sendVoiceReply synthesizes the payload and posts it as a voice message.
