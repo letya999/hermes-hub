@@ -517,8 +517,11 @@ type Delivery struct {
 	// runtime was answering; SentArtifacts is their durable send boundary.
 	Artifacts     []hubruntime.ArtifactRef `json:"artifacts,omitempty"`
 	SentArtifacts int                      `json:"sent_artifacts,omitempty"`
-	Attempts      int                      `json:"attempts"`
-	CreatedAt     time.Time                `json:"created_at"`
+	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
+	// synthesized audio is sent straight to the channel and never persisted.
+	Voice     string    `json:"voice,omitempty"`
+	Attempts  int       `json:"attempts"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
@@ -1756,7 +1759,7 @@ func (g *Gateway) voiceCommand(user User, sender int64, text string) string {
 			if !ttsReady {
 				return "Голосовые ответы включены для этого разговора, но озвучка сейчас недоступна — ответы останутся текстовыми. " + status
 			}
-			return "Голосовые ответы включены для этого разговора. Текст остаётся канонической записью. " + status
+			return "Голосовые ответы включены для этого разговора — ответы приходят голосовыми сообщениями вместо текста. " + status
 		case "off", "disable":
 			if err := g.spool.SetConversationVoice(user.ID, user.ID, conversation, false); err != nil {
 				return "Не удалось выключить голосовые ответы."
@@ -1766,9 +1769,9 @@ func (g *Gateway) voiceCommand(user User, sender int64, text string) string {
 	}
 	enabled, _ := g.spool.ConversationVoice(user.ID, user.ID, conversation)
 	if enabled {
-		return "Голосовые ответы включены. " + status + " Каноническая доставка — текст. /voice off чтобы выключить."
+		return "Голосовые ответы включены — ответы приходят голосом, текст не дублируется. " + status + " /voice off чтобы выключить."
 	}
-	return "Голосовые ответы выключены по умолчанию. " + status + " /voice on чтобы включить для этого разговора."
+	return "Голосовые ответы выключены по умолчанию. Можно просто попросить ответить голосовым — " + status + " /voice on чтобы получать голосом каждый ответ."
 }
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID int64, messageID int, text string) error {
@@ -1853,7 +1856,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}
 			g.recordJob(*job, outcome)
@@ -1890,12 +1893,24 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
 		}
 	default:
-		if delivery.Format == formatMarkdown {
-			sendErr = g.sendTelegramMarkdown(ctx, delivery)
-		} else {
-			sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text), "")
-			if sendErr == nil {
-				g.maybeSendVoice(ctx, *delivery)
+		speak, voiceOnly := g.voicePlan(*delivery)
+		if strings.TrimSpace(delivery.Text) == "" {
+			// A VOICE:-only reply keeps its spoken payload as the text
+			// fallback so an unavailable synthesizer never swallows it.
+			delivery.Text = speak
+		}
+		voiceSent := false
+		if voiceOnly && speak != "" {
+			voiceSent = g.sendVoiceReply(ctx, *delivery, speak) == nil
+		}
+		if !voiceSent {
+			if delivery.Format == formatMarkdown {
+				sendErr = g.sendTelegramMarkdown(ctx, delivery)
+			} else {
+				sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text), "")
+			}
+			if sendErr == nil && speak != "" && !voiceOnly {
+				_ = g.sendVoiceReply(ctx, *delivery, speak)
 			}
 		}
 	}
@@ -1967,7 +1982,6 @@ func (g *Gateway) sendTelegramMarkdown(ctx context.Context, delivery *Delivery) 
 			return err
 		}
 	}
-	g.maybeSendVoice(ctx, *delivery)
 	return nil
 }
 
@@ -2014,30 +2028,52 @@ func (g *Gateway) sendArtifact(ctx context.Context, delivery *Delivery, ref hubr
 	return g.api.SendDocument(ctx, delivery.ChatID, ref.Name, "", data)
 }
 
-func (g *Gateway) maybeSendVoice(ctx context.Context, delivery Delivery) {
-	if delivery.JobID == "" || delivery.Channel == "slack_app" {
-		return
+// voicePlan decides what is spoken and whether the voice message replaces
+// text delivery. An upstream VOICE: marker requests speech for its payload
+// (marker-only replies are voice-only); the /voice per-conversation flag
+// speaks whole replies INSTEAD of text — never both by default.
+func (g *Gateway) voicePlan(delivery Delivery) (speak string, voiceOnly bool) {
+	if delivery.Channel == "slack_app" {
+		return "", false
+	}
+	if speak = strings.TrimSpace(delivery.Voice); speak != "" {
+		return speak, strings.TrimSpace(delivery.Text) == ""
+	}
+	if delivery.JobID == "" {
+		return "", false
 	}
 	user := g.userByChatID(delivery.ChatID)
 	if user.ID == "" {
-		return
+		return "", false
 	}
 	enabled, err := g.spool.ConversationVoice(user.ID, user.ID, delivery.ConversationID)
-	if err != nil || !enabled || g.synthesizer == nil {
-		return
+	if err != nil || !enabled {
+		return "", false
 	}
-	audio, _, synthErr := g.synthesizer.Synthesize(ctx, delivery.Text)
-	if synthErr != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
-		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, synthErr, len(audio))
-		return
+	return delivery.Text, true
+}
+
+// sendVoiceReply synthesizes the payload and posts it as a voice message.
+// The audio lives only in memory — nothing is stored after sending; the
+// text transcript remains the canonical record.
+func (g *Gateway) sendVoiceReply(ctx context.Context, delivery Delivery, text string) error {
+	if g.synthesizer == nil || strings.TrimSpace(text) == "" {
+		return errors.New("tts is not configured")
 	}
 	if strings.TrimSpace(g.config.TTSUploadURL) != "" {
 		// Third-party upload is skipped unless a future explicit upload worker is configured.
-		return
+		return errors.New("voice upload is not configured")
+	}
+	audio, _, err := g.synthesizer.Synthesize(ctx, text)
+	if err != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
+		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, err, len(audio))
+		return errors.New("tts failed")
 	}
 	if err := g.api.SendVoice(ctx, delivery.ChatID, audio, ""); err != nil {
 		log.Printf("gateway voice send failed delivery_id=%q err=%v", delivery.ID, err)
+		return err
 	}
+	return nil
 }
 
 func (g *Gateway) recordJob(job Job, outcome RunOutcome) {

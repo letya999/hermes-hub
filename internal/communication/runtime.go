@@ -197,7 +197,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	if terminalStatus(result.Status) && result.Status != "completed" {
 		return outcomeFromEvent(result), errors.New("hermes run ended without completion")
 	}
-	return RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent}, nil
+	return RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent, Voice: result.Voice}, nil
 }
 
 // attachArtifacts stages each terminal-event artifact in the spool under the

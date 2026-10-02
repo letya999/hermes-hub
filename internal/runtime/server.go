@@ -65,6 +65,10 @@ type ExecuteResponse struct {
 	ApprovalID        string        `json:"approval_id,omitempty"`
 	ApprovalChoices   []string      `json:"approval_choices,omitempty"`
 	Artifacts         []ArtifactRef `json:"artifacts,omitempty"`
+	// Voice carries the text the model asked to deliver as a voice message
+	// (upstream VOICE: marker). The gateway synthesizes and sends it; the
+	// audio itself is never persisted — the text transcript stays canonical.
+	Voice string `json:"voice,omitempty"`
 }
 
 type runtimeHTTP struct{}
@@ -302,8 +306,10 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 				lastApproval = update.ApprovalID
 			}
 		case "completed":
-			if text, mediaRefs := extractMediaArtifacts(status.Output); strings.TrimSpace(text) != "" || len(mediaRefs) > 0 {
-				final := ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: text}
+			text, mediaRefs := extractMediaArtifacts(status.Output)
+			text, voice := extractVoiceLines(text)
+			if strings.TrimSpace(text) != "" || len(mediaRefs) > 0 || voice != "" {
+				final := ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: text, Voice: voice}
 				final.Artifacts = mergeArtifacts(scanArtifacts(runStart), mediaRefs)
 				return final, nil
 			}

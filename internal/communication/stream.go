@@ -27,7 +27,7 @@ func terminalStatus(status string) bool {
 }
 
 func outcomeFromEvent(event hubruntime.ExecuteResponse) RunOutcome {
-	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text, Artifacts: event.Artifacts}
+	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text, Artifacts: event.Artifacts, Voice: event.Voice}
 }
 
 func ownsStreamMapping(job Job, mapping JobMapping) bool {

@@ -19,8 +19,14 @@ done_extra:
     extra still excluded)
   - hub-tts added (espeak-ng -> ffmpeg -> OGG/Opus stdout); transcription
     feature exports HUB_TTS_COMMAND — /voice can actually become ready
+  - delivery semantics: /voice on now sends voice INSTEAD of text; a VOICE:
+    marker line in the model reply requests speech per message (marker-only =
+    voice-only, text+marker = both); failed synthesis/upload falls back to
+    the spoken payload as text; Slack unaffected
+  - synthesized audio is in-memory only — never written to spool, workspace
+    or tts /data; spoken text stays the canonical durable record
+  - tests: extractVoiceLines, voice-only/mixed/fallback delivery matrix,
+    parked-upload fallback
 deferred:
   - live Telegram voice round-trip evidence — needs image rebuild + deploy +
     real account; recorded as the exact gate in docs/validation.md
-  - higher-quality TTS voice (piper-class) if espeak-ng quality proves too
-    poor — deliberate small-footprint choice for now

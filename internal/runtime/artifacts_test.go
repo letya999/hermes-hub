@@ -151,6 +151,23 @@ func TestExtractMediaArtifactsDropsEmptyAndDupes(t *testing.T) {
 	}
 }
 
+func TestExtractVoiceLines(t *testing.T) {
+	// VOICE: lines are stripped from the visible reply and joined into the
+	// spoken payload; a marker-only reply cleans to empty text.
+	text, voice := extractVoiceLines("Смотри на таблицу ниже.\n\nVOICE: а голосом: всё готово\nVOICE: и ещё фраза\n")
+	if text != "Смотри на таблицу ниже." || voice != "а голосом: всё готово\nи ещё фраза" {
+		t.Fatalf("extractVoice: %q %q", text, voice)
+	}
+	text, voice = extractVoiceLines("VOICE: только голосом")
+	if text != "" || voice != "только голосом" {
+		t.Fatalf("voice-only: %q %q", text, voice)
+	}
+	// Empty payloads and VOICE-less text are untouched.
+	if text, voice = extractVoiceLines("VOICE:\nпросто текст"); text != "просто текст" || voice != "" {
+		t.Fatalf("empty marker: %q %q", text, voice)
+	}
+}
+
 func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

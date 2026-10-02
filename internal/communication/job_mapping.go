@@ -28,6 +28,8 @@ type RunOutcome struct {
 	// Artifacts carry generated files already fetched into the spool; Blob is
 	// set on success, Error records the explicit failure reason otherwise.
 	Artifacts []hubruntime.ArtifactRef
+	// Voice is the run-requested spoken payload (upstream VOICE: marker).
+	Voice string
 }
 
 // JobMapping is durable routing/lifecycle metadata. Binding fields are copied

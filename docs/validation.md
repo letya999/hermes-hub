@@ -185,6 +185,15 @@ usable TTS records the opt-in but warns that replies stay textual, and voice
 input on a host without STT gets an explicit "not configured" reply without
 downloading the attachment. Covered by unit tests over the readiness matrix.
 
+Delivery semantics tightened after live use: `/voice on` sends voice *instead
+of* text (no text+voice duplicate), and a `VOICE:` marker line in the model
+reply requests speech per message — marker-only replies are voice-only,
+visible text plus a marker sends both. Failed synthesis or a parked upload
+URL falls back to sending the spoken payload as text. Generated audio is
+held in memory and sent directly to Telegram; it is never written to the
+spool, workspace or the TTS sidecar `/data`, so it needs no TTL — the spoken
+text remains the durable content.
+
 The image itself was the real blocker: `hub-stt` shipped in the image but
 `faster-whisper` was deliberately excluded from the pip extras, so a
 configured `HUB_STT_COMMAND` always failed at import. The image now installs

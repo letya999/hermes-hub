@@ -213,16 +213,53 @@ func TestTTSOptInFallbackAndNoDefaultVoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.voices) != 1 || fake.voices[0] != "ogg-bytes" || fake.sent[len(fake.sent)-1] != "spoken-ok" {
-		t.Fatalf("opt-in tts did not add voice after text: sent=%v voices=%v", fake.sent, fake.voices)
+	// /voice on delivers the reply as a voice message INSTEAD of text.
+	if len(fake.voices) != 1 || fake.voices[0] != "ogg-bytes" || len(fake.sent) != 2 {
+		t.Fatalf("opt-in tts must replace text with voice: sent=%v voices=%v", fake.sent, fake.voices)
+	}
+	// An upstream VOICE: marker speaks its payload even without the flag.
+	if err := g.spool.SetConversationVoice("alice", "alice", "telegram-11", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-marker", JobID: "job-marker", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Voice: "сказано голосом"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.voices) != 2 || len(fake.sent) != 2 {
+		t.Fatalf("marker-only reply must be voice-only: sent=%v voices=%v", fake.sent, fake.voices)
+	}
+	// Marker plus visible text sends text first, then the spoken payload.
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-mixed", JobID: "job-mixed", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "читай тут", Format: formatMarkdown, Voice: "а это послушай"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.voices) != 3 || fake.sent[len(fake.sent)-1] != "читай тут" {
+		t.Fatalf("marker+text must send both: sent=%v voices=%v", fake.sent, fake.voices)
+	}
+	// Marker-only reply with a broken synthesizer still delivers as text.
+	g.synthesizer = stubTTS{err: errors.New("tts down")}
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-broken", JobID: "job-broken", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Voice: "упало в текст"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if fake.sent[len(fake.sent)-1] != "упало в текст" {
+		t.Fatalf("broken tts must fall back to the spoken payload as text: %v", fake.sent)
+	}
+	g.synthesizer = stubTTS{audio: []byte("ogg-bytes")}
+	if err := g.spool.SetConversationVoice("alice", "alice", "telegram-11", true); err != nil {
+		t.Fatal(err)
 	}
 	g.config.TTSUploadURL = "https://example.invalid/upload"
 	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-upload", JobID: "job-voice-upload", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "no-upload"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.voices) != 1 {
+	if len(fake.voices) != 3 {
 		t.Fatalf("third-party upload path must not send voice locally: %v", fake.voices)
+	}
+	// Blocked upload in voice-only mode still delivers the text fallback.
+	if fake.sent[len(fake.sent)-1] != "no-upload" {
+		t.Fatalf("blocked voice upload must fall back to text: %v", fake.sent)
 	}
 }
 

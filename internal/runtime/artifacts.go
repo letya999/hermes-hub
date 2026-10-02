@@ -120,6 +120,25 @@ func extractMediaArtifacts(text string) (string, []ArtifactRef) {
 	return strings.TrimSpace(strings.Join(kept, "\n")), refs
 }
 
+// extractVoiceLines lifts upstream "VOICE:<text>" marker lines out of the
+// reply text: the joined payload is what the channel synthesizes and sends
+// as a voice message. Marker lines are routing metadata and never reach the
+// visible message; when the stripped text is empty the reply is voice-only.
+func extractVoiceLines(text string) (string, string) {
+	var kept, voiced []string
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "VOICE:") {
+			kept = append(kept, line)
+			continue
+		}
+		if spoken := strings.TrimSpace(strings.TrimPrefix(trimmed, "VOICE:")); spoken != "" {
+			voiced = append(voiced, spoken)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), strings.Join(voiced, "\n")
+}
+
 // stageMediaArtifact resolves a workspace path and copies the file into the
 // matching artifacts bucket when it does not already live under
 // artifacts/documents|images. Containment, regular-file and size checks are
