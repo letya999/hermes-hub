@@ -1,0 +1,17 @@
+schema: 1
+id: CHG-0064-capability-profile
+title: Standard user-scoped capability profile
+status: in_progress
+phase: review
+started_at: 2026-10-02
+updated_at: 2026-10-02
+completed:
+  - SPEC-0040 frozen capability matrix (surface, availability, effects, credential, state, network, weight, revocation)
+  - native toolset names plus toolhub reserved in validateMCP
+  - browser_act now requires browser in Validate (fail-closed gap)
+  - catalog invariants proof tests in internal/stack/profile_test.go
+  - specs/index.md, .work/index.md, README pointer, architecture.md single-surface note
+  - just check green: race tests pass, coverage 85.05%, format/vet/staticcheck/docs/actionlint clean
+pending:
+  - live pinned-image evidence remains a deployment gate (validation.md), not claimed here
+  - web/deep_research matrix rows describe the SPEC-0035 gate landing with issue 123

@@ -86,6 +86,8 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | Other services | Arbitrary configured stdio/HTTP MCP; external services remain external |
 
 Default features are workspace, browser and hh. Image generation is the separate opt-in `image_gen` feature: provider, model, and delivery are configured there. Delivery `workspace` keeps the file in that user's workspace; delivery `url` returns the provider URL. All account integrations are opt-in.
+The frozen per-capability matrix — availability, surface, credentials,
+limits and revocation — is [SPEC-0040](specs/active/SPEC-0040-capability-profile.md).
 Hermes works without CareerGo and JobFetch. If you run an external MCP service, add
 its URL and token reference under mcp_servers; see [connections](docs/integrations.md).
 An explicit owner message containing connector `KEY=value` lines is intercepted

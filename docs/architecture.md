@@ -175,7 +175,11 @@ it to exactly one user space before invoking `hubctl`.
 Built-ins are opt-in connection presets. settings.yaml's mcp_servers adds ordinary
 HTTP or stdio servers without embedding their applications. CareerGo or any other
 external tool is used only if configured. The agent works without any business service.
-Remote hosted MCP APIs may change independently of this code.
+Remote hosted MCP APIs may change independently of this code. Each capability has
+exactly one surface — a native toolset, a hub-rendered MCP entry, an owner
+mcp_servers entry, or the ToolHub projection — and hub-owned plus native toolset
+names are reserved against owner mcp_servers
+([SPEC-0040](../specs/active/SPEC-0040-capability-profile.md)).
 GitLab uses the runtime's `glab` CLI rather than MCP; `GITLAB_TOKEN` and
 `GITLAB_HOST` are supplied to the isolated runtime. Atlassian uses the pinned
 `mcp-atlassian` stdio server from `docker/mcp-atlassian.Dockerfile` (ADR-0010,

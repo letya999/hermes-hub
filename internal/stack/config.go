@@ -246,6 +246,9 @@ func (s Settings) Validate() error {
 			return fmt.Errorf("%s requires ssh", sub)
 		}
 	}
+	if s.Has("browser_act") && !s.Has("browser") {
+		return fmt.Errorf("browser_act requires browser")
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
 	}
