@@ -79,7 +79,19 @@ func TestManagedIsolationFailsClosed(t *testing.T) {
 			_ = os.Symlink(home, filepath.Join(home, "plugins"))
 		},
 		"extension-nonempty": func(t *testing.T, home string) {
-			_ = os.WriteFile(filepath.Join(home, "skills", "evil.md"), []byte("x"), 0400)
+			skills := filepath.Join(home, "skills")
+			// The fixture root is 0555: POSIX rejects writes inside, Windows
+			// ignores the mode. Recreate it writable so the planted file
+			// exists on every platform.
+			if err := os.Remove(skills); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(skills, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(skills, "evil.md"), []byte("x"), 0400); err != nil {
+				t.Fatal(err)
+			}
 		},
 		"extension-writable": func(t *testing.T, _ string) { managedProbeWritable = func(string) bool { return true } },
 		"config-writable":    func(t *testing.T, home string) { _ = os.Chmod(filepath.Join(home, "config.yaml"), 0600) },
