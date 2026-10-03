@@ -275,7 +275,16 @@ func managedExtensionMountCanary(ctx context.Context, image string) (result erro
 	stateRoot := filepath.Join(root, "hermes")
 	defer func() {
 		if err := os.RemoveAll(root); err != nil {
-			result = errors.Join(result, fmt.Errorf("remove extension canary root: %w", err))
+			// The probe runs as the container uid: on Linux its files under the
+			// bind mount cannot be unlinked by the host user. Remove through
+			// the same image, then retry the host cleanup.
+			rm := exec.CommandContext(ctx, "docker", "run", "--rm", "-v", filepath.ToSlash(stateRoot)+":/cleanup", "--entrypoint", "sh", image, "-c", "rm -rf /cleanup/*")
+			if rmErr := rm.Run(); rmErr == nil {
+				err = os.RemoveAll(root)
+			}
+			if err != nil {
+				result = errors.Join(result, fmt.Errorf("remove extension canary root: %w", err))
+			}
 		}
 	}()
 	if err := os.Mkdir(stateRoot, 0700); err != nil {
@@ -290,7 +299,8 @@ func managedExtensionMountCanary(ctx context.Context, image string) (result erro
 	config := filepath.Join(root, "approved-config.yaml")
 	placeholder := filepath.Join(stateRoot, "config.yaml")
 	for _, file := range []string{config, placeholder} {
-		if err := os.WriteFile(file, []byte("{}\n"), 0600); err != nil {
+		// 0644: the container uid must read the approved config bind mount.
+		if err := os.WriteFile(file, []byte("{}\n"), 0644); err != nil {
 			return err
 		}
 	}
@@ -328,6 +338,7 @@ loader='from gateway.hooks import HOOKS_DIR,HookRegistry; from agent.skill_bundl
 for _ in range(2):
  subprocess.run([sys.executable,'-c',loader],cwd='/opt/hermes',check=True)
  assert not os.path.exists('/tmp/imported-hook')
+import shutil; shutil.rmtree(probe)
 print('managed extension mount canary passed: writable state, immutable config, empty read-only extension roots and no hook/bundle/script activation across process restart')`
 	args = append(args, "--env", "HERMES_HOME=/state/hermes", "--workdir", "/opt/hermes", "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-c", probe)
 	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
