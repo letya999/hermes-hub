@@ -210,18 +210,27 @@ func TestDockerBuildRejectsBlankRefs(t *testing.T) {
 		got = append(got, args...)
 		return nil
 	}
-	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", run); err != nil {
+	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", "abc123", run); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got, []string{"build", "--target", "prod", "-t", "hermes-hub:test", "--load", "-f", "docker/Dockerfile", "."}) {
+	if !slices.Equal(got, []string{"build", "--target", "prod", "-t", "hermes-hub:test", "--load",
+		"--build-arg", "GIT_SHA=abc123", "-f", "docker/Dockerfile", "."}) {
 		t.Fatalf("unexpected build args: %v", got)
 	}
-	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", func(ctx context.Context, args ...string) error {
+	got = nil
+	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", "", run); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"build", "--target", "prod", "-t", "hermes-hub:test", "--load",
+		"-f", "docker/Dockerfile", "."}) {
+		t.Fatalf("empty sha must drop build-arg: %v", got)
+	}
+	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", "abc", func(ctx context.Context, args ...string) error {
 		return fmt.Errorf("build failed")
 	}); err == nil {
 		t.Fatal("build failure accepted")
 	}
-	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", nil); err == nil {
+	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", "abc", nil); err == nil {
 		t.Fatal("nil runner accepted")
 	}
 }
@@ -230,13 +239,14 @@ func TestDockerBuildForwardsCacheEnv(t *testing.T) {
 	t.Setenv("HUB_DOCKER_CACHE_FROM", "type=gha,scope=hub-prod")
 	t.Setenv("HUB_DOCKER_CACHE_TO", "type=gha,scope=hub-prod,mode=max")
 	var got []string
-	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", func(ctx context.Context, args ...string) error {
+	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", "abc123", func(ctx context.Context, args ...string) error {
 		got = append(got, args...)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"build", "--target", "prod", "-t", "hermes-hub:test", "--load",
+		"--build-arg", "GIT_SHA=abc123",
 		"--cache-from", "type=gha,scope=hub-prod", "--cache-to", "type=gha,scope=hub-prod,mode=max",
 		"-f", "docker/Dockerfile", "."}
 	if !slices.Equal(got, want) {

@@ -120,6 +120,12 @@ completed:
   - CI: feat/capability-profile-122 added to ci.yml push branches and workflow_dispatch enabled so the containers job (just docker-check dev/prod matrix) runs for this branch and on demand
   - devcheck docker-build forwards optional HUB_DOCKER_CACHE_FROM/HUB_DOCKER_CACHE_TO as --cache-from/--cache-to and always passes --load; ci.yml adds pinned docker/setup-buildx-action so the containers job uses type=gha BuildKit cache per matrix target; documented in docs/operations.md
   - actionlint and docs-check passed for the updated workflow and operations documentation
+  - CI restructured around GHCR artifacts: image job runs devcheck docker-publish pushing immutable ghcr sha-target tags plus moving edge-target tags (packages: write); containers job pulls the sha tag and runs just docker-check-prebuilt without a build stage (packages: read)
+  - devcheck docker-pull resolves the sha tag for HEAD, falls back to edge-target, retags locally and warns via the org.opencontainers.image.revision label when the pulled image predates HEAD; Dockerfile stamps revision through ARG GIT_SHA which local docker-build also passes
+  - justfile gained docker-pull and docker-check-prebuilt recipes; AGENTS.md gate wording updated so just check remains the required local gate while the heavy Docker gate lives in CI
+  - prune-images workflow scheduled weekly to delete GHCR versions beyond the newest eight while preserving edge tags, bounding registry storage
+  - Concurrency group switched to github.head_ref || github.ref_name so push and pull_request runs of one branch share a group and cancel-in-progress drops the redundant run
+  - Registry tests cover slug resolution (ssh/https/env override), sha-tag preference and edge fallback, publish args including both tags, --push and GIT_SHA build-arg; devcheck suite and actionlint passed
 pending:
   - Complete P0 other launch-route proof and native revocation seam analysis; expand startup coverage beyond hooks
   - Complete P1 separate human confirmation all binding/control mutation gates and lifecycle audit; review group authoring UX and cross-policy identity semantics

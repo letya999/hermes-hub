@@ -298,6 +298,25 @@ builder uses the `docker-container` driver. CI sets these to
 BuildKit cache instead of rebuilding the base layers; local runs without the
 variables behave exactly as before.
 
+CI publishes hub images to GHCR so consumers pull instead of building. The
+`image` workflow job runs `devcheck docker-publish <target>` per matrix leg
+(both `<target>` and `<target>-control`), pushing the immutable
+`ghcr.io/<owner>/<repo>/hermes-hub:<sha>-<target>` tag and moving
+`edge-<target>`. The `containers` job then runs `just docker-check-prebuilt`,
+which resolves the image for `HEAD` via `devcheck docker-pull` — the sha tag
+first, `edge-<target>` as fallback — retags it as `hermes-hub:test*` and runs
+the same smoke/contract/canary chain without a build stage. Every published
+image carries the `org.opencontainers.image.revision` label (from
+`ARG GIT_SHA`); `docker-pull` warns when the pulled revision differs from
+local `HEAD`, which is the signal to either push or build locally.
+
+Local use needs a one-time `docker login ghcr.io` (a PAT or
+`gh auth token` with `read:packages`). `just docker-pull` alone only stages
+the image; `just docker-check-prebuilt` stages and runs the full gate.
+`HUB_REGISTRY_REPO` overrides the owner/repo resolution for mirrors. A weekly
+`prune-images` workflow deletes GHCR versions beyond the newest eight while
+keeping `edge-*` tags, so published image storage stays bounded.
+
 To reclaim physical Windows disk space after Docker cleanup, double-click
 `scripts/reclaim-docker-disk.cmd` and accept the administrator prompt. It
 stops Docker Desktop and WSL, removes three previously identified temporary
