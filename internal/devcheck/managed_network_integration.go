@@ -278,14 +278,22 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 
 // removeCanaryTree deletes a canary temp tree that may contain files created
 // by container processes. On Linux the host user cannot unlink files owned by
-// the container uid (10001), so removal falls back to a throwaway container.
+// the container uid, so removal falls back to a throwaway root container
+// (CAP_DAC_OVERRIDE clears any ownership/mode).
 func removeCanaryTree(ctx context.Context, image, dir string) error {
-	if err := os.RemoveAll(dir); err == nil {
+	err := os.RemoveAll(dir)
+	if err == nil {
 		return nil
 	}
-	rm := exec.CommandContext(ctx, "docker", "run", "--rm", "-v", filepath.ToSlash(dir)+":/cleanup", "--entrypoint", "sh", image, "-c", "rm -rf /cleanup/* /cleanup/.[!.]* 2>/dev/null; true")
-	_ = rm.Run()
-	return os.RemoveAll(dir)
+	rm := exec.CommandContext(ctx, "docker", "run", "--rm", "--user", "0:0", "-v", filepath.ToSlash(dir)+":/cleanup", "--entrypoint", "sh", image, "-c", "rm -rf /cleanup/* /cleanup/.[!.]*")
+	out, rmErr := rm.CombinedOutput()
+	if rmErr != nil {
+		return errors.Join(err, fmt.Errorf("container cleanup: %w: %s", rmErr, out))
+	}
+	if retry := os.RemoveAll(dir); retry != nil {
+		return errors.Join(err, retry)
+	}
+	return nil
 }
 
 func managedExtensionMountCanary(ctx context.Context, image string) (result error) {
