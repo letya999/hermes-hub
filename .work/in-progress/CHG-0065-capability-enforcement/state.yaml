@@ -126,6 +126,8 @@ completed:
   - prune-images workflow scheduled weekly to delete GHCR versions beyond the newest eight while preserving edge tags, bounding registry storage
   - Concurrency group switched to github.head_ref || github.ref_name so push and pull_request runs of one branch share a group and cancel-in-progress drops the redundant run
   - Registry tests cover slug resolution (ssh/https/env override), sha-tag preference and edge fallback, publish args including both tags, --push and GIT_SHA build-arg; devcheck suite and actionlint passed
+  - GHCR pipeline proven end-to-end on CI runs 37122072659/37126480272/37129298007: image jobs publish sha+edge tags (packages: write), containers jobs pull the exact sha tag and run canaries (packages: read); gha BuildKit cache warm across runs
+  - Linux CI exposed POSIX-permission blind spots invisible on Docker Desktop: extension-nonempty unit fixture wrote into a 0555 dir (silent no-op on Windows), extension canary state dir needed 0777 for --cap-drop ALL uid-10001 writes, preflight canary needed traversable dir + 0644 configs, SOUL.md needed 0644 for the readonly bind, and temp-tree cleanup needed a root container because container-created files defeat host RemoveAll (removeCanaryTree helper)
 pending:
   - Complete P0 other launch-route proof and native revocation seam analysis; expand startup coverage beyond hooks
   - Complete P1 separate human confirmation all binding/control mutation gates and lifecycle audit; review group authoring UX and cross-policy identity semantics
