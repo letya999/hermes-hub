@@ -223,8 +223,17 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 	}); err != nil {
 		return err
 	}
+	// Linux docker enforces bind-mount permissions: MkdirTemp/0600 files are
+	// unreadable to the container uid. The mount is readonly, so writable
+	// checks still fail closed regardless of these modes.
+	if err := os.Chmod(dir, 0755); err != nil {
+		return err
+	}
+	if err := os.Chmod(effective, 0644); err != nil {
+		return err
+	}
 	for _, name := range []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"} {
-		if err := os.Mkdir(filepath.Join(dir, name), 0700); err != nil {
+		if err := os.Mkdir(filepath.Join(dir, name), 0755); err != nil {
 			return err
 		}
 	}
@@ -257,7 +266,7 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 			return err
 		}
 	}
-	if err := os.WriteFile(effective, []byte("invalid: ["), 0600); err != nil {
+	if err := os.WriteFile(effective, []byte("invalid: ["), 0644); err != nil {
 		return err
 	}
 	if err := probe("managed runtime config preflight"); err != nil {
@@ -267,6 +276,18 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 	return nil
 }
 
+// removeCanaryTree deletes a canary temp tree that may contain files created
+// by container processes. On Linux the host user cannot unlink files owned by
+// the container uid (10001), so removal falls back to a throwaway container.
+func removeCanaryTree(ctx context.Context, image, dir string) error {
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	rm := exec.CommandContext(ctx, "docker", "run", "--rm", "-v", filepath.ToSlash(dir)+":/cleanup", "--entrypoint", "sh", image, "-c", "rm -rf /cleanup/* /cleanup/.[!.]* 2>/dev/null; true")
+	_ = rm.Run()
+	return os.RemoveAll(dir)
+}
+
 func managedExtensionMountCanary(ctx context.Context, image string) (result error) {
 	root, err := os.MkdirTemp("", "hermes-cap-ext-")
 	if err != nil {
@@ -274,17 +295,8 @@ func managedExtensionMountCanary(ctx context.Context, image string) (result erro
 	}
 	stateRoot := filepath.Join(root, "hermes")
 	defer func() {
-		if err := os.RemoveAll(root); err != nil {
-			// The probe runs as the container uid: on Linux its files under the
-			// bind mount cannot be unlinked by the host user. Remove through
-			// the same image, then retry the host cleanup.
-			rm := exec.CommandContext(ctx, "docker", "run", "--rm", "-v", filepath.ToSlash(stateRoot)+":/cleanup", "--entrypoint", "sh", image, "-c", "rm -rf /cleanup/*")
-			if rmErr := rm.Run(); rmErr == nil {
-				err = os.RemoveAll(root)
-			}
-			if err != nil {
-				result = errors.Join(result, fmt.Errorf("remove extension canary root: %w", err))
-			}
+		if err := removeCanaryTree(ctx, image, root); err != nil {
+			result = errors.Join(result, fmt.Errorf("remove extension canary root: %w", err))
 		}
 	}()
 	if err := os.Mkdir(stateRoot, 0700); err != nil {

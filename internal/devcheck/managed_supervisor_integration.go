@@ -154,7 +154,13 @@ sys.exit(1)`
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(root)
+	defer func() {
+		// The managed runtime writes its state as container uid 10001: on
+		// Linux the host user cannot unlink those files directly.
+		if err := removeCanaryTree(ctx, image, root); err != nil {
+			result = errors.Join(result, fmt.Errorf("remove supervisor canary root: %w", err))
+		}
+	}()
 	contextRoot, err := managedCanaryContext(root, userID, env)
 	if err != nil {
 		return err
@@ -494,6 +500,12 @@ func managedCanaryContext(root, userID, env string) (string, error) {
 		if err := os.WriteFile(filepath.Join(contextRoot, name), content, 0600); err != nil {
 			return "", fmt.Errorf("write %s: %w", name, err)
 		}
+	}
+	// SOUL.md is bind-mounted into the container (uid 10001): Linux keeps the
+	// host file owner, so it must be world-readable like the materialized
+	// effective config.
+	if err := os.Chmod(filepath.Join(contextRoot, "SOUL.md"), 0644); err != nil {
+		return "", err
 	}
 	for _, name := range []string{"runtime", "hermes", "home", "cache"} {
 		dir := filepath.Join(contextRoot, "managed", env, name)
