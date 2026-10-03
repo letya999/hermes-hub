@@ -53,3 +53,8 @@ Extend SPEC-0026 through one generic lifecycle for the exact repositories
     become a failed install or a guessed tool contract: onboarding collects
     those secrets on the protected form, then lists tools with the submitted
     values. An error that names no secret still fails the prepare.
+12. A reviewed prepared entry may declare `preflight_network` when the server
+    must reach its API before it can answer `tools/list` at all — for example
+    an OpenAPI schema fetched at startup. The unauthenticated probe then runs
+    with egress and placeholder credentials only, matching what the
+    credentialed probe already does; unprepared sources keep `--network none`.

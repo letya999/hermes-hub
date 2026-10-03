@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+# Standalone TTS service (hub-tts). Dedicated image, deliberately thin: the
+# default `command` engine needs only espeak-ng + ffmpeg, no ML stack.
+# `remote` proxies to any OpenAI-compatible TTS upstream (Speaches
+# piper/kokoro, OpenAI, bespoke model servers); `sherpa` needs the
+# -tags sherpa build with the native library.
+FROM golang:1.27.1-bookworm AS go_build
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY services/credential-broker ./services/credential-broker
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod go mod download
+COPY cmd/hub-tts ./cmd/hub-tts
+COPY internal/mediasvc ./internal/mediasvc
+COPY internal/credentialbroker ./internal/credentialbroker
+COPY internal/identity ./internal/identity
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-tts ./cmd/hub-tts
+
+FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg espeak-ng ca-certificates curl && rm -rf /var/lib/apt/lists/*
+# Silero TTS v5 (best offline Russian quality: auto-stress + homographs).
+# CPU-only torch wheel keeps the image lean; HUB_TTS_DEVICE=cuda needs a
+# cuda-built torch instead. Model + repo are baked under TORCH_HOME so no
+# network is needed at request time.
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" \
+    && pip install --no-cache-dir "omegaconf==2.3.0"
+ENV TORCH_HOME=/opt/torch
+RUN python -c "import torch; torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_5_ru', trust_repo=True, verbose=False)"
+# piper standalone binary (bundles onnxruntime) + Russian voices.
+# HUB_TTS_MODEL picks the fallback piper voice; request voices resolve by
+# name (see tts-worker); extra voices drop into /voices.
+RUN curl -fsSL https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz -o /tmp/piper.tgz \
+    && tar xzf /tmp/piper.tgz -C /opt \
+    && rm /tmp/piper.tgz
+RUN mkdir -p /voices \
+    && for v in irina ruslan dmitri; do \
+         curl -fsSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/${v}/medium/ru_RU-${v}-medium.onnx" -o "/voices/ru_RU-${v}-medium.onnx" \
+         && curl -fsSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/${v}/medium/ru_RU-${v}-medium.onnx.json" -o "/voices/ru_RU-${v}-medium.onnx.json"; \
+       done
+COPY --from=go_build /hub-tts /usr/local/bin/hub-tts
+COPY docker/media/tts-worker /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/tts-worker
+RUN useradd -r -u 10001 -m tts && mkdir -p /data && chown -R 10001:10001 /data /opt/torch /voices
+USER 10001:10001
+ENTRYPOINT ["hub-tts"]

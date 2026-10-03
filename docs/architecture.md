@@ -34,7 +34,11 @@ space initialization, strict configuration, organization policy resolution, Dock
 lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
-using files and tools.
+using files and tools; web retrieval uses the Hermes `web` toolset with
+operator-configured providers, a hub-shipped plugin adding provider listing
+and bounded parallel fan-out (`web_providers`/`web_search_multi`), and the
+bounded `deep-research-embedded` skill
+([SPEC-0035](../specs/active/SPEC-0035-web-research.md)).
 
 The pinned Hermes artifact also contains an opt-in authenticated HTTP API server. Its
 `/api/sessions` and `/v1/runs` contract is recorded in [SPEC-0011](../specs/active/SPEC-0011-hermes-api-contract.md)
@@ -106,8 +110,24 @@ rejected rather than overridden.
 ## Service boundary
 
 `communication-hub` owns Telegram transport, external identity mapping, the bounded
-file queue and reply delivery. It mounts only `communication-hub-data` and receives
-the bot token. `hermes-runtime` owns the selected scope homes, provider credentials
+file queue and reply delivery. Speech is delegated to standalone `hub-stt` /
+`hub-tts` services — separate binaries and images (OpenAI-compatible API +
+durable async jobs; swappable command/remote/sherpa/elevenlabs engines) reached over
+bearer-auth HTTP — see
+[SPEC-0039](../specs/active/SPEC-0039-media-sidecars.md). Image and video
+generation is likewise delegated to `hub-media` (SPEC-0040): the same
+`internal/mediasvc` core, `remote`/`fal` engines, sync image endpoints plus
+durable async video jobs on the shared job store. Provider credentials live in
+the service env; the runtime mounts only `media.auth` and the service URL. The gateway mounts only
+`communication-hub-data` and receives
+the bot token. Model-authored replies render per channel at delivery (Telegram HTML,
+Slack mrkdwn) and split on block boundaries inside the channel limit with durable
+per-part outbox progress (SPEC-0036); hub-authored notices stay plain text.
+Files generated under `workspace/artifacts/{documents,images,videos}` during a run
+cross the private contract through `POST /v1/artifact` while the runtime is
+answering, stage into the outbox and reach the chat as Telegram
+photos/documents/videos with durable per-artifact progress (SPEC-0037).
+`hermes-runtime` owns the selected scope homes, provider credentials
 and configuration. Rollback mode runs one Hermes process per job; target mode keeps
 one pinned Gateway warm per active context. It is not published on a public host port.
 
@@ -124,7 +144,11 @@ channel sender (Telegram Bot API or Slack App Events API) to the configured user
 `/state/gateway`, and run one bounded invocation at a time. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
 media envelope, transcribe through the replaceable STT worker, and submit text to the
-same Hermes session. Spoken replies are opt-in. Native Hermes memory, profile and
+same Hermes session. Spoken replies are a per-reply tool, not a mode: a `VOICE:` line in
+the model reply requests speech like an artifact marker, marker-only replies arrive
+voice-only, and synthesized audio is streamed to the channel and never persisted
+(SPEC-0038). `/voice` reports incoming-STT and outgoing-TTS readiness separately so a
+missing worker is never promised (SPEC-0038). Native Hermes memory, profile and
 skills remain in the owning home; Honcho is an official opt-in config file. The initial deployment
 has one configured user; the job envelope and per-user paths keep the expansion point for
 multiple users, organizations and channels explicit without adding external IAM today.

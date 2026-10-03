@@ -1,0 +1,47 @@
+chg: CHG-0063-media-generation-service
+status: verified-live
+phase: 2
+started: 2026-10-03
+finished: 2026-10-03
+done:
+  - audit: mediasvc/media/stack/communication изучены
+  - contract: hub-media API зафиксирован в plan.md, SPEC-0040
+  - fal queue API подтверждён (queue.fal.run, request_id, status/result)
+  - mediasvc role=media + engines remote/fal (gen.go, config.go, jobs.go, server.go)
+  - cmd/hub-media + Dockerfile (бинарь в общем образе, entrypoint hub-media)
+  - internal/media service client (HUB_MEDIA_URL/AUTH, fallback direct provider)
+  - phase2: video jobs + media_fetch + artifacts/videos + sendVideo
+  - stack render: hub-media при image_gen, media.auth, FAL_KEY ушёл из runtime env
+  - broker key resolver: acquire/materialize/release + кеш 5мин (internal/mediasvc/broker.go), env fallback без гранта
+  - render: HUB_CREDENTIAL_BROKER_MEDIA_* + HUB_MEDIA_BROKER_GRANT + broker-secrets-media ro-mount, media.<env>.env больше не рендерится и старый файл удаляется
+  - render: writeRuntimeEnvFiles extra — HUB_MEDIA_URL+AUTH попадают в runtime.<env>.env для спавненных рантаймов (регрессионный тест)
+  - hubctl: media.grant file fallback для HUB_MEDIA_BROKER_GRANT (supervisorComposeEnv)
+  - media-provider-key contract (delivers HUB_MEDIA_UPSTREAM_KEY) в examples/contracts
+  - Dockerfile.stt/.tts: +COPY internal/credentialbroker,internal/identity (mediasvc теперь их тянет)
+  - Dockerfile: /data создан и отдан uid 10001 (mkdir permission fix)
+  - dev provision LIVE: media ed25519 keypair → broker trusted_keys (audiences control+runtime), contract installed, credential ca04...469 via connect form, grant g7642da37968b8d2341e9130fbfa4721b, broker-secrets-media volume seeded
+  - end-to-end broker cycle VERIFIED live: media key acquire→materialize(HUB_MEDIA_UPSTREAM_KEY)→release на дев-брокере
+  - tests: auth/contract/isolation/broker-resolver/render wiring, just check PASSED (coverage 85.01%, race, vet, staticcheck, docs, actionlint)
+  - just security PASSED (govulncheck 0, npm audit 0)
+  - GH issue фаза 3: https://github.com/letya999/hermes-hub/issues/182 (milestone M10)
+  - docs: SPEC-0040 новый, SPEC-0037/0033 аменды, integrations.md, architecture.md, operations.md (provisioning), CHANGELOG
+  - dev: image_gen включён в spaces/local/settings.yaml + communication.users.yaml (оба юзера, policy-b25a67fb21f75a44), media.grant записан
+  - build: hubctl build → hermes-hub:0.3.0-dev, -stt, -tts образы в локальном docker
+  - deploy: hubctl up dev — весь стек healthy включая hub-media (engine=remote, :8090)
+  - LIVE SMOKE PASSED: supervisor /v1/execute → image_generate → broker lease/materialize/release (22:11:34 UTC в логе брокера) → cliproxy gemini-3.1-flash-image → red_circle.jpg 504KB в /workspace/artifacts/images
+  - artifact API VERIFIED live: POST /v1/artifact → HTTP 200 JPEG 504304 байт (JFIF magic)
+  - TELEGRAM DELIVERY VERIFIED live: spool delivery с реальным артефактом → sendPhoto → gateway telegram-sent delivery_id=smoke-media-delivery-1 chat_id=480637186, запись в outbox/done
+  - secret sweep: нет provider-ключей в env hub-media/runtime.dev.env/compose; media.*.env отсутствуют; %TEMP%\media-keys удалён
+  - push: commits 67a659c + 91724f0 на feat/message-rendering-166, PR #191 → dev
+  - CI run 37099695371: checks PASSED (coverage fix под Linux), containers dev PASSED, prod PASSED
+  - issue #172 CLOSED (live-verification отчёт), issue #182 остаётся для фазы 3
+todo: []
+notes:
+  - media.auth уже содержит HUB_MEDIA_AUTH (один токен на три роли)
+  - runtime image: тот же hermes-hub tag, entrypoint hub-media — без отдельного Dockerfile
+  - VideoModel без дефолта: пусто = видео выключено (не угадываем provider model ids)
+  - staticcheck поймал реальный баг: media.auth append в env_file после присвоения — исправлено
+  - grant PolicyVersion=hub-media (стабильная, не config hash — иначе любой re-render сиротит грант)
+  - host supervisor (C:\Users\User\hermes-hub-private\hubctl-supervisor.exe) был старше коммита 01054ac и не имел /v1/artifact — пересобран из текущего дерева, бэкап .prev5, рестарт через start-supervisor.dev.ps1 (PID сменился 22660→54732, healthz 200)
+  - communication.users.yaml политика policy-b25a67fb21f75a44 + image_gen у обоих юзеров; gateway читает конфиг на старте — рестартанут
+  - media fetch → /v1/artifact требует envelope с identity_schema=1 и scope user:<id>

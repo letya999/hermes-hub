@@ -2,6 +2,11 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0039](active/SPEC-0039-media-sidecars.md) | Standalone hub-stt/hub-tts services (separate images): OpenAI-compatible API, swappable engines, durable async jobs for long recordings |
+| [SPEC-0038](active/SPEC-0038-voice-readiness.md) | `/voice` reports STT and TTS readiness separately; live voice evidence is a deployment gate |
+| [SPEC-0037](active/SPEC-0037-artifact-delivery.md) | Run artifact handoff: bounded runtime fetch endpoint, spool staging, ordered channel delivery |
+| [SPEC-0036](active/SPEC-0036-channel-rendering.md) | Per-channel Markdown rendering, lossless multi-part replies, source document for degraded output |
+| [SPEC-0035](active/SPEC-0035-web-research.md) | Configured web search/extract providers, runtime-secret keys, bounded deep-research skill |
 | [SPEC-0034](active/SPEC-0034-user-diagnostics.md) | User-scoped diagnostics projection: store-derived scope, bounded queries, redaction |
 | [SPEC-0032](active/SPEC-0032-ssh-capability.md) | Opt-in user-scoped SSH capability with pinned host keys and stacked read/write/shell/tunnel grants |
 | [SPEC-0033](active/SPEC-0033-document-image-profile.md) | Workspace document and image profile; pdf, xlsx, pptx, and webp; configurable image provider, model, and delivery |

@@ -1,0 +1,32 @@
+schema: 1
+id: CHG-0059-channel-rendering
+title: Channel-specific rendering and long replies (issue 166)
+status: in_progress
+phase: implementation
+started_at: 2026-10-01
+updated_at: 2026-10-01
+completed:
+  - branch feat/message-rendering-166 off dev (dev now includes CHG-0058 merge)
+  - audited delivery path: deliverOne truncates to 4000 runes, SendMessage has
+    no parse_mode, unreachable sendDocument fallback, Slack shares the 4000 cut
+  - goldmark v1.8.4 (+Table/Strikethrough/TaskList) → neutral blocks →
+    renderTelegram (parse_mode=HTML) and renderSlack (mrkdwn); model HTML is
+    escaped/shown, links limited to http(s)/mailto
+  - block-boundary splitting: 4000 UTF-16 units TG, 39000 runes Slack;
+    oversized code/table/quote blocks re-wrap per part
+  - durable multi-part send: delivery record persists part_count/sent_parts/
+    source_sent after each part; failure → uncertain with sent boundary
+  - degraded content (table/raw HTML) sends canonical answer.md document once
+  - Format=markdown on final response + progress event deliveries only;
+    hub-authored replies stay plain
+  - SPEC-0036 + index, architecture.md note, CHANGELOG
+  - tests: render matrix (Cyrillic/emoji, hostile HTML, nested styles, links,
+    tables, fences, boundary lengths) + gateway multi-part/partial-failure/
+    resume/plain-untouched/source-doc tests
+  - just check green (race, coverage 85.01%, gofmt, vet, staticcheck, docs,
+    actionlint); just security green (govulncheck + npm audit)
+in_progress:
+  - commit + PR
+deferred:
+  - Slack source-file upload (files.getUploadURLExternal); source stays in spool
+  - live Telegram/Slack smoke evidence (deployment acceptance per issue)

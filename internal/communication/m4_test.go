@@ -121,7 +121,7 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 		g.deliverOne(context.Background())
 	}
 	joined := strings.Join(fake.sent, "\n")
-	if strings.Contains(joined, secret) || !strings.Contains(joined, "не настроен") || !strings.Contains(joined, "Голосовые ответы включены") {
+	if strings.Contains(joined, secret) || !strings.Contains(joined, "не настроен") || !strings.Contains(joined, "Распознавание голосовых") {
 		t.Fatalf("sent=%v", fake.sent)
 	}
 	env := strings.Join(processEnv(map[string]string{"TELEGRAM_BOT_TOKEN": "bot-secret", "SLACK_SIGNING_SECRET": "slack-secret", "OPENAI_API_KEY": "k"}), "\n")
@@ -174,12 +174,12 @@ func TestVoiceLimitsAndSTTErrorStayText(t *testing.T) {
 	if err := g.handleUpdate(context.Background(), Update{UpdateID: 52, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "big", MimeType: "audio/ogg", FileSize: mediaSizeLimit + 1, Duration: 1}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(context.Background(), Update{UpdateID: 53, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "long", MimeType: "video/mp4", FileSize: 12, Duration: mediaDurationLimit + 1}}}); err != nil {
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 53, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "long", MimeType: "video/mp4", FileSize: 12, Duration: defaultMediaDurationLimit + 1}}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestTTSOptInFallbackAndNoDefaultVoice(t *testing.T) {
+func TestVoiceMarkerDeliveryAndFallback(t *testing.T) {
 	c := testConfig(t)
 	g, err := New(c)
 	if err != nil {
@@ -187,42 +187,61 @@ func TestTTSOptInFallbackAndNoDefaultVoice(t *testing.T) {
 	}
 	fake := &fakeAPI{}
 	g.api = fake
+	g.synthesizer = stubTTS{audio: []byte("ogg-bytes")}
+	// A legacy voice_replies flag left in a stored conversation mapping is
+	// dead data: without a VOICE: marker the reply stays text.
+	convFile := g.spool.conversationPath("alice", "alice", "telegram-11")
+	if err := os.MkdirAll(filepath.Dir(convFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"principal_id":"alice","context_id":"alice","conversation_id":"telegram-11","session_id":"s1","voice_replies":true}`
+	if err := os.WriteFile(convFile, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-text-response", JobID: "job-text", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "canonical"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 || fake.sent[0] != "canonical" || len(fake.voices) != 0 {
+		t.Fatalf("stored voice flag must not produce voice: sent=%v voices=%v", fake.sent, fake.voices)
+	}
+	// An upstream VOICE: marker speaks its payload — marker-only is voice-only.
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-marker", JobID: "job-marker", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Voice: "сказано голосом"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.voices) != 1 || fake.voices[0] != "ogg-bytes" || len(fake.sent) != 1 {
+		t.Fatalf("marker-only reply must be voice-only: sent=%v voices=%v", fake.sent, fake.voices)
+	}
+	// Marker plus visible text sends text first, then the spoken payload.
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-mixed", JobID: "job-mixed", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "читай тут", Format: formatMarkdown, Voice: "а это послушай"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.voices) != 2 || fake.sent[len(fake.sent)-1] != "читай тут" {
+		t.Fatalf("marker+text must send both: sent=%v voices=%v", fake.sent, fake.voices)
+	}
+	// Marker-only reply with a broken synthesizer still delivers as text.
 	g.synthesizer = stubTTS{err: errors.New("tts down")}
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-text-response", JobID: "job-text", Channel: "telegram_bot", ChatID: 11, Text: "canonical"}); err != nil {
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-broken", JobID: "job-broken", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Voice: "упало в текст"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.sent) != 1 || fake.sent[0] != "canonical" {
-		t.Fatalf("text default broken: %v", fake.sent)
-	}
-	if err := g.spool.SetConversationVoice("alice", "alice", "telegram-11", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-response", JobID: "job-voice", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "spoken"}); err != nil {
-		t.Fatal(err)
-	}
-	g.deliverOne(context.Background())
-	if len(fake.sent) != 2 || fake.sent[1] != "spoken" {
-		t.Fatalf("tts failure must still deliver text: %v", fake.sent)
-	}
-	if len(fake.voices) != 0 {
-		t.Fatalf("failed tts still uploaded voice: %v", fake.voices)
+	if fake.sent[len(fake.sent)-1] != "упало в текст" {
+		t.Fatalf("broken tts must fall back to the spoken payload as text: %v", fake.sent)
 	}
 	g.synthesizer = stubTTS{audio: []byte("ogg-bytes")}
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-ok", JobID: "job-voice-ok", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "spoken-ok"}); err != nil {
-		t.Fatal(err)
-	}
-	g.deliverOne(context.Background())
-	if len(fake.voices) != 1 || fake.voices[0] != "ogg-bytes" || fake.sent[len(fake.sent)-1] != "spoken-ok" {
-		t.Fatalf("opt-in tts did not add voice after text: sent=%v voices=%v", fake.sent, fake.voices)
-	}
 	g.config.TTSUploadURL = "https://example.invalid/upload"
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-upload", JobID: "job-voice-upload", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "no-upload"}); err != nil {
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-voice-upload", JobID: "job-voice-upload", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Voice: "no-upload"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.voices) != 1 {
+	if len(fake.voices) != 2 {
 		t.Fatalf("third-party upload path must not send voice locally: %v", fake.voices)
+	}
+	// Blocked upload in voice-only mode still delivers the text fallback.
+	if fake.sent[len(fake.sent)-1] != "no-upload" {
+		t.Fatalf("blocked voice upload must fall back to text: %v", fake.sent)
 	}
 }
 
@@ -503,5 +522,196 @@ func TestCommandTranscriberAndSynthesizerRejectEmpty(t *testing.T) {
 	audio, mime, err := (CommandSynthesizer{Command: ttsPath}).Synthesize(context.Background(), "hello")
 	if err != nil || mime != "audio/ogg" || !strings.Contains(string(audio), "ogg-audio") {
 		t.Fatalf("tts worker: %q %s %v", audio, mime, err)
+	}
+}
+
+func TestHTTPTranscriberAndSynthesizerHitSidecar(t *testing.T) {
+	var gotAuth, gotFile bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization") == "Bearer tok"
+		switch r.URL.Path {
+		case "/v1/audio/transcriptions":
+			file, _, err := r.FormFile("file")
+			if err == nil {
+				gotFile = true
+				file.Close()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"text":"расшифровка"}`))
+		case "/v1/audio/speech":
+			w.Header().Set("Content-Type", "audio/ogg")
+			_, _ = w.Write([]byte("opus-bytes"))
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	wav := filepath.Join(dir, "v.ogg")
+	if err := os.WriteFile(wav, []byte("audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stt := HTTPTranscriber{Base: upstream.URL, Auth: "tok"}
+	text, err := stt.Transcribe(context.Background(), wav, "audio/ogg")
+	if err != nil || text != "расшифровка" {
+		t.Fatalf("sidecar stt: %q %v", text, err)
+	}
+	if !gotAuth || !gotFile {
+		t.Fatalf("auth=%v file=%v", gotAuth, gotFile)
+	}
+	if !stt.Healthy(context.Background()) {
+		t.Fatal("healthy sidecar reported unready")
+	}
+
+	tts := HTTPSynthesizer{Base: upstream.URL, Auth: "tok", Voice: "ru"}
+	audio, mime, err := tts.Synthesize(context.Background(), "привет")
+	if err != nil || mime != "audio/ogg" || string(audio) != "opus-bytes" {
+		t.Fatalf("sidecar tts: %v", err)
+	}
+	if !tts.Healthy(context.Background()) {
+		t.Fatal("healthy tts sidecar reported unready")
+	}
+
+	dead := HTTPTranscriber{Base: "http://127.0.0.1:1", Auth: "tok", Timeout: time.Second}
+	if _, err := dead.Transcribe(context.Background(), wav, "audio/ogg"); err == nil {
+		t.Fatal("dead sidecar transcribed")
+	}
+	if dead.Healthy(context.Background()) {
+		t.Fatal("dead sidecar reported ready")
+	}
+	if _, _, err := (HTTPSynthesizer{Base: "http://127.0.0.1:1", Timeout: time.Second}).Synthesize(context.Background(), "hi"); err == nil {
+		t.Fatal("dead tts synthesized")
+	}
+}
+
+func TestServiceURLBeatsCommandSelection(t *testing.T) {
+	if _, ok := serviceTranscriber("http://x", "a", "missing-binary", 0).(HTTPTranscriber); !ok {
+		t.Fatal("stt url did not select the sidecar client")
+	}
+	if _, ok := serviceSynthesizer("", "", "", "cmd").(CommandSynthesizer); !ok {
+		t.Fatal("empty tts url did not fall back to command")
+	}
+	c := testConfig(t)
+	c.STTURL = "http://hub-stt:8090"
+	c.TTSURL = "http://hub-tts:8090"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.transcriber.(HTTPTranscriber); !ok {
+		t.Fatalf("transcriber=%T", g.transcriber)
+	}
+	if _, ok := g.synthesizer.(HTTPSynthesizer); !ok {
+		t.Fatalf("synthesizer=%T", g.synthesizer)
+	}
+}
+
+func TestVoiceReadinessWithSidecarURL(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer up.Close()
+	if !mediaReady(HTTPTranscriber{Base: up.URL, Timeout: time.Second}, "", up.URL) {
+		t.Fatal("healthy sidecar reported unready")
+	}
+	if mediaReady(HTTPTranscriber{Base: "http://127.0.0.1:1", Timeout: 500 * time.Millisecond}, "", "http://127.0.0.1:1") {
+		t.Fatal("dead sidecar reported ready")
+	}
+	// URL configured but the impl is nil means not ready at all.
+	if mediaReady(nil, "", up.URL) {
+		t.Fatal("nil impl reported ready")
+	}
+	// Command mode unchanged: binary must resolve.
+	if mediaReady(CommandTranscriber{Command: "missing-binary-xyz"}, "missing-binary-xyz", "") {
+		t.Fatal("missing command reported ready")
+	}
+}
+
+func TestVoiceReadinessReportedSeparately(t *testing.T) {
+	ctx := context.Background()
+	voiceUpd := func(id int, text string) Update {
+		return Update{UpdateID: id, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: text}}
+	}
+	ask := func(t *testing.T, c Config, texts ...string) []string {
+		t.Helper()
+		g, err := New(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fake := &fakeAPI{}
+		g.api = fake
+		for i, text := range texts {
+			if err := g.handleUpdate(ctx, voiceUpd(i+1, text)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for range len(texts) + 2 {
+			g.deliverOne(ctx)
+		}
+		return fake.sent
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Neither worker configured: both directions read unavailable. There is
+	// no voice mode anymore — /voice (with any args) only reports readiness.
+	sent := ask(t, testConfig(t), "/voice", "/voice on")
+	if !strings.Contains(sent[0], "STT): недоступно") || !strings.Contains(sent[0], "TTS): недоступно") {
+		t.Fatalf("bare status: %q", sent[0])
+	}
+	if !strings.Contains(sent[1], "TTS): недоступно") || !strings.Contains(sent[1], "ответь голосовым") {
+		t.Fatalf("voice on must not set a mode: %q", sent[1])
+	}
+
+	// Resolvable STT binary only: incoming ready, outgoing still unavailable.
+	c := testConfig(t)
+	c.STTCommand = self
+	sent = ask(t, c, "/voice")
+	if !strings.Contains(sent[0], "STT): доступно") || !strings.Contains(sent[0], "TTS): недоступно") {
+		t.Fatalf("stt-only status: %q", sent[0])
+	}
+
+	// Resolvable TTS binary: outgoing ready; a parked upload URL reverts it.
+	c = testConfig(t)
+	c.TTSCommand = self
+	sent = ask(t, c, "/voice")
+	if !strings.Contains(sent[0], "TTS): доступно") {
+		t.Fatalf("tts status: %q", sent[0])
+	}
+	c = testConfig(t)
+	c.TTSCommand = self
+	c.TTSUploadURL = "https://example.invalid/upload"
+	sent = ask(t, c, "/voice")
+	if !strings.Contains(sent[0], "TTS): недоступно") {
+		t.Fatalf("parked upload must read unavailable: %q", sent[0])
+	}
+
+	// Unconfigured STT replies "not configured" without consuming a job.
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	if err := g.handleUpdate(ctx, Update{UpdateID: 9, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "v1", MimeType: "audio/ogg", FileSize: 12, Duration: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	if job, _ := g.spool.ClaimJob(); job != nil {
+		t.Fatal("unconfigured stt enqueued a job")
+	}
+	for range 3 {
+		g.deliverOne(ctx)
+	}
+	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "не настроено") {
+		t.Fatalf("unconfigured stt reply: %v", fake.sent)
 	}
 }

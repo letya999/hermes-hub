@@ -931,6 +931,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.selfEnv(w, r)
 	case "/v1/restart":
 		m.restartHTTP(w, r)
+	case "/v1/artifact":
+		m.artifactHTTP(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 			m.jobStatus(w, r, strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
@@ -1035,6 +1037,63 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
 	w.WriteHeader(response.StatusCode)
+}
+
+// artifactHTTP forwards one bounded artifact fetch to the runtime bound to the
+// request envelope. No lease: the gateway asks while the runtime is answering
+// the job, so a lookup-only forward never keeps a runtime alive for it.
+func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body too large"})
+		return
+	}
+	var request hubruntime.ArtifactRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	binding, err := m.bindingFor(request.ExecuteRequest)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(binding)]
+	running := entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) && entry.Address != ""
+	address := ""
+	if running {
+		address = entry.Address
+	}
+	m.mu.Unlock()
+	if !running {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/artifact", bytes.NewReader(body))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	upstream.Header.Set("Content-Type", "application/json")
+	upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
+	response, err := m.cfg.HTTP.Do(upstream)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	defer response.Body.Close()
+	if contentType := response.Header.Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, io.LimitReader(response.Body, 9<<20))
 }
 
 func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
@@ -1673,15 +1732,36 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// onboarding rules) must be readable at /opt/hub/skills, matching
 	// external_dirs in the generated Hermes config. Without them the agent
 	// improvises installs through terminal instead of ToolHub control ops.
-	skillsDir := ""
-	if settings, err := stack.Read(filepath.Join(binding.ContextRoot, "settings.yaml")); err == nil {
-		skillsDir = strings.TrimSpace(settings.GlobalSkillsDir)
+	// The mount is the per-space filtered copy materialized at spawn so
+	// feature gating applies even when Render was not rerun after a toggle.
+	spawnSettings, serr := stack.ReadEnvironment(binding.ContextRoot, env)
+	if serr != nil {
+		spawnSettings = stack.Settings{}
 	}
-	if skillsDir == "" {
-		skillsDir = filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills")
+	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
+		spawnSettings.GlobalSkillsDir = filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills")
 	}
-	if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
-		args = append(args, "--mount", "type=bind,src="+skillsDir+",dst=/opt/hub/skills,readonly")
+	if err := stack.MaterializeGlobalSkills(binding.ContextRoot, spawnSettings); err != nil {
+		log.Printf("supervisor skills materialization skipped: %v", err)
+	}
+	if info, err := os.Stat(stack.GeneratedSkillsDir(binding.ContextRoot)); err == nil && info.IsDir() {
+		args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/opt/hub/skills,readonly")
+	}
+	// Same contract for hub plugins: materialize the feature-filtered copy at
+	// spawn and mount each plugin read-only into upstream's bundled plugins
+	// dir, where kind=backend manifests auto-load. A disabled feature leaves
+	// the dir unmounted, so the plugin is never discovered.
+	if err := stack.MaterializeHubPlugins(binding.ContextRoot, filepath.Dir(filepath.Dir(binding.ContextRoot)), spawnSettings); err != nil {
+		log.Printf("supervisor plugins materialization skipped: %v", err)
+	}
+	if entries, err := os.ReadDir(stack.GeneratedPluginsDir(binding.ContextRoot)); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			src := filepath.Join(stack.GeneratedPluginsDir(binding.ContextRoot), entry.Name())
+			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
+		}
 	}
 	// Materialize the effective Hermes config host-side and mount it read-only
 	// over the agent-writable state dir: mcp_servers must come from ToolHub

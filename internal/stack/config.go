@@ -58,6 +58,10 @@ type Settings struct {
 	// ImageGen configures the opt-in image_gen capability. Empty fields use
 	// cliproxy, that provider's default model, and workspace delivery.
 	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
+	// Web configures the always-on Hermes web toolset: provider selection,
+	// cache and keyless policy, and the deep-research bounds the bundled
+	// skill enforces. Empty keeps upstream autodetect and defaults.
+	Web WebSettings `yaml:"web,omitempty"`
 }
 type Feature struct {
 	Name     string   `json:"name"`
@@ -67,6 +71,8 @@ type Feature struct {
 
 var Features = []Feature{
 	{"workspace", nil, "Bounded workspace and read-only extracted archive; Markdown drafts"},
+	{"web", nil, "Web search and page extraction via configured providers; anonymous keyless tier needs no key"},
+	{"deep_research", nil, "Bundled deep-research skill: bounded multi-round research on disk; requires web"},
 	{"browser", nil, "Persistent plus anonymous Chromium via Playwright MCP; manual login through private noVNC; read and navigation tools only"},
 	{"browser_act", nil, "Adds browser mutation tools (click, type, submit, evaluate) to both browser MCP servers; requires browser and a concrete owner instruction"},
 	{"ssh", nil, "SSH to owner-configured host aliases: pinned host keys, allowlisted read commands and remote file reads; keys via Credential Broker or the read-only ssh config mount"},
@@ -145,6 +151,11 @@ func selfEnvKeys(s Settings) []string {
 				}
 				break
 			}
+		}
+	}
+	if s.Has("web") {
+		for _, key := range s.Web.envKeys() {
+			keys[key] = true
 		}
 	}
 	if key := s.imageCredential(); key != "" {
@@ -246,6 +257,12 @@ func (s Settings) Validate() error {
 			return fmt.Errorf("%s requires ssh", sub)
 		}
 	}
+	if s.Has("deep_research") && !s.Has("web") {
+		return fmt.Errorf("deep_research requires web")
+	}
+	if !s.Has("web") && !s.Web.empty() {
+		return fmt.Errorf("web: settings require the web feature")
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
 	}
@@ -262,6 +279,9 @@ func (s Settings) Validate() error {
 		if _, err := s.ImageGen.Normalize(); err != nil {
 			return err
 		}
+	}
+	if err := s.Web.validate(); err != nil {
+		return err
 	}
 	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {
 		return fmt.Errorf("invalid or colliding host ports")
@@ -372,7 +392,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 			return err
 		}
 	}
-	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
+	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh", "web", "deep_research"}, OAuthPort: 8000, BrowserPort: 6080}
 	b, err := yaml.Marshal(s)
 	if err != nil {
 		return err
@@ -387,7 +407,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
 		return err
 	}
-	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFAL_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
+	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFAL_KEY=\nFIRECRAWL_API_KEY=\nFIRECRAWL_API_URL=\nTAVILY_API_KEY=\nTAVILY_BASE_URL=\nEXA_API_KEY=\nPARALLEL_API_KEY=\nPERPLEXITY_API_KEY=\nPERPLEXITY_BASE_URL=\nBRAVE_SEARCH_API_KEY=\nKEENABLE_API_KEY=\nSEARXNG_URL=\nXAI_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
 	for _, env := range []string{"dev", "prod"} {
 		if err := os.WriteFile(filepath.Join(dir, "secrets."+env+".env"), []byte(content), 0600); err != nil {
 			return err
@@ -467,6 +487,9 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 	}
 	if s.imageCredential() == "FAL_KEY" && secrets["FAL_KEY"] == "" {
 		issues = append(issues, "set FAL_KEY for image_gen")
+	}
+	if s.Has("web") {
+		issues = append(issues, s.Web.doctorIssues(secrets)...)
 	}
 	if s.Has("telegram") && secrets["TELEGRAM_ALLOWED_USERS"] != "" {
 		for _, id := range strings.Split(secrets["TELEGRAM_ALLOWED_USERS"], ",") {

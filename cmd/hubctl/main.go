@@ -164,12 +164,25 @@ func run(ctx context.Context, args []string) error {
 		if *supervisorAuth == "" {
 			return fmt.Errorf("HUB_SUPERVISOR_AUTH or --supervisor-auth is required")
 		}
+		// -env defaults to "prod" for render/up commands, but the supervisor
+		// must honor HUB_ENV when the flag is absent: leaving Environment
+		// empty lets Manager.environment() fall back to it.
+		supervisorEnv := *environment
+		envSet := false
+		f.Visit(func(fl *flag.Flag) {
+			if fl.Name == "env" {
+				envSet = true
+			}
+		})
+		if !envSet {
+			supervisorEnv = ""
+		}
 		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "supervisor.log"))
 		if err != nil {
 			return err
 		}
 		defer stopLog()
-		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: *environment, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
+		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
 		if err != nil {
 			return err
 		}
@@ -354,20 +367,27 @@ func dockerCLIEnv() []string {
 	return append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
 }
 
-// supervisorComposeEnv feeds supervisor.auth into compose variable
-// interpolation. The rendered ${HUB_SUPERVISOR_AUTH} placeholder has no value
-// otherwise; an explicit process env always wins over the file.
+// supervisorComposeEnv feeds supervisor.auth and media.grant into compose
+// variable interpolation. The rendered ${HUB_SUPERVISOR_AUTH} and
+// ${HUB_MEDIA_BROKER_GRANT} placeholders have no value otherwise; an explicit
+// process env always wins over the file.
 func supervisorComposeEnv(dir string) []string {
 	env := dockerCLIEnv()
-	if os.Getenv("HUB_SUPERVISOR_AUTH") != "" {
-		return env
+	if os.Getenv("HUB_SUPERVISOR_AUTH") == "" {
+		if auth, err := stack.ReadSecrets(filepath.Join(dir, "supervisor.auth")); err == nil {
+			if token := strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"]); token != "" {
+				env = append(env, "HUB_SUPERVISOR_AUTH="+token)
+			}
+		}
 	}
-	auth, err := stack.ReadSecrets(filepath.Join(dir, "supervisor.auth"))
-	if err != nil {
-		return env
-	}
-	if token := strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"]); token != "" {
-		env = append(env, "HUB_SUPERVISOR_AUTH="+token)
+	if os.Getenv("HUB_MEDIA_BROKER_GRANT") == "" {
+		// media.grant is not a secret: it is the grant ID provisioned for this
+		// space's hub-media service (docs/operations.md, media credentials).
+		if auth, err := stack.ReadSecrets(filepath.Join(dir, "media.grant")); err == nil {
+			if grant := strings.TrimSpace(auth["HUB_MEDIA_BROKER_GRANT"]); grant != "" {
+				env = append(env, "HUB_MEDIA_BROKER_GRANT="+grant)
+			}
+		}
 	}
 	return env
 }

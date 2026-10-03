@@ -330,7 +330,12 @@ func (d ToolDefinition) Validate() error {
 	}
 	seen = map[string]bool{}
 	for name, value := range d.RuntimeEnvironment {
-		if !credentialPattern.MatchString(name) || len(value) > 1024 || strings.ContainsAny(value, "\x00\r\n") || strings.Contains(name, "PROXY") || name == "NODE_OPTIONS" || name == "LD_PRELOAD" {
+		// NODE_USE_ENV_PROXY is a boolean switch, not a proxy URL: it makes
+		// Node's fetch honor the controller-injected HTTP(S)_PROXY values.
+		// Without it a Node server ignores the egress proxy and fails on the
+		// isolated workload network; it can never redirect egress.
+		proxyName := strings.Contains(name, "PROXY") && name != "NODE_USE_ENV_PROXY"
+		if !credentialPattern.MatchString(name) || len(value) > 1024 || strings.ContainsAny(value, "\x00\r\n") || proxyName || name == "NODE_OPTIONS" || name == "LD_PRELOAD" {
 			return fmt.Errorf("%w: invalid runtime environment", ErrInvalid)
 		}
 	}

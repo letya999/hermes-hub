@@ -1,0 +1,52 @@
+change: CHG-0062-media-sidecars
+issue: 170
+branch: feat/message-rendering-166
+status: verified-local-stack
+done:
+  - internal/mediasvc: one package, one binary, two roles (stt/tts); engines
+    command/remote/sherpa(-tags sherpa stub); fetch allowlist + private-IP
+    refusal + input-root containment; durable job store with requeue on
+    restart and TTL sweep; 30s chunking; diarization-aware segment merge;
+    text/json/srt outputs
+  - cmd/hub-stt + cmd/hub-tts: separate service entrypoints, graceful shutdown
+  - gateway: HUB_STT_URL/HUB_TTS_URL pick HTTP sidecar clients; command
+    workers remain fallback; /voice readiness probes /healthz
+  - docker/Dockerfile.stt + Dockerfile.tts + docker/media/{stt,tts}-worker (command engine
+    inside the sidecar: faster-whisper STT, espeak+ffmpeg TTS)
+  - stack render: hub-stt/hub-tts compose services with per-service
+    volumes and shared bearer via media.auth; only when feature
+    "transcription" and infra
+  - tts-worker multi-backend: silero v5_5_ru (torch CPU, baked into image,
+    auto-stress+homographs) -> piper voices (irina/ruslan/dmitri) -> espeak;
+    request voice via HUB_TTS_REQUEST_VOICE, voice names/lang map,
+    HUB_TTS_DEVICE cpu|cuda, HUB_TTS_BACKENDS ordering
+  - elevenlabs engine (xi-api-key, /v1/text-to-speech, /v1/user readiness,
+    model_id via HUB_TTS_MODEL); remote engine covers OpenAI-compatible TTS
+  - HUB_TTS_VOICES advertises a multi-voice catalog via /v1/voices
+tests:
+  - sync transcription in text/json/verbose_json/srt formats
+  - bearer auth enforced on all endpoints
+  - async job lifecycle incl. speaker labels in text and srt, result files,
+    delete
+  - local source traversal/symlink/size guards, fetch allowlist + private IP
+    refusal
+  - speech endpoint + voices + empty-input rejection; healthz reflects engine
+  - gateway HTTP clients: auth header, file field, health probe, dead sidecar
+  - race x3 clean; Windows rename-over-existing flake fixed with retry+direct
+    write fallback in jobStore.put
+  - faster-whisper av>=16 breakage fixed: worker decodes normalized wav to
+    numpy itself instead of av file decode
+  - live local stack verified (hermes-hub-local-dev): /healthz ok, bearer
+    enforced, authenticated TTS->STT roundtrip over service DNS (OGG speech
+    in, transcript out), async /v1/jobs lifecycle done with txt/json/srt
+    results; empty-signal input fails honestly (no fake transcript)
+  - e2e tts->stt: silero xenia "Привет! Это проверка новой модели синтеза
+    русской речи на сервере." -> whisper-small returned the same text
+    verbatim; eugene voice live-tested over the HTTP API
+pending:
+  - live Telegram voice roundtrip with silero voice (bot delivers OGG; user
+    listening check is the remaining human acceptance)
+  - sherpa engine needs the sherpa-onnx C lib + models; stub build rejects
+    the engine name until then
+  - elevenlabs untested against real API (no key); adapter contract covered
+    by stub tests only

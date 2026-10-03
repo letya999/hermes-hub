@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-28
+last_verified: 2026-09-30
 ---
 # Integration contracts
 
@@ -215,7 +215,10 @@ groups on that form. The groups persist on the definition as
 `credential_groups`; onboarding submits, binding resolution and workload
 admission all accept one complete group instead of demanding every declared
 required name. `tools/list` runs again only after the form is submitted,
-with the real values and with network egress on that second probe alone. An
+with the real values and with network egress on that second probe — plus,
+for a reviewed prepared entry that declares `preflight_network`, on the
+placeholder-only first probe when the server must reach its API (a remote
+schema fetch at startup) before it can answer `tools/list` at all. An
 error that names no secret stays a hard failure — except one bounded case: a
 server that answers `tools/list` with a valid response carrying zero tools
 while the definition already declares required inputs (mcp-atlassian lists
@@ -549,9 +552,11 @@ contract.
 | Convert one document | `document_convert` | new txt, md, html, pdf, xlsx, or pptx file; csv only from xlsx | none |
 | Inspect one image | `image_inspect` | png, jpeg, webp | model endpoint, `OPENAI_API_KEY` |
 | Convert one image | `image_convert` | png, jpeg, and webp, locally, new file under `artifacts/images/` | none |
-| Generate one image | `image_generate` | grant selects provider, model, and delivery | grant credential |
-| Edit one image | `image_edit` | one workspace png, jpeg, or webp; webp is sent as png; fal has no edit | grant credential |
-| Delete one artifact | `artifact_remove` | one file under `artifacts/documents/` or `artifacts/images/` | none |
+| Generate one image | `image_generate` | grant selects provider, model, and delivery | `hub-media` service |
+| Edit one image | `image_edit` | one workspace png, jpeg, or webp; webp is sent as png; fal has no edit | `hub-media` service |
+| Submit one video | `video_generate` | async job on `hub-media`, returns a job id | `hub-media` service |
+| Fetch one media job | `media_fetch` | job status; a finished job stages under `artifacts/videos/` | `hub-media` service |
+| Delete one artifact | `artifact_remove` | one file under `artifacts/documents/`, `artifacts/images/`, or `artifacts/videos/` | none |
 
 Rejected documents: doc, docx, xls, ppt, odt, rtf, epub, pages. The extension
 xslx is rejected. Rejected images: gif, bmp, svg, tif, tiff, heic, avif. HTML
@@ -615,15 +620,30 @@ configured endpoint must be public HTTPS. An unknown provider, model, delivery,
 or field fails before a request.
 
 Enabling the feature writes the normalized section into the mounted Hermes
-config. `FAL_KEY` enters the runtime env only for provider `fal`. Disabling the
-feature, or leaving it on `cliproxy`, omits that key even if the secrets file
-still has the line. The config never contains a key value. Inspect keeps using
+config. On a rendered stack the call runs in the `hub-media` sidecar
+([SPEC-0040](../specs/active/SPEC-0040-media-generation-service.md)): compose
+adds the service on the internal network with no published port,
+`HUB_MEDIA_URL`/`HUB_MEDIA_AUTH` on the runtime, and `media.auth` plus the
+`HUB_CREDENTIAL_BROKER_MEDIA_*` client env on the service. Provider
+credentials are never written to an env file: `hub-media` materializes them
+per call from the Credential Broker grant named by `HUB_MEDIA_BROKER_GRANT`
+(identity `media`/`hermes-media`, read-only `broker-secrets-media` keypair
+volume, short in-memory cache with the lease released right after
+materialization). The runtime env never contains `FAL_KEY`. Engines are
+`remote` (any
+OpenAI-compatible upstream such as CLIProxy, default upstream
+`http://cliproxy:8317`) and `fal` (`fal.run` images, `queue.fal.run` video
+jobs). Images answer synchronously; video submits return a job id for
+`media_fetch`, persist under `HUB_MEDIA_DATA`, resume provider polling after a
+restart and expire by `HUB_MEDIA_JOB_TTL`. Outside a stack the embedded
+direct-provider path stays as fallback and `FAL_KEY` enters the runtime env
+only for provider `fal`. Disabling the
+feature omits the section and the keys even if the secrets file
+still has the lines. The config never contains a key value. Inspect keeps using
 the model credential. Each call rereads the mounted file. A missing provider or
 a revoked section fails the next generate or edit call. `image_generate` and
 `image_edit` leave `tools/list` on the next process start. A missing config
-does not take down the hub MCP server. Switching the running process onto
-`FAL_KEY` waits until that env is applied; the mounted file alone does not
-insert the key.
+does not take down the hub MCP server.
 
 Files stay in the invoking user's workspace. Another user's root, an absolute
 path, and `..` fail closed. `document_edit` refuses every path outside
@@ -636,10 +656,117 @@ archive.
 
 An httptest double of these endpoints is not a live provider call.
 
+## Web search and research
+
+The web capability is the upstream Hermes `web` toolset (`web_search`,
+`web_extract`), configured — not reimplemented — by the hub. Provider code
+lives upstream in `plugins/web/<vendor>/provider.py`; the hub never embeds a
+search vendor client or an HTML extractor.
+
+Two features control it per space (`settings.yaml` `features`, removable per
+org through `scope.yaml`; both are init defaults):
+
+- `web` — enables the toolset and mounts the `hub-web` plugin. Without it
+  `web_search`/`web_extract` do not exist in the runtime at all —
+  `agent.disabled_toolsets: [web]` additionally strips them from platforms
+  whose toolset falls back to an upstream composite (e.g. `api_server`) —
+  provider env keys leave the self-env allowlist, the plugin is not mounted,
+  and a `web:` settings block is a validation error.
+- `deep_research` — requires `web`; mounts the bundled
+  `deep-research-embedded` skill into the space's `generated/skills` and
+  removes it from `skills.disabled`. Without it the skill is absent from the
+  runtime, not merely hidden.
+
+`settings.yaml` `web:` selects providers and policy; every field is optional
+and only set fields reach the rendered config:
+
+```yaml
+web:
+  backend: ""              # shared provider, e.g. tavily
+  search_backend: ""       # search override (the default engine): tavily,
+                           # exa, parallel, perplexity, firecrawl, searxng,
+                           # brave-free, ddgs, keenable, xai, nous
+  extract_backend: ""      # extract override: tavily, exa, parallel,
+                           # perplexity, firecrawl, keenable
+  search_providers: []     # engines web_search_multi may fan out to; the
+                           # default search_backend is always allowed
+  keyless_fallback: true   # anonymous free-tier ring as last resort
+  keyless_rescue: true     # one-shot keyless retry of a failed keyed call
+  extract_char_limit: 15000
+  provider_tier: {}        # exa/parallel/firecrawl/keenable: free|paid
+  cache_enabled: true
+  cache_ttl_minutes: 20
+  cache_exempt_hosts: []   # exact, *.wildcard, or domain suffix
+  research:                # bounds the deep-research-embedded skill reads
+    max_rounds: 2          # ceiling 16
+    queries_per_round: 3   # ceiling 5
+    pages_per_round: 4     # ceiling 8
+    max_pages: 12          # ceiling 100
+    max_pages_per_host: 3  # ceiling 10; source diversity cap
+    deadline_minutes: 10   # ceiling 240; ≥60 or an explicit long/deep
+                           # request runs durably via hub routines —
+                           # one bounded round per wake, resuming from
+                           # research/<slug>/state.json across restarts
+```
+
+When `web` is enabled the hub also mounts `config/plugins/hub-web` read-only
+at `/opt/hermes/plugins/hub-web`, an upstream backend plugin that adds three
+tools to the `web` toolset (so the same feature gate and
+`agent.disabled_toolsets` cover them):
+
+- `web_providers` — answers "which search engines exist here": every
+  registered provider with availability (keyed/keyless), which are in
+  `search_providers`, and which is the default.
+- `web_search_multi` — `query` plus optional `providers` list and `limit`
+  (per-provider cap 10). No `providers` runs the default `search_backend`;
+  `["all"]` or a list fans out to those configured engines in parallel
+  (bounded: 8 providers, 60 s wall clock). Results are tagged with every
+  provider that returned them and deduplicated by normalized URL; providers
+  that fail are named in `providers_failed` without failing the call —
+  `partial_failure` marks the mixed case. Names outside `search_providers`
+  are rejected, so a prompt cannot steer queries to unapproved vendors.
+- `web_cache` — `status`/`prune`/`clear` for the on-disk `web_extract` cache
+  (`$HERMES_HOME/cache/web`, i.e. `spaces/<user>/hermes/cache/web` on the
+  host). Upstream TTL-gates reads but never deletes files; prune drops
+  expired/missing/out-of-root index entries plus orphaned `*.cache.md`
+  files, clear wipes it. Search answers are in-memory only and need nothing.
+  Tool-output spillover (`cache/spillover`) is already reaped hourly by
+  upstream housekeeping at 24h; deep-research state lives in the owner's
+  `workspace/research/<slug>/` and is deleted like any workspace file.
+
+Provider keys and endpoints are runtime secrets: `secrets.<env>.env` or the
+protected self-env form delivers `TAVILY_API_KEY`, `EXA_API_KEY`,
+`PARALLEL_API_KEY`, `PERPLEXITY_API_KEY`, `FIRECRAWL_API_KEY`,
+`FIRECRAWL_API_URL`, `BRAVE_SEARCH_API_KEY`, `KEENABLE_API_KEY`,
+`SEARXNG_URL`, `XAI_API_KEY` (plus optional `TAVILY_BASE_URL`,
+`PERPLEXITY_BASE_URL`). They never appear in prompts, tool arguments, or
+results; `hubctl doctor` names a missing required env for `searxng` and
+`firecrawl`. With no key at all, `ddgs` and the keyless ring keep search and
+extraction working anonymously; no browser profile participates.
+
+The bundled `deep-research-embedded` skill (`config/skills/`) is the bounded
+research workflow — a state machine on disk under `research/<slug>/`:
+perspective-driven `plan.yaml`, a `sources.yaml` URL registry, distilled
+`notes/` (every claim with its URL), a `gaps.md` queue that drives the next
+round's queries, then outline → per-section drafts → a cited `report.md`
+with `Sources` and an explicit `Limitations` section, followed by a verify
+pass that marks unsourced claims. Each round reconstructs state from disk
+rather than accumulating pages in context, so depth scales without context
+rot; long runs execute one round per durable hub-routine wake and resume
+cold from `state.json`. Bounds come from `web.research` and can only tighten
+the ceilings. Pages and snippets are untrusted data: instructions inside
+them are never executed, URLs carrying credential-like parameters are
+refused, and private-network targets, redirected payloads, oversized or
+binary bodies, and unsupported schemes fail closed upstream. The anonymous
+`browser_guest` profile is the documented fallback only when extraction
+cannot satisfy a needed source.
+[SPEC-0035](../specs/active/SPEC-0035-web-research.md) is the contract.
+
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
+| Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai; hub `hub-web` plugin adds `web_providers` + `web_search_multi` fan-out + `web_cache` cleanup | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
 | Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |

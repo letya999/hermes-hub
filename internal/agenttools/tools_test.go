@@ -727,7 +727,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 21 {
+	if err != nil || len(listed.Tools) != 23 {
 		t.Fatal(len(listed.Tools), err)
 	}
 	made, body := callHub(t, granted, "image_generate", map[string]any{"name": "pic", "prompt": "a red square"})
@@ -741,6 +741,16 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	stored, err := os.ReadFile(filepath.Join(root, "artifacts", "images", "pic.png"))
 	if err != nil || !bytes.Equal(stored, pngBody) || bytes.Contains(stored, []byte("fal-secret-value")) {
 		t.Fatal(err)
+	}
+	// Async media tools are registered under the same grant; without a
+	// configured media service they surface a clean error, not a panic.
+	submitted, _ := callHub(t, granted, "video_generate", map[string]any{"prompt": "a rocket"})
+	if !submitted.IsError {
+		t.Fatal("video submit without service")
+	}
+	fetched, _ := callHub(t, granted, "media_fetch", map[string]any{"id": "job-1", "name": "clip"})
+	if !fetched.IsError {
+		t.Fatal("media fetch without service")
 	}
 	writeGrant(false)
 	revoked, _ := callHub(t, granted, "image_generate", map[string]any{"name": "later", "prompt": "cat"})
@@ -830,4 +840,11 @@ func hubPNG(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func TestToolHubEnvOr(t *testing.T) {
+	t.Setenv("X_ENV_PRESENT", "v")
+	if toolHubEnvOr("X_ENV_PRESENT", "fb") != "v" || toolHubEnvOr("X_ENV_ABSENT", "fb") != "fb" {
+		t.Fatal("toolHubEnvOr")
+	}
 }
