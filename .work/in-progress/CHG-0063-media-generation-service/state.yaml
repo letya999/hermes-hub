@@ -32,8 +32,10 @@ done:
   - artifact API VERIFIED live: POST /v1/artifact → HTTP 200 JPEG 504304 байт (JFIF magic)
   - TELEGRAM DELIVERY VERIFIED live: spool delivery с реальным артефактом → sendPhoto → gateway telegram-sent delivery_id=smoke-media-delivery-1 chat_id=480637186, запись в outbox/done
   - secret sweep: нет provider-ключей в env hub-media/runtime.dev.env/compose; media.*.env отсутствуют; %TEMP%\media-keys удалён
-todo:
-  - финальный just check после render-правок (в процессе)
+  - push: commits 67a659c + 91724f0 на feat/message-rendering-166, PR #191 → dev
+  - CI run 37099695371: checks PASSED (coverage fix под Linux), containers dev PASSED, prod PASSED
+  - issue #172 CLOSED (live-verification отчёт), issue #182 остаётся для фазы 3
+todo: []
 notes:
   - media.auth уже содержит HUB_MEDIA_AUTH (один токен на три роли)
   - runtime image: тот же hermes-hub tag, entrypoint hub-media — без отдельного Dockerfile
