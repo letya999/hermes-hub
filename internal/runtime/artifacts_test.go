@@ -265,3 +265,49 @@ func TestArtifactLimitBuckets(t *testing.T) {
 		t.Fatal("default bound")
 	}
 }
+
+func TestArtifactEndpointBoundsAndMime(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	t.Setenv("HUB_RUNTIME_AUTH", "secret")
+	handler := runtimeHandler()
+	call := func(method, name, auth string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/v1/artifact", strings.NewReader(`{"name":`+quote(name)+`}`))
+		req.Header.Set("Authorization", "Bearer "+auth)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	// Non-POST is refused before name validation.
+	if rec := call(http.MethodGet, "documents/x.pdf", "secret"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("get=%d", rec.Code)
+	}
+	// Empty file is outside delivery bounds.
+	writeArtifact(t, artifactRoot(), "documents/empty.txt", "")
+	if rec := call(http.MethodPost, "documents/empty.txt", "secret"); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("empty=%d", rec.Code)
+	}
+	// Oversized video beyond the 48 MiB bound is refused.
+	big := writeArtifact(t, artifactRoot(), "videos/big.mp4", "")
+	if err := os.Truncate(big, videoMaxBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(http.MethodPost, "videos/big.mp4", "secret"); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized=%d", rec.Code)
+	}
+	// Unknown extensions ride as octet-stream.
+	writeArtifact(t, artifactRoot(), "documents/data.bin", "bin-bytes")
+	if rec := call(http.MethodPost, "documents/data.bin", "secret"); rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("octet=%d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	// A body that is not JSON is a 400, not a lookup.
+	req := httptest.NewRequest(http.MethodPost, "/v1/artifact", strings.NewReader("not-json"))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("badjson=%d", rec.Code)
+	}
+}

@@ -841,3 +841,10 @@ func hubPNG(t *testing.T) []byte {
 	}
 	return buf.Bytes()
 }
+
+func TestToolHubEnvOr(t *testing.T) {
+	t.Setenv("X_ENV_PRESENT", "v")
+	if toolHubEnvOr("X_ENV_PRESENT", "fb") != "v" || toolHubEnvOr("X_ENV_ABSENT", "fb") != "fb" {
+		t.Fatal("toolHubEnvOr")
+	}
+}

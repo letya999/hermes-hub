@@ -1538,3 +1538,23 @@ func TestHermesRunnerSuccess(t *testing.T) {
 		t.Fatal(response, err)
 	}
 }
+
+func TestEnvHelpers(t *testing.T) {
+	t.Setenv("X_INT_POS", "7")
+	t.Setenv("X_INT_BAD", "-3")
+	t.Setenv("X_INT_TEXT", "abc")
+	if intFromEnv("X_INT_POS", 1) != 7 || intFromEnv("X_INT_BAD", 2) != 2 || intFromEnv("X_INT_TEXT", 3) != 3 || intFromEnv("X_INT_MISSING", 4) != 4 {
+		t.Fatal("intFromEnv")
+	}
+	if durationSecondsFromEnv("X_INT_POS", time.Minute) != 7*time.Second || durationSecondsFromEnv("X_INT_BAD", time.Minute) != time.Minute {
+		t.Fatal("durationSecondsFromEnv")
+	}
+	t.Setenv("HUB_COMMUNICATION_WORKERS", "9")
+	if workersFromEnv() != 9 {
+		t.Fatal("workersFromEnv set")
+	}
+	t.Setenv("HUB_COMMUNICATION_WORKERS", "0")
+	if workersFromEnv() != 4 {
+		t.Fatal("workersFromEnv fallback")
+	}
+}

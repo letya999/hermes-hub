@@ -1144,3 +1144,61 @@ func TestMediaEndpointEdgeCases(t *testing.T) {
 		t.Fatalf("chat image: %v", err)
 	}
 }
+
+func TestMediaPureBranches(t *testing.T) {
+	ctx := context.Background()
+	// falGen without a resolver or fetch reports unavailable, never nils.
+	if _, err := (&falGen{}).apiKey(ctx); err == nil {
+		t.Fatal("nil resolver gave a key")
+	}
+	if _, err := (&falGen{}).fetchResult(ctx, "https://x/i.png"); err == nil {
+		t.Fatal("nil fetch returned a result")
+	}
+	fg := &falGen{fetch: func(context.Context, string) ([]byte, string, error) {
+		return nil, "", errors.New("down")
+	}}
+	if _, err := fg.fetchResult(ctx, "https://x/i.png"); err == nil {
+		t.Fatal("fetch error was swallowed")
+	}
+	fg.fetch = func(context.Context, string) ([]byte, string, error) {
+		return testPNG, "image/png", nil
+	}
+	if res, err := fg.fetchResult(ctx, "https://x/i.png"); err != nil || res.Mime != "image/png" {
+		t.Fatalf("fetchResult: %v", err)
+	}
+	// orDefault honors set values and falls back on blank.
+	if orDefault("", "fb") != "fb" || orDefault(" set ", "fb") != " set " {
+		t.Fatal("orDefault")
+	}
+	// fetchResult (service fetch) refuses missing allowlist and non-https.
+	if _, _, err := fetchResult(ctx, "https://x/i.png", nil, 1<<20); err == nil {
+		t.Fatal("empty allowlist fetched")
+	}
+	if _, _, err := fetchResult(ctx, "http://fal.media/i.png", []string{"fal.media"}, 1<<20); err == nil {
+		t.Fatal("http scheme fetched")
+	}
+	// sniffMime maps magic bytes for every accepted type plus the fallback.
+	for raw, want := range map[string]string{
+		string(testPNG): "image/png",
+		string([]byte{0xff, 0xd8, 0xff, 0xe0, 1}): "image/jpeg",
+		"RIFFxxxxWEBPyyyy":                        "image/webp",
+		string(testMP4):                           "video/mp4",
+		string([]byte{0x1a, 0x45, 0xdf, 0xa3, 1}): "video/webm",
+		"garbage": "application/octet-stream",
+	} {
+		if got := sniffMime([]byte(raw)); got != want {
+			t.Fatalf("sniffMime %q: %q", want, got)
+		}
+	}
+	if !mediaMimeOK("video/quicktime") || mediaMimeOK("text/html") {
+		t.Fatal("mediaMimeOK")
+	}
+	// decodeDataImage: missing comma fails; empty mime sniffs bytes.
+	if _, _, err := decodeDataImage("data:image/png"); err == nil {
+		t.Fatal("comma-less data uri decoded")
+	}
+	data, mime, err := decodeDataImage("data:;base64," + base64.StdEncoding.EncodeToString(testPNG))
+	if err != nil || mime != "image/png" || !bytes.Equal(data, testPNG) {
+		t.Fatalf("sniffed mime: %q %v", mime, err)
+	}
+}
