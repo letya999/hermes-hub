@@ -1,0 +1,47 @@
+{
+  "id": "datalens-auth",
+  "revision": 1,
+  "title": "DataLens organization and Authorization header",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "org_id",
+      "label": "DataLens organization ID (sent as x-dl-org-id)",
+      "kind": "string",
+      "required": true,
+      "max_bytes": 256
+    },
+    {
+      "id": "auth_header",
+      "label": "Authorization header value (for example Bearer <iam-token>; OAuth <token> for internal installations)",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 8192
+    },
+    {
+      "id": "api_url",
+      "label": "DataLens API base URL (optional; defaults to https://api.datalens.tech)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 2048
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "org_id",
+      "target": "DATALENS_ORG_ID"
+    },
+    {
+      "type": "env",
+      "field": "auth_header",
+      "target": "DATALENS_API_AUTH_HEADER"
+    },
+    {
+      "type": "env",
+      "field": "api_url",
+      "target": "DATALENS_API_URL"
+    }
+  ]
+}

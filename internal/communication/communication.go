@@ -112,7 +112,14 @@ type Config struct {
 	NativeCron         string                  `yaml:"-"`
 	STTCommand         string                  `yaml:"-"`
 	TTSCommand         string                  `yaml:"-"`
+	STTURL             string                  `yaml:"-"`
+	STTAuth            string                  `yaml:"-"`
+	TTSURL             string                  `yaml:"-"`
+	TTSAuth            string                  `yaml:"-"`
+	TTSVoice           string                  `yaml:"-"`
 	TTSUploadURL       string                  `yaml:"-"`
+	STTTimeout         time.Duration           `yaml:"-"`
+	MediaMaxDuration   int                     `yaml:"-"`
 	SpoolDir           string                  `yaml:"spool_dir"`
 	RuntimeURL         string                  `yaml:"-"`
 	RuntimeAuth        string                  `yaml:"-"`
@@ -308,13 +315,29 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv()}
+	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit)}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 	if err != nil {
 		return Config{}, err
 	}
 	fillChannelSecrets(&config)
 	return config, nil
+}
+
+// durationSecondsFromEnv reads a seconds-valued duration (HUB_STT_TIMEOUT).
+func durationSecondsFromEnv(name string, fallback time.Duration) time.Duration {
+	if n := intFromEnv(name, 0); n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return fallback
+}
+
+// intFromEnv reads a positive integer env (HUB_MEDIA_MAX_DURATION).
+func intFromEnv(name string, fallback int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil && n > 0 {
+		return n
+	}
+	return fallback
 }
 
 // workersFromEnv bounds the job worker pool; default 4 keeps it under the
@@ -339,6 +362,11 @@ func fillChannelSecrets(config *Config) {
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
 	config.STTCommand = os.Getenv("HUB_STT_COMMAND")
 	config.TTSCommand = os.Getenv("HUB_TTS_COMMAND")
+	config.STTURL = os.Getenv("HUB_STT_URL")
+	config.STTAuth = envOr("HUB_STT_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
+	config.TTSURL = os.Getenv("HUB_TTS_URL")
+	config.TTSAuth = envOr("HUB_TTS_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
+	config.TTSVoice = os.Getenv("HUB_TTS_VOICE")
 	config.TTSUploadURL = os.Getenv("HUB_TTS_UPLOAD_URL")
 }
 
@@ -468,18 +496,32 @@ type Job struct {
 }
 
 type Delivery struct {
-	ID               string    `json:"id"`
-	JobID            string    `json:"job_id"`
-	IdempotencyKey   string    `json:"idempotency_key,omitempty"`
-	ConversationID   string    `json:"conversation_id"`
-	DeliveryTargetID string    `json:"delivery_target_id"`
-	Channel          string    `json:"channel,omitempty"`
-	ChatID           int64     `json:"chat_id"`
-	SlackChannel     string    `json:"slack_channel,omitempty"`
-	SlackThread      string    `json:"slack_thread,omitempty"`
-	Text             string    `json:"text"`
-	Attempts         int       `json:"attempts"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               string `json:"id"`
+	JobID            string `json:"job_id"`
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
+	ConversationID   string `json:"conversation_id"`
+	DeliveryTargetID string `json:"delivery_target_id"`
+	Channel          string `json:"channel,omitempty"`
+	ChatID           int64  `json:"chat_id"`
+	SlackChannel     string `json:"slack_channel,omitempty"`
+	SlackThread      string `json:"slack_thread,omitempty"`
+	Text             string `json:"text"`
+	Format           string `json:"format,omitempty"`
+	// PartCount/SentParts persist multi-part progress so a mid-sequence failure
+	// leaves an uncertain delivery with an exact sent boundary; SourceSent marks
+	// the optional raw-source document part of the same ordered sequence.
+	PartCount  int  `json:"part_count,omitempty"`
+	SentParts  int  `json:"sent_parts,omitempty"`
+	SourceSent bool `json:"source_sent,omitempty"`
+	// Artifacts are run-generated files fetched into outbox/blobs while the
+	// runtime was answering; SentArtifacts is their durable send boundary.
+	Artifacts     []hubruntime.ArtifactRef `json:"artifacts,omitempty"`
+	SentArtifacts int                      `json:"sent_artifacts,omitempty"`
+	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
+	// synthesized audio is sent straight to the channel and never persisted.
+	Voice     string    `json:"voice,omitempty"`
+	Attempts  int       `json:"attempts"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
@@ -787,6 +829,9 @@ func (s *Spool) FailJob(id string) error {
 }
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
+	if d.Format != "" && d.Format != formatMarkdown {
+		return errors.New("invalid delivery identity")
+	}
 	if d.Channel == "" {
 		d.Channel = "telegram_bot"
 	}
@@ -873,7 +918,54 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 	return &d, nil
 }
 
-func (s *Spool) CompleteDelivery(id string) error { return s.move("outbox/sending", "outbox/done", id) }
+func (s *Spool) CompleteDelivery(id string) error {
+	err := s.move("outbox/sending", "outbox/done", id)
+	// Artifact bytes have reached the channel by now; the workspace original
+	// remains authoritative, so the spool copy is dropped.
+	_ = os.RemoveAll(filepath.Join(s.root, "outbox", "blobs", spoolFileID(id)))
+	return err
+}
+
+// WriteDeliveryBlob stages one fetched artifact for a not-yet-created delivery
+// under a stable directory derived from the delivery ID.
+func (s *Spool) WriteDeliveryBlob(deliveryID, name string, data []byte) (string, error) {
+	if len(data) == 0 || len(data) > videoSizeLimit {
+		return "", errors.New("invalid artifact blob")
+	}
+	base := filepath.Base(name)
+	if base == "" || base == "." || base == ".." || !spoolIDPattern.MatchString(base) {
+		return "", errors.New("invalid artifact name")
+	}
+	dir := filepath.Join(s.root, "outbox", "blobs", spoolFileID(deliveryID))
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, base), data, 0600); err != nil {
+		return "", err
+	}
+	return base, nil
+}
+
+func (s *Spool) ReadDeliveryBlob(deliveryID, blob string) ([]byte, error) {
+	if blob == "" || blob == "." || blob == ".." || !spoolIDPattern.MatchString(blob) {
+		return nil, errors.New("invalid artifact blob")
+	}
+	return os.ReadFile(filepath.Join(s.root, "outbox", "blobs", spoolFileID(deliveryID), blob))
+}
+
+// UpdateSending rewrites a claimed delivery's durable record so part progress
+// survives a restart between parts of the same message.
+func (s *Spool) UpdateSending(d Delivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.root, "outbox", "sending", spoolFileID(d.ID)+".json")
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return atomicJSON(path, d)
+}
 func (s *Spool) UncertainDelivery(id string) error {
 	return s.move("outbox/sending", "outbox/failed", id)
 }
@@ -976,7 +1068,10 @@ type TelegramFile struct {
 
 type TelegramAPI interface {
 	GetUpdates(context.Context, int64, int) ([]Update, error)
-	SendMessage(context.Context, int64, string) error
+	SendMessage(context.Context, int64, string, string) error
+	SendDocument(context.Context, int64, string, string, []byte) error
+	SendPhoto(context.Context, int64, string, string, []byte) error
+	SendVideo(context.Context, int64, string, string, []byte) error
 	DeleteMessage(context.Context, int64, int) error
 	SendChatAction(context.Context, int64, string) error
 	GetFile(context.Context, string) (TelegramFile, error)
@@ -1045,36 +1140,111 @@ func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int)
 	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message"}}, &result)
 	return result, err
 }
-func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text string) error {
+func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text, parseMode string) error {
 	if !utf8.ValidString(text) || text == "" || len(text) > 2*1024*1024 {
 		return errors.New("invalid Telegram output")
 	}
-	if utf8.RuneCountInString(text) > 4096 {
-		// Preserve the complete bounded result in one delivery, without a
-		// partially sent multi-message sequence that cannot safely be retried.
-		var body bytes.Buffer
-		form := multipart.NewWriter(&body)
-		if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
-			return err
-		}
-		part, err := form.CreateFormFile("document", "response.txt")
-		if err != nil {
-			return err
-		}
-		if _, err := io.WriteString(part, text); err != nil {
-			return err
-		}
-		if err := form.Close(); err != nil {
-			return err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendDocument", &body)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", form.FormDataContentType())
-		return t.callRequest(req, nil)
+	payload := map[string]any{"chat_id": chatID, "text": text}
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
 	}
-	return t.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text}, nil)
+	return t.call(ctx, "sendMessage", payload, nil)
+}
+func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
+		return errors.New("invalid Telegram document")
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if caption != "" {
+		if err := form.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := form.CreateFormFile("document", name)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := form.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendDocument", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return t.callRequest(req, nil)
+}
+func (t *telegramAPI) SendVideo(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
+		return errors.New("invalid Telegram video")
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if err := form.WriteField("supports_streaming", "true"); err != nil {
+		return err
+	}
+	if caption != "" {
+		if err := form.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := form.CreateFormFile("video", name)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := form.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendVideo", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return t.callRequest(req, nil)
+}
+func (t *telegramAPI) SendPhoto(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+	if len(data) == 0 || len(data) > mediaSizeLimit || name == "" {
+		return errors.New("invalid Telegram photo")
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if caption != "" {
+		if err := form.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := form.CreateFormFile("photo", name)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := form.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendPhoto", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return t.callRequest(req, nil)
 }
 func (t *telegramAPI) DeleteMessage(ctx context.Context, chatID int64, messageID int) error {
 	return t.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": messageID}, nil)
@@ -1289,7 +1459,7 @@ func New(config Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: commandTranscriber(config.STTCommand), synthesizer: commandSynthesizer(config.TTSCommand), forms: map[string]credentialForm{}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand), forms: map[string]credentialForm{}}
 	if config.SlackBotToken != "" {
 		g.slack = newSlackAPI(config.SlackBotToken)
 	}
@@ -1533,7 +1703,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		case "session":
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.sessionStatus(user, message.From.ID))
 		case "voice":
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.voiceCommand(user, message.From.ID, text))
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.voiceCommand())
 		case "routine":
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.routineCommand(user, message.From.ID, message.Chat.ID, text))
 		}
@@ -1573,28 +1743,47 @@ func (g *Gateway) sessionStatus(user User, sender int64) string {
 	return "Сессия: " + mapping.SessionID + "."
 }
 
-func (g *Gateway) voiceCommand(user User, sender int64, text string) string {
-	fields := strings.Fields(text)
-	conversation := user.envelope(sender).ConversationID
-	if len(fields) >= 2 {
-		switch strings.ToLower(fields[1]) {
-		case "on", "enable":
-			if err := g.spool.SetConversationVoice(user.ID, user.ID, conversation, true); err != nil {
-				return "Не удалось включить голосовые ответы."
-			}
-			return "Голосовые ответы включены для этого разговора. Текст остаётся канонической записью."
-		case "off", "disable":
-			if err := g.spool.SetConversationVoice(user.ID, user.ID, conversation, false); err != nil {
-				return "Не удалось выключить голосовые ответы."
-			}
-			return "Голосовые ответы выключены."
-		}
+// voiceReadiness reports incoming STT and outgoing TTS availability separately:
+// a configured-but-unresolvable worker binary, a sidecar that does not answer
+// /healthz, or a parked upload URL all still mean "unavailable", so /voice
+// never promises a channel that cannot send.
+func (g *Gateway) voiceReadiness() (sttReady, ttsReady bool) {
+	sttReady = mediaReady(g.transcriber, g.config.STTCommand, g.config.STTURL)
+	ttsReady = mediaReady(g.synthesizer, g.config.TTSCommand, g.config.TTSURL) && strings.TrimSpace(g.config.TTSUploadURL) == ""
+	return
+}
+
+// mediaReady resolves readiness for either an embedded command worker (binary
+// must exist) or a URL-configured sidecar (health endpoint must answer).
+func mediaReady(impl any, command, url string) bool {
+	if impl == nil {
+		return false
 	}
-	enabled, _ := g.spool.ConversationVoice(user.ID, user.ID, conversation)
-	if enabled {
-		return "Голосовые ответы включены. Каноническая доставка — текст. /voice off чтобы выключить."
+	if strings.TrimSpace(url) == "" {
+		return commandAvailable(command)
 	}
-	return "Голосовые ответы выключены по умолчанию. /voice on чтобы включить для этого разговора."
+	type healthchecker interface {
+		Healthy(context.Context) bool
+	}
+	if h, ok := impl.(healthchecker); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return h.Healthy(ctx)
+	}
+	return true
+}
+
+func readyWord(ready bool) string {
+	if ready {
+		return "доступно"
+	}
+	return "недоступно"
+}
+
+func (g *Gateway) voiceCommand() string {
+	sttReady, ttsReady := g.voiceReadiness()
+	status := "Распознавание голосовых (STT): " + readyWord(sttReady) + ". Озвучка ответов (TTS): " + readyWord(ttsReady) + "."
+	return status + " Отдельного режима нет: попросите в сообщении ответить голосовым — например, «ответь голосовым» — и придёт голосовое сообщение."
 }
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID int64, messageID int, text string) error {
@@ -1679,7 +1868,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}
 			g.recordJob(*job, outcome)
@@ -1708,12 +1897,37 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			sendErr = errors.New("slack delivery is not configured")
 			break
 		}
-		sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
-	default:
-		sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text))
-		if sendErr == nil {
-			g.maybeSendVoice(ctx, *delivery)
+		if delivery.Format == formatMarkdown {
+			sendErr = g.sendParts(delivery, renderSlack(delivery.Text), func(part string) error {
+				return g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, part)
+			})
+		} else {
+			sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
 		}
+	default:
+		speak, voiceOnly := g.voicePlan(*delivery)
+		if strings.TrimSpace(delivery.Text) == "" {
+			// A VOICE:-only reply keeps its spoken payload as the text
+			// fallback so an unavailable synthesizer never swallows it.
+			delivery.Text = speak
+		}
+		voiceSent := false
+		if voiceOnly && speak != "" {
+			voiceSent = g.sendVoiceReply(ctx, *delivery, speak) == nil
+		}
+		if !voiceSent {
+			if delivery.Format == formatMarkdown {
+				sendErr = g.sendTelegramMarkdown(ctx, delivery)
+			} else {
+				sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text), "")
+			}
+			if sendErr == nil && speak != "" && !voiceOnly {
+				_ = g.sendVoiceReply(ctx, *delivery, speak)
+			}
+		}
+	}
+	if sendErr == nil && delivery.SentArtifacts < len(delivery.Artifacts) {
+		sendErr = g.sendDeliveryArtifacts(ctx, delivery)
 	}
 	if sendErr != nil {
 		log.Printf("gateway delivery channel=%q job_id=%q delivery_id=%q status=uncertain", delivery.Channel, delivery.JobID, delivery.ID)
@@ -1745,27 +1959,127 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	}
 }
 
-func (g *Gateway) maybeSendVoice(ctx context.Context, delivery Delivery) {
-	if delivery.JobID == "" || delivery.Channel == "slack_app" {
-		return
+// sendParts delivers ordered message parts, persisting the sent boundary after
+// each part so a failure never silently loses or blindly resends earlier parts.
+func (g *Gateway) sendParts(delivery *Delivery, parts []string, send func(string) error) error {
+	for i := delivery.SentParts; i < len(parts); i++ {
+		if err := send(parts[i]); err != nil {
+			_ = g.spool.UpdateSending(*delivery)
+			return err
+		}
+		delivery.SentParts, delivery.PartCount = i+1, len(parts)
+		if err := g.spool.UpdateSending(*delivery); err != nil {
+			return err
+		}
 	}
-	user := g.userByChatID(delivery.ChatID)
-	if user.ID == "" {
-		return
+	return nil
+}
+
+// sendTelegramMarkdown renders a model-authored delivery to Telegram HTML parts
+// and appends the raw source as a document when rendering degraded content.
+func (g *Gateway) sendTelegramMarkdown(ctx context.Context, delivery *Delivery) error {
+	parts, degraded := renderTelegram(delivery.Text)
+	err := g.sendParts(delivery, parts, func(part string) error {
+		return g.api.SendMessage(ctx, delivery.ChatID, part, "HTML")
+	})
+	if err != nil {
+		return err
 	}
-	enabled, err := g.spool.ConversationVoice(user.ID, user.ID, delivery.ConversationID)
-	if err != nil || !enabled || g.synthesizer == nil {
-		return
+	if degraded && !delivery.SourceSent {
+		if err := g.api.SendDocument(ctx, delivery.ChatID, "answer.md", "", []byte(delivery.Text)); err != nil {
+			return err
+		}
+		delivery.SourceSent = true
+		if err := g.spool.UpdateSending(*delivery); err != nil {
+			return err
+		}
 	}
-	audio, _, synthErr := g.synthesizer.Synthesize(ctx, delivery.Text)
-	if synthErr != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
-		return
+	return nil
+}
+
+// sendDeliveryArtifacts ships staged run artifacts after the text parts, in
+// order, with a durable boundary. A ref with Error still produces one explicit
+// notice: a generated file that never arrives is never silent.
+func (g *Gateway) sendDeliveryArtifacts(ctx context.Context, delivery *Delivery) error {
+	for i := delivery.SentArtifacts; i < len(delivery.Artifacts); i++ {
+		if err := g.sendArtifact(ctx, delivery, delivery.Artifacts[i]); err != nil {
+			_ = g.spool.UpdateSending(*delivery)
+			return err
+		}
+		delivery.SentArtifacts = i + 1
+		if err := g.spool.UpdateSending(*delivery); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Gateway) sendArtifact(ctx context.Context, delivery *Delivery, ref hubruntime.ArtifactRef) error {
+	if delivery.Channel == "slack_app" {
+		if g.slack == nil {
+			return errors.New("slack delivery is not configured")
+		}
+		note := "Файл готов: " + ref.Name + " — сохранён в workspace, доставка файлов в Slack пока не поддерживается"
+		if ref.Error != "" {
+			note = "Файл не удалось доставить: " + ref.Name
+		}
+		return g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, note)
+	}
+	if ref.Error != "" {
+		return g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText("Файл не удалось доставить: "+ref.Name), "")
+	}
+	data, err := g.spool.ReadDeliveryBlob(delivery.ID, ref.Blob)
+	if err != nil {
+		return err
+	}
+	if ref.Mime == "image/png" || ref.Mime == "image/jpeg" {
+		if err := g.api.SendPhoto(ctx, delivery.ChatID, ref.Name, "", data); err == nil {
+			return nil
+		}
+	}
+	if strings.HasPrefix(ref.Mime, "video/") {
+		if err := g.api.SendVideo(ctx, delivery.ChatID, ref.Name, "", data); err == nil {
+			return nil
+		}
+	}
+	return g.api.SendDocument(ctx, delivery.ChatID, ref.Name, "", data)
+}
+
+// voicePlan decides what is spoken and whether the voice message replaces
+// text delivery. Speech is a per-reply tool: only an upstream VOICE: marker
+// requests it (marker-only replies are voice-only, text+marker sends both).
+// There is no conversation-level voice mode.
+func (g *Gateway) voicePlan(delivery Delivery) (speak string, voiceOnly bool) {
+	if delivery.Channel == "slack_app" {
+		return "", false
+	}
+	if speak = strings.TrimSpace(delivery.Voice); speak != "" {
+		return speak, strings.TrimSpace(delivery.Text) == ""
+	}
+	return "", false
+}
+
+// sendVoiceReply synthesizes the payload and posts it as a voice message.
+// The audio lives only in memory — nothing is stored after sending; the
+// text transcript remains the canonical record.
+func (g *Gateway) sendVoiceReply(ctx context.Context, delivery Delivery, text string) error {
+	if g.synthesizer == nil || strings.TrimSpace(text) == "" {
+		return errors.New("tts is not configured")
 	}
 	if strings.TrimSpace(g.config.TTSUploadURL) != "" {
 		// Third-party upload is skipped unless a future explicit upload worker is configured.
-		return
+		return errors.New("voice upload is not configured")
 	}
-	_ = g.api.SendVoice(ctx, delivery.ChatID, audio, "")
+	audio, _, err := g.synthesizer.Synthesize(ctx, text)
+	if err != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
+		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, err, len(audio))
+		return errors.New("tts failed")
+	}
+	if err := g.api.SendVoice(ctx, delivery.ChatID, audio, ""); err != nil {
+		log.Printf("gateway voice send failed delivery_id=%q err=%v", delivery.ID, err)
+		return err
+	}
+	return nil
 }
 
 func (g *Gateway) recordJob(job Job, outcome RunOutcome) {

@@ -175,6 +175,39 @@ Hermes execution. Delivery records bind the normalized conversation to the numer
 Telegram audience, and spool restart tests preserve runtime and policy identity.
 Effective configuration produces one policy digest shared by gateway and runtime.
 
+## CHG-0061 voice readiness (issue #170)
+
+`/voice` now reports incoming STT and outgoing TTS readiness separately. A
+direction reads "available" only when its worker command is configured *and*
+resolves to a runnable binary; a parked `HUB_TTS_UPLOAD_URL` still reads TTS
+unavailable because `sendVoice` is skipped on that path. Voice input on a
+host without STT gets an explicit "not configured" reply without downloading
+the attachment. Covered by unit tests over the readiness matrix.
+
+Delivery semantics tightened after live use: the per-conversation
+`/voice on|off` mode was removed entirely — speech is a per-reply tool. A
+`VOICE:` marker line in the model reply requests speech: marker-only replies
+are voice-only, visible text plus a marker sends both. Failed synthesis or a
+parked upload URL falls back to sending the spoken payload as text.
+Generated audio is held in memory and sent directly to Telegram; it is never
+written to the spool, workspace or the TTS sidecar `/data`, so it needs no
+TTL — the spoken text remains the durable content. Stored `voice_replies`
+flags in old conversation mappings are dead data and ignored.
+
+The image itself was the real blocker: `hub-stt` shipped in the image but
+`faster-whisper` was deliberately excluded from the pip extras, so a
+configured `HUB_STT_COMMAND` always failed at import. The image now installs
+`faster-whisper==1.2.1` alone (not the whole `voice` extra) and ships
+`hub-tts` (espeak-ng → ffmpeg → OGG/Opus), which the `transcription` feature
+exports as `HUB_TTS_COMMAND`.
+
+Live Telegram evidence is **not** claimed: this host has no Docker runtime and
+no real bot account, so the end-to-end voice note → transcript → text answer →
+`sendVoice` round-trip stays unproven until a rebuild + deploy. The exact
+gate to run on a deployed host: image rebuilt with faster-whisper,
+`transcription` feature on, a real Telegram DM voice note, `/voice on`, and a
+reply — record model/provider, language, latency and file size.
+
 ## CHG-0023 personal assistant experience
 
 M4 keeps Telegram Bot API and Slack App as communication-hub ingress/delivery.
@@ -610,3 +643,13 @@ closed against this control-plane evidence; #47 stays open for M3 secret storage
   `just docker-check` passed the prod image, standalone smoke and pinned Hermes
   contract/lifecycle. The pre-existing `/usr/local/bin/hub-stt` fixture warning
   remains unrelated.
+- hub-tts voice upgrade: Silero `v5_5_ru` (snakers4, MIT) baked into the
+  image on CPU torch — auto-stress + homographs for Russian; piper voices
+  irina/ruslan/dmitri and espeak remain as fallbacks. Voice routing:
+  request `voice` picks a silero speaker, `piper/<name>` or `espeak`;
+  `HUB_TTS_LANG_VOICES` maps bare language codes to a primary voice;
+  `HUB_TTS_DEVICE` switches cpu/cuda; `HUB_TTS_BACKENDS` orders fallbacks.
+  External vendors: `remote` engine covers OpenAI-compatible TTS; new
+  `elevenlabs` engine (HUB_MEDIA_UPSTREAM_KEY + voice id) calls the native
+  ElevenLabs API. E2E verified on the live stack: silero xenia synthesized
+  a Russian sentence which whisper-small then transcribed verbatim.

@@ -105,14 +105,14 @@ func TestDocumentImageProfile(t *testing.T) {
 
 	envDir := t.TempDir()
 	secrets := map[string]string{"OPENAI_API_KEY": "openai-sample", "FAL_KEY": "fal-sample-value"}
-	if err := writeRuntimeEnvFiles(envDir, "prod", secrets, nil, []string{"FAL_KEY"}); err != nil {
+	if err := writeRuntimeEnvFiles(envDir, "prod", secrets, nil, []string{"FAL_KEY"}, map[string]string{"HUB_MEDIA_URL": "http://hub-media:8090"}); err != nil {
 		t.Fatal(err)
 	}
 	runtimeEnv, err := os.ReadFile(filepath.Join(envDir, "runtime.prod.env"))
-	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") || !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=openai-sample") {
+	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") || !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=openai-sample") || !strings.Contains(string(runtimeEnv), "HUB_MEDIA_URL=http://hub-media:8090") {
 		t.Fatalf("omitted runtime env: %v %s", err, runtimeEnv)
 	}
-	if err := writeRuntimeEnvFiles(envDir, "dev", secrets, nil, nil); err != nil {
+	if err := writeRuntimeEnvFiles(envDir, "dev", secrets, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	included, err := os.ReadFile(filepath.Join(envDir, "runtime.dev.env"))
@@ -187,9 +187,58 @@ func TestDocumentImageProfile(t *testing.T) {
 	if err != nil || !strings.Contains(string(rendered), "provider: "+media.FalProvider) || !strings.Contains(string(rendered), "model: "+media.ModelFromChat) || !strings.Contains(string(rendered), "delivery: "+media.DeliveryURL) || strings.Contains(string(rendered), media.CLIProxyDefaultModel) || strings.Contains(string(rendered), "fal-sample-value") {
 		t.Fatalf("rendered fal grant: %v %s", err, rendered)
 	}
+	// Provider credentials never touch env files: hub-media materializes the
+	// broker grant at call time. The runtime keeps the grant but never the
+	// key, compose carries the sidecar on the internal network with no
+	// published port, and no media.<env>.env is written at all.
 	runtimeEnv, err = os.ReadFile(filepath.Join(space, "runtime.prod.env"))
-	if err != nil || !strings.Contains(string(runtimeEnv), "FAL_KEY=fal-sample-value") {
-		t.Fatalf("rendered runtime omitted an active fal grant: %v %s", err, runtimeEnv)
+	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") {
+		t.Fatalf("rendered runtime leaked the fal credential: %v %s", err, runtimeEnv)
+	}
+	if _, err := os.Stat(filepath.Join(space, "media.prod.env")); !os.IsNotExist(err) {
+		t.Fatalf("media provider env file must not be rendered: %v", err)
+	}
+	composeDoc, err := os.ReadFile(filepath.Join(space, "generated", "compose.prod.yaml"))
+	if err != nil || !strings.Contains(string(composeDoc), "hub-media") || !strings.Contains(string(composeDoc), "HUB_MEDIA_URL") || strings.Contains(string(composeDoc), "fal-sample-value") {
+		t.Fatalf("compose missing hub-media sidecar: %v %s", err, composeDoc)
+	}
+	mediaSvc := Compose(settings, repo, space)["services"].(M)["hub-media"].(M)
+	mediaEnv := mediaSvc["environment"].(M)
+	for _, want := range []string{"HUB_MEDIA_BROKER_GRANT", "HUB_CREDENTIAL_BROKER_MEDIA_URL", "HUB_CREDENTIAL_BROKER_MEDIA_KEY_FILE", "HUB_CREDENTIAL_BROKER_MEDIA_KEY_ID", "HUB_CREDENTIAL_BROKER_MEDIA_ISSUER", "HUB_CREDENTIAL_BROKER_MEDIA_CA_FILE", "HUB_PRINCIPAL_ID", "HUB_POLICY_VERSION"} {
+		if mediaEnv[want] == nil || mediaEnv[want] == "" {
+			t.Fatalf("hub-media missing broker env %s: %#v", want, mediaEnv)
+		}
+	}
+	if mediaEnv["HUB_CREDENTIAL_BROKER_MEDIA_KEY_ID"] != "media" || mediaEnv["HUB_CREDENTIAL_BROKER_MEDIA_ISSUER"] != "hermes-media" {
+		t.Fatalf("hub-media broker identity: %#v", mediaEnv)
+	}
+	for _, raw := range mediaSvc["env_file"].([]any) {
+		if strings.Contains(raw.(M)["path"].(string), "media.prod.env") {
+			t.Fatal("hub-media still mounts a provider env file")
+		}
+	}
+	foundMediaKeys := false
+	for _, raw := range mediaSvc["volumes"].([]any) {
+		if raw.(M)["source"] == "broker-secrets-media" && raw.(M)["read_only"] == true {
+			foundMediaKeys = true
+		}
+	}
+	if !foundMediaKeys {
+		t.Fatal("hub-media missing broker-secrets-media read-only mount")
+	}
+	if _, ok := Compose(settings, repo, space)["volumes"].(M)["broker-secrets-media"]; !ok {
+		t.Fatal("compose missing broker-secrets-media volume")
+	}
+	// The runtime's env_file list must include media.auth, otherwise
+	// HUB_MEDIA_AUTH never materializes inside the container.
+	foundMediaAuth := false
+	for _, raw := range Compose(settings, repo, space)["services"].(M)["hermes-runtime"].(M)["env_file"].([]any) {
+		if raw.(M)["path"] == filepath.ToSlash(filepath.Join(space, "media.auth")) {
+			foundMediaAuth = true
+		}
+	}
+	if !foundMediaAuth {
+		t.Fatal("runtime env_file missing media.auth")
 	}
 
 	_, caller, _, ok := runtime.Caller(0)

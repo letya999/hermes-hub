@@ -1,0 +1,23 @@
+{
+  "id": "media-provider-key",
+  "revision": 1,
+  "title": "Media generation provider API key (fal / OpenAI-compatible upstream)",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "api_key",
+      "label": "Provider API key",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "api_key",
+      "target": "HUB_MEDIA_UPSTREAM_KEY"
+    }
+  ]
+}

@@ -80,10 +80,17 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
    is not written into a new artifact.
 9. `image_gen` is host-managed. It is not a self-service connector and not a
    default feature. Enabled, the Hermes config receives the normalized provider,
-   model, and delivery. `FAL_KEY` enters the runtime env only for provider
-   `fal`. Disabled, or enabled with `cliproxy`, the section or the key is
-   omitted: `FAL_KEY` stays out of the runtime env even if the secrets file
-   contains it. The rendered config does not contain a key value. Native
+   model, and delivery. On a rendered stack the generation call runs in the
+   `hub-media` sidecar (SPEC-0040): provider credentials are materialized
+   from the Credential Broker grant named by `HUB_MEDIA_BROKER_GRANT`
+   (identity `media`, `broker-secrets-media` volume) — no
+   `media.<environment>.env` file carries them — and the runtime env never
+   contains `FAL_KEY` for any provider. Outside a stack, or when
+   `HUB_MEDIA_URL` is unset, the embedded direct-provider path stays as the
+   fallback and `FAL_KEY` enters the runtime env only for provider `fal`.
+   Disabled, the section and the keys are
+   omitted even if the secrets file
+   contains them. The rendered config does not contain a key value. Native
    `vision` and `image_gen` stay out of `platform_toolsets`. Playwright
    `--caps vision,pdf` stays.
 10. The live grant is the `image_gen` section of the mounted config
@@ -105,7 +112,7 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
     for the value in chat.
 12. Artifacts are files on the user workspace mount. They remain after the
     session ends. `artifact_remove` deletes one regular file under
-    `artifacts/documents/` or `artifacts/images/`. Removing the workspace remains
+    `artifacts/documents/`, `artifacts/images/`, or `artifacts/videos/`. Removing the workspace remains
     purge with an explicit matching user confirmation. These calls run in the
     existing hub process. They are not an always-on document or GPU service.
 13. An httptest double of the model and Fal endpoints is not a live provider

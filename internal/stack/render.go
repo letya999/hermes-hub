@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,6 +85,12 @@ func Config(s Settings) M {
 		e["HUB_SELF_ENV_KEYS"] = "${HUB_SELF_ENV_KEYS}"
 		e["HUB_PROTECTED_ENV_KEYS"] = "${HUB_PROTECTED_ENV_KEYS}"
 		e["HUB_STATE"] = "/state"
+		if s.Has("image_gen") {
+			// The tools subprocess reaches hub-media with the service URL and
+			// bearer only; provider keys stay inside the media service.
+			e["HUB_MEDIA_URL"] = "${HUB_MEDIA_URL}"
+			e["HUB_MEDIA_AUTH"] = "${HUB_MEDIA_AUTH}"
+		}
 		if s.Has("ssh") {
 			e["HUB_SSH_CONFIG"] = "/state/ssh/config.yaml"
 			e["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))
@@ -132,6 +139,11 @@ func Config(s Settings) M {
 	// vision and image_gen stay off this list. The hub MCP tools are the
 	// workspace-confined profile; the native local tools are not.
 	toolsets := []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	if !s.Has("web") {
+		// No web toolset at all: web_search/web_extract do not exist for this
+		// space, so disabled web cannot be reached by prompting either.
+		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "web" })
+	}
 	if s.ExecutionMode == "supervisor" {
 		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "cronjob" })
 	}
@@ -149,6 +161,17 @@ func Config(s Settings) M {
 	if len(external) > 0 {
 		skills["external_dirs"] = external
 	}
+	// Defense in depth: the filtered /opt/hub/skills mount already excludes
+	// gated skills; disabled additionally blocks a same-named org skill.
+	var disabled []string
+	for skill, feature := range webGatedSkills {
+		if !s.Has(feature) {
+			disabled = append(disabled, skill)
+		}
+	}
+	if len(disabled) > 0 {
+		skills["disabled"] = disabled
+	}
 	memory := M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}
 	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
@@ -156,6 +179,18 @@ func Config(s Settings) M {
 	display := M{"busy_input_mode": "queue", "long_running_notifications": true}
 	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 	cfg["auxiliary"] = M{"vision": M{"provider": "main", "timeout": 30, "download_timeout": 15, "max_concurrency": media.InspectConcurrency}}
+	if s.Has("web") {
+		if web := s.Web.config(); len(web) > 0 {
+			cfg["web"] = web
+		}
+	} else {
+		// api_server and other platforms not named in platform_toolsets fall
+		// back to upstream composites that include the core web tools, so the
+		// explicit-list gate alone leaks web_search/web_extract there. Upstream
+		// applies agent.disabled_toolsets at tool granularity last, which
+		// subtracts them from every platform including composite fallbacks.
+		cfg["agent"] = M{"disabled_toolsets": []string{"web"}}
+	}
 	if s.Has("image_gen") {
 		if gen, err := s.ImageGen.Normalize(); err == nil {
 			cfg["image_gen"] = M{"provider": gen.Provider, "model": gen.Model, "delivery": gen.Delivery}
@@ -231,7 +266,20 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
 	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.GlobalSkillsDir), "target": "/opt/hub/skills", "read_only": true})
+		// The mounted dir is the per-space filtered copy materialized by
+		// Render: feature-gated bundled skills are absent entirely when the
+		// feature is off, so they cannot be read or followed by prompt.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
+	}
+	for name, feature := range hubGatedPlugins {
+		if !s.Has(feature) {
+			continue
+		}
+		// Hub plugins mount read-only into upstream's bundled plugins dir:
+		// source "bundled" + kind "backend" auto-loads them, and the agent
+		// cannot tamper with tool code the way it could in its own
+		// /state/hermes/plugins dir.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(GeneratedPluginsDir(dir), name)), "target": "/opt/hermes/plugins/" + name, "read_only": true})
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
 	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
@@ -261,6 +309,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// control plane on the shared network where `toolhub`, `credential-broker`
 		// and `cliproxy` resolve to the single deployed instances.
 		runtimeService["networks"] = []string{"default", sharedNetworkName}
+	}
+	// hub-media carries the image/video provider credentials; the runtime only
+	// gets the service URL and the shared media bearer (media.auth), never
+	// FAL_KEY itself. Secondary spaces reach the one deployed instance over
+	// the shared network, exactly like toolhub.
+	if s.Has("image_gen") {
+		runtimeEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
+		runtimeService["env_file"] = append(runtimeEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
 	}
 	services := M{"hermes-runtime": runtimeService}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
@@ -379,9 +435,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
 		if s.Has("transcription") {
+			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
+			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-tts:8090"
+			// The embedded command workers stay configured as the documented
+			// fallback; when the URL is set the sidecar wins at selection time.
 			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
+			gatewayEnvironment["HUB_TTS_COMMAND"] = "/usr/local/bin/hub-tts"
 			gatewayEnvironment["HF_HOME"] = "/data/hf"
 			gatewayEnvironment["XDG_CACHE_HOME"] = "/data/cache"
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
 		}
 		if s.ExecutionMode != "" {
 			gatewayEnvironment["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
@@ -410,6 +472,92 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			delete(services, "hermes-runtime")
 		}
+
+		// Standalone speech services: two separate binaries and images
+		// (hub-stt, hub-tts), independent lifecycle and scaling, shared
+		// bearer auth, durable job data on their own volumes. They reach
+		// the gateway's network only — never the docker socket, broker
+		// mounts or user spaces. HUB_MEDIA_ENGINE=remote with
+		// HUB_MEDIA_UPSTREAM points a service at any OpenAI-compatible
+		// upstream (Groq, Speaches, a self-hosted whisperx, NVIDIA NIM).
+		if s.Has("transcription") {
+			mediaAuth := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"}}
+			for _, role := range []string{"stt", "tts"} {
+				name := "hub-" + role
+				svc := cloneMap(common)
+				// Dedicated image tag: sharing the hub tag would let the
+				// last build overwrite the image other services run.
+				svc["image"] = "hermes-hub-" + role + ":0.3.0-" + s.Environment
+				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile." + role}
+				svc["environment"] = M{
+					"HUB_MEDIA_LISTEN": "0.0.0.0:8090",
+					"HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "/usr/local/bin/" + role + "-worker",
+					"HUB_MEDIA_DATA": "/data", "HUB_MEDIA_WORKERS": "2",
+					"HUB_MEDIA_INPUT_ROOT": "/inputs",
+					"HF_HOME":              "/data/hf", "XDG_CACHE_HOME": "/data/cache",
+					"HOME": "/tmp", "TZ": s.Timezone,
+				}
+				// whisper-tiny transcribes Russian poorly; "small" is the sane
+				// local default. Host env can override either model name.
+				if role == "stt" {
+					svc["environment"].(M)["HUB_STT_MODEL"] = "${HUB_STT_MODEL:-small}"
+				} else {
+					svc["environment"].(M)["HUB_TTS_LANG"] = "${HUB_TTS_LANG:-ru}"
+					svc["environment"].(M)["HUB_TTS_MODEL"] = "${HUB_TTS_MODEL:-ru_RU-irina-medium}"
+					svc["environment"].(M)["HUB_TTS_VOICE"] = "${HUB_TTS_VOICE:-xenia}"
+					svc["environment"].(M)["HUB_TTS_BACKENDS"] = "${HUB_TTS_BACKENDS:-silero,piper,espeak}"
+					svc["environment"].(M)["HUB_TTS_DEVICE"] = "${HUB_TTS_DEVICE:-cpu}"
+					svc["environment"].(M)["HUB_TTS_VOICES"] = "${HUB_TTS_VOICES:-aidar,baya,kseniya,xenia,eugene,piper/irina,piper/ruslan,piper/dmitri,espeak}"
+				}
+				svc["env_file"] = mediaAuth
+				svc["volumes"] = []any{M{"type": "volume", "source": "hub-" + role + "-data", "target": "/data"}}
+				svc["networks"] = sharedNetworks
+				svc["restart"] = "unless-stopped"
+				services[name] = svc
+			}
+		}
+	}
+	// hub-media is the media-generation sidecar: one Go binary from the hub
+	// image, durable video jobs on its own volume, internal network only (no
+	// published port). Provider keys never enter env files: the service
+	// materializes the grant named by HUB_MEDIA_BROKER_GRANT through the
+	// credential broker (media keypair in broker-secrets-media). With no grant
+	// configured the engines fall back to env keys — meaningful only outside
+	// the rendered stack, since compose no longer mounts a media env file.
+	if infra && s.Has("image_gen") {
+		mediaSvc := cloneMap(common)
+		mediaSvc["entrypoint"] = []string{"hub-media"}
+		mediaSvc["build"] = coreBuild
+		mediaEnv := M{
+			"HUB_MEDIA_LISTEN":         "0.0.0.0:8090",
+			"HUB_MEDIA_ENGINE":         "${HUB_MEDIA_ENGINE:-remote}",
+			"HUB_MEDIA_UPSTREAM":       "${HUB_MEDIA_UPSTREAM:-http://cliproxy:8317}",
+			"HUB_MEDIA_QUEUE_UPSTREAM": "${HUB_MEDIA_QUEUE_UPSTREAM:-}",
+			"HUB_MEDIA_IMAGE_MODEL":    "${HUB_MEDIA_IMAGE_MODEL:-gpt-image-2}",
+			"HUB_MEDIA_IMAGE_MODELS":   "${HUB_MEDIA_IMAGE_MODELS:-}",
+			"HUB_MEDIA_CHAT_MODELS":    "${HUB_MEDIA_CHAT_MODELS:-" + strings.Join(media.CLIProxyChatImageModels(), ",") + "}",
+			"HUB_MEDIA_VIDEO_MODEL":    "${HUB_MEDIA_VIDEO_MODEL:-}",
+			"HUB_MEDIA_VIDEO_MODELS":   "${HUB_MEDIA_VIDEO_MODELS:-}",
+			"HUB_MEDIA_FETCH_HOSTS":    "${HUB_MEDIA_FETCH_HOSTS:-fal.media}",
+			"HUB_MEDIA_BROKER_GRANT":   "${HUB_MEDIA_BROKER_GRANT:-}",
+			"HUB_MEDIA_DATA":           "/data", "HUB_MEDIA_WORKERS": "2",
+			// The broker grant pins the actor's policy version: the config hash
+			// changes on every settings edit, which would orphan the grant, so
+			// the service presents the stable service-level policy instead.
+			"HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": "hub-media",
+			"HOME": "/tmp", "TZ": s.Timezone,
+		}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MEDIA_", "media", "hermes-media") {
+			mediaEnv[key] = value
+		}
+		mediaSvc["environment"] = mediaEnv
+		mediaSvc["env_file"] = []any{
+			M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"},
+		}
+		mediaSvc["volumes"] = []any{M{"type": "volume", "source": "hub-media-data", "target": "/data"}, brokerSecrets("media")}
+		mediaSvc["networks"] = sharedNetworks
+		mediaSvc["healthcheck"] = M{"test": []string{"CMD", "hub-media", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
+		services["hub-media"] = mediaSvc
 	}
 	if includeGateway && !infra {
 		// Secondary spaces never keep a resident runtime: their gateway jobs
@@ -428,6 +576,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["broker-materialized"] = M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
+		if s.Has("transcription") {
+			volumes["hub-stt-data"] = M{}
+			volumes["hub-tts-data"] = M{}
+		}
+		if s.Has("image_gen") {
+			volumes["hub-media-data"] = M{}
+			volumes["broker-secrets-media"] = M{}
+		}
 	}
 	// The shared runtime network is operator-owned infrastructure: it is
 	// created once (docker network create hermes-hub-runtime), outlives any
@@ -545,16 +701,36 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
+	if s.Has("transcription") || s.Has("image_gen") {
+		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
+			return err
+		}
+	}
+	// Provider keys moved behind the credential broker: a media.<env>.env
+	// rendered by an older version must not linger with plaintext secrets.
+	if err = removeIfExists(filepath.Join(dir, "media."+environment+".env")); err != nil {
+		return err
+	}
 	if s.RendersInfra() {
 		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
 			return err
 		}
 	}
-	omitted := []string{}
-	if s.imageCredential() != "FAL_KEY" {
-		omitted = append(omitted, "FAL_KEY")
+	// FAL_KEY belongs to hub-media: image/video generation always goes
+	// through the service, so the runtime never needs the provider credential.
+	omitted := []string{"FAL_KEY"}
+	// Spawned runtimes reach hub-media through the runtime env file: the
+	// supervisor passes runtime.<env>.env to `docker run --env-file`, so the
+	// service URL and bearer must live there — compose env_file entries are
+	// not replayed for supervisor-spawned containers.
+	runtimeExtra := map[string]string{}
+	if s.Has("image_gen") {
+		if auth, _ := ReadSecrets(filepath.Join(dir, "media.auth")); strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
+			runtimeExtra["HUB_MEDIA_URL"] = "http://hub-media:8090"
+			runtimeExtra["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
+		}
 	}
-	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted); err != nil {
+	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted, runtimeExtra); err != nil {
 		return err
 	}
 	if err = writeToolHubFiles(dir); err != nil {
@@ -578,6 +754,12 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = materializeHermesConfig(dir, s); err != nil {
 		return err
 	}
+	if err = MaterializeGlobalSkills(dir, s); err != nil {
+		return err
+	}
+	if err = MaterializeHubPlugins(dir, root, s); err != nil {
+		return err
+	}
 	// Init seeds only a stub; heal it to the global template. Real user edits
 	// differ from the stub and are never overwritten.
 	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
@@ -589,6 +771,14 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if err = os.Chmod(filepath.Join(dir, "archive"), 0755); err != nil {
+		return err
+	}
+	return nil
+}
+
+// removeIfExists deletes path when present; a missing file is not an error.
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
@@ -630,6 +820,29 @@ func ensureRuntimeAuth(path string) error {
 	return f.Close()
 }
 
+// ensureMediaAuth provisions the shared bearer token between communication-hub
+// and the media sidecars. One file, three mounts: gateway reads it for
+// HUB_STT_AUTH/HUB_TTS_AUTH, sidecars read HUB_MEDIA_AUTH from the same file.
+func ensureMediaAuth(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("media auth must be a regular file")
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	value := make([]byte, 32)
+	if _, err = rand.Read(value); err != nil {
+		return err
+	}
+	token := hex.EncodeToString(value)
+	content := []byte("HUB_MEDIA_AUTH=" + token + "\nHUB_STT_AUTH=" + token + "\nHUB_TTS_AUTH=" + token + "\n")
+	return os.WriteFile(path, content, 0600)
+}
+
 // materializeHermesConfig renders the effective Hermes config host-side so the
 // runtime container mounts it read-only over the agent-writable state dir.
 // Inputs mirror what the in-container startup used to read from the env file
@@ -655,7 +868,131 @@ func materializeHermesConfig(dir string, s Settings) error {
 	})
 }
 
-func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string, omit []string) error {
+// GeneratedSkillsDir is the per-space filtered skills tree materialized by
+// MaterializeGlobalSkills and mounted at /opt/hub/skills.
+func GeneratedSkillsDir(dir string) string {
+	return filepath.Join(dir, "generated", "skills")
+}
+
+// GeneratedPluginsDir is the per-space filtered hub-plugin tree materialized
+// by MaterializeHubPlugins; each gated plugin mounts read-only at
+// /opt/hermes/plugins/<name>, which upstream discovers as a bundled backend.
+func GeneratedPluginsDir(dir string) string {
+	return filepath.Join(dir, "generated", "plugins")
+}
+
+// MaterializeHubPlugins mirrors the repo's config/plugins tree into the
+// space's generated/plugins mount, dropping plugins whose gating feature is
+// disabled. The runtime then sees exactly the plugins this space may load.
+func MaterializeHubPlugins(dir, root string, s Settings) error {
+	src := filepath.Join(root, "config", "plugins")
+	if _, err := os.Stat(src); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		src = ""
+	}
+	dest := GeneratedPluginsDir(dir)
+	if src != "" && filepath.Clean(src) == filepath.Clean(dest) {
+		return nil
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	// Every enabled gated plugin gets a dir even when the repo copy is absent:
+	// the compose/supervisor mount expects the source path to exist; an empty
+	// dir holds no plugin.yaml, so nothing loads.
+	for name, feature := range hubGatedPlugins {
+		if s.Has(feature) {
+			if err := os.MkdirAll(filepath.Join(dest, name), 0755); err != nil {
+				return err
+			}
+		}
+	}
+	if src == "" {
+		return nil
+	}
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "__pycache__" {
+				return fs.SkipDir
+			}
+			// A plugin directory is <name>/plugin.yaml; gated names skip wholesale.
+			if rel != "." {
+				if feature, gated := hubGatedPlugins[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+					return fs.SkipDir
+				}
+			}
+			return os.MkdirAll(filepath.Join(dest, rel), 0755)
+		}
+		if strings.HasSuffix(d.Name(), ".pyc") {
+			return nil
+		}
+		body, err := os.ReadFile(path) // #nosec G304 -- operator-owned plugins dir
+		if err != nil {
+			return err
+		}
+		mode := fs.FileMode(0644)
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			mode = info.Mode().Perm()
+		}
+		return os.WriteFile(filepath.Join(dest, rel), body, mode)
+	})
+}
+
+// MaterializeGlobalSkills mirrors the shared GlobalSkillsDir into the space's
+// generated/skills mount, dropping bundled skills whose gating feature is
+// disabled. The container then sees exactly the skills this space may run;
+// skills.disabled in the rendered config blocks the same names as a fallback.
+func MaterializeGlobalSkills(dir string, s Settings) error {
+	src := strings.TrimSpace(s.GlobalSkillsDir)
+	if src == "" {
+		return nil
+	}
+	dest := GeneratedSkillsDir(dir)
+	if filepath.Clean(src) == filepath.Clean(dest) {
+		return nil
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// A skill directory is <name>/SKILL.md; gated names skip wholesale.
+			if rel != "." {
+				if feature, gated := webGatedSkills[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+					return fs.SkipDir
+				}
+			}
+			return os.MkdirAll(filepath.Join(dest, rel), 0755)
+		}
+		body, err := os.ReadFile(path) // #nosec G304 -- operator-owned skills dir
+		if err != nil {
+			return err
+		}
+		mode := fs.FileMode(0644)
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			mode = info.Mode().Perm()
+		}
+		return os.WriteFile(filepath.Join(dest, rel), body, mode)
+	})
+}
+
+func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string, omit []string, extra map[string]string) error {
 	merged := map[string]string{}
 	for key, value := range organization {
 		merged[key] = value
@@ -671,6 +1008,9 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 		if GatewayOwnedSecret(key) || slices.Contains(omit, key) {
 			continue
 		}
+		runtime[key] = value
+	}
+	for key, value := range extra {
 		runtime[key] = value
 	}
 	// Every runtime is wired to the single shared ToolHub by default. Spawned

@@ -26,10 +26,13 @@ title: Personal assistant channels, voice, routines and context lifecycle
    transcript status, conversation identity). STT failure yields a safe
    user-visible reply; the canonical result remains text. Temporary files are
    deleted. Local faster-whisper on the pinned image is the supported STT
-   path. Feature `transcription` sets communication-hub `HUB_STT_COMMAND` to
-   `/usr/local/bin/hub-stt` on the same image. TTS is opt-in per conversation
-   or explicit request and falls back to text. Third-party voice upload does
-   not occur unless explicitly configured.
+   path: `hub-stt` runs it from the runtime venv (model `HUB_STT_MODEL`,
+   default `tiny`, downloaded to `/data/hf` on first use). TTS is opt-in per
+   conversation via `hub-tts` (espeak-ng → ffmpeg → OGG/Opus on stdout;
+   `HUB_TTS_LANG`, default `ru`) and falls back to text. Feature
+   `transcription` sets both `HUB_STT_COMMAND` and `HUB_TTS_COMMAND`. Third-party voice upload does
+   not occur unless explicitly configured. `/voice` reports STT and TTS
+   readiness separately per SPEC-0038.
 6. Hub-owned schedules follow SPEC-0013. `routine_create`/`list`/`update`/
    `pause`/`delete` enforce server-side ownership. Occurrences are ordinary
    idempotent jobs keyed by schedule id, time and revision. Native Hermes cron

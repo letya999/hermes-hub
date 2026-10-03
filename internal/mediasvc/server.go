@@ -1,0 +1,573 @@
+package mediasvc
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+// service holds one role's runtime: engine, job store and the work semaphore.
+type service struct {
+	cfg  Config
+	jobs *jobStore
+	stt  STTEngine
+	tts  TTSEngine
+	gen  GenEngine
+	sem  chan struct{}
+}
+
+// Serve builds the role's engine and returns the HTTP handler.
+func Serve(cfg Config) (http.Handler, error) {
+	store, err := newJobStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	s := &service{cfg: cfg, jobs: store, sem: make(chan struct{}, cfg.Workers)}
+	switch cfg.Role {
+	case RoleSTT:
+		s.stt, err = sttEngine(cfg)
+	case RoleTTS:
+		s.tts, err = ttsEngine(cfg)
+	case RoleMedia:
+		s.gen, err = genEngine(cfg)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if fg, ok := s.gen.(*falGen); ok {
+		fg.fetch = func(ctx context.Context, raw string) ([]byte, string, error) {
+			return fetchResult(ctx, raw, cfg.FetchHosts, maxGenResultBytes)
+		}
+	}
+	// Requeue jobs orphaned by a restart; a "running" record is retried once.
+	for _, j := range store.list() {
+		if j.Status == "queued" || j.Status == "running" {
+			j.Status = "queued"
+			_ = store.put(j)
+			go s.runJob(context.Background(), j.ID)
+		}
+	}
+	go func() {
+		for range time.Tick(10 * time.Minute) {
+			store.sweep(cfg.JobTTL)
+		}
+	}()
+	return s.routes(), nil
+}
+
+func (s *service) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.healthz)
+	mux.HandleFunc("/v1/audio/transcriptions", s.transcriptions)
+	mux.HandleFunc("/v1/audio/speech", s.speech)
+	mux.HandleFunc("/v1/voices", s.voices)
+	mux.HandleFunc("/v1/images/generations", s.imagesGenerations)
+	mux.HandleFunc("/v1/images/edits", s.imagesEdits)
+	mux.HandleFunc("/v1/models", s.models)
+	mux.HandleFunc("/v1/jobs", s.jobsRoot)
+	mux.HandleFunc("/v1/jobs/", s.jobItem)
+	return mux
+}
+
+func (s *service) healthz(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Role == RoleSTT && s.stt != nil && s.stt.Ready(r.Context()) ||
+		s.cfg.Role == RoleTTS && s.tts != nil && s.tts.Ready(r.Context()) ||
+		s.cfg.Role == RoleMedia && s.gen != nil && s.gen.Ready(r.Context()) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+}
+
+func (s *service) authorized(r *http.Request) bool {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == s.cfg.Auth
+}
+
+func (s *service) transcriptions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) || s.stt == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUpload)
+	if err := r.ParseMultipartForm(s.cfg.MaxUpload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file field is required")
+		return
+	}
+	defer file.Close()
+	dir, err := os.MkdirTemp(s.cfg.DataDir, "sync-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scratch dir failed")
+		return
+	}
+	defer os.RemoveAll(dir)
+	src := filepath.Join(dir, "source"+strings.ToLower(filepath.Ext(header.Filename)))
+	if err := saveBounded(src, file, s.cfg.MaxUpload); err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+		return
+	}
+	wav := filepath.Join(dir, "audio.wav")
+	if err := decodeAudioFn(r.Context(), src, wav); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	opts := TranscribeOpts{Language: r.FormValue("language"), Model: r.FormValue("model")}
+	segments, err := s.transcribeWav(r.Context(), wav, opts)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	format := r.FormValue("response_format")
+	text := transcriptText(segments)
+	switch format {
+	case "srt":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, toSRT(segments))
+	case "verbose_json":
+		writeJSON(w, http.StatusOK, map[string]any{"text": text, "segments": segments})
+	case "text", "":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, text)
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"text": text})
+	}
+}
+
+// speech is the OpenAI-compatible TTS endpoint: {model, voice, input,
+// response_format} in, audio bytes out. Wav is canonical; "opus" requests are
+// transcoded to ogg/libopus for Telegram voice bubbles.
+func (s *service) speech(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) || s.tts == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Input  string `json:"input"`
+		Voice  string `json:"voice"`
+		Format string `json:"response_format"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Input) == "" {
+		writeError(w, http.StatusBadRequest, "invalid speech request")
+		return
+	}
+	audio, err := s.tts.Synthesize(r.Context(), req.Input, req.Voice)
+	if err != nil || len(audio) == 0 {
+		writeError(w, http.StatusBadGateway, "synthesis failed")
+		return
+	}
+	if req.Format == "opus" || req.Format == "ogg" {
+		dir, err := os.MkdirTemp(s.cfg.DataDir, "tts-*")
+		if err == nil {
+			defer os.RemoveAll(dir)
+			src := filepath.Join(dir, "in.wav")
+			dst := filepath.Join(dir, "out.ogg")
+			if os.WriteFile(src, audio, 0600) == nil {
+				enc := exec.CommandContext(r.Context(), "ffmpeg", "-nostdin", "-y", "-i", src, "-c:a", "libopus", "-b:a", "32k", dst)
+				if enc.Run() == nil {
+					if b, err := os.ReadFile(dst); err == nil {
+						audio, req.Format = b, "ogg"
+					}
+				}
+			}
+		}
+	}
+	if req.Format == "ogg" {
+		w.Header().Set("Content-Type", "audio/ogg")
+	} else {
+		w.Header().Set("Content-Type", "audio/wav")
+	}
+	_, _ = w.Write(audio)
+}
+
+func (s *service) voices(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) || s.tts == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	voices := s.cfg.Voices
+	if len(voices) == 0 {
+		voices = []string{s.cfg.Voice}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"voices": voices, "default": s.cfg.Voice})
+}
+
+// ---- media role: image generation/edits are synchronous; video rides the
+// shared durable job queue (kind=video).
+
+// maxGenPromptRunes caps prompt length; maxGenResultBytes bounds provider
+// result bytes in memory — videos ride under Telegram's 50 MB bot bound.
+const (
+	maxGenPromptRunes = 2000
+	maxGenResultBytes = 48 << 20
+)
+
+func (s *service) validPrompt(prompt string) error {
+	if prompt == "" || strings.ContainsRune(prompt, 0) {
+		return errors.New("prompt must be a non-empty string")
+	}
+	if utf8.RuneCountInString(prompt) > maxGenPromptRunes {
+		return errors.New("prompt is too long")
+	}
+	return nil
+}
+
+func (s *service) allowedModel(model string, allowed []string, def string) (string, error) {
+	if model == "" {
+		model = def
+	}
+	for _, m := range allowed {
+		if m == model {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("model %q is not allowed", model)
+}
+
+// imageModel gates generation/edit model ids against the image allowlist plus
+// the chat-routed image models: HUB_MEDIA_CHAT_MODELS are valid image models
+// served over /chat/completions, not a separate capability.
+func (s *service) imageModel(model string) (string, error) {
+	if model == "" {
+		model = s.cfg.ImageModel
+	}
+	for _, m := range s.cfg.ImageModels {
+		if m == model {
+			return model, nil
+		}
+	}
+	for _, m := range s.cfg.ChatModels {
+		if m == model {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("model %q is not allowed", model)
+}
+
+func (s *service) writeMedia(w http.ResponseWriter, out GenResult) {
+	mime := out.Mime
+	if sniffed := sniffMime(out.Data); mediaMimeOK(sniffed) {
+		mime = sniffed
+	}
+	if !mediaMimeOK(mime) {
+		writeError(w, http.StatusBadGateway, "provider returned an unsupported media type")
+		return
+	}
+	w.Header().Set("Content-Type", mime)
+	_, _ = w.Write(out.Data)
+}
+
+func (s *service) imagesGenerations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) || s.gen == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	var req struct {
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
+		Size   string `json:"size"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid generation request")
+		return
+	}
+	if err := s.validPrompt(req.Prompt); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	model, err := s.imageModel(req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.Size) > 32 {
+		writeError(w, http.StatusBadRequest, "size is too long")
+		return
+	}
+	out, err := s.gen.Generate(r.Context(), GenRequest{Kind: "image", Model: model, Prompt: req.Prompt, Size: req.Size})
+	if err != nil || len(out.Data) == 0 {
+		writeError(w, http.StatusBadGateway, "image generation failed")
+		return
+	}
+	s.writeMedia(w, out)
+}
+
+func (s *service) imagesEdits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) || s.gen == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	const maxEditSource = 16 << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxEditSource)
+	if err := r.ParseMultipartForm(maxEditSource); err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "invalid multipart form")
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image field is required")
+		return
+	}
+	defer file.Close()
+	source, err := io.ReadAll(io.LimitReader(file, maxEditSource+1))
+	if err != nil || len(source) == 0 || len(source) > maxEditSource {
+		writeError(w, http.StatusRequestEntityTooLarge, "image is too large")
+		return
+	}
+	mime := sniffMime(source)
+	if !strings.HasPrefix(mime, "image/") {
+		writeError(w, http.StatusBadRequest, "image must be png, jpeg or webp")
+		return
+	}
+	prompt := r.FormValue("prompt")
+	if err := s.validPrompt(prompt); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	model, err := s.imageModel(r.FormValue("model"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out, err := s.gen.Generate(r.Context(), GenRequest{
+		Kind: "image", Model: model, Prompt: prompt,
+		Source: source, SourceName: filepath.Base(header.Filename), SourceMime: mime,
+	})
+	if err != nil || len(out.Data) == 0 {
+		writeError(w, http.StatusBadGateway, "image edit failed")
+		return
+	}
+	s.writeMedia(w, out)
+}
+
+// models advertises the operator-configured allowlists so callers can render
+// choices without knowing provider ids.
+func (s *service) models(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) || s.gen == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"image_models": s.cfg.ImageModels, "default_image": s.cfg.ImageModel,
+		"video_models": s.cfg.VideoModels, "default_video": s.cfg.VideoModel,
+	})
+}
+
+// jobRequest is the async API body. Transcription jobs carry a source;
+// media jobs carry kind/model/prompt. SourceURL/SourcePath are materialized
+// inside the job so slow fetches never hold the request open.
+type jobRequest struct {
+	Kind       string `json:"kind"`
+	SourceURL  string `json:"source_url"`
+	SourcePath string `json:"source_path"`
+	Language   string `json:"language"`
+	Model      string `json:"model"`
+	Prompt     string `json:"prompt"`
+	Diarize    bool   `json:"diarize"`
+}
+
+// jobsEnabled reports whether this role runs the async job API at all.
+func (s *service) jobsEnabled() bool { return s.stt != nil || s.gen != nil }
+
+func (s *service) jobsRoot(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) || !s.jobsEnabled() {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		var out []map[string]any
+		for _, j := range s.jobs.list() {
+			out = append(out, map[string]any{"id": j.ID, "status": j.Status, "kind": j.Kind, "created_at": j.CreatedAt, "error": j.Error})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
+	case http.MethodPost:
+		if s.gen != nil {
+			s.createMediaJob(w, r)
+			return
+		}
+		// Two ingest forms: JSON {source_url|source_path} or multipart upload.
+		var req jobRequest
+		var upload []byte
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxSource)
+			if err := r.ParseMultipartForm(s.cfg.MaxSource); err != nil {
+				writeError(w, http.StatusRequestEntityTooLarge, "upload too large")
+				return
+			}
+			file, _, err := r.FormFile("file")
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "file field is required")
+				return
+			}
+			defer file.Close()
+			upload, err = io.ReadAll(io.LimitReader(file, s.cfg.MaxSource+1))
+			if err != nil || int64(len(upload)) > s.cfg.MaxSource {
+				writeError(w, http.StatusRequestEntityTooLarge, "upload too large")
+				return
+			}
+			req.Language = r.FormValue("language")
+			req.Model = r.FormValue("model")
+			req.Diarize = r.FormValue("diarize") == "true"
+		} else {
+			r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid job request")
+				return
+			}
+		}
+		if upload == nil && req.SourceURL == "" && req.SourcePath == "" {
+			writeError(w, http.StatusBadRequest, "a source is required")
+			return
+		}
+		j := &Job{ID: newJobID(), Status: "queued", CreatedAt: time.Now().UTC(),
+			Language: req.Language, Model: req.Model, Diarize: req.Diarize,
+			Bytes: int64(len(upload))}
+		if err := s.jobs.put(j); err != nil {
+			writeError(w, http.StatusInternalServerError, "job persist failed")
+			return
+		}
+		dir := s.jobs.dirOf(j.ID)
+		if b, _ := json.Marshal(req); len(b) > 0 {
+			_ = os.WriteFile(filepath.Join(dir, "request.json"), b, 0600)
+		}
+		if upload != nil {
+			if err := os.WriteFile(filepath.Join(dir, "upload.bin"), upload, 0600); err != nil {
+				writeError(w, http.StatusInternalServerError, "upload persist failed")
+				return
+			}
+		}
+		go s.runJob(context.Background(), j.ID)
+		writeJSON(w, http.StatusAccepted, map[string]any{"id": j.ID, "status": j.Status})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// createMediaJob enqueues an async generation (video). The poll loop inside
+// the job calls the engine's queue adapter; the request returns immediately.
+func (s *service) createMediaJob(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	var req jobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job request")
+		return
+	}
+	if req.Kind != "video" {
+		writeError(w, http.StatusBadRequest, "kind must be \"video\"")
+		return
+	}
+	if err := s.validPrompt(req.Prompt); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := s.gen.(AsyncEngine); !ok {
+		writeError(w, http.StatusBadRequest, "this engine does not support async generation")
+		return
+	}
+	model, err := s.allowedModel(req.Model, s.cfg.VideoModels, s.cfg.VideoModel)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if model == "" {
+		writeError(w, http.StatusBadRequest, "video generation is not configured")
+		return
+	}
+	j := &Job{ID: newJobID(), Status: "queued", Kind: "video", CreatedAt: time.Now().UTC(),
+		Model: model, Prompt: req.Prompt}
+	if err := s.jobs.put(j); err != nil {
+		writeError(w, http.StatusInternalServerError, "job persist failed")
+		return
+	}
+	go s.runJob(context.Background(), j.ID)
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": j.ID, "status": j.Status})
+}
+
+func (s *service) jobItem(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) || !s.jobsEnabled() {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, file, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/")
+	j, err := s.jobs.get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	switch {
+	case file == "" && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"id": j.ID, "status": j.Status, "kind": j.Kind, "text": j.Text, "error": j.Error, "language": j.Language, "diarize": j.Diarize})
+	case file == "result" && r.Method == http.MethodGet:
+		if j.Status != "done" {
+			writeError(w, http.StatusConflict, "job is not finished")
+			return
+		}
+		if j.Kind == "video" {
+			if j.Mime != "" {
+				w.Header().Set("Content-Type", j.Mime)
+			}
+			http.ServeFile(w, r, filepath.Join(s.jobs.dirOf(j.ID), "result.bin"))
+			return
+		}
+		format := r.URL.Query().Get("format")
+		name := "result.txt"
+		if format == "json" {
+			name = "result.json"
+		} else if format == "srt" {
+			name = "result.srt"
+		}
+		http.ServeFile(w, r, filepath.Join(s.jobs.dirOf(j.ID), name))
+	case file == "" && r.Method == http.MethodDelete:
+		if j.Status == "running" {
+			writeError(w, http.StatusConflict, "job is running")
+			return
+		}
+		_ = os.RemoveAll(s.jobs.dirOf(j.ID))
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func saveBounded(dst string, src io.Reader, limit int64) error {
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(out, io.LimitReader(src, limit+1))
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if n > limit {
+		return errors.New("body too large")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]any{"error": map[string]string{"message": msg}})
+}

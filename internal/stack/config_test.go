@@ -57,6 +57,9 @@ func TestRenderAllFeatures(t *testing.T) {
 	root := t.TempDir()
 	_ = os.Mkdir(filepath.Join(root, "config"), 0700)
 	_ = os.WriteFile(filepath.Join(root, "config/SOUL.md"), []byte("original"), 0600)
+	gated := filepath.Join(root, "config", "skills", "deep-research-embedded")
+	_ = os.MkdirAll(gated, 0755)
+	_ = os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("name: deep-research-embedded"), 0600)
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +87,11 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatalf("default global skills mount missing: %v %s", err, generatedConfig)
 	}
 	generatedCompose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(root, "config", "skills"))) {
-		t.Fatalf("default global skills source missing: %v %s", err, generatedCompose)
+	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(d, "generated", "skills"))) {
+		t.Fatalf("filtered global skills source missing: %v %s", err, generatedCompose)
+	}
+	if _, err := os.Stat(filepath.Join(d, "generated", "skills", "deep-research-embedded", "SKILL.md")); err != nil {
+		t.Fatalf("bundled deep-research skill not materialized: %v", err)
 	}
 	cfg := Config(s)
 	display, ok := cfg["display"].(M)
@@ -486,10 +492,34 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 
 func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram", "transcription"}}
-	gw := Compose(s, "/source", "/space")["services"].(M)["communication-hub"].(M)
+	services := Compose(s, "/source", "/space")["services"].(M)
+	gw := services["communication-hub"].(M)
 	env := gw["environment"].(M)
+	if env["HUB_STT_URL"] != "http://hub-stt:8090" || env["HUB_TTS_URL"] != "http://hub-tts:8090" {
+		t.Fatalf("gateway media urls: %v %v", env["HUB_STT_URL"], env["HUB_TTS_URL"])
+	}
 	if env["HUB_STT_COMMAND"] != "/usr/local/bin/hub-stt" {
 		t.Fatalf("HUB_STT_COMMAND=%v", env["HUB_STT_COMMAND"])
+	}
+	if env["HUB_TTS_COMMAND"] != "/usr/local/bin/hub-tts" {
+		t.Fatalf("HUB_TTS_COMMAND=%v", env["HUB_TTS_COMMAND"])
+	}
+	// Two dedicated services and images — not one binary with a role flag.
+	for role, dockerfile := range map[string]string{"hub-stt": "docker/Dockerfile.stt", "hub-tts": "docker/Dockerfile.tts"} {
+		svc, ok := services[role].(M)
+		if !ok {
+			t.Fatalf("missing service %s", role)
+		}
+		if svc["build"].(M)["dockerfile"] != dockerfile {
+			t.Fatalf("%s dockerfile=%v", role, svc["build"])
+		}
+		se := svc["environment"].(M)
+		if _, present := se["HUB_MEDIA_ROLE"]; present {
+			t.Fatalf("%s still carries a role flag", role)
+		}
+		if se["HUB_MEDIA_COMMAND"] != "/usr/local/bin/"+role[4:]+"-worker" {
+			t.Fatalf("%s worker command=%v", role, se["HUB_MEDIA_COMMAND"])
+		}
 	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {

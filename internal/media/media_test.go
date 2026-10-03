@@ -817,3 +817,31 @@ func TestImageDownloadDialRejectsPrivate(t *testing.T) {
 		}
 	}
 }
+
+func TestImageFileAndBaseBranches(t *testing.T) {
+	s, dir := openSession(t)
+	// falBase honors an override and falls back to the public endpoint.
+	if s.falBase() != "https://fal.run" {
+		t.Fatal("falBase default")
+	}
+	s.FalBase = " https://edge.example "
+	if s.falBase() != " https://edge.example " {
+		t.Fatal("falBase override")
+	}
+	// imageFile refuses unknown formats and missing files before bounds.
+	if _, _, err := s.imageFile("readme.txt"); err == nil {
+		t.Fatal("text file passed imageFile")
+	}
+	if _, _, err := s.imageFile("missing.png"); err == nil {
+		t.Fatal("missing file passed imageFile")
+	}
+	writeWorkspace(t, dir, "broken.png", []byte("not an image"))
+	if _, _, err := s.imageFile("broken.png"); err == nil {
+		t.Fatal("undecodable image passed imageFile")
+	}
+	writeWorkspace(t, dir, "ok.png", pngBytes(t, 2, 2))
+	format, body, err := s.imageFile("ok.png")
+	if err != nil || format == "" || len(body) == 0 {
+		t.Fatalf("imageFile: %q %d %v", format, len(body), err)
+	}
+}

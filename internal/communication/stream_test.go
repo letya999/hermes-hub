@@ -171,48 +171,56 @@ func finalWithID(event hubruntime.ExecuteResponse) hubruntime.ExecuteResponse {
 }
 
 func TestTelegramOutputLimitsPreserveLongUnicodeResult(t *testing.T) {
-	for _, size := range []int{4096, 4097} {
-		text := strings.Repeat("я", size)
-		calls := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			calls++
-			if size == 4096 {
-				var payload struct {
-					Text string `json:"text"`
-				}
-				if r.URL.Path != "/bottoken/sendMessage" || json.NewDecoder(r.Body).Decode(&payload) != nil || payload.Text != text {
-					t.Error("invalid bounded message")
-				}
-			} else {
-				if r.URL.Path != "/bottoken/sendDocument" || r.ParseMultipartForm(3<<20) != nil || r.FormValue("chat_id") != "11" {
-					t.Error("invalid long-result document")
-					return
-				}
-				file, header, err := r.FormFile("document")
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer file.Close()
-				contents, err := io.ReadAll(file)
-				if err != nil || string(contents) != text || header.Filename != "response.txt" {
-					t.Error("long result truncated or changed")
-				}
+	text := strings.Repeat("я", 4097)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch r.URL.Path {
+		case "/bottoken/sendMessage":
+			var payload struct {
+				Text      string `json:"text"`
+				ParseMode string `json:"parse_mode"`
 			}
-			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
-		}))
-		api := newTelegramAPI(server.URL, "token", 0)
-		if err := api.SendMessage(context.Background(), 11, text); err != nil {
-			t.Fatal(err)
-		}
-		for _, invalid := range []string{"", string([]byte{255}), strings.Repeat("x", 2*1024*1024+1)} {
-			if err := api.SendMessage(context.Background(), 11, invalid); err == nil {
-				t.Error("invalid output dispatched")
+			if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.Text != text || payload.ParseMode != "HTML" {
+				t.Error("invalid bounded message")
 			}
+		case "/bottoken/sendDocument":
+			if r.ParseMultipartForm(3<<20) != nil || r.FormValue("chat_id") != "11" {
+				t.Error("invalid document")
+				return
+			}
+			file, header, err := r.FormFile("document")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			contents, err := io.ReadAll(file)
+			if err != nil || string(contents) != text || header.Filename != "answer.md" {
+				t.Error("document truncated or changed")
+			}
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		server.Close()
-		if calls != 1 {
-			t.Fatalf("calls=%d", calls)
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	api := newTelegramAPI(server.URL, "token", 0)
+	if err := api.SendMessage(context.Background(), 11, text, "HTML"); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.SendDocument(context.Background(), 11, "answer.md", "", []byte(text)); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{"", string([]byte{255}), strings.Repeat("x", 2*1024*1024+1)} {
+		if err := api.SendMessage(context.Background(), 11, invalid, ""); err == nil {
+			t.Error("invalid output dispatched")
 		}
+	}
+	if err := api.SendDocument(context.Background(), 11, "answer.md", "", nil); err == nil {
+		t.Error("empty document dispatched")
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d", calls)
 	}
 }
 

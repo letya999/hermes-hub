@@ -27,7 +27,7 @@ func terminalStatus(status string) bool {
 }
 
 func outcomeFromEvent(event hubruntime.ExecuteResponse) RunOutcome {
-	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text}
+	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text, Artifacts: event.Artifacts, Voice: event.Voice}
 }
 
 func ownsStreamMapping(job Job, mapping JobMapping) bool {
@@ -113,9 +113,10 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		}
 		text := ""
 		id := "job-" + job.ID + "-event-" + hex.EncodeToString(hash[:])
+		markdown := false
 		switch {
 		case event.Status == "completed":
-			text, id = event.Text, "job-"+job.ID+"-response"
+			text, id, markdown = event.Text, "job-"+job.ID+"-response", true
 		case terminalStatus(event.Status):
 			text, id = "Не удалось завершить задачу.", "job-"+job.ID+"-error"
 			if event.Status == "cancelled" {
@@ -124,7 +125,7 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		case event.LastEvent == "approval.request":
 			text = "Требуется подтверждение действия.\n/approve " + job.ID + " " + event.ApprovalID + " <choice>\nВарианты: " + strings.Join(event.ApprovalChoices, ", ") + "\nОтмена: /cancel " + job.ID
 		case event.LastEvent == "tool.start" || event.LastEvent == "tool.end" || event.LastEvent == "run.started":
-			text = strings.TrimSpace(event.Text)
+			text, markdown = strings.TrimSpace(event.Text), true
 			if text == "" && event.LastEvent == "run.started" {
 				text = "Выполняю запрос."
 			}
@@ -134,6 +135,12 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		}
 		if text != "" {
 			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, CreatedAt: time.Now().UTC()}
+			if markdown {
+				receipt.Delivery.Format = formatMarkdown
+			}
+			if event.Status == "completed" {
+				receipt.Delivery.Artifacts = event.Artifacts
+			}
 			if event.Status != "completed" {
 				receipt.Delivery.JobID = ""
 			} // Only final handoff may trigger a requested runtime restart.

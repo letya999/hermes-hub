@@ -1,0 +1,33 @@
+change: CHG-0061-voice-readiness
+issue: 170
+branch: feat/message-rendering-166
+status: implemented-local
+done:
+  - voiceReadiness reports STT and TTS separately; each requires a configured
+    worker command that resolves to a runnable binary; a parked
+    HUB_TTS_UPLOAD_URL counts TTS unavailable
+  - /voice status shows both directions; /voice on without usable TTS warns
+    that replies stay textual instead of promising voice
+  - handleVoice: unconfigured STT replies "not configured" and skips the
+    Telegram download; configured-but-failing STT keeps the failure reply
+  - tests: readiness matrix (unset/missing binary/resolvable/upload-parked),
+    /voice on warning, unconfigured-STT reply without a job
+  - SPEC-0038 added, SPEC-0021 cross-referenced, index/CHANGELOG updated
+done_extra:
+  - root cause of live STT failure fixed: hub-stt existed but faster-whisper
+    was absent from the image — now installed (faster-whisper==1.2.1, voice
+    extra still excluded)
+  - hub-tts added (espeak-ng -> ffmpeg -> OGG/Opus stdout); transcription
+    feature exports HUB_TTS_COMMAND — /voice can actually become ready
+  - delivery semantics final: the /voice on|off conversation mode was REMOVED
+    — speech is a per-reply tool only. A VOICE: marker line in the model
+    reply requests speech (marker-only = voice-only, text+marker = both);
+    failed synthesis/upload falls back to the spoken payload as text; Slack
+    unaffected. /voice now reports readiness only.
+  - synthesized audio is in-memory only — never written to spool, workspace
+    or tts /data; spoken text stays the canonical durable record
+  - tests: extractVoiceLines, marker-only/mixed/fallback delivery matrix,
+    parked-upload fallback, legacy voice_replies mapping ignored
+deferred:
+  - live Telegram voice round-trip evidence — needs image rebuild + deploy +
+    real account; recorded as the exact gate in docs/validation.md

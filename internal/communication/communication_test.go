@@ -40,13 +40,21 @@ func TestOpenCredentialSurfaceSkipsLocalStoreWhenBrokerApprovalIsConfigured(t *t
 }
 
 type fakeAPI struct {
-	mu       sync.Mutex
-	updates  []Update
-	sent     []string
-	voices   []string
-	deleted  []int
-	fileSize int64
-	err      error
+	mu        sync.Mutex
+	updates   []Update
+	sent      []string
+	modes     []string
+	docs      []string
+	photos    []string
+	videos    []string
+	voices    []string
+	deleted   []int
+	fileSize  int64
+	err       error
+	failOn    int // fail the failOn-th SendMessage call (1-based; 0 = never)
+	failDocOn int // fail the failOn-th SendDocument call (1-based; 0 = never)
+	photoErr  error
+	videoErr  error
 }
 
 func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
@@ -54,10 +62,47 @@ func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
 	defer f.mu.Unlock()
 	return f.updates, f.err
 }
-func (f *fakeAPI) SendMessage(_ context.Context, _ int64, text string) error {
+func (f *fakeAPI) SendMessage(_ context.Context, _ int64, text, parseMode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	if f.failOn > 0 && len(f.sent)+1 == f.failOn {
+		return errors.New("telegram send failed")
+	}
 	f.sent = append(f.sent, text)
+	f.modes = append(f.modes, parseMode)
+	return nil
+}
+func (f *fakeAPI) SendDocument(_ context.Context, _ int64, name, caption string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	if f.failDocOn > 0 && len(f.docs)+1 == f.failDocOn {
+		return errors.New("document send failed")
+	}
+	f.docs = append(f.docs, name+"\x00"+string(data))
+	return nil
+}
+func (f *fakeAPI) SendPhoto(_ context.Context, _ int64, name, caption string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.photoErr != nil {
+		return f.photoErr
+	}
+	f.photos = append(f.photos, name+"\x00"+string(data))
+	return f.err
+}
+func (f *fakeAPI) SendVideo(_ context.Context, _ int64, name, caption string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.videoErr != nil {
+		return f.videoErr
+	}
+	f.videos = append(f.videos, name+"\x00"+string(data))
 	return f.err
 }
 func (f *fakeAPI) DeleteMessage(_ context.Context, _ int64, id int) error {
@@ -611,7 +656,7 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	if updates, err := api.GetUpdates(context.Background(), 1, 1); err != nil || len(updates) != 0 {
 		t.Fatal(updates, err)
 	}
-	if err := api.SendMessage(context.Background(), 1, "hi"); err != nil {
+	if err := api.SendMessage(context.Background(), 1, "hi", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := api.DeleteMessage(context.Background(), 1, 2); err != nil {
@@ -651,6 +696,37 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	}
 	if err := files.SendChatAction(context.Background(), 11, "typing"); err != nil {
 		t.Fatal(err)
+	}
+	uploads := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path != "/bottoken/sendPhoto" && r.URL.Path != "/bottoken/sendDocument" && r.URL.Path != "/bottoken/sendVideo" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer uploads.Close()
+	upload := newTelegramAPI(uploads.URL, "token", time.Second)
+	if err := upload.SendPhoto(context.Background(), 7, "a.png", "cap", []byte("png-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := upload.SendDocument(context.Background(), 7, "a.md", "", []byte("doc-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := upload.SendVideo(context.Background(), 7, "a.mp4", "cap", []byte("mp4-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := upload.SendVideo(context.Background(), 7, "", "", []byte("mp4-bytes")); err == nil {
+		t.Fatal("nameless video accepted")
+	}
+	if err := upload.SendVideo(context.Background(), 7, "a.mp4", "", nil); err == nil {
+		t.Fatal("empty video accepted")
+	}
+	if err := upload.SendPhoto(context.Background(), 7, "a.png", "", nil); err == nil {
+		t.Fatal("empty photo accepted")
 	}
 	config := testConfig(t)
 	runner := HermesRunner{Command: filepath.Join(t.TempDir(), "missing")}
@@ -1364,8 +1440,17 @@ func (r *runAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, erro
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (r *runAPI) SendMessage(context.Context, int64, string) error { return nil }
-func (r *runAPI) DeleteMessage(context.Context, int64, int) error  { return nil }
+func (r *runAPI) SendMessage(context.Context, int64, string, string) error { return nil }
+func (r *runAPI) SendDocument(context.Context, int64, string, string, []byte) error {
+	return nil
+}
+func (r *runAPI) SendPhoto(context.Context, int64, string, string, []byte) error {
+	return nil
+}
+func (r *runAPI) SendVideo(context.Context, int64, string, string, []byte) error {
+	return nil
+}
+func (r *runAPI) DeleteMessage(context.Context, int64, int) error { return nil }
 func (r *runAPI) SendChatAction(context.Context, int64, string) error {
 	return nil
 }
@@ -1451,5 +1536,25 @@ func TestHermesRunnerSuccess(t *testing.T) {
 	response, err := (HermesRunner{Command: bin, Timeout: 10 * time.Second}).Run(context.Background(), Job{Text: "hello"}, User{StateDir: state, WorkspaceDir: workspace})
 	if err != nil || response != "reply" {
 		t.Fatal(response, err)
+	}
+}
+
+func TestEnvHelpers(t *testing.T) {
+	t.Setenv("X_INT_POS", "7")
+	t.Setenv("X_INT_BAD", "-3")
+	t.Setenv("X_INT_TEXT", "abc")
+	if intFromEnv("X_INT_POS", 1) != 7 || intFromEnv("X_INT_BAD", 2) != 2 || intFromEnv("X_INT_TEXT", 3) != 3 || intFromEnv("X_INT_MISSING", 4) != 4 {
+		t.Fatal("intFromEnv")
+	}
+	if durationSecondsFromEnv("X_INT_POS", time.Minute) != 7*time.Second || durationSecondsFromEnv("X_INT_BAD", time.Minute) != time.Minute {
+		t.Fatal("durationSecondsFromEnv")
+	}
+	t.Setenv("HUB_COMMUNICATION_WORKERS", "9")
+	if workersFromEnv() != 9 {
+		t.Fatal("workersFromEnv set")
+	}
+	t.Setenv("HUB_COMMUNICATION_WORKERS", "0")
+	if workersFromEnv() != 4 {
+		t.Fatal("workersFromEnv fallback")
 	}
 }

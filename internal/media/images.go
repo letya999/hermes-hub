@@ -153,25 +153,48 @@ func (s *Session) generate(ctx context.Context, name, prompt, source string) (ma
 	if err != nil {
 		return nil, err
 	}
-	key := getenvTrim(gen.Credential())
-	if key == "" {
-		return nil, errors.New("image generation credential is not available")
-	}
 	var sourceBody []byte
-	sourceFormat := ""
+	sourceFile := "image.png"
+	sourceMime := "image/png"
 	if source != "" {
+		var sourceFormat string
 		sourceFormat, sourceBody, err = s.imageFile(source)
 		if err != nil {
 			return nil, err
 		}
-		if gen.Provider == FalProvider {
-			return nil, errors.New("image edit is not supported for provider fal")
+		switch sourceFormat {
+		case "jpeg":
+			sourceFile, sourceMime = "image.jpg", "image/jpeg"
+		case "webp":
+			var img image.Image
+			img, err = decodeImage(sourceBody)
+			if err != nil {
+				return nil, err
+			}
+			var buf bytes.Buffer
+			if err = png.Encode(&buf, img); err != nil {
+				return nil, err
+			}
+			sourceBody = buf.Bytes()
 		}
+	}
+	// hub-media sidecar mode: provider credentials live in the service, the
+	// runtime only carries its bearer. Delivery is always workspace bytes —
+	// the provider-URL delivery mode is a direct-provider feature.
+	if base, auth := s.mediaService(); base != "" {
+		return s.serviceGenerate(ctx, base, auth, name, model, prompt, sourceFile, sourceBody)
+	}
+	key := getenvTrim(gen.Credential())
+	if key == "" {
+		return nil, errors.New("image generation credential is not available")
 	}
 	var produced generatedImage
 	allowed := s.falBase()
 	switch gen.Provider {
 	case FalProvider:
+		if source != "" {
+			return nil, errors.New("image edit is not supported for provider fal")
+		}
 		produced, err = s.falGenerate(ctx, key, model, prompt)
 		allowed = s.falBase()
 	case ProviderCLIProxy:
@@ -179,35 +202,15 @@ func (s *Session) generate(ctx context.Context, name, prompt, source string) (ma
 		if err != nil {
 			return nil, err
 		}
-		filename := "image.png"
-		mime := "image/png"
-		if source != "" {
-			switch sourceFormat {
-			case "jpeg":
-				filename = "image.jpg"
-				mime = "image/jpeg"
-			case "webp":
-				var img image.Image
-				img, err = decodeImage(sourceBody)
-				if err != nil {
-					return nil, err
-				}
-				var buf bytes.Buffer
-				if err = png.Encode(&buf, img); err != nil {
-					return nil, err
-				}
-				sourceBody = buf.Bytes()
-			}
-		}
 		if slicesContains(CLIProxyChatImageModels(), model) {
 			var src []byte
 			srcMime := ""
 			if source != "" {
-				src, srcMime = sourceBody, mime
+				src, srcMime = sourceBody, sourceMime
 			}
 			produced, err = s.cliproxyChatImage(ctx, allowed, key, model, prompt, src, srcMime)
 		} else if source != "" {
-			produced, err = s.cliproxyEdit(ctx, allowed, key, model, prompt, gen.Delivery, sourceBody, filename)
+			produced, err = s.cliproxyEdit(ctx, allowed, key, model, prompt, gen.Delivery, sourceBody, sourceFile)
 		} else {
 			produced, err = s.cliproxyGenerate(ctx, allowed, key, model, prompt, gen.Delivery)
 		}

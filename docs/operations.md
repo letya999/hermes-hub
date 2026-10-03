@@ -485,3 +485,42 @@ lines, or attach any MCP client (Inspector, an IDE). `HUB_USER_ID` and
 and drops events whose principal is empty; the rendered runtime always sets
 both. This path exercises `file:` refs only — `broker:` refs need a running
 Credential Broker deployment.
+
+## Media provider credentials (hub-media)
+
+`image_gen` renders the `hub-media` sidecar. Provider keys are never written
+to a space env file: the service materializes the Credential Broker grant
+named by `HUB_MEDIA_BROKER_GRANT` on each call (a five-minute in-process
+cache bounds lease churn; a broker outage fails the next call closed and
+`/healthz` reports the engine not ready). Provisioning is one-time, like the
+other `broker-secrets-*` volumes:
+
+1. Generate the ed25519 keypair (`media.private` 64 bytes, `media.public` 32
+   bytes, raw). Seed `media.private` and the broker's `server.crt` into the
+   project's `broker-secrets-media` volume with mode 0600 owned by uid 10001 —
+   the same procedure used for `broker-secrets-runtime`/`-toolhub`/`-communication`.
+2. Register the public key in the broker `trusted_keys`:
+   `{"id": "media", "issuer": "hermes-media", "public_key_file": ".../keys/media.public",
+   "audiences": ["broker:control", "broker:runtime"]}` — acquire needs
+   `broker:control`, materialize/release need `broker:runtime`.
+3. Install the `media-provider-key` contract
+   (`services/credential-broker/examples/contracts/media-provider-key.json`)
+   into the broker contracts dir; it delivers the secret as
+   `HUB_MEDIA_UPSTREAM_KEY`.
+4. Create the credential through the broker form (paste `FAL_KEY` or the
+   OpenAI-compatible upstream key), then create a grant bound to workload
+   `hub-media` via `brokerctl` (`POST /v1/credentials/<id>/grants` as the
+   `toolhub` control identity) with `binding_id`/`workload_id` `hub-media`,
+   `execution` `dedicated` and the signing actor `policy_version`
+   `hub-media` — the service presents that stable service-level policy, so
+   grants survive settings changes that would rotate the per-config policy
+   hash. Note the grant id.
+5. Write `HUB_MEDIA_BROKER_GRANT=<grant-id>` into `spaces/<user>/media.grant`
+   (not a secret — just the grant ID) or export it on the host, then
+   re-render (`hubctl render`/`up`). Revoking the grant or credential takes
+   effect at the next call — nothing caches beyond the five-minute TTL.
+
+With no grant set, `hub-media` falls back to `HUB_MEDIA_UPSTREAM_KEY`,
+`OPENAI_API_KEY` or `FAL_KEY` in its own process env — for standalone runs
+outside the rendered stack. The rendered compose does not mount a media env
+file; a fal engine with neither grant nor env key refuses to boot.
