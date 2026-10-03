@@ -85,6 +85,12 @@ func Config(s Settings) M {
 		e["HUB_SELF_ENV_KEYS"] = "${HUB_SELF_ENV_KEYS}"
 		e["HUB_PROTECTED_ENV_KEYS"] = "${HUB_PROTECTED_ENV_KEYS}"
 		e["HUB_STATE"] = "/state"
+		if s.Has("image_gen") {
+			// The tools subprocess reaches hub-media with the service URL and
+			// bearer only; provider keys stay inside the media service.
+			e["HUB_MEDIA_URL"] = "${HUB_MEDIA_URL}"
+			e["HUB_MEDIA_AUTH"] = "${HUB_MEDIA_AUTH}"
+		}
 		if s.Has("ssh") {
 			e["HUB_SSH_CONFIG"] = "/state/ssh/config.yaml"
 			e["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))
@@ -304,6 +310,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// and `cliproxy` resolve to the single deployed instances.
 		runtimeService["networks"] = []string{"default", sharedNetworkName}
 	}
+	// hub-media carries the image/video provider credentials; the runtime only
+	// gets the service URL and the shared media bearer (media.auth), never
+	// FAL_KEY itself. Secondary spaces reach the one deployed instance over
+	// the shared network, exactly like toolhub.
+	if s.Has("image_gen") {
+		runtimeEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
+		runtimeService["env_file"] = append(runtimeEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
+	}
 	services := M{"hermes-runtime": runtimeService}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
@@ -503,6 +517,48 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			}
 		}
 	}
+	// hub-media is the media-generation sidecar: one Go binary from the hub
+	// image, durable video jobs on its own volume, internal network only (no
+	// published port). Provider keys never enter env files: the service
+	// materializes the grant named by HUB_MEDIA_BROKER_GRANT through the
+	// credential broker (media keypair in broker-secrets-media). With no grant
+	// configured the engines fall back to env keys — meaningful only outside
+	// the rendered stack, since compose no longer mounts a media env file.
+	if infra && s.Has("image_gen") {
+		mediaSvc := cloneMap(common)
+		mediaSvc["entrypoint"] = []string{"hub-media"}
+		mediaSvc["build"] = coreBuild
+		mediaEnv := M{
+			"HUB_MEDIA_LISTEN":         "0.0.0.0:8090",
+			"HUB_MEDIA_ENGINE":         "${HUB_MEDIA_ENGINE:-remote}",
+			"HUB_MEDIA_UPSTREAM":       "${HUB_MEDIA_UPSTREAM:-http://cliproxy:8317}",
+			"HUB_MEDIA_QUEUE_UPSTREAM": "${HUB_MEDIA_QUEUE_UPSTREAM:-}",
+			"HUB_MEDIA_IMAGE_MODEL":    "${HUB_MEDIA_IMAGE_MODEL:-gpt-image-2}",
+			"HUB_MEDIA_IMAGE_MODELS":   "${HUB_MEDIA_IMAGE_MODELS:-}",
+			"HUB_MEDIA_CHAT_MODELS":    "${HUB_MEDIA_CHAT_MODELS:-" + strings.Join(media.CLIProxyChatImageModels(), ",") + "}",
+			"HUB_MEDIA_VIDEO_MODEL":    "${HUB_MEDIA_VIDEO_MODEL:-}",
+			"HUB_MEDIA_VIDEO_MODELS":   "${HUB_MEDIA_VIDEO_MODELS:-}",
+			"HUB_MEDIA_FETCH_HOSTS":    "${HUB_MEDIA_FETCH_HOSTS:-fal.media}",
+			"HUB_MEDIA_BROKER_GRANT":   "${HUB_MEDIA_BROKER_GRANT:-}",
+			"HUB_MEDIA_DATA":           "/data", "HUB_MEDIA_WORKERS": "2",
+			// The broker grant pins the actor's policy version: the config hash
+			// changes on every settings edit, which would orphan the grant, so
+			// the service presents the stable service-level policy instead.
+			"HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": "hub-media",
+			"HOME": "/tmp", "TZ": s.Timezone,
+		}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MEDIA_", "media", "hermes-media") {
+			mediaEnv[key] = value
+		}
+		mediaSvc["environment"] = mediaEnv
+		mediaSvc["env_file"] = []any{
+			M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"},
+		}
+		mediaSvc["volumes"] = []any{M{"type": "volume", "source": "hub-media-data", "target": "/data"}, brokerSecrets("media")}
+		mediaSvc["networks"] = sharedNetworks
+		mediaSvc["healthcheck"] = M{"test": []string{"CMD", "hub-media", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
+		services["hub-media"] = mediaSvc
+	}
 	if includeGateway && !infra {
 		// Secondary spaces never keep a resident runtime: their gateway jobs
 		// reach the shared supervisor over the shared network and every control
@@ -523,6 +579,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if s.Has("transcription") {
 			volumes["hub-stt-data"] = M{}
 			volumes["hub-tts-data"] = M{}
+		}
+		if s.Has("image_gen") {
+			volumes["hub-media-data"] = M{}
+			volumes["broker-secrets-media"] = M{}
 		}
 	}
 	// The shared runtime network is operator-owned infrastructure: it is
@@ -641,21 +701,36 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
-	if s.Has("transcription") {
+	if s.Has("transcription") || s.Has("image_gen") {
 		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
 			return err
 		}
+	}
+	// Provider keys moved behind the credential broker: a media.<env>.env
+	// rendered by an older version must not linger with plaintext secrets.
+	if err = removeIfExists(filepath.Join(dir, "media."+environment+".env")); err != nil {
+		return err
 	}
 	if s.RendersInfra() {
 		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
 			return err
 		}
 	}
-	omitted := []string{}
-	if s.imageCredential() != "FAL_KEY" {
-		omitted = append(omitted, "FAL_KEY")
+	// FAL_KEY belongs to hub-media: image/video generation always goes
+	// through the service, so the runtime never needs the provider credential.
+	omitted := []string{"FAL_KEY"}
+	// Spawned runtimes reach hub-media through the runtime env file: the
+	// supervisor passes runtime.<env>.env to `docker run --env-file`, so the
+	// service URL and bearer must live there — compose env_file entries are
+	// not replayed for supervisor-spawned containers.
+	runtimeExtra := map[string]string{}
+	if s.Has("image_gen") {
+		if auth, _ := ReadSecrets(filepath.Join(dir, "media.auth")); strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
+			runtimeExtra["HUB_MEDIA_URL"] = "http://hub-media:8090"
+			runtimeExtra["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
+		}
 	}
-	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted); err != nil {
+	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted, runtimeExtra); err != nil {
 		return err
 	}
 	if err = writeToolHubFiles(dir); err != nil {
@@ -696,6 +771,14 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if err = os.Chmod(filepath.Join(dir, "archive"), 0755); err != nil {
+		return err
+	}
+	return nil
+}
+
+// removeIfExists deletes path when present; a missing file is not an error.
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
@@ -909,7 +992,7 @@ func MaterializeGlobalSkills(dir string, s Settings) error {
 	})
 }
 
-func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string, omit []string) error {
+func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string, omit []string, extra map[string]string) error {
 	merged := map[string]string{}
 	for key, value := range organization {
 		merged[key] = value
@@ -925,6 +1008,9 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 		if GatewayOwnedSecret(key) || slices.Contains(omit, key) {
 			continue
 		}
+		runtime[key] = value
+	}
+	for key, value := range extra {
 		runtime[key] = value
 	}
 	// Every runtime is wired to the single shared ToolHub by default. Spawned

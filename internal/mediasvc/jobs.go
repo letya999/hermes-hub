@@ -12,16 +12,21 @@ import (
 	"time"
 )
 
-// Job is one durable async transcription unit. Status transitions:
-// queued -> running -> done | failed. result.json holds segments.
+// Job is one durable async unit: a transcription (kind "" or "transcription")
+// or a media generation (kind "video"). Status transitions:
+// queued -> running -> done | failed.
 type Job struct {
 	ID        string    `json:"id"`
 	Status    string    `json:"status"` // queued, running, done, failed
+	Kind      string    `json:"kind,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Source    string    `json:"source,omitempty"` // url|path|upload
 	Language  string    `json:"language,omitempty"`
 	Model     string    `json:"model,omitempty"`
+	Prompt    string    `json:"prompt,omitempty"`
+	RemoteID  string    `json:"remote_id,omitempty"` // provider queue handle for resume
+	Mime      string    `json:"mime,omitempty"`      // media result content type
 	Diarize   bool      `json:"diarize,omitempty"`
 	Text      string    `json:"text,omitempty"`
 	Error     string    `json:"error,omitempty"`
@@ -140,6 +145,10 @@ func (s *service) runJob(ctx context.Context, id string) {
 	if err != nil || j.Status != "queued" {
 		return
 	}
+	if j.Kind == "video" {
+		s.runGenJob(ctx, j)
+		return
+	}
 	j.Status = "running"
 	_ = s.jobs.put(j)
 	fail := func(err error) {
@@ -174,6 +183,71 @@ func (s *service) runJob(ctx context.Context, id string) {
 		// Results are on disk; a lost status write still fails the poll, and
 		// restart requeue retries the job idempotently.
 		fail(err)
+	}
+}
+
+// runGenJob drives a media job: submit once (RemoteID persists so a restart
+// resumes polling instead of paying for a second submission), then poll the
+// provider queue until the result lands. Result bytes go to result.bin.
+func (s *service) runGenJob(ctx context.Context, j *Job) {
+	j.Status = "running"
+	_ = s.jobs.put(j)
+	fail := func(err error) {
+		j.Status, j.Error = "failed", err.Error()
+		_ = s.jobs.put(j)
+	}
+	eng, ok := s.gen.(AsyncEngine)
+	if !ok {
+		fail(errors.New("engine does not support async generation"))
+		return
+	}
+	timeout := s.cfg.JobTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if j.RemoteID == "" {
+		remoteID, err := eng.Submit(ctx, GenRequest{Kind: j.Kind, Model: j.Model, Prompt: j.Prompt})
+		if err != nil {
+			fail(err)
+			return
+		}
+		j.RemoteID = remoteID
+		_ = s.jobs.put(j)
+	}
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		out, done, err := eng.Poll(ctx, j.RemoteID, j.Model)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if !done {
+			select {
+			case <-ctx.Done():
+				fail(errors.New("job timed out"))
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
+		if len(out.Data) == 0 {
+			fail(errors.New("generation returned no media"))
+			return
+		}
+		if err := os.WriteFile(filepath.Join(s.jobs.dirOf(j.ID), "result.bin"), out.Data, 0600); err != nil {
+			fail(err)
+			return
+		}
+		j.Mime = out.Mime
+		j.Bytes = int64(len(out.Data))
+		j.Status = "done"
+		if err := s.jobs.put(j); err != nil {
+			fail(err)
+		}
+		return
 	}
 }
 

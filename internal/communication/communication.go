@@ -929,7 +929,7 @@ func (s *Spool) CompleteDelivery(id string) error {
 // WriteDeliveryBlob stages one fetched artifact for a not-yet-created delivery
 // under a stable directory derived from the delivery ID.
 func (s *Spool) WriteDeliveryBlob(deliveryID, name string, data []byte) (string, error) {
-	if len(data) == 0 || len(data) > mediaSizeLimit {
+	if len(data) == 0 || len(data) > videoSizeLimit {
 		return "", errors.New("invalid artifact blob")
 	}
 	base := filepath.Base(name)
@@ -1071,6 +1071,7 @@ type TelegramAPI interface {
 	SendMessage(context.Context, int64, string, string) error
 	SendDocument(context.Context, int64, string, string, []byte) error
 	SendPhoto(context.Context, int64, string, string, []byte) error
+	SendVideo(context.Context, int64, string, string, []byte) error
 	DeleteMessage(context.Context, int64, int) error
 	SendChatAction(context.Context, int64, string) error
 	GetFile(context.Context, string) (TelegramFile, error)
@@ -1150,7 +1151,7 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text, parse
 	return t.call(ctx, "sendMessage", payload, nil)
 }
 func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, caption string, data []byte) error {
-	if len(data) == 0 || len(data) > mediaSizeLimit || name == "" {
+	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
 		return errors.New("invalid Telegram document")
 	}
 	var body bytes.Buffer
@@ -1174,6 +1175,40 @@ func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, capt
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendDocument", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return t.callRequest(req, nil)
+}
+func (t *telegramAPI) SendVideo(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
+		return errors.New("invalid Telegram video")
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if err := form.WriteField("supports_streaming", "true"); err != nil {
+		return err
+	}
+	if caption != "" {
+		if err := form.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := form.CreateFormFile("video", name)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := form.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/sendVideo", &body)
 	if err != nil {
 		return err
 	}
@@ -1999,6 +2034,11 @@ func (g *Gateway) sendArtifact(ctx context.Context, delivery *Delivery, ref hubr
 	}
 	if ref.Mime == "image/png" || ref.Mime == "image/jpeg" {
 		if err := g.api.SendPhoto(ctx, delivery.ChatID, ref.Name, "", data); err == nil {
+			return nil
+		}
+	}
+	if strings.HasPrefix(ref.Mime, "video/") {
+		if err := g.api.SendVideo(ctx, delivery.ChatID, ref.Name, "", data); err == nil {
 			return nil
 		}
 	}

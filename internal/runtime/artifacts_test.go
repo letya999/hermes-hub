@@ -98,6 +98,12 @@ func TestArtifactEndpointValidationAndServing(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Body.String() != "pdf-bytes" || !strings.Contains(rec.Header().Get("Content-Type"), "pdf") {
 		t.Fatalf("serve status=%d type=%q body=%q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
+	// Videos ride the same endpoint under the wider bound.
+	writeArtifact(t, artifactRoot(), "videos/clip.mp4", "mp4-bytes")
+	rec = call("videos/clip.mp4", "secret")
+	if rec.Code != http.StatusOK || rec.Body.String() != "mp4-bytes" || rec.Header().Get("Content-Type") != "video/mp4" {
+		t.Fatalf("video serve status=%d type=%q", rec.Code, rec.Header().Get("Content-Type"))
+	}
 	link := filepath.Join(artifactRoot(), "documents", "link.txt")
 	if err := os.Symlink(filepath.Join(dir, "secret", "hidden.txt"), link); err == nil {
 		if rec := call("documents/link.txt", "secret"); rec.Code == http.StatusOK {
@@ -171,4 +177,91 @@ func TestExtractVoiceLines(t *testing.T) {
 func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func TestScanAndStageVideoArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	root := artifactRoot()
+	writeArtifact(t, root, "videos/clip.mp4", "mp4-bytes")
+	// A video under the 48 MiB bound passes where the 8 MiB doc cap would fail.
+	big := writeArtifact(t, root, "videos/big.mp4", "")
+	if err := os.Truncate(big, 20<<20); err != nil {
+		t.Fatal(err)
+	}
+	// A document the same size is still refused by the tighter bound.
+	bigDoc := writeArtifact(t, root, "documents/big.bin", "")
+	if err := os.Truncate(bigDoc, 20<<20); err != nil {
+		t.Fatal(err)
+	}
+	got := scanArtifacts(time.Now().Add(-time.Minute))
+	var clip, bigRef *ArtifactRef
+	for i, ref := range got {
+		if ref.Path == "videos/clip.mp4" {
+			clip = &got[i]
+		}
+		if ref.Path == "videos/big.mp4" {
+			bigRef = &got[i]
+		}
+	}
+	if clip == nil || clip.Mime != "video/mp4" || bigRef == nil {
+		t.Fatalf("video artifacts: %+v", got)
+	}
+	for _, ref := range got {
+		if ref.Path == "documents/big.bin" {
+			t.Fatal("oversized document scanned")
+		}
+	}
+	// MEDIA: marker on an mp4 stages into the videos bucket.
+	vid := writeArtifact(t, dir, "movie.mp4", "movie-bytes")
+	_, refs := extractMediaArtifacts("MEDIA:" + vid)
+	if len(refs) != 1 || refs[0].Path != "videos/movie.mp4" || refs[0].Mime != "video/mp4" {
+		t.Fatalf("video staging: %+v", refs)
+	}
+}
+
+func TestMergeArtifactsDedupesAndBounds(t *testing.T) {
+	a := []ArtifactRef{{Path: "images/a.png", Size: 1}, {Path: "images/b.png", Size: 2}}
+	b := []ArtifactRef{{Path: "images/a.png", Size: 9}, {Name: "gone.png", Error: "x"}, {Path: "videos/c.mp4", Mime: "video/mp4"}}
+	got := mergeArtifacts(a, b)
+	if len(got) != 4 || got[0].Size != 1 || got[1].Path != "images/b.png" || got[2].Error != "x" || got[3].Mime != "video/mp4" {
+		t.Fatalf("merge: %+v", got)
+	}
+	// Error refs dedupe on name+error, not on path.
+	dupes := mergeArtifacts([]ArtifactRef{{Name: "x", Error: "e"}}, []ArtifactRef{{Name: "x", Error: "e"}})
+	if len(dupes) != 1 {
+		t.Fatalf("error dedupe: %+v", dupes)
+	}
+	// The artifact cap applies across merged groups.
+	var many []ArtifactRef
+	for i := 0; i < artifactMaxCount+3; i++ {
+		many = append(many, ArtifactRef{Path: strings.Repeat("x", i+1)})
+	}
+	if out := mergeArtifacts(many); len(out) != artifactMaxCount {
+		t.Fatalf("cap: %d", len(out))
+	}
+	// copyBounded: missing source errors; a normal copy lands the bytes.
+	dir := t.TempDir()
+	if err := copyBounded(filepath.Join(dir, "none.bin"), filepath.Join(dir, "out.bin"), 4); err == nil {
+		t.Fatal("missing source copied")
+	}
+	src := writeArtifact(t, dir, "in.bin", "0123456789")
+	dst := filepath.Join(dir, "out.bin")
+	if err := copyBounded(src, dst, 4); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "0123" {
+		t.Fatalf("bounded copy: %q", got)
+	}
+}
+
+func TestArtifactLimitBuckets(t *testing.T) {
+	if artifactLimit("videos/clip.mp4") != videoMaxBytes {
+		t.Fatal("video bucket bound")
+	}
+	if artifactLimit("documents/x.pdf") != artifactMaxBytes || artifactLimit("images/x.png") != artifactMaxBytes {
+		t.Fatal("default bound")
+	}
 }

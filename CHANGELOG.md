@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Media generation sidecar `hub-media` (CHG-0063, SPEC-0040): image and video
+  generation moved out of the user runtime into a standalone service sharing
+  `internal/mediasvc` with `hub-stt`/`hub-tts`. Sync endpoints
+  `/v1/images/generations` and `/v1/images/edits`, `GET /v1/models`, and
+  durable async video jobs on the existing job store (`/v1/jobs`, persisted
+  provider `RemoteID` resumes polling after a restart). Engines: `remote`
+  (any OpenAI-compatible upstream, CLIProxy default) and `fal` (`fal.run`
+  images, `queue.fal.run` video queue). Provider credentials are materialized
+  from the Credential Broker grant named by `HUB_MEDIA_BROKER_GRANT` (identity
+  `media`, `broker-secrets-media` volume) — the runtime mounts only
+  `media.auth` + `HUB_MEDIA_URL` and never receives `FAL_KEY`; compose adds
+  `hub-media` on the internal network with no published port when
+  `image_gen` is enabled. Agent tools keep `image_generate`/`image_edit` and
+  gain `video_generate` (immediate job id) and `media_fetch` (stages finished
+  results under `artifacts/videos/`). Artifact delivery (SPEC-0037) gains the
+  `videos` bucket at 48 MiB and Telegram `sendVideo` with a `sendDocument`
+  fallback; `artifact_remove` accepts `artifacts/videos/`. Direct provider
+  calls stay as the fallback when `HUB_MEDIA_URL` is unset.
 - Standalone media services (issue #170): speech work moved out of the
   gateway into two independent services with separate binaries and images —
   `hub-stt` (`docker/Dockerfile.stt`, faster-whisper toolchain) and

@@ -46,6 +46,7 @@ type fakeAPI struct {
 	modes     []string
 	docs      []string
 	photos    []string
+	videos    []string
 	voices    []string
 	deleted   []int
 	fileSize  int64
@@ -53,6 +54,7 @@ type fakeAPI struct {
 	failOn    int // fail the failOn-th SendMessage call (1-based; 0 = never)
 	failDocOn int // fail the failOn-th SendDocument call (1-based; 0 = never)
 	photoErr  error
+	videoErr  error
 }
 
 func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
@@ -92,6 +94,15 @@ func (f *fakeAPI) SendPhoto(_ context.Context, _ int64, name, caption string, da
 		return f.photoErr
 	}
 	f.photos = append(f.photos, name+"\x00"+string(data))
+	return f.err
+}
+func (f *fakeAPI) SendVideo(_ context.Context, _ int64, name, caption string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.videoErr != nil {
+		return f.videoErr
+	}
+	f.videos = append(f.videos, name+"\x00"+string(data))
 	return f.err
 }
 func (f *fakeAPI) DeleteMessage(_ context.Context, _ int64, id int) error {
@@ -691,7 +702,7 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if r.URL.Path != "/bottoken/sendPhoto" && r.URL.Path != "/bottoken/sendDocument" {
+		if r.URL.Path != "/bottoken/sendPhoto" && r.URL.Path != "/bottoken/sendDocument" && r.URL.Path != "/bottoken/sendVideo" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -704,6 +715,15 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	}
 	if err := upload.SendDocument(context.Background(), 7, "a.md", "", []byte("doc-bytes")); err != nil {
 		t.Fatal(err)
+	}
+	if err := upload.SendVideo(context.Background(), 7, "a.mp4", "cap", []byte("mp4-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := upload.SendVideo(context.Background(), 7, "", "", []byte("mp4-bytes")); err == nil {
+		t.Fatal("nameless video accepted")
+	}
+	if err := upload.SendVideo(context.Background(), 7, "a.mp4", "", nil); err == nil {
+		t.Fatal("empty video accepted")
 	}
 	if err := upload.SendPhoto(context.Background(), 7, "a.png", "", nil); err == nil {
 		t.Fatal("empty photo accepted")
@@ -1425,6 +1445,9 @@ func (r *runAPI) SendDocument(context.Context, int64, string, string, []byte) er
 	return nil
 }
 func (r *runAPI) SendPhoto(context.Context, int64, string, string, []byte) error {
+	return nil
+}
+func (r *runAPI) SendVideo(context.Context, int64, string, string, []byte) error {
 	return nil
 }
 func (r *runAPI) DeleteMessage(context.Context, int64, int) error { return nil }

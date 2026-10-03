@@ -34,8 +34,20 @@ type ArtifactRequest struct {
 const (
 	artifactMaxCount = 8
 	artifactMaxBytes = 8 << 20
+	// Videos ride the same contract but need more room: 48 MiB keeps them
+	// under Telegram's 50 MB bot upload bound.
+	videoMaxBytes    = 48 << 20
 	artifactScanSkew = 2 * time.Second
 )
+
+// artifactLimit is the per-bucket byte cap: videos get headroom, documents
+// and images stay at the original bound.
+func artifactLimit(rel string) int64 {
+	if strings.HasPrefix(filepath.ToSlash(rel), "videos/") {
+		return videoMaxBytes
+	}
+	return artifactMaxBytes
+}
 
 var artifactMimes = map[string]string{
 	".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
@@ -43,13 +55,14 @@ var artifactMimes = map[string]string{
 	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 	".png":  "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+	".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
 }
 
 func artifactRoot() string { return filepath.Join(workspace, "artifacts") }
 
-// scanArtifacts lists files the run produced under artifacts/documents and
-// artifacts/images. The run-start timestamp bounds attribution; a zero time
-// (recovered observation) lists nothing rather than guessing.
+// scanArtifacts lists files the run produced under artifacts/documents,
+// artifacts/images and artifacts/videos. The run-start timestamp bounds
+// attribution; a zero time (recovered observation) lists nothing.
 func scanArtifacts(since time.Time) []ArtifactRef {
 	if since.IsZero() {
 		return nil
@@ -71,7 +84,7 @@ func scanArtifacts(since time.Time) []ArtifactRef {
 		if err != nil || entry.Type()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return nil
 		}
-		if info.Size() == 0 || info.Size() > artifactMaxBytes || info.ModTime().Before(since.Add(-artifactScanSkew)) {
+		if info.Size() == 0 || info.Size() > artifactLimit(rel) || info.ModTime().Before(since.Add(-artifactScanSkew)) {
 			return nil
 		}
 		mime := artifactMimes[strings.ToLower(filepath.Ext(path))]
@@ -87,7 +100,7 @@ func scanArtifacts(since time.Time) []ArtifactRef {
 
 // extractMediaArtifacts lifts upstream "MEDIA:<path>" marker lines out of the
 // reply text. Each file resolving inside the workspace is staged under
-// artifacts/documents|images (copied there when the tool wrote it elsewhere,
+// artifacts/documents|images|videos by mime (copied there when the tool wrote it elsewhere,
 // e.g. the workspace root) and returned as a ref; a marker pointing at an
 // unusable file still yields a ref with Error so delivery stays explicit.
 // Marker lines are always stripped — they are routing metadata, not prose.
@@ -141,8 +154,8 @@ func extractVoiceLines(text string) (string, string) {
 
 // stageMediaArtifact resolves a workspace path and copies the file into the
 // matching artifacts bucket when it does not already live under
-// artifacts/documents|images. Containment, regular-file and size checks are
-// the same contract the artifact endpoint enforces.
+// artifacts/{documents,images,videos}. Containment, regular-file and size
+// checks are the same contract the artifact endpoint enforces.
 func stageMediaArtifact(raw string) (ArtifactRef, bool) {
 	if raw == "" || len(raw) > 1024 || strings.ContainsRune(raw, 0) {
 		return ArtifactRef{}, false
@@ -161,21 +174,26 @@ func stageMediaArtifact(raw string) (ArtifactRef, bool) {
 		return ArtifactRef{}, false
 	}
 	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > artifactMaxBytes {
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return ArtifactRef{}, false
 	}
 	mime := artifactMimes[strings.ToLower(filepath.Ext(resolved))]
 	if mime == "" {
 		mime = "application/octet-stream"
 	}
+	bucket := "documents"
+	if strings.HasPrefix(mime, "image/") {
+		bucket = "images"
+	} else if strings.HasPrefix(mime, "video/") {
+		bucket = "videos"
+	}
+	if info.Size() > artifactLimit(bucket+"/x") {
+		return ArtifactRef{}, false
+	}
 	if artRoot, err := filepath.EvalSymlinks(artifactRoot()); err == nil {
 		if rel, err := filepath.Rel(artRoot, resolved); err == nil && validArtifactRel(rel) {
 			return ArtifactRef{Name: filepath.Base(resolved), Path: filepath.ToSlash(rel), Mime: mime, Size: info.Size()}, true
 		}
-	}
-	bucket := "documents"
-	if strings.HasPrefix(mime, "image/") {
-		bucket = "images"
 	}
 	dest := filepath.Join(artifactRoot(), bucket, filepath.Base(resolved))
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
@@ -228,7 +246,7 @@ func mergeArtifacts(groups ...[]ArtifactRef) []ArtifactRef {
 
 func validArtifactRel(rel string) bool {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	return len(parts) == 2 && (parts[0] == "documents" || parts[0] == "images") && parts[1] != "" && parts[1] == filepath.Base(parts[1]) && parts[1] != "." && parts[1] != ".."
+	return len(parts) == 2 && (parts[0] == "documents" || parts[0] == "images" || parts[0] == "videos") && parts[1] != "" && parts[1] == filepath.Base(parts[1]) && parts[1] != "." && parts[1] != ".."
 }
 
 // artifact resolves one bounded file under the artifacts root. Path traversal,
@@ -255,7 +273,7 @@ func (s *runtimeHTTP) artifact(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusNotFound, "artifact not found")
 		return
 	}
-	if info.Size() == 0 || info.Size() > artifactMaxBytes {
+	if info.Size() == 0 || info.Size() > artifactLimit(request.Name) {
 		writeRuntimeError(w, http.StatusRequestEntityTooLarge, "artifact size outside delivery bounds")
 		return
 	}
@@ -281,5 +299,5 @@ func (s *runtimeHTTP) artifact(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, io.LimitReader(file, artifactMaxBytes+1))
+	_, _ = io.Copy(w, io.LimitReader(file, artifactLimit(request.Name)+1))
 }

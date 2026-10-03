@@ -2,11 +2,13 @@
 
 Frozen: 2026-10-06. Issue 172.
 
-1. `workspace/artifacts/documents` and `workspace/artifacts/images` are the
+1. `workspace/artifacts/documents`, `workspace/artifacts/images` and
+   `workspace/artifacts/videos` are the
    deliverable area: hub tools place generated files there by contract. On a
    `completed` run the runtime lists regular, non-symlink files under that
    root modified inside the run window (mtime >= run start - 2 s), bounded
-   to 8 files of <= 8 MiB each, and attaches `{name, path, mime, size}` refs
+   to 8 files of <= 8 MiB each — <= 48 MiB under `videos`, below the 50 MB
+   Telegram bot upload bound — and attaches `{name, path, mime, size}` refs
    to the terminal `ExecuteResponse`. Observed/recovered runs without a
    run-start timestamp list nothing by the window scan alone.
 1a. Upstream `MEDIA:<path>` reply markers are a second, explicit source: the
@@ -19,7 +21,7 @@ Frozen: 2026-10-06. Issue 172.
    still deliver named files.
 
 2. `POST /v1/artifact` on the runtime serves exactly one file by relative
-   path: two segments, root ∈ {documents, images}, clean basename, Lstat
+   path: two segments, root ∈ {documents, images, videos}, clean basename, Lstat
    rejects symlinks and non-regular files, `EvalSymlinks` containment is
    re-verified, size within bounds. The supervisor owns the same path and
    forwards it to the runtime bound to the request envelope (lookup only, no
@@ -36,6 +38,7 @@ Frozen: 2026-10-06. Issue 172.
    `sent_artifacts` persisted per artifact — the same sent-boundary semantics
    as multi-part text. Telegram sends `image/png` and `image/jpeg` via
    `sendPhoto` with a `sendDocument` fallback, everything else via
-   `sendDocument`. Slack gets one explicit notice line per artifact until a
+   `sendDocument`. `video/*` mimes go via `sendVideo` with the same
+   `sendDocument` fallback. Slack gets one explicit notice line per artifact until a
    Slack file-upload surface exists. `CompleteDelivery` removes the staged
    blob directory.

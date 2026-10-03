@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // service holds one role's runtime: engine, job store and the work semaphore.
@@ -19,6 +21,7 @@ type service struct {
 	jobs *jobStore
 	stt  STTEngine
 	tts  TTSEngine
+	gen  GenEngine
 	sem  chan struct{}
 }
 
@@ -34,9 +37,16 @@ func Serve(cfg Config) (http.Handler, error) {
 		s.stt, err = sttEngine(cfg)
 	case RoleTTS:
 		s.tts, err = ttsEngine(cfg)
+	case RoleMedia:
+		s.gen, err = genEngine(cfg)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if fg, ok := s.gen.(*falGen); ok {
+		fg.fetch = func(ctx context.Context, raw string) ([]byte, string, error) {
+			return fetchResult(ctx, raw, cfg.FetchHosts, maxGenResultBytes)
+		}
 	}
 	// Requeue jobs orphaned by a restart; a "running" record is retried once.
 	for _, j := range store.list() {
@@ -60,6 +70,9 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("/v1/audio/transcriptions", s.transcriptions)
 	mux.HandleFunc("/v1/audio/speech", s.speech)
 	mux.HandleFunc("/v1/voices", s.voices)
+	mux.HandleFunc("/v1/images/generations", s.imagesGenerations)
+	mux.HandleFunc("/v1/images/edits", s.imagesEdits)
+	mux.HandleFunc("/v1/models", s.models)
 	mux.HandleFunc("/v1/jobs", s.jobsRoot)
 	mux.HandleFunc("/v1/jobs/", s.jobItem)
 	return mux
@@ -67,7 +80,8 @@ func (s *service) routes() http.Handler {
 
 func (s *service) healthz(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Role == RoleSTT && s.stt != nil && s.stt.Ready(r.Context()) ||
-		s.cfg.Role == RoleTTS && s.tts != nil && s.tts.Ready(r.Context()) {
+		s.cfg.Role == RoleTTS && s.tts != nil && s.tts.Ready(r.Context()) ||
+		s.cfg.Role == RoleMedia && s.gen != nil && s.gen.Ready(r.Context()) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
@@ -191,18 +205,186 @@ func (s *service) voices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"voices": voices, "default": s.cfg.Voice})
 }
 
-// jobRequest is the async API body; SourceURL/SourcePath are materialized
+// ---- media role: image generation/edits are synchronous; video rides the
+// shared durable job queue (kind=video).
+
+// maxGenPromptRunes caps prompt length; maxGenResultBytes bounds provider
+// result bytes in memory — videos ride under Telegram's 50 MB bot bound.
+const (
+	maxGenPromptRunes = 2000
+	maxGenResultBytes = 48 << 20
+)
+
+func (s *service) validPrompt(prompt string) error {
+	if prompt == "" || strings.ContainsRune(prompt, 0) {
+		return errors.New("prompt must be a non-empty string")
+	}
+	if utf8.RuneCountInString(prompt) > maxGenPromptRunes {
+		return errors.New("prompt is too long")
+	}
+	return nil
+}
+
+func (s *service) allowedModel(model string, allowed []string, def string) (string, error) {
+	if model == "" {
+		model = def
+	}
+	for _, m := range allowed {
+		if m == model {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("model %q is not allowed", model)
+}
+
+// imageModel gates generation/edit model ids against the image allowlist plus
+// the chat-routed image models: HUB_MEDIA_CHAT_MODELS are valid image models
+// served over /chat/completions, not a separate capability.
+func (s *service) imageModel(model string) (string, error) {
+	if model == "" {
+		model = s.cfg.ImageModel
+	}
+	for _, m := range s.cfg.ImageModels {
+		if m == model {
+			return model, nil
+		}
+	}
+	for _, m := range s.cfg.ChatModels {
+		if m == model {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("model %q is not allowed", model)
+}
+
+func (s *service) writeMedia(w http.ResponseWriter, out GenResult) {
+	mime := out.Mime
+	if sniffed := sniffMime(out.Data); mediaMimeOK(sniffed) {
+		mime = sniffed
+	}
+	if !mediaMimeOK(mime) {
+		writeError(w, http.StatusBadGateway, "provider returned an unsupported media type")
+		return
+	}
+	w.Header().Set("Content-Type", mime)
+	_, _ = w.Write(out.Data)
+}
+
+func (s *service) imagesGenerations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) || s.gen == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	var req struct {
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
+		Size   string `json:"size"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid generation request")
+		return
+	}
+	if err := s.validPrompt(req.Prompt); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	model, err := s.imageModel(req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.Size) > 32 {
+		writeError(w, http.StatusBadRequest, "size is too long")
+		return
+	}
+	out, err := s.gen.Generate(r.Context(), GenRequest{Kind: "image", Model: model, Prompt: req.Prompt, Size: req.Size})
+	if err != nil || len(out.Data) == 0 {
+		writeError(w, http.StatusBadGateway, "image generation failed")
+		return
+	}
+	s.writeMedia(w, out)
+}
+
+func (s *service) imagesEdits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) || s.gen == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	const maxEditSource = 16 << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxEditSource)
+	if err := r.ParseMultipartForm(maxEditSource); err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "invalid multipart form")
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image field is required")
+		return
+	}
+	defer file.Close()
+	source, err := io.ReadAll(io.LimitReader(file, maxEditSource+1))
+	if err != nil || len(source) == 0 || len(source) > maxEditSource {
+		writeError(w, http.StatusRequestEntityTooLarge, "image is too large")
+		return
+	}
+	mime := sniffMime(source)
+	if !strings.HasPrefix(mime, "image/") {
+		writeError(w, http.StatusBadRequest, "image must be png, jpeg or webp")
+		return
+	}
+	prompt := r.FormValue("prompt")
+	if err := s.validPrompt(prompt); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	model, err := s.imageModel(r.FormValue("model"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out, err := s.gen.Generate(r.Context(), GenRequest{
+		Kind: "image", Model: model, Prompt: prompt,
+		Source: source, SourceName: filepath.Base(header.Filename), SourceMime: mime,
+	})
+	if err != nil || len(out.Data) == 0 {
+		writeError(w, http.StatusBadGateway, "image edit failed")
+		return
+	}
+	s.writeMedia(w, out)
+}
+
+// models advertises the operator-configured allowlists so callers can render
+// choices without knowing provider ids.
+func (s *service) models(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) || s.gen == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"image_models": s.cfg.ImageModels, "default_image": s.cfg.ImageModel,
+		"video_models": s.cfg.VideoModels, "default_video": s.cfg.VideoModel,
+	})
+}
+
+// jobRequest is the async API body. Transcription jobs carry a source;
+// media jobs carry kind/model/prompt. SourceURL/SourcePath are materialized
 // inside the job so slow fetches never hold the request open.
 type jobRequest struct {
+	Kind       string `json:"kind"`
 	SourceURL  string `json:"source_url"`
 	SourcePath string `json:"source_path"`
 	Language   string `json:"language"`
 	Model      string `json:"model"`
+	Prompt     string `json:"prompt"`
 	Diarize    bool   `json:"diarize"`
 }
 
+// jobsEnabled reports whether this role runs the async job API at all.
+func (s *service) jobsEnabled() bool { return s.stt != nil || s.gen != nil }
+
 func (s *service) jobsRoot(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) || s.stt == nil {
+	if !s.authorized(r) || !s.jobsEnabled() {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -210,10 +392,14 @@ func (s *service) jobsRoot(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		var out []map[string]any
 		for _, j := range s.jobs.list() {
-			out = append(out, map[string]any{"id": j.ID, "status": j.Status, "created_at": j.CreatedAt, "error": j.Error})
+			out = append(out, map[string]any{"id": j.ID, "status": j.Status, "kind": j.Kind, "created_at": j.CreatedAt, "error": j.Error})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
 	case http.MethodPost:
+		if s.gen != nil {
+			s.createMediaJob(w, r)
+			return
+		}
 		// Two ingest forms: JSON {source_url|source_path} or multipart upload.
 		var req jobRequest
 		var upload []byte
@@ -272,8 +458,48 @@ func (s *service) jobsRoot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// createMediaJob enqueues an async generation (video). The poll loop inside
+// the job calls the engine's queue adapter; the request returns immediately.
+func (s *service) createMediaJob(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	var req jobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job request")
+		return
+	}
+	if req.Kind != "video" {
+		writeError(w, http.StatusBadRequest, "kind must be \"video\"")
+		return
+	}
+	if err := s.validPrompt(req.Prompt); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := s.gen.(AsyncEngine); !ok {
+		writeError(w, http.StatusBadRequest, "this engine does not support async generation")
+		return
+	}
+	model, err := s.allowedModel(req.Model, s.cfg.VideoModels, s.cfg.VideoModel)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if model == "" {
+		writeError(w, http.StatusBadRequest, "video generation is not configured")
+		return
+	}
+	j := &Job{ID: newJobID(), Status: "queued", Kind: "video", CreatedAt: time.Now().UTC(),
+		Model: model, Prompt: req.Prompt}
+	if err := s.jobs.put(j); err != nil {
+		writeError(w, http.StatusInternalServerError, "job persist failed")
+		return
+	}
+	go s.runJob(context.Background(), j.ID)
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": j.ID, "status": j.Status})
+}
+
 func (s *service) jobItem(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) || s.stt == nil {
+	if !s.authorized(r) || !s.jobsEnabled() {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -285,10 +511,17 @@ func (s *service) jobItem(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case file == "" && r.Method == http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"id": j.ID, "status": j.Status, "text": j.Text, "error": j.Error, "language": j.Language, "diarize": j.Diarize})
+		writeJSON(w, http.StatusOK, map[string]any{"id": j.ID, "status": j.Status, "kind": j.Kind, "text": j.Text, "error": j.Error, "language": j.Language, "diarize": j.Diarize})
 	case file == "result" && r.Method == http.MethodGet:
 		if j.Status != "done" {
 			writeError(w, http.StatusConflict, "job is not finished")
+			return
+		}
+		if j.Kind == "video" {
+			if j.Mime != "" {
+				w.Header().Set("Content-Type", j.Mime)
+			}
+			http.ServeFile(w, r, filepath.Join(s.jobs.dirOf(j.ID), "result.bin"))
 			return
 		}
 		format := r.URL.Query().Get("format")

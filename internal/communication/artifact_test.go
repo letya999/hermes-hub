@@ -171,6 +171,44 @@ func TestPhotoArtifactFallsBackToDocument(t *testing.T) {
 	}
 }
 
+func TestVideoArtifactSendsVideoAndFallsBackToDocument(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	delivery := Delivery{ID: "video-artifact", JobID: "artifact-job", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "plain", Artifacts: []hubruntime.ArtifactRef{{Name: "clip.mp4", Mime: "video/mp4"}}}
+	blob, err := g.spool.WriteDeliveryBlob(delivery.ID, "0-clip.mp4", []byte("mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery.Artifacts[0].Blob = blob
+	if err := g.spool.EnqueueDelivery(delivery); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.videos) != 1 || !strings.HasPrefix(fake.videos[0], "clip.mp4\x00") || len(fake.docs) != 0 {
+		t.Fatalf("video not routed to sendVideo: %v %v", fake.videos, fake.docs)
+	}
+
+	fake.videoErr = errors.New("video rejected")
+	fake.videos = nil
+	delivery.ID = "video-fallback"
+	delivery.Artifacts[0].Blob = ""
+	if blob, err := g.spool.WriteDeliveryBlob(delivery.ID, "0-clip.mp4", []byte("mp4")); err == nil {
+		delivery.Artifacts[0].Blob = blob
+	}
+	if err := g.spool.EnqueueDelivery(delivery); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.videos) != 0 || len(fake.docs) != 1 || !strings.HasPrefix(fake.docs[0], "clip.mp4") {
+		t.Fatalf("video failure did not fall back to document: %v %v", fake.videos, fake.docs)
+	}
+}
+
 func TestSlackArtifactPostsExplicitNotice(t *testing.T) {
 	var posted []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

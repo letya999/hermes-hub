@@ -253,11 +253,11 @@ func (r HTTPRunner) fetchArtifact(ctx context.Context, job Job, name string) ([]
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("artifact fetch returned HTTP %d", response.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, mediaSizeLimit+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, videoSizeLimit+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) == 0 || len(data) > mediaSizeLimit {
+	if len(data) == 0 || len(data) > videoSizeLimit {
 		return nil, errors.New("artifact size outside delivery bounds")
 	}
 	return data, nil

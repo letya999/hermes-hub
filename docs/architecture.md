@@ -114,15 +114,19 @@ file queue and reply delivery. Speech is delegated to standalone `hub-stt` /
 `hub-tts` services — separate binaries and images (OpenAI-compatible API +
 durable async jobs; swappable command/remote/sherpa/elevenlabs engines) reached over
 bearer-auth HTTP — see
-[SPEC-0039](../specs/active/SPEC-0039-media-sidecars.md). The gateway mounts only
+[SPEC-0039](../specs/active/SPEC-0039-media-sidecars.md). Image and video
+generation is likewise delegated to `hub-media` (SPEC-0040): the same
+`internal/mediasvc` core, `remote`/`fal` engines, sync image endpoints plus
+durable async video jobs on the shared job store. Provider credentials live in
+the service env; the runtime mounts only `media.auth` and the service URL. The gateway mounts only
 `communication-hub-data` and receives
 the bot token. Model-authored replies render per channel at delivery (Telegram HTML,
 Slack mrkdwn) and split on block boundaries inside the channel limit with durable
 per-part outbox progress (SPEC-0036); hub-authored notices stay plain text.
-Files generated under `workspace/artifacts/{documents,images}` during a run
+Files generated under `workspace/artifacts/{documents,images,videos}` during a run
 cross the private contract through `POST /v1/artifact` while the runtime is
 answering, stage into the outbox and reach the chat as Telegram
-photos/documents with durable per-artifact progress (SPEC-0037).
+photos/documents/videos with durable per-artifact progress (SPEC-0037).
 `hermes-runtime` owns the selected scope homes, provider credentials
 and configuration. Rollback mode runs one Hermes process per job; target mode keeps
 one pinned Gateway warm per active context. It is not published on a public host port.

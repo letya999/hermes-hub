@@ -18,6 +18,10 @@ import (
 
 const (
 	mediaSizeLimit = 8 << 20
+	// Videos stay under Telegram's 50 MB bot upload bound with headroom for
+	// multipart framing; documents use the same ceiling since artifacts are
+	// already capped per-bucket at the runtime.
+	videoSizeLimit = 48 << 20
 	// Defaults; both are configurable on the gateway via HUB_STT_TIMEOUT and
 	// HUB_MEDIA_MAX_DURATION (seconds) — limits are policy, not constants.
 	defaultMediaDurationLimit = 120

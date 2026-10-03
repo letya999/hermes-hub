@@ -552,9 +552,11 @@ contract.
 | Convert one document | `document_convert` | new txt, md, html, pdf, xlsx, or pptx file; csv only from xlsx | none |
 | Inspect one image | `image_inspect` | png, jpeg, webp | model endpoint, `OPENAI_API_KEY` |
 | Convert one image | `image_convert` | png, jpeg, and webp, locally, new file under `artifacts/images/` | none |
-| Generate one image | `image_generate` | grant selects provider, model, and delivery | grant credential |
-| Edit one image | `image_edit` | one workspace png, jpeg, or webp; webp is sent as png; fal has no edit | grant credential |
-| Delete one artifact | `artifact_remove` | one file under `artifacts/documents/` or `artifacts/images/` | none |
+| Generate one image | `image_generate` | grant selects provider, model, and delivery | `hub-media` service |
+| Edit one image | `image_edit` | one workspace png, jpeg, or webp; webp is sent as png; fal has no edit | `hub-media` service |
+| Submit one video | `video_generate` | async job on `hub-media`, returns a job id | `hub-media` service |
+| Fetch one media job | `media_fetch` | job status; a finished job stages under `artifacts/videos/` | `hub-media` service |
+| Delete one artifact | `artifact_remove` | one file under `artifacts/documents/`, `artifacts/images/`, or `artifacts/videos/` | none |
 
 Rejected documents: doc, docx, xls, ppt, odt, rtf, epub, pages. The extension
 xslx is rejected. Rejected images: gif, bmp, svg, tif, tiff, heic, avif. HTML
@@ -618,15 +620,30 @@ configured endpoint must be public HTTPS. An unknown provider, model, delivery,
 or field fails before a request.
 
 Enabling the feature writes the normalized section into the mounted Hermes
-config. `FAL_KEY` enters the runtime env only for provider `fal`. Disabling the
-feature, or leaving it on `cliproxy`, omits that key even if the secrets file
-still has the line. The config never contains a key value. Inspect keeps using
+config. On a rendered stack the call runs in the `hub-media` sidecar
+([SPEC-0040](../specs/active/SPEC-0040-media-generation-service.md)): compose
+adds the service on the internal network with no published port,
+`HUB_MEDIA_URL`/`HUB_MEDIA_AUTH` on the runtime, and `media.auth` plus the
+`HUB_CREDENTIAL_BROKER_MEDIA_*` client env on the service. Provider
+credentials are never written to an env file: `hub-media` materializes them
+per call from the Credential Broker grant named by `HUB_MEDIA_BROKER_GRANT`
+(identity `media`/`hermes-media`, read-only `broker-secrets-media` keypair
+volume, short in-memory cache with the lease released right after
+materialization). The runtime env never contains `FAL_KEY`. Engines are
+`remote` (any
+OpenAI-compatible upstream such as CLIProxy, default upstream
+`http://cliproxy:8317`) and `fal` (`fal.run` images, `queue.fal.run` video
+jobs). Images answer synchronously; video submits return a job id for
+`media_fetch`, persist under `HUB_MEDIA_DATA`, resume provider polling after a
+restart and expire by `HUB_MEDIA_JOB_TTL`. Outside a stack the embedded
+direct-provider path stays as fallback and `FAL_KEY` enters the runtime env
+only for provider `fal`. Disabling the
+feature omits the section and the keys even if the secrets file
+still has the lines. The config never contains a key value. Inspect keeps using
 the model credential. Each call rereads the mounted file. A missing provider or
 a revoked section fails the next generate or edit call. `image_generate` and
 `image_edit` leave `tools/list` on the next process start. A missing config
-does not take down the hub MCP server. Switching the running process onto
-`FAL_KEY` waits until that env is applied; the mounted file alone does not
-insert the key.
+does not take down the hub MCP server.
 
 Files stay in the invoking user's workspace. Another user's root, an absolute
 path, and `..` fail closed. `document_edit` refuses every path outside

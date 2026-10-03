@@ -847,7 +847,7 @@ func (t *Tools) Server() *mcp.Server {
 		out, err := t.session().ConvertImage(ctx, r.Name, r.Path, r.Format)
 		return nil, out, err
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "artifact_remove", Description: "Delete one generated file under artifacts/documents or artifacts/images. Does not delete source files or other workspace paths."}, func(_ context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "artifact_remove", Description: "Delete one generated file under artifacts/documents, artifacts/images, or artifacts/videos. Does not delete source files or other workspace paths."}, func(_ context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
 		out, err := t.session().Remove(r.Path)
 		return nil, out, err
 	})
@@ -858,6 +858,14 @@ func (t *Tools) Server() *mcp.Server {
 		})
 		mcp.AddTool(s, &mcp.Tool{Name: "image_edit", Description: "Edit one workspace png, jpeg, or webp with the active image_gen provider and model. webp is sent as png. A Gemini image model uses the chat image call. fal does not support edit. Delivery follows the grant. The credential is never returned."}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
 			out, err := t.session().Edit(ctx, r.Name, r.Path, r.Prompt)
+			return nil, out, err
+		})
+		mcp.AddTool(s, &mcp.Tool{Name: "video_generate", Description: "Submit one async video generation job through the media service. Returns a job id immediately; the render continues in the background and may take minutes. Poll it with media_fetch."}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+			out, err := t.session().VideoGenerate(ctx, r.Prompt)
+			return nil, out, err
+		})
+		mcp.AddTool(s, &mcp.Tool{Name: "media_fetch", Description: "Check one media job by id and, when done, stage the result file under artifacts. Returns status while the job is still queued or running."}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+			out, err := t.session().MediaFetch(ctx, r.ID, r.Name)
 			return nil, out, err
 		})
 	}

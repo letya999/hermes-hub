@@ -460,7 +460,7 @@ func (s *Session) remove(rel string) (map[string]any, error) {
 	if err := relPath(rel); err != nil {
 		return nil, err
 	}
-	if !strings.HasPrefix(rel, "artifacts/documents/") && !strings.HasPrefix(rel, "artifacts/images/") {
+	if !strings.HasPrefix(rel, "artifacts/documents/") && !strings.HasPrefix(rel, "artifacts/images/") && !strings.HasPrefix(rel, "artifacts/videos/") {
 		return nil, errors.New("only generated artifacts can be removed")
 	}
 	if path.Base(rel) == "." || strings.HasSuffix(rel, "/") {
