@@ -116,6 +116,9 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
+	if err := c.Store.RequireControlOperation(auth, op); err != nil {
+		return nil, err
+	}
 	switch op {
 	case "discover":
 		return c.discover(ctx, auth, argString(args, "query"))

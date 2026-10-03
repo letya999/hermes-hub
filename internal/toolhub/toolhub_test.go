@@ -74,6 +74,9 @@ func seededStore(t *testing.T) (*Store, identity.Envelope, ToolBinding) {
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
 	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)

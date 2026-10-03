@@ -36,7 +36,14 @@ func dockerBuild(ctx context.Context, image, target string, run dockerExec) erro
 	if image == "" || target == "" || strings.ContainsAny(image+target, " \t\r\n") || run == nil {
 		return fmt.Errorf("image and target required")
 	}
-	return run(ctx, "build", "--target", target, "-t", image, "-f", "docker/Dockerfile", ".")
+	args := []string{"build", "--target", target, "-t", image, "--load"}
+	if from := strings.TrimSpace(os.Getenv("HUB_DOCKER_CACHE_FROM")); from != "" {
+		args = append(args, "--cache-from", from)
+	}
+	if to := strings.TrimSpace(os.Getenv("HUB_DOCKER_CACHE_TO")); to != "" {
+		args = append(args, "--cache-to", to)
+	}
+	return run(ctx, append(args, "-f", "docker/Dockerfile", ".")...)
 }
 
 var composeImagePattern = regexp.MustCompile(`(?m)^\s*image:\s*hermes-hub:(\S+)\s*$`)

@@ -154,6 +154,8 @@ type controlFixture struct {
 func newControlFixture(t *testing.T, reviewer SourceReviewer) *controlFixture {
 	t.Helper()
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", append(ControlOperations, "invoke")...)
+	grantTestControlOperations(t, store, "bob", append(ControlOperations, "invoke")...)
 	var calls atomic.Int32
 	fix := &controlFixture{store: store, calls: &calls}
 	control := &ControlPlane{Store: store, Reviewer: reviewer, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: 10 * time.Minute}
@@ -182,6 +184,15 @@ func newControlFixture(t *testing.T, reviewer SourceReviewer) *controlFixture {
 	control.FormOrigin = server.URL
 	fix.control, fix.gateway, fix.server = control, gateway, server
 	return fix
+}
+
+func grantTestControlOperations(t *testing.T, store *Store, principal string, operations ...string) {
+	t.Helper()
+	for _, operation := range operations {
+		if err := store.PutGrant(OperatorControlGrant(principal, operation)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func (f *controlFixture) session(t *testing.T, token string) *mcp.ClientSession {

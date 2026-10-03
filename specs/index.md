@@ -2,7 +2,9 @@
 
 | Specification | Status |
 |---|---|
-| [SPEC-0040](active/SPEC-0040-capability-profile.md) | Standard user-scoped capability profile: single-surface catalog matrix, opt-in gating, revocation |
+| [SPEC-0042](active/SPEC-0042-capability-isolation-and-proof.md) | Frozen: execution isolation, file/shell boundaries and T01-T22 acceptance; implementation in CHG-0065 |
+| [SPEC-0041](active/SPEC-0041-default-deny-capabilities.md) | Frozen successor to SPEC-0040 defaults: complete inventory, explicit profiles/grants, routing and revocation; implementation in CHG-0065 |
+| [SPEC-0040](active/SPEC-0040-capability-profile.md) | Frozen earlier capability matrix; defaults/enforcement superseded by SPEC-0041/0042 |
 | [SPEC-0034](active/SPEC-0034-user-diagnostics.md) | User-scoped diagnostics projection: store-derived scope, bounded queries, redaction |
 | [SPEC-0032](active/SPEC-0032-ssh-capability.md) | Opt-in user-scoped SSH capability with pinned host keys and stacked read/write/shell/tunnel grants |
 | [SPEC-0033](active/SPEC-0033-document-image-profile.md) | Workspace document and image profile; pdf, xlsx, pptx, and webp; configurable image provider, model, and delivery |

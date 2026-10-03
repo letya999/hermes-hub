@@ -18,31 +18,34 @@ import (
 )
 
 type Settings struct {
-	ExecutionMode   string               `yaml:"-"`
-	SupervisorURL   string               `yaml:"-"`
-	NativeCron      string               `yaml:"-"`
-	Environment     string               `yaml:"-"`
-	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks           map[string]any       `yaml:"hooks,omitempty"`
-	Memory          bool                 `yaml:"memory"`
-	Honcho          bool                 `yaml:"honcho,omitempty"`
-	HonchoURL       string               `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir string               `yaml:"global_skills_dir,omitempty"`
-	Schema          int                  `yaml:"schema"`
-	User            string               `yaml:"user"`
-	Organization    string               `yaml:"organization,omitempty"`
-	DisabledMCP     []string             `yaml:"disabled_mcp,omitempty"`
-	Model           string               `yaml:"model"`
-	ModelURL        string               `yaml:"model_url"`
-	Timezone        string               `yaml:"timezone"`
-	Features        []string             `yaml:"features"`
-	GoogleEmail     string               `yaml:"google_email"`
-	GitLabHost      string               `yaml:"gitlab_host"`
-	DesktopURL      string               `yaml:"desktop_url"`
-	DraftsURL       string               `yaml:"drafts_url"`
-	OAuthPort       int                  `yaml:"oauth_port"`
-	BrowserPort     int                  `yaml:"browser_port"`
-	SlackEventsPort int                  `yaml:"slack_events_port,omitempty"`
+	ExecutionMode        string               `yaml:"-"`
+	SupervisorURL        string               `yaml:"-"`
+	NativeCron           string               `yaml:"-"`
+	Environment          string               `yaml:"-"`
+	CapabilityMode       string               `yaml:"capability_mode,omitempty"`
+	CapabilityProfileID  string               `yaml:"capability_profile_id,omitempty"`
+	CapabilityGeneration uint64               `yaml:"capability_generation,omitempty"`
+	MCP                  map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks                map[string]any       `yaml:"hooks,omitempty"`
+	Memory               bool                 `yaml:"memory"`
+	Honcho               bool                 `yaml:"honcho,omitempty"`
+	HonchoURL            string               `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir      string               `yaml:"global_skills_dir,omitempty"`
+	Schema               int                  `yaml:"schema"`
+	User                 string               `yaml:"user"`
+	Organization         string               `yaml:"organization,omitempty"`
+	DisabledMCP          []string             `yaml:"disabled_mcp,omitempty"`
+	Model                string               `yaml:"model"`
+	ModelURL             string               `yaml:"model_url"`
+	Timezone             string               `yaml:"timezone"`
+	Features             []string             `yaml:"features"`
+	GoogleEmail          string               `yaml:"google_email"`
+	GitLabHost           string               `yaml:"gitlab_host"`
+	DesktopURL           string               `yaml:"desktop_url"`
+	DraftsURL            string               `yaml:"drafts_url"`
+	OAuthPort            int                  `yaml:"oauth_port"`
+	BrowserPort          int                  `yaml:"browser_port"`
+	SlackEventsPort      int                  `yaml:"slack_events_port,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -194,6 +197,34 @@ func (s Settings) imageCredential() string {
 func (s Settings) RendersInfra() bool       { return s.Infra == nil || *s.Infra }
 func (s Settings) DiagnosticsEnabled() bool { return s.Diagnostics == nil || *s.Diagnostics }
 func (s Settings) Validate() error {
+	if s.CapabilityMode != "" && s.CapabilityMode != "managed" {
+		return fmt.Errorf("capability_mode must be managed or absent for an unmigrated deployment")
+	}
+	if s.CapabilityMode == "managed" {
+		if s.Model == "" || len(s.Model) > 256 || strings.TrimSpace(s.Model) != s.Model || strings.ContainsAny(s.Model, "\x00\r\n") {
+			return fmt.Errorf("managed model requires an exact reviewed identifier")
+		}
+		if s.ModelURL != "http://model-relay:8318/v1" {
+			return fmt.Errorf("managed model_url must use the reviewed model relay")
+		}
+		if !idPattern.MatchString(s.CapabilityProfileID) || s.CapabilityGeneration == 0 {
+			return fmt.Errorf("managed capability profile needs an exact id and generation")
+		}
+		if _, err := ManagedCapabilityInventory(); err != nil {
+			return err
+		}
+		if len(s.MCP) > 0 || len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" || s.ImageGen != (media.ImageGen{}) {
+			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not direct MCP or native extensions")
+		}
+		for _, feature := range s.Features {
+			if feature != "telegram" && feature != "slack_app" {
+				return fmt.Errorf("managed capabilities cannot be enabled by legacy feature %q", feature)
+			}
+		}
+	}
+	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
+		return fmt.Errorf("managed capability identity requires capability_mode managed")
+	}
 	if s.Schema != 1 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1 and profile a lowercase identifier")
 	}

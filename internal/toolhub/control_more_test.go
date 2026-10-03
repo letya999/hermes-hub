@@ -58,6 +58,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 		t.Fatalf("nil store: %v", err)
 	}
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", ControlOperations...)
 	control := &ControlPlane{Store: store, Listen: "https://127.0.0.1:9", Now: time.Now, ConfirmationTTL: time.Minute}
 	if control.origin() != "https://127.0.0.1:9" {
 		t.Fatalf("origin=%s", control.origin())
@@ -307,6 +308,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 
 func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", ControlOperations...)
 	definition := catalogReadDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,31 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
+
+func TestControlGrantCLIAndRevocationRevision(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store.json")
+	args := []string{"--kind", "control-operation", "--operation", "status", "--user", "alice", "--toolhub-store", storePath}
+	if err := runGrant(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	if err := store.RequireControlOperation(auth, "status"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGrant(t.Context(), append(args, "--status", "revoked", "--revision", "2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireControlOperation(auth, "status"); !errors.Is(err, toolhub.ErrUnauthorized) {
+		t.Fatalf("CLI revocation did not reach existing reader: %v", err)
+	}
+	if err := runGrant(t.Context(), args); !errors.Is(err, toolhub.ErrConflict) {
+		t.Fatalf("stale CLI revision resurrected grant: %v", err)
+	}
+}
 
 func TestGrantWritesOperatorRecordAndRejectsModelIssuer(t *testing.T) {
 	dir := t.TempDir()

@@ -193,6 +193,7 @@ func TestReadinessBackendRouting(t *testing.T) {
 
 func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm")
 	definition := statefulContainerDefinition()
 	definition.DefinitionID = "ready-container"
 	definition.Credentials = nil
@@ -287,6 +288,27 @@ func TestEndpointConfigFromEnvUsesRuntimeIdentityDefaults(t *testing.T) {
 	}
 }
 
+func TestEndpointConfigFromEnvBindsManagedIdentity(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_CAPABILITY_MODE", "managed")
+	t.Setenv("HUB_CAPABILITY_PROFILE_ID", "alice-default")
+	t.Setenv("HUB_CAPABILITY_ENVIRONMENT", "dev")
+	t.Setenv("HUB_CAPABILITY_GENERATION", "3")
+	config, err := EndpointConfigFromEnv()
+	if err != nil || config.Auth.CapabilityProfile != "alice-default" || config.Auth.Environment != "dev" || config.Auth.Generation != 3 {
+		t.Fatalf("managed identity=%+v err=%v", config.Auth, err)
+	}
+	t.Setenv("HUB_CAPABILITY_GENERATION", "0")
+	if _, err := EndpointConfigFromEnv(); err == nil {
+		t.Fatal("managed endpoint accepted zero generation")
+	}
+	t.Setenv("HUB_CAPABILITY_MODE", "unknown")
+	if _, err := EndpointConfigFromEnv(); err == nil {
+		t.Fatal("unknown mode fell back to legacy")
+	}
+}
+
 func TestFormOriginUsesLoopbackForWildcardListener(t *testing.T) {
 	for listen, want := range map[string]string{
 		"0.0.0.0:8090":   "http://127.0.0.1:8090",
@@ -349,6 +371,7 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 	t.Setenv("HUB_CREDENTIAL_STORE", "")
 	t.Setenv("HUB_AUDIT_LEDGER", "")
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", "prepare_source", "required_credentials")
 	if err := store.RegisterDefinition(remoteDefinition()); err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +448,7 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth identity.Envelope, onboardingID, wantURL string) {
 	t.Helper()
 	control := &ControlPlane{Store: store, Listen: "127.0.0.1:8090"}
+	grantTestControlOperations(t, store, auth.PrincipalID, "required_credentials")
 	control.FormOrigin = control.origin()
 	gateway := &Gateway{
 		Store: store, Tokens: map[string]identity.Envelope{strings.Repeat("t", 32): auth},

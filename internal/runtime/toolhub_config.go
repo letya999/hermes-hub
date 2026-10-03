@@ -27,6 +27,7 @@ func materializeOptionsFromEnv() stack.MaterializeOptions {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
 	return stack.MaterializeOptions{
+		Managed:            os.Getenv("HUB_CAPABILITY_MODE") == "managed",
 		ToolHubEndpoint:    toolHubEndpoint(),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: os.Getenv(tokenEnv) != "",

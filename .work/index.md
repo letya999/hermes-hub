@@ -3,12 +3,14 @@
 Use todo / in-progress / done directories for active change folders. A folder contains
 plan.md and state.yaml. Task progress belongs here, never in current architecture docs.
 
-No changes are in progress. Follow-ups live as GitHub issues #73 (live ToolHive/VPS)
-and #74 (Hermes reconnect).
+The table tracks current change records. Issue 122's broader default-deny design
+is CHG-0065; its implementation is in progress. Live deployment follow-ups also remain
+in issues #73 (ToolHive/VPS) and #74 (Hermes reconnect).
 
 | Change | State |
 |---|---|
-| [CHG-0064](in-progress/CHG-0064-capability-profile/plan.md) | Issue 122: standard user-scoped capability profile — SPEC-0040 matrix, catalog invariants |
+| [CHG-0065](in-progress/CHG-0065-capability-enforcement/plan.md) | Issue 122: accepted ADR-0031/0032, frozen SPEC-0041/0042; P0 probes and P1 grant hardening in progress |
+| [CHG-0064](in-progress/CHG-0064-capability-profile/plan.md) | Issue 122 earlier matrix/name-reservation scope; broader enforcement continues in CHG-0065 |
 | [CHG-0054](done/CHG-0054-diagnostics-hardening/plan.md) | Diagnostics hardening: ingest redaction, failure isolation, throttles, per-principal caps — shipped (PR #158) |
 | [CHG-0053](done/CHG-0053-user-diagnostics/plan.md) | Issue 125: user-scoped diagnostics control op — shipped (PR #155, #156) |
 | [CHG-0052](in-progress/CHG-0052-document-image-tools/plan.md) | Workspace document and image capability; Gemini image calls use chat completions, images-endpoint models stay on /images; Fal and a rebuilt Hermes image still open |
@@ -51,31 +53,5 @@ and #74 (Hermes reconnect).
 | [CHG-0005](done/CHG-0005-self-env/plan.md) | User self-env and independent Telegram paths implemented |
 | [CHG-0004](done/CHG-0004-multitenant-knowledge/plan.md) | Organization/user scope overlay implemented |
 | [CHG-0001-bootstrap](done/CHG-0001-bootstrap/plan.md) | Implemented; local gates passed |
-||||||| parent of fa81a0e (docs(work): close shipped CHGs and move them to done)
-| [CHG-0023](done/CHG-0023-personal-assistant/plan.md) | M4 personal assistant: Telegram/Slack channels, voice, routines, memory/skills/backup |
-| [CHG-0022](done/CHG-0022-credentials-connector-platform/plan.md) | M3 shipped-path inject/audit/registry wiring; just check 85.07%; docker-check prod a61ce4879a1d |
-| [CHG-0021](done/CHG-0021-toolhub-stage3/plan.md) | M2 control-plane done; #20–#26 closed; live ToolHive/Hermes evidence is #73/#74 |
-| [CHG-0020](done/CHG-0020-toolhub-stage2/plan.md) | M2 stage 2 in progress: authenticated projection endpoint, ToolHive adapter contract, bounded CLI and workload lifecycle |
-| [CHG-0018](done/CHG-0018-communication-runtime-migration/plan.md) | Issue19: per-context execution selection, migration audit and real five-minute gateway lifecycle |
-| [CHG-0019](done/CHG-0019-toolhub-foundation/plan.md) | M2 complete: immutable ToolHub definitions, workload classification and exact-owner bindings; runtime unchanged |
-| [CHG-0017](done/CHG-0017-stream-approval-reconciliation/plan.md) | Issues 16–18 complete: repository and pinned Hermes Docker gates passed; GitHub issues closed |
-| [CHG-0016](done/CHG-0016-scale-to-zero-runtimes/plan.md) | Initial host supervisor, warm lifecycle and opt-in routing implemented; durable migration pending |
-| [CHG-0015](done/CHG-0015-migration-map/plan.md) | Current-to-target migration and deprecation map |
-| [CHG-0015-durable](done/CHG-0015-durable-job-runtime-mappings/plan.md) | Durable job and runtime mappings |
-| [CHG-0014](done/CHG-0014-threat-model/plan.md) | Threat-model personal deployment and future company boundary |
-| [CHG-0013](done/CHG-0013-dependency-refresh/plan.md) | Apply reviewed GitHub Actions and Docker dependency updates |
-| [CHG-0012](done/CHG-0012-hermes-api-contract/plan.md) | Validate pinned Hermes API contract for persistent sessions and runs |
-| [CHG-0011](done/CHG-0011-stable-identifiers/plan.md) | Stable identity and ownership identifier contract |
-| [CHG-0010](done/CHG-0010-direct-mcp-atlassian/plan.md) | Replace Atlassian Rovo with pinned direct mcp-atlassian |
-| [CHG-0009](done/CHG-0009-scoped-homes-and-service-split/plan.md) | Scoped homes and communication-hub split ready for deployment acceptance |
-| [CHG-0008](done/CHG-0008-telegram-service-self-service/plan.md) | Telegram connector catalog and self-service enablement implemented |
-| [CHG-0007](done/CHG-0007-communication-gateway/plan.md) | Communication gateway implemented; local gates passed, live Telegram acceptance pending |
-| [CHG-0006](done/CHG-0006-work-services/plan.md) | Work-service integrations implemented |
-| [CHG-0005](done/CHG-0005-self-env/plan.md) | User self-env and independent Telegram paths implemented |
-| [CHG-0004](done/CHG-0004-multitenant-knowledge/plan.md) | Organization/user scope overlay implemented |
-| [CHG-0001-bootstrap](done/CHG-0001-bootstrap/plan.md) | Implemented; local gates passed |
 | [CHG-0002](done/CHG-0002-standalone/plan.md) | Completed; local checks passed |
-| [CHG-0003](done/CHG-0003-go-first-tooling/plan.md) | Go-first tooling in progress |
-
-||||||| parent of fa81a0e (docs(work): close shipped CHGs and move them to done)
 | [CHG-0003](done/CHG-0003-go-first-tooling/plan.md) | Go-first tooling in progress |

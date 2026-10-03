@@ -36,6 +36,32 @@ func TestSupervisedRuntimeUsesDevEnvFile(t *testing.T) {
 	}
 }
 
+func TestManagedSupervisorRefusesBeforeSpawnPreparation(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
+	configDir := filepath.Join(filepath.Dir(root), "config")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "SOUL.md"), []byte("template"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SOUL.md"), []byte("# User instructions\n\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Even an incomplete managed profile must fail before the legacy path
+	// mutates the space or constructs a shared-network Docker command.
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ncapability_mode: managed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if args, err := m.runArgsWithGeneration(binding(root), "fixture", 19000, "generation"); err == nil || args != nil {
+		t.Fatalf("managed runtime entered legacy spawn: args=%v err=%v", args, err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "SOUL.md"))
+	if err != nil || string(body) != "# User instructions\n\n" {
+		t.Fatalf("managed refusal mutated SOUL: %q %v", body, err)
+	}
+}
+
 func TestNormalizeRejectsMissingRuntimeEnvFile(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	if err := os.Remove(filepath.Join(root, "runtime.prod.env")); err != nil {

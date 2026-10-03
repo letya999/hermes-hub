@@ -1,8 +1,47 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 ---
 # Architecture
+
+The default-deny capability boundary is accepted and **in implementation**.
+The [2026-10-02 audit](capability-boundary-audit.md) records gaps in native/API
+tool selection and control/runtime isolation. Follow
+[ADR-0031](adr/ADR-0031-default-deny-capability-policy.md) and
+[ADR-0032](adr/ADR-0032-capability-execution-isolation.md) for the target decisions;
+the existing deployment must not be described as meeting those guarantees yet.
+
+The first ToolHub hardening denies self-install without an explicit active grant
+and hides catalog publications when the user has no catalog/definition grant.
+A matching disabled/revoked grant overrides matching allows. Grant writes reject
+older revisions and become visible only after durable persistence succeeds;
+self-install/catalog admission reloads the protected store. Control operations
+(including diagnostics, discovery and generic invoke) require independent exact
+operation grants, are omitted from ungranted projections and reauthorize each
+call; open MCP sessions refresh after grant changes. User-owned publications,
+existing bindings, principal-only legacy grant scopes and the earlier confirmation
+flow still need the remaining P1/P3 changes. These fixes alone do not establish
+the complete capability policy.
+
+The opt-in managed ToolHub evaluator now combines organization ceiling/defaults,
+personal allows/denies, exact runtime/environment/generation identity and immutable
+implementation selections. It checks complete action/resource/connection tuples
+and execution limits on each call. Managed projection/catalog omit unselected
+tools; legacy binding/control/install paths cannot grant managed authority.
+Policy/profile history is the persisted source for current policy maps, committed
+with the existing atomic snapshot and stale-writer fence. A shared disk lock also
+fences managed admission against writers in other processes. Durable call audit
+is mandatory before injection. Reviewed group snapshots now expand explicit
+complete tuples at fixed revisions; a policy update invalidates old profiles.
+Human consent, runtime provisioning, unified local routing and execution isolation are
+still open. See the current limits in [operations](operations.md).
+
+The managed Compose candidate assigns each user/environment an internal agent
+network. Hermes reaches ToolHub and a per-user model relay there; the relay
+forwards only chat completions for the selected model to CLIProxy on the shared control network.
+CLIProxy, broker and sibling runtimes are not directly attached to the agent
+network. Managed launch still refuses until supervised network lifecycle,
+immutable extension content and private executors are proven in real containers.
 
 M5 stage-2 Calendar and Slack data calls use opt-in stateless `provider-api`
 definitions behind the same ToolHub authorization/injection/audit gateway.
@@ -363,7 +402,7 @@ external conditional backend at the pin recorded in ADR-0013 and issue #11.
 ownership registry and store secret values only as ciphertext behind opaque
 locators. The encryption key is supplied by `HUB_CREDENTIAL_KEY` or
 `HUB_CREDENTIAL_KEY_FILE` and is never written to the ToolHub snapshot, the
-ciphertext file or a ciphertext backup. `AuthorizeProjected` is the only
+ciphertext file or a ciphertext backup. Projected-call authorization gates the
 decrypt/inject path; the shipped ToolHub endpoint decrypts inside that admit
 and passes environment to CLI `CallEnv` and MCP workload files, never to vMCP
 HTTP. Chat `KEY=value` is intercepted before Hermes and rotates matching

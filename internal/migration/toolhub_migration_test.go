@@ -77,6 +77,13 @@ mcp_servers:
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "alice", ConversationID: "migration", DeliveryTargetID: "migration", PolicyVersion: "policy-1"}
 	entries, err := store.Catalog(auth)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("migration implicitly granted catalog access: %+v, %v", entries, err)
+	}
+	if err := store.PutGrant(toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = store.Catalog(auth)
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("catalog=%+v err=%v", entries, err)
 	}

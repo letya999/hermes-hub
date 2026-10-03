@@ -1,0 +1,141 @@
+schema: 1
+id: CHG-0065-capability-enforcement
+title: Default-deny capabilities and isolated execution
+status: in_progress
+phase: p0_and_p1_in_progress
+started_at: 2026-10-02
+updated_at: 2026-10-03
+implementation_status: partial_not_release_ready
+completed:
+  - Re-read owner requirements and audited the issue-122 worktree at code baseline 114b458
+  - Consulted Context7 for Hermes, MCP and ToolHive; checked original GitHub sources and official Go/MCP guidance
+  - Prepared proposed ADR-0031 and ADR-0032 without rewriting accepted decisions
+  - Prepared proposed SPEC-0041 and SPEC-0042 with precedence, threat boundaries and T01-T22 acceptance
+  - Prepared phased plan P0-P6, migration, rollback and owner-requirement traceability
+  - Documentation/workflow checks and git diff whitespace check passed
+  - Verified unique T01-T22 acceptance IDs, P0-P6 phases and preservation of historical ADR/spec files
+  - just check passed with race tests and 85.05 percent own Go statement coverage
+  - Attempted just docker-check; cancelled during slow base-image apt downloads before smoke/contract tests
+  - just docker-clean passed after the cancelled build; no remaining matching build process
+  - Owner adopted ADR-0031 and ADR-0032; SPEC-0041 and SPEC-0042 frozen on implementation instruction
+  - Added Go-driven pinned-image capability inventory and real API-agent forbidden-call probe
+  - Probe passed for 27 platform resolvers and five forged calls with exact rejection feedback and unchanged canary
+  - Extended pinned probe to native HTTP /v1/runs admission; unauthenticated admission denied and five forged calls rejected
+  - Default-deny self-install and catalog publications; deny precedence and monotonic durable grant updates implemented
+  - Exact control-operation grants now gate projection and invocation including generic invoke
+  - Open MCP session proof passed for zero control surface, exact grant visibility, cross-user separation and revoke without reconnect
+  - Host grant CLI supports operation, status and monotonic revision; no agent grant API introduced
+  - Updated authorized lifecycle and agenttools fixtures; migration test verifies no implicit catalog grant
+  - Targeted ToolHub, hubctl, agenttools and migration tests passed
+  - Full race and coverage gate passed at 85.09 percent; lint and documentation stages passed after fixing one error-string capitalization
+  - Managed policy evaluates org ceiling/defaults and personal allows/denies as complete capability implementation action resource connection tuples
+  - Profile admission binds authenticated user context environment runtime generation and policy revision; legacy control install and bare binding paths deny
+  - Projection catalog and actual argument dispatch share managed evaluation; hidden aliases and scope spoofing reach neither injection nor backend
+  - Strict host capability CLI publishes reviewed policy/profile records with immutable selections and monotonic revisions
+  - Ordered policy/profile history and current authority share atomic persistence; failed writes roll back grant and audit history together
+  - Managed dispatch requires durable call audit; ledger preserves profile revisions implementation digest environment and generation without arguments
+  - Shared file fence prevents cross-process publication across managed admission and rejects changed or unavailable snapshots
+  - Targeted managed policy CLI MCP revoke persistence malformed-record and audit tests passed
+  - Intermediate just check passed at 85.22 percent before the subsequent history CLI and cross-process fence changes
+  - Latest just check passed all stages with race/shuffle tests and 85.25 percent own Go statement coverage
+  - Generated native-zero manifest from pinned Hermes registry and verified Go-produced zero config against the real image
+  - Managed Hermes materialization now rejects edited native, MCP, extension, hook, memory and install config; injects only ToolHub
+  - Managed runtime and ToolHub tokens bind exact profile, environment and generation; supervisor managed launch is refused pending isolation
+  - Managed Docker render and runtime startup refuse launch until service network and executor isolation are verified
+  - Repaired asynchronous contract test race; latest just check passed all stages with 85.21 percent own Go coverage
+  - Safe just docker-clean completed after failed Docker dependency download
+  - Draft managed Compose runtime uses separate private state/home/cache, read-only extensions/config, scratch tmpfs and narrow model env file
+  - Managed runtime no longer receives live workspace/archive, broker runtime keys, control-store path, dev source tree or host-gateway alias in generated topology
+  - Latest Docker wrapper built both images and passed smoke, then exposed a supervisor stop race during the real Hermes contract
+  - Supervisor reaper now confirms immutable-ID stopped state before treating a failed Docker stop as a completed stop; targeted race regression passed
+  - Full just check after the supervisor race fix passed with 85.22 percent own Go coverage
+  - Full just docker-check passed after the stop-race fix: both images, smoke, real Hermes API/lifecycle, zero-capability probe and wrapper cleanup
+  - Managed Compose candidate places infra-owner and secondary Hermes on an internal per-user/environment network; only ToolHub and model adapter join it from control services
+  - Disposable Docker network canary reached ToolHub but could not resolve broker or sibling; exact canary containers and networks were removed
+  - Reproducible managed-network-canary command now checks ToolHub access and broker/sibling DNS plus direct-IP denial in Docker and cleans all fixtures
+  - Managed model URL is pinned to reviewed CLIProxy adapter; unknown host, host gateway and admin path are rejected by settings validation
+  - Full just check after the private-network candidate passed all stages with 85.19 percent own Go coverage
+  - Full just docker-check passed both image builds, smoke, real Hermes API and gateway lifecycle, zero-capability probe, managed network canary and wrapper cleanup
+  - Supervised managed-mode refusal now precedes SOUL healing and sibling-token enrollment, including malformed managed profiles; regression test and full just check passed
+  - Reviewed default and personal group snapshots now expand complete allow tuples at fixed group revisions; policy/profile revision fencing, ceiling checks, restart replay and historical revision reuse are tested
+  - Full just check after group snapshots passed all stages with 85.19 percent own Go coverage
+  - Full just docker-check after group snapshots passed builds, smoke, real Hermes lifecycle, zero-capability probe, managed network canary and cleanup
+  - Pinned Hermes probe demonstrated that an on-disk hook executes at discovery despite empty YAML hooks; the initial host-root rejection was later superseded by empty read-only tmpfs mounts
+  - Full just check after hook/root guard passed at 85.20 percent own Go coverage; full just docker-check passed both builds, real lifecycle, hook-aware zero-capability probe, network canary and cleanup
+  - Managed topology candidate now puts CLIProxy only on control networks and inserts a per-user Go model relay on the private agent network with an exact chat-completions route
+  - Model relay rejects management/other methods/queries and upstream redirects; unit/Compose tests and just check passed with 85.17 percent own Go coverage
+  - Full just docker-check with the relay passed real Hermes lifecycle, zero-capability probe, ToolHub/model route and direct CLIProxy/broker/sibling isolation canary, then cleaned fixtures
+  - Model relay now binds one exact reviewed model ID in bounded JSON body, rejects missing/alternate/duplicate/case-variant IDs and tests admission before upstream dispatch
+  - Full just check after model binding passed all stages with 85.15 percent own Go coverage
+  - Full just docker-check after model binding passed lifecycle, hook-aware zero-capability probe, selected-model relay canary, direct-network denial and wrapper cleanup
+  - Managed startup and authenticated self-env HTTP update now refuse legacy self-managed environment before state or process mutation; regression tests passed
+  - Full just check after self-env guard passed at 85.15 percent own Go coverage; full just docker-check passed pinned Hermes lifecycle, zero-capability probe, managed network canary and wrapper cleanup
+  - Model relay now ignores HTTP proxy environment; synthetic proxy-trap regression passes, and managed network canary checks upstream metadata redirect denial
+  - Full just check after relay proxy guard passed at 85.16 percent own Go coverage; full just docker-check passed pinned Hermes lifecycle, zero-capability probe, metadata redirect canary and cleanup
+  - Candidate managed topology routes ToolHub MCP through a narrow per-user relay for infra-owner and secondary users; control ToolHub remains outside agent network, and network canary now checks denied direct/control routes
+  - Full just check after ToolHub relay passed at 85.13 percent own Go coverage; full just docker-check passed pinned Hermes lifecycle, zero-capability probe, narrow ToolHub/model relay network canary and cleanup
+  - Managed org-scoped candidate no longer mounts /org or publishes the legacy OAuth callback port; focused render regressions passed
+  - Full just check after org/callback isolation passed at 85.12 percent own Go coverage; full just docker-check passed pinned Hermes lifecycle, zero-capability probe, private relay network canary and cleanup
+  - Targeted Docker extension mount canary passed: writable parent state, read-only config/skills/hooks/plugins, denied writes/symlinks/rename and exact cleanup; host-side replacement remains unproven
+  - Full just check after extension mount canary passed at 85.12 percent own Go coverage; full just docker-check passed pinned Hermes lifecycle, zero-capability probe, extension mount and private-network canaries, and wrapper cleanup
+  - Replaced host-bound empty extension roots with empty read-only tmpfs roots in managed Compose; Docker CLI and Compose accept ro mounts, targeted canary rejects writes/symlinks/rename without host extension sources
+  - Full just check after read-only tmpfs extension roots passed all stages with 85.13 percent own Go coverage
+  - Full just docker-check passed pinned Hermes lifecycle, zero-capability probe, empty read-only tmpfs extension roots, private relay network canary and wrapper cleanup
+  - Targeted Docker canary ran pinned Hermes HookRegistry twice in fresh processes against writable state plus read-only tmpfs roots; unapproved hook was not imported
+  - Full just check after HookRegistry canary passed all stages with 85.11 percent own Go coverage
+  - Full just docker-check passed pinned Hermes lifecycle, zero-capability probe, HookRegistry restart canary, private relay network canary and wrapper cleanup
+  - Managed Go startup now re-attests the complete mounted effective YAML against reviewed model and ToolHub identity before state mutation; malformed or changed config denies ahead of Hermes fallback
+  - Full just check after managed config preflight passed all stages with 85.10 percent own Go coverage
+  - Full just docker-check passed pinned Hermes lifecycle, zero-capability probe, hook/network canaries and a built hub-runtime preflight proving valid config reaches isolation refusal while malformed YAML denies before Hermes
+  - Disposable managed Docker network canary now verifies no IPv4 or IPv6 default route from the agent network, alongside direct control/sibling IP denial and narrow relay reachability
+  - Full just check after default-route canary passed all stages with 85.11 percent own Go coverage
+  - Full just docker-check passed pinned Hermes lifecycle, zero-capability probe, hook/config/network canaries including no IPv4/IPv6 default route, and wrapper cleanup
+  - Pinned Hermes source audit found skill-bundles, scripts, bin, node and lsp ingress under writable home; managed candidate now overlays empty read-only tmpfs on all five and pins bundle/project-plugin discovery environment
+  - Targeted Go tests passed for expanded Compose roots and preflight rejection of alternate bundle directory/project plugin discovery
+  - Managed supervisor launch refusal replaced by supervised topology: runtime joins only the internal per-user agent network, a labelled control-relay sidecar dual-homes onto supervisor-owned hermes-hub-control and publishes only 127.0.0.1 for readiness/control
+  - Managed settings, execution selection and env files are validated before any legacy spawn preparation; malformed or unreadable settings fail closed instead of falling back
+  - Managed runtimes use private managed/<env>/{runtime,hermes,home,cache} state, read-only effective config, sealed tmpfs extension roots, no scope/org/archive/broker/host-gateway mounts and generation-bound ownership labels
+  - hub-runtime gained control-relay (fixed-origin reverse proxy, redirect/rewrite denial) and verify-managed commands; managed serve runs managedPreflight attesting pinned discovery env, effective config and network isolation before Hermes
+  - In-container verifyManagedIsolation checks profile/generation/environment/model pins, empty non-writable extension roots, immutable config, absent IPv4/IPv6 default routes, denied control-host resolution and relay reachability
+  - Orphan inventory skips control-relay sidecars and records container names so ReapOrphans can remove same-generation relays with their runtime
+  - Regression tests passed for managed run args, separate state layout, supervisor-selection gate, relay spawn/dual-home/failure cleanup, non-internal network refusal, /scope ownership skip, relay handler and all isolation verifier failure modes
+  - Full just check after managed supervised launch passed all stages with race/shuffle tests and 85.08 percent own Go statement coverage
+  - Full just docker-check passed image builds, pinned Hermes lifecycle, zero-capability probe, extension/hook canaries, updated preflight canary (profile-unset refusal and relay-unreachable network gate) and private-network canary, then cleaned fixtures
+  - Managed supervisor canary now proves the real path end to end on Docker: actual spawn on the internal agent network, relay-only control route on 127.0.0.1, live in-container verify-managed attestation and combined runtime plus sidecar teardown
+  - Reap now removes the managed control relay after verified runtime removal; sidecar lookup inspects labels (no ps guesswork), unverifiable names are left untouched, and stale same-context relays are reclaimed on respawn name conflict
+  - Regression coverage added for managed Reap sidecar teardown; legacy runtimes never reach sidecar cleanup
+  - Full just check after managed supervisor canary and Reap sidecar cleanup passed all stages with race/shuffle tests and 85.06 percent own Go statement coverage
+  - Full just docker-check after Reap sidecar cleanup passed image builds, pinned Hermes lifecycle, real gateway lifecycle, zero-capability probe, extension/hook/network canaries and the managed supervisor canary, then cleaned fixtures
+  - Supervisor port allocation replaced hash-only selection with Config.PortRange (default 10000) and allocatePortLocked: tracked runtime ports are collected under the manager mutex, probing starts at the deterministic hash offset and linearly scans the range, exhaustion fails closed before any Docker call
+  - Recovered managed runtimes no longer assume the configured candidate port; publishedPort reads the actual 127.0.0.1 host binding from docker port and rewrites the runtime address
+  - Scale regression proves 500-plus distinct contexts receive unique ports and the configured range fails closed when exhausted; deterministic per-context preference is preserved across respawns
+  - reclaimStaleRuntime unblocks respawn wedged by a dead same-name container: only same-owner, same-context, older-generation runtime without the control-relay role is removed; foreign or same-generation containers are never touched and the retry preserves ownership/generation labels
+  - Managed supervisor canary extended on real Docker: restart with readiness, normalized mount signature equality (Mounts plus Tmpfs plus Binds, sorted), effective config SHA equality and repeated verify-managed attestation across the restart, sealed extension-root write denial after restart
+  - Canary now spawns a second managed context proving secondary parity: separate internal agent network, distinct loopback relay port, relay aliases attached via docker network connect --alias, no sibling runtime resolution, equivalent isolation attestations
+  - Canary secret/executor checks pass on real Docker: no broker material, no control-plane secret environment, no /scope or legacy broad mounts, link-local metadata route denied
+  - Relay alias fix: docker network connect without --alias dropped toolhub/model-relay names on secondary networks, which caused secondary readiness timeout; explicit --alias restored parity
+  - Full just check after port allocator, stale-runtime reclaim and extended canary passed all stages with race/shuffle tests and 85.10 percent own Go statement coverage
+  - Direct managed supervisor canary passed on the rebuilt image covering spawn, restart, rollover, secondary parity, secret isolation and combined teardown
+  - Full just docker-check re-run passed image builds, smoke, pinned Hermes lifecycle, gateway five-minute idle lifecycle, zero-capability probe, extension/hook/preflight/network canaries and the extended managed supervisor canary, then cleaned fixtures
+  - CI: feat/capability-profile-122 added to ci.yml push branches and workflow_dispatch enabled so the containers job (just docker-check dev/prod matrix) runs for this branch and on demand
+  - devcheck docker-build forwards optional HUB_DOCKER_CACHE_FROM/HUB_DOCKER_CACHE_TO as --cache-from/--cache-to and always passes --load; ci.yml adds pinned docker/setup-buildx-action so the containers job uses type=gha BuildKit cache per matrix target; documented in docs/operations.md
+  - actionlint and docs-check passed for the updated workflow and operations documentation
+pending:
+  - Complete P0 other launch-route proof and native revocation seam analysis; expand startup coverage beyond hooks
+  - Complete P1 separate human confirmation all binding/control mutation gates and lifecycle audit; review group authoring UX and cross-policy identity semantics
+  - Complete P2 remainder: additional model-route and metadata/redirect proof where applicable; P3-P6 remain
+  - Port uniqueness is proven within one supervisor manager; multi-supervisor or multi-host port namespaces and external unmanaged containers are outside the tracked set and may need host-level reservation if ever deployed
+  - Real provider acceptance and rollout require separate concrete user instructions
+verification:
+  source_pin: 869228cab4a8276d3b4c78da9d9939670c47bd0f
+  prior_audit_check: passed_85.05_percent
+  documentation: passed
+  just_check: passed_all_stages_85.10_percent_after_port_allocator_and_extended_canary
+  docker_check: passed_full_wrapper_restart_rollover_secondary_parity_secret_isolation
+  docker_check_session: passed_2026_10_03_extended_managed_supervisor_canary
+  docker_cleanup: passed
+  security: not_run_no_dependency_changes
+  new_capability_acceptance: partial_T01_T03_T04_T05_T06_T07_T08_T11_T12_not_full_acceptance
+  capability_probe: passed
+  capability_image: sha256:a4eca3c610e98b22c70b87576a02140a8c172475678a9ee120f58f4bd3493959
+  capability_inventory: fbbec23d3a93c1c572b795c3b9dfeca1072aead123fd644d13f149d70561045c

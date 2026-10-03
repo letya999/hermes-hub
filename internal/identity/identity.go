@@ -23,6 +23,9 @@ type Envelope struct {
 	ConversationID     string `json:"conversation_id"`
 	DeliveryTargetID   string `json:"delivery_target_id"`
 	PolicyVersion      string `json:"policy_version"`
+	CapabilityProfile  string `json:"capability_profile,omitempty"`
+	Environment        string `json:"environment,omitempty"`
+	Generation         uint64 `json:"generation,omitempty"`
 }
 
 func ValidID(id string) bool { return idPattern.MatchString(id) }
@@ -61,6 +64,11 @@ func (e Envelope) Validate(principal, context, runtime, policy string) error {
 	}
 	if e.PrincipalID != principal || e.ContextID != context || e.RuntimeID != runtime || e.PolicyVersion != policy {
 		return errors.New("identity binding mismatch")
+	}
+	if e.CapabilityProfile != "" || e.Environment != "" || e.Generation != 0 {
+		if !ValidID(e.CapabilityProfile) || (e.Environment != "dev" && e.Environment != "prod") || e.Generation == 0 {
+			return errors.New("invalid managed capability identity")
+		}
 	}
 	return nil
 }

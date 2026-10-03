@@ -18,6 +18,7 @@ import (
 func asyncFixture(t *testing.T, reviewer SourceReviewer) *ControlPlane {
 	t.Helper()
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", "prepare_source", "status")
 	if err := store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +124,7 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 				calls.Add(1)
 				return SourceReview{Definition: userMCPDefinition()}, nil
 			})
+			control.PrepareSyncWindow = -1
 			if err := control.Store.RegisterDefinition(definition); err != nil {
 				t.Fatal(err)
 			}

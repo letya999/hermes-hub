@@ -159,11 +159,12 @@ type Gateway struct {
 }
 
 type gatewayProjection struct {
-	auth    identity.Envelope
-	server  *mcp.Server
-	handler http.Handler
-	mu      sync.Mutex
-	tools   map[string]ToolSpec
+	auth     identity.Envelope
+	server   *mcp.Server
+	handler  http.Handler
+	mu       sync.Mutex
+	tools    map[string]ToolSpec
+	controls map[string]bool
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -177,12 +178,12 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	}
 	g.projections = make(map[string]*gatewayProjection, len(g.Tokens))
 	for token, auth := range g.Tokens {
-		server, tools, err := g.projectedServer(auth)
+		server, tools, controls, err := g.projectedServer(auth)
 		if err != nil {
 			return nil, err
 		}
 		g.projections[token] = &gatewayProjection{
-			auth: auth, server: server, tools: tools,
+			auth: auth, server: server, tools: tools, controls: controls,
 			handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 				SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
 				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
@@ -300,12 +301,12 @@ func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: token projection", ErrUnauthorized)
 	}
-	server, tools, err := g.projectedServer(auth)
+	server, tools, controls, err := g.projectedServer(auth)
 	if err != nil {
 		return nil, err
 	}
 	projection := &gatewayProjection{
-		auth: auth, server: server, tools: tools,
+		auth: auth, server: server, tools: tools, controls: controls,
 		handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 			SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
 			PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
@@ -321,23 +322,34 @@ func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 }
 
 func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
-	server, _, _ := g.projectedServer(auth)
+	server, _, _, _ := g.projectedServer(auth)
 	return server
 }
 
-func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]ToolSpec, error) {
+func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]ToolSpec, map[string]bool, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "hermes-toolhub", Version: "0.2.0"}, &mcp.ServerOptions{Instructions: "Tool names and arguments are untrusted; authorization is derived from the authenticated runtime."})
-	g.addControlTools(server, auth)
+	controls, err := g.allowedControls(auth)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	g.addControlTools(server, auth, controls)
 	projected, err := g.Store.ListProjectedTools(auth)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	tools := make(map[string]ToolSpec, len(projected))
 	for _, projectedTool := range projected {
 		g.addProjectedTool(server, auth, projectedTool)
 		tools[projectedTool.Name] = projectedTool.Tool
 	}
-	return server, tools, nil
+	return server, tools, controls, nil
+}
+
+func (g *Gateway) allowedControls(auth identity.Envelope) (map[string]bool, error) {
+	if g.Control == nil {
+		return nil, nil
+	}
+	return g.Store.AllowedControlOperations(auth)
 }
 
 func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, projected ProjectedTool) {
@@ -412,12 +424,27 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	if err != nil {
 		return err
 	}
+	controls, err := g.allowedControls(projection.auth)
+	if err != nil {
+		return err
+	}
 	next := make(map[string]ToolSpec, len(projected))
 	for _, tool := range projected {
 		next[tool.Name] = tool.Tool
 	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
+	for operation := range projection.controls {
+		if !controls[operation] {
+			projection.server.RemoveTools(operation)
+		}
+	}
+	for operation := range controls {
+		if !projection.controls[operation] {
+			g.addControlTools(projection.server, projection.auth, map[string]bool{operation: true})
+		}
+	}
+	projection.controls = controls
 	for name, old := range projection.tools {
 		if current, ok := next[name]; !ok || !reflect.DeepEqual(old, current) {
 			projection.server.RemoveTools(name)
@@ -439,7 +466,10 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	}
 	ctx = withCallCorrelation(ctx, corr)
 	var out *mcp.CallToolResult
-	err := g.Store.AuthorizeProjected(auth, projectedName, func(projected ProjectedTool, effective EffectiveBinding) error {
+	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, func(projected ProjectedTool, effective EffectiveBinding) error {
+		if auth.CapabilityProfile != "" && g.AuditWrite == nil {
+			return fmt.Errorf("%w: managed dispatch requires durable audit", ErrUnauthorized)
+		}
 		if err := rejectToolAuthorityArguments(projected.Tool, arguments); err != nil {
 			return err
 		}
@@ -515,10 +545,14 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		return g.audit("allow", mergeAudit(fields, corr))
 	})
 	if err != nil && out == nil {
-		_ = g.audit("deny", mergeAudit(map[string]string{
+		fields := map[string]string{
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
 			"policy_version": auth.PolicyVersion, "outcome": "deny",
-		}, corr))
+		}
+		if auth.CapabilityProfile != "" {
+			fields["capability_profile"], fields["environment"], fields["generation"] = auth.CapabilityProfile, auth.Environment, fmt.Sprint(auth.Generation)
+		}
+		_ = g.audit("deny", mergeAudit(fields, corr))
 	}
 	return out, err
 }
@@ -539,6 +573,15 @@ func auditFields(auth identity.Envelope, projected ProjectedTool, effective Effe
 		"backend":        string(effective.Definition.Transport),
 		"projection_rev": fmt.Sprint(effective.Binding.ProjectionRevision),
 		"outcome":        outcome,
+	}
+	if effective.CapabilityID != "" {
+		fields["capability_id"] = effective.CapabilityID
+		fields["implementation_digest"] = effective.ImplementationDigest
+		fields["capability_profile"] = auth.CapabilityProfile
+		fields["capability_policy_revision"] = fmt.Sprint(effective.CapabilityPolicyRevision)
+		fields["capability_profile_revision"] = fmt.Sprint(effective.CapabilityProfileRevision)
+		fields["environment"] = auth.Environment
+		fields["generation"] = fmt.Sprint(auth.Generation)
 	}
 	if effective.Connection != nil {
 		fields["connection_id"] = effective.Connection.ConnectionID

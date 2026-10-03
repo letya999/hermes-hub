@@ -108,6 +108,7 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 			return append(out, out[0], RecipeCandidate{Repository: "https://github.com/other/repo"}), nil
 		}),
 	}}
+	grantTestControlOperations(t, c.Store, "alice", "discover", "prepare_source")
 	body, err := c.Invoke(t.Context(), aliceAuth(), "discover", map[string]any{"query": "notion"})
 	if err != nil {
 		t.Fatal(err)

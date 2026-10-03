@@ -197,6 +197,9 @@ func TestToolHubManifestCatalogEnableDisableIsOptIn(t *testing.T) {
 	state := t.TempDir()
 	storePath := filepath.Join(state, "toolhub", "store.json")
 	store := toolhub.NewStore()
+	if err := store.PutGrant(toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
 	definition := toolhub.ToolDefinition{
 		Schema: toolhub.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: toolhub.RemoteMCP,
 		Source:    toolhub.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},
@@ -304,6 +307,9 @@ func TestToolHubOrganizationCanDisableButNotEnable(t *testing.T) {
 	state := t.TempDir()
 	storePath := filepath.Join(state, "toolhub", "store.json")
 	store := toolhub.NewStore()
+	if err := store.PutGrant(toolhub.OperatorGrant(toolhub.GrantDefinition, "alice", "demo", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
 	definition := toolhub.ToolDefinition{
 		Schema: toolhub.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: toolhub.RemoteMCP,
 		Source:    toolhub.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},

@@ -62,6 +62,20 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 	if policy == "" {
 		policy = "policy-1"
 	}
+	capabilityMode := os.Getenv("HUB_CAPABILITY_MODE")
+	if capabilityMode != "" && capabilityMode != "managed" {
+		return EndpointConfig{}, fmt.Errorf("invalid capability mode")
+	}
+	managed := capabilityMode == "managed"
+	var generation uint64
+	if managed {
+		var parseErr error
+		generation, parseErr = strconv.ParseUint(os.Getenv("HUB_CAPABILITY_GENERATION"), 10, 64)
+		if parseErr != nil || generation == 0 || !identity.ValidID(os.Getenv("HUB_CAPABILITY_PROFILE_ID")) ||
+			(os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "dev" && os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "prod") {
+			return EndpointConfig{}, fmt.Errorf("managed ToolHub identity is incomplete")
+		}
+	}
 	admission, err := ControllerAdmissionVerifierFromEnv()
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("ToolHive admission: %w", err)
@@ -75,6 +89,9 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		ConversationID:     envOr("HUB_CONVERSATION_ID", "toolhub"),
 		DeliveryTargetID:   envOr("HUB_DELIVERY_TARGET_ID", "toolhub"),
 		PolicyVersion:      policy,
+	}
+	if managed {
+		auth.CapabilityProfile, auth.Environment, auth.Generation = os.Getenv("HUB_CAPABILITY_PROFILE_ID"), os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), generation
 	}
 	controlBroker, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_CONTROL_")
 	if err != nil {
@@ -219,6 +236,13 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			record.ToolCallID = fields["tool_call_id"]
 			record.CorrelationID = fields["correlation_id"]
 			record.Receipt = fields["receipt"]
+			record.CapabilityID = fields["capability_id"]
+			record.CapabilityProfile = fields["capability_profile"]
+			record.ImplementationDigest = fields["implementation_digest"]
+			record.Environment = fields["environment"]
+			record.Generation, _ = strconv.ParseUint(fields["generation"], 10, 64)
+			record.CapabilityPolicyRevision, _ = strconv.ParseUint(fields["capability_policy_revision"], 10, 64)
+			record.CapabilityProfileRevision, _ = strconv.ParseUint(fields["capability_profile_revision"], 10, 64)
 			if fields["credential_revision"] != "" {
 				n, _ := strconv.ParseUint(fields["credential_revision"], 10, 64)
 				record.CredentialRevision = n

@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-27
+last_verified: 2026-10-02
 ---
 # Operations
 
@@ -24,8 +24,8 @@ redacted at collection time, so the combined file never stores tokens or
 passwords in plaintext. To opt out, set `diagnostics: false` in the
 infra-owning space's `settings.yaml` and run `hubctl up` again.
 
-Users inspect their own diagnostics through the ToolHub `diagnostics` control
-operation. It returns the caller's connector workloads plus bounded,
+Users with an explicit `control-operation` grant for `diagnostics` inspect their
+own diagnostics through that ToolHub operation. It returns the caller's connector workloads plus bounded,
 redacted log lines from their runtime and workload containers. Scope comes
 from the authenticated principal, context and live binding state — never from
 tool arguments — so host logs, platform containers and other users' data stay
@@ -36,6 +36,85 @@ ID, or `runtime`). Secrets are redacted again at projection and host-supervisor
 lines appear only when they name the caller's own runtime container as a whole
 token. Requests are capped per principal and globally, so a single caller
 cannot starve diagnostics for others.
+
+ToolHub control operations are denied by default, including `discover`, `status`,
+`prepare_source`, `required_credentials`, `confirm`, `enable`, `rotate`, `disable`,
+`revoke`, `remove`, `diagnostics` and generic `invoke`. The host operator grants
+each selected operation separately; a catalog or self-install grant does not
+grant control operations. Self-install additionally requires its own explicit
+active grant. A matching disabled/revoked grant wins over a matching active grant.
+For example, using the protected registry path for the selected deployment:
+
+```text
+hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status
+hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status --status revoked --revision 2
+```
+
+Grant revision 1 is the default; changing a record requires a higher revision.
+Older writes cannot undo a revoke. The next request on an existing MCP session
+refreshes the projection and checks the current grant. These principal-scoped
+grants are the legacy path. Managed profiles below do not inherit them.
+
+### Managed capability policy (implementation primitive)
+
+`hubctl capability` publishes an operator-reviewed JSON policy or profile to the
+protected registry. It is a host command, with no corresponding agent MCP method:
+
+```text
+hubctl capability --kind policy --file reviewed-policy.json --toolhub-store /protected/toolhub/store.json
+hubctl capability --kind profile --file reviewed-profile.json --toolhub-store /protected/toolhub/store.json
+```
+
+A policy contains `schema`, `policy_id`, optional `organization`, explicit
+`members`, `revision`, `issued_by`, `issued_at` (RFC3339), `reason`, `status`,
+`ceiling`, `defaults` and optional `denies`. Each allow carries the exact
+`capability_id`, `implementation_digest`, `action`, `resource`, optional
+`connection_id`/`path_prefix`, positive `limits.output_bytes` and
+`limits.timeout_seconds`, and optional `expires_at`. Denies carry the same tuple
+with zero limits. Defaults must fit within the ceiling; an empty policy grants
+nothing. A personal policy has exactly one member and no organization.
+Optional `default_groups` hold reviewed snapshots with `group_id`, positive
+`revision` and explicit `members` containing the same complete allow tuples.
+Members must fit the ceiling. A changed list needs a new group and policy
+revision; the group name never authorizes future members.
+
+A profile binds `profile_id`, `principal_id`, `context_id`, `runtime_id`,
+`environment` (`dev`/`prod`), `generation` and `policy_version` to `policy_id` and
+`policy_revision`. It has the same schema/revision/issuer/time/reason/status
+metadata, optional personal `allows`/`denies`, and explicit `selections`.
+Optional `allow_groups` use the same fixed snapshot format and cannot exceed
+the current ceiling. A changed personal group needs a new group and profile
+revision. Existing snapshots are not widened by a later group.
+Each selection names one capability, definition ID/version/digest, upstream tool
+name, unique projected `name`, and optional connection. A definition's reviewed
+tool contract declares its capability, required action/resource pairs, relative
+path arguments and any fixed string argument constraints. The digest covers the
+whole immutable definition, including schemas and that contract.
+
+The authenticated envelope opts into this evaluator with `capability_profile`,
+`environment` and `generation`. A missing/stale profile, membership or policy
+denies admission. Organization/default and personal rules intersect the ceiling;
+matching denies win. Names and installed credentials do not grant access. All
+required action/resource pairs must pass before credential injection. Bare binding
+calls, old projected names, self-install and legacy control operations are denied
+for managed profiles. Call admission requires a durable audit writer
+(`HUB_AUDIT_LEDGER` in the endpoint); disk failure prevents dispatch.
+
+Policy/profile publication and its complete issuer/scope/revision history share
+one atomic registry snapshot. Reload reconstructs current authority from ordered
+history; stale writers and duplicate/conflicting revisions cannot resurrect it.
+Publication records contain metadata, never credentials. Call records include
+capability/profile revisions, implementation digest, environment and generation;
+they omit private arguments and response contents.
+
+These primitives are not a completed deployment boundary. Rendering does not yet
+provision managed identities or isolated roots, legacy deployments remain outside
+the guarantee, and human consent/migration still need CHG-0065.
+Path prefixes are logical authorization constraints, not filesystem containment.
+Admission currently holds the existing store lock and a shared disk fence through
+the bounded call; a revoke waits for that call before committing. Executor leases,
+cancellation and confirmed process-tree stops remain P4 work. Do not roll this out
+as full SPEC-0041/0042 compliance.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes
@@ -209,6 +288,15 @@ fully prunes it and additionally drops
 `hermes-build-state-shared`, the opt-in persistent builder cache that
 `HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
 artifact build is in flight.
+
+`devcheck docker-build` accepts optional `HUB_DOCKER_CACHE_FROM` and
+`HUB_DOCKER_CACHE_TO` environment variables; each non-empty value is forwarded
+to `docker build` as `--cache-from`/`--cache-to`. The build always passes
+`--load` so the tagged image lands in the local daemon even when the selected
+builder uses the `docker-container` driver. CI sets these to
+`type=gha,scope=hermes-hub-<target>` so GitHub-hosted runs reuse remote
+BuildKit cache instead of rebuilding the base layers; local runs without the
+variables behave exactly as before.
 
 To reclaim physical Windows disk space after Docker cleanup, double-click
 `scripts/reclaim-docker-disk.cmd` and accept the administrator prompt. It

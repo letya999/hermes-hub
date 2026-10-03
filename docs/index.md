@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 ---
 # Documentation
 
@@ -8,16 +8,17 @@ last_verified: 2026-09-28
 
 | Document | Purpose | Verified |
 |---|---|---|
-| [architecture.md](architecture.md) | Current components and target scale-to-zero runtime boundary | 2026-09-28 |
+| [capability-boundary-audit.md](capability-boundary-audit.md) | Issue 122 current gaps, pinned-Hermes probes and Context7/GitHub evidence for proposed enforcement | 2026-10-02 |
+| [architecture.md](architecture.md) | Current components and capability enforcement progress | 2026-10-02 |
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-28 |
 | [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, generic lifecycle and handoffs | 2026-09-27 |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup | 2026-09-15 |
-| [operations.md](operations.md) | Deployment, runtime lifecycle, backup and recovery | 2026-09-27 |
+| [operations.md](operations.md) | Deployment, runtime lifecycle, explicit control grants, backup and recovery | 2026-10-02 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-28 |
 | [toolhive-vmcp-audit.md](toolhive-vmcp-audit.md) | Issue 11 ToolHive vMCP compatibility, performance and go/no-go evidence | 2026-09-11 |
 | [threat-model.md](threat-model.md) | Scale-to-zero and future-organization trust boundaries | 2026-09-17 |
 | [migration-map.md](migration-map.md) | Current-to-scale-to-zero rollout, rollback and deletion gates | 2026-09-13 |
-| [adr/index.md](adr/index.md) | Append-only architectural decisions | 2026-09-28 |
+| [adr/index.md](adr/index.md) | Append-only decisions and explicitly marked proposals | 2026-10-02 |
 
 <!-- КОНЕЦ СОДЕРЖИМОГО -->
 

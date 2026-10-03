@@ -203,6 +203,8 @@ func TestDockerBuildRejectsBlankRefs(t *testing.T) {
 			t.Fatalf("accepted %#v", pair)
 		}
 	}
+	t.Setenv("HUB_DOCKER_CACHE_FROM", "")
+	t.Setenv("HUB_DOCKER_CACHE_TO", "")
 	var got []string
 	run := func(ctx context.Context, args ...string) error {
 		got = append(got, args...)
@@ -211,7 +213,7 @@ func TestDockerBuildRejectsBlankRefs(t *testing.T) {
 	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", run); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got, []string{"build", "--target", "prod", "-t", "hermes-hub:test", "-f", "docker/Dockerfile", "."}) {
+	if !slices.Equal(got, []string{"build", "--target", "prod", "-t", "hermes-hub:test", "--load", "-f", "docker/Dockerfile", "."}) {
 		t.Fatalf("unexpected build args: %v", got)
 	}
 	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", func(ctx context.Context, args ...string) error {
@@ -221,6 +223,24 @@ func TestDockerBuildRejectsBlankRefs(t *testing.T) {
 	}
 	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", nil); err == nil {
 		t.Fatal("nil runner accepted")
+	}
+}
+
+func TestDockerBuildForwardsCacheEnv(t *testing.T) {
+	t.Setenv("HUB_DOCKER_CACHE_FROM", "type=gha,scope=hub-prod")
+	t.Setenv("HUB_DOCKER_CACHE_TO", "type=gha,scope=hub-prod,mode=max")
+	var got []string
+	if err := dockerBuild(context.Background(), "hermes-hub:test", "prod", func(ctx context.Context, args ...string) error {
+		got = append(got, args...)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"build", "--target", "prod", "-t", "hermes-hub:test", "--load",
+		"--cache-from", "type=gha,scope=hub-prod", "--cache-to", "type=gha,scope=hub-prod,mode=max",
+		"-f", "docker/Dockerfile", "."}
+	if !slices.Equal(got, want) {
+		t.Fatalf("cache flags not forwarded: %v", got)
 	}
 }
 

@@ -16,6 +16,7 @@ const (
 	GrantDefinition       GrantKind = "definition"
 	GrantSelfInstall      GrantKind = "self-install"
 	GrantSharedCredential GrantKind = "shared-credential"
+	GrantControlOperation GrantKind = "control-operation"
 	PublicationCatalog    string    = "catalog"
 	PublicationUser       string    = "user"
 	OnboardingCatalog     string    = "catalog"
@@ -42,6 +43,7 @@ type Grant struct {
 	PrincipalID       string    `json:"principal_id"`
 	DefinitionID      string    `json:"definition_id,omitempty"`
 	DefinitionVersion string    `json:"definition_version,omitempty"`
+	Operation         string    `json:"operation,omitempty"`
 	IssuedBy          string    `json:"issued_by"`
 	Status            Status    `json:"status"`
 	Revision          uint64    `json:"revision"`
@@ -138,6 +140,13 @@ func OperatorGrant(kind GrantKind, principal, definitionID, version string) Gran
 	}
 }
 
+func OperatorControlGrant(principal, operation string) Grant {
+	grant := OperatorGrant(GrantControlOperation, principal, "", "")
+	grant.Operation = operation
+	grant.GrantID = deterministicID("grant", string(grant.Kind), principal, operation)
+	return grant
+}
+
 func (g Grant) Validate() error {
 	if g.Schema != SchemaVersion || !identity.ValidID(g.GrantID) || !identity.ValidID(g.PrincipalID) || !identity.ValidID(g.IssuedBy) || g.Revision == 0 {
 		return fmt.Errorf("%w: grant identity", ErrInvalid)
@@ -148,7 +157,14 @@ func (g Grant) Validate() error {
 	if g.Status != ActiveStatus && g.Status != DisabledStatus && g.Status != RevokedStatus {
 		return fmt.Errorf("%w: grant status", ErrInvalid)
 	}
+	if g.Kind != GrantControlOperation && g.Operation != "" {
+		return fmt.Errorf("%w: operation on non-control grant", ErrInvalid)
+	}
 	switch g.Kind {
+	case GrantControlOperation:
+		if !validControlOperation(g.Operation) || g.DefinitionID != "" || g.DefinitionVersion != "" {
+			return fmt.Errorf("%w: control operation grant", ErrInvalid)
+		}
 	case GrantCatalogDefault, GrantSelfInstall:
 		if g.DefinitionID != "" || g.DefinitionVersion != "" {
 			return fmt.Errorf("%w: %s grant cannot name a definition", ErrInvalid, g.Kind)
@@ -236,13 +252,23 @@ func (s *Store) PutGrant(grant Grant) error {
 		return err
 	}
 	s.mu.Lock()
-	if existing, ok := s.grants[grant.GrantID]; ok && !recordsEqual(existing, grant) && existing.Revision == grant.Revision {
-		s.mu.Unlock()
-		return fmt.Errorf("%w: grant is immutable within a revision", ErrConflict)
+	defer s.mu.Unlock()
+	existing, exists := s.grants[grant.GrantID]
+	if exists && (grant.Revision < existing.Revision || (grant.Revision == existing.Revision && !recordsEqual(existing, grant))) {
+		return fmt.Errorf("%w: grant revision must advance", ErrConflict)
 	}
 	s.grants[grant.GrantID] = grant
-	s.mu.Unlock()
-	return s.persist()
+	if s.path != "" {
+		if err := s.saveLocked(s.path); err != nil {
+			if exists {
+				s.grants[grant.GrantID] = existing
+			} else {
+				delete(s.grants, grant.GrantID)
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) PutPublication(pub DefinitionPublication) error {
@@ -332,36 +358,37 @@ func (s *Store) visibleDefinitionLocked(auth identity.Envelope, definition ToolD
 	if pub.Visibility == PublicationUser {
 		return pub.OwnerPrincipalID == auth.PrincipalID
 	}
-	if len(s.grants) == 0 {
-		return true
-	}
 	return s.hasCatalogAccessLocked(auth, definition.DefinitionID, definition.Version)
 }
 
 func (s *Store) hasCatalogAccessLocked(auth identity.Envelope, definitionID, version string) bool {
+	allowed := false
 	for _, grant := range s.grants {
-		if grant.Status != ActiveStatus || grant.PrincipalID != auth.PrincipalID {
+		if grant.PrincipalID != auth.PrincipalID {
 			continue
 		}
-		switch grant.Kind {
-		case GrantCatalogDefault:
-			return true
-		case GrantDefinition:
-			if grant.DefinitionID == definitionID && grant.DefinitionVersion == version {
-				return true
-			}
+		if grant.Kind != GrantCatalogDefault && !(grant.Kind == GrantDefinition && grant.DefinitionID == definitionID && grant.DefinitionVersion == version) {
+			continue
 		}
+		if grant.Status != ActiveStatus {
+			return false
+		}
+		allowed = true
 	}
-	return false
+	return allowed
 }
 
-func (s *Store) selfInstallDeniedLocked(auth identity.Envelope) bool {
+func (s *Store) selfInstallAllowedLocked(auth identity.Envelope) bool {
+	allowed := false
 	for _, grant := range s.grants {
 		if grant.Kind == GrantSelfInstall && grant.PrincipalID == auth.PrincipalID {
-			return grant.Status != ActiveStatus
+			if grant.Status != ActiveStatus {
+				return false
+			}
+			allowed = true
 		}
 	}
-	return false
+	return allowed
 }
 
 func (s *Store) sharedPolicyLocked(auth identity.Envelope, definitionID string) *SharedCredentialPolicy {
@@ -381,8 +408,23 @@ func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition ToolDefi
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
+	if err := s.Reload(); err != nil {
+		return err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if auth.CapabilityProfile != "" {
+		tools, err := s.managedToolsLocked(auth)
+		if err != nil {
+			return err
+		}
+		for _, tool := range tools {
+			if tool.DefinitionID == definition.DefinitionID && tool.Version == definition.Version {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: catalog grant", ErrUnauthorized)
+	}
 	pub := s.publicationLocked(definition)
 	if pub.Visibility == PublicationUser {
 		if pub.OwnerPrincipalID != auth.PrincipalID {
@@ -397,15 +439,77 @@ func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition ToolDefi
 }
 
 func (s *Store) RequireSelfInstall(auth identity.Envelope) error {
+	// Managed installation awaits the separately authenticated human flow; legacy
+	// principal-only grants must not enable that unproven route.
+	if auth.CapabilityProfile != "" {
+		return fmt.Errorf("%w: managed installation is not admitted", ErrUnauthorized)
+	}
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
+	if err := s.Reload(); err != nil {
+		return err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Self-install is allowed for every principal by default; an operator can
-	// still withdraw it per principal with a disabled or revoked grant.
-	if s.selfInstallDeniedLocked(auth) {
+	if !s.selfInstallAllowedLocked(auth) {
 		return fmt.Errorf("%w: self-install grant", ErrUnauthorized)
+	}
+	return nil
+}
+
+func validControlOperation(operation string) bool {
+	return operation == "invoke" || slices.Contains(ControlOperations, operation)
+}
+
+func (s *Store) controlAllowedLocked(auth identity.Envelope, operation string) bool {
+	allowed := false
+	for _, grant := range s.grants {
+		if grant.Kind != GrantControlOperation || grant.PrincipalID != auth.PrincipalID || grant.Operation != operation {
+			continue
+		}
+		if grant.Status != ActiveStatus {
+			return false
+		}
+		allowed = true
+	}
+	return allowed
+}
+
+// AllowedControlOperations is an authorized projection, never an installation or
+// catalog grant. Every invocation checks the current grant again independently.
+func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]bool, error) {
+	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	if err := s.Reload(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	allowed := map[string]bool{}
+	if auth.CapabilityProfile != "" {
+		_, _, err := s.capabilityProfileLocked(auth)
+		return allowed, err
+	}
+	for _, operation := range append(slices.Clone(ControlOperations), "invoke") {
+		if s.controlAllowedLocked(auth, operation) {
+			allowed[operation] = true
+		}
+	}
+	return allowed, nil
+}
+
+func (s *Store) RequireControlOperation(auth identity.Envelope, operation string) error {
+	if !validControlOperation(operation) {
+		return fmt.Errorf("%w: unknown control operation", ErrInvalid)
+	}
+	allowed, err := s.AllowedControlOperations(auth)
+	if err != nil {
+		return err
+	}
+	if !allowed[operation] {
+		return fmt.Errorf("%w: control operation", ErrUnauthorized)
 	}
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 
 func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", ControlOperations...)
 	definition := catalogReadDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
@@ -106,6 +107,7 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	}
 
 	store2 := NewStore()
+	grantTestControlOperations(t, store2, "alice", ControlOperations...)
 	if err := store2.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +153,7 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 
 func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm", "enable", "disable")
 	definition := catalogReadDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
@@ -217,6 +220,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 		}
 		return nil
 	}}
+	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm")
 	prepared, err := control.Invoke(t.Context(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "retry-readiness"})
 	if err != nil {
 		t.Fatal(err)
@@ -278,6 +282,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		}
 		return nil
 	}}
+	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm", "enable", "disable")
 	prepared, err := control.Invoke(t.Context(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "failure-visible"})
 	if err != nil {
 		t.Fatal(err)
@@ -348,6 +353,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 	}
 	store := NewStore()
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now}
+	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm", "enable")
 	base := catalogReadDefinition()
 	base.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
 	locators := map[string]int{}
@@ -422,6 +428,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if err := store.PutGrant(OperatorGrant(GrantDefinition, principal, "mcp-shared", "1.0.0")); err != nil {
 			t.Fatal(err)
 		}
+		grantTestControlOperations(t, store, principal, "prepare_source", "status", "confirm", "enable")
 		prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "mcp-shared", "version": "1.0.0", "request_key": "shared-" + principal})
 		if err != nil {
 			t.Fatal(err)

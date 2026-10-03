@@ -42,6 +42,8 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	var calls atomic.Int32
 	var lastArgs map[string]any
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: time.Minute}
+	grantTestControlOperations(t, store, "alice", ControlOperations...)
+	grantTestControlOperations(t, store, "bob", ControlOperations...)
 	gateway := &Gateway{
 		Store:  store,
 		Tokens: map[string]identity.Envelope{aliceToken: auth, bobToken: bobAuth()},
@@ -209,6 +211,7 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	control := &ControlPlane{Store: store, Now: func() time.Time { return now }, ConfirmationTTL: time.Minute}
+	grantTestControlOperations(t, store, "alice", "prepare_source", "required_credentials")
 	auth := aliceAuth()
 	args := map[string]any{"definition_id": "google-work", "version": "1.0.0", "request_key": "expired-form"}
 	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", args)
@@ -247,6 +250,7 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	control := &ControlPlane{Store: store, Now: func() time.Time { return now }, ConfirmationTTL: time.Minute}
+	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm")
 	auth := aliceAuth()
 	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "expire-1"})
 	if err != nil {
