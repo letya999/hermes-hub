@@ -281,6 +281,12 @@ func managedExtensionMountCanary(ctx context.Context, image string) (result erro
 	if err := os.Mkdir(stateRoot, 0700); err != nil {
 		return err
 	}
+	// Linux docker enforces bind-mount permissions: --cap-drop ALL strips
+	// CAP_DAC_OVERRIDE so a 0700 foreign-owned dir rejects container writes.
+	// Docker Desktop virtualizes ownership so 0700 silently works there.
+	if err := os.Chmod(stateRoot, 0777); err != nil {
+		return err
+	}
 	config := filepath.Join(root, "approved-config.yaml")
 	placeholder := filepath.Join(stateRoot, "config.yaml")
 	for _, file := range []string{config, placeholder} {
