@@ -19,14 +19,17 @@ before Telegram login. Do not set `DOCKER_BUILDKIT=0` in the operator environmen
 For the prepared work-service bundle, add these settings once:
 
 ```yaml
-features: [workspace, browser, hh, gitlab]
+tools:
+  browser: mcp       # playwright read/navigate
+  hh: toolhub
+  gitlab: mcp
 gitlab_host: gitlab.com
 ```
 
 Fill the matching GitLab PAT. Google Workspace is the official ToolHub remote MCP
 (`hubctl connector connect --provider google --official-mcp`), not a copy inside
-the hub image. Atlassian is `docker/mcp-atlassian.Dockerfile`. Keep `google_write`
-out unless Workspace mutations are needed.
+the hub image. Atlassian is `docker/mcp-atlassian.Dockerfile`. Keep the
+`google.tools.write` toggle off unless Workspace mutations are needed.
 
 Run commands from the extracted project root, or pass `--root /absolute/project` on
 build/up/render. Use `hubctl logs` for runtime errors. Do not start simultaneous CLI
@@ -228,8 +231,8 @@ org_actions: []
 Add organization credentials to `spaces/acme/secrets.dev.env` or
 `secrets.prod.env`; add personal OAuth/API credentials only to the member's matching
 `spaces/<user>/secrets.*.env`. The organization file is loaded separately and is not
-copied into the user space. A member may only remove an approved MCP with
-`disabled_mcp`; they cannot add a feature, credential or MCP. Every organization MCP
+copied into the user space. A member may only remove an approved MCP by
+denying it in `tools:` (`name: off`); they cannot add a feature, credential or MCP. Every organization MCP
 must be listed in `read_only_mcp` and must use a non-empty `tools.include` allowlist;
 the list is what Hermes exposes to the agent. Organization `docs/` is mounted as
 read-only `/scope/org`. `org_actions` is empty by default; add an action only when

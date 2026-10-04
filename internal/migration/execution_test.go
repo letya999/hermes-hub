@@ -55,7 +55,11 @@ func TestExecutionSelectionPreservesQueueAndRollsBackOnlyOneContext(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Features = []string{"telegram"}
+	tools, ingress, err := stack.LegacyFeatureTools([]string{"telegram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Tools, s.Ingress = tools, ingress
 	if _, ok := stack.Compose(s, "", alice)["services"].(stack.M)["hermes-runtime"]; ok {
 		t.Fatal("migrated context resident")
 	}
@@ -71,7 +75,11 @@ func TestExecutionSelectionPreservesQueueAndRollsBackOnlyOneContext(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Features = []string{"telegram"}
+	tools, ingress, err = stack.LegacyFeatureTools([]string{"telegram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Tools, s.Ingress = tools, ingress
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://global-selection:8765")
 	services := stack.Compose(s, "", alice)["services"].(stack.M)
 	if _, ok := services["hermes-runtime"]; !ok {

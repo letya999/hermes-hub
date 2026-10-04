@@ -194,15 +194,17 @@ func TestCapabilityCLIConnectorsManifest(t *testing.T) {
 	}
 }
 
-// --kind native is the operator-level grant for upstream toolsets: it lists
-// the reviewed set, requires --confirm to write a managed settings.yaml, and
-// re-validates the file through the exact parser a spawn runs.
-func TestCapabilityCLINativeCarveout(t *testing.T) {
+// --kind tools is the operator surface over the unified `tools:` map: it
+// lists the backend vocabulary, prints the compiled plan for a settings.yaml,
+// requires --confirm to write, and re-validates through the spawn parser.
+func TestCapabilityCLITools(t *testing.T) {
 	out := captureOutput(t, func() error {
-		return runCapability([]string{"--kind", "native"})
+		return runCapability([]string{"--kind", "tools"})
 	})
-	if !strings.Contains(out, "terminal") || !strings.Contains(out, "memory") {
-		t.Fatalf("carve-out list missing reviewed names: %s", out)
+	for _, want := range []string{"native", "toolhub", "mcp", "off", "terminal", "memory"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tools vocabulary missing %q: %s", want, out)
+		}
 	}
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.yaml")
@@ -210,13 +212,20 @@ func TestCapabilityCLINativeCarveout(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(managed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Grant without --confirm prints the diff and refuses.
-	args := []string{"--kind", "native", "--settings", settingsPath, "--allow", "terminal,memory"}
-	if err := runCapability(args); err == nil || !strings.Contains(err.Error(), "not confirmed") {
-		t.Fatalf("unconfirmed carve-out committed: %v", err)
+	// Without --set the compiled plan prints and nothing changes.
+	plan := captureOutput(t, func() error {
+		return runCapability([]string{"--kind", "tools", "--settings", settingsPath})
+	})
+	if !strings.Contains(plan, `"plan"`) {
+		t.Fatalf("plan output missing: %s", plan)
 	}
-	if body, _ := os.ReadFile(settingsPath); strings.Contains(string(body), "native_toolsets") {
-		t.Fatal("unconfirmed carve-out changed settings")
+	// Grant without --confirm prints the diff and refuses.
+	args := []string{"--kind", "tools", "--settings", settingsPath, "--set", "terminal=native,memory=native"}
+	if err := runCapability(args); err == nil || !strings.Contains(err.Error(), "not confirmed") {
+		t.Fatalf("unconfirmed grant committed: %v", err)
+	}
+	if body, _ := os.ReadFile(settingsPath); strings.Contains(string(body), "terminal: native") {
+		t.Fatal("unconfirmed grant changed settings")
 	}
 	if err := runCapability(append(args, "--confirm")); err != nil {
 		t.Fatal(err)
@@ -225,44 +234,60 @@ func TestCapabilityCLINativeCarveout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(settings.NativeToolsets, []string{"memory", "terminal"}) {
-		t.Fatalf("grant not applied: %v", settings.NativeToolsets)
+	for _, name := range []string{"terminal", "memory"} {
+		if settings.Tools[name].Via != "native" {
+			t.Fatalf("grant for %q not applied: %+v", name, settings.Tools)
+		}
 	}
-	// Replace with a block-list rewrite: the previous inline list is swapped,
-	// every other line preserved.
-	if err := runCapability([]string{"--kind", "native", "--settings", settingsPath, "--allow", "todo", "--confirm"}); err != nil {
+	// Upsert adds an entry without dropping the existing ones; the written
+	// form stays a compact scalar map and other settings lines survive.
+	if err := runCapability([]string{"--kind", "tools", "--settings", settingsPath, "--set", "todo=native,browser=mcp:playwright", "--confirm"}); err != nil {
 		t.Fatal(err)
 	}
 	settings, err = stack.Read(settingsPath)
-	if err != nil || !slices.Equal(settings.NativeToolsets, []string{"todo"}) {
-		t.Fatalf("carve-out swap lost: %v %v", settings.NativeToolsets, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Tools["todo"].Via != "native" || settings.Tools["browser"].Via != "mcp" || settings.Tools["browser"].Server != "playwright" {
+		t.Fatalf("upsert lost entries: %+v", settings.Tools)
+	}
+	if settings.Tools["terminal"].Via != "native" || settings.Tools["memory"].Via != "native" {
+		t.Fatalf("upsert dropped earlier grants: %+v", settings.Tools)
 	}
 	body, _ := os.ReadFile(settingsPath)
-	if !strings.Contains(string(body), "capability_mode: managed") {
-		t.Fatal("carve-out write dropped settings lines")
+	if !strings.Contains(string(body), "capability_mode: managed") || !strings.Contains(string(body), "tools:") {
+		t.Fatalf("surgical write corrupted settings:\n%s", body)
 	}
-	// A non-reviewed name is refused before the file is touched.
-	if err := runCapability([]string{"--kind", "native", "--settings", settingsPath, "--allow", "delegation", "--confirm"}); err == nil {
-		t.Fatal("bypassing toolset granted")
+	// A non-reviewed native name and an unknown backend are refused before
+	// the file is touched.
+	before, _ := os.ReadFile(settingsPath)
+	for _, set := range []string{"delegation=native", "file=bogus", "not-a-pair"} {
+		if err := runCapability([]string{"--kind", "tools", "--settings", settingsPath, "--set", set, "--confirm"}); err == nil {
+			t.Fatalf("invalid --set %q accepted", set)
+		}
 	}
-	// Empty --allow revokes all carve-outs.
-	if err := runCapability([]string{"--kind", "native", "--settings", settingsPath, "--allow", "", "--confirm"}); err != nil {
+	if after, _ := os.ReadFile(settingsPath); !slices.Equal(before, after) {
+		t.Fatal("refused --set changed the file")
+	}
+	// Empty backends remove entries; emptying the map revokes everything.
+	if err := runCapability([]string{"--kind", "tools", "--settings", settingsPath, "--set", "terminal=,memory=,todo=,browser=", "--confirm"}); err != nil {
 		t.Fatal(err)
 	}
 	settings, err = stack.Read(settingsPath)
-	if err != nil || len(settings.NativeToolsets) != 0 {
-		t.Fatalf("revoke left grants: %v %v", settings.NativeToolsets, err)
+	if err != nil || len(settings.Tools) != 0 {
+		t.Fatalf("revoke left grants: %+v %v", settings.Tools, err)
 	}
-	// Non-managed settings reject the write before it lands.
+	// tools: is the universal surface — unmanaged settings accept it too.
 	plain := filepath.Join(dir, "plain.yaml")
-	if err := os.WriteFile(plain, []byte("schema: 1\nuser: alice\ntimezone: UTC\nmemory: false\n"), 0o600); err != nil {
+	if err := os.WriteFile(plain, []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nmemory: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runCapability([]string{"--kind", "native", "--settings", plain, "--allow", "terminal", "--confirm"}); err == nil {
-		t.Fatal("carve-out applied to non-managed settings")
+	if err := runCapability([]string{"--kind", "tools", "--settings", plain, "--set", "terminal=native", "--confirm"}); err != nil {
+		t.Fatalf("tools write rejected on plain settings: %v", err)
 	}
-	if body, _ := os.ReadFile(plain); strings.Contains(string(body), "native_toolsets") {
-		t.Fatal("rejected carve-out changed the file")
+	settings, err = stack.Read(plain)
+	if err != nil || settings.Tools["terminal"].Via != "native" {
+		t.Fatalf("plain settings lost the grant: %+v %v", settings.Tools, err)
 	}
 }
 

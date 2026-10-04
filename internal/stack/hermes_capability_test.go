@@ -141,9 +141,9 @@ func TestManagedHermesSourceRejectsEveryAlternativeIngress(t *testing.T) {
 		}
 	}
 	bad := s
-	bad.Features = []string{"workspace"}
+	bad.Tools = testTools("meet")
 	if err := bad.Validate(); err == nil {
-		t.Fatal("legacy feature widened managed profile")
+		t.Fatal("plugin-backed toolset widened managed profile")
 	}
 	bad = s
 	bad.MCP = map[string]MCPServer{"escape": {URL: "https://example.invalid/mcp"}}
@@ -184,7 +184,7 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
-	settings.Memory, settings.Features = false, nil
+	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
 	updated, err := yaml.Marshal(settings)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
-	settings.Memory, settings.Features = false, nil
+	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
 	updated, err := yaml.Marshal(settings)
 	if err != nil {
 		t.Fatal(err)
@@ -385,18 +385,20 @@ func TestNativeToolsetValidation(t *testing.T) {
 		}
 	}
 	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	s.NativeToolsets = []string{"terminal", "memory"}
+	s.Tools = testNativeTools("terminal", "memory")
 	if err := s.Validate(); err != nil {
 		t.Fatalf("managed settings with carve-outs rejected: %v", err)
 	}
-	s.NativeToolsets = []string{"a2a"}
+	s.Tools = testNativeTools("a2a")
 	if err := s.Validate(); err == nil {
 		t.Fatal("unreviewed native toolset accepted into managed settings")
 	}
-	s.NativeToolsets = []string{"terminal"}
-	s.CapabilityMode = ""
-	if err := s.Validate(); err == nil {
-		t.Fatal("native_toolsets accepted outside managed mode")
+	s.Tools = testNativeTools("terminal")
+	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "", "", 0
+	// Outside managed mode a native entry is an ordinary allowlist grant on the
+	// unmanaged platform_toolsets surface, so it stays valid.
+	if err := s.Validate(); err != nil {
+		t.Fatalf("native entry rejected outside managed mode: %v", err)
 	}
 }
 
@@ -406,7 +408,7 @@ func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		NativeToolsets: []string{"terminal", "memory", "todo"}}
+		Tools: testNativeTools("terminal", "memory", "todo")}
 	zero := Config(s)
 	disabled := zero["agent"].(M)["disabled_toolsets"].([]string)
 	for _, carved := range []string{"terminal", "memory", "todo"} {
@@ -429,7 +431,7 @@ func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
 
 func TestNativeCarveoutMaterializeAndAttest(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		NativeToolsets: []string{"terminal"}}
+		Tools: testNativeTools("terminal")}
 	zero := Config(s)
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.yaml")

@@ -32,8 +32,8 @@ type MaterializeOptions struct {
 	ToolHubReconnect   bool
 	SelfServicesPath   string
 	// NativeToolsets is the operator-approved carve-out list rendered into
-	// this runtime's denylist (settings.yaml `native_toolsets`, or
-	// HUB_NATIVE_TOOLSETS inside the container).
+	// this runtime's denylist (settings.yaml `tools:` entries with
+	// `via: native`, or HUB_NATIVE_TOOLSETS inside the container).
 	NativeToolsets []string
 }
 
@@ -127,7 +127,7 @@ func validateManagedSourceConfig(configPath string, nativeToolsets []string) err
 	if !nameOK || !urlOK || !zoneOK {
 		return fmt.Errorf("invalid managed model identity")
 	}
-	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone, NativeToolsets: nativeToolsets}))
+	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone, Tools: nativeToolsEntries(nativeToolsets)}))
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,12 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	if err := ValidateNativeToolsets(opts.NativeToolsets); err != nil {
 		return fmt.Errorf("native_toolsets: %w", err)
 	}
-	s.NativeToolsets = opts.NativeToolsets
+	if s.Tools == nil {
+		s.Tools = map[string]ToolEntry{}
+	}
+	for name, entry := range nativeToolsEntries(opts.NativeToolsets) {
+		s.Tools[name] = entry
+	}
 	expected := managedHermesConfig(s)
 	expected["mcp_servers"] = M{"toolhub": M{
 		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,

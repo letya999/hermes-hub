@@ -4,7 +4,7 @@ title: Default-deny capabilities and isolated execution
 status: in_progress
 phase: p6_matrix_recorded_gates_pending
 started_at: 2026-10-02
-updated_at: 2026-10-05
+updated_at: 2026-10-04
 implementation_status: partial_not_release_ready
 completed:
   - Re-read owner requirements and audited the issue-122 worktree at code baseline 114b458
@@ -153,6 +153,12 @@ completed:
   - Persistent tools daemon: hubctl tools-daemon serves the identical AgentExecRequest contract over NDJSON frames multiplexed by id; AgentExecPool lazily spawns one docker exec -i channel per owning runtime container (per-user by keying on container), demultiplexes concurrent calls, fails pending calls with a transport error on daemon death and respawns on the next call; caller deadlines honored; bounded stderr capture; StdinPipe/StdoutPipe chosen so dead-daemon writes surface as errors
   - Daemon death can never return a forged success: pending calls receive a daemonOutcome{reply,err} and die() fails them all before removing the session
   - just check passed all stages with race/shuffle tests and 85.05 percent own Go statement coverage after the native carve-out and persistent-daemon work
+  - Unified tools: settings surface (owner instruction, full replacement): features/native_toolsets/disabled_mcp collapsed into one tools: map — each entry selects native|toolhub|mcp[:server]|off scalar or mapping form; ingress: carries transport channels; workspace.mounts declares space/org bind mounts (org: forced read-only, reserved roots and traversal rejected); tools: is visibility/intent while ToolHub profiles and grants stay in the protected store
+  - Schema-1 migration in Read converts features/native_toolsets/disabled_mcp and rejects mixing; featureList() re-derives the classic feature vocabulary for HUB_FEATURES, org ceilings and Doctor so non-classic tool entries never reach the feature policy vocabulary
+  - Embedded defaults/settings.yaml seeds every space via go:embed with user/org substitution (ax-style default template); Init never overwrites
+  - hubctl capability --kind tools prints the backend vocabulary and compiled ToolPlan; --set name=backend --confirm upserts/removes entries surgically via yaml.Node with spawn-parser re-validation and atomic swap
+  - Child-without-parent feature cases became unrepresentable in the folded model (toggles live on the parent entry, off takes no fields); dependency tests rewritten to the new shape; workspace made unconditional in the effective vocabulary
+  - just check passed all stages with race/shuffle tests and 85.05 percent own Go statement coverage after the tools-surface refactor
 pending:
   - Channel adapters and alternate entrypoints are proven denied only at resolver level under the managed zero profile; they are never launched by managed runtime and live managed lifecycle is covered by the extended supervisor canary
   - Docker-gated proof of the supervisor docker-exec channel and the new ToolHub relay redirect canary awaits the next CI image run; local unit/integration evidence is in place
@@ -165,7 +171,7 @@ verification:
   source_pin: 869228cab4a8276d3b4c78da9d9939670c47bd0f
   prior_audit_check: passed_85.05_percent
   documentation: passed
-  just_check: passed_all_stages_85.05_percent_after_native_carveout_persistent_daemon
+  just_check: passed_all_stages_85.05_percent_after_tools_surface_refactor
   docker_check: passed_full_wrapper_restart_rollover_secondary_parity_secret_isolation
   docker_check_session: passed_2026_10_03_extended_managed_supervisor_canary
   docker_cleanup: passed

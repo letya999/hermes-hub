@@ -229,7 +229,10 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	for _, name := range o.Features {
 		allowed[name] = true
 	}
-	for _, name := range s.Features {
+	for _, name := range s.featureList() {
+		if name == "workspace" {
+			continue
+		}
 		if !allowed[name] {
 			return s, fmt.Errorf("feature %q is not enabled for organization %q", name, s.Organization)
 		}
@@ -240,14 +243,15 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	if len(s.MCP) > 0 {
 		return s, fmt.Errorf("user MCP definitions are not allowed in organization scope; add them to the organization")
 	}
-	for _, name := range s.DisabledMCP {
-		if _, ok := o.MCP[name]; !ok {
-			return s, fmt.Errorf("MCP %q is not approved by organization %q", name, s.Organization)
-		}
+	// A user's `off` entries narrow the organization MCP set; entries that
+	// name something else are ordinary self-denies and need no approval.
+	disabled := map[string]bool{}
+	for _, name := range s.disabledMCPNames() {
+		disabled[name] = true
 	}
 	mcp := make(map[string]MCPServer, len(o.MCP))
 	for name, server := range o.MCP {
-		if !slices.Contains(s.DisabledMCP, name) {
+		if !disabled[name] {
 			mcp[name] = server
 		}
 	}

@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"gopkg.in/yaml.v3"
 )
 
 // This command is a host operation, never an agent-facing MCP method. Its input
@@ -25,12 +25,12 @@ import (
 // checks revisions and pins.
 func runCapability(args []string) error {
 	f := flag.NewFlagSet("capability", flag.ContinueOnError)
-	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors or native")
+	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors or tools")
 	file := f.String("file", "", "operator-reviewed JSON record")
 	issuer := f.String("issuer", "operator", "operator identity recorded as issuer and confirmer")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation onto the reviewed record")
-	settingsPath := f.String("settings", "", "space settings.yaml the native carve-out applies to")
-	allow := f.String("allow", "", "comma-separated native toolsets to grant (empty revokes all)")
+	settingsPath := f.String("settings", "", "space settings.yaml the tools plan applies to")
+	set := f.String("set", "", "comma-separated name=backend tool entries (empty backend removes the entry)")
 	principal := f.String("principal", os.Getenv("HUB_PRINCIPAL_ID"), "principal owning the agent-tools binding")
 	contextID := f.String("context", os.Getenv("HUB_CONTEXT_ID"), "context owning the agent-tools binding")
 	runtimeID := f.String("runtime", os.Getenv("HUB_RUNTIME_ID"), "runtime owning the agent-tools binding")
@@ -39,11 +39,11 @@ func runCapability(args []string) error {
 	if err := f.Parse(args); err != nil {
 		return err
 	}
-	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors" && *kind != "native") {
-		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors|native; no positional arguments")
+	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors" && *kind != "tools") {
+		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors|tools; no positional arguments")
 	}
-	if *kind == "native" {
-		return runCapabilityNative(*settingsPath, *allow, *confirm)
+	if *kind == "tools" {
+		return runCapabilityTools(*settingsPath, *set, *confirm)
 	}
 	if *kind == "connectors" {
 		manifest := toolhub.RecommendedConnectorManifest()
@@ -176,84 +176,171 @@ func confirmRecord(confirmed bool, issuer string, record any) error {
 	return nil
 }
 
-// runCapabilityNative grants or revokes the operator-level native-toolset
-// carve-out for one managed runtime. Without --settings it prints the
-// reviewed carve-out set; with --settings it surgically rewrites the
-// `native_toolsets:` line in the space settings.yaml, re-validates the whole
-// file through the same parser a spawn reads, and swaps it atomically.
-// The grant renders into agent.disabled_toolsets: native tools bypass ToolHub
-// admission entirely, so revocation takes effect on the next spawn.
-func runCapabilityNative(settingsPath, allow string, confirm bool) error {
+// runCapabilityTools inspects or edits the unified `tools:` surface of one
+// space settings.yaml. Without --settings it prints the reviewed vocabulary;
+// without --set it prints the compiled plan (which backend serves what);
+// with --set name=backend it surgically rewrites the tools map, re-validates
+// the whole file through the spawn parser and swaps atomically.
+func runCapabilityTools(settingsPath, set string, confirm bool) error {
 	if settingsPath == "" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
-			"kind": "native", "carveout_toolsets": stack.NativeCarveoutToolsets(),
-			"note": "add native_toolsets to a managed space settings.yaml, then re-render",
+			"kind":              "tools",
+			"backends":          []string{"native", "toolhub", "mcp[:server]", "off"},
+			"carveout_toolsets": stack.NativeCarveoutToolsets(),
+			"note":              "hubctl capability --kind tools --settings <space>/settings.yaml [--set name=backend,...] [--confirm]",
 		})
-	}
-	var granted []string
-	for _, name := range strings.Split(allow, ",") {
-		if name = strings.TrimSpace(name); name != "" {
-			granted = append(granted, name)
-		}
-	}
-	if err := stack.ValidateNativeToolsets(granted); err != nil {
-		return err
 	}
 	current, err := stack.Read(settingsPath)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
-	slices.Sort(granted)
-	if slices.Equal(current.NativeToolsets, granted) {
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": "native", "native_toolsets": granted, "changed": false})
+	if strings.TrimSpace(set) == "" {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": "tools", "plan": current.ToolPlan()})
 	}
+	updates, removals, err := parseToolSet(set)
+	if err != nil {
+		return err
+	}
+	candidate := current
+	candidate.Tools = map[string]stack.ToolEntry{}
+	for name, entry := range current.Tools {
+		candidate.Tools[name] = entry
+	}
+	for _, name := range removals {
+		delete(candidate.Tools, name)
+	}
+	for name, entry := range updates {
+		candidate.Tools[name] = entry
+	}
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("tools plan would become invalid: %w", err)
+	}
+	before, after := current.ToolPlan(), candidate.ToolPlan()
 	if !confirm {
-		fmt.Fprintf(os.Stderr, "native_toolsets: %s -> %s\nre-run with --confirm to commit\n",
-			strings.Join(current.NativeToolsets, ","), strings.Join(granted, ","))
-		return errors.New("carve-out not confirmed")
+		fmt.Fprintf(os.Stderr, "tools plan before: %+v\ntools plan after:  %+v\nre-run with --confirm to commit\n", before, after)
+		return errors.New("tools plan not confirmed")
 	}
-	if err := writeNativeToolsets(settingsPath, granted); err != nil {
+	if err := writeToolEntries(settingsPath, updates, removals); err != nil {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"kind": "native", "native_toolsets": granted, "changed": true,
+		"kind": "tools", "plan": after, "changed": true,
 		"note": "restart or re-spawn the runtime; native tools have no per-call admission",
 	})
 }
 
-var (
-	nativeHeaderLine = regexp.MustCompile(`^native_toolsets\s*:`)
-	nativeBlockEntry = regexp.MustCompile(`^\s+-\s`)
-)
+// parseToolSet parses `name=backend,name=backend` — `backend` is
+// native|toolhub|mcp[:server]|off; an empty backend removes the entry.
+func parseToolSet(set string) (map[string]stack.ToolEntry, []string, error) {
+	updates := map[string]stack.ToolEntry{}
+	var removals []string
+	for _, pair := range strings.Split(set, ",") {
+		name, backend, found := strings.Cut(strings.TrimSpace(pair), "=")
+		if !found {
+			return nil, nil, fmt.Errorf("invalid --set pair %q (want name=backend)", pair)
+		}
+		if name = strings.TrimSpace(name); name == "" {
+			return nil, nil, fmt.Errorf("invalid --set pair %q: empty name", pair)
+		}
+		backend = strings.TrimSpace(backend)
+		if backend == "" {
+			removals = append(removals, name)
+			continue
+		}
+		entry := stack.ToolEntry{Via: backend}
+		if strings.HasPrefix(backend, "mcp:") {
+			entry.Via, entry.Server = "mcp", strings.TrimPrefix(backend, "mcp:")
+		}
+		updates[name] = entry
+	}
+	return updates, removals, nil
+}
 
-// writeNativeToolsets replaces the top-level `native_toolsets:` key (scalar,
-// inline or block list) in a settings.yaml, preserving every other line, then
-// proves the result still parses as valid managed settings before swapping.
-func writeNativeToolsets(path string, names []string) error {
+// toolEntryNode renders an entry as the compact scalar form when possible,
+// keeping written settings.yaml as terse as the operator's own style.
+func toolEntryNode(entry stack.ToolEntry) (*yaml.Node, error) {
+	if len(entry.Only) == 0 && len(entry.Except) == 0 && len(entry.Tools) == 0 && len(entry.Paths) == 0 && len(entry.Limits) == 0 {
+		value := entry.Via
+		if entry.Via == "mcp" && entry.Server != "" {
+			value = "mcp:" + entry.Server
+		}
+		if entry.Server == "" || entry.Via == "mcp" {
+			return &yaml.Node{Kind: yaml.ScalarNode, Value: value}, nil
+		}
+	}
+	body, err := yaml.Marshal(entry)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return nil, err
+	}
+	return doc.Content[0], nil
+}
+
+// writeToolEntries upserts/removes keys inside the top-level `tools:` mapping
+// of a settings.yaml, preserving comments and every other key, then proves
+// the result still parses as valid settings before swapping atomically.
+func writeToolEntries(path string, updates map[string]stack.ToolEntry, removals []string) error {
 	body, err := os.ReadFile(path) // #nosec G304 -- operator-supplied settings path.
 	if err != nil {
 		return err
 	}
-	rendered := "native_toolsets: [" + strings.Join(names, ", ") + "]"
-	if len(names) == 0 {
-		rendered = "native_toolsets: []"
+	var doc yaml.Node
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return err
 	}
-	lines := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
-	out := make([]string, 0, len(lines)+1)
-	replaced := false
-	for i := 0; i < len(lines); i++ {
-		if !replaced && nativeHeaderLine.MatchString(lines[i]) {
-			out = append(out, rendered)
-			replaced = true
-			for i+1 < len(lines) && nativeBlockEntry.MatchString(lines[i+1]) {
-				i++
-			}
-			continue
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return errors.New("settings.yaml is not a YAML mapping")
+	}
+	root := doc.Content[0]
+	var tools *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "tools" {
+			tools = root.Content[i+1]
 		}
-		out = append(out, lines[i])
 	}
-	if !replaced {
-		out = append(out, rendered)
+	if tools == nil {
+		tools = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "tools"}, tools)
+	}
+	if tools.Kind != yaml.MappingNode {
+		return errors.New("settings.yaml tools: is not a mapping")
+	}
+	setPair := func(name string, value *yaml.Node) {
+		for i := 0; i+1 < len(tools.Content); i += 2 {
+			if tools.Content[i].Value == name {
+				if value == nil {
+					tools.Content = append(tools.Content[:i], tools.Content[i+2:]...)
+				} else {
+					tools.Content[i+1] = value
+				}
+				return
+			}
+		}
+		if value != nil {
+			tools.Content = append(tools.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: name}, value)
+		}
+	}
+	for _, name := range removals {
+		setPair(name, nil)
+	}
+	names := make([]string, 0, len(updates))
+	for name := range updates {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		node, err := toolEntryNode(updates[name])
+		if err != nil {
+			return err
+		}
+		setPair(name, node)
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*")
 	if err != nil {
@@ -261,7 +348,7 @@ func writeNativeToolsets(path string, names []string) error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if _, err = tmp.WriteString(strings.Join(out, "\n") + "\n"); err != nil {
+	if _, err = tmp.Write(out); err != nil {
 		_ = tmp.Close()
 		return err
 	}

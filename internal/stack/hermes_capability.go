@@ -36,7 +36,7 @@ func ManagedCapabilityInventory() (HermesCapabilityInventory, error) {
 }
 
 // nativeCarveoutToolsets is the reviewed set of upstream toolsets an operator
-// may re-enable for one runtime through settings.yaml `native_toolsets`.
+// may re-enable for one runtime through `tools:` entries with `via: native`.
 // Everything else in the inventory stays denied: platform adapters only open
 // gateway listeners inside the agent, delegation/bot_room/a2a/coding spawn
 // sub-agents whose literal toolsets bypass the denylist entirely, and
@@ -91,9 +91,10 @@ func disabledToolsets(s Settings) []string {
 	if err != nil {
 		panic(err) // Corrupt compiled inventory must never render a permissive config.
 	}
+	carveouts := s.nativeCarveouts()
 	disabled := make([]string, 0, len(inventory.DisabledToolsets))
 	for _, name := range inventory.DisabledToolsets {
-		if !slices.Contains(s.NativeToolsets, name) {
+		if !slices.Contains(carveouts, name) {
 			disabled = append(disabled, name)
 		}
 	}
@@ -119,8 +120,8 @@ func managedHermesConfig(s Settings) M {
 		"hooks":             M{},
 		// A carved-out `memory` toolset still needs its subsystem flag; without
 		// it the tool loads against a disabled backend and silently no-ops.
-		"memory":   M{"memory_enabled": slices.Contains(s.NativeToolsets, "memory"), "user_profile_enabled": false},
-		"stt":      M{"enabled": false},
+		"memory":   M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory"), "user_profile_enabled": false},
+		"stt":      M{"enabled": s.toolEntry("transcription").enabled()},
 		"security": M{"allow_lazy_installs": false},
 		// Literal-toolset sub-agents ignore the denylist (AIAgent receives no
 		// disabled_toolsets on these paths): detached compression hygiene gets

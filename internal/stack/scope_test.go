@@ -54,7 +54,7 @@ func TestOrganizationOverlayAndMembership(t *testing.T) {
 		t.Fatal("organization action policy not applied")
 	}
 
-	s.DisabledMCP = []string{"clickhouse"}
+	s.Tools = testTools("clickhouse=off")
 	s.MCP = nil
 	saveYAML(t, filepath.Join(space, "settings.yaml"), s)
 	s, err = ReadEnvironment(space, "prod")
@@ -114,7 +114,7 @@ func TestDoctorScopeUsesSeparateSecrets(t *testing.T) {
 }
 
 func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Organization: "acme", OrgActions: []string{}, Features: []string{"workspace", "slack"}, MCP: map[string]MCPServer{"org": {URL: "https://org.invalid/mcp", Tools: &MCPTools{Include: []string{"query"}}}}, OrganizationDir: "/host/organizations/acme", OrganizationDocsDir: "/host/organizations/acme/docs"}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Organization: "acme", OrgActions: []string{}, Tools: testTools("workspace", "slack"), MCP: map[string]MCPServer{"org": {URL: "https://org.invalid/mcp", Tools: &MCPTools{Include: []string{"query"}}}}, OrganizationDir: "/host/organizations/acme", OrganizationDocsDir: "/host/organizations/acme/docs"}
 	c := Config(s)
 	hub := c["mcp_servers"].(M)["hub"].(M)
 	args := hub["args"].([]string)
@@ -184,20 +184,19 @@ func TestOrganizationPolicyErrors(t *testing.T) {
 	if InitOrganization(orgDir, "acme", "alice") == nil || InitOrganization(root, "../acme", "alice") == nil || InitOrganization(root, "acme", "../alice") == nil {
 		t.Fatal("invalid org-init accepted")
 	}
-	user := Settings{Schema: 1, User: "alice", Organization: "acme", Features: []string{"workspace"}}
+	user := Settings{Schema: 1, User: "alice", Organization: "acme", Tools: testTools("workspace"), Ingress: testIngress("workspace")}
 	org := OrganizationSettings{Schema: 1, Organization: "acme", Members: map[string]string{"alice": "member"}, Features: []string{"workspace"}}
 	for _, bad := range []struct {
 		org OrganizationSettings
 		set Settings
 		dir string
 	}{
-		{org: org, set: Settings{Schema: 1, User: "alice", Features: []string{"workspace"}}, dir: orgDir},
+		{org: org, set: Settings{Schema: 1, User: "alice", Tools: testTools("workspace"), Ingress: testIngress("workspace")}, dir: orgDir},
 		{org: OrganizationSettings{Schema: 1, Organization: "other"}, set: user, dir: orgDir},
-		{org: org, set: Settings{Schema: 1, User: "bob", Organization: "acme", Features: []string{"workspace"}}, dir: orgDir},
-		{org: org, set: Settings{Schema: 1, User: "alice", Organization: "acme", Features: []string{"browser"}}, dir: orgDir},
-		{org: org, set: Settings{Schema: 1, User: "alice", Organization: "acme", Features: []string{"workspace", "telegram_write"}}, dir: orgDir},
-		{org: org, set: Settings{Schema: 1, User: "alice", Organization: "acme", Features: []string{"workspace"}, MCP: map[string]MCPServer{"user": {URL: "https://user.invalid/mcp"}}}, dir: orgDir},
-		{org: org, set: Settings{Schema: 1, User: "alice", Organization: "acme", Features: []string{"workspace"}, DisabledMCP: []string{"missing"}}, dir: orgDir},
+		{org: org, set: Settings{Schema: 1, User: "bob", Organization: "acme", Tools: testTools("workspace"), Ingress: testIngress("workspace")}, dir: orgDir},
+		{org: org, set: Settings{Schema: 1, User: "alice", Organization: "acme", Tools: testTools("browser"), Ingress: testIngress("browser")}, dir: orgDir},
+		{org: org, set: Settings{Schema: 1, User: "alice", Organization: "acme", Tools: testTools("workspace", "telegram_write"), Ingress: testIngress("workspace", "telegram_write")}, dir: orgDir},
+		{org: org, set: Settings{Schema: 1, User: "alice", Organization: "acme", Tools: testTools("workspace"), Ingress: testIngress("workspace"), MCP: map[string]MCPServer{"user": {URL: "https://user.invalid/mcp"}}}, dir: orgDir},
 		{org: org, set: user, dir: filepath.Join(root, "missing")},
 	} {
 		if _, err := ApplyOrganization(bad.org, bad.set, bad.dir); err == nil {

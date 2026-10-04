@@ -183,37 +183,73 @@ projected tool descriptions name the admitted scope. An agent cannot reach
 the Docker socket, so it cannot invoke the executor or forge scopes.
 `hubctl tools` remains the unmanaged local stdio surface only.
 
-### Native toolset carve-outs (operator level)
+### The `tools:` surface (operator level)
 
-A managed runtime may re-enable reviewed upstream toolsets through
-`native_toolsets` in the space `settings.yaml` — the same operator-owned
-layer that pins `capability_profile_id` and `capability_generation`:
+One `tools:` map in `settings.yaml` is the whole capability surface —
+toolsets, ToolHub families, MCP connectors and explicit denies share one
+vocabulary. Each entry picks a backend, scalar or mapping:
 
 ```yaml
-native_toolsets: [terminal, memory, todo]
+tools:
+  terminal: native            # upstream toolset inside the runtime
+  file: toolhub               # managed executor, per-call admission
+  browser: mcp:playwright     # a builtin or mcp_servers MCP server
+  github: mcp                 # connector capability (via ToolHub when managed)
+  code_exec: off              # explicit deny; absent means denied
+  ssh:
+    via: toolhub
+    tools: {write: false, shell: false, tunnel: false}
+  file:
+    via: toolhub
+    only: [file_read, file_list]
+    paths: [docs, inbox]
+    limits: {output_bytes: 65536, timeout_seconds: 30}
+ingress: [telegram]           # transport channels, never agent tools
+workspace:
+  mounts:
+    - {from: docs, to: /docs, mode: ro}
+    - {from: org:docs, to: /orgdocs}   # organization dirs are always ro
 ```
 
-Each name must come from the reviewed carve-out set (`hubctl capability
---kind native` lists it). Platform adapters, `delegation`, `bot_room`,
-`a2a`, `coding`, `hermes-*` and `context_engine` are never carve-out
-approved: they open listeners inside the agent or spawn sub-agents whose
-literal toolsets bypass the denylist entirely. The carve-out renders into
-`agent.disabled_toolsets` at materialize and is attested again inside the
-runtime (`HUB_NATIVE_TOOLSETS`); a source config rendered without the same
-list fails the effective-config check. Grant or revoke with
-`hubctl capability --kind native --settings <space>/settings.yaml
---allow terminal,memory --confirm` — the write is surgical, re-validates
-the whole file through the spawn parser, and applies atomically.
+The embedded `internal/stack/defaults/settings.yaml` seeds every new space;
+`init` substitutes `user`/`organization` and never overwrites. Schema-1
+files keep reading: `features`, `native_toolsets` and `disabled_mcp`
+migrate into this surface at parse time and are rejected when mixed with
+the new keys.
 
-Native tools bypass ToolHub admission on every call by construction: there
-is no per-call check, no call audit, and revocation takes effect only on
-the next spawn. A carved-out `terminal` therefore runs inside the runtime
-without the `code_exec` disposable sandbox — it is still bounded by the
-container's own isolation (agent network, no Docker socket, sealed
-extension roots) but gets full workspace/state reach within it. Grant it
-only to runtimes whose operator accepts that weaker boundary. `memory`
-also flips `memory.memory_enabled` in the rendered config; `skills` can
-list built-in skills but install stays sealed by the read-only tmpfs.
+`tools:` declares visibility, not authority — ToolHub profiles and grants
+in the protected store still govern what an admitted call may do.
+
+* `native` re-enables a reviewed upstream toolset for that runtime. The
+  reviewed set is the same carve-out list as before — platform adapters,
+  `delegation`, `bot_room`, `a2a`, `coding`, `hermes-*` and
+  `context_engine` are never approved (they open listeners inside the
+  agent or spawn sub-agents with literal toolsets that bypass the
+  denylist). Native entries render into `agent.disabled_toolsets` and are
+  attested in-runtime via `HUB_NATIVE_TOOLSETS`. They bypass ToolHub
+  admission on every call: no per-call check, no call audit, revocation
+  only on respawn. A carved-out `terminal` runs without the `code_exec`
+  disposable sandbox — bounded by the container's own isolation but with
+  full workspace/state reach. Grant it only to runtimes whose operator
+  accepts that weaker boundary.
+* `toolhub` marks a managed family (files, documents, images, artifacts,
+  routines, services, hh, ssh, image_gen, code_exec) as visible intent;
+  admission still needs a matching ToolHub grant.
+* `mcp[:server]` selects a builtin connector or an `mcp_servers` entry.
+  `only`/`except`/`tools`/`paths`/`limits` refine per-tool selection and
+  execution bounds.
+
+```text
+hubctl capability --kind tools                                  # backend vocabulary + reviewed native set
+hubctl capability --kind tools --settings <space>/settings.yaml # compiled plan
+hubctl capability --kind tools --settings <space>/settings.yaml \
+  --set terminal=native,browser=mcp:playwright --confirm        # surgical write
+```
+
+`--set name=backend` upserts entries; `--set name=` removes them. The
+write edits only the `tools:` mapping, re-validates the whole file
+through the spawn parser and swaps atomically. Native changes take effect
+on restart or re-spawn.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes

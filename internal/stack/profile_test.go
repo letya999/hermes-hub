@@ -20,7 +20,7 @@ func profileSettings(features ...string) Settings {
 		ModelURL: "https://example.invalid/v1", Timezone: "UTC",
 		OAuthPort: 8000, BrowserPort: 6080, GoogleEmail: "me@example.org",
 		DesktopURL: "https://example.invalid/d", DraftsURL: "https://example.invalid/r",
-		Features: features}
+		Tools: testTools(features...), Ingress: testIngress(features...)}
 }
 
 func TestCapabilityProfileIsDeterministic(t *testing.T) {
@@ -106,16 +106,23 @@ func TestCapabilityProfileOptInAbsent(t *testing.T) {
 }
 
 func TestCapabilityProfileDependencyClosure(t *testing.T) {
-	for child, parent := range map[string]string{
-		"browser_act": "browser", "google_write": "google",
-		"telegram_write": "telegram_user", "ssh_write": "ssh",
-		"ssh_shell": "ssh", "ssh_tunnel": "ssh",
+	// A toggle cannot live on a denied entry — `off` takes no extra fields —
+	// and each sub-capability names its parent family in the same entry.
+	parentVia := map[string]string{"browser": "mcp", "google": "mcp", "telegram_user": "mcp", "ssh": "toolhub"}
+	for child, pair := range map[string][2]string{
+		"browser_act": {"browser", "act"}, "google_write": {"google", "write"},
+		"telegram_write": {"telegram_user", "write"}, "ssh_write": {"ssh", "write"},
+		"ssh_shell": {"ssh", "shell"}, "ssh_tunnel": {"ssh", "tunnel"},
 	} {
-		if err := profileSettings(child).Validate(); err == nil {
-			t.Fatalf("%s accepted without %s", child, parent)
+		parent, token := pair[0], pair[1]
+		s := profileSettings("workspace")
+		s.Tools = map[string]ToolEntry{parent: {Via: "off", Tools: map[string]bool{token: true}}}
+		if err := s.Validate(); err == nil {
+			t.Fatalf("%s accepted on a denied %s", child, parent)
 		}
-		if err := profileSettings(child, parent).Validate(); err != nil {
-			t.Fatalf("%s+%s rejected: %v", child, parent, err)
+		s.Tools = map[string]ToolEntry{parent: {Via: parentVia[parent], Tools: map[string]bool{token: true}}}
+		if err := s.Validate(); err != nil {
+			t.Fatalf("%s toggle on %s rejected: %v", child, parent, err)
 		}
 	}
 }

@@ -130,17 +130,32 @@ func Config(s Settings) M {
 	// mcp_servers entries for google/github/slack/atlassian/
 	// telegram_user/desktop/drafts.
 	for name, server := range s.MCP {
+		if s.toolEntry(name).Via == ToolViaOff {
+			continue
+		}
 		servers[name] = server.Config()
 	}
 	// vision and image_gen stay off this list. The hub MCP tools are the
 	// workspace-confined profile; the native local tools are not.
 	toolsets := []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	for name, entry := range s.Tools {
+		mapped := name
+		if name == "meet" {
+			mapped = "google_meet"
+		}
+		switch entry.Via {
+		case ToolViaNative:
+			if !slices.Contains(toolsets, mapped) {
+				toolsets = append(toolsets, mapped)
+			}
+		case ToolViaOff:
+			toolsets = slices.DeleteFunc(toolsets, func(t string) bool { return t == mapped })
+		}
+	}
 	if s.ExecutionMode == "supervisor" {
 		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "cronjob" })
 	}
-	if s.Has("meet") {
-		toolsets = append(toolsets, "google_meet")
-	}
+	slices.Sort(toolsets)
 	skills := M{}
 	external := []string{}
 	if organizationSkills != "" {
@@ -152,7 +167,7 @@ func Config(s Settings) M {
 	if len(external) > 0 {
 		skills["external_dirs"] = external
 	}
-	memory := M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}
+	memory := M{"memory_enabled": s.Memory || s.toolEntry("memory").enabled(), "user_profile_enabled": s.Memory || s.toolEntry("memory").enabled()}
 	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
 	// turns and lets the existing heartbeat notify the user while a build runs.
@@ -220,6 +235,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// file: credentials — is operator-owned and read-only inside the runtime.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "ssh")), "target": "/state/ssh", "read_only": true})
 	}
+	for _, m := range s.Workspace.Mounts {
+		source, readOnly, err := s.resolveMount(m)
+		if err != nil {
+			continue // validate() already rejected it; render stays total
+		}
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
+	}
 	ports := []string{}
 	if s.Has("browser") || s.Has("meet") {
 		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort))
@@ -246,7 +268,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60"}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
@@ -258,7 +280,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
 		runtimeEnv["HUB_MANAGED_MODEL_ID"] = s.Model
 		runtimeEnv["HUB_MANAGED_MODEL_URL"] = s.ModelURL
-		runtimeEnv["HUB_NATIVE_TOOLSETS"] = strings.Join(s.NativeToolsets, ",")
+		runtimeEnv["HUB_NATIVE_TOOLSETS"] = strings.Join(s.nativeCarveouts(), ",")
 		runtimeEnv["HERMES_BUNDLES_DIR"] = "/state/hermes/skill-bundles"
 		runtimeEnv["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
 	}
@@ -441,7 +463,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_APPROVE_", "communication", "hermes-communication") {
 			gatewayEnvironment[key] = value
 		}
@@ -763,7 +785,7 @@ func materializeHermesConfig(dir string, s Settings) error {
 		RuntimeAuthPresent: strings.TrimSpace(auth[tokenEnv]) != "" || strings.TrimSpace(runtimeEnv[tokenEnv]) != "",
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
-		NativeToolsets:     s.NativeToolsets,
+		NativeToolsets:     s.nativeCarveouts(),
 	})
 }
 

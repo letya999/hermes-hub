@@ -1938,7 +1938,7 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		RuntimeAuthPresent: authPresent,
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(secrets["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(binding.ContextRoot, "runtime", "self-services.json"),
-		NativeToolsets:     settings.NativeToolsets,
+		NativeToolsets:     settings.NativeCarveouts(),
 	}
 	if _, present := secrets["HUB_TOOLHUB_ENDPOINT"]; !present {
 		opts.ToolHubEndpoint = "http://toolhub:8090/mcp"

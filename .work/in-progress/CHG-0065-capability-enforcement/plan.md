@@ -476,3 +476,21 @@ complete on the strength of this design package.
   next call lazily respawns. Scratch/sandboxed execution deliberately keeps
   the one-shot tools-exec path — persistence is for standard tools only.
 - just check passed at 85.05 percent after both additions.
+
+- Unified `tools:` settings surface (owner instruction, full replacement):
+  `features`/`native_toolsets`/`disabled_mcp` collapsed into one
+  `tools:` map — each entry selects `native`, `toolhub`,
+  `mcp[:server]` or `off`, scalar or mapping form; `ingress:` carries
+  transport channels; `workspace.mounts` declares space/org bind mounts
+  (org: forced read-only, reserved roots rejected). `tools:` is intent
+  and visibility — ToolHub profiles/grants in the protected store still
+  govern admission. Schema-1 files migrate at Read (mixing rejected);
+  `featureList()` re-derives the classic feature vocabulary for
+  HUB_FEATURES, org ceilings and Doctor. The embedded
+  defaults/settings.yaml seeds every space (user/org substitution, ax-style
+  seed). `hubctl capability --kind tools` prints the vocabulary/plan;
+  `--set name=backend --confirm` upserts/removes entries surgically via
+  yaml.Node, re-validates through the spawn parser and swaps atomically.
+  Child-without-parent feature dependency cases became unrepresentable
+  (toggles live on the parent entry; `via: off` takes no fields) — tests
+  updated to the folded model. `just check` passed at 85.05 percent.

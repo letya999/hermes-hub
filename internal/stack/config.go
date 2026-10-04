@@ -25,11 +25,15 @@ type Settings struct {
 	CapabilityMode       string `yaml:"capability_mode,omitempty"`
 	CapabilityProfileID  string `yaml:"capability_profile_id,omitempty"`
 	CapabilityGeneration uint64 `yaml:"capability_generation,omitempty"`
-	// NativeToolsets is the operator-level carve-out list: each name is
-	// removed from the managed denylist for this runtime only. Native tools
-	// bypass ToolHub admission entirely — the grant applies at render time and
-	// revocation takes effect on the next spawn, never mid-session.
-	NativeToolsets  []string             `yaml:"native_toolsets,omitempty"`
+	// Tools is the single capability surface: each entry names a toolset,
+	// capability family or MCP capability and picks its backend — `native`
+	// (carved out of the managed denylist, no per-call admission), `toolhub`
+	// (managed executor with per-call admission and audit), `mcp[:server]`
+	// (builtin connector or an mcp_servers definition) or `off`. Absent
+	// means denied.
+	Tools           map[string]ToolEntry `yaml:"tools,omitempty"`
+	Ingress         []string             `yaml:"ingress,omitempty"`
+	Workspace       Workspace            `yaml:"workspace,omitempty"`
 	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
 	Hooks           map[string]any       `yaml:"hooks,omitempty"`
 	Memory          bool                 `yaml:"memory"`
@@ -39,11 +43,9 @@ type Settings struct {
 	Schema          int                  `yaml:"schema"`
 	User            string               `yaml:"user"`
 	Organization    string               `yaml:"organization,omitempty"`
-	DisabledMCP     []string             `yaml:"disabled_mcp,omitempty"`
 	Model           string               `yaml:"model"`
 	ModelURL        string               `yaml:"model_url"`
 	Timezone        string               `yaml:"timezone"`
-	Features        []string             `yaml:"features"`
 	GoogleEmail     string               `yaml:"google_email"`
 	GitLabHost      string               `yaml:"gitlab_host"`
 	DesktopURL      string               `yaml:"desktop_url"`
@@ -145,7 +147,7 @@ func selfEnvKeys(s Settings) []string {
 			}
 		}
 	}
-	for _, enabled := range s.Features {
+	for _, enabled := range s.featureList() {
 		for _, feature := range Features {
 			if feature.Name == enabled {
 				for _, key := range feature.Requires {
@@ -180,8 +182,6 @@ func selfEnvKeys(s Settings) []string {
 	slices.Sort(result)
 	return result
 }
-
-func (s Settings) Has(name string) bool { return slices.Contains(s.Features, name) }
 
 // imageCredential is FAL_KEY only for the external fal provider.
 // The cliproxy provider uses the model credential already required for chat.
@@ -221,33 +221,26 @@ func (s Settings) Validate() error {
 		if len(s.MCP) > 0 || len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" || s.ImageGen != (media.ImageGen{}) {
 			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not direct MCP or native extensions")
 		}
-		for _, feature := range s.Features {
-			if feature != "telegram" && feature != "slack_app" {
-				return fmt.Errorf("managed capabilities cannot be enabled by legacy feature %q", feature)
+		for name, entry := range s.Tools {
+			switch entry.Via {
+			case "", ToolViaOff, ToolViaToolHub, ToolViaMCP:
+			case ToolViaNative:
+				if !nativeCarveoutToolsets[name] && !pseudoToolsets[name] {
+					return fmt.Errorf("tools.%s: %q cannot be enabled natively under managed mode", name, name)
+				}
+			default:
+				return fmt.Errorf("tools.%s: unknown backend %q", name, entry.Via)
 			}
 		}
-		if err := ValidateNativeToolsets(s.NativeToolsets); err != nil {
-			return fmt.Errorf("native_toolsets: %w", err)
-		}
-	}
-	if s.CapabilityMode != "managed" && len(s.NativeToolsets) > 0 {
-		return fmt.Errorf("native_toolsets requires capability_mode managed")
 	}
 	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
 		return fmt.Errorf("managed capability identity requires capability_mode managed")
 	}
-	if s.Schema != 1 || !idPattern.MatchString(s.User) {
-		return fmt.Errorf("schema must be 1 and profile a lowercase identifier")
+	if s.Schema != 1 && s.Schema != 2 || !idPattern.MatchString(s.User) {
+		return fmt.Errorf("schema must be 1 or 2 and profile a lowercase identifier")
 	}
 	if s.Organization != "" && !idPattern.MatchString(s.Organization) {
 		return fmt.Errorf("organization must be a lowercase identifier")
-	}
-	seenMCP := map[string]bool{}
-	for _, name := range s.DisabledMCP {
-		if seenMCP[name] || !idPattern.MatchString(name) {
-			return fmt.Errorf("invalid disabled MCP name %q", name)
-		}
-		seenMCP[name] = true
 	}
 	if _, err := time.LoadLocation(s.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone")
@@ -270,12 +263,11 @@ func (s Settings) Validate() error {
 	if err := validateMCP(s.MCP); err != nil {
 		return err
 	}
-	seen := map[string]bool{}
-	for _, name := range s.Features {
-		if seen[name] || !slices.ContainsFunc(Features, func(f Feature) bool { return f.Name == name }) {
-			return fmt.Errorf("unknown or duplicate feature %q", name)
-		}
-		seen[name] = true
+	if err := s.validateTools(); err != nil {
+		return err
+	}
+	if err := s.Workspace.validate(); err != nil {
+		return err
 	}
 	if s.Has("telegram_write") && !s.Has("telegram_user") {
 		return fmt.Errorf("telegram_write requires telegram_user")
@@ -326,6 +318,75 @@ func slackEventsHostPort(s Settings) int {
 	}
 	return 8081
 }
+
+// legacySettingsFile keeps schema-1 capability fields parseable so Read can
+// migrate them into the unified `tools:`/`ingress:` surface. New files write
+// only the new keys.
+type legacySettingsFile struct {
+	Settings       `yaml:",inline"`
+	LegacyFeatures []string `yaml:"features,omitempty"`
+	LegacyNative   []string `yaml:"native_toolsets,omitempty"`
+	LegacyMCP      []string `yaml:"disabled_mcp,omitempty"`
+}
+
+// featureToolMigration maps each schema-1 feature to its tools entry.
+// Modifiers land on the parent entry's `tools:` toggle map; transports move
+// to `ingress`; `workspace` is unconditional and drops silently.
+var featureToolMigration = map[string]ToolEntry{
+	"browser":       {Via: ToolViaMCP, Server: "playwright"},
+	"hh":            {Via: ToolViaToolHub},
+	"ssh":           {Via: ToolViaToolHub},
+	"image_gen":     {Via: ToolViaToolHub},
+	"meet":          {Via: ToolViaNative},
+	"transcription": {Via: ToolViaNative},
+	"google":        {Via: ToolViaMCP},
+	"gitlab":        {Via: ToolViaMCP},
+	"github":        {Via: ToolViaMCP},
+	"slack":         {Via: ToolViaMCP},
+	"atlassian":     {Via: ToolViaMCP},
+	"telegram_user": {Via: ToolViaMCP},
+	"desktop":       {Via: ToolViaMCP},
+	"drafts":        {Via: ToolViaMCP},
+}
+
+var featureToggleMigration = map[string][2]string{
+	"browser_act":    {"browser", "act"},
+	"ssh_write":      {"ssh", "write"},
+	"ssh_shell":      {"ssh", "shell"},
+	"ssh_tunnel":     {"ssh", "tunnel"},
+	"google_write":   {"google", "write"},
+	"telegram_write": {"telegram_user", "write"},
+}
+
+func migrateLegacyTools(lf legacySettingsFile) (Settings, error) {
+	s := lf.Settings
+	legacy := len(lf.LegacyFeatures) + len(lf.LegacyNative) + len(lf.LegacyMCP)
+	if legacy == 0 {
+		return s, nil
+	}
+	if len(s.Tools) > 0 || len(s.Ingress) > 0 {
+		return s, fmt.Errorf("cannot mix tools:/ingress: with legacy features/native_toolsets/disabled_mcp")
+	}
+	tools, ingress, err := LegacyFeatureTools(lf.LegacyFeatures)
+	if err != nil {
+		return s, err
+	}
+	s.Ingress = ingress
+	for _, name := range lf.LegacyNative {
+		if _, dup := tools[name]; dup {
+			return s, fmt.Errorf("legacy native_toolsets %q conflicts with a feature entry", name)
+		}
+		tools[name] = ToolEntry{Via: ToolViaNative}
+	}
+	for _, name := range lf.LegacyMCP {
+		tools[name] = ToolEntry{Via: ToolViaOff}
+	}
+	if len(tools) > 0 {
+		s.Tools = tools
+	}
+	return s, nil
+}
+
 func Read(path string) (Settings, error) {
 	var s Settings
 	b, err := os.ReadFile(path)
@@ -334,12 +395,16 @@ func Read(path string) (Settings, error) {
 	}
 	d := yaml.NewDecoder(strings.NewReader(string(b)))
 	d.KnownFields(true)
-	if err = d.Decode(&s); err != nil {
+	var lf legacySettingsFile
+	if err = d.Decode(&lf); err != nil {
 		return s, err
 	}
 	var extra any
 	if err = d.Decode(&extra); err != io.EOF {
 		return s, fmt.Errorf("one YAML document expected")
+	}
+	if s, err = migrateLegacyTools(lf); err != nil {
+		return s, err
 	}
 	s.Environment = "prod"
 	s.SpaceDir = filepath.Dir(path)
@@ -417,8 +482,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 			return err
 		}
 	}
-	s := Settings{Schema: 1, Environment: environment, Memory: true, User: profile, Organization: organization, Timezone: "UTC", GitLabHost: "gitlab.com", Features: []string{"workspace", "browser", "hh"}, OAuthPort: 8000, BrowserPort: 6080}
-	b, err := yaml.Marshal(s)
+	b, err := renderDefaultSettings(profile, organization)
 	if err != nil {
 		return err
 	}

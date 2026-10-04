@@ -679,7 +679,7 @@ this is not a bit-for-bit reproducible OS build.
 
 Standalone users may define `mcp_servers` in their own settings. In organization
 scope, only the host-owned `spaces/<org>/scope.yaml` can define MCP servers;
-the user can only narrow the approved set with `disabled_mcp`. Every organization MCP
+the user can only narrow the approved set by denying entries in `tools:` (`name: off`). Every organization MCP
 must be listed in `read_only_mcp` and have a non-empty `tools.include` allowlist. The
 allowlist is passed to Hermes, so shared organization credentials are reserved for
 explicitly selected read-only tools. Write-capable servers need their own upstream

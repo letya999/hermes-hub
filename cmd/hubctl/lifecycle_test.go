@@ -98,7 +98,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		}
 	}
 	t.Setenv("HUB_FAIL_MATCH", "")
-	s.Features = append(s.Features, "telegram")
+	s.Ingress = append(s.Ingress, "telegram")
 	save()
 	if run(context.Background(), []string{"chat", "--dir", d}) == nil {
 		t.Fatal("two agents sharing one home")

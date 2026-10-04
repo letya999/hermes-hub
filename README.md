@@ -31,7 +31,7 @@ The namespace is **spaces/<id>** for both users and organizations. Every home ha
 `scope.yaml`; user homes also have `settings.yaml`, SOUL, secrets and persistent
 `hermes/`, `connections/`, `workspace/` and `archive/` directories. An organization
 home contains membership, approved features/MCP servers, shared material and policy.
-The user can narrow that policy with `disabled_mcp`, but cannot expand it. Public
+The user can narrow that policy by denying entries in `tools:` (`name: off`), but cannot expand it. Public
 authentication/routing is not part of this local control plane: the caller must map
 an authenticated principal to one user space before starting its runtime.
 

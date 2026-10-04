@@ -648,7 +648,7 @@ func TestApprovalRejectsChangedUnavailableAndExpandedPolicy(t *testing.T) {
 		t.Fatal("caller expanded organization")
 	}
 	path := filepath.Join(root, "settings.yaml")
-	if err := os.WriteFile(path, []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: []\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, browser]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.authorizeApproval(control); err == nil {
@@ -708,7 +708,7 @@ func TestScheduledExecutionReauthorizesPolicyBeforeRuntimeStart(t *testing.T) {
 	}, func(context.Context, string, string) error { return nil })
 	policy := controlTestPolicy(t, root)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", policy), JobID: "revoked-routine", IdempotencyKey: "revoked-routine", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", Trigger: "cron", Text: "scheduled work"}
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: []\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, browser]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := json.Marshal(request)
