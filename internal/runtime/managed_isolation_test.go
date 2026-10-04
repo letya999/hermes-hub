@@ -31,6 +31,8 @@ func managedIsolationFixture(t *testing.T) string {
 	t.Setenv("HUB_MANAGED_MODEL_ID", "synthetic")
 	t.Setenv("HUB_MANAGED_MODEL_URL", managedModelURL)
 	oldRoutes, oldLookup, oldDial, oldWritable := managedReadRoutes, managedLookupHost, managedDialTCP, managedProbeWritable
+	oldScopeDir := managedScopeEtcDir
+	managedScopeEtcDir = filepath.Join(t.TempDir(), "etc-hermes")
 	managedReadRoutes = func() ([]byte, []byte, error) {
 		return []byte("Iface\tDestination\tGateway\tFlags\neth0\t000011AC\t00000000\t0001\n"), []byte(""), nil
 	}
@@ -54,6 +56,7 @@ func managedIsolationFixture(t *testing.T) string {
 	managedProbeWritable = func(string) bool { return false }
 	t.Cleanup(func() {
 		managedReadRoutes, managedLookupHost, managedDialTCP, managedProbeWritable = oldRoutes, oldLookup, oldDial, oldWritable
+		managedScopeEtcDir = oldScopeDir
 	})
 	return home
 }
@@ -95,6 +98,21 @@ func TestManagedIsolationFailsClosed(t *testing.T) {
 		},
 		"extension-writable": func(t *testing.T, _ string) { managedProbeWritable = func(string) bool { return true } },
 		"config-writable":    func(t *testing.T, home string) { _ = os.Chmod(filepath.Join(home, "config.yaml"), 0600) },
+		"dotenv-present": func(t *testing.T, home string) {
+			if err := os.WriteFile(filepath.Join(home, ".env"), []byte("X=1\n"), 0400); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"dotenv-symlink": func(t *testing.T, home string) {
+			if err := os.Symlink(filepath.Join(home, "config.yaml"), filepath.Join(home, ".op.env")); err != nil {
+				t.Skip("symlinks unavailable")
+			}
+		},
+		"managed-dir-env": func(t *testing.T, _ string) { t.Setenv("HERMES_MANAGED_DIR", t.TempDir()) },
+		"managed-etc-present": func(t *testing.T, _ string) {
+			dir := t.TempDir()
+			managedScopeEtcDir = dir
+		},
 		"default-route-v4": func(t *testing.T, _ string) {
 			managedReadRoutes = func() ([]byte, []byte, error) {
 				return []byte("Iface\tDestination\tGateway\tFlags\neth0\t00000000\t010011AC\t0003\n"), nil, nil

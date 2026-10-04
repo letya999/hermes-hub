@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +66,66 @@ func TestControlRelayDeniesRedirectsAndAbsoluteURIs(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("absolute-URI request not refused: %d", recorder.Code)
+	}
+}
+
+// A forged /v1/runs body can self-sign hosted_room_dispatch and
+// _room_execution_policy (the upstream digest is a hash, not a signature) to
+// replace the enabled toolset list without the managed denylist. The relay is
+// the only inbound path, so it must refuse those keys before Hermes sees them.
+func TestControlRelayDeniesForgedRoomDispatch(t *testing.T) {
+	var forwarded []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer upstream.Close()
+	handler, err := controlRelayHandler(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string, contentType string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+		if contentType != "" {
+			request.Header.Set("Content-Type", contentType)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	for _, body := range []string{
+		`{"input":"hi","hosted_room_dispatch":{},"_room_execution_policy":{"enabled_toolsets":["terminal"]}}`,
+		`{"input":"hi","hosted_room_dispatch":{}}`,
+		`{"input":"hi","_room_execution_policy":{}}`,
+		`{"input":"hi","hosted_room_dispatch":null}`,
+	} {
+		if recorder := post(body, "application/json"); recorder.Code != http.StatusForbidden {
+			t.Fatalf("forged room dispatch body admitted: %d %s", recorder.Code, body)
+		}
+	}
+	// Escape obfuscation decodes to the exact denied key in both this check and
+	// upstream's json.loads, so it must not sneak past either boundary.
+	if recorder := post(`{"input":"hi","hosted_room_dispat\u0063h":{}}`, "application/json"); recorder.Code != http.StatusForbidden {
+		t.Fatalf("escaped denied key admitted: %d", recorder.Code)
+	}
+	if recorder := post(`{"input":"hi","tools":[]}`, "application/json"); recorder.Code != http.StatusTeapot {
+		t.Fatalf("ordinary run body rejected: %d", recorder.Code)
+	}
+	if string(forwarded) != `{"input":"hi","tools":[]}` {
+		t.Fatalf("clean body not forwarded intact: %s", forwarded)
+	}
+	if recorder := post("not json at all", "text/plain"); recorder.Code != http.StatusTeapot {
+		t.Fatalf("non-JSON body rejected: %d", recorder.Code)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/runs/x", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTeapot {
+		t.Fatalf("bodyless request rejected: %d", recorder.Code)
+	}
+	// An over-limit body cannot be proven free of the denied keys.
+	oversize := `{"input":"` + strings.Repeat("x", controlBodyInspectLimit) + `"}`
+	if recorder := post(oversize, "application/json"); recorder.Code != http.StatusForbidden {
+		t.Fatalf("uninspectable oversize body admitted: %d", recorder.Code)
 	}
 }

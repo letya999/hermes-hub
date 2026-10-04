@@ -365,6 +365,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
 			toolhubEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
 			toolhubEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
+			// The agent-tools executor runs inside the owning runtime
+			// container; the supervisor owns its naming contract and docker
+			// exec is the only control-plane path that never crosses the
+			// agent network.
+			toolhubEnv["HUB_AGENT_EXEC_MODE"] = "supervisor"
 		}
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 		if s.ExecutionMode != "" {

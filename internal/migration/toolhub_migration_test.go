@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -80,7 +81,11 @@ mcp_servers:
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("migration implicitly granted catalog access: %+v, %v", entries, err)
 	}
-	if err := store.PutGrant(toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")); err != nil {
+	grant := toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")
+	if err := toolhub.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(grant); err != nil {
 		t.Fatal(err)
 	}
 	entries, err = store.Catalog(auth)

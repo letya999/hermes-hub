@@ -24,6 +24,10 @@ func ManagedSupervisorCanary(context.Context, string) error {
 	return errors.New("managed supervisor canary requires: go run -tags integration ./cmd/devcheck managed-supervisor-canary IMAGE")
 }
 
+func ScratchWorkloadCanary(context.Context, string) error {
+	return errors.New("scratch workload canary requires: go run -tags integration ./cmd/devcheck scratch-workload-canary IMAGE")
+}
+
 func GatewayLifecycle(context.Context, string) error {
 	return errors.New("gateway lifecycle probe requires: go run -tags integration ./cmd/devcheck gateway-lifecycle IMAGE")
 }

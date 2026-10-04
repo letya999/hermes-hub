@@ -258,6 +258,24 @@ sys.exit(1)`
 			return fmt.Errorf("control relay exposed an unauthenticated runtime route")
 		}
 	}
+	// The upstream API server would arm attacker-chosen toolsets for a
+	// self-signed room dispatch/policy body; the relay must deny those keys
+	// before Hermes sees them (proven armed on the pinned capability probe).
+	forged, err := http.NewRequestWithContext(ctx, http.MethodPost, runtime.Address+"/v1/runs",
+		strings.NewReader(`{"input":"hi","hosted_room_dispatch":{},"_room_execution_policy":{"version":1}}`))
+	if err != nil {
+		return err
+	}
+	forged.Header.Set("Content-Type", "application/json")
+	forged.Header.Set("Authorization", "Bearer managed-canary-auth-0123456789abcdef")
+	forgedResponse, err := http.DefaultClient.Do(forged)
+	if err != nil {
+		return fmt.Errorf("forged room-dispatch body through relay: %w", err)
+	}
+	_ = forgedResponse.Body.Close()
+	if forgedResponse.StatusCode != http.StatusForbidden {
+		return fmt.Errorf("control relay admitted a forged room-dispatch body: %d", forgedResponse.StatusCode)
+	}
 	// Live in-container attestations on the real spawned runtime.
 	execCheck := func(expected, name string, args ...string) error {
 		out, runErr := exec.CommandContext(ctx, "docker", append([]string{"exec", runtime.Container}, args...)...).CombinedOutput()

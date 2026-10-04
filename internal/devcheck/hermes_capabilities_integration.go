@@ -73,6 +73,13 @@ func HermesCapabilityContract(ctx context.Context, image string) error {
 		Pin                    string                     `json:"pin"`
 		InventorySHA256        string                     `json:"inventory_sha256"`
 		DiskHookImportExecuted bool                       `json:"disk_hook_import_executed"`
+		DotenvOverrideExecuted bool                       `json:"dotenv_override_executed"`
+		UserSiteDisabled       bool                       `json:"user_site_disabled"`
+		CronToolsetsDenied     []string                   `json:"cron_toolsets_denied"`
+		DelegateChildTools     map[string][]string        `json:"delegate_child_tools"`
+		RoomForgedAgentArmed   []string                   `json:"room_forged_agent_armed"`
+		RoomForgedHTTPArmed    []string                   `json:"room_forged_http_armed"`
+		HygieneArmed           map[string][]string        `json:"hygiene_armed"`
 		EmptySurfaces          map[string]json.RawMessage `json:"empty_surfaces"`
 		Inventory              struct {
 			Toolsets map[string]json.RawMessage `json:"toolsets"`
@@ -89,6 +96,30 @@ func HermesCapabilityContract(ctx context.Context, image string) error {
 	}
 	if err != nil || report.Pin != manifest.SourcePin || report.InventorySHA256 != manifest.InventorySHA256 || !report.DiskHookImportExecuted {
 		return fmt.Errorf("pinned Hermes capability inventory changed or probe report missing")
+	}
+	// Other launch routes: cron per-job lists/fallback, delegate children and the
+	// .env override mechanism must all collapse to the managed denylist. The
+	// orchestrator role may keep only its documented delegate_task carve-out.
+	if len(report.CronToolsetsDenied) != 3 || !report.DotenvOverrideExecuted || !report.UserSiteDisabled {
+		return fmt.Errorf("launch-route or startup-ingress proof incomplete: %s", tailProbeOutput(output.String()))
+	}
+	if len(report.DelegateChildTools["worker"]) != 0 {
+		return fmt.Errorf("delegate worker child gained tools: %v", report.DelegateChildTools["worker"])
+	}
+	for _, name := range report.DelegateChildTools["orchestrator"] {
+		if name != "delegate_task" {
+			return fmt.Errorf("delegate orchestrator child gained %q beyond the role carve-out", name)
+		}
+	}
+	// The probe must keep observing the upstream gaps it records: a self-signed
+	// room policy arming tools and literal-toolset sub-agents. If either stops
+	// reproducing, the compensating boundary (control-relay key denial, disabled
+	// compression/curator config) needs review rather than silent acceptance.
+	if !slices.Contains(report.RoomForgedAgentArmed, "terminal") || !slices.Contains(report.RoomForgedHTTPArmed, "terminal") {
+		return fmt.Errorf("room-dispatch forgery did not arm tools upstream; boundary review needed")
+	}
+	if len(report.HygieneArmed["memory"]) == 0 || len(report.HygieneArmed["skills"]) == 0 {
+		return fmt.Errorf("literal-toolset sub-agent arm lists changed; gate review needed")
 	}
 	platforms := make([]string, 0, len(report.EmptySurfaces))
 	for platform := range report.EmptySurfaces {

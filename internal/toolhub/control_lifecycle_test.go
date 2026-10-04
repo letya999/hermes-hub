@@ -22,7 +22,7 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
@@ -111,7 +111,7 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if err := store2.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store2.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store2, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	control2 := &ControlPlane{Store: store2, WorkloadRoot: t.TempDir(), Now: time.Now}
@@ -158,7 +158,7 @@ func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	var admissions int
@@ -210,7 +210,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
 		t.Fatal(err)
 	}
 	admit := false
@@ -272,7 +272,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
 		t.Fatal(err)
 	}
 	admit := false
@@ -365,7 +365,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 			t.Fatal(err)
 		}
 		auth := aliceAuth()
-		if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
 			t.Fatal(err)
 		}
 		prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": fmt.Sprintf("u-%02d", i)})
@@ -425,7 +425,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 	}
 	for _, principal := range principals {
 		auth := identity.TelegramEnvelope(principal, 9, principal+"-runtime", "policy-1")
-		if err := store.PutGrant(OperatorGrant(GrantDefinition, principal, "mcp-shared", "1.0.0")); err != nil {
+		if err := putGrant(t, store, OperatorGrant(GrantDefinition, principal, "mcp-shared", "1.0.0")); err != nil {
 			t.Fatal(err)
 		}
 		grantTestControlOperations(t, store, principal, "prepare_source", "status", "confirm", "enable")

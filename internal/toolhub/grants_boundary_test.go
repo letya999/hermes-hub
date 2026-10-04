@@ -20,12 +20,12 @@ func TestCatalogGrantAbsentAndDenyPrecedence(t *testing.T) {
 	if err := store.RequireCatalogAccess(aliceAuth(), definition); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("ungranted access: %v", err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	deny := OperatorGrant(GrantDefinition, "alice", definition.DefinitionID, definition.Version)
 	deny.Status = RevokedStatus
-	if err := store.PutGrant(deny); err != nil {
+	if err := putGrant(t, store, deny); err != nil {
 		t.Fatal(err)
 	}
 	for range 32 {
@@ -47,12 +47,12 @@ func TestCatalogGrantAbsentAndDenyPrecedence(t *testing.T) {
 func TestSelfInstallDenialWinsAcrossGrantIDs(t *testing.T) {
 	store := NewStore()
 	allow := OperatorGrant(GrantSelfInstall, "alice", "", "")
-	if err := store.PutGrant(allow); err != nil {
+	if err := putGrant(t, store, allow); err != nil {
 		t.Fatal(err)
 	}
 	deny := allow
 	deny.GrantID, deny.Status = "explicit-denial", DisabledStatus
-	if err := store.PutGrant(deny); err != nil {
+	if err := putGrant(t, store, deny); err != nil {
 		t.Fatal(err)
 	}
 	for range 32 {
@@ -67,17 +67,17 @@ func TestGrantRevisionCannotResurrectPermission(t *testing.T) {
 	allow := OperatorGrant(GrantSelfInstall, "alice", "", "")
 	deny := allow
 	deny.Status, deny.Revision = RevokedStatus, 2
-	if err := store.PutGrant(deny); err != nil {
+	if err := putGrant(t, store, deny); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(allow); !errors.Is(err, ErrConflict) {
+	if err := putGrant(t, store, allow); !errors.Is(err, ErrConflict) {
 		t.Fatalf("older grant resurrected permission: %v", err)
 	}
-	if err := store.PutGrant(deny); err != nil {
+	if err := putGrant(t, store, deny); err != nil {
 		t.Fatalf("identical retry rejected: %v", err)
 	}
 	allow.Revision = 2
-	if err := store.PutGrant(allow); !errors.Is(err, ErrConflict) {
+	if err := putGrant(t, store, allow); !errors.Is(err, ErrConflict) {
 		t.Fatalf("same revision changed permission: %v", err)
 	}
 	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, ErrUnauthorized) {
@@ -89,7 +89,7 @@ func TestGrantRefreshAndFailedWriteDoNotAdmit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	initial := NewStore()
 	grant := OperatorGrant(GrantSelfInstall, "alice", "", "")
-	if err := initial.PutGrant(grant); err != nil {
+	if err := putGrant(t, initial, grant); err != nil {
 		t.Fatal(err)
 	}
 	if err := initial.Save(path); err != nil {
@@ -104,12 +104,12 @@ func TestGrantRefreshAndFailedWriteDoNotAdmit(t *testing.T) {
 		t.Fatal(err)
 	}
 	grant.Status, grant.Revision = RevokedStatus, 2
-	if err := writer.PutGrant(grant); err != nil {
+	if err := putGrant(t, writer, grant); err != nil {
 		t.Fatal(err)
 	}
 	stale := grant
 	stale.Status, stale.Revision = ActiveStatus, 3
-	if err := reader.PutGrant(stale); !errors.Is(err, ErrConflict) {
+	if err := putGrant(t, reader, stale); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale store overwrote revoke: %v", err)
 	}
 	if err := reader.RequireSelfInstall(aliceAuth()); !errors.Is(err, ErrUnauthorized) {
@@ -121,14 +121,14 @@ func TestGrantRefreshAndFailedWriteDoNotAdmit(t *testing.T) {
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := reader.PutGrant(stale); err == nil {
+	if err := putGrant(t, reader, stale); err == nil {
 		t.Fatal("grant update succeeded on unusable store")
 	}
 	if reader.grants[grant.GrantID].Status != RevokedStatus {
 		t.Fatal("failed durable update changed in-memory authorization")
 	}
 	bob := OperatorGrant(GrantSelfInstall, "bob", "", "")
-	if err := reader.PutGrant(bob); err == nil {
+	if err := putGrant(t, reader, bob); err == nil {
 		t.Fatal("new grant succeeded on unusable store")
 	}
 	if _, exists := reader.grants[bob.GrantID]; exists {

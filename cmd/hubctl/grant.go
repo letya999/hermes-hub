@@ -20,6 +20,8 @@ func runGrant(_ context.Context, args []string) error {
 	revision := f.Uint64("revision", 1, "monotonic grant revision; increment when changing an existing grant")
 	definition := f.String("definition", "", "definition id for a definition grant")
 	version := f.String("version", "", "definition version for a definition grant")
+	issuer := f.String("issuer", "operator", "operator identity recorded as issuer and confirmer")
+	confirm := f.Bool("confirm", false, "stamp this operator's confirmation onto the grant record")
 	storePath := f.String("toolhub-store", os.Getenv("HUB_TOOLHUB_STORE"), "ToolHub registry path")
 	dir := f.String("dir", "", "private deployment directory")
 	if err := f.Parse(args); err != nil {
@@ -60,6 +62,10 @@ func runGrant(_ context.Context, args []string) error {
 		grant.Operation = *operation
 	}
 	grant.Status, grant.Revision = toolhub.Status(*status), *revision
+	grant.IssuedBy = *issuer
+	if err := confirmRecord(*confirm, *issuer, &grant); err != nil {
+		return err
+	}
 	if err := store.PutGrant(grant); err != nil {
 		return err
 	}

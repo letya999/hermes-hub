@@ -18,6 +18,33 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// mustConfirm stamps a record's own issuer onto it: the same durable act the
+// operator CLI performs with --confirm, pinned to a fixed time for tests.
+func mustConfirm(t *testing.T, record any) {
+	t.Helper()
+	if err := Confirm(record, "", time.Unix(1700000000, 0).UTC()); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+}
+
+// The put* helpers re-stamp the record's own issuer before admission, matching
+// what a confirmed operator write looks like; negative-path tests keep working
+// because confirmation happens before the store's own checks run.
+func putPolicy(t *testing.T, s *Store, p CapabilityPolicy) error {
+	mustConfirm(t, &p)
+	return s.PutCapabilityPolicy(p)
+}
+
+func putProfile(t *testing.T, s *Store, p CapabilityProfile) error {
+	mustConfirm(t, &p)
+	return s.PutCapabilityProfile(p)
+}
+
+func putGrant(t *testing.T, s *Store, g Grant) error {
+	mustConfirm(t, &g)
+	return s.PutGrant(g)
+}
+
 func managedStore(t *testing.T) (*Store, identity.Envelope, CapabilityPolicy, CapabilityProfile) {
 	t.Helper()
 	s, auth, binding := seededStore(t)
@@ -44,10 +71,10 @@ func managedStore(t *testing.T) (*Store, identity.Envelope, CapabilityPolicy, Ca
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: ActiveStatus,
 		Selections: []CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest,
 			ToolName: "search", Name: "workspace_read", ConnectionID: binding.ConnectionID}}}
-	if err := s.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
 	return s, auth, policy, profile
@@ -59,7 +86,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	policy.Revision++
 	policy.Defaults = nil
 	policy.DefaultGroups = []CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []CapabilityRule{rule}}}
-	if err := s.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
@@ -67,7 +94,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	}
 	profile.Revision++
 	profile.PolicyRevision = policy.Revision
-	if err := s.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
 	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 1 {
@@ -76,28 +103,28 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 
 	changed := policy
 	changed.DefaultGroups = []CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []CapabilityRule{{CapabilityID: rule.CapabilityID, ImplementationDigest: rule.ImplementationDigest, Action: rule.Action, Resource: rule.Resource, ConnectionID: rule.ConnectionID, Limits: rule.Limits}}}}
-	if err := s.PutCapabilityPolicy(changed); err == nil {
+	if err := putPolicy(t, s, changed); err == nil {
 		t.Fatal("same policy revision changed group membership")
 	}
 	changed.Revision++
-	if err := s.PutCapabilityPolicy(changed); err == nil {
+	if err := putPolicy(t, s, changed); err == nil {
 		t.Fatal("group member outside ceiling admitted")
 	}
 	changed.DefaultGroups[0].Members[0] = rule
 	changed.DefaultGroups[0].Members[0].Limits.OutputBytes--
-	if err := s.PutCapabilityPolicy(changed); err == nil {
+	if err := putPolicy(t, s, changed); err == nil {
 		t.Fatal("group membership changed without group revision")
 	}
 
 	policy.Revision++
 	policy.DefaultGroups = nil
-	if err := s.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	profile.Revision++
 	profile.PolicyRevision = policy.Revision
 	profile.AllowGroups = []CapabilityGroup{{GroupID: "personal-reads", Revision: 1, Members: []CapabilityRule{rule}}}
-	if err := s.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
 	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 1 {
@@ -105,11 +132,11 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	}
 	profile.Revision++
 	profile.AllowGroups[0].Members[0].Limits.OutputBytes--
-	if err := s.PutCapabilityProfile(profile); err == nil {
+	if err := putProfile(t, s, profile); err == nil {
 		t.Fatal("personal group membership changed without group revision")
 	}
 	profile.AllowGroups[0].Members[0].PathPrefix = ""
-	if err := s.PutCapabilityProfile(profile); err == nil {
+	if err := putProfile(t, s, profile); err == nil {
 		t.Fatal("personal group outside ceiling admitted")
 	}
 	path := filepath.Join(t.TempDir(), "registry.json")
@@ -127,7 +154,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	changed.Revision++
 	changed.DefaultGroups = []CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []CapabilityRule{rule}}}
 	changed.DefaultGroups[0].Members[0].Limits.OutputBytes--
-	if err := reloaded.PutCapabilityPolicy(changed); err == nil {
+	if err := putPolicy(t, reloaded, changed); err == nil {
 		t.Fatal("removed group revision reused with changed members after restart")
 	}
 }
@@ -197,7 +224,7 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 		t.Fatal("bare binding admitted")
 	}
 	for _, grant := range []Grant{OperatorGrant(GrantSelfInstall, "alice", "", ""), OperatorControlGrant("alice", "invoke")} {
-		if err := s.PutGrant(grant); err != nil {
+		if err := putGrant(t, s, grant); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -209,7 +236,7 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	}
 	profile.Revision++
 	profile.Selections = nil
-	if err := s.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
 	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 0 {
@@ -220,7 +247,7 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	}
 	policy.Revision++
 	policy.Status = RevokedStatus
-	if err := s.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
@@ -275,7 +302,7 @@ func TestCapabilityCompleteTupleAndScopeIntersection(t *testing.T) {
 			p := CapabilityPolicy{Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
 			u := CapabilityProfile{}
 			tc.edit(&p, &u)
-			_, got := capabilityRuleDecision(u, p, rule, &tc.path, now)
+			_, _, got := capabilityRuleDecision(u, p, rule, &tc.path, now)
 			if got != tc.allowed {
 				t.Fatalf("allowed=%v want=%v", got, tc.allowed)
 			}
@@ -283,7 +310,7 @@ func TestCapabilityCompleteTupleAndScopeIntersection(t *testing.T) {
 	}
 	p := CapabilityPolicy{Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
 	p.Defaults[0].Limits = CapabilityLimits{4096, 20}
-	limits, allowed := capabilityRuleDecision(CapabilityProfile{}, p, rule, nil, now)
+	limits, _, allowed := capabilityRuleDecision(CapabilityProfile{}, p, rule, nil, now)
 	if !allowed || limits != (CapabilityLimits{4096, 10}) {
 		t.Fatalf("limits widened: %+v %v", limits, allowed)
 	}
@@ -321,7 +348,7 @@ func TestManagedIdentityAndImplementationPin(t *testing.T) {
 		copy.Selections = append([]CapabilitySelection(nil), profile.Selections...)
 		copy.Revision++
 		mutate(&copy)
-		if err := s.PutCapabilityProfile(copy); !errors.Is(err, ErrUnauthorized) {
+		if err := putProfile(t, s, copy); !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("unreviewed profile: %v", err)
 		}
 	}
@@ -338,7 +365,7 @@ func TestManagedIdentityAndImplementationPin(t *testing.T) {
 	// before the operator republishes its next revision.
 	policy.Revision++
 	policy.Members = []string{"bob"}
-	if err := s.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
@@ -362,48 +389,48 @@ func TestManagedProfilePersistenceAndRollback(t *testing.T) {
 	}
 	profile.Revision++
 	profile.Status = RevokedStatus
-	if err := writer.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, writer, profile); err != nil {
 		t.Fatal(err)
 	}
-	if err := reader.PutCapabilityProfile(reader.capabilityProfiles[profile.ProfileID]); !errors.Is(err, ErrConflict) {
+	if err := putProfile(t, reader, reader.capabilityProfiles[profile.ProfileID]); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale identical retry reported successful publication: %v", err)
 	}
 	stale := profile
 	stale.Revision++
 	stale.Status = ActiveStatus
-	if err := reader.PutCapabilityProfile(stale); !errors.Is(err, ErrConflict) {
+	if err := putProfile(t, reader, stale); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale write resurrected profile: %v", err)
 	}
 	if _, err := reader.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("stale reader admitted: %v", err)
 	}
-	if err := reader.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, reader, profile); err != nil {
 		t.Fatal(err)
 	}
 	old := profile
 	old.Revision--
 	old.Status = ActiveStatus
-	if err := reader.PutCapabilityProfile(old); !errors.Is(err, ErrConflict) {
+	if err := putProfile(t, reader, old); !errors.Is(err, ErrConflict) {
 		t.Fatalf("old revision allowed: %v", err)
 	}
 	old.Revision = profile.Revision
-	if err := reader.PutCapabilityProfile(old); !errors.Is(err, ErrConflict) {
+	if err := putProfile(t, reader, old); !errors.Is(err, ErrConflict) {
 		t.Fatalf("same revision changed: %v", err)
 	}
 	policy.Revision++
-	if err := reader.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, reader, policy); err != nil {
 		t.Fatal(err)
 	}
-	if err := reader.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, reader, policy); err != nil {
 		t.Fatal(err)
 	}
 	oldPolicy := policy
 	oldPolicy.Status = DisabledStatus
-	if err := reader.PutCapabilityPolicy(oldPolicy); !errors.Is(err, ErrConflict) {
+	if err := putPolicy(t, reader, oldPolicy); !errors.Is(err, ErrConflict) {
 		t.Fatalf("same policy revision changed: %v", err)
 	}
 	oldPolicy.Revision--
-	if err := reader.PutCapabilityPolicy(oldPolicy); !errors.Is(err, ErrConflict) {
+	if err := putPolicy(t, reader, oldPolicy); !errors.Is(err, ErrConflict) {
 		t.Fatalf("old policy revision allowed: %v", err)
 	}
 	if err := os.Rename(path, path+".backup"); err != nil {
@@ -413,14 +440,14 @@ func TestManagedProfilePersistenceAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.Revision++
-	if err := reader.PutCapabilityPolicy(policy); err == nil {
+	if err := putPolicy(t, reader, policy); err == nil {
 		t.Fatal("unwritable policy store accepted")
 	}
 	if reader.capabilityPolicies[policy.PolicyID].Revision != 2 {
 		t.Fatal("failed policy update changed memory")
 	}
 	policy.PolicyID = "new-policy"
-	if err := reader.PutCapabilityPolicy(policy); err == nil {
+	if err := putPolicy(t, reader, policy); err == nil {
 		t.Fatal("unwritable policy insert accepted")
 	}
 	if _, ok := reader.capabilityPolicies[policy.PolicyID]; ok {
@@ -428,14 +455,14 @@ func TestManagedProfilePersistenceAndRollback(t *testing.T) {
 	}
 	profile.PolicyRevision = 2
 	profile.Revision++
-	if err := reader.PutCapabilityProfile(profile); err == nil {
+	if err := putProfile(t, reader, profile); err == nil {
 		t.Fatal("unwritable profile store accepted")
 	}
 	if reader.capabilityProfiles[profile.ProfileID].Revision != 2 {
 		t.Fatal("failed profile update changed memory")
 	}
 	profile.ProfileID = "new-profile"
-	if err := reader.PutCapabilityProfile(profile); err == nil {
+	if err := putProfile(t, reader, profile); err == nil {
 		t.Fatal("unwritable profile insert accepted")
 	}
 	if _, ok := reader.capabilityProfiles[profile.ProfileID]; ok {
@@ -444,7 +471,7 @@ func TestManagedProfilePersistenceAndRollback(t *testing.T) {
 	if _, err := reader.ListProjectedTools(auth); err == nil {
 		t.Fatal("unavailable store admitted")
 	}
-	if len(reader.capabilityChanges) != 4 {
+	if len(reader.capabilityChanges) != 5 {
 		t.Fatalf("failed/idempotent writes changed audit history: %d", len(reader.capabilityChanges))
 	}
 }
@@ -462,7 +489,7 @@ func TestCapabilityHistoryRecoversPolicyAndIssuerTogether(t *testing.T) {
 	policy.Revision++
 	policy.Defaults = nil
 	policy.Reason = "Remove default read"
-	if err := writer.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, writer, policy); err != nil {
 		t.Fatal(err)
 	}
 	restarted, err := Load(file)
@@ -474,7 +501,7 @@ func TestCapabilityHistoryRecoversPolicyAndIssuerTogether(t *testing.T) {
 	}
 	profile.Revision++
 	profile.PolicyRevision = policy.Revision
-	if err := restarted.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, restarted, profile); err != nil {
 		t.Fatal(err)
 	}
 	again, err := Load(file)
@@ -484,7 +511,7 @@ func TestCapabilityHistoryRecoversPolicyAndIssuerTogether(t *testing.T) {
 	if tools, err := again.ListProjectedTools(auth); err != nil || len(tools) != 0 {
 		t.Fatalf("history recovery widened profile: %v %v", tools, err)
 	}
-	if len(again.capabilityChanges) != 4 || again.capabilityChanges[0].Policy.Revision != 1 || again.capabilityChanges[2].Policy.Reason != "Remove default read" || again.capabilityChanges[2].Policy.IssuedBy != "operator" || again.capabilityChanges[3].Profile.PolicyRevision != 2 {
+	if len(again.capabilityChanges) != 5 || again.capabilityChanges[0].Grant == nil || again.capabilityChanges[1].Policy.Revision != 1 || again.capabilityChanges[3].Policy.Reason != "Remove default read" || again.capabilityChanges[3].Policy.IssuedBy != "operator" || again.capabilityChanges[4].Profile.PolicyRevision != 2 {
 		t.Fatalf("lost authorization history: %+v", again.capabilityChanges)
 	}
 	// A profile cannot appear before the policy that authorized its creation.
@@ -496,7 +523,7 @@ func TestCapabilityHistoryRecoversPolicyAndIssuerTogether(t *testing.T) {
 	if err := json.Unmarshal(body, &state); err != nil {
 		t.Fatal(err)
 	}
-	state.CapabilityChanges[0], state.CapabilityChanges[1] = state.CapabilityChanges[1], state.CapabilityChanges[0]
+	state.CapabilityChanges[1], state.CapabilityChanges[2] = state.CapabilityChanges[2], state.CapabilityChanges[1]
 	body, err = json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
@@ -543,7 +570,7 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 	}
 	policy.Revision++
 	policy.Status = RevokedStatus
-	if err := writer.PutCapabilityPolicy(policy); err != nil {
+	if err := putPolicy(t, writer, policy); err != nil {
 		t.Fatal(err)
 	}
 	// Model the race where a writer commits after Reload but before admission.
@@ -625,7 +652,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	}
 	profile.Revision++
 	profile.Denies = []CapabilityRule{{CapabilityID: profile.Selections[0].CapabilityID, ImplementationDigest: profile.Selections[0].ImplementationDigest, Action: "read", Resource: "workspace", ConnectionID: profile.Selections[0].ConnectionID}}
-	if err := s.PutCapabilityProfile(profile); err != nil {
+	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.CallTool(t.Context(), args); err == nil {
@@ -687,7 +714,13 @@ func TestCapabilityPolicyRejectsMalformedAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			mutate(&copy)
-			if err := NewStore().PutCapabilityPolicy(copy); err == nil {
+			var err error
+			if copy.IssuedBy == "model" || copy.IssuedBy == "hermes" {
+				err = NewStore().PutCapabilityPolicy(copy)
+			} else {
+				err = putPolicy(t, NewStore(), copy)
+			}
+			if err == nil {
 				t.Fatal("malformed policy accepted")
 			}
 		})
@@ -713,7 +746,7 @@ func TestCapabilityPolicyRejectsMalformedAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			mutate(&copy)
-			if err := NewStore().PutCapabilityProfile(copy); !errors.Is(err, ErrInvalid) {
+			if err := putProfile(t, NewStore(), copy); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("malformed profile accepted: %v", err)
 			}
 		})
@@ -746,8 +779,22 @@ func TestCapabilityStoreRejectsMalformedAndDuplicateRecords(t *testing.T) {
 	for _, mutate := range []func(*snapshot){
 		func(s *snapshot) { s.CapabilityChanges = append(s.CapabilityChanges, s.CapabilityChanges[0]) },
 		func(s *snapshot) { s.CapabilityChanges = append(s.CapabilityChanges, s.CapabilityChanges[1]) },
-		func(s *snapshot) { s.CapabilityChanges[0].Policy.Members = nil },
-		func(s *snapshot) { s.CapabilityChanges[1].Profile.Generation = 0 },
+		func(s *snapshot) {
+			for i := range s.CapabilityChanges {
+				if s.CapabilityChanges[i].Policy != nil {
+					s.CapabilityChanges[i].Policy.Members = nil
+					return
+				}
+			}
+		},
+		func(s *snapshot) {
+			for i := range s.CapabilityChanges {
+				if s.CapabilityChanges[i].Profile != nil {
+					s.CapabilityChanges[i].Profile.Generation = 0
+					return
+				}
+			}
+		},
 		func(s *snapshot) { s.CapabilityChanges[0] = capabilityChange{} },
 	} {
 		var state snapshot
@@ -765,6 +812,72 @@ func TestCapabilityStoreRejectsMalformedAndDuplicateRecords(t *testing.T) {
 		if _, err := Load(storePath); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("bad store admitted: %v", err)
 		}
+	}
+}
+
+func TestCapabilityRecordsRequireHumanConfirmation(t *testing.T) {
+	s, _, policy, profile := managedStore(t)
+	// A record with no operator confirmation carries no authority at all.
+	if err := NewStore().PutCapabilityPolicy(policy); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unconfirmed policy admitted: %v", err)
+	}
+	if err := NewStore().PutCapabilityProfile(profile); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unconfirmed profile admitted: %v", err)
+	}
+	grant := OperatorGrant(GrantSelfInstall, "alice", "", "")
+	if err := s.PutGrant(grant); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unconfirmed grant admitted: %v", err)
+	}
+	// Confirmation is bound to the exact bytes reviewed: tampering voids it.
+	body, _ := json.Marshal(profile)
+	var tampered CapabilityProfile
+	if err := json.Unmarshal(body, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	mustConfirm(t, &tampered)
+	tampered.Selections[0].Name = "sneaked_in"
+	if err := NewStore().PutCapabilityProfile(tampered); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("post-confirmation tamper admitted: %v", err)
+	}
+	// One operator identity cannot stand in for a record issued by another:
+	// the stamp succeeds, but admission binds confirmation issuer to record
+	// issuer and rejects the mismatch durably.
+	crossed := OperatorGrant(GrantSelfInstall, "alice", "", "")
+	if err := Confirm(&crossed, "mallory", time.Unix(1, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutGrant(crossed); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("cross-issuer confirmation admitted: %v", err)
+	}
+	// Model/agent issuers can never mint a confirmation.
+	for _, issuer := range []string{"model", "hermes"} {
+		if err := Confirm(&grant, issuer, time.Unix(1, 0).UTC()); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("%s confirmation minted: %v", issuer, err)
+		}
+	}
+	// Grant mutations are durable lifecycle records, replayed like policies.
+	storePath := filepath.Join(t.TempDir(), "registry.json")
+	if err := putGrant(t, s, grant); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, change := range loaded.capabilityChanges {
+		if change.Grant != nil && change.Grant.GrantID == grant.GrantID && change.Grant.Confirmation != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("grant lifecycle record lost across restart")
+	}
+	if err := loaded.RequireSelfInstall(aliceAuth()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -809,5 +922,226 @@ func TestManagedAuditPersistsScopeWithoutArguments(t *testing.T) {
 	event.CapabilityID = "forged\nfield"
 	if err := ledger.Append(event); err == nil {
 		t.Fatal("audit accepted forged metadata")
+	}
+}
+
+// PreviewCapabilityProfile runs the same evaluator and admission checks as
+// apply, so the diff an operator reviews is exactly what publish+dispatch
+// will do — including denied selections staying visible.
+// draftProfile deep-copies a profile so preview fixtures cannot mutate the
+// stored fixture's shared slices.
+func draftProfile(t *testing.T, p CapabilityProfile) CapabilityProfile {
+	t.Helper()
+	body, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out CapabilityProfile
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Confirmation = nil
+	return out
+}
+
+func TestPreviewCapabilityProfileDiff(t *testing.T) {
+	s, auth, policy, profile := managedStore(t)
+	_ = auth
+
+	// Unconfirmed draft previews fine: confirmation gates apply, not review.
+	draft := draftProfile(t, profile)
+	draft.Revision = profile.Revision + 1
+	draft.Selections[0].Name = "files_read"
+	preview, err := s.PreviewCapabilityProfile(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.CurrentRevision != 1 || preview.CandidateRevision != 2 {
+		t.Fatalf("preview revisions: %+v", preview)
+	}
+	if len(preview.Added) != 1 || preview.Added[0] != "files_read" || len(preview.Removed) != 1 || preview.Removed[0] != "workspace_read" || len(preview.Changed) != 0 {
+		t.Fatalf("rename diff wrong: %+v", preview)
+	}
+	for _, side := range [][]ProfilePreviewEntry{preview.Current, preview.Candidate} {
+		if len(side) != 1 || !side[0].Admitted || len(side[0].Scopes) != 1 || side[0].Scopes[0].PathPrefix != "docs" {
+			t.Fatalf("admitted entry missing scope: %+v", side)
+		}
+	}
+
+	// Identical content at a bumped revision produces an empty diff.
+	same := draftProfile(t, profile)
+	same.Revision++
+	quiet, err := s.PreviewCapabilityProfile(same)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quiet.Added)+len(quiet.Removed)+len(quiet.Changed) != 0 {
+		t.Fatalf("identical profile produced a diff: %+v", quiet)
+	}
+
+	// Stale or replayed revisions are rejected exactly as apply rejects them.
+	stale := draftProfile(t, profile)
+	if _, err := s.PreviewCapabilityProfile(stale); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale preview admitted: %v", err)
+	}
+
+	// A deny in the draft quarantines the selection: visible, not admitted.
+	denied := draftProfile(t, profile)
+	denied.Revision++
+	denyRule := policy.Defaults[0]
+	denyRule.Limits = CapabilityLimits{}
+	denied.Denies = []CapabilityRule{denyRule}
+	deniedPreview, err := s.PreviewCapabilityProfile(denied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deniedPreview.Candidate) != 1 || deniedPreview.Candidate[0].Admitted || deniedPreview.Candidate[0].Reason == "" {
+		t.Fatalf("denied selection not quarantined: %+v", deniedPreview.Candidate)
+	}
+	if len(deniedPreview.Removed) != 1 || deniedPreview.Removed[0] != "workspace_read" {
+		t.Fatalf("denied selection stayed admitted: %+v", deniedPreview)
+	}
+
+	// An allow outside the policy ceiling fails the same admission check
+	// PutCapabilityProfile runs — preview cannot preview what apply rejects.
+	overreach := draftProfile(t, profile)
+	overreach.Revision++
+	wider := policy.Defaults[0]
+	wider.PathPrefix = ""
+	overreach.Allows = []CapabilityRule{wider}
+	if _, err := s.PreviewCapabilityProfile(overreach); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ceiling violation previewed: %v", err)
+	}
+
+	// A changed scope shows as Changed, not Removed+Added: publish a narrower
+	// policy revision first, then preview the matching profile bump.
+	narrower := policy
+	narrower.Revision++
+	rule := narrower.Ceiling[0]
+	rule.PathPrefix = "docs/inbox"
+	narrower.Ceiling = []CapabilityRule{rule}
+	narrower.Defaults = []CapabilityRule{rule}
+	if err := putPolicy(t, s, narrower); err != nil {
+		t.Fatal(err)
+	}
+	migrated := draftProfile(t, profile)
+	migrated.Revision++
+	migrated.PolicyRevision = narrower.Revision
+	migratedPreview, err := s.PreviewCapabilityProfile(migrated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migratedPreview.Changed) != 1 || migratedPreview.Changed[0] != "workspace_read" || len(migratedPreview.Added)+len(migratedPreview.Removed) != 0 {
+		t.Fatalf("scope narrowing not reported as changed: %+v", migratedPreview)
+	}
+	if got := migratedPreview.Candidate[0].Scopes[0].PathPrefix; got != "docs/inbox" {
+		t.Fatalf("candidate kept old scope: %q", got)
+	}
+}
+
+// Applying a previewed candidate admits exactly the previewed projection.
+func TestPreviewMatchesApply(t *testing.T) {
+	s, auth, policy, profile := managedStore(t)
+	_ = policy
+	draft := draftProfile(t, profile)
+	draft.Revision++
+	draft.Selections[0].Name = "files_read"
+	preview, err := s.PreviewCapabilityProfile(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := putProfile(t, s, draft); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := s.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != len(preview.Candidate) {
+		t.Fatalf("applied surface %v diverged from preview %+v", tools, preview.Candidate)
+	}
+	for i, tool := range tools {
+		if tool.Name != preview.Candidate[i].Name || !preview.Candidate[i].Admitted {
+			t.Fatalf("applied entry %v diverged from preview %+v", tool, preview.Candidate[i])
+		}
+	}
+}
+
+// The connector manifest is a reviewed recommendation set: every entry is
+// opt-in, HH stays a separately reviewed connector and nothing maps to a
+// default grant.
+func TestRecommendedConnectorManifest(t *testing.T) {
+	manifest := RecommendedConnectorManifest()
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	var hh *ConnectorRecommendation
+	for i, entry := range manifest.Entries {
+		if entry.Admission != AdmissionOptIn {
+			t.Fatalf("non-opt-in admission on %q", entry.Family)
+		}
+		if entry.Family == "hh" {
+			hh = &manifest.Entries[i]
+		}
+	}
+	if hh == nil || hh.Status != "implemented" {
+		t.Fatal("hh connector missing from the reviewed manifest")
+	}
+	bad := manifest
+	bad.Entries[0].Admission = "default"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("default-admission manifest accepted")
+	}
+	dup := manifest
+	dup.Entries = append(dup.Entries, manifest.Entries[0])
+	if err := dup.Validate(); err == nil {
+		t.Fatal("duplicate family accepted")
+	}
+}
+
+// CP-10 rollback: republishing an earlier profile's content requires a new
+// monotonic revision and restores only reviewed selections — no legacy
+// always-on or self-install permission can come back with it.
+func TestProfileRollbackRestoresOnlyReviewedSurface(t *testing.T) {
+	s, auth, policy, profile := managedStore(t)
+	_ = policy
+	before, err := s.ListProjectedTools(auth)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("seeded surface: %v %v", before, err)
+	}
+
+	// Rev 2 narrows the profile to nothing.
+	narrowed := draftProfile(t, profile)
+	narrowed.Revision++
+	narrowed.Selections = nil
+	if err := putProfile(t, s, narrowed); err != nil {
+		t.Fatal(err)
+	}
+	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 0 {
+		t.Fatalf("narrowed profile still projects: %v %v", tools, err)
+	}
+
+	// Rollback is republishing the rev-1 content at a new revision; replaying
+	// the old revision number is rejected as stale.
+	stale := draftProfile(t, profile)
+	if err := putProfile(t, s, stale); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale rollback accepted: %v", err)
+	}
+	rolledBack := draftProfile(t, profile)
+	rolledBack.Revision = narrowed.Revision + 1
+	if err := putProfile(t, s, rolledBack); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := s.ListProjectedTools(auth)
+	if err != nil || len(restored) != 1 || restored[0].Name != before[0].Name {
+		t.Fatalf("rollback did not restore the reviewed selection: %v %v", restored, err)
+	}
+
+	// Nothing outside the reviewed selection comes back: the store still has
+	// no implicit grants, self-installs or unselected tools on the projection.
+	for _, tool := range restored {
+		if tool.Name != "workspace_read" {
+			t.Fatalf("rollback resurrected an unreviewed tool: %v", tool)
+		}
 	}
 }

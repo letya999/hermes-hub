@@ -642,6 +642,9 @@ type RoutingBackend struct {
 	MCP      ToolBackend
 	CLI      ToolBackend
 	Provider ToolBackend
+	// Agent serves the in-process hub agent-tools executor. It stays nil until
+	// a host entrypoint wires one, and dispatch fails closed without it.
+	Agent ToolBackend
 }
 
 func (b RoutingBackend) Call(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any) (BackendResult, error) {
@@ -655,11 +658,13 @@ func (b RoutingBackend) CallEnv(ctx context.Context, effective EffectiveBinding,
 		backend = b.CLI
 	case ProviderAPI:
 		backend = b.Provider
+	case AgentTools:
+		backend = b.Agent
 	default:
 		backend = b.MCP
 	}
 	if backend == nil {
-		if effective.Definition.Transport == BoundedCLI || effective.Definition.Transport == ProviderAPI {
+		if effective.Definition.Transport == BoundedCLI || effective.Definition.Transport == ProviderAPI || effective.Definition.Transport == AgentTools {
 			return BackendResult{}, ErrIsolation
 		}
 		return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)

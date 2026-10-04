@@ -19,7 +19,7 @@ func asyncFixture(t *testing.T, reviewer SourceReviewer) *ControlPlane {
 	t.Helper()
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", "prepare_source", "status")
-	if err := store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	return &ControlPlane{Store: store, Reviewer: reviewer, WorkloadRoot: t.TempDir(), Now: time.Now,

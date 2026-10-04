@@ -201,7 +201,7 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, auth.PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, auth.PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	var admissions atomic.Int32
@@ -376,10 +376,10 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := store.PutGrant(OperatorGrant(GrantDefinition, auth.PrincipalID, "google-work", "1.0.0")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, "google-work", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantSelfInstall, auth.PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantSelfInstall, auth.PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	token := strings.Repeat("t", 32)

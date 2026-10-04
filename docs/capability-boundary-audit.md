@@ -135,3 +135,60 @@ restrict what else a compromised runtime can request on that listener. The
 managed topology candidate now uses a path-limited Go model relay and removes
 direct CLIProxy attachment from the agent network. The relay is an initial
 chat-only route; broader model methods require separate review and tests.
+
+Pinned-source review of the remaining launch surfaces found every in-process
+route — `/v1/runs`, channel turns (including webhook per-route `toolsets`
+overrides read from `webhook_subscriptions.json`), cron jobs and background
+tasks — resolving through the same `_get_platform_tools` +
+`agent.disabled_toolsets` path, with the denylist subtracted last at selection.
+The capability probe now proves that a hostile persisted cron job's
+`enabled_toolsets`, the platform fallback and the `enabled=None` full-default
+fallback all yield zero tools, and that a zero-profile parent's delegate child
+inherits the denylist (the upstream orchestrator role deliberately re-adds only
+`delegate_task`, which stays unreachable while no parent holds it). Alternate
+entrypoints (`run_agent.py`, `batch_runner.py`, `mcp_serve`, ACP, TUI gateway)
+take toolset flags but are unreachable: the supervisor spawns a fixed
+`hermes gateway run` argv and no execution tool exists. A missing
+`platform_toolsets` key falls back to the platform's default bundle upstream,
+so the manifest must enumerate every platform — the probe asserts that set
+equality and a newly registered runtime toolset survives `enabled=None` by
+design, which is why dynamic plugin registration stays sealed out.
+Two writable-state startup inputs remained beyond the sealed extension roots:
+`$HERMES_HOME/.env` and `.op.env` load with `override=True` at gateway start
+and are reloaded every turn (the probe demonstrates a synthetic `.env`
+re-pointing `HERMES_BUNDLES_DIR`), and upstream's own managed scope
+(`$HERMES_MANAGED_DIR` or `/etc/hermes`) overlays config and env in-process
+at load time, bypassing the attested read-only YAML. The managed verifier now
+refuses launch when any of these is present. For revocation, upstream offers
+only the user-triggered `/reload-mcp` slash command (MCP reconnect plus cached
+agent rebuild, gated by slash-confirm, not reachable over `/v1/runs`) and the
+CLI's MCP config watch; there is no native grant-revocation API, so managed
+revocation remains admission fencing plus generation restart.
+
+The deeper adapter pass found three upstream gaps that the platform denylist
+alone cannot cover, because they never consult `disabled_toolsets`. First,
+`api_server._create_agent` omits `disabled_toolsets` entirely: the zero profile
+holds only because `platform_toolsets["api_server"]` is empty, and any enabled
+list bypasses denial. A `/v1/runs` body can self-assert `hosted_room_dispatch`
+and `_room_execution_policy` — the policy digest is a caller-computable SHA-256,
+not a signature — and `RoomExecutionPolicy` then replaces the enabled toolset
+list while `approval_mode: "off"` suppresses approvals. The pinned probe proves
+this end to end: in-process construction and a real HTTP run through the
+running gateway both arm `terminal`, `write_file`, `read_file`, `search_files`,
+`patch` and the tool-search bridge under the managed zero config. The
+compensating boundary is the managed control relay, the only inbound path: it
+now parses every request body (bounded, fail-closed) and refuses both keys.
+Second, literal-toolset sub-agents ignore platform resolution: detached
+compression hygiene gets `["memory"]`, manual `/compress` gets the same (not
+reachable over `/v1/runs`, which has no slash dispatch), curator consolidation
+gets `["skills"]`, and SKILL.md blueprints accept arbitrary `enabled_toolsets`
+(dead under the sealed skills root). The managed config therefore pins
+`compression.enabled: false` and `curator.enabled: false`; the probe asserts
+the arm lists still exist upstream and that the config gates hold. Third,
+per-request `provider`/`model` overrides on `/v1/runs` resolve only against
+configured providers and route aliases — no `base_url` injection — and the
+managed config ships exactly one pinned provider, so model traffic cannot
+select an unmanaged endpoint. Steer, approval and idempotency surfaces carry
+no toolset input. Room-grant dispatches remain impossible regardless: the
+grant secret is never provisioned into managed state, and the dispatch is
+verified against the local room catalog before any policy applies.

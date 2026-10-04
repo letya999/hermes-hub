@@ -79,6 +79,8 @@ func ManagedNetworkCanary(ctx context.Context, image string) (result error) {
 	const toolFixture = `from http.server import BaseHTTPRequestHandler,HTTPServer
 class Handler(BaseHTTPRequestHandler):
  def do_GET(self):
+  if self.headers.get('X-Canary-Redirect')=='metadata':
+   self.send_response(307); self.send_header('Location','http://169.254.169.254/latest/meta-data/'); self.end_headers(); return
   self.send_response(200); self.end_headers(); self.wfile.write(b'mcp-ok' if self.path=='/mcp' else b'control-route')
  def do_POST(self): self.do_GET()
  def log_message(self,*args): pass
@@ -156,6 +158,9 @@ else: raise AssertionError("ToolHub unavailable on private network")
 try: opener.open("http://toolhub:8090/credentials/private",timeout=2)
 except urllib.error.HTTPError as error: assert error.code==404
 else: raise AssertionError("ToolHub control route exposed to agent network")
+try: opener.open(urllib.request.Request("http://toolhub:8090/mcp",data=b'{}',headers={"X-Canary-Redirect":"metadata","Content-Type":"application/json"},method="POST"),timeout=2)
+except urllib.error.HTTPError as error: assert error.code==502 and not error.headers.get("Location")
+else: raise AssertionError("ToolHub relay forwarded metadata redirect")
 for attempt in range(30):
  try:
   response=opener.open(urllib.request.Request("http://model-relay:8318/v1/chat/completions",data=b'{"model":"synthetic"}',headers={"Content-Type":"application/json"},method="POST"),timeout=2)
@@ -265,6 +270,17 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 		if err := probe("redirected extension discovery", override); err != nil {
 			return err
 		}
+	}
+	// A planted $HERMES_HOME/.env would re-override the pinned environment at
+	// gateway start and per turn; the verifier must refuse before Hermes runs.
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("HERMES_BUNDLES_DIR=/tmp\n"), 0644); err != nil {
+		return err
+	}
+	if err := probe("managed environment file .env present", "HUB_CAPABILITY_PROFILE_ID=alice-default", "HUB_CAPABILITY_GENERATION=1", "HUB_CAPABILITY_ENVIRONMENT=prod"); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(dir, ".env")); err != nil {
+		return err
 	}
 	if err := os.WriteFile(effective, []byte("invalid: ["), 0644); err != nil {
 		return err

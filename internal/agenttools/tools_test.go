@@ -197,7 +197,11 @@ func TestToolHubManifestCatalogEnableDisableIsOptIn(t *testing.T) {
 	state := t.TempDir()
 	storePath := filepath.Join(state, "toolhub", "store.json")
 	store := toolhub.NewStore()
-	if err := store.PutGrant(toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")); err != nil {
+	grant := toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")
+	if err := toolhub.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(grant); err != nil {
 		t.Fatal(err)
 	}
 	definition := toolhub.ToolDefinition{
@@ -307,7 +311,11 @@ func TestToolHubOrganizationCanDisableButNotEnable(t *testing.T) {
 	state := t.TempDir()
 	storePath := filepath.Join(state, "toolhub", "store.json")
 	store := toolhub.NewStore()
-	if err := store.PutGrant(toolhub.OperatorGrant(toolhub.GrantDefinition, "alice", "demo", "1.0.0")); err != nil {
+	grant := toolhub.OperatorGrant(toolhub.GrantDefinition, "alice", "demo", "1.0.0")
+	if err := toolhub.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(grant); err != nil {
 		t.Fatal(err)
 	}
 	definition := toolhub.ToolDefinition{

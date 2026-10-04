@@ -37,16 +37,17 @@ const (
 var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics"}
 
 type Grant struct {
-	Schema            int       `json:"schema"`
-	GrantID           string    `json:"grant_id"`
-	Kind              GrantKind `json:"kind"`
-	PrincipalID       string    `json:"principal_id"`
-	DefinitionID      string    `json:"definition_id,omitempty"`
-	DefinitionVersion string    `json:"definition_version,omitempty"`
-	Operation         string    `json:"operation,omitempty"`
-	IssuedBy          string    `json:"issued_by"`
-	Status            Status    `json:"status"`
-	Revision          uint64    `json:"revision"`
+	Schema            int           `json:"schema"`
+	GrantID           string        `json:"grant_id"`
+	Kind              GrantKind     `json:"kind"`
+	PrincipalID       string        `json:"principal_id"`
+	DefinitionID      string        `json:"definition_id,omitempty"`
+	DefinitionVersion string        `json:"definition_version,omitempty"`
+	Operation         string        `json:"operation,omitempty"`
+	IssuedBy          string        `json:"issued_by"`
+	Status            Status        `json:"status"`
+	Revision          uint64        `json:"revision"`
+	Confirmation      *Confirmation `json:"confirmation,omitempty"`
 }
 
 type DefinitionPublication struct {
@@ -180,6 +181,9 @@ func (g Grant) Validate() error {
 	default:
 		return fmt.Errorf("%w: grant kind", ErrInvalid)
 	}
+	if !validConfirmation(g.Confirmation, g, g.IssuedBy) {
+		return fmt.Errorf("%w: unconfirmed grant", ErrUnauthorized)
+	}
 	return nil
 }
 
@@ -254,12 +258,21 @@ func (s *Store) PutGrant(grant Grant) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, exists := s.grants[grant.GrantID]
-	if exists && (grant.Revision < existing.Revision || (grant.Revision == existing.Revision && !recordsEqual(existing, grant))) {
+	if exists && grant.Revision == existing.Revision && recordsEqual(existing, grant) {
+		if s.path != "" {
+			return s.saveLocked(s.path)
+		}
+		return nil
+	}
+	if exists && grant.Revision <= existing.Revision {
 		return fmt.Errorf("%w: grant revision must advance", ErrConflict)
 	}
+	before := len(s.capabilityChanges)
+	s.capabilityChanges = append(s.capabilityChanges, capabilityChange{Grant: &grant})
 	s.grants[grant.GrantID] = grant
 	if s.path != "" {
 		if err := s.saveLocked(s.path); err != nil {
+			s.capabilityChanges = s.capabilityChanges[:before]
 			if exists {
 				s.grants[grant.GrantID] = existing
 			} else {

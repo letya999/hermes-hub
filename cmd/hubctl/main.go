@@ -105,6 +105,15 @@ func run(ctx context.Context, args []string) error {
 	if op == "capability" {
 		return runCapability(args[1:])
 	}
+	if op == "tools-exec" {
+		return runToolsExec(ctx)
+	}
+	if op == "exec-pack" {
+		return runExecPack(ctx)
+	}
+	if op == "exec-scratch" {
+		return runExecScratch(ctx)
+	}
 	if op == "context" {
 		return runContext(ctx, args[1:])
 	}

@@ -357,3 +357,93 @@ complete on the strength of this design package.
   no /scope, no control-plane secret env), unreachable link-local metadata,
   and respawn-after-reap with a fresh generation. `just check` passed at
   85.10% with the new port/reclaim regressions.
+- P0 completion pass over the remaining launch surfaces: the probe now proves
+  hostile persisted cron jobs (`enabled_toolsets` per job), the `cron` platform
+  fallback and the `enabled=None` full-default fallback all resolve to zero
+  tools under the managed denylist, and delegate children of a zero parent
+  inherit it (upstream's orchestrator role deliberately re-adds only
+  `delegate_task`, unreachable while the parent lacks it). Channel adapters and
+  alternate entrypoints stay resolver-only by construction: the supervisor
+  spawns a fixed `hermes gateway run` argv. Startup coverage beyond hooks
+  closed two remaining writable-state inputs — the verifier refuses launch when
+  `$HERMES_HOME/.env`/`.op.env` (loaded upstream with `override=True` at start
+  and per turn; the probe demonstrates the re-pointing) or the upstream managed
+  scope (`HERMES_MANAGED_DIR`/`/etc/hermes`, an in-process config/env overlay)
+  is present. Revocation seam analysis: upstream provides only the
+  confirm-gated `/reload-mcp` slash command (MCP reconnect, unreachable over
+  `/v1/runs`) and the CLI MCP file watch; there is no native grant-revocation
+  API, so managed revocation remains admission fencing plus generation restart.
+- Adapter re-audit on pinned source 869228c found three upstream bypasses:
+  forged `hosted_room_dispatch` plus a self-signed `_room_execution_policy`
+  (unsigned sha256 digest) arms an api_server agent past the entire denylist
+  because `disabled_toolsets` is never passed on that path; literal-toolset
+  sub-agents (memory hygiene `["memory"]`, curator `["skills"]`) bypass
+  platform resolution because `AIAgent` never reads the denylist config; and
+  blueprints accepts caller-chosen toolset lists. Fixes: the control relay
+  strips caller-supplied room-dispatch policy keys, the managed render
+  disables `compression.enabled` and `curator`, and the pinned probe gained a
+  wire-level forged POST plus config-gate assertions proving the arm pre-fix
+  and denial post-fix.
+- P3 unified agent-tools entry landed: the `AgentTools` transport carries no
+  DefinitionSource, CLI flags or MCP schema and is only reachable through
+  ToolHub admission. `CapabilityScope` {resource, path_argument, path_prefix}
+  binds at dispatch and travels verbatim on `EffectiveBinding`; the private
+  `tools-exec` channel (docker exec into the owning runtime) carries only
+  tool+args+scopes+timeout. `hubctl capability --kind agent-tools` registers
+  the compiled-in definition plus an operator binding; projected descriptions
+  name the admitted scope.
+- P4 file grants (T14/T15): per-call `scopedRoots` narrows the executor's
+  os.Root workspace/archive/organization roots to the admitted `path_prefix`
+  via `ScopedSub` (file scopes narrow to the containing directory and keep
+  the target name; directory scopes narrow to themselves). Duplicate
+  read+write scopes deduplicate before path-argument rewriting, symlinks and
+  swapped scope directories deny, and file operations carry distinct
+  read/write/create/delete capability tuples so conversion needs create
+  authority on its O_EXCL destination.
+- P4 scratch execution (T16-T18): `ToolSpec.Sandboxed` marks `code_exec` and
+  restricts it to the AgentTools transport, dispatching to `DockerScratchExec`
+  instead of the in-runtime executor (unconfigured fails closed ErrIsolation).
+  The lease is: `exec-pack` inside the owning runtime packs only the exact
+  admitted scope through an os.Root into a bounded regular-files-only tar; a
+  disposable container runs `exec-scratch` with `--network none --read-only
+  --cap-drop ALL --security-opt no-new-privileges --user 10001:10001`, tmpfs
+  /scratch /outputs /tmp, `--memory 256m --cpus 0.5 --pids-limit 64
+  --stop-timeout 2`; stop is confirmed by inspect before success; unconfirmed
+  stop quarantines that binding only until inspection proves the sandbox is
+  gone; exports are bounded, create-only, under the admitted scope, and gated
+  by a `Store.ReverifyEffective` fence so revocation or policy/profile bumps
+  stop the write. A real-image runner check proved uid 10001, read-only
+  rootfs, absent workspace/state/socket/network and a working export channel;
+  the multi-container topology remains for the next CI docker gate. A
+  serialization bug where `CapabilityScope` fields were `json:"-"` (dropping
+  the boundary on the private wire) was found and fixed.
+- `just check` after P4 passed all stages with race/shuffle tests at exactly
+  85.00 percent own Go statement coverage. P5 (profile preview->apply, HH
+  connector manifest, rollback without legacy) and P6 (full T01-T22 matrix)
+  remain.
+- P5 preview->apply and connectors: `Store.PreviewCapabilityProfile` diffs a
+  candidate against the stored profile with the same `managedSelectionLocked`
+  evaluator and the same admission checks `PutCapabilityProfile` runs
+  (extracted as `validateProfileAdmissionLocked`), so preview cannot diverge
+  from apply. The old side evaluates under its pinned policy revision replayed
+  from capability history, so a policy bump reports `changed` scopes rather
+  than an empty set; denied selections stay visible with their reason instead
+  of dropping silently (CP-10 quarantine of unknown entries). Drafts need only
+  `validateStructure` — confirmation remains the apply gate and preview never
+  writes the store. `hubctl capability --kind preview` prints the diff;
+  `--kind connectors` prints the versioned `ConnectorManifest` where every
+  family is `opt_in` (hh implemented via the agenttools `hh` capability behind
+  an explicit grant, org bundle candidates recommended or deferred,
+  txttsql/dbhub marked mutually exclusive). Rollback is republishing earlier
+  content at a new monotonic revision — stale revisions conflict and only
+  reviewed selections return; `TestPreviewMatchesApply` proves an applied
+  draft admits exactly the previewed surface.
+- P6 traceability: `.work/in-progress/CHG-0065-capability-enforcement/
+  acceptance-matrix.md` maps every T01-T22 row to its existing evidence and
+  layer (unit, fake-docker contract, real-Docker canary, pinned-image probe)
+  and marks open obligations honestly — T16-T18 full multi-container leases,
+  T13/T22 canaries on the latest image and live-provider T09/T21 still need
+  the CI docker gate or explicit provider instructions.
+- `just check` after P5 passed all stages at 85.02 percent own Go statement
+  coverage. No release claim: `implementation_status` remains
+  `partial_not_release_ready`.

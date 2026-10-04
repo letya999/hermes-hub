@@ -91,7 +91,7 @@ func TestControlResolvesRepositoryURLBeforeReview(t *testing.T) {
 		}
 		return ArtifactSource{Repository: raw, CommitSHA: "0123456789abcdef0123456789abcdef01234567"}, nil
 	}
-	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := callControl(t, fix.session(t, aliceToken), "prepare_source", map[string]any{"source": "https://github.com/example/mcp", "request_key": "repo-url"})
@@ -127,7 +127,7 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 	if err := fix.store.PutPublication(DefinitionPublication{DefinitionID: "mcp", Version: "0.0.2", Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{
@@ -189,7 +189,7 @@ func newControlFixture(t *testing.T, reviewer SourceReviewer) *controlFixture {
 func grantTestControlOperations(t *testing.T, store *Store, principal string, operations ...string) {
 	t.Helper()
 	for _, operation := range operations {
-		if err := store.PutGrant(OperatorControlGrant(principal, operation)); err != nil {
+		if err := putGrant(t, store, OperatorControlGrant(principal, operation)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -236,10 +236,10 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := fix.store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
@@ -327,7 +327,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	// Self-install is open by default; a revoked grant is the per-principal deny.
 	revoked := OperatorGrant(GrantSelfInstall, "bob", "", "")
 	revoked.Status = RevokedStatus
-	if err := fix.store.PutGrant(revoked); err != nil {
+	if err := putGrant(t, fix.store, revoked); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callControl(t, bob, "prepare_source", map[string]any{"source": githubCommitURL()}); err == nil {
@@ -385,7 +385,7 @@ func TestControlResponsesAreNonSecret(t *testing.T) {
 	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := fix.store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
@@ -413,7 +413,7 @@ func TestControlMCPReportsProgress(t *testing.T) {
 	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := fix.store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	messages := make(chan string, 4)

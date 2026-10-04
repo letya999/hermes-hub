@@ -54,7 +54,14 @@ func managedHermesConfig(s Settings) M {
 		"memory":            M{"memory_enabled": false, "user_profile_enabled": false},
 		"stt":               M{"enabled": false},
 		"security":          M{"allow_lazy_installs": false},
-		"display":           M{"busy_input_mode": "queue", "long_running_notifications": true},
-		"timezone":          s.Timezone,
+		// Literal-toolset sub-agents ignore the denylist (AIAgent receives no
+		// disabled_toolsets on these paths): detached compression hygiene gets
+		// ["memory"] and curator consolidation gets ["skills"]. Both are config
+		// gated, so the managed profile switches the paths off entirely rather
+		// than trusting a denylist that never reaches them.
+		"compression": M{"enabled": false},
+		"curator":     M{"enabled": false},
+		"display":     M{"busy_input_mode": "queue", "long_running_notifications": true},
+		"timezone":    s.Timezone,
 	}
 }

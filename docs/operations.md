@@ -46,8 +46,8 @@ active grant. A matching disabled/revoked grant wins over a matching active gran
 For example, using the protected registry path for the selected deployment:
 
 ```text
-hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status
-hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status --status revoked --revision 2
+hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status --confirm
+hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status --status revoked --revision 2 --confirm
 ```
 
 Grant revision 1 is the default; changing a record requires a higher revision.
@@ -55,15 +55,33 @@ Older writes cannot undo a revoke. The next request on an existing MCP session
 refreshes the projection and checks the current grant. These principal-scoped
 grants are the legacy path. Managed profiles below do not inherit them.
 
+Every operator mutation requires the explicit `--confirm` human act. Without it
+the command prints the canonical review digest and refuses to write; with it the
+command stamps `{digest, issued_by, confirmed_at}` onto the record before the
+store runs its own checks. The digest is recomputed at admission over the record
+minus its confirmation, so a confirmation never covers bytes it did not review,
+and `confirmation.issued_by` must equal the record's `issued_by` — one operator
+identity cannot stamp for another, and `model`/`hermes` can never mint one.
+`--issuer` (default `operator`) names the confirming identity. Unconfirmed
+records are rejected by the store itself, not just by the CLI, so persisted
+history proves the human act for every policy, profile and grant change.
+Grant changes are now durable lifecycle records alongside policy and profile
+changes and are replayed on restart in commit order.
+
 ### Managed capability policy (implementation primitive)
 
 `hubctl capability` publishes an operator-reviewed JSON policy or profile to the
 protected registry. It is a host command, with no corresponding agent MCP method:
 
 ```text
-hubctl capability --kind policy --file reviewed-policy.json --toolhub-store /protected/toolhub/store.json
-hubctl capability --kind profile --file reviewed-profile.json --toolhub-store /protected/toolhub/store.json
+hubctl capability --kind policy --file reviewed-policy.json --toolhub-store /protected/toolhub/store.json --confirm
+hubctl capability --kind profile --file reviewed-profile.json --toolhub-store /protected/toolhub/store.json --confirm
 ```
+
+`--kind group --file reviewed-group.json` validates a capability group for
+authoring: it prints the canonical JSON and its review digest and never writes
+the registry. Groups have no standalone authority; the enclosing policy or
+profile revision's confirmation covers them.
 
 A policy contains `schema`, `policy_id`, optional `organization`, explicit
 `members`, `revision`, `issued_by`, `issued_at` (RFC3339), `reason`, `status`,
@@ -107,6 +125,21 @@ Publication records contain metadata, never credentials. Call records include
 capability/profile revisions, implementation digest, environment and generation;
 they omit private arguments and response contents.
 
+`--kind preview --file draft-profile.json --toolhub-store <path>` prints the
+human-reviewable old-to-new diff a migration or profile change needs before
+apply. It evaluates the unconfirmed draft with the same evaluator and
+admission checks publication and dispatch run: each selection is either
+admitted with its scopes and tightened limits or quarantined with its deny
+reason, and the diff lists `added`, `removed` and `changed` projected names.
+The old side is evaluated under its own pinned policy revision (replayed from
+capability history when superseded), so a policy bump shows as `changed`
+scopes rather than an empty old set. Preview never writes the store and never
+requires `--confirm`; applying the identical confirmed record admits exactly
+the previewed surface. `--kind connectors` prints the versioned connector
+recommendation manifest (SPEC-0041 CP-07): every family is `opt_in`, including
+the reviewed `hh` connector, which exists only as the agenttools `hh`
+capability behind an explicit grant — never a core or default feature.
+
 These primitives are not a completed deployment boundary. Rendering does not yet
 provision managed identities or isolated roots, legacy deployments remain outside
 the guarantee, and human consent/migration still need CHG-0065.
@@ -115,6 +148,35 @@ Admission currently holds the existing store lock and a shared disk fence throug
 the bounded call; a revoke waits for that call before committing. Executor leases,
 cancellation and confirmed process-tree stops remain P4 work. Do not roll this out
 as full SPEC-0041/0042 compliance.
+
+### Agent-tools executor (hub-owned catalog)
+
+Managed runtimes expose exactly one MCP server — the ToolHub relay. The local
+hub tools (files, documents, images, artifacts, services, routines, HeadHunter,
+SSH) are not a second MCP surface inside the runtime: they are the built-in
+`hub-agent-tools` ToolHub definition, dispatched over a private per-call
+executor. Install is an operator act on the protected registry:
+
+```text
+hubctl capability --kind agent-tools \
+  --toolhub-store /protected/toolhub/store.json \
+  --principal alice --context alice --runtime alice --policy-version policy-abc12345
+```
+
+The command registers the compiled-in definition and creates its binding for
+the supplied identity; nothing is reachable until a confirmed profile selects
+individual tools. Dispatch resolves to the `agent-tools` transport and reaches
+the executor over `docker exec` (`HUB_AGENT_EXEC_MODE=supervisor` derives the
+supervisor container name; `HUB_AGENT_EXEC_CONTAINER=<name>` pins a fixed
+container). `hubctl tools-exec` inside the runtime is the one-shot executor:
+one bounded JSON request on stdin carrying the verbatim admitted capability
+scopes, one bounded result on stdout. It is not an MCP server, accepts no
+authority fields and fails closed when the channel is unconfigured. Admitted
+path prefixes become `os.Root` sub-roots inside the executor, so a handler bug
+cannot widen a grant into a traversal; projected tool descriptions name the
+admitted scope. An agent cannot reach the Docker socket, so it cannot invoke
+the executor or forge scopes. `hubctl tools` remains the unmanaged local
+stdio surface only.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes

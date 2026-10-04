@@ -36,7 +36,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := store.PutGrant(OperatorGrant(GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
@@ -206,7 +206,7 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 	if err := store.RegisterDefinition(remoteDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -245,7 +245,7 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	if err := store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -331,7 +331,7 @@ func TestRotateRevokeCutsOpenSession(t *testing.T) {
 	store.Stopper = stops
 	var calls atomic.Int32
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir()}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	onboarding := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-rotate1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0", Phase: PhaseEnabled, BindingID: binding.ToolBindingID, ConnectionID: binding.ConnectionID, Locator: "local://alice/google/1", Revision: 1, CreatedAt: time.Now().UTC()}

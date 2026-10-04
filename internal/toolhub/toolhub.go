@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -72,6 +73,11 @@ const (
 	// child process and owns no filesystem state, so its enforcement is the
 	// declared egress allowlist, the authorization fence and bounded output.
 	ProviderAPI Transport = "provider-api"
+	// AgentTools is an in-process hub executor for the agent-facing local tool
+	// domain (files, documents, images, routines, connectors). It has no
+	// upstream source: the reviewed definition is the code itself, admission is
+	// the capability tuple and the executor scopes os.Root per call.
+	AgentTools Transport = "agent-tools"
 )
 
 type Effect string
@@ -188,6 +194,10 @@ type ToolSpec struct {
 	CapabilityID   string            `json:"capability_id,omitempty"`
 	Uses           []CapabilityUse   `json:"capability_uses,omitempty"`
 	ArgumentEquals map[string]string `json:"argument_equals,omitempty"`
+	// Sandboxed marks a tool dispatched to the disposable scratch executor
+	// rather than the per-call in-runtime executor. Only the AgentTools
+	// transport may carry it: it changes which control channel runs the call.
+	Sandboxed bool `json:"sandboxed,omitempty"`
 }
 
 // CLIArgument is the only model-controlled input accepted by a bounded CLI
@@ -313,6 +323,9 @@ func (d ToolDefinition) Validate() error {
 		if len(tool.Description) > 1024 || len(tool.Arguments) > 32 {
 			return fmt.Errorf("%w: tool metadata is too large", ErrInvalid)
 		}
+		if tool.Sandboxed && d.Transport != AgentTools {
+			return fmt.Errorf("%w: sandboxed tool %q requires the agent-tools transport", ErrInvalid, tool.Name)
+		}
 		argumentNames := map[string]bool{}
 		for _, argument := range tool.Arguments {
 			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validCLIType(argument.Type) {
@@ -323,7 +336,7 @@ func (d ToolDefinition) Validate() error {
 				if !validCLIFlag(argument.Flag) {
 					return fmt.Errorf("%w: invalid CLI argument %q", ErrInvalid, argument.Name)
 				}
-			case ProviderAPI:
+			case ProviderAPI, AgentTools:
 				if argument.Flag != "" {
 					return fmt.Errorf("%w: provider argument %q cannot carry a CLI flag", ErrInvalid, argument.Name)
 				}
@@ -473,6 +486,10 @@ func (s DefinitionSource) validate(transport Transport) error {
 		values++
 	}
 	switch transport {
+	case AgentTools:
+		if !reflect.DeepEqual(s, DefinitionSource{}) {
+			return fmt.Errorf("%w: agent-tools source is the in-process executor and must be empty", ErrInvalid)
+		}
 	case RemoteMCP, ProviderAPI:
 		if s.URL == "" || values != 1 || s.TLSMode != "required" || s.Digest != "" || len(s.Args) != 0 || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" {
 			return fmt.Errorf("%w: %s needs an HTTPS URL and required TLS", ErrInvalid, transport)
@@ -850,8 +867,13 @@ type EffectiveBinding struct {
 	CredentialMounts          []Mount `json:"-"`
 	CapabilityID              string  `json:"-"`
 	ImplementationDigest      string  `json:"-"`
+	CapabilityPolicyID        string  `json:"-"`
+	CapabilityProfileID       string  `json:"-"`
 	CapabilityPolicyRevision  uint64  `json:"-"`
 	CapabilityProfileRevision uint64  `json:"-"`
+	// CapabilityScopes are the path-grant boundaries the admission bound for
+	// this call; executors must map them to os.Root scopes, never recompute.
+	CapabilityScopes []CapabilityScope `json:"-"`
 }
 
 type WorkloadStopper interface {
@@ -1484,14 +1506,23 @@ func Load(path string) (*Store, error) {
 		}
 	}
 	for _, change := range state.CapabilityChanges {
-		if (change.Policy == nil) == (change.Profile == nil) {
+		records := 0
+		for _, present := range []bool{change.Policy != nil, change.Profile != nil, change.Grant != nil} {
+			if present {
+				records++
+			}
+		}
+		if records != 1 {
 			return nil, fmt.Errorf("%w: exactly one capability change expected", ErrInvalid)
 		}
 		before := len(store.capabilityChanges)
-		if change.Policy != nil {
+		switch {
+		case change.Policy != nil:
 			err = store.PutCapabilityPolicy(*change.Policy)
-		} else {
+		case change.Profile != nil:
 			err = store.PutCapabilityProfile(*change.Profile)
+		default:
+			err = store.PutGrant(*change.Grant)
 		}
 		if err != nil {
 			return nil, err

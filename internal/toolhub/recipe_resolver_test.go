@@ -160,7 +160,7 @@ func TestPrepareSourcePublishesRecipeOnlyToItsOwner(t *testing.T) {
 	fix := newControlFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
 		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review", Recipe: recipe}, nil
 	})
-	if err := fix.store.PutGrant(OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "recipe-owner"})

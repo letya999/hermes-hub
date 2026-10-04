@@ -121,6 +121,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 			Provider: PersonalProviderBackend{},
 			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: envOr("HUB_STATE", "/state")},
 			CLI:      CLIRunner{Root: envOr("HUB_STATE", "/state")},
+			Agent:    agentBackendFromEnv(),
 		},
 		RecipeCatalogs: catalogs,
 		BrokerControl: func() *credentialbroker.Config {
@@ -151,6 +152,17 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	if config.Backend == nil {
 		return nil, fmt.Errorf("%w: nil ToolHub backend", ErrInvalid)
+	}
+	if routing, ok := config.Backend.(RoutingBackend); ok {
+		if agent, ok := routing.Agent.(AgentExecBackend); ok && agent.Fence == nil {
+			// Export and apply paths re-verify the admitted authority against
+			// the live store so a mid-flight revocation stops the write.
+			agent.Fence = func(_ context.Context, effective EffectiveBinding) error {
+				return store.ReverifyEffective(effective)
+			}
+			routing.Agent = agent
+			config.Backend = routing
+		}
 	}
 	if (config.BrokerControl == nil) != (config.BrokerRuntime == nil) {
 		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", ErrInvalid)
@@ -320,6 +332,23 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// agentBackendFromEnv wires the private agent-tools executor. The channel is
+// `docker exec` into the owning runtime container — the only control-plane
+// path that never crosses the agent network, so an agent cannot invoke the
+// executor or forge capability scopes. Unconfigured stays nil and dispatch
+// fails closed.
+func agentBackendFromEnv() ToolBackend {
+	docker := envOr("HUB_DOCKER_BIN", "docker")
+	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
+		resolve := FixedAgentContainer(container)
+		return AgentExecBackend{Exec: DockerAgentExec([]string{docker}, resolve), Scratch: DockerScratchExec([]string{docker}, resolve, DockerAgentExec([]string{docker}, resolve))}
+	}
+	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
+		return AgentExecBackend{Exec: DockerAgentExec([]string{docker}, ManagedAgentContainer), Scratch: DockerScratchExec([]string{docker}, ManagedAgentContainer, DockerAgentExec([]string{docker}, ManagedAgentContainer))}
+	}
+	return nil
 }
 
 // loadTokenEnvelopes reads a JSON object mapping additional bearer tokens to

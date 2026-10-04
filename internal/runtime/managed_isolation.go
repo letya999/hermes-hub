@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -24,6 +25,10 @@ var managedDeniedHosts = []string{
 }
 
 const managedModelURL = "http://model-relay:8318/v1"
+
+// managedScopeEtcDir is the upstream default managed-scope location; a variable
+// so tests can point it at a temp directory.
+var managedScopeEtcDir = "/etc/hermes"
 
 var (
 	managedReadRoutes = func() (ipv4, ipv6 []byte, err error) {
@@ -91,6 +96,29 @@ func verifyManagedIsolation(hermesHome string) error {
 	if file, err := os.OpenFile(config, os.O_WRONLY|os.O_APPEND, 0); err == nil {
 		_ = file.Close()
 		return fmt.Errorf("managed effective config is writable")
+	}
+	// Hermes loads $HERMES_HOME/.env (and .op.env) with override=True at gateway
+	// start and reloads it per turn: either file would re-point pinned discovery
+	// or proxy env after this preflight. Both must be absent, not merely empty —
+	// an existing file also activates upstream's managed-key cleanup.
+	for _, name := range []string{".env", ".op.env"} {
+		target := filepath.Join(hermesHome, name)
+		if _, err := os.Lstat(target); err == nil {
+			return fmt.Errorf("managed environment file %s present in hermes home", name)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("managed environment file %s check: %w", name, err)
+		}
+	}
+	// Upstream honors its own admin managed scope: $HERMES_MANAGED_DIR or
+	// /etc/hermes overlays config and env in-process at load time, bypassing the
+	// attested read-only file. Neither source may exist in a managed runtime.
+	if strings.TrimSpace(os.Getenv("HERMES_MANAGED_DIR")) != "" {
+		return fmt.Errorf("managed runtime forbids HERMES_MANAGED_DIR")
+	}
+	if info, err := os.Lstat(managedScopeEtcDir); err == nil && info.IsDir() {
+		return fmt.Errorf("managed runtime forbids upstream managed scope at %s", managedScopeEtcDir)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("managed scope check: %w", err)
 	}
 	ipv4, ipv6, err := managedReadRoutes()
 	if err != nil {

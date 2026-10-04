@@ -24,7 +24,7 @@ func TestControlDefaultDenyBeforeAnySourceOrStateMutation(t *testing.T) {
 	// These grants cover different actions and must never implicitly grant
 	// prepare_source, confirm, enable, diagnostics, or any other control tool.
 	for _, kind := range []GrantKind{GrantCatalogDefault, GrantSelfInstall} {
-		if err := store.PutGrant(OperatorGrant(kind, "alice", "", "")); err != nil {
+		if err := putGrant(t, store, OperatorGrant(kind, "alice", "", "")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -76,7 +76,7 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	grant := OperatorControlGrant("alice", "status")
-	if err := store.PutGrant(grant); err != nil {
+	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
 	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 1 || listed.Tools[0].Name != "status" {
@@ -90,7 +90,7 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	}
 	id := alice.ID()
 	grant.Status, grant.Revision = RevokedStatus, 2
-	if err := store.PutGrant(grant); err != nil {
+	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(t.Context(), aliceAuth(), "status", nil); !errors.Is(err, ErrUnauthorized) {
@@ -127,7 +127,7 @@ func TestControlGrantValidationAndStoreFailure(t *testing.T) {
 	grantTestControlOperations(t, store, "alice", "status")
 	deny := OperatorControlGrant("alice", "status")
 	deny.GrantID, deny.Status = "control-deny", DisabledStatus
-	if err := store.PutGrant(deny); err != nil {
+	if err := putGrant(t, store, deny); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RequireControlOperation(aliceAuth(), "status"); !errors.Is(err, ErrUnauthorized) {
