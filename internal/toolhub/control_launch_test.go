@@ -22,7 +22,8 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 		if grant {
-			if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, principal, "", "")); err != nil {
+			grantTestControlOperations(t, store, principal, "prepare_source", "status", "confirm", "enable", "revoke")
+			if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, principal, "", "")); err != nil {
 				t.Fatal(err)
 			}
 		}

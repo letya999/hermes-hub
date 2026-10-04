@@ -82,7 +82,7 @@ func ServiceMCPConfig(name string) (string, M, bool, error) {
 	}
 	switch name {
 	case "hh":
-		servers, ok := Config(Settings{Features: []string{"workspace", "hh"}})["mcp_servers"].(M)
+		servers, ok := Config(Settings{Tools: map[string]ToolEntry{"hh": {Via: ToolViaToolHub}}})["mcp_servers"].(M)
 		if !ok {
 			return "", nil, false, fmt.Errorf("service %q has no MCP definition", name)
 		}

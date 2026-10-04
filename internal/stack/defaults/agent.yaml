@@ -1,0 +1,15 @@
+# Hermes Hub agent runtime — operator-owned file; the user does not edit it.
+schema: 3
+user: __USER__
+model: ""
+model_url: ""
+timezone: UTC
+gitlab_host: gitlab.com
+oauth_port: __OAUTH_PORT__
+browser_port: __BROWSER_PORT__
+slack_events_port: __SLACK_PORT__
+
+# capability_mode: managed plus capability_profile_id/capability_generation
+# go here once the operator publishes a capability profile for this space.
+# Operator extras (hooks, memory backend, image_gen, infra, diagnostics)
+# belong in this file too — never in workspace.yaml.

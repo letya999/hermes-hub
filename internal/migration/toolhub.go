@@ -49,7 +49,7 @@ func MigrateToolHub(options ToolHubMigrationOptions) (ToolHubMigrationReport, er
 	if options.Directory == "" || options.User == "" {
 		return ToolHubMigrationReport{}, errors.New("migration directory and user are required")
 	}
-	settings, err := stack.Read(filepath.Join(options.Directory, "settings.yaml"))
+	settings, err := stack.Read(options.Directory)
 	if err != nil {
 		return ToolHubMigrationReport{}, fmt.Errorf("read settings: %w", err)
 	}
@@ -74,7 +74,7 @@ func MigrateToolHub(options ToolHubMigrationOptions) (ToolHubMigrationReport, er
 		return report, err
 	}
 	report.LegacyEnabled = legacy
-	report.LegacyDisabled = append([]string(nil), settings.DisabledMCP...)
+	report.LegacyDisabled = append([]string(nil), settings.DisabledMCPNames()...)
 	slices.Sort(report.LegacyDisabled)
 
 	store := toolhub.NewStore()
@@ -83,7 +83,7 @@ func MigrateToolHub(options ToolHubMigrationOptions) (ToolHubMigrationReport, er
 		return report, err
 	}
 	for name, server := range settings.MCP {
-		definition, connection, reference, binding, reason, err := importMCP(name, server, settings.DisabledMCP, auth)
+		definition, connection, reference, binding, reason, err := importMCP(name, server, settings.DisabledMCPNames(), auth)
 		if err != nil {
 			return report, err
 		}

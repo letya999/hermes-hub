@@ -36,6 +36,32 @@ func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if auth.CapabilityProfile != "" {
+		tools, err := s.managedToolsLocked(auth)
+		if err != nil {
+			return nil, err
+		}
+		byDefinition := map[string]*CatalogEntry{}
+		for _, tool := range tools {
+			key := definitionKey(tool.DefinitionID, tool.Version)
+			entry := byDefinition[key]
+			if entry == nil {
+				definition := s.definitions[key]
+				entry = &CatalogEntry{Name: tool.DefinitionID, Version: tool.Version, Transport: definition.Transport, WorkloadClass: definition.Workload.Class, Enabled: true, Status: string(ActiveStatus)}
+				byDefinition[key] = entry
+			}
+			entry.Tools = append(entry.Tools, tool.Name)
+		}
+		entries := make([]CatalogEntry, 0, len(byDefinition))
+		for _, entry := range byDefinition {
+			slices.Sort(entry.Tools)
+			entries = append(entries, *entry)
+		}
+		slices.SortFunc(entries, func(a, b CatalogEntry) int {
+			return strings.Compare(definitionKey(a.Name, a.Version), definitionKey(b.Name, b.Version))
+		})
+		return entries, nil
+	}
 	entries := make([]CatalogEntry, 0, len(s.definitions))
 	for _, definition := range s.definitions {
 		if !s.visibleDefinitionLocked(auth, definition) {

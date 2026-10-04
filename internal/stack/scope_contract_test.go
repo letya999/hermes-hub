@@ -49,7 +49,7 @@ func TestPeerScopeHomesAndCollisionRules(t *testing.T) {
 }
 
 func TestRenderedServiceBoundaries(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "artem", Organization: "acme", Features: []string{"workspace", "telegram"}, OrganizationDir: "/host/spaces/acme", OrganizationDocsDir: "/host/spaces/acme/docs", OrganizationSkillsDir: "/host/spaces/acme/hermes/skills", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Environment: "prod", User: "artem", Organization: "acme", Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), OrganizationDir: "/host/spaces/acme", OrganizationDocsDir: "/host/spaces/acme/docs", OrganizationSkillsDir: "/host/spaces/acme/hermes/skills", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	config := Config(s)
 	if got := Config(s)["skills"].(M)["external_dirs"].([]string); len(got) != 1 || got[0] != "/org/hermes/skills" {
 		t.Fatal(got)
@@ -111,7 +111,7 @@ func TestScopeValidationAndSingleDocument(t *testing.T) {
 }
 
 func TestIdentityBindingIsSharedAndPolicyVersionChanges(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "prod", Timezone: "UTC", Features: []string{"telegram"}}
+	s := Settings{Schema: 1, User: "alice", Environment: "prod", Timezone: "UTC", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	compose := Compose(s, "/source", "/space")
 	services := compose["services"].(M)
 	runtime := services["hermes-runtime"].(M)["environment"].(M)
@@ -121,7 +121,7 @@ func TestIdentityBindingIsSharedAndPolicyVersionChanges(t *testing.T) {
 			t.Fatalf("identity binding %s is not shared", key)
 		}
 	}
-	s.Features = []string{"telegram", "workspace"}
+	s.Tools, s.Ingress = testTools("telegram", "ssh"), testIngress("telegram", "ssh")
 	if policyVersion(s) == runtime["HUB_POLICY_VERSION"] {
 		t.Fatal("policy change retained a stale policy version")
 	}

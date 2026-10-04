@@ -40,6 +40,10 @@ type ExecuteRequest struct {
 	Trigger        string `json:"trigger"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Text           string `json:"text"`
+	// Instructions is the hub-pinned presentation guidance for this admitted
+	// run (ephemeral system prompt upstream). It is never a synthetic user
+	// message and never carries authorization.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // SelfEnvRequest is the private protected-form-to-runtime contract. It is
@@ -107,6 +111,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.selfEnv(w, r)
 	case "/v1/artifact":
 		s.artifact(w, r)
+	case "/v1/usage":
+		s.usage(w, r)
 	default:
 		writeRuntimeError(w, http.StatusNotFound, "not found")
 	}
@@ -241,7 +247,11 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 		RunID string `json:"run_id"`
 	}
 	runStart := time.Now()
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, map[string]any{"input": request.Text, "session_id": sessionID}, &admission, request.IdempotencyKey); err != nil {
+	runBody := map[string]any{"input": request.Text, "session_id": sessionID}
+	if request.Instructions != "" {
+		runBody["instructions"] = request.Instructions
+	}
+	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, runBody, &admission, request.IdempotencyKey); err != nil {
 		return ExecuteResponse{}, err
 	}
 	if admission.RunID == "" {
@@ -571,6 +581,9 @@ func validateExecuteRequest(request ExecuteRequest) error {
 	if len(request.IdempotencyKey) > 256 || len(request.Text) == 0 || len(request.Text) > maxPromptBytes {
 		return errors.New("invalid prompt")
 	}
+	if len(request.Instructions) > 4096 || strings.ContainsRune(request.Instructions, '\x00') {
+		return errors.New("invalid instructions")
+	}
 	return nil
 }
 
@@ -596,6 +609,10 @@ func (s *runtimeHTTP) restart(w http.ResponseWriter, r *http.Request) {
 func (s *runtimeHTTP) selfEnv(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || !s.authorized(r) {
 		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
+		writeRuntimeError(w, http.StatusForbidden, "self-managed environment disabled")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)

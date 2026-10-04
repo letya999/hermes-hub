@@ -60,7 +60,7 @@ func TestExecutionSelectionStrictOwnershipAndCorruptState(t *testing.T) {
 }
 
 func TestExecutionSelectionDoesNotBroadenPolicyAndKeepsUnmigratedClock(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "prod", Timezone: "UTC", Features: []string{"workspace", "telegram"}}
+	s := Settings{Schema: 1, User: "alice", Environment: "prod", Timezone: "UTC", Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram")}
 	before := PolicyVersion(s)
 	s.ExecutionMode, s.SupervisorURL = "supervisor", "http://localhost:8765"
 	if PolicyVersion(s) != before {
@@ -75,11 +75,11 @@ func TestExecutionSelectionDoesNotBroadenPolicyAndKeepsUnmigratedClock(t *testin
 	if service["command"].([]string)[0] != "serve" {
 		t.Fatal("unmigrated native clock not resident")
 	}
-	s.Features, s.NativeCron = []string{"workspace"}, "disabled"
+	s.Tools, s.Ingress, s.NativeCron = testTools("workspace"), nil, "disabled"
 	if RuntimeService(s, "", t.TempDir())["command"].([]string)[0] != "idle" {
 		t.Fatal("CLI-only context started resident Hermes")
 	}
-	s.Features = append(s.Features, "telegram")
+	s.Ingress = append(s.Ingress, "telegram")
 	if RuntimeService(s, "", t.TempDir())["command"].([]string)[0] != "serve" {
 		t.Fatal("static communication lost native Gateway")
 	}

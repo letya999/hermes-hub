@@ -24,7 +24,13 @@ type MCPTools struct {
 }
 
 func validateMCP(servers map[string]MCPServer) error {
-	reserved := map[string]bool{"hub": true, "browser": true, "browser_guest": true, "google": true, "telegram_user": true, "slack": true, "github": true, "atlassian": true, "desktop": true, "drafts": true}
+	// Native toolset names are reserved too: an owner mcp_servers entry must
+	// not publish a second MCP wrapper surface for a capability Hermes
+	// already provides natively (SPEC-0040).
+	reserved := map[string]bool{"hub": true, "browser": true, "browser_guest": true, "toolhub": true, "google": true, "telegram_user": true, "slack": true, "github": true, "atlassian": true, "desktop": true, "drafts": true}
+	for _, name := range []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search", "google_meet", "vision", "image_gen"} {
+		reserved[name] = true
+	}
 	for name, s := range servers {
 		if !idPattern.MatchString(name) || reserved[name] {
 			return fmt.Errorf("invalid or reserved MCP name %q", name)

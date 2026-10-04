@@ -276,6 +276,59 @@ func TestReapDeletesVerifiedImmutableID(t *testing.T) {
 	}
 }
 
+func TestReapAcceptsOnlyConfirmedExitedContainerAfterStopRace(t *testing.T) {
+	for _, running := range []string{"false", "true"} {
+		t.Run(running, func(t *testing.T) {
+			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "inspect" {
+					return nil, os.ErrNotExist
+				}
+				return []byte("running"), nil
+			}, func(context.Context, string, string) error { return nil })
+			b := binding(root)
+			runtime, err := m.Ensure(context.Background(), b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.ReleaseBinding(b); err != nil {
+				t.Fatal(err)
+			}
+			id := strings.Repeat("a", 64)
+			removed := 0
+			m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
+				switch {
+				case args[0] == "stop":
+					return nil, errors.New("container is not running")
+				case args[0] == "rm":
+					removed++
+					if args[2] != id {
+						t.Errorf("removed mutable name: %v", args)
+					}
+					return nil, nil
+				case args[2] == "{{.Id}}":
+					return []byte(id), nil
+				case args[2] == "{{.State.Running}}":
+					if args[3] != id {
+						t.Errorf("state checked by mutable name: %v", args)
+					}
+					return []byte(running), nil
+				case args[2] == "{{json .Mounts}}":
+					return json.Marshal([]map[string]string{{"Type": "bind", "Source": root, "Destination": "/scope"}})
+				default:
+					return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": runtime.Generation})
+				}
+			}
+			err = m.Reap(context.Background(), time.Now().Add(time.Hour))
+			if running == "false" && (err != nil || removed != 1) {
+				t.Fatalf("confirmed exited runtime not removed: err=%v removed=%d", err, removed)
+			}
+			if running == "true" && (err == nil || removed != 0) {
+				t.Fatalf("running runtime was treated as stopped: err=%v removed=%d", err, removed)
+			}
+		})
+	}
+}
+
 func TestFailedReadinessCleanupVerifiesIDAndPreservesUnknownSlot(t *testing.T) {
 	for _, foreign := range []bool{false, true} {
 		t.Run(map[bool]string{false: "owned", true: "replacement"}[foreign], func(t *testing.T) {
@@ -283,6 +336,9 @@ func TestFailedReadinessCleanupVerifiesIDAndPreservesUnknownSlot(t *testing.T) {
 			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 				if args[0] == "inspect" {
 					return nil, os.ErrNotExist
+				}
+				if args[0] == "ps" {
+					return []byte(""), nil
 				}
 				if args[0] == "rm" {
 					removed++

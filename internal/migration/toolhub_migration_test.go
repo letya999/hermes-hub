@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -77,6 +78,17 @@ mcp_servers:
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "alice", ConversationID: "migration", DeliveryTargetID: "migration", PolicyVersion: "policy-1"}
 	entries, err := store.Catalog(auth)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("migration implicitly granted catalog access: %+v, %v", entries, err)
+	}
+	grant := toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")
+	if err := toolhub.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutGrant(grant); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = store.Catalog(auth)
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("catalog=%+v err=%v", entries, err)
 	}

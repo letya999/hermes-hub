@@ -73,6 +73,9 @@ func stdio(command string, args []string, e M) M {
 	return M{"command": command, "args": args, "env": e, "timeout": 120}
 }
 func Config(s Settings) M {
+	if s.CapabilityMode == "managed" {
+		return managedHermesConfig(s)
+	}
 	organizationSkills := s.OrganizationSkillsDir
 	if organizationSkills == "" && s.OrganizationDir != "" {
 		organizationSkills = filepath.Join(s.OrganizationDir, "hermes", "skills")
@@ -128,17 +131,28 @@ func Config(s Settings) M {
 		servers["browser"] = browserServer(false, s.Has("browser_act"))
 		servers["browser_guest"] = browserServer(true, s.Has("browser_act"))
 	}
-	// No upstream MCP servers are embedded directly: connectors run behind the
-	// ToolHub admission boundary and are projected over its remote endpoint.
-	// Feature flags still drive ports, volumes and auth files, but never write
-	// mcp_servers entries for google/github/slack/atlassian/
-	// telegram_user/desktop/drafts.
-	for name, server := range s.MCP {
-		servers[name] = server.Config()
+	// Connectors run behind the ToolHub admission boundary; only via: mcp-raw
+	// selections render raw mcp: definitions directly into mcp_servers.
+	for name, cfg := range rawMCPServers(s) {
+		servers[name] = cfg
 	}
 	// vision and image_gen stay off this list. The hub MCP tools are the
 	// workspace-confined profile; the native local tools are not.
 	toolsets := []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	for name, entry := range s.Tools {
+		mapped := name
+		if name == "meet" {
+			mapped = "google_meet"
+		}
+		switch entry.Via {
+		case ToolViaNative:
+			if !slices.Contains(toolsets, mapped) {
+				toolsets = append(toolsets, mapped)
+			}
+		case ToolViaOff:
+			toolsets = slices.DeleteFunc(toolsets, func(t string) bool { return t == mapped })
+		}
+	}
 	if !s.Has("web") {
 		// No web toolset at all: web_search/web_extract do not exist for this
 		// space, so disabled web cannot be reached by prompting either.
@@ -147,9 +161,7 @@ func Config(s Settings) M {
 	if s.ExecutionMode == "supervisor" {
 		toolsets = slices.DeleteFunc(toolsets, func(name string) bool { return name == "cronjob" })
 	}
-	if s.Has("meet") {
-		toolsets = append(toolsets, "google_meet")
-	}
+	slices.Sort(toolsets)
 	skills := M{}
 	external := []string{}
 	if organizationSkills != "" {
@@ -172,7 +184,7 @@ func Config(s Settings) M {
 	if len(disabled) > 0 {
 		skills["disabled"] = disabled
 	}
-	memory := M{"memory_enabled": s.Memory, "user_profile_enabled": s.Memory}
+	memory := M{"memory_enabled": s.Memory || s.toolEntry("memory").enabled(), "user_profile_enabled": s.Memory || s.toolEntry("memory").enabled()}
 	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
 	// turns and lets the existing heartbeat notify the user while a build runs.
@@ -213,6 +225,10 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 // spaces. Service names like `toolhub` resolve identically for every runtime.
 const sharedNetworkName = "hermes-hub-runtime"
 
+func managedAgentNetwork(s Settings) string {
+	return "hermes-hub-agent-" + s.User + "-" + s.Environment
+}
+
 func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	infra := s.RendersInfra()
 	stateVolumes := []any{
@@ -233,18 +249,41 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// from ToolHub onboarding, never from terminal edits inside the runtime.
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
 	}
+	if s.CapabilityMode == "managed" {
+		stateVolumes = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "runtime")), "target": "/state"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "hermes")), "target": "/state/hermes"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/state/hermes/SOUL.md", "read_only": true},
+		}
+	}
 	if s.Has("ssh") {
 		// The whole SSH capability — host bindings, pinned host keys and any
 		// file: credentials — is operator-owned and read-only inside the runtime.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "ssh")), "target": "/state/ssh", "read_only": true})
 	}
+	for _, m := range s.Workspace.Mounts {
+		source, readOnly, err := s.resolveMount(m)
+		if err != nil {
+			continue // validate() already rejected it; render stays total
+		}
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
+	}
 	ports := []string{}
 	if s.Has("browser") || s.Has("meet") {
 		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort))
 	}
-	// Keep the loopback OAuth callback available for a connector enabled from chat.
-	ports = append(ports, fmt.Sprintf("127.0.0.1:%d:8000", s.OAuthPort))
+	// Legacy self-service connectors use this callback; managed connectors are
+	// admitted through the control plane and do not expose it from Hermes.
+	if s.CapabilityMode != "managed" {
+		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:8000", s.OAuthPort))
+	}
 	runtimeEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}}
+	if s.CapabilityMode == "managed" {
+		runtimeEnvFiles[0] = M{"path": filepath.ToSlash(filepath.Join(dir, "managed-runtime."+s.Environment+".env")), "format": "raw"}
+	}
 	organizationID := s.Organization
 	if organizationID == "" {
 		organizationID = "personal"
@@ -258,28 +297,42 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.OrgActions, ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60"}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
-	if s.OrgScoped() {
+	runtimeEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
+	if s.CapabilityMode == "managed" {
+		delete(runtimeEnv, "HUB_TOOLHUB_STORE")
+		runtimeEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
+		runtimeEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
+		runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
+		runtimeEnv["HUB_MANAGED_MODEL_ID"] = s.Model
+		runtimeEnv["HUB_MANAGED_MODEL_URL"] = s.ModelURL
+		runtimeEnv["HUB_NATIVE_TOOLSETS"] = strings.Join(s.nativeCarveouts(), ",")
+		runtimeEnv["HERMES_BUNDLES_DIR"] = "/state/hermes/skill-bundles"
+		runtimeEnv["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
+	}
+	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
-	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
+	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) != "" {
 		// The mounted dir is the per-space filtered copy materialized by
 		// Render: feature-gated bundled skills are absent entirely when the
 		// feature is off, so they cannot be read or followed by prompt.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
 	}
-	for name, feature := range hubGatedPlugins {
-		if !s.Has(feature) {
-			continue
+	if s.CapabilityMode != "managed" {
+		for name, feature := range hubGatedPlugins {
+			if !s.Has(feature) {
+				continue
+			}
+			// Hub plugins mount read-only into upstream's bundled plugins dir:
+			// source "bundled" + kind "backend" auto-loads them, and the agent
+			// cannot tamper with tool code the way it could in its own
+			// /state/hermes/plugins dir.
+			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(GeneratedPluginsDir(dir), name)), "target": "/opt/hermes/plugins/" + name, "read_only": true})
 		}
-		// Hub plugins mount read-only into upstream's bundled plugins dir:
-		// source "bundled" + kind "backend" auto-loads them, and the agent
-		// cannot tamper with tool code the way it could in its own
-		// /state/hermes/plugins dir.
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(GeneratedPluginsDir(dir), name)), "target": "/opt/hermes/plugins/" + name, "read_only": true})
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
 	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
@@ -289,22 +342,34 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	runtimeService["environment"] = runtimeEnv
 	runtimeService["volumes"] = stateVolumes
 	runtimeService["ports"] = ports
+	if s.CapabilityMode == "managed" {
+		runtimeService["extra_hosts"] = []string{}
+		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)), "/workspace:uid=10001,gid=10001,mode=0700",
+			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
+			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
+			"/state/hermes/bin:ro,mode=0555", "/state/hermes/node:ro,mode=0555", "/state/hermes/lsp:ro,mode=0555")
+	}
 	runtimeService["command"] = []string{"serve"}
 	if !s.Has("telegram") && s.NativeCron != "unmigrated" {
 		runtimeService["command"] = []string{"idle"}
 	}
 	runtimeService["healthcheck"] = M{"test": []string{"CMD", "hub-runtime", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
+	if s.CapabilityMode == "managed" {
+		runtimeService["networks"] = []string{managedAgentNetwork(s)}
+	}
 	if s.Environment == "dev" {
 		runtimeService["restart"] = "no"
-		runtimeService["read_only"] = false
-		for _, name := range []string{"cmd", "internal", "services", "docker", "config", "docs", "specs", ".work", ".github", "go.mod", "go.sum", "justfile", "AGENTS.md", "README.md", "SETUP.md", "START_HERE.ru.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md"} {
-			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, name)), "target": "/src/" + name})
+		if s.CapabilityMode != "managed" {
+			runtimeService["read_only"] = false
+			for _, name := range []string{"cmd", "internal", "services", "docker", "config", "docs", "specs", ".work", ".github", "go.mod", "go.sum", "justfile", "AGENTS.md", "README.md", "SETUP.md", "START_HERE.ru.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md"} {
+				stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, name)), "target": "/src/" + name})
+			}
+			runtimeService["environment"].(M)["GOCACHE"] = "/state/go-build"
+			runtimeService["environment"].(M)["GOMODCACHE"] = "/state/go-mod"
 		}
 		runtimeService["volumes"] = stateVolumes
-		runtimeService["environment"].(M)["GOCACHE"] = "/state/go-build"
-		runtimeService["environment"].(M)["GOMODCACHE"] = "/state/go-mod"
 	}
-	if !infra {
+	if !infra && s.CapabilityMode != "managed" {
 		// Secondary spaces keep only their runtime; it reaches the shared
 		// control plane on the shared network where `toolhub`, `credential-broker`
 		// and `cliproxy` resolve to the single deployed instances.
@@ -337,14 +402,29 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	brokerClientEnv := func(prefix, keyID, issuer string) M {
 		return M{prefix + "URL": brokerURL, prefix + "KEY_FILE": "/run/broker-secrets/" + keyID + ".private", prefix + "KEY_ID": keyID, prefix + "ISSUER": issuer, prefix + "CA_FILE": brokerCA}
 	}
-	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
-		runtimeEnv[key] = value
+	if s.CapabilityMode != "managed" {
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
+			runtimeEnv[key] = value
+		}
+		runtimeService["volumes"] = append(runtimeService["volumes"].([]any), brokerSecrets("runtime"))
 	}
-	runtimeService["volumes"] = append(runtimeService["volumes"].([]any), brokerSecrets("runtime"))
 
 	// Services every spawned or secondary runtime resolves by name attach to the
 	// shared network; everything else stays on the project default.
 	sharedNetworks := []string{"default", sharedNetworkName}
+	if s.CapabilityMode == "managed" {
+		modelRelay := cloneMap(common)
+		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
+		modelRelay["environment"] = M{"HUB_MODEL_RELAY_MODEL": s.Model}
+		modelRelay["extra_hosts"] = []string{}
+		modelRelay["networks"] = []string{sharedNetworkName, managedAgentNetwork(s)}
+		services["model-relay"] = modelRelay
+		toolhubRelay := cloneMap(common)
+		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
+		toolhubRelay["extra_hosts"] = []string{}
+		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
+		services["toolhub-relay"] = toolhubRelay
+	}
 	if infra {
 		cliproxy := cloneMap(common)
 		cliproxy["build"] = coreBuild
@@ -355,6 +435,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["cliproxy"] = cliproxy
 
 		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081"}
+		if s.CapabilityMode == "managed" {
+			toolhubEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
+			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
+			toolhubEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
+			toolhubEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
+			// The agent-tools executor runs inside the owning runtime
+			// container; the supervisor owns its naming contract and docker
+			// exec is the only control-plane path that never crosses the
+			// agent network.
+			toolhubEnv["HUB_AGENT_EXEC_MODE"] = "supervisor"
+		}
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 		if s.ExecutionMode != "" {
 			supervisorURL = s.SupervisorURL
@@ -389,6 +480,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub["volumes"] = toolhubVolumes
 		toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
 		toolhub["networks"] = sharedNetworks
+		if s.CapabilityMode == "managed" {
+			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control"}}}
+		}
 		services["toolhub"] = toolhub
 
 		controller := cloneMap(common)
@@ -421,7 +515,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.Features, ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_APPROVE_", "communication", "hermes-communication") {
 			gatewayEnvironment[key] = value
 		}
@@ -566,6 +660,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// the supervisor's spawned runtimes.
 		delete(services, "hermes-runtime")
 	}
+	if includeGateway && s.CapabilityMode == "managed" {
+		// Managed runtimes are spawned by the supervisor onto the private agent
+		// network. Compose owns only the control plane and the narrow relays.
+		// RuntimeService (includeGateway=false) keeps the entry for its env contract.
+		delete(services, "hermes-runtime")
+	}
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
@@ -591,6 +691,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// it external everywhere keeps `compose down` from deleting it and avoids
 	// compose-owned label conflicts.
 	result["networks"] = M{sharedNetworkName: M{"name": sharedNetworkName, "external": true}}
+	if s.CapabilityMode == "managed" {
+		result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
+	}
 	return result
 }
 
@@ -661,6 +764,9 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err != nil {
 		return err
 	}
+	if s.CapabilityMode == "managed" && s.ExecutionMode != "supervisor" {
+		return fmt.Errorf("managed runtime requires supervisor-executed runtimes; static managed launch is not proven")
+	}
 	if s.Has("ssh") {
 		// Fail render on a broken capability config rather than shipping a
 		// runtime whose ssh tools would all deny.
@@ -668,7 +774,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return fmt.Errorf("ssh config: %w", err)
 		}
 	}
-	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
+	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.GlobalSkillsDir = filepath.Join(root, "config", "skills")
 		if err := os.MkdirAll(s.GlobalSkillsDir, 0755); err != nil {
 			return err
@@ -688,6 +794,13 @@ func RenderEnvironment(dir, root, environment string) error {
 	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
+		}
+	}
+	if s.CapabilityMode == "managed" {
+		for _, name := range []string{"runtime", "hermes", "home", "cache"} {
+			if err = os.MkdirAll(filepath.Join(dir, "managed", s.Environment, name), 0700); err != nil {
+				return err
+			}
 		}
 	}
 	if s.RendersInfra() && s.DiagnosticsEnabled() {
@@ -732,6 +845,17 @@ func RenderEnvironment(dir, root, environment string) error {
 	}
 	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted, runtimeExtra); err != nil {
 		return err
+	}
+	if s.CapabilityMode == "managed" {
+		modelKey := secrets["OPENAI_API_KEY"]
+		if modelKey == "" {
+			modelKey = orgSecrets["OPENAI_API_KEY"]
+		}
+		if err = writeEnvFile(filepath.Join(dir, "managed-runtime."+s.Environment+".env"), map[string]string{
+			"OPENAI_API_KEY": modelKey, "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
+		}); err != nil {
+			return err
+		}
 	}
 	if err = writeToolHubFiles(dir); err != nil {
 		return err
@@ -850,7 +974,11 @@ func ensureMediaAuth(path string) error {
 func materializeHermesConfig(dir string, s Settings) error {
 	source := filepath.Join(dir, "hermes."+s.Environment+".yaml")
 	dest := filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")
-	runtimeEnv, err := ReadSecrets(filepath.Join(dir, "runtime."+s.Environment+".env"))
+	envFile := "runtime." + s.Environment + ".env"
+	if s.CapabilityMode == "managed" {
+		envFile = "managed-runtime." + s.Environment + ".env"
+	}
+	runtimeEnv, err := ReadSecrets(filepath.Join(dir, envFile))
 	if err != nil {
 		return err
 	}
@@ -860,11 +988,13 @@ func materializeHermesConfig(dir string, s Settings) error {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
 	return MaterializeHermesConfig(source, dest, MaterializeOptions{
+		Managed:            s.CapabilityMode == "managed",
 		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: strings.TrimSpace(auth[tokenEnv]) != "" || strings.TrimSpace(runtimeEnv[tokenEnv]) != "",
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
+		NativeToolsets:     s.nativeCarveouts(),
 	})
 }
 

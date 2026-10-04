@@ -1,11 +1,13 @@
 ---
-description: Accepted architectural decisions; append new decisions when changing direction.
-last_verified: 2026-09-28
+description: Architectural decisions and clearly marked proposals; append new records when changing direction.
+last_verified: 2026-10-02
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0032](ADR-0032-capability-execution-isolation.md) | Accepted: isolate control state, Hermes, scoped file executors and scratch-only code workloads |
+| [ADR-0031](ADR-0031-default-deny-capability-policy.md) | Accepted: zero-capability baseline, explicit profiles, canonical identities and one ToolHub policy boundary |
 | [ADR-0030](ADR-0030-cliproxy-image-routes.md) | CLIProxy image ids use two calls: images endpoint, or Gemini chat completions |
 | [ADR-0029](ADR-0029-bounded-pdf-office-webp.md) | Bounded pdf, xlsx, pptx, and webp stay in the hub process; Word and a user zip tool stay out |
 | [ADR-0028](ADR-0028-configurable-image-capability.md) | Image capability selects provider, model, and delivery; CLIProxy is the default, Fal stays external |

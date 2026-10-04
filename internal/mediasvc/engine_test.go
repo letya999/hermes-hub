@@ -555,19 +555,26 @@ func TestTranscriptionErrorPaths(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/audio/transcriptions", &body)
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	authReq(req)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("engine failure: %d", resp.StatusCode)
 	}
-	// Missing file field -> 400.
-	body.Reset()
-	form = multipart.NewWriter(&body)
-	form.Close()
-	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/audio/transcriptions", &body)
-	req.Header.Set("Content-Type", form.FormDataContentType())
+	// Missing file field -> 400. Fresh buffer: the previous request's transport
+	// write loop can still be draining its body after the response arrived.
+	var emptyBody bytes.Buffer
+	emptyForm := multipart.NewWriter(&emptyBody)
+	emptyForm.Close()
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/audio/transcriptions", &emptyBody)
+	req.Header.Set("Content-Type", emptyForm.FormDataContentType())
 	authReq(req)
-	resp, _ = http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing file: %d", resp.StatusCode)
@@ -576,7 +583,10 @@ func TestTranscriptionErrorPaths(t *testing.T) {
 	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/audio/transcriptions", strings.NewReader("x"))
 	req.Header.Set("Content-Type", "application/json")
 	authReq(req)
-	resp, _ = http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("non-multipart: %d", resp.StatusCode)

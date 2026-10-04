@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
+	"gopkg.in/yaml.v3"
 )
 
 type prepareFileInfo struct {
@@ -122,6 +125,78 @@ func TestHealthAndRunValidation(t *testing.T) {
 	body, _ = json.Marshal(marker{PIDs: []int{999999999}})
 	if err := os.WriteFile(path, body, 0600); err != nil || Health(path) == nil {
 		t.Fatal("dead process accepted")
+	}
+}
+
+func managedRuntimeConfig(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	s := stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", CapabilityMode: "managed"}
+	content, err := yaml.Marshal(stack.Config(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, effective := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(source, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_CAPABILITY_MODE", "managed")
+	t.Setenv("HERMES_HOME", dir)
+	t.Setenv("HUB_MANAGED_MODEL_ID", s.Model)
+	t.Setenv("HUB_MANAGED_MODEL_URL", s.ModelURL)
+	t.Setenv("TZ", s.Timezone)
+	t.Setenv("HERMES_BUNDLES_DIR", filepath.Join(dir, "skill-bundles"))
+	t.Setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", "http://toolhub:8090/mcp")
+	t.Setenv("HUB_RUNTIME_AUTH", "synthetic-auth")
+	if err := stack.MaterializeHermesConfig(source, effective, stack.MaterializeOptions{
+		Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true, ToolHubReconnect: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return effective
+}
+
+func TestManagedRuntimeRefusesSharedState(t *testing.T) {
+	managedRuntimeConfig(t)
+	if _, err := superviseOnce("idle"); err == nil || !strings.Contains(err.Error(), "isolation unverified") {
+		t.Fatalf("managed runtime accepted shared state: %v", err)
+	}
+	t.Setenv("HERMES_BUNDLES_DIR", t.TempDir())
+	if _, err := superviseOnce("idle"); err == nil || !strings.Contains(err.Error(), "redirected extension discovery") {
+		t.Fatalf("managed runtime accepted alternate bundles directory: %v", err)
+	}
+	t.Setenv("HERMES_BUNDLES_DIR", filepath.Join(os.Getenv("HERMES_HOME"), "skill-bundles"))
+	t.Setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+	if _, err := superviseOnce("idle"); err == nil || !strings.Contains(err.Error(), "redirected extension discovery") {
+		t.Fatalf("managed runtime accepted project plugin discovery: %v", err)
+	}
+}
+
+func TestManagedRuntimeDoesNotLoadSelfEnvironment(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	config := managedRuntimeConfig(t)
+	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN")
+	t.Setenv("GITHUB_TOKEN", "original")
+	path := filepath.Join(state, "self-env.json")
+	body := []byte(`{"GITHUB_TOKEN":"injected","ATLASSIAN_EMAIL":"stale"}`)
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run([]string{"serve"}); err == nil || !strings.Contains(err.Error(), "isolation unverified") {
+		t.Fatalf("managed runtime loaded self environment: %v", err)
+	}
+	if err := os.WriteFile(config, []byte("invalid: ["), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run([]string{"serve"}); err == nil || !strings.Contains(err.Error(), "config preflight") {
+		t.Fatalf("managed runtime accepted malformed effective config: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(body) || os.Getenv("GITHUB_TOKEN") != "original" {
+		t.Fatalf("managed startup changed self environment: file=%q env=%q err=%v", got, os.Getenv("GITHUB_TOKEN"), err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,9 +53,20 @@ func env(name, fallback string) string {
 
 func Run(args []string) error {
 	if len(args) != 1 {
-		return errors.New("expected idle, gateway, prepare, serve or health")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay or control-relay")
 	}
 	switch args[0] {
+	case "model-relay":
+		return runModelRelay(context.Background())
+	case "toolhub-relay":
+		return runToolHubRelay(context.Background())
+	case "control-relay":
+		return runControlRelay(context.Background())
+	case "verify-managed":
+		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
+			return errors.New("verify-managed requires managed capability mode")
+		}
+		return managedPreflight()
 	case "health":
 		return Health(filepath.Join(state, "runtime.json"))
 	case "prepare":
@@ -64,16 +76,21 @@ func Run(args []string) error {
 		}
 		return Prepare([]string{state, workspace}, 10001, gid, chown)
 	case "idle", "gateway", "serve":
-		if err := loadSelfEnv(); err != nil {
-			return err
+		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
+			if err := loadSelfEnv(); err != nil {
+				return err
+			}
 		}
 		return supervise(args[0])
 	default:
-		return errors.New("expected idle, gateway, prepare, serve or health")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay or control-relay")
 	}
 }
 
 func loadSelfEnv() error {
+	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
+		return errors.New("managed runtime forbids self-managed environment")
+	}
 	path := filepath.Join(state, envstore.FileName)
 	for _, key := range []string{"ATLASSIAN_EMAIL", "ATLASSIAN_API_TOKEN", "ATLASSIAN_BASIC_AUTH"} {
 		if err := os.Unsetenv(key); err != nil {
@@ -182,20 +199,51 @@ func supervise(mode string) error {
 		if err != nil || !restart {
 			return err
 		}
-		if err := loadSelfEnv(); err != nil {
-			return err
+		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
+			if err := loadSelfEnv(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
+// managedPreflight attests the mounted effective config and the container's
+// actual isolation before any managed Hermes process may start.
+func managedPreflight() error {
+	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
+	if os.Getenv("HERMES_BUNDLES_DIR") != filepath.Join(hermesHome, "skill-bundles") ||
+		os.Getenv("HERMES_ENABLE_PROJECT_PLUGINS") != "0" {
+		return fmt.Errorf("managed runtime forbids redirected extension discovery")
+	}
+	if err := stack.ValidateManagedEffectiveConfig(filepath.Join(hermesHome, "config.yaml"),
+		stack.Settings{Model: os.Getenv("HUB_MANAGED_MODEL_ID"), ModelURL: os.Getenv("HUB_MANAGED_MODEL_URL"), Timezone: os.Getenv("TZ")},
+		materializeOptionsFromEnv()); err != nil {
+		return fmt.Errorf("managed runtime config preflight: %w", err)
+	}
+	if err := verifyManagedIsolation(hermesHome); err != nil {
+		return fmt.Errorf("managed runtime isolation unverified: %w", err)
+	}
+	return nil
+}
+
 func superviseOnce(mode string) (bool, error) {
+	managed := os.Getenv("HUB_CAPABILITY_MODE") == "managed"
+	if managed {
+		if err := managedPreflight(); err != nil {
+			return false, err
+		}
+	}
 	setUmask()
 	restartPath := filepath.Join(state, "restart.request")
 	if err := os.Remove(restartPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
 	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
-	for _, folder := range []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "browser"), filepath.Join(state, "cache"), filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "hooks"), filepath.Join(hermesHome, "plugins"), filepath.Join(hermesHome, "memories")} {
+	folders := []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "cache"), filepath.Join(hermesHome, "memories")}
+	if !managed {
+		folders = []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "browser"), filepath.Join(state, "cache"), filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "hooks"), filepath.Join(hermesHome, "plugins"), filepath.Join(hermesHome, "memories")}
+	}
+	for _, folder := range folders {
 		if err := os.MkdirAll(folder, 0770); err != nil {
 			return false, err
 		}

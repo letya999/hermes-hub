@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -72,6 +73,11 @@ const (
 	// child process and owns no filesystem state, so its enforcement is the
 	// declared egress allowlist, the authorization fence and bounded output.
 	ProviderAPI Transport = "provider-api"
+	// AgentTools is an in-process hub executor for the agent-facing local tool
+	// domain (files, documents, images, routines, connectors). It has no
+	// upstream source: the reviewed definition is the code itself, admission is
+	// the capability tuple and the executor scopes os.Root per call.
+	AgentTools Transport = "agent-tools"
 )
 
 type Effect string
@@ -180,11 +186,18 @@ type DefinitionSource struct {
 }
 
 type ToolSpec struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Effect      Effect          `json:"effect"`
-	Arguments   []CLIArgument   `json:"arguments,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description,omitempty"`
+	Effect         Effect            `json:"effect"`
+	Arguments      []CLIArgument     `json:"arguments,omitempty"`
+	InputSchema    json.RawMessage   `json:"input_schema,omitempty"`
+	CapabilityID   string            `json:"capability_id,omitempty"`
+	Uses           []CapabilityUse   `json:"capability_uses,omitempty"`
+	ArgumentEquals map[string]string `json:"argument_equals,omitempty"`
+	// Sandboxed marks a tool dispatched to the disposable scratch executor
+	// rather than the per-call in-runtime executor. Only the AgentTools
+	// transport may carry it: it changes which control channel runs the call.
+	Sandboxed bool `json:"sandboxed,omitempty"`
 }
 
 // CLIArgument is the only model-controlled input accepted by a bounded CLI
@@ -298,6 +311,9 @@ func (d ToolDefinition) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, tool := range d.Tools {
+		if err := validateToolCapability(tool); err != nil {
+			return err
+		}
 		if len(tool.InputSchema) > 65536 || (len(tool.InputSchema) > 0 && (!json.Valid(tool.InputSchema) || (d.Transport != RemoteMCP && d.Transport != ContainerMCP))) {
 			return fmt.Errorf("%w: MCP input schema", ErrInvalid)
 		}
@@ -306,6 +322,9 @@ func (d ToolDefinition) Validate() error {
 		}
 		if len(tool.Description) > 1024 || len(tool.Arguments) > 32 {
 			return fmt.Errorf("%w: tool metadata is too large", ErrInvalid)
+		}
+		if tool.Sandboxed && d.Transport != AgentTools {
+			return fmt.Errorf("%w: sandboxed tool %q requires the agent-tools transport", ErrInvalid, tool.Name)
 		}
 		argumentNames := map[string]bool{}
 		for _, argument := range tool.Arguments {
@@ -317,7 +336,7 @@ func (d ToolDefinition) Validate() error {
 				if !validCLIFlag(argument.Flag) {
 					return fmt.Errorf("%w: invalid CLI argument %q", ErrInvalid, argument.Name)
 				}
-			case ProviderAPI:
+			case ProviderAPI, AgentTools:
 				if argument.Flag != "" {
 					return fmt.Errorf("%w: provider argument %q cannot carry a CLI flag", ErrInvalid, argument.Name)
 				}
@@ -472,6 +491,10 @@ func (s DefinitionSource) validate(transport Transport) error {
 		values++
 	}
 	switch transport {
+	case AgentTools:
+		if !reflect.DeepEqual(s, DefinitionSource{}) {
+			return fmt.Errorf("%w: agent-tools source is the in-process executor and must be empty", ErrInvalid)
+		}
 	case RemoteMCP, ProviderAPI:
 		if s.URL == "" || values != 1 || s.TLSMode != "required" || s.Digest != "" || len(s.Args) != 0 || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" {
 			return fmt.Errorf("%w: %s needs an HTTPS URL and required TLS", ErrInvalid, transport)
@@ -846,7 +869,16 @@ type EffectiveBinding struct {
 	WorkloadID string
 	// CredentialMounts are runtime-only paths returned by Credential Broker.
 	// They never enter the persisted projection or audit ledger.
-	CredentialMounts []Mount `json:"-"`
+	CredentialMounts          []Mount `json:"-"`
+	CapabilityID              string  `json:"-"`
+	ImplementationDigest      string  `json:"-"`
+	CapabilityPolicyID        string  `json:"-"`
+	CapabilityProfileID       string  `json:"-"`
+	CapabilityPolicyRevision  uint64  `json:"-"`
+	CapabilityProfileRevision uint64  `json:"-"`
+	// CapabilityScopes are the path-grant boundaries the admission bound for
+	// this call; executors must map them to os.Root scopes, never recompute.
+	CapabilityScopes []CapabilityScope `json:"-"`
 }
 
 type WorkloadStopper interface {
@@ -870,10 +902,13 @@ type Store struct {
 	onboardings         map[string]Onboarding
 	publications        map[string]DefinitionPublication
 	sharedPolicies      map[string]SharedCredentialPolicy
+	capabilityPolicies  map[string]CapabilityPolicy
+	capabilityProfiles  map[string]CapabilityProfile
+	capabilityChanges   []capabilityChange
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]Grant{}, onboardings: map[string]Onboarding{}, publications: map[string]DefinitionPublication{}, sharedPolicies: map[string]SharedCredentialPolicy{}}
+	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]Grant{}, onboardings: map[string]Onboarding{}, publications: map[string]DefinitionPublication{}, sharedPolicies: map[string]SharedCredentialPolicy{}, capabilityPolicies: map[string]CapabilityPolicy{}, capabilityProfiles: map[string]CapabilityProfile{}}
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
@@ -909,6 +944,17 @@ func (s *Store) RegisterDefinition(definition ToolDefinition) error {
 	if err := definition.Validate(); err != nil {
 		return err
 	}
+	// The immutable definition must not share mutable schema/rule slices with
+	// its caller. Validate above ensures every embedded JSON document is valid.
+	body, err := json.Marshal(definition)
+	if err != nil {
+		return err
+	}
+	var owned ToolDefinition
+	if err := json.Unmarshal(body, &owned); err != nil {
+		return err
+	}
+	definition = owned
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := definitionKey(definition.DefinitionID, definition.Version)
@@ -1197,6 +1243,9 @@ func (s *Store) SetBindingStatus(bindingID string, status Status) error {
 }
 
 func (s *Store) Resolve(auth identity.Envelope, bindingID string) (EffectiveBinding, error) {
+	if auth.CapabilityProfile != "" {
+		return EffectiveBinding{}, fmt.Errorf("%w: managed lookup requires a capability", ErrUnauthorized)
+	}
 	if err := s.Reload(); err != nil {
 		return EffectiveBinding{}, err
 	}
@@ -1211,6 +1260,9 @@ func (s *Store) Resolve(auth identity.Envelope, bindingID string) (EffectiveBind
 // ponytail: one registry lock serializes authorization and lifecycle mutations;
 // use per-connection locks only if measured connector concurrency needs it.
 func (s *Store) Authorize(auth identity.Envelope, bindingID string, admit func(EffectiveBinding) error) error {
+	if auth.CapabilityProfile != "" {
+		return fmt.Errorf("%w: managed admission requires a capability and arguments", ErrUnauthorized)
+	}
 	if admit == nil {
 		return fmt.Errorf("%w: nil admission callback", ErrInvalid)
 	}
@@ -1322,14 +1374,21 @@ type snapshot struct {
 	Onboardings         []Onboarding             `json:"onboardings,omitempty"`
 	Publications        []DefinitionPublication  `json:"publications,omitempty"`
 	SharedPolicies      []SharedCredentialPolicy `json:"shared_credential_policies,omitempty"`
+	CapabilityChanges   []capabilityChange       `json:"capability_changes,omitempty"`
 }
 
 func (s *Store) Save(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(path)
+}
+
+// saveLocked lets authorization mutations become visible only after the same
+// snapshot fence and durable write used by Save have succeeded.
+func (s *Store) saveLocked(path string) error {
 	if err := safeStorePath(path); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -1348,7 +1407,7 @@ func (s *Store) Save(path string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	state := snapshot{Schema: SchemaVersion, ProjectionRevisions: map[string]uint64{}}
+	state := snapshot{Schema: SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
 	}
@@ -1449,6 +1508,32 @@ func Load(path string) (*Store, error) {
 	for _, definition := range state.Definitions {
 		if err := store.RegisterDefinition(definition); err != nil {
 			return nil, err
+		}
+	}
+	for _, change := range state.CapabilityChanges {
+		records := 0
+		for _, present := range []bool{change.Policy != nil, change.Profile != nil, change.Grant != nil} {
+			if present {
+				records++
+			}
+		}
+		if records != 1 {
+			return nil, fmt.Errorf("%w: exactly one capability change expected", ErrInvalid)
+		}
+		before := len(store.capabilityChanges)
+		switch {
+		case change.Policy != nil:
+			err = store.PutCapabilityPolicy(*change.Policy)
+		case change.Profile != nil:
+			err = store.PutCapabilityProfile(*change.Profile)
+		default:
+			err = store.PutGrant(*change.Grant)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(store.capabilityChanges) != before+1 {
+			return nil, fmt.Errorf("%w: duplicate capability change", ErrInvalid)
 		}
 	}
 	store.mu.Lock()
@@ -1626,6 +1711,9 @@ func (s *Store) Reload() error {
 	s.onboardings = fresh.onboardings
 	s.publications = fresh.publications
 	s.sharedPolicies = fresh.sharedPolicies
+	s.capabilityPolicies = fresh.capabilityPolicies
+	s.capabilityProfiles = fresh.capabilityProfiles
+	s.capabilityChanges = fresh.capabilityChanges
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.mu.Unlock()
 	s.stopWorkloads(stopped)

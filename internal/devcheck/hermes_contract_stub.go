@@ -12,6 +12,22 @@ func HermesContract(context.Context, string) error {
 	return errors.New("hermes contract probe requires: go run -tags integration ./cmd/devcheck hermes-contract IMAGE")
 }
 
+func HermesCapabilityContract(context.Context, string) error {
+	return errors.New("hermes capability probe requires: go run -tags integration ./cmd/devcheck hermes-capability-contract IMAGE")
+}
+
+func ManagedNetworkCanary(context.Context, string) error {
+	return errors.New("managed network canary requires: go run -tags integration ./cmd/devcheck managed-network-canary IMAGE")
+}
+
+func ManagedSupervisorCanary(context.Context, string) error {
+	return errors.New("managed supervisor canary requires: go run -tags integration ./cmd/devcheck managed-supervisor-canary IMAGE")
+}
+
+func ScratchWorkloadCanary(context.Context, string) error {
+	return errors.New("scratch workload canary requires: go run -tags integration ./cmd/devcheck scratch-workload-canary IMAGE")
+}
+
 func GatewayLifecycle(context.Context, string) error {
 	return errors.New("gateway lifecycle probe requires: go run -tags integration ./cmd/devcheck gateway-lifecycle IMAGE")
 }

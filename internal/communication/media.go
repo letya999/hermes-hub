@@ -148,25 +148,26 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 	if media == nil {
 		media = message.Audio
 	}
+	topic := messageTopicID(message)
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if err := rejectMedia(envelope, g.config.MediaMaxDuration); err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, "Голосовое сообщение отклонено: слишком большое, длинное или неподдерживаемый тип.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, "Голосовое сообщение отклонено: слишком большое, длинное или неподдерживаемый тип.")
 	}
 	if g.transcriber == nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, "Распознавание речи не настроено на этом сервере. Отправьте текст.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, "Распознавание речи не настроено на этом сервере. Отправьте текст.")
 	}
 	path, err := g.downloadTelegramMedia(ctx, media.FileID)
 	if path != "" {
 		defer os.Remove(path)
 	}
 	if err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, "Не удалось загрузить голосовое сообщение.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, "Не удалось загрузить голосовое сообщение.")
 	}
 	envelope.TempPath = path
 	transcript, sttErr := g.transcribe(ctx, path, envelope.MIME)
 	if sttErr != nil || strings.TrimSpace(transcript) == "" {
 		envelope.TranscriptStatus = "error"
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, "Не удалось распознать голосовое сообщение. Отправьте текст.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, "Не удалось распознать голосовое сообщение. Отправьте текст.")
 	}
 	envelope.TranscriptStatus = "ok"
 	caption := strings.TrimSpace(message.Caption)
@@ -174,7 +175,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 	if caption != "" {
 		text = caption + "\n" + text
 	}
-	return g.enqueueChannelJob(ctx, user, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, user.envelope(message.From.ID))
+	return g.enqueueMediaJob(ctx, update, user, message, text)
 }
 
 func (g *Gateway) handleFile(ctx context.Context, update Update, user User, message *Message) error {
@@ -190,20 +191,31 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	}
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if envelope.Size > mediaSizeLimit {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, "Файл слишком большой.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Файл слишком большой.")
 	}
 	name := media.FileName
 	if name == "" {
 		name = media.FileID
 	}
 	text := strings.TrimSpace(message.Caption)
-	meta := "[file name=" + name + " mime=" + envelope.MIME + " size=" + strconv.FormatInt(envelope.Size, 10) + "]"
+	meta := "[file name=" + name + " mime=" + envelope.MIME + " size=" + strconv.FormatInt(media.FileSize, 10) + "]"
 	if text == "" {
 		text = meta
 	} else {
 		text = text + "\n" + meta
 	}
-	return g.enqueueChannelJob(ctx, user, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, user.envelope(message.From.ID))
+	return g.enqueueMediaJob(ctx, update, user, message, text)
+}
+
+// enqueueMediaJob resolves the inbound task binding (adopting a topic on the
+// verified first post) and admits the media job under it.
+func (g *Gateway) enqueueMediaJob(ctx context.Context, update Update, user User, message *Message, text string) error {
+	topic := messageTopicID(message)
+	task, err := g.spool.ResolveTask(user, message.Chat.ID, topic, true)
+	if err != nil {
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, "Не удалось открыть задачу.")
+	}
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID)
 }
 
 func rejectMedia(e MediaEnvelope, maxDuration int) error {

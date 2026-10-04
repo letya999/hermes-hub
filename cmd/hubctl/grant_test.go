@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,10 +14,35 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
+func TestControlGrantCLIAndRevocationRevision(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store.json")
+	args := []string{"--kind", "control-operation", "--operation", "status", "--user", "alice", "--toolhub-store", storePath, "--confirm"}
+	if err := runGrant(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	if err := store.RequireControlOperation(auth, "status"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGrant(t.Context(), append(args, "--status", "revoked", "--revision", "2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireControlOperation(auth, "status"); !errors.Is(err, toolhub.ErrUnauthorized) {
+		t.Fatalf("CLI revocation did not reach existing reader: %v", err)
+	}
+	if err := runGrant(t.Context(), args); !errors.Is(err, toolhub.ErrConflict) {
+		t.Fatalf("stale CLI revision resurrected grant: %v", err)
+	}
+}
+
 func TestGrantWritesOperatorRecordAndRejectsModelIssuer(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "store.json")
-	if err := runGrant(context.Background(), []string{"--kind", "self-install", "--user", "alice", "--toolhub-store", storePath, "--dir", dir}); err != nil {
+	if err := runGrant(context.Background(), []string{"--kind", "self-install", "--user", "alice", "--toolhub-store", storePath, "--dir", dir, "--confirm"}); err != nil {
 		t.Fatal(err)
 	}
 	store, err := toolhub.Load(storePath)
@@ -42,7 +68,7 @@ func TestGrantJSONOmitsSecrets(t *testing.T) {
 	}
 	old := os.Stdout
 	os.Stdout = writer
-	runErr := runGrant(context.Background(), []string{"--kind", "catalog-default", "--user", "alice", "--toolhub-store", storePath, "--dir", dir})
+	runErr := runGrant(context.Background(), []string{"--kind", "catalog-default", "--user", "alice", "--toolhub-store", storePath, "--dir", dir, "--confirm"})
 	writer.Close()
 	os.Stdout = old
 	body, _ := io.ReadAll(reader)
@@ -89,12 +115,12 @@ func TestGrantCLIErrorPathsAndDefinitionKind(t *testing.T) {
 	}
 
 	absStore := filepath.Join(dir, "absolute.json")
-	if err := runGrant(context.Background(), []string{"--kind", "self-install", "--user", "alice", "--toolhub-store", absStore}); err != nil {
+	if err := runGrant(context.Background(), []string{"--kind", "self-install", "--user", "alice", "--toolhub-store", absStore, "--confirm"}); err != nil {
 		t.Fatalf("default dir: %v", err)
 	}
 
 	t.Setenv("HUB_TOOLHUB_STORE", "")
-	if err := runGrant(context.Background(), []string{"--kind", "catalog-default", "--user", "bob", "--dir", dir}); err != nil {
+	if err := runGrant(context.Background(), []string{"--kind", "catalog-default", "--user", "bob", "--dir", dir, "--confirm"}); err != nil {
 		t.Fatalf("default store path: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "runtime", "toolhub", "store.json")); err != nil {
@@ -103,7 +129,7 @@ func TestGrantCLIErrorPathsAndDefinitionKind(t *testing.T) {
 
 	relDir := t.TempDir()
 	t.Chdir(relDir)
-	if err := runGrant(context.Background(), []string{"--kind", "definition", "--definition", "catalog-read", "--version", "1.0.0", "--user", "alice", "--dir", relDir, "--toolhub-store", "relative.json"}); err != nil {
+	if err := runGrant(context.Background(), []string{"--kind", "definition", "--definition", "catalog-read", "--version", "1.0.0", "--user", "alice", "--dir", relDir, "--toolhub-store", "relative.json", "--confirm"}); err != nil {
 		t.Fatalf("relative store: %v", err)
 	}
 	store, err := toolhub.Load(filepath.Join(relDir, "relative.json"))
@@ -121,7 +147,7 @@ func TestGrantCLIErrorPathsAndDefinitionKind(t *testing.T) {
 	}
 	old := os.Stdout
 	os.Stdout = writer
-	runErr := run(context.Background(), []string{"grant", "--kind", "self-install", "--user", "carol", "--dir", dir, "--toolhub-store", filepath.Join(dir, "via-run.json")})
+	runErr := run(context.Background(), []string{"grant", "--kind", "self-install", "--user", "carol", "--dir", dir, "--toolhub-store", filepath.Join(dir, "via-run.json"), "--confirm"})
 	writer.Close()
 	os.Stdout = old
 	body, _ := io.ReadAll(reader)

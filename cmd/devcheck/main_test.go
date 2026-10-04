@@ -22,6 +22,9 @@ func TestRunCoverageAndValidation(t *testing.T) {
 	if err := run([]string{"hermes-contract", "test-image"}); err == nil {
 		t.Fatal("integration-only Hermes contract accepted without build tag")
 	}
+	if err := run([]string{"hermes-capability-contract", "test-image"}); err == nil {
+		t.Fatal("integration-only capability contract accepted without build tag")
+	}
 	if err := run([]string{"gateway-lifecycle", "test-image"}); err == nil {
 		t.Fatal("integration-only gateway lifecycle accepted without build tag")
 	}

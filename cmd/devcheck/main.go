@@ -36,12 +36,24 @@ func run(args []string) error {
 		err = devcheck.DockerSmoke(context.Background(), args[1])
 	case len(args) == 3 && args[0] == "docker-build":
 		err = devcheck.DockerBuild(context.Background(), args[1], args[2])
+	case len(args) == 3 && args[0] == "docker-pull":
+		err = devcheck.DockerPull(context.Background(), args[1], args[2])
+	case len(args) == 2 && args[0] == "docker-publish":
+		err = devcheck.DockerPublish(context.Background(), args[1])
 	case len(args) == 1 && args[0] == "docker-clean":
 		err = devcheck.DockerClean(context.Background(), ".", false)
 	case len(args) == 2 && args[0] == "docker-clean" && args[1] == "--deep":
 		err = devcheck.DockerClean(context.Background(), ".", true)
 	case len(args) == 2 && args[0] == "hermes-contract":
 		err = devcheck.HermesContract(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "hermes-capability-contract":
+		err = devcheck.HermesCapabilityContract(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "managed-network-canary":
+		err = devcheck.ManagedNetworkCanary(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "managed-supervisor-canary":
+		err = devcheck.ManagedSupervisorCanary(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "scratch-workload-canary":
+		err = devcheck.ScratchWorkloadCanary(context.Background(), args[1])
 	case len(args) == 2 && args[0] == "gateway-lifecycle":
 		err = devcheck.GatewayLifecycle(context.Background(), args[1])
 	case len(args) == 1 && args[0] == "toolhub-contract":
@@ -58,7 +70,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-build IMAGE TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
+		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
 	}
 	return err
 }
