@@ -139,6 +139,61 @@ func TestUsageSessionNotCreatedYet(t *testing.T) {
 	}
 }
 
+func TestUsageSessionLookupErrorAndEmptyRow(t *testing.T) {
+	request := usageRequest(t)
+	declared := sessionIDFor(request.ExecuteRequest)
+	measure := func() (SessionUsage, error) {
+		return (&runtimeHTTP{}).measureUsage(httptest.NewRequest(http.MethodGet, "/", nil).Context(), request)
+	}
+	messagesReply := func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "session_id": declared, "data": []any{}, "pagination": map[string]any{"returned": 0}})
+	}
+
+	// A non-404 session lookup failure propagates; no half-read report.
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/messages") {
+			messagesReply(w)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	usageSetEnv(t, broken)
+	if _, err := measure(); err == nil {
+		t.Fatal("upstream 500 produced a usage report")
+	}
+	broken.Close()
+
+	// An empty session envelope means "not found", not an error.
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/messages") {
+			messagesReply(w)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "hermes.session"})
+	}))
+	usageSetEnv(t, empty)
+	report, err := measure()
+	if err != nil || report.SessionFound {
+		t.Fatalf("empty session row: %+v err=%v", report, err)
+	}
+	empty.Close()
+
+	// A dangling parent pointer ends the lineage walk without failing the
+	// report: the measured row still stands on its own.
+	dangling := usageFixture(t, map[string]map[string]any{
+		"eff": {"id": "eff", "model": "model-a", "parent_session_id": "gone"},
+	}, map[string]string{declared: "eff"})
+	defer dangling.Close()
+	usageSetEnv(t, dangling)
+	report, err = measure()
+	if err != nil || !report.SessionFound || report.Model != "model-a" {
+		t.Fatalf("dangling parent: %+v err=%v", report, err)
+	}
+	if report.Compactions == nil || *report.Compactions != 0 {
+		t.Fatalf("dangling lineage counted: %+v", report.Compactions)
+	}
+}
+
 func TestUsageRejectsUnauthorized(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "secret")
 	req := httptest.NewRequest(http.MethodPost, "/v1/usage", strings.NewReader("{}"))
