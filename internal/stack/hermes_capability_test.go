@@ -366,6 +366,118 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	}
 }
 
+func TestNativeToolsetValidation(t *testing.T) {
+	if err := ValidateNativeToolsets([]string{"terminal", "memory", "todo"}); err != nil {
+		t.Fatalf("reviewed carve-out rejected: %v", err)
+	}
+	if err := ValidateNativeToolsets(nil); err != nil {
+		t.Fatal("empty carve-out rejected")
+	}
+	for _, names := range [][]string{
+		{"delegation"},           // sub-agent literal toolsets bypass the denylist
+		{"bot_room"},             // forged room-policy bypass
+		{"hermes-gateway"},       // platform adapter listener inside the agent
+		{"not a name"},           // invalid format
+		{"terminal", "terminal"}, // duplicate
+	} {
+		if err := ValidateNativeToolsets(names); err == nil {
+			t.Fatalf("carve-out accepted: %v", names)
+		}
+	}
+	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s.NativeToolsets = []string{"terminal", "memory"}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("managed settings with carve-outs rejected: %v", err)
+	}
+	s.NativeToolsets = []string{"a2a"}
+	if err := s.Validate(); err == nil {
+		t.Fatal("unreviewed native toolset accepted into managed settings")
+	}
+	s.NativeToolsets = []string{"terminal"}
+	s.CapabilityMode = ""
+	if err := s.Validate(); err == nil {
+		t.Fatal("native_toolsets accepted outside managed mode")
+	}
+}
+
+func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
+	inventory, err := ManagedCapabilityInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		NativeToolsets: []string{"terminal", "memory", "todo"}}
+	zero := Config(s)
+	disabled := zero["agent"].(M)["disabled_toolsets"].([]string)
+	for _, carved := range []string{"terminal", "memory", "todo"} {
+		if slices.Contains(disabled, carved) {
+			t.Fatalf("carved-out toolset %s still denied", carved)
+		}
+	}
+	if len(disabled) != len(inventory.DisabledToolsets)-3 {
+		t.Fatalf("denylist shrank by %d, expected 3", len(inventory.DisabledToolsets)-len(disabled))
+	}
+	// The carved-out memory toolset needs its subsystem flag; the rest stay
+	// at the reviewed zero posture.
+	if zero["memory"].(M)["memory_enabled"] != true {
+		t.Fatal("carved memory toolset rendered without memory_enabled")
+	}
+	if zero["compression"].(M)["enabled"] != false || zero["curator"].(M)["enabled"] != false {
+		t.Fatal("carve-out re-enabled bypassing sub-agent paths")
+	}
+}
+
+func TestNativeCarveoutMaterializeAndAttest(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		NativeToolsets: []string{"terminal"}}
+	zero := Config(s)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.yaml")
+	body, err := yaml.Marshal(zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, NativeToolsets: []string{"terminal"}}
+	dest := filepath.Join(dir, "effective.yaml")
+	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
+		t.Fatalf("carved materialize: %v", err)
+	}
+	if err := ValidateManagedEffectiveConfig(dest, s, opts); err != nil {
+		t.Fatalf("carved effective config rejected: %v", err)
+	}
+	var effective M
+	raw, _ := os.ReadFile(dest)
+	if err := yaml.Unmarshal(raw, &effective); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range effective["agent"].(map[string]any)["disabled_toolsets"].([]any) {
+		if name == "terminal" {
+			t.Fatal("effective config still denies the carved terminal toolset")
+		}
+	}
+	// A source rendered without the same carve-out is an unreviewed edit:
+	// the attestation must not accept a mismatched denial set.
+	stale := Config(Settings{Model: s.Model, ModelURL: s.ModelURL, Timezone: s.Timezone})
+	body, _ = yaml.Marshal(stale)
+	if err := os.WriteFile(source, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeHermesConfig(source, dest, opts); err == nil {
+		t.Fatal("full-deny source accepted under a carved grant")
+	}
+	bad := opts
+	bad.NativeToolsets = []string{"delegation"}
+	if err := MaterializeHermesConfig(source, dest, bad); err == nil {
+		t.Fatal("unapproved native toolset reached materialize")
+	}
+	if err := ValidateManagedEffectiveConfig(dest, s, bad); err == nil {
+		t.Fatal("unapproved native toolset reached runtime attestation")
+	}
+}
+
 func TestManagedOrganizationRuntimeDoesNotMountOrgDocuments(t *testing.T) {
 	s := Settings{Schema: 1, User: "alice", Organization: "acme", OrganizationDocsDir: t.TempDir(), Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
 	for _, infra := range []bool{true, false} {

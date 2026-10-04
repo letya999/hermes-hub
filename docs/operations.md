@@ -168,15 +168,52 @@ the supplied identity; nothing is reachable until a confirmed profile selects
 individual tools. Dispatch resolves to the `agent-tools` transport and reaches
 the executor over `docker exec` (`HUB_AGENT_EXEC_MODE=supervisor` derives the
 supervisor container name; `HUB_AGENT_EXEC_CONTAINER=<name>` pins a fixed
-container). `hubctl tools-exec` inside the runtime is the one-shot executor:
-one bounded JSON request on stdin carrying the verbatim admitted capability
-scopes, one bounded result on stdout. It is not an MCP server, accepts no
-authority fields and fails closed when the channel is unconfigured. Admitted
-path prefixes become `os.Root` sub-roots inside the executor, so a handler bug
-cannot widen a grant into a traversal; projected tool descriptions name the
-admitted scope. An agent cannot reach the Docker socket, so it cannot invoke
-the executor or forge scopes. `hubctl tools` remains the unmanaged local
-stdio surface only.
+container). Calls travel over `hubctl tools-daemon` — one persistent framed
+channel per owning runtime container, multiplexed by frame id, so an
+admitted call costs a frame rather than a process spawn. The daemon is
+per-user by construction (sessions key on the resolved container); a
+resolver that returns a shared container name is the documented extension
+point for group- or deployment-wide executors. `hubctl tools-exec` remains
+the one-shot form for the pack/apply legs of sandboxed runs. Both carry the
+same contract — bounded framed requests with verbatim admitted capability
+scopes, bounded results, no authority fields — and the channel fails closed
+when unconfigured. Admitted path prefixes become `os.Root` sub-roots inside
+the executor, so a handler bug cannot widen a grant into a traversal;
+projected tool descriptions name the admitted scope. An agent cannot reach
+the Docker socket, so it cannot invoke the executor or forge scopes.
+`hubctl tools` remains the unmanaged local stdio surface only.
+
+### Native toolset carve-outs (operator level)
+
+A managed runtime may re-enable reviewed upstream toolsets through
+`native_toolsets` in the space `settings.yaml` — the same operator-owned
+layer that pins `capability_profile_id` and `capability_generation`:
+
+```yaml
+native_toolsets: [terminal, memory, todo]
+```
+
+Each name must come from the reviewed carve-out set (`hubctl capability
+--kind native` lists it). Platform adapters, `delegation`, `bot_room`,
+`a2a`, `coding`, `hermes-*` and `context_engine` are never carve-out
+approved: they open listeners inside the agent or spawn sub-agents whose
+literal toolsets bypass the denylist entirely. The carve-out renders into
+`agent.disabled_toolsets` at materialize and is attested again inside the
+runtime (`HUB_NATIVE_TOOLSETS`); a source config rendered without the same
+list fails the effective-config check. Grant or revoke with
+`hubctl capability --kind native --settings <space>/settings.yaml
+--allow terminal,memory --confirm` — the write is surgical, re-validates
+the whole file through the spawn parser, and applies atomically.
+
+Native tools bypass ToolHub admission on every call by construction: there
+is no per-call check, no call audit, and revocation takes effect only on
+the next spawn. A carved-out `terminal` therefore runs inside the runtime
+without the `code_exec` disposable sandbox — it is still bounded by the
+container's own isolation (agent network, no Docker socket, sealed
+extension roots) but gets full workspace/state reach within it. Grant it
+only to runtimes whose operator accepts that weaker boundary. `memory`
+also flips `memory.memory_enabled` in the rendered config; `skills` can
+list built-in skills but install stays sealed by the read-only tmpfs.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes

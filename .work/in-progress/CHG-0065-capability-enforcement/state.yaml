@@ -148,6 +148,11 @@ completed:
   - P5 hubctl: --kind preview prints the JSON diff read-only; --kind connectors prints the reviewed ConnectorManifest (schema+version, every family opt_in, hh as implemented separately-reviewed connector, org bundle candidates recommended/deferred, mutual-exclusion alternatives for txttsql/dbhub); manifest.Validate rejects non-opt-in admission and duplicate families
   - P5 rollback/migration evidence: replayed revisions conflict as stale; republished earlier content at a new revision restores only reviewed selections with no implicit/legacy resurrection; apply of a previewed draft admits exactly the previewed surface (TestPreviewMatchesApply); acceptance-matrix.md records the full T01-T22 traceability with honest layer per row
   - Full just check after P5 passed all stages with race/shuffle tests and 85.02 percent own Go statement coverage
+  - Native toolset carve-outs: settings.yaml native_toolsets validated against a reviewed set (managed-only, duplicates/malformed rejected, platform/delegation/bot_room/hermes-*/context_engine never approved), subtracted from disabled_toolsets at render/materialize/effective-attest; memory carve-out flips memory.memory_enabled only, compression/curator stay off; HUB_NATIVE_TOOLSETS carries the list to runtime attestation
+  - hubctl capability --kind native lists the reviewed set and performs surgical settings.yaml writes (--settings --allow --confirm): preview without confirm, list replacement, empty allow revokes all, re-validates whole file through the spawn parser, atomic write, non-managed settings rejected without modification
+  - Persistent tools daemon: hubctl tools-daemon serves the identical AgentExecRequest contract over NDJSON frames multiplexed by id; AgentExecPool lazily spawns one docker exec -i channel per owning runtime container (per-user by keying on container), demultiplexes concurrent calls, fails pending calls with a transport error on daemon death and respawns on the next call; caller deadlines honored; bounded stderr capture; StdinPipe/StdoutPipe chosen so dead-daemon writes surface as errors
+  - Daemon death can never return a forged success: pending calls receive a daemonOutcome{reply,err} and die() fails them all before removing the session
+  - just check passed all stages with race/shuffle tests and 85.05 percent own Go statement coverage after the native carve-out and persistent-daemon work
 pending:
   - Channel adapters and alternate entrypoints are proven denied only at resolver level under the managed zero profile; they are never launched by managed runtime and live managed lifecycle is covered by the extended supervisor canary
   - Docker-gated proof of the supervisor docker-exec channel and the new ToolHub relay redirect canary awaits the next CI image run; local unit/integration evidence is in place
@@ -160,7 +165,7 @@ verification:
   source_pin: 869228cab4a8276d3b4c78da9d9939670c47bd0f
   prior_audit_check: passed_85.05_percent
   documentation: passed
-  just_check: passed_all_stages_85.02_percent_after_p5_preview_connectors
+  just_check: passed_all_stages_85.05_percent_after_native_carveout_persistent_daemon
   docker_check: passed_full_wrapper_restart_rollover_secondary_parity_secret_isolation
   docker_check_session: passed_2026_10_03_extended_managed_supervisor_canary
   docker_cleanup: passed

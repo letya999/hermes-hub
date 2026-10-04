@@ -447,3 +447,32 @@ complete on the strength of this design package.
 - `just check` after P5 passed all stages at 85.02 percent own Go statement
   coverage. No release claim: `implementation_status` remains
   `partial_not_release_ready`.
+
+- Native toolset carve-outs (owner instruction): a managed runtime may grant
+  reviewed upstream toolsets natively through `native_toolsets` in
+  settings.yaml — the same operator-owned layer that pins
+  capability_profile_id/capability_generation. The list is validated against
+  a fixed reviewed set (platform adapters, delegation, bot_room, a2a,
+  coding, hermes-* and context_engine are never approved — they open
+  listeners or spawn literal-toolset sub-agents that bypass the denylist),
+  subtracted from `agent.disabled_toolsets` at render/materialize, carried
+  to the runtime via `HUB_NATIVE_TOOLSETS` and attested against the
+  effective config. `memory` also flips `memory.memory_enabled`;
+  compression and curator stay disabled. Honest semantics: native tools get
+  no per-call ToolHub admission, no call audit, and revocation applies only
+  on the next spawn — `hubctl capability --kind native --settings
+  <space>/settings.yaml --allow terminal,memory --confirm` performs the
+  surgical write (preview without --confirm, replacement semantics, empty
+  --allow revokes all, atomic + spawn-parser re-validated).
+- Persistent per-user tools daemon (owner instruction): admitted agenttools
+  calls no longer spawn a process per call. `hubctl tools-daemon` inside
+  the runtime serves the identical bounded AgentExecRequest/Result contract
+  over NDJSON frames multiplexed by id; `AgentExecPool` (internal/toolhub)
+  lazily spawns one `docker exec -i` channel per resolved runtime
+  container — per-user today by keying on the owning container, with the
+  resolver indirection preserved for group- or deployment-wide executors
+  later. Concurrent calls demultiplex by frame id; daemon death fails all
+  pending calls with a real transport error (never a forged result) and the
+  next call lazily respawns. Scratch/sandboxed execution deliberately keeps
+  the one-shot tools-exec path — persistence is for standard tools only.
+- just check passed at 85.05 percent after both additions.

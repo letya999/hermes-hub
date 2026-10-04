@@ -343,10 +343,10 @@ func agentBackendFromEnv() ToolBackend {
 	docker := envOr("HUB_DOCKER_BIN", "docker")
 	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
 		resolve := FixedAgentContainer(container)
-		return AgentExecBackend{Exec: DockerAgentExec([]string{docker}, resolve), Scratch: DockerScratchExec([]string{docker}, resolve, DockerAgentExec([]string{docker}, resolve))}
+		return AgentExecBackend{Exec: DaemonAgentExec([]string{docker}, resolve), Scratch: DockerScratchExec([]string{docker}, resolve, DockerAgentExec([]string{docker}, resolve))}
 	}
 	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
-		return AgentExecBackend{Exec: DockerAgentExec([]string{docker}, ManagedAgentContainer), Scratch: DockerScratchExec([]string{docker}, ManagedAgentContainer, DockerAgentExec([]string{docker}, ManagedAgentContainer))}
+		return AgentExecBackend{Exec: DaemonAgentExec([]string{docker}, ManagedAgentContainer), Scratch: DockerScratchExec([]string{docker}, ManagedAgentContainer, DockerAgentExec([]string{docker}, ManagedAgentContainer))}
 	}
 	return nil
 }

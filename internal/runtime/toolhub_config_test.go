@@ -59,6 +59,19 @@ func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 	}
 }
 
+func TestMaterializeOptionsFromEnvCarriesNativeToolsets(t *testing.T) {
+	t.Setenv("HUB_CAPABILITY_MODE", "managed")
+	t.Setenv("HUB_NATIVE_TOOLSETS", "terminal, memory ,,todo")
+	opts := materializeOptionsFromEnv()
+	if !opts.Managed || len(opts.NativeToolsets) != 3 || opts.NativeToolsets[0] != "terminal" || opts.NativeToolsets[1] != "memory" || opts.NativeToolsets[2] != "todo" {
+		t.Fatalf("native toolsets lost in env transit: %+v", opts)
+	}
+	t.Setenv("HUB_NATIVE_TOOLSETS", "")
+	if got := materializeOptionsFromEnv().NativeToolsets; len(got) != 0 {
+		t.Fatalf("empty env produced grants: %v", got)
+	}
+}
+
 func TestToolHubAutostartBinaryPrefersShippedName(t *testing.T) {
 	old := lookPath
 	t.Cleanup(func() { lookPath = old })

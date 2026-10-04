@@ -31,6 +31,10 @@ type MaterializeOptions struct {
 	RuntimeAuthPresent bool
 	ToolHubReconnect   bool
 	SelfServicesPath   string
+	// NativeToolsets is the operator-approved carve-out list rendered into
+	// this runtime's denylist (settings.yaml `native_toolsets`, or
+	// HUB_NATIVE_TOOLSETS inside the container).
+	NativeToolsets []string
 }
 
 // MaterializeHermesConfig renders the effective Hermes config on the host so
@@ -88,7 +92,10 @@ func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
 		if opts.ToolHubEndpoint == "" || !opts.RuntimeAuthPresent {
 			return fmt.Errorf("managed capabilities require a scoped ToolHub endpoint and token")
 		}
-		if err := validateManagedSourceConfig(configPath); err != nil {
+		if err := ValidateNativeToolsets(opts.NativeToolsets); err != nil {
+			return fmt.Errorf("native_toolsets: %w", err)
+		}
+		if err := validateManagedSourceConfig(configPath, opts.NativeToolsets); err != nil {
 			return err
 		}
 	} else {
@@ -101,7 +108,7 @@ func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
 
 // The selected model and timezone may vary, but capability-bearing fields
 // must exactly match the generated zero template. Extra YAML is denied.
-func validateManagedSourceConfig(configPath string) error {
+func validateManagedSourceConfig(configPath string, nativeToolsets []string) error {
 	body, err := os.ReadFile(configPath) // #nosec G304 -- host-owned materialization path.
 	if err != nil {
 		return err
@@ -120,7 +127,7 @@ func validateManagedSourceConfig(configPath string) error {
 	if !nameOK || !urlOK || !zoneOK {
 		return fmt.Errorf("invalid managed model identity")
 	}
-	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone}))
+	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone, NativeToolsets: nativeToolsets}))
 	if err != nil {
 		return err
 	}
@@ -151,6 +158,10 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	if !runtimeEnvName.MatchString(tokenEnv) {
 		return fmt.Errorf("invalid managed ToolHub token environment")
 	}
+	if err := ValidateNativeToolsets(opts.NativeToolsets); err != nil {
+		return fmt.Errorf("native_toolsets: %w", err)
+	}
+	s.NativeToolsets = opts.NativeToolsets
 	expected := managedHermesConfig(s)
 	expected["mcp_servers"] = M{"toolhub": M{
 		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,

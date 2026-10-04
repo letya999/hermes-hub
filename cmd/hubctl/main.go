@@ -108,6 +108,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "tools-exec" {
 		return runToolsExec(ctx)
 	}
+	if op == "tools-daemon" {
+		return runToolsDaemon(ctx)
+	}
 	if op == "exec-pack" {
 		return runExecPack(ctx)
 	}

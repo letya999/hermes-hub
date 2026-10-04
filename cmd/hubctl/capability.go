@@ -9,9 +9,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
@@ -21,10 +25,12 @@ import (
 // checks revisions and pins.
 func runCapability(args []string) error {
 	f := flag.NewFlagSet("capability", flag.ContinueOnError)
-	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview or connectors")
+	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors or native")
 	file := f.String("file", "", "operator-reviewed JSON record")
 	issuer := f.String("issuer", "operator", "operator identity recorded as issuer and confirmer")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation onto the reviewed record")
+	settingsPath := f.String("settings", "", "space settings.yaml the native carve-out applies to")
+	allow := f.String("allow", "", "comma-separated native toolsets to grant (empty revokes all)")
 	principal := f.String("principal", os.Getenv("HUB_PRINCIPAL_ID"), "principal owning the agent-tools binding")
 	contextID := f.String("context", os.Getenv("HUB_CONTEXT_ID"), "context owning the agent-tools binding")
 	runtimeID := f.String("runtime", os.Getenv("HUB_RUNTIME_ID"), "runtime owning the agent-tools binding")
@@ -33,8 +39,11 @@ func runCapability(args []string) error {
 	if err := f.Parse(args); err != nil {
 		return err
 	}
-	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors") {
-		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors; no positional arguments")
+	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors" && *kind != "native") {
+		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors|native; no positional arguments")
+	}
+	if *kind == "native" {
+		return runCapabilityNative(*settingsPath, *allow, *confirm)
 	}
 	if *kind == "connectors" {
 		manifest := toolhub.RecommendedConnectorManifest()
@@ -165,6 +174,106 @@ func confirmRecord(confirmed bool, issuer string, record any) error {
 	}
 	fmt.Fprintf(os.Stderr, "confirmed digest: %s\n", digest)
 	return nil
+}
+
+// runCapabilityNative grants or revokes the operator-level native-toolset
+// carve-out for one managed runtime. Without --settings it prints the
+// reviewed carve-out set; with --settings it surgically rewrites the
+// `native_toolsets:` line in the space settings.yaml, re-validates the whole
+// file through the same parser a spawn reads, and swaps it atomically.
+// The grant renders into agent.disabled_toolsets: native tools bypass ToolHub
+// admission entirely, so revocation takes effect on the next spawn.
+func runCapabilityNative(settingsPath, allow string, confirm bool) error {
+	if settingsPath == "" {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"kind": "native", "carveout_toolsets": stack.NativeCarveoutToolsets(),
+			"note": "add native_toolsets to a managed space settings.yaml, then re-render",
+		})
+	}
+	var granted []string
+	for _, name := range strings.Split(allow, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			granted = append(granted, name)
+		}
+	}
+	if err := stack.ValidateNativeToolsets(granted); err != nil {
+		return err
+	}
+	current, err := stack.Read(settingsPath)
+	if err != nil {
+		return fmt.Errorf("settings: %w", err)
+	}
+	slices.Sort(granted)
+	if slices.Equal(current.NativeToolsets, granted) {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": "native", "native_toolsets": granted, "changed": false})
+	}
+	if !confirm {
+		fmt.Fprintf(os.Stderr, "native_toolsets: %s -> %s\nre-run with --confirm to commit\n",
+			strings.Join(current.NativeToolsets, ","), strings.Join(granted, ","))
+		return errors.New("carve-out not confirmed")
+	}
+	if err := writeNativeToolsets(settingsPath, granted); err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"kind": "native", "native_toolsets": granted, "changed": true,
+		"note": "restart or re-spawn the runtime; native tools have no per-call admission",
+	})
+}
+
+var (
+	nativeHeaderLine = regexp.MustCompile(`^native_toolsets\s*:`)
+	nativeBlockEntry = regexp.MustCompile(`^\s+-\s`)
+)
+
+// writeNativeToolsets replaces the top-level `native_toolsets:` key (scalar,
+// inline or block list) in a settings.yaml, preserving every other line, then
+// proves the result still parses as valid managed settings before swapping.
+func writeNativeToolsets(path string, names []string) error {
+	body, err := os.ReadFile(path) // #nosec G304 -- operator-supplied settings path.
+	if err != nil {
+		return err
+	}
+	rendered := "native_toolsets: [" + strings.Join(names, ", ") + "]"
+	if len(names) == 0 {
+		rendered = "native_toolsets: []"
+	}
+	lines := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
+	out := make([]string, 0, len(lines)+1)
+	replaced := false
+	for i := 0; i < len(lines); i++ {
+		if !replaced && nativeHeaderLine.MatchString(lines[i]) {
+			out = append(out, rendered)
+			replaced = true
+			for i+1 < len(lines) && nativeBlockEntry.MatchString(lines[i+1]) {
+				i++
+			}
+			continue
+		}
+		out = append(out, lines[i])
+	}
+	if !replaced {
+		out = append(out, rendered)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err = tmp.WriteString(strings.Join(out, "\n") + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	// The post-write file must pass the same strict parse a spawn performs;
+	// a settings file that no longer validates never reaches the runtime.
+	if _, err = stack.Read(name); err != nil {
+		return fmt.Errorf("settings would become invalid: %w", err)
+	}
+	return os.Rename(name, path)
 }
 
 func readCapabilityRecord(path string, record any) error {

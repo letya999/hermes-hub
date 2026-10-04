@@ -33,5 +33,16 @@ func materializeOptionsFromEnv() stack.MaterializeOptions {
 		RuntimeAuthPresent: os.Getenv(tokenEnv) != "",
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_RECONNECT")), "false"),
 		SelfServicesPath:   filepath.Join(state, selfServicesFile),
+		NativeToolsets:     envList("HUB_NATIVE_TOOLSETS"),
 	}
+}
+
+func envList(name string) []string {
+	var out []string
+	for _, value := range strings.Split(os.Getenv(name), ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

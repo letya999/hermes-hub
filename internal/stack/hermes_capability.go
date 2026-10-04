@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 )
 
@@ -34,6 +35,71 @@ func ManagedCapabilityInventory() (HermesCapabilityInventory, error) {
 	return inventory, nil
 }
 
+// nativeCarveoutToolsets is the reviewed set of upstream toolsets an operator
+// may re-enable for one runtime through settings.yaml `native_toolsets`.
+// Everything else in the inventory stays denied: platform adapters only open
+// gateway listeners inside the agent, delegation/bot_room/a2a/coding spawn
+// sub-agents whose literal toolsets bypass the denylist entirely, and
+// hermes-*/context_engine surfaces reopen API paths the boundary removed.
+var nativeCarveoutToolsets = map[string]bool{
+	"file": true, "terminal": true, "memory": true, "skills": true,
+	"todo": true, "web": true, "search": true, "browser": true,
+	"image_gen": true, "video": true, "video_gen": true, "vision": true,
+	"kanban": true, "session_search": true, "cronjob": true,
+	"spotify": true, "homeassistant": true, "tts": true, "x_search": true,
+	"feishu_doc": true, "feishu_drive": true, "clarify": true,
+	"debugging": true, "project": true, "safe": true, "code_execution": true,
+}
+
+var nativeToolsetName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
+// NativeCarveoutToolsets returns the sorted set of upstream toolsets a managed
+// runtime may re-enable per space.
+func NativeCarveoutToolsets() []string {
+	names := make([]string, 0, len(nativeCarveoutToolsets))
+	for name := range nativeCarveoutToolsets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// ValidateNativeToolsets checks an operator-supplied carve-out list: exact
+// reviewed names, deduplicated.
+func ValidateNativeToolsets(names []string) error {
+	seen := map[string]bool{}
+	for _, name := range names {
+		if !nativeToolsetName.MatchString(name) {
+			return fmt.Errorf("invalid native toolset name %q", name)
+		}
+		if !nativeCarveoutToolsets[name] {
+			return fmt.Errorf("native toolset %q is not carve-out approved", name)
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate native toolset %q", name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+// disabledToolsets subtracts the operator's native carve-outs from the
+// inventory denylist. Validate() runs ValidateNativeToolsets first, so any
+// name reaching here is known and approved.
+func disabledToolsets(s Settings) []string {
+	inventory, err := ManagedCapabilityInventory()
+	if err != nil {
+		panic(err) // Corrupt compiled inventory must never render a permissive config.
+	}
+	disabled := make([]string, 0, len(inventory.DisabledToolsets))
+	for _, name := range inventory.DisabledToolsets {
+		if !slices.Contains(s.NativeToolsets, name) {
+			disabled = append(disabled, name)
+		}
+	}
+	return disabled
+}
+
 func managedHermesConfig(s Settings) M {
 	inventory, err := ManagedCapabilityInventory()
 	if err != nil {
@@ -46,14 +112,16 @@ func managedHermesConfig(s Settings) M {
 	return M{
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
-		"agent":             M{"disabled_toolsets": slices.Clone(inventory.DisabledToolsets)},
+		"agent":             M{"disabled_toolsets": disabledToolsets(s)},
 		"mcp_servers":       M{},
 		"plugins":           M{"enabled": []string{}},
 		"skills":            M{},
 		"hooks":             M{},
-		"memory":            M{"memory_enabled": false, "user_profile_enabled": false},
-		"stt":               M{"enabled": false},
-		"security":          M{"allow_lazy_installs": false},
+		// A carved-out `memory` toolset still needs its subsystem flag; without
+		// it the tool loads against a disabled backend and silently no-ops.
+		"memory":   M{"memory_enabled": slices.Contains(s.NativeToolsets, "memory"), "user_profile_enabled": false},
+		"stt":      M{"enabled": false},
+		"security": M{"allow_lazy_installs": false},
 		// Literal-toolset sub-agents ignore the denylist (AIAgent receives no
 		// disabled_toolsets on these paths): detached compression hygiene gets
 		// ["memory"] and curator consolidation gets ["skills"]. Both are config

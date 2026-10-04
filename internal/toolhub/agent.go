@@ -1,15 +1,19 @@
 package toolhub
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // AgentExecRequest is the one-shot contract between the ToolHub gateway and
@@ -87,6 +91,261 @@ func (b AgentExecBackend) CallEnv(ctx context.Context, effective EffectiveBindin
 }
 
 const agentExecMaxResponse = 4 << 20
+
+// AgentExecFrame carries one call on the persistent tools-daemon channel. The
+// request fields are the same verbatim admitted contract the one-shot
+// tools-exec consumes; id correlates multiplexed replies.
+type AgentExecFrame struct {
+	ID uint64 `json:"id"`
+	AgentExecRequest
+}
+
+// AgentExecReply is the daemon's demultiplexed response: id selects the
+// pending caller; the embedded result is the bounded executor contract.
+type AgentExecReply struct {
+	ID uint64 `json:"id"`
+	AgentExecResult
+}
+
+// agentExecSession is one live tools-daemon: a single `docker exec -i`
+// channel into the owning runtime container multiplexing framed calls. When
+// the process dies every pending call fails and the pool respawns lazily.
+// daemonOutcome distinguishes a demultiplexed reply from a transport failure:
+// session death resolves pending calls with an error, never a fake result.
+type daemonOutcome struct {
+	reply AgentExecReply
+	err   error
+}
+
+type agentExecSession struct {
+	pendingMu sync.Mutex
+	pending   map[uint64]chan daemonOutcome
+	dead      chan struct{}
+	deadErr   error
+	seq       atomic.Uint64
+
+	writeMu sync.Mutex
+	stdin   io.WriteCloser
+
+	cmd    *exec.Cmd
+	stderr *bytes.Buffer
+}
+
+func (s *agentExecSession) register(id uint64) (chan daemonOutcome, error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	select {
+	case <-s.dead:
+		return nil, s.deadErr
+	default:
+	}
+	ch := make(chan daemonOutcome, 1)
+	s.pending[id] = ch
+	return ch, nil
+}
+
+func (s *agentExecSession) unregister(id uint64) {
+	s.pendingMu.Lock()
+	delete(s.pending, id)
+	s.pendingMu.Unlock()
+}
+
+// die fails every pending call exactly once and marks the session for lazy
+// respawn; the caller never revives a dead channel.
+func (s *agentExecSession) die(err error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	select {
+	case <-s.dead:
+		return
+	default:
+	}
+	if err == nil {
+		err = errors.New("tools-daemon stopped")
+	}
+	s.deadErr = err
+	close(s.dead)
+	for id, ch := range s.pending {
+		ch <- daemonOutcome{err: fmt.Errorf("executor channel: %w", err)}
+		delete(s.pending, id)
+	}
+}
+
+// readReplies demultiplexes daemon reply frames until the stream or the
+// daemon itself ends, then sinks the session.
+func (s *agentExecSession) readReplies(stdout io.Reader) {
+	reader := bufio.NewReaderSize(stdout, 64*1024)
+	var readErr error
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > agentExecMaxResponse+1024 {
+			readErr = errors.New("tools-daemon reply exceeds bound")
+			break
+		}
+		if len(line) > 0 {
+			var reply AgentExecReply
+			if json.Unmarshal(line, &reply) == nil {
+				s.pendingMu.Lock()
+				if ch, ok := s.pending[reply.ID]; ok {
+					ch <- daemonOutcome{reply: reply}
+					delete(s.pending, reply.ID)
+				}
+				s.pendingMu.Unlock()
+			}
+		}
+		if err != nil {
+			readErr = err
+			break
+		}
+	}
+	waitErr := s.cmd.Wait()
+	if readErr == nil || errors.Is(readErr, io.EOF) {
+		readErr = waitErr
+	}
+	detail := strings.TrimSpace(s.stderr.String())
+	if len(detail) > 200 {
+		detail = detail[:200]
+	}
+	if detail != "" {
+		readErr = fmt.Errorf("%v: %s", readErr, detail)
+	}
+	s.die(readErr)
+}
+
+// agentExecPool owns persistent executor sessions keyed by resolved container
+// name. Each owning runtime keeps its own daemon — per-user by construction;
+// a resolver that returns a shared container name would share one session
+// across bindings, which is the documented group/shared extension point.
+type agentExecPool struct {
+	docker   []string
+	resolve  func(EffectiveBinding) (string, error)
+	mu       sync.Mutex
+	sessions map[string]*agentExecSession
+}
+
+// NewAgentExecPool builds a lazily-spawning persistent executor pool; Close
+// kills every live session (shutdown and tests only — a dead session respawns
+// on the next call anyway).
+func NewAgentExecPool(dockerArgv []string, resolve func(EffectiveBinding) (string, error)) *agentExecPool {
+	if len(dockerArgv) == 0 {
+		dockerArgv = []string{"docker"}
+	}
+	return &agentExecPool{docker: dockerArgv, resolve: resolve, sessions: map[string]*agentExecSession{}}
+}
+
+func (p *agentExecPool) session(container string) (*agentExecSession, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if s, ok := p.sessions[container]; ok {
+		select {
+		case <-s.dead:
+			delete(p.sessions, container)
+		default:
+			return s, nil
+		}
+	}
+	cmd := exec.Command(p.docker[0], append(p.docker[1:], "exec", "-i", container, "hubctl", "tools-daemon")...)
+	s := &agentExecSession{pending: map[uint64]chan daemonOutcome{}, dead: make(chan struct{}), stderr: &bytes.Buffer{}}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = &boundedWriter{w: s.stderr, max: 4096}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("tools-daemon spawn: %w", err)
+	}
+	s.cmd = cmd
+	s.stdin = stdin
+	go s.readReplies(stdout)
+	p.sessions[container] = s
+	return s, nil
+}
+
+// boundedWriter caps captured daemon stderr for error detail.
+type boundedWriter struct {
+	w   *bytes.Buffer
+	max int
+}
+
+func (b *boundedWriter) Write(p []byte) (int, error) {
+	if b.w.Len()+len(p) > b.max {
+		p = p[:max(0, b.max-b.w.Len())]
+	}
+	return b.w.Write(p)
+}
+
+func (p *agentExecPool) call(ctx context.Context, effective EffectiveBinding, request AgentExecRequest) (AgentExecResult, error) {
+	container, err := p.resolve(effective)
+	if err != nil {
+		return AgentExecResult{}, err
+	}
+	s, err := p.session(container)
+	if err != nil {
+		return AgentExecResult{}, err
+	}
+	id := s.seq.Add(1)
+	replyCh, err := s.register(id)
+	if err != nil {
+		return AgentExecResult{}, err
+	}
+	frame, err := json.Marshal(AgentExecFrame{ID: id, AgentExecRequest: request})
+	if err != nil {
+		s.unregister(id)
+		return AgentExecResult{}, err
+	}
+	s.writeMu.Lock()
+	_, err = s.stdin.Write(append(frame, '\n'))
+	s.writeMu.Unlock()
+	if err != nil {
+		s.unregister(id)
+		s.die(fmt.Errorf("tools-daemon write: %w", err))
+		return AgentExecResult{}, err
+	}
+	select {
+	case outcome := <-replyCh:
+		if outcome.err != nil {
+			return AgentExecResult{}, outcome.err
+		}
+		return outcome.reply.AgentExecResult, nil
+	case <-ctx.Done():
+		s.unregister(id)
+		return AgentExecResult{}, ctx.Err()
+	}
+}
+
+// Exec adapts the pool to the AgentExecFunc contract.
+func (p *agentExecPool) Exec(ctx context.Context, effective EffectiveBinding, request AgentExecRequest) (AgentExecResult, error) {
+	return p.call(ctx, effective, request)
+}
+
+// Close kills every live daemon session; used on shutdown and by tests.
+func (p *agentExecPool) Close() {
+	p.mu.Lock()
+	sessions := make([]*agentExecSession, 0, len(p.sessions))
+	for _, s := range p.sessions {
+		sessions = append(sessions, s)
+	}
+	p.sessions = map[string]*agentExecSession{}
+	p.mu.Unlock()
+	for _, s := range sessions {
+		_ = s.stdin.Close()
+		_ = s.cmd.Process.Kill()
+		s.die(errors.New("tools-daemon pool closed"))
+	}
+}
+
+// DaemonAgentExec serves admitted agent-tools calls over one persistent
+// tools-daemon per owning runtime container instead of spawning `docker exec`
+// per call. The channel is identical in kind — docker exec never crosses the
+// agent network — only its lifetime changes: spawn cost amortizes across
+// calls while each frame still carries the verbatim admitted scopes.
+func DaemonAgentExec(dockerArgv []string, resolve func(EffectiveBinding) (string, error)) AgentExecFunc {
+	return NewAgentExecPool(dockerArgv, resolve).Exec
+}
 
 // DockerAgentExec invokes `hubctl tools-exec` inside the owning runtime
 // container over the Docker engine API. The channel never crosses the agent

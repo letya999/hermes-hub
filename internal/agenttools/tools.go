@@ -819,6 +819,8 @@ func (t *Tools) API(ctx context.Context, op string, r Input) (map[string]any, er
 	return out, nil
 }
 func (t *Tools) session() *media.Session {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.Media == nil {
 		t.Media = media.New(t.Workspace)
 	}

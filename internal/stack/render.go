@@ -258,6 +258,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
 		runtimeEnv["HUB_MANAGED_MODEL_ID"] = s.Model
 		runtimeEnv["HUB_MANAGED_MODEL_URL"] = s.ModelURL
+		runtimeEnv["HUB_NATIVE_TOOLSETS"] = strings.Join(s.NativeToolsets, ",")
 		runtimeEnv["HERMES_BUNDLES_DIR"] = "/state/hermes/skill-bundles"
 		runtimeEnv["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
 	}
@@ -762,6 +763,7 @@ func materializeHermesConfig(dir string, s Settings) error {
 		RuntimeAuthPresent: strings.TrimSpace(auth[tokenEnv]) != "" || strings.TrimSpace(runtimeEnv[tokenEnv]) != "",
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
+		NativeToolsets:     s.NativeToolsets,
 	})
 }
 

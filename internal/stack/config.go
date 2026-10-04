@@ -18,34 +18,39 @@ import (
 )
 
 type Settings struct {
-	ExecutionMode        string               `yaml:"-"`
-	SupervisorURL        string               `yaml:"-"`
-	NativeCron           string               `yaml:"-"`
-	Environment          string               `yaml:"-"`
-	CapabilityMode       string               `yaml:"capability_mode,omitempty"`
-	CapabilityProfileID  string               `yaml:"capability_profile_id,omitempty"`
-	CapabilityGeneration uint64               `yaml:"capability_generation,omitempty"`
-	MCP                  map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks                map[string]any       `yaml:"hooks,omitempty"`
-	Memory               bool                 `yaml:"memory"`
-	Honcho               bool                 `yaml:"honcho,omitempty"`
-	HonchoURL            string               `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir      string               `yaml:"global_skills_dir,omitempty"`
-	Schema               int                  `yaml:"schema"`
-	User                 string               `yaml:"user"`
-	Organization         string               `yaml:"organization,omitempty"`
-	DisabledMCP          []string             `yaml:"disabled_mcp,omitempty"`
-	Model                string               `yaml:"model"`
-	ModelURL             string               `yaml:"model_url"`
-	Timezone             string               `yaml:"timezone"`
-	Features             []string             `yaml:"features"`
-	GoogleEmail          string               `yaml:"google_email"`
-	GitLabHost           string               `yaml:"gitlab_host"`
-	DesktopURL           string               `yaml:"desktop_url"`
-	DraftsURL            string               `yaml:"drafts_url"`
-	OAuthPort            int                  `yaml:"oauth_port"`
-	BrowserPort          int                  `yaml:"browser_port"`
-	SlackEventsPort      int                  `yaml:"slack_events_port,omitempty"`
+	ExecutionMode        string `yaml:"-"`
+	SupervisorURL        string `yaml:"-"`
+	NativeCron           string `yaml:"-"`
+	Environment          string `yaml:"-"`
+	CapabilityMode       string `yaml:"capability_mode,omitempty"`
+	CapabilityProfileID  string `yaml:"capability_profile_id,omitempty"`
+	CapabilityGeneration uint64 `yaml:"capability_generation,omitempty"`
+	// NativeToolsets is the operator-level carve-out list: each name is
+	// removed from the managed denylist for this runtime only. Native tools
+	// bypass ToolHub admission entirely — the grant applies at render time and
+	// revocation takes effect on the next spawn, never mid-session.
+	NativeToolsets  []string             `yaml:"native_toolsets,omitempty"`
+	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks           map[string]any       `yaml:"hooks,omitempty"`
+	Memory          bool                 `yaml:"memory"`
+	Honcho          bool                 `yaml:"honcho,omitempty"`
+	HonchoURL       string               `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir string               `yaml:"global_skills_dir,omitempty"`
+	Schema          int                  `yaml:"schema"`
+	User            string               `yaml:"user"`
+	Organization    string               `yaml:"organization,omitempty"`
+	DisabledMCP     []string             `yaml:"disabled_mcp,omitempty"`
+	Model           string               `yaml:"model"`
+	ModelURL        string               `yaml:"model_url"`
+	Timezone        string               `yaml:"timezone"`
+	Features        []string             `yaml:"features"`
+	GoogleEmail     string               `yaml:"google_email"`
+	GitLabHost      string               `yaml:"gitlab_host"`
+	DesktopURL      string               `yaml:"desktop_url"`
+	DraftsURL       string               `yaml:"drafts_url"`
+	OAuthPort       int                  `yaml:"oauth_port"`
+	BrowserPort     int                  `yaml:"browser_port"`
+	SlackEventsPort int                  `yaml:"slack_events_port,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -221,6 +226,12 @@ func (s Settings) Validate() error {
 				return fmt.Errorf("managed capabilities cannot be enabled by legacy feature %q", feature)
 			}
 		}
+		if err := ValidateNativeToolsets(s.NativeToolsets); err != nil {
+			return fmt.Errorf("native_toolsets: %w", err)
+		}
+	}
+	if s.CapabilityMode != "managed" && len(s.NativeToolsets) > 0 {
+		return fmt.Errorf("native_toolsets requires capability_mode managed")
 	}
 	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
 		return fmt.Errorf("managed capability identity requires capability_mode managed")
