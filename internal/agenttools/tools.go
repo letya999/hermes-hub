@@ -61,6 +61,7 @@ type Tools struct {
 	HHURL, HHKey, UserAgent          string
 	HHEnabled, OrgScoped             bool
 	OrgActions                       map[string]bool
+	ReadOnlyTools                    map[string]bool
 	StateDir                         string
 	ToolHub                          *toolhub.Store
 	ToolHubAuth                      identity.Envelope
@@ -136,9 +137,27 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 	if communicationAuth == "" {
 		communicationAuth = os.Getenv("HUB_RUNTIME_AUTH")
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	t.openSSH()
 	return t, nil
+}
+
+// readOnlyToolNames expands the HUB_TOOLS_RO capability list into the tool
+// names the executor must refuse: every write-effect tool of a read-only
+// capability. The env arrives only from the rendered runtime spec — the
+// agent cannot widen it — and admission profiles remain the authority; this
+// is the same answer enforced inside the process.
+func readOnlyToolNames(capabilities map[string]bool) map[string]bool {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, spec := range HubToolsDefinition().Tools {
+		if spec.Effect == toolhub.WriteEffect && capabilities[spec.CapabilityID] {
+			names[spec.Name] = true
+		}
+	}
+	return names
 }
 
 func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {
@@ -321,7 +340,7 @@ func (t *Tools) ServiceEnable(r Input) (map[string]any, error) {
 		return nil, fmt.Errorf("unknown service %q; call service_catalog first", name)
 	}
 	if !info.SelfService {
-		return nil, fmt.Errorf("service %q is host-managed; enable it in settings.yaml", name)
+		return nil, fmt.Errorf("service %q is host-managed; enable it in workspace.yaml", name)
 	}
 	if os.Getenv("HUB_ORG_SCOPED") == "true" {
 		return nil, fmt.Errorf("service changes are host-managed in organization scope")

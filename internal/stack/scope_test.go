@@ -56,7 +56,9 @@ func TestOrganizationOverlayAndMembership(t *testing.T) {
 
 	s.Tools = testTools("clickhouse=off")
 	s.MCP = nil
-	saveYAML(t, filepath.Join(space, "settings.yaml"), s)
+	if err := WriteSpace(space, s); err != nil {
+		t.Fatal(err)
+	}
 	s, err = ReadEnvironment(space, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +87,7 @@ func TestOrganizationRejectsEscalationAndNonMember(t *testing.T) {
 		if err := InitEnvironmentWithOrganization(space, user, "prod", "acme"); err != nil {
 			t.Fatal(err)
 		}
-		s, err := Read(filepath.Join(space, "settings.yaml"))
+		s, err := Read(space)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +98,9 @@ func TestOrganizationRejectsEscalationAndNonMember(t *testing.T) {
 			continue
 		}
 		s.MCP = map[string]MCPServer{"unapproved": {URL: "https://unapproved.invalid/mcp"}}
-		saveYAML(t, filepath.Join(space, "settings.yaml"), s)
+		if err := WriteSpace(space, s); err != nil {
+			t.Fatal(err)
+		}
 		if _, err = ReadEnvironment(space, "prod"); err == nil || !strings.Contains(err.Error(), "user MCP definitions") {
 			t.Fatalf("user MCP escalation accepted: %v", err)
 		}

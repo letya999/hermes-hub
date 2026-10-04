@@ -44,6 +44,9 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 // call dispatches to one handler. ws, ar and org are the call-scoped roots;
 // handlers for non-filesystem capabilities ignore them.
 func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.Root) (any, error) {
+	if t.ReadOnlyTools[name] {
+		return nil, fmt.Errorf("%s is read-only on this runtime", name)
+	}
 	session := func() *media.Session {
 		if ws == t.Workspace {
 			return t.session()

@@ -46,7 +46,7 @@ Telegram chats.
 For `slack_app`, create a Slack App with Events API. Fill `SLACK_SIGNING_SECRET`,
 `SLACK_BOT_TOKEN` and `SLACK_ALLOWED_USERS` as `TEAMID/USERID` pairs (never email or
 display name). Compose publishes loopback `slack_events_port` (default 8081, set in
-`settings.yaml`) to communication-hub `:8081`. Point the app Request URL at
+`agent.yaml`) to communication-hub `:8081`. Point the app Request URL at
 `http://127.0.0.1:<slack_events_port>/v1/slack/events` (tunnel if Slack Cloud must
 reach this host). This is ingress/delivery only and does not enable Slack
 search/read/write tools; those stay on the separate `slack` feature.
@@ -275,7 +275,7 @@ review their code and permissions. User skills stay writable only in the user ho
 Organization and global skills are curated read-only mounts.
 
 Gateway hooks use a directory containing HOOK.yaml and handler.py. Plugin hooks run
-in CLI and gateway. Shell hooks are passed from settings.yaml's hooks block unchanged.
+in CLI and gateway. Shell hooks are passed from agent.yaml's hooks block unchanged.
 See the pinned upstream [hook guide](https://github.com/nousresearch/hermes-agent/blob/869228cab4a8276d3b4c78da9d9939670c47bd0f/website/docs/user-guide/features/hooks.md).
 Copy reviewed local extensions into the selected container using Docker cp, or install
 through Hermes. No hooks/skills are silently installed with extra account permissions.

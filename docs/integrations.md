@@ -688,11 +688,12 @@ hub-owned mutations are separately gated by `org_actions`.
 
 ## External MCP connections
 
-Add user-owned connections in settings.yaml, then add secrets independently to the
+Add user-owned connections in workspace.yaml's `mcp:` map and select them with a
+`tools:` entry (`via: mcp-raw`), then add secrets independently to the
 selected secrets.dev.env or secrets.prod.env. Example external service:
 
 ```yaml
-mcp_servers:
+mcp:
   career:
     url: https://your-career-host.example/mcp
     headers:
@@ -702,6 +703,9 @@ mcp_servers:
     args: [/workspace/tools/server.cjs]
     env:
       TOOL_TOKEN: ${TOOL_TOKEN}
+tools:
+  career: mcp-raw:career
+  local_tool: mcp-raw:local_tool
 ```
 
 These are examples, not preconfigured endpoints. Remote MCP needs an actual MCP server;

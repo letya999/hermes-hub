@@ -241,7 +241,7 @@ func validateDestination(path string, kind stack.ScopeKind, id string) error {
 			return fmt.Errorf("destination scope collision at %s", path)
 		}
 	}
-	allowed := map[string]bool{"scope.yaml": true, "settings.yaml": true, "SOUL.md": true, "secrets.dev.env": true, "secrets.prod.env": true, "docs": true, "hermes": true, "connections": true, "workspace": true, "archive": true, "generated": true}
+	allowed := map[string]bool{"scope.yaml": true, "settings.yaml": true, "agent.yaml": true, "workspace.yaml": true, "SOUL.md": true, "secrets.dev.env": true, "secrets.prod.env": true, "docs": true, "hermes": true, "connections": true, "workspace": true, "archive": true, "generated": true}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return err

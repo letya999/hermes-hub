@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func TestInitNeverOverwrites(t *testing.T) {
@@ -29,7 +27,7 @@ func TestInitNeverOverwrites(t *testing.T) {
 	if err != nil || secrets["OPENAI_API_KEY"] != "" {
 		t.Fatal(err)
 	}
-	s, err := Read(filepath.Join(d, "settings.yaml"))
+	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +63,7 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSSHConfig(t, d) // the all-features render includes ssh; it fails closed without a config
-	s, _ := Read(filepath.Join(d, "settings.yaml"))
+	s, _ := Read(d)
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.GoogleEmail = "me@example.org"
@@ -76,10 +74,9 @@ func TestRenderAllFeatures(t *testing.T) {
 		featureNames = append(featureNames, f.Name)
 	}
 	s.Tools, s.Ingress = testTools(featureNames...), testIngress(featureNames...)
-	s.Tools, s.Ingress = nil, nil
-	s.Tools, s.Ingress = testTools(featureNames...), testIngress(featureNames...)
-	b, _ := yaml.Marshal(s)
-	_ = os.WriteFile(filepath.Join(d, "settings.yaml"), b, 0600)
+	if err := saveSpace(d, s); err != nil {
+		t.Fatal(err)
+	}
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +177,14 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	settings, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools, settings.Ingress = testTools("workspace", "telegram", "atlassian"), testIngress("workspace", "telegram", "atlassian")
-	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
 	secrets := "OPENAI_API_KEY=model\nTELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\nJIRA_API_TOKEN=provider\n"
@@ -278,13 +275,9 @@ func TestComposeMountsCommunicationUsersWhenPresent(t *testing.T) {
 	}
 }
 
-func saveSettings(path string, settings Settings) error {
-	b, err := yaml.Marshal(settings)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0600)
-}
+// saveSpace keeps the historical test helper name; the canonical pair
+// writer lives next to readSpace.
+func saveSpace(dir string, settings Settings) error { return WriteSpace(dir, settings) }
 
 func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
@@ -472,11 +465,7 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := yaml.Marshal(Settings{Schema: 1, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), encoded, 0600); err != nil {
+	if err := saveSpace(dir, Settings{Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}); err != nil {
 		t.Fatal(err)
 	}
 	dev, err := ReadEnvironment(dir, "dev")
@@ -522,13 +511,13 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	settings, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -635,13 +624,13 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	settings, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -706,13 +695,13 @@ func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settingsPath := filepath.Join(d, "settings.yaml")
-	body, _ := os.ReadFile(settingsPath)
-	body = []byte(strings.Replace(string(body), "ingress:", "mcp_servers:\n    browser_guest:\n        url: https://evil.invalid/mcp\ningress:", 1))
-	if err := os.WriteFile(settingsPath, body, 0600); err != nil {
+	workspacePath := filepath.Join(d, "workspace.yaml")
+	body, _ := os.ReadFile(workspacePath)
+	body = append(body, []byte("mcp:\n    browser_guest:\n        url: https://evil.invalid/mcp\n")...)
+	if err := os.WriteFile(workspacePath, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Read(settingsPath); err == nil {
+	if _, err := Read(d); err == nil {
 		t.Fatal("user MCP claimed the reserved browser_guest name")
 	}
 }

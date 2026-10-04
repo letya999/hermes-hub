@@ -131,14 +131,14 @@ func TestDocumentImageProfile(t *testing.T) {
 	if err := Init(space, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(space, "settings.yaml"))
+	settings, err := Read(space)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "m"
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools, settings.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSettings(filepath.Join(space, "settings.yaml"), settings); err != nil {
+	if err := WriteSpace(space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(space, "secrets.prod.env"), []byte("OPENAI_API_KEY=openai-sample\nFAL_KEY=fal-sample-value\n"), 0o600); err != nil {
@@ -162,7 +162,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatalf("rendered runtime leaked generation credential: %v %s", err, runtimeEnv)
 	}
 	settings.Tools, settings.Ingress = testTools("workspace", "image_gen"), testIngress("workspace", "image_gen")
-	if err := saveSettings(filepath.Join(space, "settings.yaml"), settings); err != nil {
+	if err := WriteSpace(space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := Render(space, repo); err != nil {
@@ -177,7 +177,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatalf("cliproxy runtime included FAL_KEY: %v %s", err, runtimeEnv)
 	}
 	settings.ImageGen = media.ImageGen{Provider: media.FalProvider, Model: media.ModelFromChat, Delivery: media.DeliveryURL}
-	if err := saveSettings(filepath.Join(space, "settings.yaml"), settings); err != nil {
+	if err := WriteSpace(space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := Render(space, repo); err != nil {

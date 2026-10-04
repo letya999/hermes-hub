@@ -5,7 +5,8 @@ Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).
 
 1. The user-scoped catalog is the materialized `hermes-effective.<env>.yaml`
    plus the ToolHub projection for that owner. It is a function of exactly
-   four host-side inputs: `settings.yaml`, the organization overlay
+   four host-side inputs: the space config pair (`workspace.yaml` +
+   `agent.yaml`; legacy `settings.yaml` reads equivalently), the organization overlay
    (SPEC-0004), the validated self-service state file, and the owner's
    effective ToolHub bindings (SPEC-0023). Same inputs produce the same
    file; nothing in the catalog is sampled, negotiated, or discovered at
@@ -66,7 +67,8 @@ Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).
 8. Resource-heavy rows (browser, image_gen, transcription, ssh shells,
    deep research) are opt-in or carry explicit concurrency/size/deadline
    bounds; Init defaults add no always-on heavy capability.
-9. Operator path: enable a host feature in `settings.yaml` + `hubctl up`,
+9. Operator path: enable a host feature in the space config (`tools:` in
+   `workspace.yaml`) + `hubctl up`,
    or a self-service connector from chat; `hubctl doctor` reports the
    missing `Requires` keys. Removal is the symmetric edit or revoke;
    `hubctl secret delete` removes the credential. Recovery is a normal

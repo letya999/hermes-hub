@@ -22,7 +22,7 @@ lines; later cycles take at most 5000 lines per container, and one container
 whose `docker logs` fails is skipped without stalling the others. Secrets are
 redacted at collection time, so the combined file never stores tokens or
 passwords in plaintext. To opt out, set `diagnostics: false` in the
-infra-owning space's `settings.yaml` and run `hubctl up` again.
+infra-owning space's `agent.yaml` and run `hubctl up` again.
 
 Users with an explicit `control-operation` grant for `diagnostics` inspect their
 own diagnostics through that ToolHub operation. It returns the caller's connector workloads plus bounded,
@@ -185,7 +185,15 @@ the Docker socket, so it cannot invoke the executor or forge scopes.
 
 ### The `tools:` surface (operator level)
 
-One `tools:` map in `settings.yaml` is the whole capability surface —
+A space keeps two YAML files with different owners. `agent.yaml` is
+operator-owned runtime config — identity, model, timezone, ports,
+capability mode/profile pin, hooks, memory and infra flags. `workspace.yaml`
+is capability intent — the `tools:` map, `ingress:` channels, workspace
+mounts and raw `mcp:` server definitions. Legacy `settings.yaml` keeps
+reading and migrates into the same model; keys placed in the wrong file of
+the pair are rejected, not merged.
+
+One `tools:` map in `workspace.yaml` is the whole capability surface —
 toolsets, ToolHub families, MCP connectors and explicit denies share one
 vocabulary. Each entry picks a backend, scalar or mapping:
 
@@ -193,12 +201,14 @@ vocabulary. Each entry picks a backend, scalar or mapping:
 tools:
   terminal: native            # upstream toolset inside the runtime
   file: toolhub               # managed executor, per-call admission
-  browser: mcp:playwright     # a builtin or mcp_servers MCP server
+  browser: mcp:playwright     # ToolHub-mediated connector (slack, github, ...)
   github: mcp                 # connector capability (via ToolHub when managed)
+  gitea: mcp-raw:gitea        # raw mcp: definition rendered into mcp_servers
   code_exec: off              # explicit deny; absent means denied
   ssh:
     via: toolhub
-    tools: {write: false, shell: false, tunnel: false}
+    access: ro                # write-effect tools denied inside the executor
+    tools: {shell: false, tunnel: false}
   file:
     via: toolhub
     only: [file_read, file_list]
@@ -209,13 +219,15 @@ workspace:
   mounts:
     - {from: docs, to: /docs, mode: ro}
     - {from: org:docs, to: /orgdocs}   # organization dirs are always ro
+mcp:
+  gitea: {url: https://gitea.example/mcp}   # referenced by via: mcp-raw only
 ```
 
-The embedded `internal/stack/defaults/settings.yaml` seeds every new space;
-`init` substitutes `user`/`organization` and never overwrites. Schema-1
-files keep reading: `features`, `native_toolsets` and `disabled_mcp`
-migrate into this surface at parse time and are rejected when mixed with
-the new keys.
+The embedded `internal/stack/defaults/{agent,workspace}.yaml` pair seeds
+every new space; `init` substitutes `user`/`organization`, allocates ports
+and never overwrites. Schema-1 `settings.yaml` files keep reading:
+`features`, `native_toolsets` and `disabled_mcp` migrate into this surface
+at parse time and are rejected when mixed with the new keys.
 
 `tools:` declares visibility, not authority — ToolHub profiles and grants
 in the protected store still govern what an admitted call may do.
@@ -235,21 +247,33 @@ in the protected store still govern what an admitted call may do.
 * `toolhub` marks a managed family (files, documents, images, artifacts,
   routines, services, hh, ssh, image_gen, code_exec) as visible intent;
   admission still needs a matching ToolHub grant.
-* `mcp[:server]` selects a builtin connector or an `mcp_servers` entry.
-  `only`/`except`/`tools`/`paths`/`limits` refine per-tool selection and
-  execution bounds.
+* `mcp[:server]` selects a ToolHub-mediated connector. The connector runs
+  on the hub side and calls are admitted through ToolHub — it never
+  appears in the runtime's `mcp_servers` section.
+* `mcp-raw[:server]` renders a `mcp:` definition (or an organization-
+  provided one) directly into the runtime's `mcp_servers`. Managed mode
+  only permits organization-scoped definitions.
+
+`access: ro` makes an entry read-only where the boundary can prove it:
+ToolHub entries deny every write-effect tool inside the executor
+(`HUB_TOOLS_RO`), connector write actions drop out of `HUB_ORG_ACTIONS`,
+browser loses its mutation tools, and an `mcp-raw` server gains a
+`tools.exclude` filter (reviewed mutation table, or a mandatory explicit
+`except:` for servers the hub has not reviewed). `access: ro` on a native
+toolset is a validation error — upstream grants toolsets whole, so the
+hub would be promising a filter it cannot enforce.
 
 ```text
-hubctl capability --kind tools                                  # backend vocabulary + reviewed native set
-hubctl capability --kind tools --settings <space>/settings.yaml # compiled plan
-hubctl capability --kind tools --settings <space>/settings.yaml \
-  --set terminal=native,browser=mcp:playwright --confirm        # surgical write
+hubctl capability --kind tools                                   # backend vocabulary + reviewed native set
+hubctl capability --kind tools --settings <space>                # compiled plan
+hubctl capability --kind tools --settings <space>/workspace.yaml \
+  --set terminal=native,browser=mcp:playwright+ro --confirm      # surgical write
 ```
 
-`--set name=backend` upserts entries; `--set name=` removes them. The
-write edits only the `tools:` mapping, re-validates the whole file
-through the spawn parser and swaps atomically. Native changes take effect
-on restart or re-spawn.
+`--set name=backend` upserts entries; `--set name=` removes them; `+ro`
+sets `access: ro`. The write edits only the `tools:` mapping, re-validates
+the whole file pair through the spawn parser and swaps atomically. Native
+changes take effect on restart or re-spawn.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes
@@ -651,7 +675,7 @@ See SPEC-0016 and CHG-0018 for acceptance and current evidence.
 
 ## SSH capability
 
-`ssh` in `settings.yaml` features exposes bounded SSH to owner-configured
+`ssh` in `workspace.yaml` `tools:` exposes bounded SSH to owner-configured
 hosts. `ssh_write`, `ssh_shell` and `ssh_tunnel` stack on it; each requires
 `ssh`. Render fails when `connections/ssh/config.yaml` is missing or invalid;
 `doctor` reports the same gap. The directory is mounted read-only at

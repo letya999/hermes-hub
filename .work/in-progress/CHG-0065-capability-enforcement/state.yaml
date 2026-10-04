@@ -159,6 +159,14 @@ completed:
   - hubctl capability --kind tools prints the backend vocabulary and compiled ToolPlan; --set name=backend --confirm upserts/removes entries surgically via yaml.Node with spawn-parser re-validation and atomic swap
   - Child-without-parent feature cases became unrepresentable in the folded model (toggles live on the parent entry, off takes no fields); dependency tests rewritten to the new shape; workspace made unconditional in the effective vocabulary
   - just check passed all stages with race/shuffle tests and 85.05 percent own Go statement coverage after the tools-surface refactor
+  - Config split landed: space is now workspace.yaml (tools/ingress/workspace mounts/mcp defs — capability intent) plus agent.yaml (identity, model/url, timezone, ports, capability mode/profile pin, gitlab_host, hooks, memory, infra, diagnostics — operator runtime); legacy settings.yaml keeps reading and migrates; wrong-file keys are rejected; WriteSpace serializes the pair; supervisor/migration call sites read via stack.Read(dir)
+  - Embedded defaults split into defaults/agent.yaml and defaults/workspace.yaml; Init allocates oauth/browser/slack ports by scanning sibling spaces instead of templating fixed values
+  - MCP separation: via mcp selects ToolHub-mediated connectors only (never rendered into mcp_servers); via mcp-raw[:server] renders a workspace.yaml mcp: definition (or an organization-provided one) directly into hermes mcp_servers; managed mode only permits organization-scoped raw definitions; scalar mcp-raw:server form parsed (a gap the new CLI split test caught)
+  - access: ro enforces at every provable boundary: write toggles suppressed in Has/toolToggle; orgActionTool-mapped actions dropped from effectiveOrgActions and refused by AllowsOrgAction; HUB_TOOLS_RO rendered env is expanded by agenttools readOnlyToolNames into every write-effect tool of the capability and denied before dispatch in call(); mcp-raw ro renders a real tools.exclude from a reviewed mutation table (playwright) or requires an explicit except list; ro on native or off entries is a validation error
+  - NanoClaw-style mount blocklist: deniedMountSource rejects .ssh/.aws/.kube/.docker/.secrets/.gnupg, credentials/.env/pem/id_rsa basenames, runtime/state/generated segments and the three config file names as mount sources
+  - CLI --kind tools resolves dir/workspace.yaml/settings.yaml targets, parses backend[+ro] including mcp-raw[:server], stages the workspace.yaml edit next to a copy of agent.yaml, validates the pair via stack.Read and swaps atomically; agent.yaml stays byte-identical
+  - Tests: split round-trip, misplaced-key rejection, ro toggle suppression, HUB_TOOLS_RO env render, mcp-raw exclude table plus unknown-server except requirement, mount blocklist, org action strip, executor read-only gate, CLI split-space write path; docs (README/SETUP/architecture/operations/integrations) updated to the new file layout
+  - just check passed all stages with race/shuffle tests and 85.04 percent own Go statement coverage after the config split
 pending:
   - Channel adapters and alternate entrypoints are proven denied only at resolver level under the managed zero profile; they are never launched by managed runtime and live managed lifecycle is covered by the extended supervisor canary
   - Docker-gated proof of the supervisor docker-exec channel and the new ToolHub relay redirect canary awaits the next CI image run; local unit/integration evidence is in place
@@ -171,7 +179,7 @@ verification:
   source_pin: 869228cab4a8276d3b4c78da9d9939670c47bd0f
   prior_audit_check: passed_85.05_percent
   documentation: passed
-  just_check: passed_all_stages_85.05_percent_after_tools_surface_refactor
+  just_check: passed_all_stages_85.04_percent_after_config_split
   docker_check: passed_full_wrapper_restart_rollover_secondary_parity_secret_isolation
   docker_check_session: passed_2026_10_03_extended_managed_supervisor_canary
   docker_cleanup: passed

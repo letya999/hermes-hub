@@ -494,3 +494,32 @@ complete on the strength of this design package.
   Child-without-parent feature dependency cases became unrepresentable
   (toggles live on the parent entry; `via: off` takes no fields) — tests
   updated to the folded model. `just check` passed at 85.05 percent.
+
+- Space config split (owner instruction): the user-facing file pair is
+  `workspace.yaml` (capability intent: `tools:`, `ingress:`,
+  `workspace.mounts`, raw `mcp:` definitions) plus `agent.yaml`
+  (operator-owned runtime: identity, model/url, timezone, ports,
+  capability mode/profile pin, hooks, memory, infra, diagnostics).
+  Legacy `settings.yaml` reads and migrates; keys placed in the wrong
+  file of the pair are rejected, not merged. `WriteSpace` serializes the
+  pair; supervisor/migration read via `stack.Read(dir)`. Ports are
+  allocated at Init by scanning sibling spaces; embedded
+  `defaults/{agent,workspace}.yaml` seed every space. MCP backends are
+  explicit: `via: mcp` selects only ToolHub-mediated connectors (never
+  rendered into `mcp_servers`), `via: mcp-raw[:server]` renders an
+  `mcp:` definition directly — unmanaged keeps the implicit surface,
+  managed permits organization-scoped definitions only. `access: ro`
+  enforces where provable: write toggles suppressed, `orgActionTool`
+  actions dropped, `HUB_TOOLS_RO` denies write-effect tools inside the
+  agenttools executor before dispatch, `mcp-raw` ro renders a reviewed
+  `tools.exclude` (playwright mutation table) or requires explicit
+  `except:`; ro on `native`/`off` is a validation error. Mount sources
+  matching credential/state names (.ssh/.aws/.kube/.docker/.env*/
+  credentials*/id_rsa*/settings files) are rejected. The `--kind tools`
+  CLI resolves dir/workspace.yaml/settings.yaml, parses
+  `backend[+ro]`/`mcp-raw[:server]`, stages the workspace edit beside a
+  copy of agent.yaml, pair-validates via `stack.Read` and swaps
+  atomically. `just check` passed at 85.04 percent. Note: `mcp-raw` in
+  managed mode is an operator-chosen render-time surface without
+  per-call ToolHub admission — same trust class as a native carve-out,
+  restricted to organization-scoped definitions.

@@ -114,10 +114,12 @@ func managedHermesConfig(s Settings) M {
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
 		"agent":             M{"disabled_toolsets": disabledToolsets(s)},
-		"mcp_servers":       M{},
-		"plugins":           M{"enabled": []string{}},
-		"skills":            M{},
-		"hooks":             M{},
+		// Only via: mcp-raw selections (organization-provided servers) render
+		// here; every connector still goes through the ToolHub projection.
+		"mcp_servers": rawMCPServers(s),
+		"plugins":     M{"enabled": []string{}},
+		"skills":      M{},
+		"hooks":       M{},
 		// A carved-out `memory` toolset still needs its subsystem flag; without
 		// it the tool loads against a disabled backend and silently no-ops.
 		"memory":   M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory"), "user_profile_enabled": false},

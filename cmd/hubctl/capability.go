@@ -177,17 +177,18 @@ func confirmRecord(confirmed bool, issuer string, record any) error {
 }
 
 // runCapabilityTools inspects or edits the unified `tools:` surface of one
-// space settings.yaml. Without --settings it prints the reviewed vocabulary;
-// without --set it prints the compiled plan (which backend serves what);
-// with --set name=backend it surgically rewrites the tools map, re-validates
-// the whole file through the spawn parser and swaps atomically.
+// space. Without --settings it prints the reviewed vocabulary; without --set
+// it prints the compiled plan (which backend serves what); with --set
+// name=backend it surgically rewrites the tools map in workspace.yaml,
+// re-validates the whole space and swaps atomically.
 func runCapabilityTools(settingsPath, set string, confirm bool) error {
 	if settingsPath == "" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"kind":              "tools",
-			"backends":          []string{"native", "toolhub", "mcp[:server]", "off"},
+			"backends":          []string{"native", "toolhub", "mcp[:server]", "mcp-raw[:server]", "off"},
+			"access":            []string{"ro"},
 			"carveout_toolsets": stack.NativeCarveoutToolsets(),
-			"note":              "hubctl capability --kind tools --settings <space>/settings.yaml [--set name=backend,...] [--confirm]",
+			"note":              "hubctl capability --kind tools --settings <space-dir|workspace.yaml> [--set name=backend[+ro],...] [--confirm]",
 		})
 	}
 	current, err := stack.Read(settingsPath)
@@ -220,7 +221,11 @@ func runCapabilityTools(settingsPath, set string, confirm bool) error {
 		fmt.Fprintf(os.Stderr, "tools plan before: %+v\ntools plan after:  %+v\nre-run with --confirm to commit\n", before, after)
 		return errors.New("tools plan not confirmed")
 	}
-	if err := writeToolEntries(settingsPath, updates, removals); err != nil {
+	target, legacy, err := workspaceTarget(settingsPath)
+	if err != nil {
+		return err
+	}
+	if err := writeToolEntries(target, legacy, updates, removals); err != nil {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
@@ -230,7 +235,8 @@ func runCapabilityTools(settingsPath, set string, confirm bool) error {
 }
 
 // parseToolSet parses `name=backend,name=backend` — `backend` is
-// native|toolhub|mcp[:server]|off; an empty backend removes the entry.
+// native|toolhub|mcp[:server]|mcp-raw[:server]|off with an optional `+ro`
+// access suffix; an empty backend removes the entry.
 func parseToolSet(set string) (map[string]stack.ToolEntry, []string, error) {
 	updates := map[string]stack.ToolEntry{}
 	var removals []string
@@ -247,8 +253,15 @@ func parseToolSet(set string) (map[string]stack.ToolEntry, []string, error) {
 			removals = append(removals, name)
 			continue
 		}
-		entry := stack.ToolEntry{Via: backend}
-		if strings.HasPrefix(backend, "mcp:") {
+		entry := stack.ToolEntry{}
+		if strings.HasSuffix(backend, "+ro") {
+			entry.Access = stack.ToolAccessRO
+			backend = strings.TrimSuffix(backend, "+ro")
+		}
+		entry.Via = backend
+		if strings.HasPrefix(backend, "mcp-raw:") {
+			entry.Via, entry.Server = "mcp-raw", strings.TrimPrefix(backend, "mcp-raw:")
+		} else if strings.HasPrefix(backend, "mcp:") {
 			entry.Via, entry.Server = "mcp", strings.TrimPrefix(backend, "mcp:")
 		}
 		updates[name] = entry
@@ -257,15 +270,16 @@ func parseToolSet(set string) (map[string]stack.ToolEntry, []string, error) {
 }
 
 // toolEntryNode renders an entry as the compact scalar form when possible,
-// keeping written settings.yaml as terse as the operator's own style.
+// keeping written workspace.yaml as terse as the operator's own style.
 func toolEntryNode(entry stack.ToolEntry) (*yaml.Node, error) {
-	if len(entry.Only) == 0 && len(entry.Except) == 0 && len(entry.Tools) == 0 && len(entry.Paths) == 0 && len(entry.Limits) == 0 {
-		value := entry.Via
-		if entry.Via == "mcp" && entry.Server != "" {
-			value = "mcp:" + entry.Server
-		}
-		if entry.Server == "" || entry.Via == "mcp" {
-			return &yaml.Node{Kind: yaml.ScalarNode, Value: value}, nil
+	if entry.Access == "" && len(entry.Only) == 0 && len(entry.Except) == 0 && len(entry.Tools) == 0 && len(entry.Paths) == 0 && len(entry.Limits) == 0 {
+		switch {
+		case entry.Via == "mcp" && entry.Server != "":
+			return &yaml.Node{Kind: yaml.ScalarNode, Value: "mcp:" + entry.Server}, nil
+		case entry.Via == "mcp-raw" && entry.Server != "":
+			return &yaml.Node{Kind: yaml.ScalarNode, Value: "mcp-raw:" + entry.Server}, nil
+		case entry.Server == "":
+			return &yaml.Node{Kind: yaml.ScalarNode, Value: entry.Via}, nil
 		}
 	}
 	body, err := yaml.Marshal(entry)
@@ -279,10 +293,46 @@ func toolEntryNode(entry stack.ToolEntry) (*yaml.Node, error) {
 	return doc.Content[0], nil
 }
 
+// workspaceTarget resolves the file a tools write applies to: a directory or
+// split-file path selects workspace.yaml, a settings.yaml stays a legacy
+// single-file target.
+func workspaceTarget(settingsPath string) (string, bool, error) {
+	dir := settingsPath
+	base := filepath.Base(settingsPath)
+	if info, err := os.Stat(settingsPath); err == nil && info.IsDir() {
+		base = ""
+	} else {
+		dir = filepath.Dir(settingsPath)
+	}
+	switch base {
+	case "", "workspace.yaml", "agent.yaml":
+		workspace := filepath.Join(dir, "workspace.yaml")
+		if _, err := os.Stat(workspace); err == nil {
+			return workspace, false, nil
+		}
+		if base == "workspace.yaml" {
+			return "", false, fmt.Errorf("%s does not exist", workspace)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "settings.yaml")); err == nil {
+			return filepath.Join(dir, "settings.yaml"), true, nil
+		}
+		return "", false, fmt.Errorf("no workspace.yaml or settings.yaml in %s", dir)
+	case "settings.yaml":
+		return settingsPath, true, nil
+	default:
+		// An explicitly named .yaml file is a legacy single-file target; the
+		// extension check keeps directories-that-aren't-spaces out.
+		if ext := filepath.Ext(base); ext == ".yaml" || ext == ".yml" {
+			return settingsPath, true, nil
+		}
+		return "", false, fmt.Errorf("expected a space dir, workspace.yaml or settings.yaml, got %s", settingsPath)
+	}
+}
+
 // writeToolEntries upserts/removes keys inside the top-level `tools:` mapping
-// of a settings.yaml, preserving comments and every other key, then proves
+// of the target file, preserving comments and every other key, then proves
 // the result still parses as valid settings before swapping atomically.
-func writeToolEntries(path string, updates map[string]stack.ToolEntry, removals []string) error {
+func writeToolEntries(path string, legacy bool, updates map[string]stack.ToolEntry, removals []string) error {
 	body, err := os.ReadFile(path) // #nosec G304 -- operator-supplied settings path.
 	if err != nil {
 		return err
@@ -292,7 +342,7 @@ func writeToolEntries(path string, updates map[string]stack.ToolEntry, removals 
 		return err
 	}
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return errors.New("settings.yaml is not a YAML mapping")
+		return errors.New("tools file is not a YAML mapping")
 	}
 	root := doc.Content[0]
 	var tools *yaml.Node
@@ -306,7 +356,7 @@ func writeToolEntries(path string, updates map[string]stack.ToolEntry, removals 
 		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "tools"}, tools)
 	}
 	if tools.Kind != yaml.MappingNode {
-		return errors.New("settings.yaml tools: is not a mapping")
+		return errors.New("tools: is not a mapping")
 	}
 	setPair := func(name string, value *yaml.Node) {
 		for i := 0; i+1 < len(tools.Content); i += 2 {
@@ -342,6 +392,30 @@ func writeToolEntries(path string, updates map[string]stack.ToolEntry, removals 
 	if err != nil {
 		return err
 	}
+	if !legacy {
+		// The space validates as a pair: stage the edited workspace.yaml next
+		// to a copy of agent.yaml and run the spawn parser on the pair before
+		// swapping — a file the runtime would reject never lands.
+		stage, err := os.MkdirTemp("", "hub-workspace-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(stage)
+		if err = os.WriteFile(filepath.Join(stage, "workspace.yaml"), out, 0600); err != nil {
+			return err
+		}
+		agent, err := os.ReadFile(filepath.Join(filepath.Dir(path), "agent.yaml"))
+		if err != nil {
+			return err
+		}
+		if err = os.WriteFile(filepath.Join(stage, "agent.yaml"), agent, 0600); err != nil {
+			return err
+		}
+		if _, err = stack.Read(stage); err != nil {
+			return fmt.Errorf("workspace.yaml would become invalid: %w", err)
+		}
+		return writeAtomic(path, out)
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*")
 	if err != nil {
 		return err
@@ -359,6 +433,23 @@ func writeToolEntries(path string, updates map[string]stack.ToolEntry, removals 
 	// a settings file that no longer validates never reaches the runtime.
 	if _, err = stack.Read(name); err != nil {
 		return fmt.Errorf("settings would become invalid: %w", err)
+	}
+	return os.Rename(name, path)
+}
+
+func writeAtomic(path string, body []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".workspace-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err = tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
 	}
 	return os.Rename(name, path)
 }

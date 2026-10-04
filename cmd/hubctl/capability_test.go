@@ -291,6 +291,79 @@ func TestCapabilityCLITools(t *testing.T) {
 	}
 }
 
+// The same CLI edits a split space: --settings resolves a directory to its
+// workspace.yaml, the write is staged against agent.yaml, validated as a
+// pair and swapped atomically; access/mcp-raw suffixes land in the entry.
+func TestCapabilityCLIToolsSplitSpace(t *testing.T) {
+	dir := t.TempDir()
+	s := stack.Settings{
+		Schema: 3, User: "alice", Environment: "prod", Model: "synthetic",
+		ModelURL: "http://model-relay:8318/v1", Timezone: "UTC",
+		BrowserPort: 6080, OAuthPort: 8000, SpaceDir: dir,
+		Tools: map[string]stack.ToolEntry{"memory": {Via: "native"}},
+		MCP:   map[string]stack.MCPServer{"gitea": {URL: "https://gitea.example/mcp"}},
+	}
+	if err := stack.WriteSpace(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	agentBefore, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A bare directory resolves to workspace.yaml for the tools surface.
+	plan := captureOutput(t, func() error {
+		return runCapability([]string{"--kind", "tools", "--settings", dir})
+	})
+	if !strings.Contains(plan, "memory") {
+		t.Fatalf("dir plan missing native entries: %s", plan)
+	}
+	// Unconfirmed edits print the plan and leave both files untouched.
+	args := []string{"--kind", "tools", "--settings", dir, "--set", "file=toolhub+ro,gitea=mcp-raw:gitea"}
+	if err := runCapability(args); err == nil || !strings.Contains(err.Error(), "not confirmed") {
+		t.Fatalf("unconfirmed split edit committed: %v", err)
+	}
+	if err := runCapability(append(args, "--confirm")); err != nil {
+		t.Fatal(err)
+	}
+	back, err := stack.Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Tools["file"].Access != "ro" || back.Tools["file"].Via != "toolhub" {
+		t.Fatalf("+ro access lost: %+v", back.Tools["file"])
+	}
+	if back.Tools["gitea"].Via != "mcp-raw" || back.Tools["gitea"].Server != "gitea" {
+		t.Fatalf("mcp-raw server lost: %+v", back.Tools["gitea"])
+	}
+	// The write touched workspace.yaml only — agent.yaml is byte-identical.
+	agentAfter, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(agentBefore, agentAfter) {
+		t.Fatal("tools edit modified agent.yaml")
+	}
+	// Pointing at workspace.yaml directly resolves the same target.
+	if err := runCapability([]string{"--kind", "tools", "--settings", filepath.Join(dir, "workspace.yaml"), "--set", "file=", "--confirm"}); err != nil {
+		t.Fatal(err)
+	}
+	back, err = stack.Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := back.Tools["file"]; ok {
+		t.Fatalf("removal left entry: %+v", back.Tools)
+	}
+	// An edit that would invalidate the pair refuses before swapping.
+	wsBefore, _ := os.ReadFile(filepath.Join(dir, "workspace.yaml"))
+	if err := runCapability([]string{"--kind", "tools", "--settings", dir, "--set", "memory=native+ro", "--confirm"}); err == nil {
+		t.Fatal("ro on native accepted")
+	}
+	if wsAfter, _ := os.ReadFile(filepath.Join(dir, "workspace.yaml")); !slices.Equal(wsBefore, wsAfter) {
+		t.Fatal("invalid edit changed workspace.yaml")
+	}
+}
+
 // --kind preview diffs an unconfirmed draft against the stored profile using
 // the dispatch evaluator and never writes the store.
 func TestCapabilityCLIPreview(t *testing.T) {

@@ -98,7 +98,8 @@ the trusted `organization:<id>` scope and an approved organization action.
 | Location | Data |
 |---|---|
 | `spaces/<id>/scope.yaml` | Scope kind, ID and organization membership/policy |
-| `spaces/<user>/settings.yaml` | User features, model endpoint, MCP and hooks |
+| `spaces/<user>/agent.yaml` | Operator runtime config: identity, model endpoint, ports, capability pin, hooks |
+| `spaces/<user>/workspace.yaml` | Capability intent: `tools:` surface, ingress, mounts and `mcp:` definitions |
 | `spaces/<id>/hermes/` | Hermes memories, skills, sessions, hooks, plugins and state |
 | `spaces/<id>/connections/` | OAuth, browser, Telegram and self-service state |
 | `spaces/<id>/workspace/` | User or organization work files |
@@ -211,8 +212,9 @@ it to exactly one user space before invoking `hubctl`.
 
 ## Connections
 
-Built-ins are opt-in connection presets. settings.yaml's mcp_servers adds ordinary
-HTTP or stdio servers without embedding their applications. CareerGo or any other
+Built-ins are opt-in connection presets. The `mcp:` map in workspace.yaml adds
+ordinary HTTP or stdio servers (selected via `tools:` entries with
+`via: mcp-raw`) without embedding their applications. CareerGo or any other
 external tool is used only if configured. The agent works without any business service.
 Remote hosted MCP APIs may change independently of this code. Each capability has
 exactly one surface — a native toolset, a hub-rendered MCP entry, an owner
@@ -343,7 +345,7 @@ example Serena 1.5.x), the backend hop pins `MCP-Protocol-Version: 2025-11-25`
 so discovery and calls remain compatible with the SDK's newer default handshake.
 Both list and call use the same current projection resolver. ToolHub, the
 credential broker, the workload controller and cliproxy are shared control-plane
-services: the space whose `settings.yaml` keeps `infra: true` (the default)
+services: the space whose `agent.yaml` keeps `infra: true` (the default)
 renders and owns them once, while spaces with `infra: false` render only their
 `hermes-runtime`. Shared services and every spawned runtime join the external
 `hermes-hub-runtime` network, so rendered spaces default

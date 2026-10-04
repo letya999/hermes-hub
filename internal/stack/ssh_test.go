@@ -79,15 +79,14 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSSHConfig(t, d)
-	s, err := Read(filepath.Join(d, "settings.yaml"))
+	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.Tools, s.Ingress = testTools("ssh", "ssh_write", "ssh_tunnel"), testIngress("ssh", "ssh_write", "ssh_tunnel")
-	b, _ := yaml.Marshal(s)
-	if err = os.WriteFile(filepath.Join(d, "settings.yaml"), b, 0600); err != nil {
+	if err = WriteSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err != nil {
@@ -125,13 +124,12 @@ func TestSSHRenderFailsClosedOnBrokenConfig(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(filepath.Join(d, "settings.yaml"))
+	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Tools, s.Ingress = testTools("ssh"), testIngress("ssh")
-	b, _ := yaml.Marshal(s)
-	if err = os.WriteFile(filepath.Join(d, "settings.yaml"), b, 0600); err != nil {
+	if err = WriteSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err == nil {

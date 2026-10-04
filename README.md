@@ -13,7 +13,7 @@ release archive; Go is only needed when building from source. Linux example:
 
 ```bash
 ./bin/hubctl-linux-amd64 init --user artem
-# Edit spaces/artem/settings.yaml and spaces/artem/secrets.prod.env locally.
+# Edit spaces/artem/agent.yaml and spaces/artem/secrets.prod.env locally.
 ./bin/hubctl-linux-amd64 doctor --user artem
 ./bin/hubctl-linux-amd64 up --user artem --env prod
 ./bin/hubctl-linux-amd64 chat --user artem
@@ -28,7 +28,8 @@ agent image larger than the small Go CLI. The first build downloads pinned upstr
 ## Organizations, users and environments
 
 The namespace is **spaces/<id>** for both users and organizations. Every home has a
-`scope.yaml`; user homes also have `settings.yaml`, SOUL, secrets and persistent
+`scope.yaml`; user homes also have `agent.yaml` (runtime config) and
+`workspace.yaml` (capability intent), SOUL, secrets and persistent
 `hermes/`, `connections/`, `workspace/` and `archive/` directories. An organization
 home contains membership, approved features/MCP servers, shared material and policy.
 The user can narrow that policy by denying entries in `tools:` (`name: off`), but cannot expand it. Public

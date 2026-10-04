@@ -172,24 +172,15 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "settings.yaml")
-	body, err := os.ReadFile(path)
+	settings, err := Read(dir)
 	if err != nil {
-		t.Fatal(err)
-	}
-	var settings Settings
-	if err := yaml.Unmarshal(body, &settings); err != nil {
 		t.Fatal(err)
 	}
 	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
-	updated, err := yaml.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, updated, 0600); err != nil {
+	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := RenderEnvironment(dir, root, "dev"); err == nil || !strings.Contains(err.Error(), "managed runtime requires supervisor-executed runtimes") {
@@ -203,24 +194,15 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "settings.yaml")
-	body, err := os.ReadFile(path)
+	settings, err := Read(dir)
 	if err != nil {
-		t.Fatal(err)
-	}
-	var settings Settings
-	if err := yaml.Unmarshal(body, &settings); err != nil {
 		t.Fatal(err)
 	}
 	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
-	updated, err := yaml.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, updated, 0600); err != nil {
+	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	selection := ExecutionSelection{Schema: 1, User: "alice", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}

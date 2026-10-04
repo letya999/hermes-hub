@@ -2,6 +2,7 @@
 package stack
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -160,7 +161,9 @@ func selfEnvKeys(s Settings) []string {
 	if key := s.imageCredential(); key != "" {
 		keys[key] = true
 	}
-	if s.Has("slack") && (!s.OrgScoped() || s.AllowsOrgAction("slack.write")) {
+	// Slack posting arrives only through the connector's add_message env;
+	// access: ro withholds it so the entry is provably read-only.
+	if s.Has("slack") && s.toolEntry("slack").Access != ToolAccessRO && (!s.OrgScoped() || s.AllowsOrgAction("slack.write")) {
 		keys["SLACK_MCP_ADD_MESSAGE_TOOL"] = true
 	}
 	for _, server := range s.MCP {
@@ -218,12 +221,19 @@ func (s Settings) Validate() error {
 		if _, err := ManagedCapabilityInventory(); err != nil {
 			return err
 		}
-		if len(s.MCP) > 0 || len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" || s.ImageGen != (media.ImageGen{}) {
+		if len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" || s.ImageGen != (media.ImageGen{}) {
+			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not hooks or native extensions")
+		}
+		// Under managed mode raw MCP servers may only come from the
+		// organization catalog (merged in by ApplyOrganization); definitions
+		// written into a personal space stay forbidden. Which of them render
+		// is selected per-entry with via: mcp-raw.
+		if len(s.MCP) > 0 && !s.OrgScoped() {
 			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not direct MCP or native extensions")
 		}
 		for name, entry := range s.Tools {
 			switch entry.Via {
-			case "", ToolViaOff, ToolViaToolHub, ToolViaMCP:
+			case "", ToolViaOff, ToolViaToolHub, ToolViaMCP, ToolViaMCPRaw:
 			case ToolViaNative:
 				if !nativeCarveoutToolsets[name] && !pseudoToolsets[name] {
 					return fmt.Errorf("tools.%s: %q cannot be enabled natively under managed mode", name, name)
@@ -236,8 +246,8 @@ func (s Settings) Validate() error {
 	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
 		return fmt.Errorf("managed capability identity requires capability_mode managed")
 	}
-	if s.Schema != 1 && s.Schema != 2 || !idPattern.MatchString(s.User) {
-		return fmt.Errorf("schema must be 1 or 2 and profile a lowercase identifier")
+	if s.Schema < 1 || s.Schema > 3 || !idPattern.MatchString(s.User) {
+		return fmt.Errorf("schema must be 1..3 and profile a lowercase identifier")
 	}
 	if s.Organization != "" && !idPattern.MatchString(s.Organization) {
 		return fmt.Errorf("organization must be a lowercase identifier")
@@ -329,6 +339,77 @@ type legacySettingsFile struct {
 	LegacyMCP      []string `yaml:"disabled_mcp,omitempty"`
 }
 
+// workspaceFile is the user-facing half of a space: the capability surface
+// from tools.go plus raw MCP server definitions. It holds wishes only —
+// identity, model, ports and the capability pin live in agent.yaml, which
+// the user does not edit.
+type workspaceFile struct {
+	Schema    int                  `yaml:"schema,omitempty"`
+	Tools     map[string]ToolEntry `yaml:"tools,omitempty"`
+	Ingress   []string             `yaml:"ingress,omitempty"`
+	Workspace Workspace            `yaml:"workspace,omitempty"`
+	MCP       map[string]MCPServer `yaml:"mcp,omitempty"`
+}
+
+// workspaceYAMLKeys is the complete top-level vocabulary of workspace.yaml.
+// Anything else is either a mistake or an operator key that belongs in
+// agent.yaml — reported by name rather than as a generic unknown field.
+var workspaceYAMLKeys = map[string]bool{"schema": true, "tools": true, "ingress": true, "workspace": true, "mcp": true}
+
+// agentYAMLForbidden are top-level keys agent.yaml must not carry: the
+// capability surface lives in workspace.yaml, and legacy capability fields
+// must migrate there instead of silently widening the operator file.
+var agentYAMLForbidden = map[string]string{
+	"tools": "tools belongs in workspace.yaml", "ingress": "ingress belongs in workspace.yaml",
+	"workspace": "workspace belongs in workspace.yaml", "mcp": "mcp belongs in workspace.yaml",
+	"mcp_servers":     "mcp_servers belongs in workspace.yaml as mcp:",
+	"features":        "features is schema-1 — use tools: in workspace.yaml",
+	"native_toolsets": "native_toolsets is schema-1 — use tools: <name>: native in workspace.yaml",
+	"disabled_mcp":    "disabled_mcp is schema-1 — use tools: <name>: off in workspace.yaml",
+}
+
+// topLevelKeys returns the mapping keys of a single-document YAML file.
+func topLevelKeys(b []byte) ([]string, error) {
+	var doc map[string]any
+	d := yaml.NewDecoder(strings.NewReader(string(b)))
+	if err := d.Decode(&doc); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(doc))
+	for k := range doc {
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+// readSpaceYAML parses one split file through a strict decoder after checking
+// that no key was written into the wrong half of the pair.
+func readSpaceYAML(path string, target any, check func(key string) error) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	keys, err := topLevelKeys(b)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := check(key); err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(path), err)
+		}
+	}
+	d := yaml.NewDecoder(strings.NewReader(string(b)))
+	d.KnownFields(true)
+	if err := d.Decode(target); err != nil {
+		return fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	var extra any
+	if err = d.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("%s: one YAML document expected", filepath.Base(path))
+	}
+	return nil
+}
+
 // featureToolMigration maps each schema-1 feature to its tools entry.
 // Modifiers land on the parent entry's `tools:` toggle map; transports move
 // to `ingress`; `workspace` is unconditional and drops silently.
@@ -387,7 +468,23 @@ func migrateLegacyTools(lf legacySettingsFile) (Settings, error) {
 	return s, nil
 }
 
+// Read loads a space. The path may be the space directory, the split pair
+// workspace.yaml + agent.yaml, or the legacy single settings.yaml — all of
+// them merge into the same Settings. A bare workspace/agent filename reads
+// its containing directory so the pair is always validated together.
 func Read(path string) (Settings, error) {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return readSpace(path)
+	}
+	switch filepath.Base(path) {
+	case "workspace.yaml", "agent.yaml":
+		return readSpace(filepath.Dir(path))
+	default:
+		return readLegacySettings(path)
+	}
+}
+
+func readLegacySettings(path string) (Settings, error) {
 	var s Settings
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -406,11 +503,105 @@ func Read(path string) (Settings, error) {
 	if s, err = migrateLegacyTools(lf); err != nil {
 		return s, err
 	}
+	return finishRead(s, filepath.Dir(path))
+}
+
+// readSpace merges agent.yaml (operator identity/runtime) with workspace.yaml
+// (user capability surface). Neither file is ever mounted into the runtime
+// container — the agent only sees the rendered, attested config.
+func readSpace(dir string) (Settings, error) {
+	agentPath := filepath.Join(dir, "agent.yaml")
+	workspacePath := filepath.Join(dir, "workspace.yaml")
+	if _, err := os.Stat(workspacePath); err != nil {
+		if os.IsNotExist(err) {
+			if _, agentErr := os.Stat(agentPath); os.IsNotExist(agentErr) {
+				return readLegacySettings(filepath.Join(dir, "settings.yaml"))
+			}
+			return Settings{}, fmt.Errorf("agent.yaml without workspace.yaml")
+		}
+		return Settings{}, err
+	}
+	if _, err := os.Stat(agentPath); err != nil {
+		if os.IsNotExist(err) {
+			return Settings{}, fmt.Errorf("workspace.yaml without agent.yaml")
+		}
+		return Settings{}, err
+	}
+	var lf legacySettingsFile
+	if err := readSpaceYAML(agentPath, &lf, func(key string) error {
+		if msg, bad := agentYAMLForbidden[key]; bad {
+			return errors.New(msg)
+		}
+		return nil
+	}); err != nil {
+		return Settings{}, err
+	}
+	if len(lf.LegacyFeatures)+len(lf.LegacyNative)+len(lf.LegacyMCP) > 0 {
+		return Settings{}, fmt.Errorf("agent.yaml holds no capability fields — use workspace.yaml")
+	}
+	s := lf.Settings
+	var wf workspaceFile
+	if err := readSpaceYAML(workspacePath, &wf, func(key string) error {
+		if !workspaceYAMLKeys[key] {
+			return fmt.Errorf("%s belongs in agent.yaml", key)
+		}
+		return nil
+	}); err != nil {
+		return Settings{}, err
+	}
+	if wf.Schema != 0 && wf.Schema != 3 {
+		return Settings{}, fmt.Errorf("workspace.yaml schema must be 3")
+	}
+	s.Tools, s.Ingress, s.Workspace = wf.Tools, wf.Ingress, wf.Workspace
+	s.MCP = wf.MCP
+	return finishRead(s, dir)
+}
+
+// WriteSpace serializes a Settings back into the agent.yaml + workspace.yaml
+// pair, splitting top-level keys the way readSpace expects. Comments are not
+// preserved — callers that need them edit through yaml.Node instead.
+func WriteSpace(dir string, s Settings) error {
+	body, err := yaml.Marshal(s)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return err
+	}
+	agent := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	workspace := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	root := doc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key := root.Content[i]
+		target := agent
+		if (workspaceYAMLKeys[key.Value] && key.Value != "schema") || key.Value == "mcp_servers" {
+			target = workspace
+			if key.Value == "mcp_servers" {
+				key.Value = "mcp"
+			}
+		}
+		target.Content = append(target.Content, key, root.Content[i+1])
+	}
+	write := func(name string, mapping *yaml.Node) error {
+		out, err := yaml.Marshal(mapping)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, name), out, 0600)
+	}
+	if err := write("agent.yaml", agent); err != nil {
+		return err
+	}
+	return write("workspace.yaml", workspace)
+}
+
+func finishRead(s Settings, dir string) (Settings, error) {
 	s.Environment = "prod"
-	s.SpaceDir = filepath.Dir(path)
-	if scope, scopeErr := ReadScope(s.SpaceDir); scopeErr == nil {
+	s.SpaceDir = dir
+	if scope, scopeErr := ReadScope(dir); scopeErr == nil {
 		if scope.Kind != UserScope || scope.ID != s.User || scope.Organization != s.Organization {
-			return s, fmt.Errorf("user scope does not match settings.yaml")
+			return s, fmt.Errorf("user scope does not match the space files")
 		}
 	} else if !os.IsNotExist(scopeErr) {
 		return s, scopeErr
@@ -420,7 +611,7 @@ func Read(path string) (Settings, error) {
 
 // ReadEnvironment selects runtime settings without making dev/prod a user namespace.
 func ReadEnvironment(dir, environment string) (Settings, error) {
-	s, err := Read(filepath.Join(dir, "settings.yaml"))
+	s, err := Read(dir)
 	if err != nil {
 		return s, err
 	}
@@ -475,17 +666,18 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, p := range []string{"scope.yaml", "settings.yaml", "secrets.dev.env", "secrets.prod.env"} {
+	for _, p := range []string{"scope.yaml", "settings.yaml", "agent.yaml", "workspace.yaml", "secrets.dev.env", "secrets.prod.env"} {
 		if _, err := os.Lstat(filepath.Join(dir, p)); err == nil {
 			return fmt.Errorf("%s already exists; init never overwrites", p)
 		} else if !os.IsNotExist(err) {
 			return err
 		}
 	}
-	b, err := renderDefaultSettings(profile, organization)
+	agentBody, err := renderDefaultAgent(dir, profile, organization, allocatePorts(dir))
 	if err != nil {
 		return err
 	}
+	workspaceBody := policyTemplate(dir, "workspace-default.yaml", defaultWorkspaceYAML)
 	scopeBody, err := yaml.Marshal(Scope{Kind: UserScope, ID: profile, Organization: organization})
 	if err != nil {
 		return err
@@ -493,7 +685,10 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if err = os.WriteFile(filepath.Join(dir, "scope.yaml"), scopeBody, 0600); err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(dir, "settings.yaml"), b, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, "agent.yaml"), agentBody, 0600); err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "workspace.yaml"), workspaceBody, 0600); err != nil {
 		return err
 	}
 	content := "# Fill locally. Never commit or send this file in chat.\nOPENAI_API_KEY=\nFAL_KEY=\nFIRECRAWL_API_KEY=\nTAVILY_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=\nTELEGRAM_API_ID=\nTELEGRAM_API_HASH=\nTELEGRAM_SESSION_STRING=\nGOOGLE_EMAIL=\nGOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=\nHH_TOKEN=\nHH_USER_AGENT=hermes-hub/0.1\nGITHUB_TOKEN=\nGITLAB_TOKEN=\nJIRA_URL=\nJIRA_USERNAME=\nJIRA_API_TOKEN=\nSLACK_MCP_XOXP_TOKEN=\nSLACK_MCP_ADD_MESSAGE_TOOL=\nSLACK_SIGNING_SECRET=\nSLACK_BOT_TOKEN=\nSLACK_APP_TOKEN=\nSLACK_ALLOWED_USERS=\nDESKTOP_TOKEN=\nDRAFTS_TOKEN=\n"
@@ -556,7 +751,7 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 		secrets[key] = value
 	}
 	if s.Model == "" {
-		issues = append(issues, "set model in settings.yaml")
+		issues = append(issues, "set model in agent.yaml")
 	}
 	if s.ModelURL == "" {
 		issues = append(issues, "set model_url to your OpenAI-compatible /v1 endpoint")

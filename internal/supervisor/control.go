@@ -417,13 +417,19 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 		return errors.New("approval actor/scope mismatch")
 	}
 	root := filepath.Join(m.cfg.SpacesRoot, request.UserID)
-	path := filepath.Join(root, "settings.yaml")
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 1024*1024 {
+	found := false
+	for _, name := range []string{"settings.yaml", "agent.yaml"} {
+		info, err := os.Lstat(filepath.Join(root, name))
+		if err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 && info.Size() <= 1024*1024 {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return errors.New("current settings unavailable")
 	}
 	// Check organization selection before loading its policy.
-	selected, err := stack.Read(path)
+	selected, err := stack.Read(root)
 	if err != nil {
 		return err
 	}

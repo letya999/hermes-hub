@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -189,5 +190,51 @@ func TestExecCallDispatch(t *testing.T) {
 	// Malformed argument types are rejected before dispatch.
 	if _, err := v.ExecCall(context.Background(), "file_read", map[string]any{"path": 42}, nil); err == nil {
 		t.Fatal("non-string path argument reached dispatch")
+	}
+}
+
+// HUB_TOOLS_RO marks capabilities read-only inside the process: every
+// write-effect tool of a listed capability is refused before dispatch, while
+// read tools of the same capability and writes of other capabilities pass.
+func TestExecCallReadOnlyGate(t *testing.T) {
+	v := fixture(t)
+	v.ReadOnlyTools = readOnlyToolNames(map[string]bool{"files": true})
+	if !v.ReadOnlyTools["file_write"] {
+		t.Fatalf("files capability did not expand to file_write: %v", v.ReadOnlyTools)
+	}
+	if v.ReadOnlyTools["file_read"] || v.ReadOnlyTools["file_list"] {
+		t.Fatalf("read tool marked read-only: %v", v.ReadOnlyTools)
+	}
+	write(t, v, "docs/a.txt", "before")
+	if _, err := v.ExecCall(context.Background(), "file_write", map[string]any{"path": "docs/b.txt", "text": "x"}, nil); err == nil {
+		t.Fatal("write-effect tool reached dispatch on a read-only capability")
+	}
+	if _, err := v.ExecCall(context.Background(), "file_read", map[string]any{"path": "docs/a.txt"}, nil); err != nil {
+		t.Fatalf("read tool denied by the ro gate: %v", err)
+	}
+	// A capability not on the ro list keeps its write tools.
+	if _, err := v.ExecCall(context.Background(), "service_disable", map[string]any{"service": "nope"}, nil); err == nil || !strings.Contains(err.Error(), "service") {
+		t.Fatalf("unrelated capability blocked or silently allowed: %v", err)
+	}
+}
+
+// An empty HUB_TOOLS_RO leaves the gate unset — no tool name is denied.
+func TestReadOnlyToolNamesEmpty(t *testing.T) {
+	if got := readOnlyToolNames(nil); got != nil {
+		t.Fatalf("empty capability set produced gates: %v", got)
+	}
+	if got := readOnlyToolNames(map[string]bool{"files": false}); len(got) != 0 {
+		t.Fatalf("disabled capability produced gates: %v", got)
+	}
+	// Every write-effect tool of a capability is gated; read-effect tools of
+	// the same capability are not.
+	names := readOnlyToolNames(map[string]bool{"ssh": true})
+	for _, want := range []string{"ssh_exec", "ssh_write", "ssh_shell_open", "ssh_tunnel_open"} {
+		if !names[want] {
+			t.Fatalf("ssh write tool %s not gated: %v", want, names)
+		}
+	}
+	if names["service_catalog"] {
+		t.Fatal("read-effect tool gated")
 	}
 }

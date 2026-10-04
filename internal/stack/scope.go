@@ -274,7 +274,34 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 
 func (s Settings) OrgScoped() bool { return s.Organization != "" }
 
+// orgActionTool maps an organization write-action to the tools: entry whose
+// access mode governs it. An `access: ro` entry strips the action from the
+// effective set — the rendered HUB_ORG_ACTIONS env and every settings-side
+// check see the same answer.
+var orgActionTool = map[string]string{
+	"hh.apply":       "hh",
+	"slack.write":    "slack",
+	"telegram.write": "telegram_user",
+	"google.write":   "google",
+}
+
+// effectiveOrgActions subtracts write-actions governed by an `access: ro`
+// tools entry from the organization-granted set.
+func (s Settings) effectiveOrgActions() []string {
+	out := make([]string, 0, len(s.OrgActions))
+	for _, action := range s.OrgActions {
+		if tool, ok := orgActionTool[action]; ok && s.toolEntry(tool).Access == ToolAccessRO {
+			continue
+		}
+		out = append(out, action)
+	}
+	return out
+}
+
 func (s Settings) AllowsOrgAction(action string) bool {
+	if tool, ok := orgActionTool[action]; ok && s.toolEntry(tool).Access == ToolAccessRO {
+		return false
+	}
 	if !s.OrgScoped() {
 		return true
 	}

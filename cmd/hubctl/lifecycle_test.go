@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/stack"
-	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,12 +47,11 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	if err := stack.InitEnvironment(d, "owner", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	s, _ := stack.Read(filepath.Join(d, "settings.yaml"))
+	s, _ := stack.Read(d)
 	s.Model = "test"
 	s.ModelURL = "http://model.invalid/v1"
 	save := func() {
-		b, _ := yaml.Marshal(s)
-		if err := os.WriteFile(filepath.Join(d, "settings.yaml"), b, 0600); err != nil {
+		if err := stack.WriteSpace(d, s); err != nil {
 			t.Fatal(err)
 		}
 	}

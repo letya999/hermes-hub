@@ -49,7 +49,7 @@ func MigrateToolHub(options ToolHubMigrationOptions) (ToolHubMigrationReport, er
 	if options.Directory == "" || options.User == "" {
 		return ToolHubMigrationReport{}, errors.New("migration directory and user are required")
 	}
-	settings, err := stack.Read(filepath.Join(options.Directory, "settings.yaml"))
+	settings, err := stack.Read(options.Directory)
 	if err != nil {
 		return ToolHubMigrationReport{}, fmt.Errorf("read settings: %w", err)
 	}

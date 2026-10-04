@@ -231,12 +231,16 @@ func TestInitSeedsDefaultTemplate(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(dir, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "settings.yaml"))
+	agent, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "user: alice") || !strings.Contains(string(body), "organization: acme") || !strings.Contains(string(body), "tools:") {
-		t.Fatalf("seeded template missing substitutions:\n%s", body)
+	workspace, err := os.ReadFile(filepath.Join(dir, "workspace.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(agent), "user: alice") || !strings.Contains(string(agent), "organization: acme") || !strings.Contains(string(workspace), "tools:") {
+		t.Fatalf("seeded template missing substitutions:\n%s\n%s", agent, workspace)
 	}
 	s, err := ReadEnvironment(dir, "prod")
 	if err != nil {
@@ -248,5 +252,214 @@ func TestInitSeedsDefaultTemplate(t *testing.T) {
 	// A second init never overwrites an existing space.
 	if err := Init(dir, "alice"); err == nil {
 		t.Fatal("init overwrote an existing space")
+	}
+}
+
+// WriteSpace splits operator fields into agent.yaml and capability intent
+// into workspace.yaml; Read on the directory reassembles the same Settings.
+func TestWriteSpaceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	s := Settings{
+		Schema: 3, User: "alice", Organization: "acme", Environment: "prod",
+		Model: "gemini-3-pro", ModelURL: "http://relay:8318/v1", Timezone: "UTC",
+		BrowserPort: 6080, OAuthPort: 8000, SpaceDir: dir,
+		Tools: map[string]ToolEntry{
+			"terminal": {Via: "native"},
+			"file":     {Via: "toolhub"},
+			"browser":  {Via: "mcp", Server: "playwright", Access: "ro"},
+			"gitea":    {Via: "mcp-raw", Server: "gitea"},
+			"ssh":      {Via: "toolhub", Access: "ro"},
+		},
+		Ingress:   []string{"telegram"},
+		Workspace: Workspace{Mounts: []Mount{{From: "docs", To: "/docs", Mode: "ro"}}},
+		MCP:       map[string]MCPServer{"gitea": {URL: "http://gitea:3000/mcp"}},
+	}
+	if err := WriteSpace(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	// The pair keeps its separation: no capability keys leak into agent.yaml.
+	agent, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"tools:", "ingress:", "mounts:", "mcp:"} {
+		if strings.Contains(string(agent), key) {
+			t.Fatalf("agent.yaml leaked capability key %s:\n%s", key, agent)
+		}
+	}
+	workspace, err := os.ReadFile(filepath.Join(dir, "workspace.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"model:", "timezone:", "oauth_port:", "browser_port:", "model_url:"} {
+		if strings.Contains(string(workspace), key) {
+			t.Fatalf("workspace.yaml leaked runtime key %s:\n%s", key, workspace)
+		}
+	}
+	back, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Tools["browser"].Access != "ro" || back.Tools["gitea"].Via != "mcp-raw" ||
+		back.Model != s.Model || back.OAuthPort != s.OAuthPort {
+		t.Fatalf("round-trip lost fields: %+v", back)
+	}
+}
+
+// Cross-file placement is rejected: capability keys in agent.yaml and runtime
+// keys in workspace.yaml are operator errors, not silent merges.
+func TestSplitRejectsMisplacedKeys(t *testing.T) {
+	dir := t.TempDir()
+	agent := "schema: 3\nuser: alice\ntimezone: UTC\noauth_port: 8000\nbrowser_port: 6080\n"
+	workspace := "tools: {terminal: native}\n"
+	write := func(a, w string) {
+		if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte(a), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte(w), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(agent, workspace)
+	if _, err := Read(dir); err != nil {
+		t.Fatalf("valid pair rejected: %v", err)
+	}
+	write(agent+"tools: {file: toolhub}\n", workspace)
+	if _, err := Read(dir); err == nil {
+		t.Fatal("tools in agent.yaml accepted")
+	}
+	write(agent, workspace+"model: bogus\n")
+	if _, err := Read(dir); err == nil {
+		t.Fatal("model in workspace.yaml accepted")
+	}
+}
+
+// access: ro suppresses every write-effect toggle of the entry — Has() is the
+// predicate the runtime and org-action mapping read.
+func TestAccessROSuppressesToggles(t *testing.T) {
+	s := Settings{Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SpaceDir: t.TempDir(),
+		Tools: map[string]ToolEntry{
+			"browser":       {Via: "mcp", Server: "playwright", Access: "ro"},
+			"ssh":           {Via: "toolhub", Access: "ro"},
+			"google":        {Via: "mcp", Access: "ro"},
+			"telegram_user": {Via: "mcp", Access: "ro"},
+		}}
+	if s.Has("browser_act") || s.Has("ssh_write") || s.Has("google_write") || s.Has("telegram_write") {
+		t.Fatalf("ro entry leaked a write toggle: %+v", s.Tools)
+	}
+	if !s.Has("browser") || !s.Has("ssh") || !s.Has("google") {
+		t.Fatalf("ro suppressed the read side: %+v", s.Tools)
+	}
+}
+
+// readOnlyCapabilities maps ro tool entries onto ToolHub capability IDs so the
+// executor can hard-deny write-effect tools at call time; the compose env is
+// the transport that carries them into the runtime.
+func TestReadOnlyCapabilitiesEnv(t *testing.T) {
+	s := Settings{User: "alice", Environment: "prod", SpaceDir: t.TempDir(),
+		Tools: map[string]ToolEntry{
+			"file": {Via: "toolhub", Access: "ro"},
+			"ssh":  {Via: "toolhub", Access: "ro"},
+			"docs": {Via: "toolhub"},
+		}}
+	ro := s.readOnlyCapabilities()
+	for _, id := range []string{"files", "ssh"} {
+		if !slices.Contains(ro, id) {
+			t.Fatalf("ro capabilities missing %s: %v", id, ro)
+		}
+	}
+	if slices.Contains(ro, "documents") {
+		t.Fatalf("rw capability leaked into ro set: %v", ro)
+	}
+	env := Compose(s, "/source", s.SpaceDir)["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	v, _ := env["HUB_TOOLS_RO"].(string)
+	if !strings.Contains(v, "files") || !strings.Contains(v, "ssh") {
+		t.Fatalf("HUB_TOOLS_RO rendered wrong: %q", v)
+	}
+}
+
+// access: ro on a raw MCP server appends the reviewed mutation tools to
+// tools.exclude; an unknown server must carry an explicit except list.
+func TestMCPRawROExcludesMutations(t *testing.T) {
+	dir := t.TempDir()
+	s := Settings{Schema: 3, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SpaceDir: dir,
+		Tools: map[string]ToolEntry{"browser": {Via: "mcp-raw", Server: "playwright", Access: "ro"}},
+		MCP:   map[string]MCPServer{"playwright": {Command: "npx", Args: []string{"-y", "@playwright/mcp"}}}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("ro raw MCP rejected: %v", err)
+	}
+	rendered := rawMCPServers(s)
+	pw, _ := rendered["playwright"].(M)["tools"].(MCPTools)
+	if len(pw.Exclude) == 0 {
+		t.Fatalf("ro raw MCP rendered without excludes: %+v", rendered["playwright"])
+	}
+	for _, tool := range []string{"browser_type", "browser_click", "browser_fill_form"} {
+		if !slices.Contains(pw.Exclude, tool) {
+			t.Fatalf("mutation tool %s not excluded: %v", tool, pw.Exclude)
+		}
+	}
+	// Unknown servers cannot prove enforcement — explicit except is required.
+	s.Tools = map[string]ToolEntry{"gitea": {Via: "mcp-raw", Server: "gitea", Access: "ro"}}
+	s.MCP = map[string]MCPServer{"gitea": {URL: "http://gitea/mcp"}}
+	if err := s.Validate(); err == nil {
+		t.Fatal("ro on unknown raw MCP accepted without except")
+	}
+	s.Tools = map[string]ToolEntry{"gitea": {Via: "mcp-raw", Server: "gitea", Access: "ro", Except: []string{"create_issue"}}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("ro with explicit except rejected: %v", err)
+	}
+	// rw raw MCP needs no except.
+	s.Tools = map[string]ToolEntry{"gitea": {Via: "mcp-raw", Server: "gitea"}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("rw raw MCP rejected: %v", err)
+	}
+}
+
+// Credential-shaped mount sources are rejected outright — NanoClaw blocklist.
+func TestMountBlocklist(t *testing.T) {
+	s := Settings{Schema: 3, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		SpaceDir: t.TempDir()}
+	for _, from := range []string{
+		".ssh", ".ssh/id_rsa", "keys/id_rsa_backup", ".aws", ".kube", ".docker",
+		"app/.env", ".env.local", "svc/credentials.json", "creds.pem",
+		".state", "runtime/managed", "settings.yaml", "workspace.yaml", "agent.yaml",
+	} {
+		s.Workspace = Workspace{Mounts: []Mount{{From: from, To: "/mnt/x"}}}
+		if err := s.Validate(); err == nil {
+			t.Fatalf("blocked mount source accepted: %s", from)
+		}
+	}
+	for _, from := range []string{"docs", "shared/notes", "data"} {
+		s.Workspace = Workspace{Mounts: []Mount{{From: from, To: "/mnt/" + filepath.Base(from)}}}
+		if err := s.Validate(); err != nil {
+			t.Fatalf("clean mount source rejected: %s: %v", from, err)
+		}
+	}
+}
+
+// Organization actions mapped to a read-only tool entry are stripped from the
+// effective set and refused by AllowsOrgAction.
+func TestOrgActionReadOnlyStrip(t *testing.T) {
+	org := t.TempDir()
+	if err := InitOrganization(org, "acme", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 3, User: "alice", Organization: "acme", Timezone: "UTC",
+		BrowserPort: 6080, OAuthPort: 8000, SpaceDir: t.TempDir(), OrganizationDir: org,
+		OrgActions: []string{"slack.write", "hh.apply", "telegram.write"},
+		Tools: map[string]ToolEntry{
+			"slack":         {Via: "mcp", Access: "ro"},
+			"hh":            {Via: "toolhub"},
+			"telegram_user": {Via: "mcp", Access: "ro"},
+		}}
+	effective := s.effectiveOrgActions()
+	if slices.Contains(effective, "slack.write") || slices.Contains(effective, "telegram.write") {
+		t.Fatalf("ro actions leaked: %v", effective)
+	}
+	if !slices.Contains(effective, "hh.apply") {
+		t.Fatalf("rw action stripped: %v", effective)
+	}
+	if s.AllowsOrgAction("slack.write") {
+		t.Fatal("AllowsOrgAction honored a ro action")
 	}
 }

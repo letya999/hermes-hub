@@ -409,7 +409,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	if selected && selection.Mode != "supervisor" {
 		return Runtime{}, errors.New("context selected the legacy executor")
 	}
-	managedSettings, managedErr := stack.Read(filepath.Join(binding.ContextRoot, "settings.yaml"))
+	managedSettings, managedErr := stack.Read(binding.ContextRoot)
 	if managedErr != nil && !os.IsNotExist(managedErr) {
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
@@ -1631,7 +1631,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	settings, settingsErr := stack.Read(filepath.Join(abs, "settings.yaml"))
+	settings, settingsErr := stack.Read(abs)
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return Binding{}, fmt.Errorf("context settings unavailable: %w", settingsErr)
 	}
@@ -1715,7 +1715,7 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) ([]string, error) {
 	env := m.environment()
-	settings, settingsErr := stack.Read(filepath.Join(binding.ContextRoot, "settings.yaml"))
+	settings, settingsErr := stack.Read(binding.ContextRoot)
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return nil, settingsErr
 	}
@@ -1757,7 +1757,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// external_dirs in the generated Hermes config. Without them the agent
 	// improvises installs through terminal instead of ToolHub control ops.
 	skillsDir := ""
-	if settings, err := stack.Read(filepath.Join(binding.ContextRoot, "settings.yaml")); err == nil {
+	if settings, err := stack.Read(binding.ContextRoot); err == nil {
 		skillsDir = strings.TrimSpace(settings.GlobalSkillsDir)
 	}
 	if skillsDir == "" {
@@ -1901,14 +1901,20 @@ func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, contai
 // runtime contract: secrets.<env>.env endpoint override and self-services.
 func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, error) {
 	settings := stack.Settings{}
-	settingsPath := filepath.Join(binding.ContextRoot, "settings.yaml")
-	if _, err := os.Stat(settingsPath); err == nil {
+	hasConfig := false
+	for _, name := range []string{"settings.yaml", "agent.yaml", "workspace.yaml"} {
+		if _, err := os.Stat(filepath.Join(binding.ContextRoot, name)); err == nil {
+			hasConfig = true
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	if hasConfig {
+		var err error
 		settings, err = stack.ReadEnvironment(binding.ContextRoot, env)
 		if err != nil {
 			return "", err
 		}
-	} else if !os.IsNotExist(err) {
-		return "", err
 	}
 	source := filepath.Join(binding.ContextRoot, "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")
