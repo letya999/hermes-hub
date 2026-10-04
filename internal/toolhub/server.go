@@ -62,6 +62,20 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 	if policy == "" {
 		policy = "policy-1"
 	}
+	capabilityMode := os.Getenv("HUB_CAPABILITY_MODE")
+	if capabilityMode != "" && capabilityMode != "managed" {
+		return EndpointConfig{}, fmt.Errorf("invalid capability mode")
+	}
+	managed := capabilityMode == "managed"
+	var generation uint64
+	if managed {
+		var parseErr error
+		generation, parseErr = strconv.ParseUint(os.Getenv("HUB_CAPABILITY_GENERATION"), 10, 64)
+		if parseErr != nil || generation == 0 || !identity.ValidID(os.Getenv("HUB_CAPABILITY_PROFILE_ID")) ||
+			(os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "dev" && os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "prod") {
+			return EndpointConfig{}, fmt.Errorf("managed ToolHub identity is incomplete")
+		}
+	}
 	admission, err := ControllerAdmissionVerifierFromEnv()
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("ToolHive admission: %w", err)
@@ -75,6 +89,9 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		ConversationID:     envOr("HUB_CONVERSATION_ID", "toolhub"),
 		DeliveryTargetID:   envOr("HUB_DELIVERY_TARGET_ID", "toolhub"),
 		PolicyVersion:      policy,
+	}
+	if managed {
+		auth.CapabilityProfile, auth.Environment, auth.Generation = os.Getenv("HUB_CAPABILITY_PROFILE_ID"), os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), generation
 	}
 	controlBroker, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_CONTROL_")
 	if err != nil {
@@ -104,6 +121,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 			Provider: PersonalProviderBackend{},
 			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: envOr("HUB_STATE", "/state")},
 			CLI:      CLIRunner{Root: envOr("HUB_STATE", "/state")},
+			Agent:    agentBackendFromEnv(),
 		},
 		RecipeCatalogs: catalogs,
 		BrokerControl: func() *credentialbroker.Config {
@@ -134,6 +152,17 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	if config.Backend == nil {
 		return nil, fmt.Errorf("%w: nil ToolHub backend", ErrInvalid)
+	}
+	if routing, ok := config.Backend.(RoutingBackend); ok {
+		if agent, ok := routing.Agent.(AgentExecBackend); ok && agent.Fence == nil {
+			// Export and apply paths re-verify the admitted authority against
+			// the live store so a mid-flight revocation stops the write.
+			agent.Fence = func(_ context.Context, effective EffectiveBinding) error {
+				return store.ReverifyEffective(effective)
+			}
+			routing.Agent = agent
+			config.Backend = routing
+		}
 	}
 	if (config.BrokerControl == nil) != (config.BrokerRuntime == nil) {
 		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", ErrInvalid)
@@ -219,6 +248,13 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			record.ToolCallID = fields["tool_call_id"]
 			record.CorrelationID = fields["correlation_id"]
 			record.Receipt = fields["receipt"]
+			record.CapabilityID = fields["capability_id"]
+			record.CapabilityProfile = fields["capability_profile"]
+			record.ImplementationDigest = fields["implementation_digest"]
+			record.Environment = fields["environment"]
+			record.Generation, _ = strconv.ParseUint(fields["generation"], 10, 64)
+			record.CapabilityPolicyRevision, _ = strconv.ParseUint(fields["capability_policy_revision"], 10, 64)
+			record.CapabilityProfileRevision, _ = strconv.ParseUint(fields["capability_profile_revision"], 10, 64)
 			if fields["credential_revision"] != "" {
 				n, _ := strconv.ParseUint(fields["credential_revision"], 10, 64)
 				record.CredentialRevision = n
@@ -296,6 +332,23 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// agentBackendFromEnv wires the private agent-tools executor. The channel is
+// `docker exec` into the owning runtime container — the only control-plane
+// path that never crosses the agent network, so an agent cannot invoke the
+// executor or forge capability scopes. Unconfigured stays nil and dispatch
+// fails closed.
+func agentBackendFromEnv() ToolBackend {
+	docker := envOr("HUB_DOCKER_BIN", "docker")
+	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
+		resolve := FixedAgentContainer(container)
+		return AgentExecBackend{Exec: DaemonAgentExec([]string{docker}, resolve), Scratch: DockerScratchExec([]string{docker}, resolve, DockerAgentExec([]string{docker}, resolve))}
+	}
+	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
+		return AgentExecBackend{Exec: DaemonAgentExec([]string{docker}, ManagedAgentContainer), Scratch: DockerScratchExec([]string{docker}, ManagedAgentContainer, DockerAgentExec([]string{docker}, ManagedAgentContainer))}
+	}
+	return nil
 }
 
 // loadTokenEnvelopes reads a JSON object mapping additional bearer tokens to

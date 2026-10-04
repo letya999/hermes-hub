@@ -80,6 +80,7 @@ type Config struct {
 	PIDs          int
 	RuntimePort   int
 	PortBase      int
+	PortRange     int
 	HTTP          *http.Client
 	Probe         func(context.Context, string, string) error
 	Command       func(context.Context, ...string) ([]byte, error)
@@ -122,6 +123,7 @@ type Runtime struct {
 	Leases            int       `json:"leases"`
 	LastUsed          time.Time `json:"last_used"`
 	IdleDeadline      time.Time `json:"idle_deadline,omitempty"`
+	Managed           bool      `json:"managed,omitempty"`
 }
 
 type runtimeEntry struct {
@@ -269,6 +271,9 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.PortBase <= 0 {
 		cfg.PortBase = 18080
 	}
+	if cfg.PortRange <= 0 {
+		cfg.PortRange = 10000
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -404,6 +409,14 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	if selected && selection.Mode != "supervisor" {
 		return Runtime{}, errors.New("context selected the legacy executor")
 	}
+	managedSettings, managedErr := stack.Read(binding.ContextRoot)
+	if managedErr != nil && !os.IsNotExist(managedErr) {
+		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
+	}
+	managed := managedErr == nil && managedSettings.CapabilityMode == "managed"
+	if managed && (!selected || selection.Mode != "supervisor") {
+		return Runtime{}, errors.New("managed capability mode requires supervisor execution selection")
+	}
 	m.mu.Lock()
 	if current := m.items[key]; current != nil && current.RuntimeID != binding.RuntimeID {
 		m.mu.Unlock()
@@ -528,11 +541,18 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		m.mu.Unlock()
 	}
 	container := containerName(key)
-	port := m.cfg.PortBase + int(hashNumber(key)%10000)
-	address := "http://127.0.0.1:" + strconv.Itoa(port)
 	m.mu.Lock()
+	port, portErr := m.allocatePortLocked(key)
+	if portErr != nil {
+		m.mu.Unlock()
+		if !slotHeld {
+			m.releaseSlot(key)
+		}
+		return Runtime{}, portErr
+	}
+	address := "http://127.0.0.1:" + strconv.Itoa(port)
 	m.gen++
-	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now()}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
 	for id, lease := range lifecycle {
 		lease.Generation = logical.Generation
@@ -557,36 +577,65 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		return Runtime{}, errors.New("runtime start state unavailable")
 	}
 	m.mu.Unlock()
-	if out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container); inspectErr == nil && strings.TrimSpace(string(out)) == "running" {
+	status := ""
+	if out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container); inspectErr == nil {
+		status = strings.TrimSpace(string(out))
+	}
+	if status == "running" {
 		if _, ownershipErr := m.ownedContainerID(ctx, logical.Runtime); ownershipErr != nil {
-			m.mu.Lock()
-			if previousEntry == nil {
-				delete(m.items, key)
-			} else {
-				m.items[key] = previousEntry
+			// A same-name container from an older generation blocks the respawn;
+			// reclaim it only when its labels still prove our ownership.
+			if !m.reclaimStaleRuntime(ctx, binding, container, logical.Generation) {
+				m.mu.Lock()
+				if previousEntry == nil {
+					delete(m.items, key)
+				} else {
+					m.items[key] = previousEntry
+				}
+				_ = m.persistLocked()
+				m.mu.Unlock()
+				m.releaseSlot(key)
+				return Runtime{}, ownershipErr
 			}
-			_ = m.persistLocked()
-			m.mu.Unlock()
-			m.releaseSlot(key)
-			return Runtime{}, ownershipErr
+		} else {
+			// Port allocation may have moved since this container started;
+			// reuse requires its actually published port.
+			if hostPort, portErr := m.publishedPort(ctx, logical.Runtime); portErr == nil {
+				address = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
+				logical.Address = address
+			}
+			if err = m.ready(ctx, address, binding.runtimeAuth); err == nil {
+				m.mu.Lock()
+				logical.State = Busy
+				result := logical.Runtime
+				_ = m.persistLocked()
+				m.mu.Unlock()
+				return result, nil
+			}
+			if cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime); cleanupErr != nil {
+				m.markDegraded(key)
+				return Runtime{}, cleanupErr
+			}
 		}
-		if err = m.ready(ctx, address, binding.runtimeAuth); err == nil {
-			m.mu.Lock()
-			logical.State = Busy
-			result := logical.Runtime
-			_ = m.persistLocked()
-			m.mu.Unlock()
-			return result, nil
-		}
-		if cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime); cleanupErr != nil {
-			m.markDegraded(key)
-			return Runtime{}, cleanupErr
-		}
+	} else if status != "" {
+		// A dead or paused same-name container would make docker run fail on
+		// the name; remove it only when it is verifiably ours and stale.
+		m.reclaimStaleRuntime(ctx, binding, container, logical.Generation)
 	}
 	args, err := m.runArgsWithGeneration(binding, container, port, logical.Generation)
 	if err != nil {
 		m.markDegraded(key)
 		return Runtime{}, fmt.Errorf("prepare runtime launch: %w", err)
+	}
+	if managed {
+		if err := m.ensureManagedInfra(ctx, binding, managedSettings, container, port, logical.Generation); err != nil {
+			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+			m.markDegraded(key)
+			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+				m.releaseSlot(key)
+			}
+			return Runtime{}, fmt.Errorf("managed topology: %w", err)
+		}
 	}
 	if out, runErr := m.command(ctx, args...); runErr != nil {
 		m.markDegraded(key)
@@ -857,8 +906,21 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 		container := containerID
 		m.mu.Unlock()
 		_, err := m.command(ctx, "stop", "--time", "30", container)
+		if err != nil {
+			// A runtime may exit after the ownership check and before Docker stop.
+			// Only an exact-ID stopped-state observation can resolve that race.
+			if out, stateErr := m.command(ctx, "inspect", "--format", "{{.State.Running}}", container); stateErr == nil && strings.TrimSpace(string(out)) == "false" {
+				err = nil
+			}
+		}
 		if err == nil {
 			_, err = m.command(ctx, "rm", "-f", container)
+		}
+		// A managed runtime's control-relay sidecar shares its generation; it is
+		// removed only after the runtime container is gone and always by the
+		// verified <name>-ctl ownership labels.
+		if err == nil {
+			err = m.removeOwnedSidecar(ctx, snapshot)
 		}
 		m.mu.Lock()
 		previous := snapshot
@@ -1680,7 +1742,15 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
+	settings, settingsErr := stack.Read(abs)
+	if settingsErr != nil && !os.IsNotExist(settingsErr) {
+		return Binding{}, fmt.Errorf("context settings unavailable: %w", settingsErr)
+	}
+	managed := settingsErr == nil && settings.CapabilityMode == "managed"
 	runtimeEnv := "runtime." + m.environment() + ".env"
+	if managed {
+		runtimeEnv = "managed-runtime." + m.environment() + ".env"
+	}
 	if info, err := os.Lstat(filepath.Join(abs, runtimeEnv)); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return Binding{}, errors.New("runtime env file is unavailable")
 	}
@@ -1697,8 +1767,14 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	if err != nil {
 		return Binding{}, err
 	}
-	// Match static Compose data paths without allowing a symlink to another home.
-	for _, name := range []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"} {
+	// Match static Compose data paths without allowing a symlink to another
+	// home. Managed contexts keep a separate private layout: no shared state,
+	// workspace or connection directories ever enter the spawned runtime.
+	dirs := []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"}
+	if managed {
+		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache"}
+	}
+	for _, name := range dirs {
 		path := filepath.Join(abs, filepath.FromSlash(name))
 		if err := os.MkdirAll(path, 0770); err != nil {
 			return Binding{}, errors.New("context data directory unavailable")
@@ -1750,6 +1826,13 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) ([]string, error) {
 	env := m.environment()
+	settings, settingsErr := stack.Read(binding.ContextRoot)
+	if settingsErr != nil && !os.IsNotExist(settingsErr) {
+		return nil, settingsErr
+	}
+	if settingsErr == nil && settings.CapabilityMode == "managed" {
+		return m.managedRunArgs(binding, settings, container, generation)
+	}
 	m.prepareSpawnFiles(binding, env)
 	project := "hermes-hub-" + binding.UserID + "-" + env
 	// Spawned runtimes join the single shared runtime network where the shared
@@ -1841,13 +1924,137 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	return args, nil
 }
 
+// managedAgentNetworkName mirrors the Compose topology: one internal network
+// per user/environment where only the reviewed relays and runtime resolve.
+func managedAgentNetworkName(user, env string) string {
+	return "hermes-hub-agent-" + user + "-" + env
+}
+
+// controlNetworkName is the supervisor-owned bridge carrying the per-runtime
+// control relay's loopback-published port. It is not Compose-owned so a
+// project teardown never strands a live supervised runtime.
+const controlNetworkName = "hermes-hub-control"
+
+// managedExtensionRootTmpfs are the empty read-only overlays covering every
+// executable import path under HERMES_HOME.
+var managedExtensionRootTmpfs = []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"}
+
+// managedRunArgs mirrors the managed Compose service: private managed state
+// layout, read-only effective config, scratch workspace, sealed extension
+// roots and the agent network only. No published port (internal network), no
+// broker secrets, no shared mounts, no host gateway.
+func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, container string, generation string) ([]string, error) {
+	env := m.environment()
+	managedDir := filepath.Join(binding.ContextRoot, "managed", env)
+	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
+	args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "managed-runtime."+env+".env"), "--env-file", binding.EnvFile)
+	if service := stack.RuntimeService(settings, "", binding.ContextRoot); service != nil {
+		if envMap, ok := service["environment"].(stack.M); ok {
+			keys := make([]string, 0)
+			for key := range envMap {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				args = append(args, "-e", key+"="+fmt.Sprint(envMap[key]))
+			}
+		}
+	}
+	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}} {
+		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
+	}
+	effectiveConfig, err := m.materializeHermesConfig(binding, env)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, "--mount", "type=bind,src="+effectiveConfig+",dst=/state/hermes/config.yaml,readonly")
+	if soul := filepath.Join(binding.ContextRoot, "SOUL.md"); fileExists(soul) {
+		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
+	}
+	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--shm-size", "1gb")
+	for _, name := range managedExtensionRootTmpfs {
+		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")
+	}
+	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
+	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
+	if generation != "" {
+		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
+	}
+	args = append(args, m.cfg.Image, "serve")
+	return args, nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+// ensureManagedInfra verifies the Compose-owned private agent network and
+// creates the supervisor's control network plus this runtime's control relay:
+// the dual-homed sidecar is the only inbound route to an internal-network
+// runtime, publishing only on the host loopback.
+func (m *Manager) ensureManagedInfra(ctx context.Context, binding Binding, settings stack.Settings, container string, port int, generation string) error {
+	agentNet := managedAgentNetworkName(settings.User, m.environment())
+	out, err := m.command(ctx, "network", "inspect", "--format", "{{.Internal}}", agentNet)
+	if err != nil {
+		return fmt.Errorf("managed agent network %s unavailable; run hubctl up for this space first", agentNet)
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return fmt.Errorf("managed agent network %s is not internal", agentNet)
+	}
+	if _, err := m.command(ctx, "network", "inspect", "--format", "{{.Id}}", controlNetworkName); err != nil {
+		if _, cerr := m.command(ctx, "network", "create", controlNetworkName); cerr != nil {
+			return fmt.Errorf("managed control network %s unavailable: %w", controlNetworkName, cerr)
+		}
+	}
+	return m.spawnControlRelay(ctx, binding, container, port, generation, agentNet)
+}
+
+func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet string) error {
+	relay := container + "-ctl"
+	args := []string{"run", "-d", "--name", relay, "--network", agentNet, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, controlRelayContainerPort), "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "-e", "HUB_CONTROL_RELAY_TARGET=http://" + container + ":" + strconv.Itoa(m.cfg.RuntimePort), "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.context=" + hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation=" + generation, "--label", "hermes-hub.role=control-relay", "--entrypoint", "hub-runtime", m.cfg.Image, "control-relay"}
+	if out, err := m.command(ctx, args...); err != nil {
+		// A stale same-name relay from an older generation blocks the spawn;
+		// reclaim it only when its labels still prove our ownership.
+		m.reclaimSidecarName(ctx, binding, container)
+		if retryOut, retryErr := m.command(ctx, args...); retryErr != nil {
+			return fmt.Errorf("start control relay: %w: %s; retry: %s", retryErr, firstLine(string(retryOut)), firstLine(string(out)))
+		}
+	}
+	if out, err := m.command(ctx, "network", "connect", controlNetworkName, relay); err != nil {
+		_, _ = m.command(ctx, "rm", "-f", relay)
+		return fmt.Errorf("attach control relay: %w: %s", err, firstLine(string(out)))
+	}
+	return nil
+}
+
 // materializeHermesConfig renders the effective Hermes config on the host so
 // the spawned runtime mounts it read-only. Inputs mirror the rendered
 // runtime contract: secrets.<env>.env endpoint override and self-services.
 func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, error) {
+	settings := stack.Settings{}
+	hasConfig := false
+	for _, name := range []string{"settings.yaml", "agent.yaml", "workspace.yaml"} {
+		if _, err := os.Stat(filepath.Join(binding.ContextRoot, name)); err == nil {
+			hasConfig = true
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	if hasConfig {
+		var err error
+		settings, err = stack.ReadEnvironment(binding.ContextRoot, env)
+		if err != nil {
+			return "", err
+		}
+	}
 	source := filepath.Join(binding.ContextRoot, "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")
-	secrets, _ := stack.ReadSecrets(filepath.Join(binding.ContextRoot, "runtime."+env+".env"))
+	envName := "runtime." + env + ".env"
+	if settings.CapabilityMode == "managed" {
+		envName = "managed-runtime." + env + ".env"
+	}
+	secrets, _ := stack.ReadSecrets(filepath.Join(binding.ContextRoot, envName))
 	tokenEnv := strings.TrimSpace(secrets["HUB_TOOLHUB_TOKEN_ENV"])
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"
@@ -1863,11 +2070,13 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		}
 	}
 	opts := stack.MaterializeOptions{
+		Managed:            settings.CapabilityMode == "managed",
 		ToolHubEndpoint:    strings.TrimSpace(secrets["HUB_TOOLHUB_ENDPOINT"]),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: authPresent,
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(secrets["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(binding.ContextRoot, "runtime", "self-services.json"),
+		NativeToolsets:     settings.NativeCarveouts(),
 	}
 	if _, present := secrets["HUB_TOOLHUB_ENDPOINT"]; !present {
 		opts.ToolHubEndpoint = "http://toolhub:8090/mcp"
@@ -1952,6 +2161,64 @@ func (m *Manager) recordRuntimeFailureLocked(runtime *Runtime) {
 	}
 	runtime.NextRetryAt = m.cfg.Now().Add(time.Duration(1<<shift) * time.Second)
 }
+
+const controlRelayContainerPort = 8091
+
+// allocatePortLocked reserves a loopback host port for this context. The hash
+// offset keeps allocations stable across respawns, and linear probing over the
+// tracked inventory guarantees no two supervised runtimes ever share a port.
+// Callers must hold m.mu.
+func (m *Manager) allocatePortLocked(key string) (int, error) {
+	used := map[int]struct{}{}
+	for _, item := range m.items {
+		if port := addressPort(item.Address); port != 0 {
+			used[port] = struct{}{}
+		}
+	}
+	start := int(hashNumber(key) % uint32(m.cfg.PortRange))
+	for i := 0; i < m.cfg.PortRange; i++ {
+		candidate := m.cfg.PortBase + (start+i)%m.cfg.PortRange
+		if _, busy := used[candidate]; !busy {
+			return candidate, nil
+		}
+	}
+	return 0, errors.New("supervisor host port range exhausted")
+}
+
+func addressPort(address string) int {
+	i := strings.LastIndexByte(address, ':')
+	if i < 0 {
+		return 0
+	}
+	port, _ := strconv.Atoi(address[i+1:])
+	return port
+}
+
+// publishedPort reports the loopback host port a running runtime — or a
+// managed runtime's control relay — actually binds, so a recovered container
+// keeps its real address even when allocation moved on.
+func (m *Manager) publishedPort(ctx context.Context, runtime Runtime) (int, error) {
+	name, port := runtime.Container, m.cfg.RuntimePort
+	if runtime.Managed {
+		name += "-ctl"
+		port = controlRelayContainerPort
+	}
+	out, err := m.command(ctx, "port", name, strconv.Itoa(port))
+	if err != nil {
+		return 0, errors.New("published port unavailable")
+	}
+	line := strings.TrimSpace(firstLine(string(out)))
+	i := strings.LastIndexByte(line, ':')
+	if i < 0 {
+		return 0, errors.New("published port unavailable")
+	}
+	parsed, err := strconv.Atoi(line[i+1:])
+	if err != nil || parsed <= 0 || parsed > 65535 {
+		return 0, errors.New("published port unavailable")
+	}
+	return parsed, nil
+}
+
 func containerName(key string) string {
 	return "hermes-context-" + hex.EncodeToString(hashBytes(key)[:8])
 }

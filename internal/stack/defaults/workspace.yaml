@@ -1,0 +1,33 @@
+# Hermes Hub workspace — the capability surface for this space. These are
+# wishes only: ToolHub grants in the protected store are the authority, and
+# an entry without a grant admits nothing.
+#
+# tools: each entry picks a backend —
+#   native        upstream Hermes toolset inside the runtime; no per-call
+#                 admission, no call audit, revokes on respawn only
+#   toolhub       managed executor: per-call admission, audit, os.Root scopes
+#   mcp[:server]  builtin connector served through ToolHub
+#   mcp-raw       raw MCP server defined in mcp: below (or by the org)
+#   off           explicit deny; absent means denied
+# access: ro      strips every mutation path the backend can honour
+tools:
+  file:
+    via: toolhub
+    paths: [docs]
+  documents: toolhub
+  images: toolhub
+  todo: native
+  memory: native
+  web: native         # web search/extract toolset; provider keys via secrets
+  deep_research: native # bundled bounded deep-research skill; needs web
+  browser: mcp        # playwright read/navigate; tools: {act: true} adds mutations
+  hh: toolhub
+  # terminal: native   # relaxed grant: full workspace reach, no call audit
+  # code_exec: toolhub # sandboxed execution in a disposable container
+  # ssh: {via: toolhub, access: ro}
+  # gitea: mcp-raw
+# mcp:
+#   gitea: {url: "https://mcp.example.invalid/gitea", timeout: 60}
+ingress: []
+workspace:
+  mounts: []

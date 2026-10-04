@@ -7,14 +7,17 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func boolPtr(v bool) *bool { return &v }
 
 func webSettings(base Settings) Settings {
-	base.Features = append(append([]string{}, base.Features...), "web")
+	if base.Tools == nil {
+		base.Tools = map[string]ToolEntry{}
+	}
+	for name, entry := range testTools("web") {
+		base.Tools[name] = entry
+	}
 	base.Web = WebSettings{
 		SearchBackend:    "searxng",
 		ExtractBackend:   "firecrawl",
@@ -36,7 +39,7 @@ func TestWebConfigRendersOnlySetFields(t *testing.T) {
 	if _, ok := Config(s)["web"]; ok {
 		t.Fatal("empty web settings rendered a web section")
 	}
-	s.Features = []string{"web"}
+	s.Tools = testTools("web")
 	s.Web = WebSettings{SearchBackend: "SearXNG", KeylessFallback: boolPtr(false), Research: WebResearchBounds{MaxRounds: 3, MaxPages: 16}}
 	web, ok := Config(s)["web"].(M)
 	if !ok {
@@ -89,7 +92,7 @@ func TestWebValidationRejectsBadInput(t *testing.T) {
 	}
 	// A shared search-only backend is fine once extract_backend is explicit.
 	s = validSettings()
-	s.Features = []string{"web"}
+	s.Tools = testTools("web")
 	s.Web = WebSettings{Backend: "ddgs", ExtractBackend: "tavily"}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("ddgs backend with extract override rejected: %v", err)
@@ -105,7 +108,7 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	}
 	// deep_research cannot stand without web.
 	s = validSettings()
-	s.Features = []string{"deep_research"}
+	s.Tools = testTools("deep_research")
 	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "deep_research requires web") {
 		t.Fatalf("deep_research without web must fail: %v", err)
 	}
@@ -129,7 +132,7 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	}
 	// Feature on: toolset present, gated skill enabled, no toolset stripping.
 	s = validSettings()
-	s.Features = []string{"web", "deep_research"}
+	s.Tools = testTools("web", "deep_research")
 	cfg = Config(s)
 	cli = cfg["platform_toolsets"].(M)["cli"].([]string)
 	if !slices.Contains(cli, "web") {
@@ -156,7 +159,7 @@ func TestWebSearchProvidersValidation(t *testing.T) {
 		}
 	}
 	s := validSettings()
-	s.Features = []string{"web"}
+	s.Tools = testTools("web")
 	s.Web = WebSettings{SearchBackend: "keenable", SearchProviders: []string{"Keenable", " DDGS "}}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("valid search_providers rejected: %v", err)
@@ -201,7 +204,7 @@ func TestGatedPluginExcludedFromMaterializedMount(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(space, "generated", "plugins", "other-plugin", "plugin.yaml")); err != nil {
 		t.Fatalf("ungated plugin not copied: %v", err)
 	}
-	s.Features = []string{"web"}
+	s.Tools = testTools("web")
 	if err := MaterializeHubPlugins(space, root, s); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +223,7 @@ func TestWebPluginMountedOnlyWithFeature(t *testing.T) {
 			t.Fatal("hub plugin mounted without web feature")
 		}
 	}
-	s.Features = []string{"web"}
+	s.Tools = testTools("web")
 	volumes = RuntimeService(s, "", space)["volumes"].([]any)
 	found := false
 	for _, v := range volumes {
@@ -259,7 +262,7 @@ func TestGatedSkillExcludedFromMaterializedMount(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(space, "generated", "skills", "other-skill", "SKILL.md")); err != nil {
 		t.Fatalf("ungated skill not copied: %v", err)
 	}
-	s.Features = []string{"web", "deep_research"}
+	s.Tools = testTools("web", "deep_research")
 	if err := MaterializeGlobalSkills(space, s); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +279,7 @@ func TestWebProviderEnvKeysReachSelfEnvAllowlist(t *testing.T) {
 			t.Fatalf("%s leaked into self-env without configuration", key)
 		}
 	}
-	s.Features = []string{"web"}
+	s.Tools = testTools("web")
 	s.Web = WebSettings{SearchBackend: "searxng", ExtractBackend: "exa"}
 	keys := selfEnvKeys(s)
 	for _, key := range []string{"SEARXNG_URL", "EXA_API_KEY"} {
@@ -288,7 +291,7 @@ func TestWebProviderEnvKeysReachSelfEnvAllowlist(t *testing.T) {
 
 func TestWebDoctorWarnsOnlyKeyedProviders(t *testing.T) {
 	s := validSettings()
-	s.Features = []string{"web"}
+	s.Tools = testTools("web")
 	s.Web = WebSettings{Backend: "searxng"}
 	issues := Doctor(s, map[string]string{"OPENAI_API_KEY": "x", "model": "y"})
 	joined := strings.Join(issues, " ")
@@ -329,24 +332,20 @@ func TestWebDoctorWarnsOnlyKeyedProviders(t *testing.T) {
 	}
 }
 
-func TestWebSettingsRoundTripThroughSettingsYAML(t *testing.T) {
+func TestWebSettingsRoundTripThroughSpaceFiles(t *testing.T) {
 	d := t.TempDir()
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(filepath.Join(d, "settings.yaml"))
+	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Web = WebSettings{Backend: "tavily", Research: WebResearchBounds{MaxRounds: 2}}
-	body, err := yaml.Marshal(s)
-	if err != nil {
+	if err := WriteSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(d, "settings.yaml"), body, 0600); err != nil {
-		t.Fatal(err)
-	}
-	reloaded, err := Read(filepath.Join(d, "settings.yaml"))
+	reloaded, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}

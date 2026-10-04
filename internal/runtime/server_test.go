@@ -638,6 +638,24 @@ func TestSelfEnvProtectedFormUpdatesBoundRuntimeOnly(t *testing.T) {
 	}
 }
 
+func TestManagedRuntimeRejectsSelfEnvironmentUpdate(t *testing.T) {
+	t.Setenv("HUB_CAPABILITY_MODE", "managed")
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	request := httptest.NewRequest(http.MethodPost, "/v1/self-env", strings.NewReader(`{}`))
+	request.Header.Set("Authorization", "Bearer runtime-secret")
+	recorder := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("managed self-env status=%d", recorder.Code)
+	}
+	if _, err := os.Stat(filepath.Join(state, envstore.FileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed self-env wrote state: %v", err)
+	}
+}
+
 func TestHermesGatewayEnvironmentPinsAuthenticatedAPI(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_HERMES_API_PORT", "9000")

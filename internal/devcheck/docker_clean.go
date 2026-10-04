@@ -22,7 +22,22 @@ type dockerExec func(ctx context.Context, args ...string) error
 // tagged image fully duplicated, so each rebuild used to add the whole image
 // size again.
 func DockerBuild(ctx context.Context, image, target string) error {
-	return dockerBuild(ctx, image, target, streamDocker)
+	sha, _ := gitSHA(ctx, cliGit)
+	return dockerBuild(ctx, image, target, sha, streamDocker)
+}
+
+// cacheArgs forwards optional HUB_DOCKER_CACHE_FROM/HUB_DOCKER_CACHE_TO values
+// as --cache-from/--cache-to so CI can reuse remote BuildKit cache while local
+// builds behave as before.
+func cacheArgs() []string {
+	var args []string
+	if from := strings.TrimSpace(os.Getenv("HUB_DOCKER_CACHE_FROM")); from != "" {
+		args = append(args, "--cache-from", from)
+	}
+	if to := strings.TrimSpace(os.Getenv("HUB_DOCKER_CACHE_TO")); to != "" {
+		args = append(args, "--cache-to", to)
+	}
+	return args
 }
 
 func streamDocker(ctx context.Context, args ...string) error {
@@ -32,11 +47,15 @@ func streamDocker(ctx context.Context, args ...string) error {
 	return cmd.Run()
 }
 
-func dockerBuild(ctx context.Context, image, target string, run dockerExec) error {
+func dockerBuild(ctx context.Context, image, target, sha string, run dockerExec) error {
 	if image == "" || target == "" || strings.ContainsAny(image+target, " \t\r\n") || run == nil {
 		return fmt.Errorf("image and target required")
 	}
-	return run(ctx, "build", "--target", target, "-t", image, "-f", "docker/Dockerfile", ".")
+	args := []string{"build", "--target", target, "-t", image, "--load"}
+	if validRef(sha) {
+		args = append(args, "--build-arg", "GIT_SHA="+sha)
+	}
+	return run(ctx, append(append(args, cacheArgs()...), "-f", "docker/Dockerfile", ".")...)
 }
 
 var composeImagePattern = regexp.MustCompile(`(?m)^\s*image:\s*hermes-hub:(\S+)\s*$`)

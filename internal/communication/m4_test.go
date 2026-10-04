@@ -319,7 +319,7 @@ func TestSlackEventsSignatureMappingDedupAndAudience(t *testing.T) {
 	if rec := post(channel, slackSig(c.SlackSigningSecret, ts, channel), ts); rec.Code != http.StatusForbidden {
 		t.Fatalf("unmapped channel allowed: %d", rec.Code)
 	}
-	cfg := stack.Config(stack.Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Features: []string{"workspace", "slack_app"}})
+	cfg := stack.Config(stack.Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Ingress: []string{"slack_app"}})
 	servers := cfg["mcp_servers"].(stack.M)
 	if _, ok := servers["slack"]; ok {
 		t.Fatal("slack_app communication permission created Slack data tools")

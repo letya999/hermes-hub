@@ -611,6 +611,10 @@ func (s *runtimeHTTP) selfEnv(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
+		writeRuntimeError(w, http.StatusForbidden, "self-managed environment disabled")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)

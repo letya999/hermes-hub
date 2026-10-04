@@ -53,53 +53,34 @@ func (t *Tools) registerSSH(s *mcp.Server) {
 	if os.Getenv("HUB_SSH_CONFIG") == "" {
 		return
 	}
-	call := func(fn func(context.Context, *sshcap.Service, Input) (any, error)) func(context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, any, error) {
-		return func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, any, error) {
-			svc, err := t.sshService()
+	add := func(name, description string) {
+		mcp.AddTool(s, &mcp.Tool{Name: name, Description: description}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+			out, err := t.Call(ctx, name, r)
 			if err != nil {
 				return nil, nil, err
 			}
-			out, err := fn(ctx, svc, r)
-			return nil, out, err
-		}
+			result, ok := out.(map[string]any)
+			if !ok {
+				return nil, map[string]any{"result": out}, nil
+			}
+			return nil, result, nil
+		})
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "ssh_hosts", Description: "List configured SSH host aliases with host/port/user, capabilities and bounds. Host credentials and host keys are never returned."}, call(func(_ context.Context, svc *sshcap.Service, _ Input) (any, error) {
-		return map[string]any{"hosts": svc.Hosts()}, nil
-	}))
-	mcp.AddTool(s, &mcp.Tool{Name: "ssh_exec", Description: "Run one allowlisted diagnostic command on a configured host alias. Write commands require the ssh_write grant. Output, duration and concurrency are bounded."}, call(func(ctx context.Context, svc *sshcap.Service, r Input) (any, error) {
-		return svc.Exec(ctx, r.Host, r.Command)
-	}))
-	mcp.AddTool(s, &mcp.Tool{Name: "ssh_read", Description: "Read one allowlisted remote file (bounded UTF-8 text) from a configured host alias."}, call(func(ctx context.Context, svc *sshcap.Service, r Input) (any, error) {
-		return svc.Read(ctx, r.Host, r.Path)
-	}))
+	add("ssh_hosts", "List configured SSH host aliases with host/port/user, capabilities and bounds. Host credentials and host keys are never returned.")
+	add("ssh_exec", "Run one allowlisted diagnostic command on a configured host alias. Write commands require the ssh_write grant. Output, duration and concurrency are bounded.")
+	add("ssh_read", "Read one allowlisted remote file (bounded UTF-8 text) from a configured host alias.")
 	if t.SSHGrants.Write {
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_write", Description: "Replace one allowlisted remote file atomically (bounded UTF-8 text). Privileged ssh_write capability."}, call(func(ctx context.Context, svc *sshcap.Service, r Input) (any, error) {
-			return svc.Write(ctx, r.Host, r.Path, r.Text)
-		}))
+		add("ssh_write", "Replace one allowlisted remote file atomically (bounded UTF-8 text). Privileged ssh_write capability.")
 	}
 	if t.SSHGrants.Shell {
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_shell_open", Description: "Open a bounded interactive PTY shell on a configured host alias. Privileged ssh_shell capability."}, call(func(ctx context.Context, svc *sshcap.Service, r Input) (any, error) {
-			return svc.ShellOpen(ctx, r.Host)
-		}))
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_shell_send", Description: "Write input (max 4 KiB) to an open SSH shell by id."}, call(func(_ context.Context, svc *sshcap.Service, r Input) (any, error) {
-			return map[string]any{"id": r.ID, "sent": len(r.Data)}, svc.ShellSend(r.ID, r.Data)
-		}))
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_shell_read", Description: "Read new shell output from the bounded ring buffer at offset."}, call(func(_ context.Context, svc *sshcap.Service, r Input) (any, error) {
-			return svc.ShellRead(r.ID, r.Offset)
-		}))
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_shell_close", Description: "Close an open SSH shell by id."}, call(func(_ context.Context, svc *sshcap.Service, r Input) (any, error) {
-			return map[string]any{"id": r.ID, "closed": true}, svc.ShellClose(r.ID)
-		}))
+		add("ssh_shell_open", "Open a bounded interactive PTY shell on a configured host alias. Privileged ssh_shell capability.")
+		add("ssh_shell_send", "Write input (max 4 KiB) to an open SSH shell by id.")
+		add("ssh_shell_read", "Read new shell output from the bounded ring buffer at offset.")
+		add("ssh_shell_close", "Close an open SSH shell by id.")
 	}
 	if t.SSHGrants.Tunnel {
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_tunnel_open", Description: "Open a managed loopback tunnel to a pre-approved remote endpoint on a configured host alias. Privileged ssh_tunnel capability."}, call(func(ctx context.Context, svc *sshcap.Service, r Input) (any, error) {
-			return svc.TunnelOpen(ctx, r.Host, r.Name)
-		}))
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_tunnel_list", Description: "List open managed SSH tunnels."}, call(func(_ context.Context, svc *sshcap.Service, _ Input) (any, error) {
-			return map[string]any{"tunnels": svc.TunnelList()}, nil
-		}))
-		mcp.AddTool(s, &mcp.Tool{Name: "ssh_tunnel_close", Description: "Close one managed SSH tunnel by id."}, call(func(_ context.Context, svc *sshcap.Service, r Input) (any, error) {
-			return map[string]any{"id": r.ID, "closed": true}, svc.TunnelClose(r.ID)
-		}))
+		add("ssh_tunnel_open", "Open a managed loopback tunnel to a pre-approved remote endpoint on a configured host alias. Privileged ssh_tunnel capability.")
+		add("ssh_tunnel_list", "List open managed SSH tunnels.")
+		add("ssh_tunnel_close", "Close one managed SSH tunnel by id.")
 	}
 }

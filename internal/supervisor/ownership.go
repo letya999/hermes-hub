@@ -12,6 +12,7 @@ import (
 
 type OrphanRuntime struct {
 	Container  string `json:"container"`
+	Name       string `json:"name,omitempty"`
 	ContextKey string `json:"context_key"`
 	Generation string `json:"generation"`
 }
@@ -59,8 +60,12 @@ func (m *Manager) VerifyOwnership(ctx context.Context, runtime Runtime) error {
 	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] != runtime.Generation || runtime.Generation == "" {
 		return errors.New("runtime ownership mismatch")
 	}
-	if err := m.verifyScopeMount(ctx, runtime); err != nil {
-		return err
+	// Managed runtimes never mount the context scope: the space directory
+	// carries secrets that must not be readable inside the isolated runtime.
+	if !runtime.Managed {
+		if err := m.verifyScopeMount(ctx, runtime); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -138,13 +143,78 @@ func (m *Manager) ownedContainerID(ctx context.Context, runtime Runtime) (string
 
 func (m *Manager) removeOwnedRuntime(ctx context.Context, runtime Runtime) error {
 	id, err := m.ownedContainerID(ctx, runtime)
+	var result error
 	if err != nil {
-		return err
+		result = err
+	} else if _, err = m.command(ctx, "rm", "-f", id); err != nil {
+		result = errors.New("owned runtime removal failed")
 	}
-	if _, err = m.command(ctx, "rm", "-f", id); err != nil {
-		return errors.New("owned runtime removal failed")
+	// A managed runtime owns a same-generation control relay sidecar; it is
+	// removed with its runtime even when the runtime record is already gone.
+	if sidecarErr := m.removeOwnedSidecar(ctx, runtime); sidecarErr != nil {
+		result = errors.Join(result, sidecarErr)
+	}
+	return result
+}
+
+// removeOwnedSidecar removes <container>-ctl only when its labels prove it
+// belongs to this supervisor, context and generation. A name that cannot be
+// inspected is treated as absent: an unverifiable container is never removed.
+func (m *Manager) removeOwnedSidecar(ctx context.Context, runtime Runtime) error {
+	// Only managed runtimes carry a control-relay sidecar; legacy teardown
+	// paths must not even inspect other contexts' containers.
+	if !runtime.Managed || runtime.Container == "" || runtime.Generation == "" {
+		return nil
+	}
+	name := runtime.Container + "-ctl"
+	metadata, err := m.runtimeLabels(ctx, name)
+	if err != nil {
+		return nil
+	}
+	key := runtime.PrincipalID + "\x00" + runtime.ContextID + "\x00" + runtime.RuntimeMode
+	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] != runtime.Generation || metadata["hermes-hub.role"] != "control-relay" {
+		return errors.New("control relay ownership mismatch")
+	}
+	if _, err := m.command(ctx, "rm", "-f", name); err != nil {
+		return errors.New("owned control relay removal failed")
 	}
 	return nil
+}
+
+// reclaimSidecarName removes a stale <container>-ctl from an earlier runtime
+// generation of this same context so a replacement runtime can spawn its own
+// relay. Foreign or same-generation containers are never touched.
+func (m *Manager) reclaimSidecarName(ctx context.Context, binding Binding, container string) {
+	name := container + "-ctl"
+	metadata, err := m.runtimeLabels(ctx, name)
+	if err != nil {
+		return
+	}
+	key := runtimeKey(binding)
+	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.role"] != "control-relay" {
+		return
+	}
+	_, _ = m.command(ctx, "rm", "-f", name)
+}
+
+// reclaimStaleRuntime removes a same-name container only when its labels prove
+// it belongs to this supervisor and context but to an older generation, and
+// also releases that generation's control relay. It reports whether the name
+// is now free for the incoming generation.
+func (m *Manager) reclaimStaleRuntime(ctx context.Context, binding Binding, container, generation string) bool {
+	metadata, err := m.runtimeLabels(ctx, container)
+	if err != nil {
+		return false
+	}
+	key := runtimeKey(binding)
+	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] == "" || metadata["hermes-hub.generation"] == generation || metadata["hermes-hub.role"] != "" {
+		return false
+	}
+	if _, err := m.command(ctx, "rm", "-f", container); err != nil {
+		return false
+	}
+	m.reclaimSidecarName(ctx, binding, container)
+	return true
 }
 
 // DetectOrphans inventories only this supervisor's labelled containers.
@@ -183,21 +253,27 @@ func (m *Manager) DetectOrphans(ctx context.Context) error {
 		if decodeErr != nil || len(decoded) != 32 || generation == "" || len(generation) > 256 {
 			return errors.New("invalid runtime ownership")
 		}
+		// Control-relay sidecars share owner/context/generation labels but are
+		// removed through their owning runtime, never inventoried as orphans.
+		if metadata["hermes-hub.role"] == "control-relay" {
+			continue
+		}
 		name, err := m.command(ctx, "inspect", "--format", "{{.Name}}", id)
 		if err != nil || len(name) > 1024 {
 			return errors.New("runtime inventory identity unavailable")
 		}
+		containerName := strings.TrimPrefix(strings.TrimSpace(string(name)), "/")
 		m.mu.Lock()
 		current := false
 		for logicalKey, entry := range m.items {
-			if hex.EncodeToString(hashBytes(logicalKey)) == key && entry.Generation == generation && entry.State != Stopped && strings.TrimPrefix(strings.TrimSpace(string(name)), "/") == entry.Container {
+			if hex.EncodeToString(hashBytes(logicalKey)) == key && entry.Generation == generation && entry.State != Stopped && containerName == entry.Container {
 				current = true
 				break
 			}
 		}
 		m.mu.Unlock()
 		if !current {
-			orphans = append(orphans, OrphanRuntime{Container: id, ContextKey: key, Generation: generation})
+			orphans = append(orphans, OrphanRuntime{Container: id, Name: containerName, ContextKey: key, Generation: generation})
 		}
 	}
 	m.mu.Lock()
@@ -239,7 +315,12 @@ func (m *Manager) ReapOrphans(ctx context.Context) {
 		}
 		lock := m.lockFor(runtimeKey(Binding{PrincipalID: runtime.PrincipalID, ContextID: runtime.ContextID, RuntimeMode: runtime.RuntimeMode}))
 		lock.Lock()
+		// Removal inspects either form, but the control relay is named
+		// <container>-ctl, so prefer the recorded name when it is known.
 		runtime.Container, runtime.Generation = orphan.Container, orphan.Generation
+		if orphan.Name != "" {
+			runtime.Container = orphan.Name
+		}
 		// Compute removal does not include Docker's volume deletion option.
 		_ = m.removeOwnedRuntime(ctx, runtime)
 		lock.Unlock()

@@ -13,7 +13,7 @@ import (
 )
 
 func TestDocumentImageProfile(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Features: []string{"workspace"}}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace"), Ingress: testIngress("workspace")}
 	cfg := Config(s)
 	for _, platform := range []string{"cli", "telegram"} {
 		toolsets := cfg["platform_toolsets"].(M)[platform].([]string)
@@ -39,7 +39,7 @@ func TestDocumentImageProfile(t *testing.T) {
 	}
 
 	s.ExecutionMode = ""
-	s.Features = []string{"workspace", "image_gen"}
+	s.Tools, s.Ingress = testTools("workspace", "image_gen"), testIngress("workspace", "image_gen")
 	cfg = Config(s)
 	section := cfg["image_gen"].(M)
 	if section["provider"] != media.ProviderCLIProxy || section["model"] != media.CLIProxyDefaultModel || section["delivery"] != media.DeliveryWorkspace {
@@ -52,7 +52,7 @@ func TestDocumentImageProfile(t *testing.T) {
 	if _, _, ok, err := ServiceMCPConfig("image_gen"); err == nil || ok {
 		t.Fatal("image_gen became self-service", ok, err)
 	}
-	if slices.Contains(selfEnvKeys(s), "FAL_KEY") || slices.Contains(selfEnvKeys(Settings{Features: []string{"workspace"}}), "FAL_KEY") {
+	if slices.Contains(selfEnvKeys(s), "FAL_KEY") || slices.Contains(selfEnvKeys(Settings{Tools: testTools("workspace"), Ingress: testIngress("workspace")}), "FAL_KEY") {
 		t.Fatal("cliproxy image_gen named FAL_KEY")
 	}
 	if strings.Contains(strings.Join(Doctor(s, map[string]string{"OPENAI_API_KEY": "present"}), " "), "FAL_KEY") {
@@ -79,11 +79,11 @@ func TestDocumentImageProfile(t *testing.T) {
 	if strings.Contains(present, "FAL_KEY") {
 		t.Fatal(present)
 	}
-	if err := (Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Features: []string{"image_gen"}, ImageGen: media.ImageGen{Provider: "guessed"}, BrowserPort: 6080, OAuthPort: 8000}).Validate(); err == nil {
+	if err := (Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Tools: testTools("image_gen"), Ingress: testIngress("image_gen"), ImageGen: media.ImageGen{Provider: "guessed"}, BrowserPort: 6080, OAuthPort: 8000}).Validate(); err == nil {
 		t.Fatal("unknown image provider accepted")
 	}
 
-	browser := Config(Settings{Features: []string{"browser"}, Model: "m", ModelURL: "http://model.invalid/v1"})
+	browser := Config(Settings{Tools: testTools("browser"), Ingress: testIngress("browser"), Model: "m", ModelURL: "http://model.invalid/v1"})
 	args := browser["mcp_servers"].(M)["browser"].(M)["args"].([]string)
 	if !slices.Contains(args, "vision,pdf") {
 		t.Fatal(args)
@@ -131,14 +131,14 @@ func TestDocumentImageProfile(t *testing.T) {
 	if err := Init(space, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(space, "settings.yaml"))
+	settings, err := Read(space)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "m"
 	settings.ModelURL = "http://model.invalid/v1"
-	settings.Features = []string{"workspace"}
-	if err := saveSettings(filepath.Join(space, "settings.yaml"), settings); err != nil {
+	settings.Tools, settings.Ingress = testTools("workspace"), testIngress("workspace")
+	if err := WriteSpace(space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(space, "secrets.prod.env"), []byte("OPENAI_API_KEY=openai-sample\nFAL_KEY=fal-sample-value\n"), 0o600); err != nil {
@@ -161,8 +161,8 @@ func TestDocumentImageProfile(t *testing.T) {
 	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") {
 		t.Fatalf("rendered runtime leaked generation credential: %v %s", err, runtimeEnv)
 	}
-	settings.Features = []string{"workspace", "image_gen"}
-	if err := saveSettings(filepath.Join(space, "settings.yaml"), settings); err != nil {
+	settings.Tools, settings.Ingress = testTools("workspace", "image_gen"), testIngress("workspace", "image_gen")
+	if err := WriteSpace(space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := Render(space, repo); err != nil {
@@ -177,7 +177,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatalf("cliproxy runtime included FAL_KEY: %v %s", err, runtimeEnv)
 	}
 	settings.ImageGen = media.ImageGen{Provider: media.FalProvider, Model: media.ModelFromChat, Delivery: media.DeliveryURL}
-	if err := saveSettings(filepath.Join(space, "settings.yaml"), settings); err != nil {
+	if err := WriteSpace(space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := Render(space, repo); err != nil {

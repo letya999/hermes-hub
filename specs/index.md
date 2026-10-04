@@ -2,6 +2,9 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0042](active/SPEC-0042-capability-isolation-and-proof.md) | Frozen: execution isolation, file/shell boundaries and T01-T22 acceptance; implementation in CHG-0065 |
+| [SPEC-0041](active/SPEC-0041-default-deny-capabilities.md) | Frozen successor to SPEC-0040 defaults: complete inventory, explicit profiles/grants, routing and revocation; implementation in CHG-0065 |
+| [SPEC-0040](active/SPEC-0040-capability-profile.md) | Frozen earlier capability matrix; defaults/enforcement superseded by SPEC-0041/0042 |
 | [SPEC-0039](active/SPEC-0039-media-sidecars.md) | Standalone hub-stt/hub-tts services (separate images): OpenAI-compatible API, swappable engines, durable async jobs for long recordings |
 | [SPEC-0038](active/SPEC-0038-voice-readiness.md) | `/voice` reports STT and TTS readiness separately; live voice evidence is a deployment gate |
 | [SPEC-0037](active/SPEC-0037-artifact-delivery.md) | Run artifact handoff: bounded runtime fetch endpoint, spool staging, ordered channel delivery |

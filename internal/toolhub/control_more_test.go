@@ -58,6 +58,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 		t.Fatalf("nil store: %v", err)
 	}
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", ControlOperations...)
 	control := &ControlPlane{Store: store, Listen: "https://127.0.0.1:9", Now: time.Now, ConfirmationTTL: time.Minute}
 	if control.origin() != "https://127.0.0.1:9" {
 		t.Fatalf("origin=%s", control.origin())
@@ -88,10 +89,10 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("catalog without grant: %v", err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
+	if err := putGrant(t, store, Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil); !errors.Is(err, ErrInvalid) {
@@ -191,7 +192,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err := store.RegisterDefinition(credDef); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantDefinition, "alice", "oauth-mcp", "1.0.0")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "oauth-mcp", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	oauthPrep, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": "oauth-mcp", "version": "1.0.0", "request_key": "oauth-1"})
@@ -307,11 +308,12 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 
 func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", ControlOperations...)
 	definition := catalogReadDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	key, err := credstore.GenerateKey()
@@ -382,7 +384,7 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	if err := store.RegisterDefinition(credDef); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantDefinition, "alice", "secret-mcp", "1.0.0")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "secret-mcp", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	credPrep, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "secret-mcp", "version": "1.0.0", "request_key": "secret-1"})
@@ -438,16 +440,17 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 		t.Fatal("shared-credential grant without definition accepted")
 	}
 	sharedGrant := OperatorGrant(GrantSharedCredential, "alice", "catalog-read", "")
+	mustConfirm(t, &sharedGrant)
 	if err := sharedGrant.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	first := OperatorGrant(GrantSelfInstall, "dave", "", "")
-	if err := store.PutGrant(first); err != nil {
+	if err := putGrant(t, store, first); err != nil {
 		t.Fatal(err)
 	}
 	conflict := first
 	conflict.Status = DisabledStatus
-	if err := store.PutGrant(conflict); !errors.Is(err, ErrConflict) {
+	if err := putGrant(t, store, conflict); !errors.Is(err, ErrConflict) {
 		t.Fatalf("grant conflict: %v", err)
 	}
 	if err := store.PutPublication(DefinitionPublication{DefinitionID: "missing-pub", Version: "1.0.0", Visibility: PublicationCatalog}); !errors.Is(err, ErrNotFound) {
@@ -543,7 +546,7 @@ func TestStatusBodyExposesNextAction(t *testing.T) {
 
 func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
 	store := NewStore()
-	if err := store.PutGrant(Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
+	if err := putGrant(t, store, Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})

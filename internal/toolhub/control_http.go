@@ -17,11 +17,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope) {
+func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, allowed map[string]bool) {
 	if g == nil || g.Control == nil || server == nil {
 		return
 	}
 	for _, op := range ControlOperations {
+		if !allowed[op] {
+			continue
+		}
 		name := op
 		description, schema := controlToolContract(name)
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -46,10 +49,16 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope) {
 			return &mcp.CallToolResult{StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
 		})
 	}
+	if !allowed["invoke"] {
+		return
+	}
 	server.AddTool(&mcp.Tool{Name: "invoke", Description: "Call an enabled ToolHub projected tool without reconnecting the MCP client. Pass the exact projected tool name and its arguments.", InputSchema: map[string]any{
 		"type": "object", "required": []string{"tool"}, "additionalProperties": false,
 		"properties": map[string]any{"tool": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object"}},
 	}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := g.Store.RequireControlOperation(auth, "invoke"); err != nil {
+			return nil, err
+		}
 		var arguments struct {
 			Tool      string         `json:"tool"`
 			Arguments map[string]any `json:"arguments"`

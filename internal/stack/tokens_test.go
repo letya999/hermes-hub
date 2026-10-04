@@ -162,3 +162,15 @@ func TestRuntimeTokenEnvelopeUsesOrganizationContext(t *testing.T) {
 		t.Fatalf("envelope=%+v", envelope)
 	}
 }
+
+func TestManagedRuntimeTokenEnvelopeBindsGeneration(t *testing.T) {
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 3}
+	envelope, err := runtimeTokenEnvelope(s)
+	if err != nil || envelope.CapabilityProfile != "alice-default" || envelope.Environment != "dev" || envelope.Generation != 3 {
+		t.Fatalf("managed envelope=%+v err=%v", envelope, err)
+	}
+	s.CapabilityGeneration = 0
+	if _, err := runtimeTokenEnvelope(s); err == nil {
+		t.Fatal("managed token admitted without generation")
+	}
+}

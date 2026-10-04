@@ -89,7 +89,7 @@ func TestConfigurationFailurePaths(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"google", "desktop", "drafts"} {
-		s := Settings{Schema: 1, User: "me", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{name}}
+		s := Settings{Schema: 1, User: "me", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools(name), Ingress: testIngress(name)}
 		if s.Validate() == nil {
 			t.Fatal(name)
 		}

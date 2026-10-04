@@ -112,6 +112,9 @@ func (s *Store) ListProjectedTools(auth identity.Envelope) ([]ProjectedTool, err
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
+	if auth.CapabilityProfile != "" {
+		return s.managedToolsLocked(auth)
+	}
 	result := make([]ProjectedTool, 0)
 	seen := map[string]bool{}
 	for _, binding := range s.bindings {
@@ -150,6 +153,12 @@ func (s *Store) ResolveProjectedTool(auth identity.Envelope, projectedName strin
 // AuthorizeProjected holds the registry read lock through backend admission for
 // a projected tool name. Cached MCP visibility is not an authorization grant.
 func (s *Store) AuthorizeProjected(auth identity.Envelope, projectedName string, admit func(ProjectedTool, EffectiveBinding) error) error {
+	return s.AuthorizeProjectedCall(auth, projectedName, nil, admit)
+}
+
+// AuthorizeProjectedCall evaluates the reviewed action/resource contract against
+// the actual arguments before the same credential/backend admission callback.
+func (s *Store) AuthorizeProjectedCall(auth identity.Envelope, projectedName string, arguments map[string]any, admit func(ProjectedTool, EffectiveBinding) error) error {
 	if admit == nil {
 		return fmt.Errorf("%w: nil admission callback", ErrInvalid)
 	}
@@ -161,6 +170,18 @@ func (s *Store) AuthorizeProjected(auth identity.Envelope, projectedName string,
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if auth.CapabilityProfile != "" {
+		release, err := s.lockCapabilityAdmission()
+		if err != nil {
+			return err
+		}
+		defer release()
+		projected, effective, err := s.managedToolLocked(auth, projectedName, arguments, false)
+		if err != nil {
+			return err
+		}
+		return admit(projected, effective)
+	}
 	projected, effective, err := s.findProjectedLocked(auth, projectedName)
 	if err != nil {
 		return err
@@ -178,6 +199,9 @@ func validateProjectedName(projectedName string) error {
 func (s *Store) findProjectedLocked(auth identity.Envelope, projectedName string) (ProjectedTool, EffectiveBinding, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return ProjectedTool{}, EffectiveBinding{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	if auth.CapabilityProfile != "" {
+		return s.managedToolLocked(auth, projectedName, nil, true)
 	}
 	var found *ProjectedTool
 	var effective EffectiveBinding

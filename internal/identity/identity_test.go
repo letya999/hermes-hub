@@ -18,14 +18,28 @@ func TestEnvelopeValidation(t *testing.T) {
 		t.Fatal("slack identities collided across workspaces")
 	}
 	for name, envelope := range map[string]Envelope{
-		"malformed": func() Envelope { e := valid; e.ConversationID = "bad:id"; return e }(),
-		"principal": func() Envelope { e := valid; e.PrincipalID = "bob"; return e }(),
-		"context":   func() Envelope { e := valid; e.ContextID = "other"; return e }(),
-		"runtime":   func() Envelope { e := valid; e.RuntimeID = "stale"; return e }(),
-		"policy":    func() Envelope { e := valid; e.PolicyVersion = "policy-0"; return e }(),
+		"malformed":        func() Envelope { e := valid; e.ConversationID = "bad:id"; return e }(),
+		"principal":        func() Envelope { e := valid; e.PrincipalID = "bob"; return e }(),
+		"context":          func() Envelope { e := valid; e.ContextID = "other"; return e }(),
+		"runtime":          func() Envelope { e := valid; e.RuntimeID = "stale"; return e }(),
+		"policy":           func() Envelope { e := valid; e.PolicyVersion = "policy-0"; return e }(),
+		"profile-only":     func() Envelope { e := valid; e.CapabilityProfile = "default"; return e }(),
+		"environment-only": func() Envelope { e := valid; e.Environment = "prod"; return e }(),
+		"generation-only":  func() Envelope { e := valid; e.Generation = 1; return e }(),
+		"bad-environment": func() Envelope {
+			e := valid
+			e.CapabilityProfile = "default"
+			e.Environment = "any"
+			e.Generation = 1
+			return e
+		}(),
 	} {
 		if envelope.Validate("alice", "alice", "alice", "policy-1") == nil {
 			t.Fatalf("accepted invalid %s envelope", name)
 		}
+	}
+	valid.CapabilityProfile, valid.Environment, valid.Generation = "default", "dev", 1
+	if err := valid.Validate("alice", "alice", "alice", "policy-1"); err != nil {
+		t.Fatal(err)
 	}
 }

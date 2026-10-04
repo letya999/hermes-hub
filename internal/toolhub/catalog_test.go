@@ -81,6 +81,9 @@ func TestManifestCatalogReportsMissingCredentialsAndStaleConnection(t *testing.T
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
 	entries, err := store.Catalog(auth)
 	if err != nil || len(entries) != 1 || entries[0].Status != "missing-connection" || len(entries[0].MissingCredentials) != 1 {
 		t.Fatalf("missing credential catalog=%+v err=%v", entries, err)
@@ -157,7 +160,7 @@ func TestEnableReadyAdmitsBeforePublishingProjection(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutGrant(OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
@@ -355,14 +358,27 @@ func TestReloadUnchangedSnapshotPreservesPendingMutation(t *testing.T) {
 	}
 }
 
-func TestSelfInstallAllowedByDefaultAndRevocable(t *testing.T) {
+func TestSelfInstallDeniedByDefaultAndRevocable(t *testing.T) {
 	store := NewStore()
-	if err := store.RequireSelfInstall(aliceAuth()); err != nil {
-		t.Fatalf("self-install denied without a grant: %v", err)
+	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("self-install allowed without a grant: %v", err)
 	}
 	grant := OperatorGrant(GrantSelfInstall, "alice", "", "")
+	if err := putGrant(t, store, grant); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireSelfInstall(aliceAuth()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireSelfInstall(bobAuth()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("another principal inherited self-install: %v", err)
+	}
+	if err := putGrant(t, store, OperatorGrant(GrantSelfInstall, "bob", "", "")); err != nil {
+		t.Fatal(err)
+	}
 	grant.Status = RevokedStatus
-	if err := store.PutGrant(grant); err != nil {
+	grant.Revision++
+	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, ErrUnauthorized) {

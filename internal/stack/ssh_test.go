@@ -39,14 +39,18 @@ func writeSSHConfig(t *testing.T, dir string) {
 
 func TestSSHFeatureValidationAndDoctor(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	for _, sub := range []string{"ssh_write", "ssh_shell", "ssh_tunnel"} {
+	for _, sub := range []string{"write", "shell", "tunnel"} {
 		copy := s
-		copy.Features = []string{sub}
+		copy.Tools = map[string]ToolEntry{"ssh": {Via: "off", Tools: map[string]bool{sub: true}}}
 		if copy.Validate() == nil {
-			t.Fatal(sub + " accepted without ssh")
+			t.Fatal("ssh_" + sub + " accepted on a denied ssh")
+		}
+		copy.Tools = map[string]ToolEntry{"ssh": {Via: "toolhub", Tools: map[string]bool{"bogus": true}}}
+		if copy.Validate() == nil {
+			t.Fatal("unknown ssh toggle accepted")
 		}
 	}
-	s.Features = []string{"ssh"}
+	s.Tools, s.Ingress = testTools("ssh"), testIngress("ssh")
 	if err := s.Validate(); err != nil {
 		t.Fatal("ssh alone should validate:", err)
 	}
@@ -75,15 +79,14 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSSHConfig(t, d)
-	s, err := Read(filepath.Join(d, "settings.yaml"))
+	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
-	s.Features = []string{"ssh", "ssh_write", "ssh_tunnel"}
-	b, _ := yaml.Marshal(s)
-	if err = os.WriteFile(filepath.Join(d, "settings.yaml"), b, 0600); err != nil {
+	s.Tools, s.Ingress = testTools("ssh", "ssh_write", "ssh_tunnel"), testIngress("ssh", "ssh_write", "ssh_tunnel")
+	if err = WriteSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err != nil {
@@ -121,13 +124,12 @@ func TestSSHRenderFailsClosedOnBrokenConfig(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(filepath.Join(d, "settings.yaml"))
+	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Features = []string{"ssh"}
-	b, _ := yaml.Marshal(s)
-	if err = os.WriteFile(filepath.Join(d, "settings.yaml"), b, 0600); err != nil {
+	s.Tools, s.Ingress = testTools("ssh"), testIngress("ssh")
+	if err = WriteSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err == nil {
