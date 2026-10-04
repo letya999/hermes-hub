@@ -55,21 +55,28 @@ type JobMapping struct {
 	PolicyVersion       string          `json:"policy_version"`
 	Channel             string          `json:"channel"`
 	Trigger             string          `json:"trigger"`
-	Status              string          `json:"status"`
-	SessionID           string          `json:"session_id,omitempty"`
-	RunID               string          `json:"run_id,omitempty"`
-	RuntimeGeneration   string          `json:"runtime_generation,omitempty"`
-	CreatedAt           time.Time       `json:"created_at"`
-	UpdatedAt           time.Time       `json:"updated_at"`
-	TerminalAt          time.Time       `json:"terminal_at,omitempty"`
-	LastKnownEvent      string          `json:"last_known_event,omitempty"`
-	EventPosition       uint64          `json:"event_position,omitempty"`
-	LastEventID         string          `json:"last_event_id,omitempty"`
-	ApprovalID          string          `json:"approval_id,omitempty"`
-	ApprovalChoices     []string        `json:"approval_choices,omitempty"`
-	ApprovalDeadline    time.Time       `json:"approval_deadline,omitempty"`
-	ApprovalState       string          `json:"approval_state,omitempty"`
-	Result              string          `json:"result,omitempty"`
+	// TaskID/TopicID pin the durable task binding; Style/StyleVersion/
+	// StyleSnapshotted pin the admitted-run presentation snapshot.
+	TaskID            string    `json:"task_id,omitempty"`
+	TopicID           int64     `json:"topic_id,omitempty"`
+	Style             string    `json:"style,omitempty"`
+	StyleVersion      uint64    `json:"style_version,omitempty"`
+	StyleSnapshotted  bool      `json:"style_snapshotted,omitempty"`
+	Status            string    `json:"status"`
+	SessionID         string    `json:"session_id,omitempty"`
+	RunID             string    `json:"run_id,omitempty"`
+	RuntimeGeneration string    `json:"runtime_generation,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	TerminalAt        time.Time `json:"terminal_at,omitempty"`
+	LastKnownEvent    string    `json:"last_known_event,omitempty"`
+	EventPosition     uint64    `json:"event_position,omitempty"`
+	LastEventID       string    `json:"last_event_id,omitempty"`
+	ApprovalID        string    `json:"approval_id,omitempty"`
+	ApprovalChoices   []string  `json:"approval_choices,omitempty"`
+	ApprovalDeadline  time.Time `json:"approval_deadline,omitempty"`
+	ApprovalState     string    `json:"approval_state,omitempty"`
+	Result            string    `json:"result,omitempty"`
 }
 
 type ConversationMapping struct {
@@ -109,7 +116,7 @@ func (mapping JobMapping) MatchesJob(job Job) bool {
 }
 
 func mappingFromJob(job Job, now time.Time) JobMapping {
-	return JobMapping{IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: jobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
+	return JobMapping{IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: jobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
 }
 
 func (s *Spool) mappingPath(id string) string {

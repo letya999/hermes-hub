@@ -1,0 +1,21 @@
+schema: 1
+id: CHG-0065-task-style
+title: Per-task communication style (issue 168)
+status: in_progress
+phase: verification
+started_at: 2026-10-04
+updated_at: 2026-10-04
+completed:
+  - verified pinned /v1/runs instructions field -> ephemeral_system_prompt
+  - design: style snapshot pinned on JobMapping at admission
+  - Task.Style + StyleVersion storage; /style show|set|reset command with
+    1024-char bound and control-character rejection
+  - ExecuteRequest.Instructions -> /v1/runs instructions; snapshot reused on
+    retry, never reparsed for authorization or tool policy
+  - regression tests: persistence, reset, hostile input, snapshot pinning,
+    owner isolation; runtime forwarding covered
+  - just check green; SPEC-0011 records the instructions field
+  - docker-check green: image build, runtime+supervisor smoke, real pinned
+    Hermes 0.21.0 contract probe (hub-stt fixture skipped, pre-existing)
+pending:
+  - live provider style effect requires real Hermes run — not claimed

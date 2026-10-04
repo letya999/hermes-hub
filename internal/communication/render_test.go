@@ -292,7 +292,7 @@ func TestPlainDeliveryStaysPlain(t *testing.T) {
 	}
 	fake := &fakeAPI{}
 	g.api = fake
-	if err := g.queueDelivery(context.Background(), "k", 11, "Варианты: <choice> и **не маркдаун**"); err != nil {
+	if err := g.queueDelivery(context.Background(), "k", 11, 0, "Варианты: <choice> и **не маркдаун**"); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())

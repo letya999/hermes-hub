@@ -280,6 +280,68 @@ func TestArtifactForwardReachesOwningRuntime(t *testing.T) {
 	}
 }
 
+func TestUsageForwardReachesOwningRuntime(t *testing.T) {
+	var gotAuth, gotConversation string
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var request hubruntime.UsageRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotConversation = request.ConversationID
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"hub.session_usage","session_id":"s-1","declared_session_id":"s-1","session_found":true,"source":"hermes_session_db"}`))
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	envelope.ConversationID = "telegram-11-t-aabbccdd"
+	request := hubruntime.UsageRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "usage", IdempotencyKey: "usage"}}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(target, auth string, body []byte) *httptest.ResponseRecorder {
+		httpRequest := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer "+auth)
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		return recorder
+	}
+	recorder := call("/v1/usage", "secret", body)
+	if recorder.Code != http.StatusOK || gotConversation != "telegram-11-t-aabbccdd" || gotAuth != "Bearer secret" {
+		t.Fatalf("forward status=%d conversation=%q auth=%q body=%q", recorder.Code, gotConversation, gotAuth, recorder.Body.String())
+	}
+	var report hubruntime.SessionUsage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &report); err != nil || report.SessionID != "s-1" || !report.SessionFound {
+		t.Fatalf("usage body=%s err=%v", recorder.Body.String(), err)
+	}
+	if recorder := call("/v1/usage", "wrong", body); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", recorder.Code)
+	}
+	foreign := request
+	foreign.UserID = "bob"
+	foreignBody, _ := json.Marshal(foreign)
+	if recorder := call("/v1/usage", "secret", foreignBody); recorder.Code != http.StatusConflict {
+		t.Fatalf("foreign binding=%d", recorder.Code)
+	}
+	m.mu.Lock()
+	delete(m.items, runtimeKey(normalized))
+	m.mu.Unlock()
+	if recorder := call("/v1/usage", "secret", body); recorder.Code != http.StatusNotFound {
+		t.Fatalf("absent runtime=%d", recorder.Code)
+	}
+}
+
 func TestEnsureDeduplicatesAndReusesWarmRuntime(t *testing.T) {
 	var mu sync.Mutex
 	runs := 0

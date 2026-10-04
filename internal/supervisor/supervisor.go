@@ -933,6 +933,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.restartHTTP(w, r)
 	case "/v1/artifact":
 		m.artifactHTTP(w, r)
+	case "/v1/usage":
+		m.usageHTTP(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 			m.jobStatus(w, r, strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
@@ -1081,6 +1083,56 @@ func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
 		return
 	}
+	m.forwardRuntimeRequest(w, r, upstream, binding)
+}
+
+// usageHTTP forwards one bounded usage query to the runtime bound to the
+// request envelope. Lookup-only like /v1/artifact: no lease is taken.
+func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body too large"})
+		return
+	}
+	var request hubruntime.UsageRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	binding, err := m.bindingFor(request.ExecuteRequest)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(binding)]
+	running := entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) && entry.Address != ""
+	address := ""
+	if running {
+		address = entry.Address
+	}
+	m.mu.Unlock()
+	if !running {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/usage", bytes.NewReader(body))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	m.forwardRuntimeRequest(w, r, upstream, binding)
+}
+
+// forwardRuntimeRequest sends a prepared runtime request with the binding's
+// runtime credential and streams the bounded response back.
+func (m *Manager) forwardRuntimeRequest(w http.ResponseWriter, r *http.Request, upstream *http.Request, binding Binding) {
 	upstream.Header.Set("Content-Type", "application/json")
 	upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
 	response, err := m.cfg.HTTP.Do(upstream)

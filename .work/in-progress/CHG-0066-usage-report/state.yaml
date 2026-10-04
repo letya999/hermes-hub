@@ -1,0 +1,26 @@
+schema: 1
+id: CHG-0066-usage-report
+title: Real task/session usage report (issue 169)
+status: in_progress
+phase: verification
+started_at: 2026-10-04
+updated_at: 2026-10-04
+completed:
+  - verified pinned session/messages payload shape and pagination;
+    resolve_resume_session_id exposes the effective session id
+  - design: /v1/usage mirrors /v1/artifact trust boundary; nil fields render
+    unknown
+  - runtime POST /v1/usage + SessionUsage; effective-id resolution via
+    /messages?limit=0, cumulative fields from /api/sessions/{id},
+    parent_session_id lineage <=16 hops for compaction count
+  - supervisor lookup-forward to the envelope-bound runtime (no lease)
+  - /usage command renders measured fields; context tokens/window and
+    provider limits stay unknown (pinned API has no authoritative source)
+  - regression tests: measured fields+lineage, missing-field honesty,
+    auth/method/malformed/unreachable rejects, supervisor forwarding,
+    runner client
+  - just check green; SPEC-0011 records the measured session fields
+  - docker-check green: image build, runtime+supervisor smoke, real pinned
+    Hermes 0.21.0 contract probe (hub-stt fixture skipped, pre-existing)
+pending:
+  - real-session figures need a live Hermes deployment — mock fixtures only

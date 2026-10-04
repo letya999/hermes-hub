@@ -107,6 +107,45 @@ func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 	}
 }
 
+func TestPersistentHermesForwardsAdmittedInstructions(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_ORGANIZATION_ID", "personal")
+	var gotInstructions any
+	var gotBody bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			gotBody = true
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			gotInstructions = body["instructions"]
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"run_id":"run-1","status":"started"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/run-1":
+			_, _ = w.Write([]byte(`{"status":"completed","output":"done"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	port := api.Listener.Addr().(*net.TCPAddr).Port
+	t.Setenv("HUB_HERMES_API_HOST", "127.0.0.1")
+	t.Setenv("HUB_HERMES_API_PORT", fmt.Sprint(port))
+	request := validExecuteRequest("alice", "personal", "styled-run", "hello")
+	request.Instructions = "Presentation style requested for this task:\nlaconic"
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, request)))
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	rec := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !gotBody || gotInstructions != request.Instructions {
+		t.Fatalf("status=%d instructions=%v body=%s", rec.Code, gotInstructions, rec.Body.String())
+	}
+}
+
 func TestPersistentHermesCancellationStopsAdmittedRun(t *testing.T) {
 	var stopped atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -314,6 +314,27 @@ acknowledgement is observed without repeating approval. Native deny/hardline rul
 and current organization/tool authorization still apply. `/cancel <job_id>` is
 durable during queueing, startup and execution and never starts a new task.
 
+A verified owner keeps several independent task sessions inside one private DM.
+`/task new <name>` creates a task, `/task use <id|name|default>` switches the
+chat's current task, `/task rename`/`/task archive` mutate the task resolved
+for the message's audience, and `/tasks` lists live tasks. A message posted in
+a Telegram direct-messages topic resolves to its bound task; a first post in an
+unbound topic adopts one, and root-DM messages follow the current pointer. The
+implicit `default` task keeps the legacy `telegram-<chat>` conversation, so
+pre-task history and mappings remain valid. Each task owns its own durable
+Hermes session because the session id derives from the task conversation id;
+jobs, replies, streams, artifacts, voice, scheduled occurrences and
+continuation notices carry the originating task and topic id end to end.
+`/style <text>` stores per-task presentation guidance (up to 1024 characters,
+no control characters) that rides each admitted run as Hermes `instructions`;
+the admitted run's snapshot is pinned on its durable mapping, so a later
+`/style` change affects subsequent runs only and never touches authorization
+or tool policy. `/usage` reports the task session's measured model, cumulative
+tokens, calls, cost and session-rotation count read back from the pinned
+Hermes session API; fields the upstream does not authoritatively expose —
+current-prompt context, the context window and provider limits — render
+`unknown` instead of an estimate.
+
 Reconciliation reserves capacity for every restored non-stopped runtime. A
 missing idle container releases that capacity only after TTL and a durable
 stopped-state write. A lost Docker launch acknowledgement keeps capacity until

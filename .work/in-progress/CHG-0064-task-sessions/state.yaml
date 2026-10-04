@@ -1,0 +1,29 @@
+schema: 1
+id: CHG-0064-task-sessions
+title: Task sessions and Telegram DM topics (issue 167)
+status: in_progress
+phase: verification
+started_at: 2026-10-04
+updated_at: 2026-10-04
+completed:
+  - branch feat/tasks-style-usage-167 off dev
+  - audited gateway/spool/stream/runtime/supervisor paths; sessionIDFor makes
+    per-task conversations the session mechanism
+  - verified pinned Hermes 0.21.0 source: /v1/runs accepts instructions,
+    run status carries cumulative usage; /api/sessions/{id} + /messages are
+    the measured usage sources
+  - durable owner-scoped Task records + current/topic pointers in the spool;
+    default task preserves the legacy telegram-<chat> conversation
+  - topic resolution: bound topic wins, first post adopts, root DM follows
+    current pointer; mutations target the resolved task
+  - TaskID/TopicID threaded through Job, JobMapping, Delivery, streams,
+    schedules, media, artifacts, worker outcomes and prepare continuations
+  - /task, /tasks commands; task-aware /session, /cancel, /approve via
+    mapping-reconstructed callers
+  - regression tests: lifecycle, topic adoption/conflict/archive, owner+chat
+    isolation, spool-reopen durability, schedule binding, job routing
+  - just check green (85.05% >= 85%); docs/operations.md updated
+  - docker-check green: image build, runtime+supervisor smoke, real pinned
+    Hermes 0.21.0 contract probe (hub-stt fixture skipped, pre-existing)
+pending:
+  - live Telegram DM-topics smoke requires a real bot — not claimed from mocks

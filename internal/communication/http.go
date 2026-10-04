@@ -141,7 +141,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (g *Gateway) routineCommand(user User, sender, chatID int64, text string) string {
+func (g *Gateway) routineCommand(user User, sender, chatID int64, task Task, text string) string {
 	fields := strings.Fields(text)
 	caller := user.envelope(sender)
 	if len(fields) < 2 {
@@ -170,7 +170,7 @@ func (g *Gateway) routineCommand(user User, sender, chatID int64, text string) s
 			return "Используйте /routine create <id> <tz> <once:RFC3339|m h dom mon dow> <задание>."
 		}
 		input := strings.Join(fields[5:], " ")
-		_, err := g.spool.CreateSchedule(Schedule{ScheduleID: fields[2], Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: chatID, Timezone: fields[3], Expression: fields[4], Input: input, CreatedAt: g.now().UTC()}, caller, g.config.NativeCron)
+		_, err := g.spool.CreateSchedule(Schedule{ScheduleID: fields[2], Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: chatID, TaskID: task.TaskID, TopicID: task.TopicID, Timezone: fields[3], Expression: fields[4], Input: input, CreatedAt: g.now().UTC()}, caller, g.config.NativeCron)
 		if err != nil {
 			return "Расписание отклонено."
 		}

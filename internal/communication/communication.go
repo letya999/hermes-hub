@@ -477,22 +477,27 @@ func runtimeEnv(features []string) map[string]string {
 // held only in memory by Spool and are intentionally absent from job files.
 type Job struct {
 	identity.Envelope
-	ID             string    `json:"id"`
-	OrganizationID string    `json:"organization_id"`
-	UserID         string    `json:"user_id"`
-	ActorID        string    `json:"actor_id"`
-	ScopeID        string    `json:"scope_id"`
-	Channel        string    `json:"channel"`
-	Trigger        string    `json:"trigger"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	ChatID         int64     `json:"chat_id"`
-	MessageID      int       `json:"message_id"`
-	SlackChannel   string    `json:"slack_channel,omitempty"`
-	SlackThread    string    `json:"slack_thread,omitempty"`
-	Text           string    `json:"text,omitempty"`
-	Sensitive      bool      `json:"sensitive"`
-	TextSHA256     string    `json:"text_sha256,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	UserID         string `json:"user_id"`
+	ActorID        string `json:"actor_id"`
+	ScopeID        string `json:"scope_id"`
+	Channel        string `json:"channel"`
+	Trigger        string `json:"trigger"`
+	IdempotencyKey string `json:"idempotency_key"`
+	ChatID         int64  `json:"chat_id"`
+	MessageID      int    `json:"message_id"`
+	// TaskID/TopicID pin the durable task binding at acceptance: every reply,
+	// progress event, approval, artifact and voice note returns to the same
+	// task/topic. Model output never re-routes them.
+	TaskID       string    `json:"task_id,omitempty"`
+	TopicID      int64     `json:"topic_id,omitempty"`
+	SlackChannel string    `json:"slack_channel,omitempty"`
+	SlackThread  string    `json:"slack_thread,omitempty"`
+	Text         string    `json:"text,omitempty"`
+	Sensitive    bool      `json:"sensitive"`
+	TextSHA256   string    `json:"text_sha256,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Delivery struct {
@@ -503,10 +508,14 @@ type Delivery struct {
 	DeliveryTargetID string `json:"delivery_target_id"`
 	Channel          string `json:"channel,omitempty"`
 	ChatID           int64  `json:"chat_id"`
-	SlackChannel     string `json:"slack_channel,omitempty"`
-	SlackThread      string `json:"slack_thread,omitempty"`
-	Text             string `json:"text"`
-	Format           string `json:"format,omitempty"`
+	TaskID           string `json:"task_id,omitempty"`
+	// TopicID is the Telegram direct-messages topic the delivery must land in;
+	// sent as direct_messages_topic_id, never message_thread_id.
+	TopicID      int64  `json:"topic_id,omitempty"`
+	SlackChannel string `json:"slack_channel,omitempty"`
+	SlackThread  string `json:"slack_thread,omitempty"`
+	Text         string `json:"text"`
+	Format       string `json:"format,omitempty"`
 	// PartCount/SentParts persist multi-part progress so a mid-sequence failure
 	// leaves an uncertain delivery with an exact sent boundary; SourceSent marks
 	// the optional raw-source document part of the same ordered sequence.
@@ -537,7 +546,7 @@ type Spool struct {
 
 func NewSpool(root string) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tmp"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -662,6 +671,19 @@ func (s *Spool) Enqueue(job Job) (bool, error) {
 	return s.enqueueLocked(job)
 }
 func (s *Spool) enqueueLocked(job Job) (bool, error) {
+	// Task binding is resolved at admission from the durable record: the
+	// caller-visible envelope stays canonical, the conversation (and so the
+	// deterministic Hermes session) is bound only to a task the owner holds.
+	if job.TaskID != "" && job.TaskID != defaultTaskID {
+		task, err := s.loadTaskLocked(job.PrincipalID, job.TaskID)
+		if err != nil {
+			return false, errors.New("task binding unavailable")
+		}
+		if task.ChatID != job.ChatID {
+			return false, errors.New("task binding audience mismatch")
+		}
+		job.Envelope.ConversationID = task.ConversationID
+	}
 	fingerprint := jobFingerprint(job)
 	if strings.TrimSpace(job.IdempotencyKey) != "" {
 		if mapping, found, err := s.findIdempotencyLocked(job.IdempotencyKey); err != nil {
@@ -1036,19 +1058,36 @@ type Update struct {
 	EditedMessage *Message `json:"edited_message,omitempty"`
 }
 type Message struct {
-	MessageID int       `json:"message_id"`
-	From      *TGUser   `json:"from,omitempty"`
-	Chat      TGChat    `json:"chat"`
-	Text      string    `json:"text,omitempty"`
-	Caption   string    `json:"caption,omitempty"`
-	Voice     *TGMedia  `json:"voice,omitempty"`
-	Audio     *TGMedia  `json:"audio,omitempty"`
-	Document  *TGMedia  `json:"document,omitempty"`
-	Photo     []TGMedia `json:"photo,omitempty"`
+	MessageID int     `json:"message_id"`
+	From      *TGUser `json:"from,omitempty"`
+	Chat      TGChat  `json:"chat"`
+	Text      string  `json:"text,omitempty"`
+	Caption   string  `json:"caption,omitempty"`
+	// DirectMessagesTopic is set on messages posted inside a private-chat
+	// topic (Bot API direct_messages_topic). It is distinct from
+	// message_thread_id — the two are not interchangeable.
+	DirectMessagesTopic *TGDirectTopic `json:"direct_messages_topic,omitempty"`
+	Voice               *TGMedia       `json:"voice,omitempty"`
+	Audio               *TGMedia       `json:"audio,omitempty"`
+	Document            *TGMedia       `json:"document,omitempty"`
+	Photo               []TGMedia      `json:"photo,omitempty"`
 }
 type TGUser struct {
 	ID int64 `json:"id"`
 }
+type TGDirectTopic struct {
+	TopicID int64 `json:"topic_id"`
+}
+
+// messageTopicID returns the verified private-chat topic of an inbound
+// message, or 0 for the root DM.
+func messageTopicID(m *Message) int64 {
+	if m != nil && m.DirectMessagesTopic != nil && m.DirectMessagesTopic.TopicID > 0 {
+		return m.DirectMessagesTopic.TopicID
+	}
+	return 0
+}
+
 type TGChat struct {
 	ID   int64  `json:"id"`
 	Type string `json:"type"`
@@ -1068,15 +1107,15 @@ type TelegramFile struct {
 
 type TelegramAPI interface {
 	GetUpdates(context.Context, int64, int) ([]Update, error)
-	SendMessage(context.Context, int64, string, string) error
-	SendDocument(context.Context, int64, string, string, []byte) error
-	SendPhoto(context.Context, int64, string, string, []byte) error
-	SendVideo(context.Context, int64, string, string, []byte) error
+	SendMessage(context.Context, int64, int64, string, string) error
+	SendDocument(context.Context, int64, int64, string, string, []byte) error
+	SendPhoto(context.Context, int64, int64, string, string, []byte) error
+	SendVideo(context.Context, int64, int64, string, string, []byte) error
 	DeleteMessage(context.Context, int64, int) error
 	SendChatAction(context.Context, int64, string) error
 	GetFile(context.Context, string) (TelegramFile, error)
 	DownloadFile(context.Context, string, io.Writer) error
-	SendVoice(context.Context, int64, []byte, string) error
+	SendVoice(context.Context, int64, int64, []byte, string) error
 }
 
 type telegramAPI struct {
@@ -1140,7 +1179,7 @@ func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int)
 	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message"}}, &result)
 	return result, err
 }
-func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text, parseMode string) error {
+func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, text, parseMode string) error {
 	if !utf8.ValidString(text) || text == "" || len(text) > 2*1024*1024 {
 		return errors.New("invalid Telegram output")
 	}
@@ -1148,9 +1187,12 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text, parse
 	if parseMode != "" {
 		payload["parse_mode"] = parseMode
 	}
+	if topicID > 0 {
+		payload["direct_messages_topic_id"] = topicID
+	}
 	return t.call(ctx, "sendMessage", payload, nil)
 }
-func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+func (t *telegramAPI) SendDocument(ctx context.Context, chatID, topicID int64, name, caption string, data []byte) error {
 	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
 		return errors.New("invalid Telegram document")
 	}
@@ -1158,6 +1200,11 @@ func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, capt
 	form := multipart.NewWriter(&body)
 	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
 		return err
+	}
+	if topicID > 0 {
+		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+			return err
+		}
 	}
 	if caption != "" {
 		if err := form.WriteField("caption", caption); err != nil {
@@ -1181,7 +1228,7 @@ func (t *telegramAPI) SendDocument(ctx context.Context, chatID int64, name, capt
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	return t.callRequest(req, nil)
 }
-func (t *telegramAPI) SendVideo(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+func (t *telegramAPI) SendVideo(ctx context.Context, chatID, topicID int64, name, caption string, data []byte) error {
 	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
 		return errors.New("invalid Telegram video")
 	}
@@ -1189,6 +1236,11 @@ func (t *telegramAPI) SendVideo(ctx context.Context, chatID int64, name, caption
 	form := multipart.NewWriter(&body)
 	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
 		return err
+	}
+	if topicID > 0 {
+		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+			return err
+		}
 	}
 	if err := form.WriteField("supports_streaming", "true"); err != nil {
 		return err
@@ -1215,7 +1267,7 @@ func (t *telegramAPI) SendVideo(ctx context.Context, chatID int64, name, caption
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	return t.callRequest(req, nil)
 }
-func (t *telegramAPI) SendPhoto(ctx context.Context, chatID int64, name, caption string, data []byte) error {
+func (t *telegramAPI) SendPhoto(ctx context.Context, chatID, topicID int64, name, caption string, data []byte) error {
 	if len(data) == 0 || len(data) > mediaSizeLimit || name == "" {
 		return errors.New("invalid Telegram photo")
 	}
@@ -1223,6 +1275,11 @@ func (t *telegramAPI) SendPhoto(ctx context.Context, chatID int64, name, caption
 	form := multipart.NewWriter(&body)
 	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
 		return err
+	}
+	if topicID > 0 {
+		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+			return err
+		}
 	}
 	if caption != "" {
 		if err := form.WriteField("caption", caption); err != nil {
@@ -1276,7 +1333,7 @@ func (t *telegramAPI) DownloadFile(ctx context.Context, filePath string, dest io
 	_, err = io.Copy(dest, io.LimitReader(response.Body, mediaSizeLimit+1))
 	return err
 }
-func (t *telegramAPI) SendVoice(ctx context.Context, chatID int64, audio []byte, caption string) error {
+func (t *telegramAPI) SendVoice(ctx context.Context, chatID, topicID int64, audio []byte, caption string) error {
 	if len(audio) == 0 || len(audio) > mediaSizeLimit {
 		return errors.New("invalid voice payload")
 	}
@@ -1284,6 +1341,11 @@ func (t *telegramAPI) SendVoice(ctx context.Context, chatID int64, audio []byte,
 	form := multipart.NewWriter(&body)
 	if err := form.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
 		return err
+	}
+	if topicID > 0 {
+		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+			return err
+		}
 	}
 	if caption != "" {
 		if err := form.WriteField("caption", limitTelegramText(caption)); err != nil {
@@ -1606,7 +1668,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if envstore.LooksLikeEnv(text) {
 			if _, ok := g.users[message.From.ID]; ok {
 				_ = g.api.DeleteMessage(ctx, message.Chat.ID, message.MessageID)
-				return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, "Группы не принимают секреты.")
+				return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, "Группы не принимают секреты.")
 			}
 		}
 		return nil
@@ -1616,7 +1678,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if text == "" && message.Voice == nil && message.Audio == nil && message.Document == nil && len(message.Photo) == 0 {
 			return nil
 		}
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Доступ к этому боту не настроен.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), "Доступ к этому боту не настроен.")
 	}
 	if os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
 		visible := text
@@ -1632,12 +1694,33 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		log.Printf("gateway telegram-received user=%q update_id=%d chat_id=%d message_id=%d text=%q", user.ID, update.UpdateID, message.Chat.ID, message.MessageID, visible)
 	}
 	if edited {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, "Изменение сообщения не перезапускает задачу. Используйте новое сообщение или /cancel.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), "Изменение сообщения не перезапускает задачу. Используйте новое сообщение или /cancel.")
 	}
 	if strings.HasPrefix(text, "/") {
 		command := strings.ToLower(strings.TrimPrefix(strings.Fields(text)[0], "/"))
 		if at := strings.IndexByte(command, '@'); at >= 0 {
 			command = command[:at]
+		}
+		topic := messageTopicID(message)
+		// Commands resolve the addressed task without adopting an unbound
+		// topic: /task new is the explicit binding action.
+		task, taskErr := g.spool.ResolveTask(user, message.Chat.ID, topic, false)
+		// callerForJob authorizes /cancel and /approve in the job's own
+		// conversation so an owner can act on another task's job; the verified
+		// sender identity still carries the proof.
+		callerForJob := func(jobID string) identity.Envelope {
+			env := user.envelope(message.From.ID)
+			if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
+				env.ConversationID = mapping.ConversationID
+				env.DeliveryTargetID = mapping.DeliveryTargetID
+			}
+			return env
+		}
+		reply := func(answer string) error {
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, answer)
+		}
+		if taskErr != nil {
+			return reply("Не удалось открыть задачу.")
 		}
 		switch command {
 		case "runat":
@@ -1648,7 +1731,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 				if err == nil && due.After(g.now()) {
 					input := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, fields[0])), fields[1]))
 					caller := user.envelope(message.From.ID)
-					job := Job{Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: message.Chat.ID, Text: input}
+					job := Job{Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: message.Chat.ID, TaskID: task.TaskID, TopicID: task.TopicID, Text: input}
 					err = g.spool.PutOccurrence(RoutineOccurrence{ScheduleID: "telegram-" + strconv.Itoa(update.UpdateID), Revision: 1, DueAt: due, Job: job}, caller)
 					if err == nil {
 						answer = "Задание по расписанию сохранено."
@@ -1657,23 +1740,22 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 					}
 				}
 			}
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, answer)
+			return reply(answer)
 		case "cancel", "approve":
 			fields := strings.Fields(text)
-			caller := user.envelope(message.From.ID)
 			answer := "Используйте /cancel <job-id> или /approve <job-id> <request-id> <choice>."
 			var err error
 			if command == "cancel" && len(fields) == 2 {
-				_, err = g.spool.RequestCancel(fields[1], caller)
+				_, err = g.spool.RequestCancel(fields[1], callerForJob(fields[1]))
 				answer = "Запрос отмены сохранен."
 			} else if command == "approve" && len(fields) == 4 {
-				err = g.spool.RequestApproval(fields[1], caller, fields[2], fields[3])
+				err = g.spool.RequestApproval(fields[1], callerForJob(fields[1]), fields[2], fields[3])
 				answer = "Ответ на подтверждение сохранен."
 			}
 			if err != nil {
 				answer = "Запрос отклонен: задача или подтверждение недоступны в этом разговоре."
 			}
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, answer)
+			return reply(answer)
 		case "credentials", "broker-approve":
 			fields := strings.Fields(text)
 			answer := "Используйте /credentials <request-id> <код из формы Credential Broker>."
@@ -1689,23 +1771,31 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 					answer = "Подтверждение отклонено или истекло. Запросите новую ссылку подключения."
 				}
 			}
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, answer)
+			return reply(answer)
 		case "start":
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Готово. Вы подключены к своему Hermes-пространству.")
+			return reply("Готово. Вы подключены к своему Hermes-пространству.")
 		case "status":
 			state := "свободен"
 			if g.busy.Load() > 0 {
 				state = "обрабатывает сообщение"
 			}
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, "Hermes: "+state+".")
+			return reply("Hermes: " + state + ".")
 		case "connections", "connection":
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, connectionList(user))
+			return reply(connectionList(user))
 		case "session":
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.sessionStatus(user, message.From.ID))
+			return reply(g.sessionStatus(user, task))
+		case "task":
+			return reply(g.taskCommand(user, message.Chat.ID, topic, task, text))
+		case "tasks":
+			return reply(g.tasksCommand(user, message.Chat.ID))
+		case "style":
+			return reply(g.styleCommand(user, message.Chat.ID, task, text))
+		case "usage":
+			return reply(g.usageCommand(ctx, user, message.From.ID, task))
 		case "voice":
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.voiceCommand())
+			return reply(g.voiceCommand())
 		case "routine":
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, g.routineCommand(user, message.From.ID, message.Chat.ID, text))
+			return reply(g.routineCommand(user, message.From.ID, message.Chat.ID, task, text))
 		}
 	}
 	if message.Voice != nil || message.Audio != nil {
@@ -1718,13 +1808,21 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		return nil
 	}
 	if envstore.LooksLikeEnv(text) {
-		return g.interceptSecret(ctx, user, update.UpdateID, message.Chat.ID, message.MessageID, text)
+		return g.interceptSecret(ctx, user, update.UpdateID, message.Chat.ID, messageTopicID(message), message.MessageID, text)
 	}
-	return g.enqueueChannelJob(ctx, user, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, user.envelope(message.From.ID))
+	// A job's task binding is resolved at acceptance: posting inside a bound
+	// topic adopts it, root-DM text follows the chat's current task.
+	task, err := g.spool.ResolveTask(user, message.Chat.ID, messageTopicID(message), true)
+	if err != nil {
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), "Не удалось открыть задачу.")
+	}
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID)
 }
 
-func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, channel, id, idempotency string, chatID int64, messageID int, text string, envelope identity.Envelope) error {
-	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, Text: text, Sensitive: false, CreatedAt: g.now().UTC()}
+func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64) error {
+	envelope := user.envelope(sender)
+	envelope.ConversationID = task.ConversationID
+	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, Sensitive: false, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}
@@ -1734,13 +1832,12 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, channel, id,
 	return nil
 }
 
-func (g *Gateway) sessionStatus(user User, sender int64) string {
-	conversation := user.envelope(sender).ConversationID
-	mapping, found, err := g.spool.SessionFor(user.ID, user.ID, conversation)
+func (g *Gateway) sessionStatus(user User, task Task) string {
+	mapping, found, err := g.spool.SessionFor(user.ID, user.ID, task.ConversationID)
 	if err != nil || !found || mapping.SessionID == "" {
-		return "Постоянная Hermes-сессия для этого разговора ещё не создана."
+		return "Задача " + taskLabel(task) + ": постоянная Hermes-сессия ещё не создана."
 	}
-	return "Сессия: " + mapping.SessionID + "."
+	return "Задача " + taskLabel(task) + ". Сессия: " + mapping.SessionID + "."
 }
 
 // voiceReadiness reports incoming STT and outgoing TTS availability separately:
@@ -1786,7 +1883,7 @@ func (g *Gateway) voiceCommand() string {
 	return status + " Отдельного режима нет: попросите в сообщении ответить голосовым — например, «ответь голосовым» — и придёт голосовое сообщение."
 }
 
-func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID int64, messageID int, text string) error {
+func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID, topicID int64, messageID int, text string) error {
 	_ = g.api.DeleteMessage(ctx, chatID, messageID)
 	reply := "Секреты через чат не принимаются."
 	values, err := envstore.Parse(text)
@@ -1801,15 +1898,15 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 			reply = "Введите данные только в защищённой форме: " + form.FormURL
 		}
 	}
-	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, reply)
+	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, topicID, reply)
 }
 
-func (g *Gateway) queueDelivery(_ context.Context, key string, chatID int64, text string) error {
+func (g *Gateway) queueDelivery(_ context.Context, key string, chatID, topicID int64, text string) error {
 	id := key
 	if id == "" {
 		id = newID()
 	}
-	return g.spool.EnqueueDelivery(Delivery{ID: id, IdempotencyKey: key, Channel: "telegram_bot", ChatID: chatID, Text: text, CreatedAt: g.now().UTC()})
+	return g.spool.EnqueueDelivery(Delivery{ID: id, IdempotencyKey: key, Channel: "telegram_bot", ChatID: chatID, TopicID: topicID, Text: text, CreatedAt: g.now().UTC()})
 }
 
 func (g *Gateway) worker(ctx context.Context) {
@@ -1865,10 +1962,10 @@ func (g *Gateway) worker(ctx context.Context) {
 				} else if outcome.Status == "cancelled" {
 					message = "Задача отменена. ID: " + job.ID
 				}
-				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
+				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 			}
 			g.recordJob(*job, outcome)
@@ -1919,7 +2016,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			if delivery.Format == formatMarkdown {
 				sendErr = g.sendTelegramMarkdown(ctx, delivery)
 			} else {
-				sendErr = g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText(delivery.Text), "")
+				sendErr = g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
 			}
 			if sendErr == nil && speak != "" && !voiceOnly {
 				_ = g.sendVoiceReply(ctx, *delivery, speak)
@@ -1980,13 +2077,13 @@ func (g *Gateway) sendParts(delivery *Delivery, parts []string, send func(string
 func (g *Gateway) sendTelegramMarkdown(ctx context.Context, delivery *Delivery) error {
 	parts, degraded := renderTelegram(delivery.Text)
 	err := g.sendParts(delivery, parts, func(part string) error {
-		return g.api.SendMessage(ctx, delivery.ChatID, part, "HTML")
+		return g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, part, "HTML")
 	})
 	if err != nil {
 		return err
 	}
 	if degraded && !delivery.SourceSent {
-		if err := g.api.SendDocument(ctx, delivery.ChatID, "answer.md", "", []byte(delivery.Text)); err != nil {
+		if err := g.api.SendDocument(ctx, delivery.ChatID, delivery.TopicID, "answer.md", "", []byte(delivery.Text)); err != nil {
 			return err
 		}
 		delivery.SourceSent = true
@@ -2026,23 +2123,23 @@ func (g *Gateway) sendArtifact(ctx context.Context, delivery *Delivery, ref hubr
 		return g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, note)
 	}
 	if ref.Error != "" {
-		return g.api.SendMessage(ctx, delivery.ChatID, limitTelegramText("Файл не удалось доставить: "+ref.Name), "")
+		return g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText("Файл не удалось доставить: "+ref.Name), "")
 	}
 	data, err := g.spool.ReadDeliveryBlob(delivery.ID, ref.Blob)
 	if err != nil {
 		return err
 	}
 	if ref.Mime == "image/png" || ref.Mime == "image/jpeg" {
-		if err := g.api.SendPhoto(ctx, delivery.ChatID, ref.Name, "", data); err == nil {
+		if err := g.api.SendPhoto(ctx, delivery.ChatID, delivery.TopicID, ref.Name, "", data); err == nil {
 			return nil
 		}
 	}
 	if strings.HasPrefix(ref.Mime, "video/") {
-		if err := g.api.SendVideo(ctx, delivery.ChatID, ref.Name, "", data); err == nil {
+		if err := g.api.SendVideo(ctx, delivery.ChatID, delivery.TopicID, ref.Name, "", data); err == nil {
 			return nil
 		}
 	}
-	return g.api.SendDocument(ctx, delivery.ChatID, ref.Name, "", data)
+	return g.api.SendDocument(ctx, delivery.ChatID, delivery.TopicID, ref.Name, "", data)
 }
 
 // voicePlan decides what is spoken and whether the voice message replaces
@@ -2075,7 +2172,7 @@ func (g *Gateway) sendVoiceReply(ctx context.Context, delivery Delivery, text st
 		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, err, len(audio))
 		return errors.New("tts failed")
 	}
-	if err := g.api.SendVoice(ctx, delivery.ChatID, audio, ""); err != nil {
+	if err := g.api.SendVoice(ctx, delivery.ChatID, delivery.TopicID, audio, ""); err != nil {
 		log.Printf("gateway voice send failed delivery_id=%q err=%v", delivery.ID, err)
 		return err
 	}
