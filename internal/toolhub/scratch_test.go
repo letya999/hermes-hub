@@ -307,7 +307,7 @@ func TestDockerScratchExecHappyPath(t *testing.T) {
 		}
 	}
 	runSpec := log[2]
-	for _, flag := range []string{"--network none", "--read-only", "--cap-drop ALL", "no-new-privileges:true", "--user 10001:10001", "--tmpfs /scratch", "--tmpfs /outputs", "--memory 256m", "--cpus 0.5", "--pids-limit 64", "img:latest hubctl exec-scratch"} {
+	for _, flag := range []string{"--network none", "--read-only", "--cap-drop ALL", "no-new-privileges:true", "--user 10001:10001", "--tmpfs /scratch", "--tmpfs /outputs", "--memory 256m", "--cpus 0.5", "--pids-limit 64", "--entrypoint hubctl img:latest exec-scratch"} {
 		if !strings.Contains(runSpec, flag) {
 			t.Fatalf("sandbox spec missing %q: %s", flag, runSpec)
 		}

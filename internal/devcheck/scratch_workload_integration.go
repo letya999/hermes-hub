@@ -46,7 +46,7 @@ func ScratchWorkloadCanary(ctx context.Context, image string) error {
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", "10001:10001",
 		"--tmpfs", "/scratch:rw,exec,size=64m", "--tmpfs", "/outputs:rw,size=64m", "--tmpfs", "/tmp:rw,size=16m",
 		"--memory", "256m", "--cpus", "0.5", "--pids-limit", "64",
-		image, "hubctl", "exec-scratch"}
+		"--entrypoint", "hubctl", image, "exec-scratch"}
 	cmd := exec.CommandContext(runCtx, "docker", args...)
 	cmd.Stdin = bytes.NewReader(request)
 	out, err := cmd.CombinedOutput()

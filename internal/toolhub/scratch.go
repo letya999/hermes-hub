@@ -147,7 +147,7 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 			"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", "10001:10001",
 			"--tmpfs", "/scratch:rw,exec,size=64m", "--tmpfs", "/outputs:rw,size=64m", "--tmpfs", "/tmp:rw,size=16m",
 			"--memory", "256m", "--cpus", "0.5", "--pids-limit", "64", "--stop-timeout", "2",
-			"-i", image, "hubctl", "exec-scratch"}
+			"-i", "--entrypoint", "hubctl", image, "exec-scratch"}
 		stdout, stderr, runErr := run(lease, bytes.NewReader(body), args...)
 		stopped, stopErr := confirmStopped(ctx, run, name)
 		if !stopped {

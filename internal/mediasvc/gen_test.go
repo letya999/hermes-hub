@@ -203,15 +203,16 @@ func TestImageEditContract(t *testing.T) {
 		t.Fatalf("edit source not forwarded: %+v", gen.lastReq)
 	}
 
-	// A non-image upload is refused before reaching the engine.
-	body.Reset()
-	form = multipart.NewWriter(&body)
-	part, _ = form.CreateFormFile("image", "in.bin")
-	part.Write([]byte("not an image"))
-	form.WriteField("prompt", "x")
-	form.Close()
-	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/images/edits", &body)
-	req.Header.Set("Content-Type", form.FormDataContentType())
+	// A non-image upload is refused before reaching the engine. Fresh buffer:
+	// the previous request's write loop can still drain the old body.
+	var badBody bytes.Buffer
+	badForm := multipart.NewWriter(&badBody)
+	badPart, _ := badForm.CreateFormFile("image", "in.bin")
+	badPart.Write([]byte("not an image"))
+	badForm.WriteField("prompt", "x")
+	badForm.Close()
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/images/edits", &badBody)
+	req.Header.Set("Content-Type", badForm.FormDataContentType())
 	authReq(req)
 	resp, _ = http.DefaultClient.Do(req)
 	resp.Body.Close()
@@ -1008,12 +1009,12 @@ func TestMediaEdgeBranches(t *testing.T) {
 		t.Fatalf("edit bad model: %d", resp.StatusCode)
 	}
 	// Multipart job post on the media role is invalid JSON → 400.
-	body.Reset()
-	form = multipart.NewWriter(&body)
-	form.WriteField("kind", "video")
-	form.Close()
-	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/jobs", &body)
-	req.Header.Set("Content-Type", form.FormDataContentType())
+	var jobBody bytes.Buffer
+	jobForm := multipart.NewWriter(&jobBody)
+	jobForm.WriteField("kind", "video")
+	jobForm.Close()
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/jobs", &jobBody)
+	req.Header.Set("Content-Type", jobForm.FormDataContentType())
 	authReq(req)
 	resp, _ = http.DefaultClient.Do(req)
 	resp.Body.Close()
