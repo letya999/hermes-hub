@@ -54,6 +54,8 @@ type Input struct {
 	Command    string `json:"command,omitempty"`
 	Data       string `json:"data,omitempty"`
 	Offset     uint64 `json:"offset,omitempty"`
+	Key        string `json:"key,omitempty"`
+	Value      string `json:"value,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -878,6 +880,8 @@ func (t *Tools) Server() *mcp.Server {
 	add("image_inspect", "Describe one png, jpeg, or webp in this workspace. Uses the model credential, not the image-generation credential. Unsupported: gif, bmp, svg, tif, heic, avif.")
 	add("image_convert", "Convert one workspace png, jpeg, or webp into another of those formats and write a new file under artifacts/images. This does not call an image provider.")
 	add("artifact_remove", "Delete one generated file under artifacts/documents, artifacts/images, or artifacts/videos. Does not delete source files or other workspace paths.")
+	add("settings_get", "Show runtime self-settings: the manageable key allowlist, current overrides and effective values. Settings never include credential values.")
+	add("settings_set", "Set one manageable runtime setting (compression, display, image_gen model/delivery) or reset it with an empty value. The change applies after the scheduled runtime restart.")
 	if t.session().ImageGranted() {
 		add("image_generate", "Generate one image with the active image_gen provider, model, and delivery. The model selects the images endpoint or the Gemini chat image call. workspace writes artifacts/images in the returned format. url returns an http(s) provider URL and does not write a file. The credential is never returned.")
 		add("image_edit", "Edit one workspace png, jpeg, or webp with the active image_gen provider and model. webp is sent as png. A Gemini image model uses the chat image call. fal does not support edit. Delivery follows the grant. The credential is never returned.")

@@ -26,6 +26,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -2089,6 +2090,10 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		SelfServicesPath:   filepath.Join(binding.ContextRoot, "runtime", "self-services.json"),
 		NativeToolsets:     settings.NativeCarveouts(),
 		Web:                settings.Web,
+		ImageGen:           settings.ManagedImageGenGrant(),
+	}
+	if settings.CapabilityMode == "managed" {
+		opts.SelfSettingsPath = filepath.Join(binding.ContextRoot, "managed", env, "runtime", selfsettings.FileName)
 	}
 	if _, present := secrets["HUB_TOOLHUB_ENDPOINT"]; !present {
 		opts.ToolHubEndpoint = "http://toolhub:8090/mcp"

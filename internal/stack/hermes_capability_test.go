@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/letya999/hermes-hub/internal/media"
 	"gopkg.in/yaml.v3"
 )
 
@@ -419,7 +420,14 @@ func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
 	if zero["memory"].(M)["memory_enabled"] != true {
 		t.Fatal("carved memory toolset rendered without memory_enabled")
 	}
-	if zero["compression"].(M)["enabled"] != false || zero["curator"].(M)["enabled"] != false {
+	// In-loop compression is reviewed-on with an explicit token cap; only the
+	// detached curator sub-agent (which would bypass the denylist) stays off.
+	compression := zero["compression"].(M)
+	if compression["enabled"] != true || compression["in_place"] != true ||
+		compression["micro_compact"] != false || compression["threshold_tokens"] != 200000 {
+		t.Fatalf("managed compression posture changed: %v", compression)
+	}
+	if zero["curator"].(M)["enabled"] != false {
 		t.Fatal("carve-out re-enabled bypassing sub-agent paths")
 	}
 }
@@ -631,10 +639,23 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if !reflect.DeepEqual(carried, settings.Web) {
 		t.Fatalf("HUB_MANAGED_WEB round-trip changed the selection: %+v", carried)
 	}
+	// The image_gen grant rides the same contract: the spawned runtime
+	// reconstructs the block from HUB_MANAGED_IMAGE_GEN.
+	imageGenJSON, ok := envMap["HUB_MANAGED_IMAGE_GEN"].(string)
+	if !ok || imageGenJSON == "" {
+		t.Fatal("managed runtime env lost HUB_MANAGED_IMAGE_GEN")
+	}
+	var carriedGen media.ImageGen
+	if err := json.Unmarshal([]byte(imageGenJSON), &carriedGen); err != nil {
+		t.Fatalf("HUB_MANAGED_IMAGE_GEN is not JSON: %v", err)
+	}
+	if carriedGen != settings.managedImageGenGrant() {
+		t.Fatalf("HUB_MANAGED_IMAGE_GEN round-trip changed the grant: %+v", carriedGen)
+	}
 	// Attestation must accept the effective config when — and only when —
-	// the web selection arrives with the materialize options.
+	// the web and image_gen selections arrive with the materialize options.
 	attestOpts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, ToolHubReconnect: true,
-		NativeToolsets: settings.nativeCarveouts(), Web: carried}
+		NativeToolsets: settings.nativeCarveouts(), Web: carried, ImageGen: carriedGen}
 	validate := Settings{Model: settings.Model, ModelURL: settings.ModelURL, Timezone: settings.Timezone}
 	effectivePath := filepath.Join(dir, "generated", "hermes-effective.dev.yaml")
 	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err != nil {
@@ -643,5 +664,10 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	attestOpts.Web = WebSettings{}
 	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err == nil {
 		t.Fatal("web block accepted without the provider selection in transit")
+	}
+	attestOpts.Web = carried
+	attestOpts.ImageGen = media.ImageGen{}
+	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err == nil {
+		t.Fatal("image_gen block accepted without the grant in transit")
 	}
 }

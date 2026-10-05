@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -34,6 +36,16 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 			return stack.MaterializeOptions{}, fmt.Errorf("invalid HUB_MANAGED_WEB: %w", err)
 		}
 	}
+	var imageGen media.ImageGen
+	if raw := strings.TrimSpace(os.Getenv("HUB_MANAGED_IMAGE_GEN")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &imageGen); err != nil {
+			return stack.MaterializeOptions{}, fmt.Errorf("invalid HUB_MANAGED_IMAGE_GEN: %w", err)
+		}
+	}
+	selfSettingsPath := ""
+	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
+		selfSettingsPath = filepath.Join(state, selfsettings.FileName)
+	}
 	return stack.MaterializeOptions{
 		Managed:            os.Getenv("HUB_CAPABILITY_MODE") == "managed",
 		ToolHubEndpoint:    toolHubEndpoint(),
@@ -43,6 +55,8 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		SelfServicesPath:   filepath.Join(state, selfServicesFile),
 		NativeToolsets:     envList("HUB_NATIVE_TOOLSETS"),
 		Web:                web,
+		ImageGen:           imageGen,
+		SelfSettingsPath:   selfSettingsPath,
 	}, nil
 }
 

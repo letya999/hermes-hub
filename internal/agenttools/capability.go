@@ -33,7 +33,7 @@ func HubToolsDefinition() toolhub.ToolDefinition {
 	return toolhub.ToolDefinition{
 		Schema:       toolhub.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "1.0.0",
+		Version:      "1.1.0",
 		Transport:    toolhub.AgentTools,
 		Source:       toolhub.DefinitionSource{},
 		Workload: toolhub.WorkloadPolicy{
@@ -60,6 +60,11 @@ func HubToolsDefinition() toolhub.ToolDefinition {
 			tool("service_catalog", "services.read", "List optional services available on this runtime.", toolhub.ReadEffect, use("read", "services")),
 			tool("service_enable", "services.enable", "Enable one self-service integration declared in the catalog.", toolhub.WriteEffect, use("enable", "services"), str("service")),
 			tool("service_disable", "services.disable", "Disable one self-service integration declared in the catalog.", toolhub.WriteEffect, use("disable", "services"), str("service")),
+			// Runtime self-settings: the same admitted/audited discipline as
+			// service_* — a reviewed key allowlist, typed values, atomic file,
+			// restart-scheduled application. No arbitrary config writes.
+			tool("settings_get", "settings.read", "Show runtime self-setting overrides: the manageable key allowlist, current overrides and their effective values. Secret values are never shown.", toolhub.ReadEffect, use("read", "settings"), opt("key")),
+			tool("settings_set", "settings.write", "Set one manageable runtime setting or reset it to the rendered default. Applies after the scheduled runtime restart.", toolhub.WriteEffect, use("write", "settings"), str("key"), opt("value")),
 			tool("routine_create", "routines.create", "Create a scheduled routine on this runtime.", toolhub.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text")),
 			tool("routine_list", "routines.list", "List routines configured on this runtime.", toolhub.ReadEffect, use("list", "routines")),
 			tool("routine_update", "routines.update", "Update a routine schedule or text.", toolhub.WriteEffect, use("update", "routines"), str("id"), opt("expression"), opt("text")),

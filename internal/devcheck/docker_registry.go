@@ -131,5 +131,17 @@ func dockerPublish(ctx context.Context, target, repo, sha string, run dockerExec
 		"-t", registryRef(repo, "edge-"+target),
 		"--push", "--build-arg", "GIT_SHA=" + sha}
 	args = append(args, cacheArgs()...)
-	return run(ctx, append(args, "-f", "docker/Dockerfile", ".")...)
+	return run(ctx, append(args, "-f", targetDockerfile(target), ".")...)
+}
+
+// targetDockerfile maps a build target to its Dockerfile. The hub families
+// (dev/prod plus their -control variants) share docker/Dockerfile; the
+// standalone media sidecars own dedicated files built through the same
+// publish/pull plumbing.
+func targetDockerfile(target string) string {
+	switch target {
+	case "stt", "tts":
+		return "docker/Dockerfile." + target
+	}
+	return "docker/Dockerfile"
 }

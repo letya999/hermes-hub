@@ -1,0 +1,483 @@
+{
+  "schema": 1,
+  "profile_id": "telegram-8275678764-default",
+  "principal_id": "telegram-8275678764",
+  "context_id": "telegram-8275678764",
+  "runtime_id": "telegram-8275678764",
+  "environment": "dev",
+  "generation": 1,
+  "policy_version": "policy-2e2781aa17bdfed3",
+  "policy_id": "telegram-8275678764-default-policy",
+  "policy_revision": 1,
+  "revision": 1,
+  "issued_by": "operator",
+  "issued_at": "2026-10-05T15:23:57.2057152Z",
+  "reason": "managed cutover: admit reviewed agent-tools surface",
+  "status": "active",
+  "selections": [
+    {
+      "capability_id": "artifacts.delete",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "artifact_remove",
+      "name": "artifact_remove"
+    },
+    {
+      "capability_id": "terminal.exec",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "code_exec",
+      "name": "code_exec"
+    },
+    {
+      "capability_id": "documents.convert",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "document_convert",
+      "name": "document_convert"
+    },
+    {
+      "capability_id": "documents.create",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "document_create",
+      "name": "document_create"
+    },
+    {
+      "capability_id": "documents.edit",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "document_edit",
+      "name": "document_edit"
+    },
+    {
+      "capability_id": "documents.read",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "document_extract",
+      "name": "document_extract"
+    },
+    {
+      "capability_id": "files.list",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "file_list",
+      "name": "file_list"
+    },
+    {
+      "capability_id": "files.read",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "file_read",
+      "name": "file_read"
+    },
+    {
+      "capability_id": "files.search",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "file_search",
+      "name": "file_search"
+    },
+    {
+      "capability_id": "files.write",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "file_write",
+      "name": "file_write"
+    },
+    {
+      "capability_id": "images.convert",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "image_convert",
+      "name": "image_convert"
+    },
+    {
+      "capability_id": "image_gen.edit",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "image_edit",
+      "name": "image_edit"
+    },
+    {
+      "capability_id": "image_gen.generate",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "image_generate",
+      "name": "image_generate"
+    },
+    {
+      "capability_id": "images.read",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "image_inspect",
+      "name": "image_inspect"
+    },
+    {
+      "capability_id": "routines.create",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "routine_create",
+      "name": "routine_create"
+    },
+    {
+      "capability_id": "routines.delete",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "routine_delete",
+      "name": "routine_delete"
+    },
+    {
+      "capability_id": "routines.list",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "routine_list",
+      "name": "routine_list"
+    },
+    {
+      "capability_id": "routines.pause",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "routine_pause",
+      "name": "routine_pause"
+    },
+    {
+      "capability_id": "routines.update",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "routine_update",
+      "name": "routine_update"
+    },
+    {
+      "capability_id": "services.read",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "service_catalog",
+      "name": "service_catalog"
+    },
+    {
+      "capability_id": "services.disable",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "service_disable",
+      "name": "service_disable"
+    },
+    {
+      "capability_id": "services.enable",
+      "definition_id": "hub-agent-tools",
+      "definition_version": "1.0.0",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "tool_name": "service_enable",
+      "name": "service_enable"
+    }
+  ],
+  "allows": [
+    {
+      "capability_id": "artifacts.delete",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "delete",
+      "resource": "artifacts",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "convert",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "artifacts",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.create",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.edit",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "edit",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.list",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "list",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.search",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "search",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.write",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "write",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "image_gen.edit",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "edit",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "image_gen.generate",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "generate",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "images.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "convert",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "images.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "artifacts",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "images.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.create",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.delete",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "delete",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.list",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "list",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.pause",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "update",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.update",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "update",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "services.disable",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "disable",
+      "resource": "services",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "services.enable",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "enable",
+      "resource": "services",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "services.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "services",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "terminal.exec",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "exec",
+      "resource": "terminal",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "terminal.exec",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "terminal.exec",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "write",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    }
+  ]
+}

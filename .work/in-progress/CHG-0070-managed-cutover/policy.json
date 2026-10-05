@@ -1,0 +1,301 @@
+{
+  "schema": 1,
+  "policy_id": "telegram-8275678764-default-policy",
+  "members": [
+    "telegram-8275678764"
+  ],
+  "revision": 1,
+  "issued_by": "operator",
+  "issued_at": "2026-10-05T15:23:57.2057152Z",
+  "reason": "managed cutover: default ceiling for the reviewed agent-tools surface",
+  "status": "active",
+  "ceiling": [
+    {
+      "capability_id": "artifacts.delete",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "delete",
+      "resource": "artifacts",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "convert",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "artifacts",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.create",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.edit",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "edit",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "documents.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "documents",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.list",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "list",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.search",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "search",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "files.write",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "write",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "image_gen.edit",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "edit",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "image_gen.generate",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "generate",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "images.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "convert",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "images.convert",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "artifacts",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "images.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "images",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.create",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "create",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.delete",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "delete",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.list",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "list",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.pause",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "update",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "routines.update",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "update",
+      "resource": "routines",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "services.disable",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "disable",
+      "resource": "services",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "services.enable",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "enable",
+      "resource": "services",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "services.read",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "services",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "terminal.exec",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "exec",
+      "resource": "terminal",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "terminal.exec",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "read",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "capability_id": "terminal.exec",
+      "implementation_digest": "sha256:a91f5a97451b688e392260dab1c6a53c8c8b57ebc4e81f059cc9b3dbffdc96b4",
+      "action": "write",
+      "resource": "files",
+      "limits": {
+        "output_bytes": 2097152,
+        "timeout_seconds": 120
+      },
+      "expires_at": "0001-01-01T00:00:00Z"
+    }
+  ],
+  "defaults": null
+}

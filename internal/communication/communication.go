@@ -99,37 +99,43 @@ func (user User) slackEnvelope(teamID, slackUser string) identity.Envelope {
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
-	Supervised         bool                    `yaml:"-"`
-	OrganizationID     string                  `yaml:"organization_id"`
-	Users              []User                  `yaml:"users"`
-	TelegramToken      string                  `yaml:"-"`
-	APIBaseURL         string                  `yaml:"api_base_url,omitempty"`
-	SlackSigningSecret string                  `yaml:"-"`
-	SlackBotToken      string                  `yaml:"-"`
-	ControlAuth        string                  `yaml:"-"`
-	ListenAddr         string                  `yaml:"-"`
-	FormOrigin         string                  `yaml:"-"`
-	NativeCron         string                  `yaml:"-"`
-	STTCommand         string                  `yaml:"-"`
-	TTSCommand         string                  `yaml:"-"`
-	STTURL             string                  `yaml:"-"`
-	STTAuth            string                  `yaml:"-"`
-	TTSURL             string                  `yaml:"-"`
-	TTSAuth            string                  `yaml:"-"`
-	TTSVoice           string                  `yaml:"-"`
-	TTSUploadURL       string                  `yaml:"-"`
-	STTTimeout         time.Duration           `yaml:"-"`
-	MediaMaxDuration   int                     `yaml:"-"`
-	SpoolDir           string                  `yaml:"spool_dir"`
-	RuntimeURL         string                  `yaml:"-"`
-	RuntimeAuth        string                  `yaml:"-"`
-	PollTimeout        time.Duration           `yaml:"-"`
-	HermesCommand      string                  `yaml:"-"`
-	CredentialStore    string                  `yaml:"-"`
-	CredentialKeyFile  string                  `yaml:"-"`
-	ToolHubStore       string                  `yaml:"-"`
-	AuditLedger        string                  `yaml:"-"`
-	BrokerApprove      credentialbroker.Config `yaml:"-"`
+	Supervised         bool   `yaml:"-"`
+	OrganizationID     string `yaml:"organization_id"`
+	Users              []User `yaml:"users"`
+	TelegramToken      string `yaml:"-"`
+	APIBaseURL         string `yaml:"api_base_url,omitempty"`
+	SlackSigningSecret string `yaml:"-"`
+	SlackBotToken      string `yaml:"-"`
+	ControlAuth        string `yaml:"-"`
+	// ControlTokensFile optionally points at the infra owner's
+	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
+	// equally valid control-plane bearers. The principal still comes from
+	// X-Hub-Principal — the token only proves the caller is a hub service.
+	ControlTokensFile string                  `yaml:"-"`
+	controlAuthExtra  []string                `yaml:"-"`
+	ListenAddr        string                  `yaml:"-"`
+	FormOrigin        string                  `yaml:"-"`
+	NativeCron        string                  `yaml:"-"`
+	STTCommand        string                  `yaml:"-"`
+	TTSCommand        string                  `yaml:"-"`
+	STTURL            string                  `yaml:"-"`
+	STTAuth           string                  `yaml:"-"`
+	TTSURL            string                  `yaml:"-"`
+	TTSAuth           string                  `yaml:"-"`
+	TTSVoice          string                  `yaml:"-"`
+	TTSUploadURL      string                  `yaml:"-"`
+	STTTimeout        time.Duration           `yaml:"-"`
+	MediaMaxDuration  int                     `yaml:"-"`
+	SpoolDir          string                  `yaml:"spool_dir"`
+	RuntimeURL        string                  `yaml:"-"`
+	RuntimeAuth       string                  `yaml:"-"`
+	PollTimeout       time.Duration           `yaml:"-"`
+	HermesCommand     string                  `yaml:"-"`
+	CredentialStore   string                  `yaml:"-"`
+	CredentialKeyFile string                  `yaml:"-"`
+	ToolHubStore      string                  `yaml:"-"`
+	AuditLedger       string                  `yaml:"-"`
+	BrokerApprove     credentialbroker.Config `yaml:"-"`
 	// Workers bounds concurrent job execution; contexts serialize per
 	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
 	Workers int `yaml:"-"`
@@ -357,6 +363,12 @@ func fillChannelSecrets(config *Config) {
 		config.SlackBotToken = os.Getenv("SLACK_BOT_TOKEN")
 	}
 	config.ControlAuth = envOr("HUB_COMMUNICATION_AUTH", config.RuntimeAuth)
+	config.ControlTokensFile = os.Getenv("HUB_COMMUNICATION_TOKENS_FILE")
+	// The supervisor's own bearer is a control-plane peer too: ToolHub's
+	// prepare-outcome posts and sibling runtimes authenticate with it.
+	if token := strings.TrimSpace(os.Getenv("HUB_SUPERVISOR_AUTH")); token != "" && token != config.ControlAuth {
+		config.controlAuthExtra = append(config.controlAuthExtra, token)
+	}
 	config.ListenAddr = os.Getenv("HUB_COMMUNICATION_LISTEN")
 	config.FormOrigin = os.Getenv("HUB_COMMUNICATION_FORM_ORIGIN")
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")

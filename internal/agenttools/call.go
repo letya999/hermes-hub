@@ -68,6 +68,10 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.ServiceEnable(r)
 	case "service_disable":
 		return t.ServiceDisable(r)
+	case "settings_get":
+		return t.SettingsGet(r)
+	case "settings_set":
+		return t.SettingsSet(r)
 	case "routine_create", "routine_list", "routine_update", "routine_pause", "routine_delete":
 		return t.Routine(ctx, name, r)
 	case "document_extract":

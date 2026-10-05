@@ -1,0 +1,15 @@
+schema: 1
+change: CHG-0071-managed-voice-media-settings
+status: in-progress
+phase: code
+started: 2026-10-06
+owner: operator
+next:
+  - implement selfsettings overlay + merge plumbing
+  - enable compression + image_gen block in managed config
+  - add settings_get/settings_set tools and capability family
+  - republish policy/profile, re-render, redeploy
+  - build/publish hub-stt + hub-tts images via GitHub Actions
+  - create telegram-480637186 space + users file + profile
+  - live-verify image gen, stt, tts, usage/sessions/connections, github mcp install for both users
+notes: []

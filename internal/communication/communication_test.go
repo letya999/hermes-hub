@@ -1562,3 +1562,57 @@ func TestEnvHelpers(t *testing.T) {
 		t.Fatal("workersFromEnv fallback")
 	}
 }
+
+func TestControlAuthAcceptsEnrolledSiblingToken(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "owner-token"
+	// A second user joined: its envelope is what ToolHub's sibling token file
+	// carries — the bearer proves service identity, X-Hub-Principal picks the
+	// principal as before.
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "bob", "state"), 0700)
+	_ = os.MkdirAll(filepath.Join(root, "bob", "workspace"), 0700)
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: filepath.Join(root, "bob", "state"), WorkspaceDir: filepath.Join(root, "bob", "workspace")})
+	sibling := identity.TelegramEnvelope("bob", 22, "bob", "policy-bob")
+	tokensFile := filepath.Join(root, "toolhub-tokens.json")
+	body, _ := json.Marshal(map[string]identity.Envelope{"sibling-runtime-token": sibling})
+	if err := os.WriteFile(tokensFile, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.ControlTokensFile = tokensFile
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(token, principal string) int {
+		r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		r.Header.Set("X-Hub-Principal", principal)
+		w := httptest.NewRecorder()
+		g.Handler().ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := call("sibling-runtime-token", "bob"); code != http.StatusOK {
+		t.Fatalf("sibling token rejected: %d", code)
+	}
+	if code := call("owner-token", "alice"); code != http.StatusOK {
+		t.Fatalf("owner token rejected: %d", code)
+	}
+	if code := call("sibling-runtime-token", "mallory"); code != http.StatusUnauthorized {
+		t.Fatalf("unknown principal with valid token: %d", code)
+	}
+	if code := call("forged-token", "bob"); code != http.StatusUnauthorized {
+		t.Fatalf("forged token accepted: %d", code)
+	}
+	// A token mapped to an envelope that no longer validates must not open
+	// the control surface even when the principal exists.
+	bad, _ := json.Marshal(map[string]identity.Envelope{"stale-token": {PrincipalID: "bob"}})
+	if err := os.WriteFile(tokensFile, bad, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := call("stale-token", "bob"); code != http.StatusUnauthorized {
+		t.Fatalf("stale invalid envelope accepted: %d", code)
+	}
+}

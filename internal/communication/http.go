@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -21,7 +23,8 @@ func (g *Gateway) Handler() http.Handler {
 }
 
 func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
-	if g.config.ControlAuth == "" || r.Header.Get("Authorization") != "Bearer "+g.config.ControlAuth {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !g.controlTokenAccepted(token) {
 		return identity.Envelope{}, false
 	}
 	principal := r.Header.Get("X-Hub-Principal")
@@ -39,6 +42,39 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 		return user.slackEnvelope(user.SlackIDs[0].TeamID, user.SlackIDs[0].UserID), true
 	}
 	return identity.Envelope{}, false
+}
+
+// controlTokenAccepted checks the primary control bearer and, when a tokens
+// file is configured, the enrolled sibling-space runtime tokens. The file is
+// re-read on every call: enrollment rewrites it in place and control-plane
+// calls are rare, so freshness beats caching.
+func (g *Gateway) controlTokenAccepted(token string) bool {
+	if token == "" {
+		return false
+	}
+	if g.config.ControlAuth != "" && token == g.config.ControlAuth {
+		return true
+	}
+	if slices.Contains(g.config.controlAuthExtra, token) {
+		return true
+	}
+	path := strings.TrimSpace(g.config.ControlTokensFile)
+	if path == "" {
+		return false
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || len(body) > 1<<20 {
+		return false
+	}
+	var entries map[string]identity.Envelope
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return false
+	}
+	env, ok := entries[token]
+	if !ok {
+		return false
+	}
+	return env.Validate(env.PrincipalID, env.ContextID, env.RuntimeID, env.PolicyVersion) == nil
 }
 
 func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {

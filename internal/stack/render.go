@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"gopkg.in/yaml.v3"
 
 	"github.com/letya999/hermes-hub/internal/sshcap"
@@ -324,6 +325,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				runtimeEnv["HUB_MANAGED_WEB"] = string(managedWebJSON)
 			}
 		}
+		// Same contract for the image_gen grant: the spawned runtime
+		// reconstructs the identical config block from this normalized JSON
+		// (riding RuntimeService env → -e flags), never from agent-editable
+		// state. A non-empty value is itself the "feature enabled" marker —
+		// see ValidateManagedEffectiveConfig.
+		if gen := s.managedImageGenGrant(); gen != (media.ImageGen{}) {
+			if imageGenJSON, err := json.Marshal(gen); err == nil {
+				runtimeEnv["HUB_MANAGED_IMAGE_GEN"] = string(imageGenJSON)
+			}
+		}
 	}
 	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
@@ -584,6 +595,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if info, err := os.Stat(usersFile); err == nil && info.Mode().IsRegular() {
 			gatewayEnvironment["HUB_COMMUNICATION_CONFIG"] = "/config/communication.users.yaml"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(usersFile), "target": "/config/communication.users.yaml", "read_only": true})
+		}
+		// Sibling runtimes authenticate control calls (credential forms,
+		// prepare-outcome, routines) with their own enrolled tokens.
+		if info, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil && info.Mode().IsRegular() {
+			gatewayEnvironment["HUB_COMMUNICATION_TOKENS_FILE"] = "/config/toolhub-tokens.json"
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/config/toolhub-tokens.json", "read_only": true})
 		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
@@ -1043,6 +1060,10 @@ func materializeHermesConfig(dir string, s Settings) error {
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
+	selfSettingsPath := ""
+	if s.CapabilityMode == "managed" {
+		selfSettingsPath = filepath.Join(dir, "managed", s.Environment, "runtime", selfsettings.FileName)
+	}
 	return MaterializeHermesConfig(source, dest, MaterializeOptions{
 		Managed:            s.CapabilityMode == "managed",
 		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
@@ -1052,6 +1073,8 @@ func materializeHermesConfig(dir string, s Settings) error {
 		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
 		NativeToolsets:     s.nativeCarveouts(),
 		Web:                s.Web,
+		ImageGen:           s.managedImageGenGrant(),
+		SelfSettingsPath:   selfSettingsPath,
 	})
 }
 
