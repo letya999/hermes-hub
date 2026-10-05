@@ -278,7 +278,9 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Now = time.Now
 	}
 	if cfg.HTTP == nil {
-		cfg.HTTP = &http.Client{Timeout: 130 * time.Second}
+		// Long runs outlive the default cap: the stream severs but the run
+		// keeps executing and reconciles later. Tune via HUB_SUPERVISOR_JOB_TIMEOUT.
+		cfg.HTTP = &http.Client{Timeout: durationEnv("HUB_SUPERVISOR_JOB_TIMEOUT", 130*time.Second)}
 	}
 	if cfg.Command == nil {
 		cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -1922,6 +1924,9 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if generation != "" {
 		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
 	}
+	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
+		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
+	}
 	args = append(args, m.cfg.Image, "serve")
 	return args, nil
 }
@@ -1981,6 +1986,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
 	if generation != "" {
 		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
+	}
+	// Operator-tunable run watchdog rides into the spawned runtime when set.
+	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
+		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
 	args = append(args, m.cfg.Image, "serve")
 	return args, nil
@@ -2254,6 +2263,22 @@ func (m *Manager) environment() string {
 func envOr(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
+	}
+	return fallback
+}
+
+// durationEnv reads a Go duration ("130s", "15m") or a bare seconds value.
+// Invalid or empty values fall back so a typo cannot disable the cap.
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
 	}
 	return fallback
 }

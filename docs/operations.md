@@ -522,6 +522,18 @@ HUB_SUPERVISOR_AUTH=<host-control-token> hubctl supervisor --spaces spaces
 HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8876 hubctl render --dir spaces/alice
 ```
 
+Two watchdog knobs bound long-running jobs. `HUB_SUPERVISOR_JOB_TIMEOUT`
+(default `130s`) is the supervisor's per-request HTTP timeout toward the
+runtime: when it elapses the job stream ends and the durable job is marked
+`uncertain`, while the runtime keeps executing and reconciliation observes it
+to a terminal state. Raise it for routinely long jobs. `HUB_RUN_STALL_TIMEOUT`
+(default `15m`) lives inside the runtime: if the Hermes run `updated_at`
+timestamp and the event stream both stay silent for that interval, the runtime
+issues a confirmed stop and fails the job as stalled instead of polling until
+the hard run timeout. Both accept Go durations (`130s`, `10m`) or bare
+seconds; the supervisor passes `HUB_RUN_STALL_TIMEOUT` into spawned runtime
+containers.
+
 The runtime uses pinned Hermes `/api/sessions` and `/v1/runs` for each accepted job.
 Persistent execution supports normalized event streaming, durable admission metadata
 and a spool event journal. Back up the spool's `events/` directory together with

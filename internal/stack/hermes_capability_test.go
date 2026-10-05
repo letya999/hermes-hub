@@ -356,6 +356,9 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	if control["environment"].(M)["HUB_TOOLHUB_STORE"] == nil {
 		t.Fatal("control service lost its authoritative store")
 	}
+	if control["environment"].(M)["HUB_AUDIT_LEDGER"] != "/state/toolhub/audit.jsonl" {
+		t.Fatal("managed dispatch requires the durable audit ledger path")
+	}
 }
 
 func TestNativeToolsetValidation(t *testing.T) {

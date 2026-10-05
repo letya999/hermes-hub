@@ -1559,3 +1559,53 @@ func TestRunArgsHealsStubSoulAndEnrollsSibling(t *testing.T) {
 		t.Fatalf("edited soul overwritten: %q", soul)
 	}
 }
+
+func TestDurationEnv(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", 5 * time.Second}, {"90s", 90 * time.Second}, {"10m", 10 * time.Minute},
+		{"45", 45 * time.Second}, {"abc", 5 * time.Second}, {"0", 5 * time.Second}, {"-5s", 5 * time.Second},
+	} {
+		t.Setenv("HUB_TEST_DURATION", tc.raw)
+		if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != tc.want {
+			t.Fatalf("durationEnv(%q)=%s want %s", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestRunArgsPassesStallTimeout(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	ctx := filepath.Join(root, "spaces", "alice")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{"runtime.auth": "HUB_RUNTIME_AUTH=secret\n", "hermes.dev.yaml": "model: {}"} {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	settings := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\n"
+	if err := os.WriteFile(filepath.Join(ctx, "settings.yaml"), []byte(settings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-alice", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(rawArgs, " "), "HUB_RUN_STALL_TIMEOUT") {
+		t.Fatal("stall timeout env propagated while unset")
+	}
+	t.Setenv("HUB_RUN_STALL_TIMEOUT", "90s")
+	rawArgs, err = m.runArgs(binding(ctx), "hermes-context-alice", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(rawArgs, " "), "HUB_RUN_STALL_TIMEOUT=90s") {
+		t.Fatalf("run args missing stall timeout: %s", strings.Join(rawArgs, " "))
+	}
+}

@@ -283,6 +283,11 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 	}
 	progress := 0
 	lastApproval := ""
+	// Stall watchdog: a run whose Hermes-side update timestamp stops moving
+	// for stallTimeout is hung (e.g. a severed upstream model stream) — stop
+	// it instead of polling until the hard deadline.
+	stallTimeout := durationEnv("HUB_RUN_STALL_TIMEOUT", 15*time.Minute)
+	lastProgress, lastRunUpdate := time.Now(), float64(0)
 	deadline := time.Now().Add(hermesRunTimeout)
 	for time.Now().Before(deadline) {
 		var status struct {
@@ -291,10 +296,19 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 			Error     string         `json:"error"`
 			Approval  nativeRunEvent `json:"approval"`
 			SessionID string         `json:"session_id"`
+			UpdatedAt float64        `json:"updated_at"`
 		}
 		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+admission.RunID, auth, nil, &status); err != nil {
 			known.Status, known.LastEvent = "uncertain", "run.unknown"
 			return known, err
+		}
+		if status.UpdatedAt > lastRunUpdate {
+			lastRunUpdate, lastProgress = status.UpdatedAt, time.Now()
+		} else if stallTimeout > 0 && time.Since(lastProgress) > stallTimeout {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
+			cancel()
+			return result, fmt.Errorf("hermes run stalled (no update for %s)", stallTimeout)
 		}
 		if status.SessionID != "" && status.SessionID != sessionID {
 			known.Status = "uncertain"
@@ -339,6 +353,7 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 				events = nil // Pinned Hermes destroys SSE transport on disconnect; poll durable status.
 				continue
 			}
+			lastProgress = time.Now() // A live event stream is progress by itself.
 			if event.RunID != admission.RunID {
 				known.Status, known.LastEvent = "uncertain", "run.unknown"
 				return known, errors.New("hermes stream returned another run")

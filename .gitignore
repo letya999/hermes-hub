@@ -17,3 +17,4 @@ secrets.env
 docker/observability/.secrets/
 *.log
 .DS_Store
+/.tmpgen/

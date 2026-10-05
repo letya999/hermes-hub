@@ -687,6 +687,64 @@ func TestRuntimeReadyReportsUnavailableHermes(t *testing.T) {
 	}
 }
 
+func TestPersistentHermesStallsWithoutProgress(t *testing.T) {
+	t.Setenv("HUB_RUN_STALL_TIMEOUT", "300ms")
+	stopped := false
+	stopCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusConflict)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "stall-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs/stall-1/stop":
+			stopCalls++
+			stopped = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/stall-1":
+			if stopped {
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "running", "updated_at": 1})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", Text: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "stalled") || stopCalls != 1 || result.Status != "cancelled" {
+		t.Fatalf("result=%+v err=%v stops=%d", result, err, stopCalls)
+	}
+}
+
+func TestDurationEnv(t *testing.T) {
+	t.Setenv("HUB_TEST_DURATION", "")
+	if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 5*time.Second {
+		t.Fatalf("empty fallback=%s", got)
+	}
+	t.Setenv("HUB_TEST_DURATION", "90s")
+	if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 90*time.Second {
+		t.Fatalf("duration parse=%s", got)
+	}
+	t.Setenv("HUB_TEST_DURATION", "45")
+	if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 45*time.Second {
+		t.Fatalf("bare seconds=%s", got)
+	}
+	for _, bad := range []string{"abc", "0", "-5s", "0s"} {
+		t.Setenv("HUB_TEST_DURATION", bad)
+		if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 5*time.Second {
+			t.Fatalf("%q accepted=%s", bad, got)
+		}
+	}
+}
+
 func mustJSON(t *testing.T, value any) string {
 	t.Helper()
 	return mustJSONBytes(t, value)
