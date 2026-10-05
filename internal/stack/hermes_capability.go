@@ -148,3 +148,15 @@ func managedHermesConfig(s Settings) M {
 	}
 	return out
 }
+
+// managedWebSettings returns the operator web selection only when a web
+// family toolset is carved out natively — the same condition under which
+// managedHermesConfig renders the `web:` block.
+func (s Settings) managedWebSettings() WebSettings {
+	for _, name := range []string{"web", "search", "x_search"} {
+		if entry := s.Tools[name]; entry.Via == ToolViaNative {
+			return s.Web
+		}
+	}
+	return WebSettings{}
+}

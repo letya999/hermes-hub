@@ -171,6 +171,9 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	for name, entry := range nativeToolsEntries(opts.NativeToolsets) {
 		s.Tools[name] = entry
 	}
+	// The operator's web provider selection rides HUB_MANAGED_WEB into the
+	// container; without it a carved-out web block can never be reproduced.
+	s.Web = opts.Web
 	expected := managedHermesConfig(s)
 	expected["mcp_servers"] = M{"toolhub": M{
 		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,

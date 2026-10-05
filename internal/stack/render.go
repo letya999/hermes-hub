@@ -316,6 +316,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeEnv["HUB_NATIVE_TOOLSETS"] = strings.Join(s.nativeCarveouts(), ",")
 		runtimeEnv["HERMES_BUNDLES_DIR"] = "/state/hermes/skill-bundles"
 		runtimeEnv["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
+		// The effective-config preflight must reconstruct the same web block
+		// the host materialized; the provider selection cannot be derived from
+		// the carve-out list alone, so it rides in as JSON.
+		if web := s.managedWebSettings(); !web.empty() {
+			if managedWebJSON, err := json.Marshal(web); err == nil {
+				runtimeEnv["HUB_MANAGED_WEB"] = string(managedWebJSON)
+			}
+		}
 	}
 	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})

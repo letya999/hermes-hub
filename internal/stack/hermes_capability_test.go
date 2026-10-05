@@ -610,4 +610,35 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if !strings.Contains(string(effective), "keenable") {
 		t.Fatal("managed effective config dropped web provider selection")
 	}
+	// The spawned container reconstructs the same expectation from env: the
+	// web provider selection must ride HUB_MANAGED_WEB into the runtime.
+	runtimeService := RuntimeService(settings, "", dir)
+	envMap, ok := runtimeService["environment"].(M)
+	if !ok {
+		t.Fatal("runtime service has no environment")
+	}
+	webJSON, ok := envMap["HUB_MANAGED_WEB"].(string)
+	if !ok || webJSON == "" {
+		t.Fatal("managed runtime env lost HUB_MANAGED_WEB")
+	}
+	var carried WebSettings
+	if err := json.Unmarshal([]byte(webJSON), &carried); err != nil {
+		t.Fatalf("HUB_MANAGED_WEB is not JSON: %v", err)
+	}
+	if !reflect.DeepEqual(carried, settings.Web) {
+		t.Fatalf("HUB_MANAGED_WEB round-trip changed the selection: %+v", carried)
+	}
+	// Attestation must accept the effective config when — and only when —
+	// the web selection arrives with the materialize options.
+	attestOpts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, ToolHubReconnect: true,
+		NativeToolsets: settings.nativeCarveouts(), Web: carried}
+	validate := Settings{Model: settings.Model, ModelURL: settings.ModelURL, Timezone: settings.Timezone}
+	effectivePath := filepath.Join(dir, "generated", "hermes-effective.dev.yaml")
+	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err != nil {
+		t.Fatalf("effective config rejected with carried web selection: %v", err)
+	}
+	attestOpts.Web = WebSettings{}
+	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err == nil {
+		t.Fatal("web block accepted without the provider selection in transit")
+	}
 }

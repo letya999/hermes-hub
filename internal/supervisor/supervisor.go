@@ -1742,7 +1742,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	settings, settingsErr := stack.Read(abs)
+	settings, settingsErr := stack.ReadEnvironment(abs, m.environment())
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return Binding{}, fmt.Errorf("context settings unavailable: %w", settingsErr)
 	}
@@ -1826,7 +1826,9 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) ([]string, error) {
 	env := m.environment()
-	settings, settingsErr := stack.Read(binding.ContextRoot)
+	// Environment-aware: the managed env contract (HUB_CAPABILITY_ENVIRONMENT,
+	// dev port offsets, execution selection) must match the rendered compose.
+	settings, settingsErr := stack.ReadEnvironment(binding.ContextRoot, env)
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return nil, settingsErr
 	}

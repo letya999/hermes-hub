@@ -217,9 +217,13 @@ func managedPreflight() error {
 		os.Getenv("HERMES_ENABLE_PROJECT_PLUGINS") != "0" {
 		return fmt.Errorf("managed runtime forbids redirected extension discovery")
 	}
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		return fmt.Errorf("managed runtime config preflight: %w", err)
+	}
 	if err := stack.ValidateManagedEffectiveConfig(filepath.Join(hermesHome, "config.yaml"),
 		stack.Settings{Model: os.Getenv("HUB_MANAGED_MODEL_ID"), ModelURL: os.Getenv("HUB_MANAGED_MODEL_URL"), Timezone: os.Getenv("TZ")},
-		materializeOptionsFromEnv()); err != nil {
+		opts); err != nil {
 		return fmt.Errorf("managed runtime config preflight: %w", err)
 	}
 	if err := verifyManagedIsolation(hermesHome); err != nil {
@@ -257,11 +261,14 @@ func superviseOnce(mode string) (bool, error) {
 	configDst := filepath.Join(hermesHome, "config.yaml")
 	if effectiveConfigWritable(configDst) {
 		var configErr error
-		if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
-			configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, materializeOptionsFromEnv())
-		} else {
-			// No rendered source mount (legacy/test run): mutate in place.
-			configErr = stack.ApplyHermesConfig(configDst, materializeOptionsFromEnv())
+		var opts stack.MaterializeOptions
+		if opts, configErr = materializeOptionsFromEnv(); configErr == nil {
+			if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
+				configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, opts)
+			} else {
+				// No rendered source mount (legacy/test run): mutate in place.
+				configErr = stack.ApplyHermesConfig(configDst, opts)
+			}
 		}
 		if configErr != nil {
 			return false, configErr

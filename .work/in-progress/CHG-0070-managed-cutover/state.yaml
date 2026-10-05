@@ -24,3 +24,17 @@ next:
   - migration script + cutover + end-to-end verification
 blockers: []
 rollback: legacy settings.yaml preserved; select-execution static restores unmanaged path
+cutover_progress:
+  - store: definition hub-agent-tools v1.0.0 + binding bind-6063a0658beb4f9eb1503a00
+  - policy telegram-8275678764-default-policy rev1 (26 rules) + profile rev1 (22 selections) confirmed in runtime/toolhub/store.json
+  - settings split: agent.yaml + workspace.yaml (schema 3); settings.yaml -> settings.yaml.unmanaged.bak
+  - managed/dev/ state migrated via migrate-managed-state.sh (cp+prune; Windows: use sh not bash=WSL, not tar=bsdtar)
+  - supervisor running on 0.0.0.0:8876 (killed stale hermes-hub-private hubctl-supervisor PID 30392)
+  - execution.dev.json applied: mode=supervisor url=http://host.docker.internal:8876 native_cron=disabled compat=0.3.0; cron snapshot pin verified 869228c, 0 active jobs
+  - render: hermes-runtime removed; model-relay/toolhub-relay/egress-relay present; agent net internal
+  - cutover.exe (.tmpgen) reproduces select-execution apply with volume-name spool proof (Windows named volumes have no host path)
+  - hubctl up: first attempt died on github fetch (HTTP/2 stream cancel); retry rebuilding 375MB apt layer
+  - pending: build completes, containers healthy, bot e2e, runtime spawn via supervisor, isolation+egress verify
+  - DEPLOYED: images patched host-side (github fetch died twice on ~110KB/s link; binaries built with identical CGO_ENABLED=0 -trimpath -s -w flags onto the same pinned-Hermes base, docker build patch layer). stack up: 9 containers healthy
+  - verified: agent net internal no-default-route; toolhub/model-relay/egress-relay resolve, cliproxy does not; egress CONNECT keenable=404(real) vs evil.example=denied; comm-hub->supervisor http://host.docker.internal:8876 authed OK
+  - pending: user sends Telegram message -> supervisor spawns managed runtime -> e2e
