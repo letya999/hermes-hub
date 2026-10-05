@@ -1,15 +1,22 @@
 schema: 1
 change: CHG-0071-managed-voice-media-settings
 status: in-progress
-phase: code
+phase: deploy-verify
 started: 2026-10-06
 owner: operator
+done:
+  - internal/selfsettings package (reviewed allowlist, typed validation, atomic overlay)
+  - compression enabled + image_gen block in managed effective config
+  - settings_get/settings_set tools, settings family, catalog 1.1.0, digest 0e1e9ef2
+  - profile control_operations + self_install fields for managed GitHub MCP install
+  - spaces/telegram-480637186 created (infra:false, managed, 24 selections)
+  - communication.users.yaml with both Telegram IDs; sibling tokens accepted by comm-hub
+  - CI matrix publishes stt/tts images (commit 6711725, PR #231)
+  - both spaces re-rendered; store has rev2/rev1 profiles, 1.1.0 bindings
 next:
-  - implement selfsettings overlay + merge plumbing
-  - enable compression + image_gen block in managed config
-  - add settings_get/settings_set tools and capability family
-  - republish policy/profile, re-render, redeploy
-  - build/publish hub-stt + hub-tts images via GitHub Actions
-  - create telegram-480637186 space + users file + profile
-  - live-verify image gen, stt, tts, usage/sessions/connections, github mcp install for both users
-notes: []
+  - wait for CI image publish, pull server-built images
+  - recreate stack; verify supervisor spawn for both users
+  - live-verify settings_get/set, image gen, STT/TTS, /usage /sessions /connections, github prepare_source, isolation
+notes:
+  - CI run 37374261130 queued for 6711725
+  - toolhub-tokens.json enrolls local + telegram-480637186 sibling tokens

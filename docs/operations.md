@@ -114,8 +114,13 @@ The authenticated envelope opts into this evaluator with `capability_profile`,
 denies admission. Organization/default and personal rules intersect the ceiling;
 matching denies win. Names and installed credentials do not grant access. All
 required action/resource pairs must pass before credential injection. Bare binding
-calls, old projected names, self-install and legacy control operations are denied
-for managed profiles. Call admission requires a durable audit writer
+calls, old projected names and legacy control operations are denied for
+managed profiles unless the profile itself admits them: `control_operations`
+lists the reviewed connector lifecycle operations (discover, prepare_source,
+status, required_credentials, confirm, enable, rotate, disable, revoke,
+remove, diagnostics) and `self_install` admits the GitHub-source install grant;
+both are profile fields, so a principal without them still fails closed.
+Call admission requires a durable audit writer
 (`HUB_AUDIT_LEDGER` in the endpoint); disk failure prevents dispatch.
 
 Policy/profile publication and its complete issuer/scope/revision history share
@@ -253,6 +258,23 @@ in the protected store still govern what an admitted call may do.
 * `mcp-raw[:server]` renders a `mcp:` definition (or an organization-
   provided one) directly into the runtime's `mcp_servers`. Managed mode
   only permits organization-scoped definitions.
+* `settings` exposes the reviewed self-settings surface. Values live in a
+  JSON overlay (`HUB_SELF_SETTINGS_PATH`, rendered at `self-settings.json`
+  under the managed runtime state dir) that both the supervisor
+  materialization and the runtime-side attestation load, so the effective
+  config stays identical on both sides of the boundary. `settings_get`
+  returns only reviewed keys; `settings_set` validates types, applies the
+  overlay atomically and returns `restart_required` keys — the runtime
+  restarts itself rather than mutating live state. Arbitrary config keys
+  are never accepted; the allowlist lives in `internal/selfsettings`.
+
+Managed effective config enables Hermes compression
+(`compression.enabled`, `in_place`, `micro_compact`) with a fixed
+`threshold_tokens` budget so sessions compact predictably regardless of
+model window size. Compression is safe there because managed runtimes run
+the api-server path — the detached hygiene/curator sub-agents that bypass
+`disabled_toolsets` never spawn, and `ContextCompressor` is an auxiliary
+LLM call with no tool surface.
 
 `access: ro` makes an entry read-only where the boundary can prove it:
 ToolHub entries deny every write-effect tool inside the executor
