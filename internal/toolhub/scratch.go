@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"strings"
@@ -23,6 +24,75 @@ import (
 // replacement lease may issue for that binding until the container is
 // confirmed gone. Entries clear on a failed docker inspect.
 var scratchPending sync.Map
+
+// scratchLeasePath mirrors scratchPending to disk so a ToolHub restart still
+// quarantines a binding whose executor was never confirmed gone. Without the
+// durable file a restart could drop the quarantine while the workload lived.
+var (
+	scratchLeasePath string
+	scratchLeaseMu   sync.Mutex
+)
+
+// SetScratchLeasePath enables durable executor leases: existing entries are
+// loaded into the quarantine map and every later mutation is persisted
+// atomically alongside the file. A corrupt file fails closed — the path is
+// not enabled and the in-memory quarantine keeps working.
+func SetScratchLeasePath(path string) error {
+	scratchLeaseMu.Lock()
+	defer scratchLeaseMu.Unlock()
+	body, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	default:
+		var leases map[string]string
+		if err := json.Unmarshal(body, &leases); err != nil {
+			return fmt.Errorf("scratch lease file: %w", err)
+		}
+		for binding, name := range leases {
+			scratchPending.Store(binding, name)
+		}
+	}
+	scratchLeasePath = path
+	return nil
+}
+
+// scratchLeaseSave persists the quarantine map; enabled only after
+// SetScratchLeasePath succeeded. Write-then-rename keeps a torn write from
+// dropping every pending lease.
+func scratchLeaseSave() {
+	if scratchLeasePath == "" {
+		return
+	}
+	leases := map[string]string{}
+	scratchPending.Range(func(k, v any) bool {
+		leases[k.(string)] = v.(string)
+		return true
+	})
+	body, err := json.Marshal(leases)
+	if err != nil {
+		return
+	}
+	tmp := scratchLeasePath + ".tmp"
+	if os.WriteFile(tmp, body, 0o600) == nil {
+		_ = os.Rename(tmp, scratchLeasePath)
+	}
+}
+
+func scratchLeaseSet(binding, name string) {
+	scratchLeaseMu.Lock()
+	defer scratchLeaseMu.Unlock()
+	scratchPending.Store(binding, name)
+	scratchLeaseSave()
+}
+
+func scratchLeaseClear(binding string) {
+	scratchLeaseMu.Lock()
+	defer scratchLeaseMu.Unlock()
+	scratchPending.Delete(binding)
+	scratchLeaseSave()
+}
 
 // Scratch-pack protocol: the runtime-side `hubctl exec-pack` streams a bounded
 // tar of exactly the admitted path scope; the sandbox-side `hubctl
@@ -49,6 +119,10 @@ type ScratchExecResult struct {
 	Stderr    string `json:"stderr,omitempty"`
 	ExportTar string `json:"export_tar_base64,omitempty"`
 	Stopped   bool   `json:"stopped"`
+	// TreeStopped confirms the workload's process group is fully gone; a
+	// false value means orphaned children may still have run until the
+	// container removal killed them — reported, never hidden.
+	TreeStopped bool `json:"tree_stopped,omitempty"`
 }
 
 const (
@@ -86,11 +160,16 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		return out.Bytes(), errb.Bytes(), err
 	}
 	return func(ctx context.Context, effective EffectiveBinding, request AgentExecRequest, fence ScratchFenceFunc) (AgentExecResult, error) {
+		// Cleanup and quarantine checks run detached from the caller's ctx:
+		// a cancelled admission must still be able to verify and remove a
+		// possibly-live executor instead of leaving it orphaned.
+		cleanCtx, cleanCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cleanCancel()
 		if name, quarantined := scratchPending.Load(effective.Binding.ToolBindingID); quarantined {
-			if _, _, err := run(ctx, nil, "inspect", name.(string)); err == nil {
+			if _, _, err := run(cleanCtx, nil, "inspect", name.(string)); err == nil {
 				return AgentExecResult{}, fmt.Errorf("%w: sandbox executor %s still live; lease quarantined", ErrIsolation, name)
 			}
-			scratchPending.Delete(effective.Binding.ToolBindingID)
+			scratchLeaseClear(effective.Binding.ToolBindingID)
 		}
 		runtime, err := container(effective)
 		if err != nil {
@@ -149,12 +228,12 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 			"--memory", "256m", "--cpus", "0.5", "--pids-limit", "64", "--stop-timeout", "2",
 			"-i", "--entrypoint", "hubctl", image, "exec-scratch"}
 		stdout, stderr, runErr := run(lease, bytes.NewReader(body), args...)
-		stopped, stopErr := confirmStopped(ctx, run, name)
+		stopped, stopErr := confirmStopped(cleanCtx, run, name)
 		if !stopped {
 			// Do not report a possibly-live executor as finished: the lease is
 			// over, the container may still act and no replacement may start
 			// for this binding until the executor is confirmed gone.
-			scratchPending.Store(effective.Binding.ToolBindingID, name)
+			scratchLeaseSet(effective.Binding.ToolBindingID, name)
 			if stopErr != nil {
 				return AgentExecResult{}, fmt.Errorf("%w: sandbox stop unconfirmed: %s", ErrIsolation, stopErr)
 			}
@@ -171,6 +250,7 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		summary := map[string]any{
 			"exit_code": result.ExitCode, "stdout": result.Stdout, "stderr": result.Stderr,
 			"applied": applied, "skipped": skipped, "stopped": true, "path": relPath, "scope": scope,
+			"tree_stopped": result.TreeStopped,
 		}
 		if applyErr != nil {
 			summary["export_error"] = applyErr.Error()

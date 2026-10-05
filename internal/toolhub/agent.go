@@ -94,9 +94,12 @@ const agentExecMaxResponse = 4 << 20
 
 // AgentExecFrame carries one call on the persistent tools-daemon channel. The
 // request fields are the same verbatim admitted contract the one-shot
-// tools-exec consumes; id correlates multiplexed replies.
+// tools-exec consumes; id correlates multiplexed replies. A frame with Cancel
+// set carries no request: it asks the daemon to stop the in-flight call with
+// the same id so a cancelled admission does not keep running unobserved.
 type AgentExecFrame struct {
-	ID uint64 `json:"id"`
+	ID     uint64 `json:"id"`
+	Cancel bool   `json:"cancel,omitempty"`
 	AgentExecRequest
 }
 
@@ -312,6 +315,14 @@ func (p *agentExecPool) call(ctx context.Context, effective EffectiveBinding, re
 		}
 		return outcome.reply.AgentExecResult, nil
 	case <-ctx.Done():
+		// Propagate the cancel into the daemon so the in-flight call stops
+		// inside the runtime instead of finishing unobserved. Best effort:
+		// a dead session kills the daemon process anyway.
+		if frame, err := json.Marshal(AgentExecFrame{ID: id, Cancel: true}); err == nil {
+			s.writeMu.Lock()
+			_, _ = s.stdin.Write(append(frame, '\n'))
+			s.writeMu.Unlock()
+		}
 		s.unregister(id)
 		return AgentExecResult{}, ctx.Err()
 	}

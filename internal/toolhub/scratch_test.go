@@ -352,6 +352,51 @@ func TestDockerScratchExecUnconfirmedStop(t *testing.T) {
 	}
 }
 
+// A persisted lease survives a ToolHub restart: the reloaded quarantine still
+// blocks the binding until docker confirms the executor is gone.
+func TestDockerScratchExecDurableLease(t *testing.T) {
+	_, state, exec := fakeScratch(t)
+	leaseFile := filepath.Join(state, "executor-leases.json")
+	if err := SetScratchLeasePath(leaseFile); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		scratchLeaseMu.Lock()
+		scratchLeasePath = ""
+		scratchLeaseMu.Unlock()
+	}()
+	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-lease"}}
+	ok := func(context.Context, EffectiveBinding) error { return nil }
+	if err := os.WriteFile(filepath.Join(state, "neverdie"), []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("unconfirmed stop must not report success: %v", err)
+	}
+	// Simulate a restart: the in-memory map loses the entry, the lease file
+	// still has it, and reloading the file must restore the quarantine.
+	scratchPending.Delete("bind-lease")
+	if err := SetScratchLeasePath(leaseFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("restarted ToolHub re-issued a quarantined lease: %v", err)
+	}
+	if err := os.Remove(filepath.Join(state, "neverdie")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); err != nil {
+		t.Fatalf("confirmed stop did not lift the durable quarantine: %v", err)
+	}
+	body, err := os.ReadFile(leaseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "bind-lease") {
+		t.Fatalf("cleared lease still persisted: %s", body)
+	}
+}
+
 // A fence denial at apply time keeps the run result but blocks the write:
 // exports are reported, never applied.
 func TestDockerScratchExecExportFence(t *testing.T) {

@@ -66,6 +66,11 @@ func runExecScratch(ctx context.Context) error {
 	lease, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(lease, "sh", "-c", request.Command)
+	// The lease kills the whole process group, not only the direct sh; the
+	// post-run check confirms no children survived before we report stopped.
+	cmd.SysProcAttr = scratchProcAttr()
+	cmd.Cancel = func() error { return scratchCancel(cmd) }
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = scratch
 	cmd.Env = []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + scratch, "TMPDIR=/tmp",
@@ -75,6 +80,7 @@ func runExecScratch(ctx context.Context) error {
 	cmd.Stdout = &boundedWriter{w: &stdout, max: 256 << 10}
 	cmd.Stderr = &boundedWriter{w: &stderr, max: 256 << 10}
 	runErr := cmd.Run()
+	result.TreeStopped = cmd.Process == nil || scratchTreeGone(cmd.Process.Pid)
 	result.Stdout = stdout.String()
 	result.Stderr = stderr.String()
 	result.ExitCode = 0
