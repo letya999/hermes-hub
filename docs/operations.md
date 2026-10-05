@@ -552,9 +552,9 @@ or an unmigrated native Hermes cron. Disabling a pin does not cancel current
 jobs or remove user files; normal idle retention resumes. Pins require the
 private supervisor token and the same saved owner envelope for removal.
 
-A verified private owner may enqueue a one-shot task with
-`/runat <RFC3339 timestamp with timezone> <task>`. The communication spool saves
-its occurrence before acknowledging it. Due occurrences become ordinary jobs
+A verified private owner may enqueue one-shot and recurring tasks through the
+schedules HTTP API (`/v1/routines`). The communication spool saves each
+occurrence before acknowledging it. Due occurrences become ordinary jobs
 with `trigger=cron`; the normal supervisor execution path wakes the context.
 Duplicate ticks and restart reuse the same occurrence key. Inputs containing
 credential assignments are rejected. Catch-up is limited to one hour and each
@@ -577,36 +577,37 @@ commands can wait for `/approve <job_id> <request_id> <choice>` in the initiatin
 private conversation. The saved request expires after two minutes; the supervisor
 confirms native cancellation before releasing its approval hold. A lost decision
 acknowledgement is observed without repeating approval. Native deny/hardline rules
-and current organization/tool authorization still apply. `/cancel <job_id>` is
-durable during queueing, startup and execution and never starts a new task.
+and current organization/tool authorization still apply.
 
 A verified owner keeps several independent task sessions inside one private DM.
-`/new [name]` or `/task new [name]` creates a task and switches to it; a
-nameless task carries a placeholder name flagged `name_auto` and adopts the
-upstream session title after its first real exchange. `/task use
-<id|name|default>` switches the chat's current task, `/task rename`,
-`/task archive`, `/task delete [id|name]` and `/task archived` mutate or list
-the task resolved for the message's audience, and `/tasks` (`/sessions`) lists
-live tasks with their creation dates. `/task delete` removes only the local
-registry record and routing state; the durable Hermes session stays upstream
-for audit. A message posted in a Telegram direct-messages topic resolves to
-its bound task; a first post in an unbound topic adopts one, and root-DM
-messages follow the current pointer. Forum-group topics are supported the same
-way: the bot accepts group messages only from verified users, topic messages
-carry `message_thread_id`, and replies return to the originating topic — group
-jobs deliver to the group chat rather than the sender's DM. Scheduled
-occurrences (`/runat`, `/routine`) remain private-DM only. Unknown slash
+`/new [name]` creates a task and switches to it; a nameless task carries a
+placeholder name flagged `name_auto` and adopts the upstream session title
+after its first real exchange. `/use <id|name|default>` switches the chat's
+current task, `/delete [id|name]` removes the task resolved for the message's
+audience (the local registry record and routing only; the durable Hermes
+session stays upstream for audit), and `/sessions` lists live tasks with their
+creation dates. `/session` reports the current task's name, creation date,
+bound topic and durable session id. A message posted in a Telegram
+direct-messages topic resolves to its bound task; a first post in an unbound
+topic adopts one, and root-DM messages follow the current pointer. Forum-group
+topics are supported the same way: the bot accepts group messages only from
+verified users, topic messages carry `message_thread_id`, and replies return
+to the originating topic — group jobs deliver to the group chat rather than
+the sender's DM. Scheduled occurrences remain private-DM only. Unknown slash
 commands are answered with the supported-command list and never reach the
-model. The implicit `default` task keeps the legacy `telegram-<chat>`
-conversation, so pre-task history and mappings remain valid. Each task owns
-its own durable Hermes session because the session id derives from the task
-conversation id; jobs, replies, streams, artifacts, voice and continuation
-notices carry the originating task and topic id end to end.
-`/style <text>` stores per-task presentation guidance (up to 1024 characters,
-no control characters) that rides each admitted run as Hermes `instructions`;
-the admitted run's snapshot is pinned on its durable mapping, so a later
-`/style` change affects subsequent runs only and never touches authorization
-or tool policy. `/usage` reports the task session's measured model, title and
+model, and the gateway registers that same list as the bot's command menu on
+every startup across all Telegram scopes, so a foreign adapter's stale menu
+cannot shadow it. The implicit `default` task keeps the legacy
+`telegram-<chat>` conversation, so pre-task history and mappings remain valid.
+Each task owns its own durable Hermes session because the session id derives
+from the task conversation id; jobs, replies, streams, artifacts, voice and
+continuation notices carry the originating task and topic id end to end.
+Task records may carry per-task presentation guidance (`style`, up to 1024
+characters, no control characters) that rides each admitted run as Hermes
+`instructions`; the admitted run's snapshot is pinned on its durable mapping,
+so a later style change affects subsequent runs only and never touches
+authorization or tool policy. `/usage` reports the task session's measured
+model, title and
 start time, cumulative tokens, calls, cost and session-rotation count read
 back from the pinned Hermes session API; fields the upstream does not
 authoritatively expose — current-prompt context and the context window —

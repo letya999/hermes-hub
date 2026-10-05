@@ -538,7 +538,7 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	if err := g.handleUpdate(context.Background(), base(1, 1, "/start", 11)); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(context.Background(), base(2, 2, "/status", 11)); err != nil {
+	if err := g.handleUpdate(context.Background(), base(2, 2, "/session", 11)); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.handleUpdate(context.Background(), base(3, 3, "/connections", 11)); err != nil {

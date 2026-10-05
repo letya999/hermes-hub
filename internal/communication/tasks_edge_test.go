@@ -92,8 +92,8 @@ func TestTaskStoreRejectsCorruptAndForeignRecords(t *testing.T) {
 	if _, err := spool.ResolveTask(user, 11, 0, false); err == nil {
 		t.Fatal("corrupt current pointer resolved")
 	}
-	if got := g.tasksCommand(user, 11); !strings.Contains(got, "Не удалось") {
-		t.Fatalf("/tasks hid corrupt pointer: %q", got)
+	if got := g.sessionsCommand(user, 11); !strings.Contains(got, "Не удалось") {
+		t.Fatalf("/sessions hid corrupt pointer: %q", got)
 	}
 	if _, err := spool.UseTask(user, 11, "default"); err != nil {
 		t.Fatal(err)
@@ -289,30 +289,27 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := g.taskCommand(user, 11, 0, task, "/task new bad\x00name"); !strings.Contains(got, "отклонена") {
+	if got := g.newTaskCommand(user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
 		t.Fatalf("invalid name accepted: %q", got)
 	}
-	// A nameless /task new creates an auto-named session.
-	if got := g.taskCommand(user, 11, 0, task, "/task new"); !strings.Contains(got, "создана") {
+	// A nameless /new creates an auto-named session.
+	if got := g.newTaskCommand(user, 11, 0, "/new"); !strings.Contains(got, "создана") {
 		t.Fatalf("auto create wrong: %q", got)
 	}
-	if got := g.taskCommand(user, 11, 0, task, "/task new alpha"); !strings.Contains(got, "создана") {
+	if got := g.newTaskCommand(user, 11, 0, "/new alpha"); !strings.Contains(got, "создана") {
 		t.Fatalf("create=%q", got)
 	}
-	if got := g.taskCommand(user, 11, 0, task, "/task new alpha"); !strings.Contains(got, "уже есть") {
+	if got := g.newTaskCommand(user, 11, 0, "/new alpha"); !strings.Contains(got, "уже есть") {
 		t.Fatalf("reuse=%q", got)
 	}
-	if got := g.taskCommand(user, 11, 0, task, "/task rename bad\x00name"); !strings.Contains(got, "Не удалось переименовать") {
-		t.Fatalf("rename=%q", got)
-	}
-	if got := g.taskCommand(user, 11, 0, task, "/task archive"); !strings.Contains(got, "Не удалось архивировать") {
-		t.Fatalf("default archive=%q", got)
-	}
-	if got := g.taskCommand(user, 11, 0, task, "/task frobnicate"); !strings.Contains(got, "Используйте /task") {
-		t.Fatalf("unknown subcommand=%q", got)
-	}
-	if got := g.taskCommand(user, 11, 0, task, "/task use"); !strings.Contains(got, "/task use <id|имя|default>") {
+	if got := g.useCommand(user, 11, "/use"); !strings.Contains(got, "/use <id|имя|default>") {
 		t.Fatalf("use hint=%q", got)
+	}
+	if got := g.useCommand(user, 11, "/use missing-task"); !strings.Contains(got, "не найдена") {
+		t.Fatalf("use missing=%q", got)
+	}
+	if got := g.deleteCommand(user, 11, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
+		t.Fatalf("default delete=%q", got)
 	}
 
 	// Status inside a bound topic reports the topic and its session.
@@ -333,8 +330,8 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 	if !strings.Contains(status, "Топик #51") || !strings.Contains(status, "sess-topic") {
 		t.Fatalf("status=%q", status)
 	}
-	// /tasks lists the bound topic marker too.
-	list := g.tasksCommand(user, 11)
+	// /sessions lists the bound topic marker too.
+	list := g.sessionsCommand(user, 11)
 	if !strings.Contains(list, "топик #51") {
 		t.Fatalf("list=%q", list)
 	}

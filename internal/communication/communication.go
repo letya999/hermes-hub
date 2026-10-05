@@ -1757,32 +1757,11 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply("Не удалось открыть задачу.")
 		}
 		switch command {
-		case "runat":
+		case "approve":
 			fields := strings.Fields(text)
-			answer := "Используйте /runat <дата RFC3339 с часовым поясом> <задание>."
-			if len(fields) >= 3 {
-				due, err := time.Parse(time.RFC3339, fields[1])
-				if err == nil && due.After(g.now()) {
-					input := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, fields[0])), fields[1]))
-					caller := user.envelope(message.From.ID)
-					job := Job{Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: message.Chat.ID, TaskID: task.TaskID, TopicID: task.TopicID, Text: input}
-					err = g.spool.PutOccurrence(RoutineOccurrence{ScheduleID: "telegram-" + strconv.Itoa(update.UpdateID), Revision: 1, DueAt: due, Job: job}, caller)
-					if err == nil {
-						answer = "Задание по расписанию сохранено."
-					} else {
-						answer = "Задание отклонено: проверьте текст и время."
-					}
-				}
-			}
-			return reply(answer)
-		case "cancel", "approve":
-			fields := strings.Fields(text)
-			answer := "Используйте /cancel <job-id> или /approve <job-id> <request-id> <choice>."
+			answer := "Используйте /approve <job-id> <request-id> <choice>."
 			var err error
-			if command == "cancel" && len(fields) == 2 {
-				_, err = g.spool.RequestCancel(fields[1], callerForJob(fields[1]))
-				answer = "Запрос отмены сохранен."
-			} else if command == "approve" && len(fields) == 4 {
+			if len(fields) == 4 {
 				err = g.spool.RequestApproval(fields[1], callerForJob(fields[1]), fields[2], fields[3])
 				answer = "Ответ на подтверждение сохранен."
 			}
@@ -1808,33 +1787,20 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply(answer)
 		case "start":
 			return reply("Готово. Вы подключены к своему Hermes-пространству.")
-		case "status":
-			state := "свободен"
-			if g.busy.Load() > 0 {
-				state = "обрабатывает сообщение"
-			}
-			return reply("Hermes: " + state + ".")
-		case "connections", "connection":
-			return reply(connectionList(user))
-		case "session":
-			return reply(g.sessionStatus(user, task))
-		case "task":
-			return reply(g.taskCommand(user, message.Chat.ID, topic, task, text))
-		case "tasks", "sessions":
-			return reply(g.tasksCommand(user, message.Chat.ID))
 		case "new":
-			fields := strings.Fields(text)
-			return reply(g.taskCommand(user, message.Chat.ID, topic, task, "/task new"+strings.TrimPrefix(text, fields[0])))
-		case "topic":
+			return reply(g.newTaskCommand(user, message.Chat.ID, topic, text))
+		case "sessions":
+			return reply(g.sessionsCommand(user, message.Chat.ID))
+		case "use":
+			return reply(g.useCommand(user, message.Chat.ID, text))
+		case "delete":
+			return reply(g.deleteCommand(user, message.Chat.ID, task, text))
+		case "session":
 			return reply(g.taskStatus(user, task))
-		case "style":
-			return reply(g.styleCommand(user, message.Chat.ID, task, text))
 		case "usage":
 			return reply(g.usageCommand(ctx, user, message.From.ID, task))
-		case "voice":
-			return reply(g.voiceCommand())
-		case "routine":
-			return reply(g.routineCommand(user, message.From.ID, message.Chat.ID, task, text))
+		case "connections", "connection":
+			return reply(g.connectionsCommand(user, message.From.ID))
 		case "help":
 			return reply(commandHelp())
 		default:
@@ -1886,21 +1852,16 @@ var botCommandInventory = []struct {
 	Command     string
 	Description string
 }{
+	{"start", "Подключиться к своему Hermes-пространству"},
 	{"new", "Новая сессия (отдельный контекст): /new [имя]"},
 	{"sessions", "Список сессий с датами"},
-	{"task", "Сессии: статус, /task use|rename|archive|delete|archived"},
-	{"style", "Стиль ответа сессии: /style [текст|reset]"},
+	{"use", "Переключиться на сессию: /use <id|имя|default>"},
+	{"delete", "Удалить сессию: /delete [id|имя]"},
+	{"session", "Текущая сессия: имя, дата, session id"},
 	{"usage", "Расход токенов сессии и лимиты подписки"},
-	{"session", "ID постоянной Hermes-сессии"},
-	{"status", "Занят ли Hermes"},
-	{"voice", "Доступность голосового ввода/ответов"},
-	{"routine", "Расписания"},
-	{"runat", "Разовое задание: /runat <RFC3339> <текст>"},
-	{"cancel", "Отменить джобу: /cancel <job-id>"},
-	{"approve", "Подтвердить: /approve <job-id> <request-id> <choice>"},
+	{"connections", "Подключения и коннекторы ToolHub"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
-	{"connections", "Список подключений"},
-	{"help", "Этот список команд"},
+	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
 }
 
 // commandHelp is the authoritative inventory of supported slash commands;
@@ -1963,26 +1924,8 @@ func (g *Gateway) maybeAutoTitle(ctx context.Context, job Job) {
 		return
 	}
 	if g.spool.AutoTitleTask(job.PrincipalID, job.TaskID, report.Title) {
-		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "». Переименовать: /task rename <имя>.", CreatedAt: g.now().UTC()})
+		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "».", CreatedAt: g.now().UTC()})
 	}
-}
-
-func (g *Gateway) sessionStatus(user User, task Task) string {
-	mapping, found, err := g.spool.SessionFor(user.ID, user.ID, task.ConversationID)
-	if err != nil || !found || mapping.SessionID == "" {
-		return "Задача " + taskLabel(task) + ": постоянная Hermes-сессия ещё не создана."
-	}
-	return "Задача " + taskLabel(task) + ". Сессия: " + mapping.SessionID + "."
-}
-
-// voiceReadiness reports incoming STT and outgoing TTS availability separately:
-// a configured-but-unresolvable worker binary, a sidecar that does not answer
-// /healthz, or a parked upload URL all still mean "unavailable", so /voice
-// never promises a channel that cannot send.
-func (g *Gateway) voiceReadiness() (sttReady, ttsReady bool) {
-	sttReady = mediaReady(g.transcriber, g.config.STTCommand, g.config.STTURL)
-	ttsReady = mediaReady(g.synthesizer, g.config.TTSCommand, g.config.TTSURL) && strings.TrimSpace(g.config.TTSUploadURL) == ""
-	return
 }
 
 // mediaReady resolves readiness for either an embedded command worker (binary
@@ -2003,19 +1946,6 @@ func mediaReady(impl any, command, url string) bool {
 		return h.Healthy(ctx)
 	}
 	return true
-}
-
-func readyWord(ready bool) string {
-	if ready {
-		return "доступно"
-	}
-	return "недоступно"
-}
-
-func (g *Gateway) voiceCommand() string {
-	sttReady, ttsReady := g.voiceReadiness()
-	status := "Распознавание голосовых (STT): " + readyWord(sttReady) + ". Озвучка ответов (TTS): " + readyWord(ttsReady) + "."
-	return status + " Отдельного режима нет: попросите в сообщении ответить голосовым — например, «ответь голосовым» — и придёт голосовое сообщение."
 }
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID, topicID int64, messageID int, text string) error {
@@ -2418,6 +2348,50 @@ func signalRestartAfterDelivery(stateDir string) error {
 		return err
 	}
 	return process.Signal(os.Interrupt)
+}
+
+// connectionsCommand answers /connections: the operator-facing connection
+// catalog plus the ToolHub tool inventory projected for this principal —
+// builtin agent tools, bounded CLIs, containerized and remote MCP servers.
+func (g *Gateway) connectionsCommand(user User, sender int64) string {
+	answer := connectionList(user)
+	if g.secrets == nil || g.secrets.Registry == nil {
+		return answer + "\nКоннекторы ToolHub: реестр недоступен."
+	}
+	tools, err := g.secrets.Registry.ListProjectedTools(user.envelope(sender))
+	if err != nil {
+		return answer + "\nКоннекторы ToolHub: не удалось получить список."
+	}
+	if len(tools) == 0 {
+		return answer + "\nКоннекторы ToolHub: нет."
+	}
+	kind := map[string]string{}
+	for _, t := range tools {
+		if _, seen := kind[t.DefinitionID]; seen {
+			continue
+		}
+		label := string(t.Tool.Effect)
+		if def, derr := g.secrets.Registry.Definition(t.DefinitionID, t.Version); derr == nil {
+			label = string(def.Transport)
+		}
+		kind[t.DefinitionID] = label
+	}
+	lines := []string{"", "Коннекторы ToolHub:"}
+	seen := map[string]bool{}
+	for _, t := range tools {
+		if seen[t.DefinitionID] {
+			continue
+		}
+		seen[t.DefinitionID] = true
+		var names []string
+		for _, o := range tools {
+			if o.DefinitionID == t.DefinitionID {
+				names = append(names, o.Name)
+			}
+		}
+		lines = append(lines, "- "+t.DefinitionID+" ["+kind[t.DefinitionID]+"]: "+strings.Join(names, ", "))
+	}
+	return answer + strings.Join(lines, "\n")
 }
 
 func connectionList(user User) string {
