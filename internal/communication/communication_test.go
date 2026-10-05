@@ -1566,9 +1566,8 @@ func TestEnvHelpers(t *testing.T) {
 func TestControlAuthAcceptsEnrolledSiblingToken(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "owner-token"
-	// A second user joined: its envelope is what ToolHub's sibling token file
-	// carries — the bearer proves service identity, X-Hub-Principal picks the
-	// principal as before.
+	// A second user joined: the enrolled sibling token both proves service
+	// identity and pins the principal — the header cannot override it.
 	root := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(root, "bob", "state"), 0700)
 	_ = os.MkdirAll(filepath.Join(root, "bob", "workspace"), 0700)
@@ -1600,11 +1599,30 @@ func TestControlAuthAcceptsEnrolledSiblingToken(t *testing.T) {
 	if code := call("owner-token", "alice"); code != http.StatusOK {
 		t.Fatalf("owner token rejected: %d", code)
 	}
-	if code := call("sibling-runtime-token", "mallory"); code != http.StatusUnauthorized {
-		t.Fatalf("unknown principal with valid token: %d", code)
-	}
 	if code := call("forged-token", "bob"); code != http.StatusUnauthorized {
 		t.Fatalf("forged token accepted: %d", code)
+	}
+	// A sibling token pins the enrolled principal: the header cannot borrow a
+	// different user's identity.
+	for _, claimed := range []string{"alice", "mallory", ""} {
+		r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
+		r.Header.Set("Authorization", "Bearer sibling-runtime-token")
+		r.Header.Set("X-Hub-Principal", claimed)
+		env, ok := g.authorizeControl(r)
+		if !ok || env.PrincipalID != "bob" {
+			t.Fatalf("sibling token claimed %q: env=%v ok=%v", claimed, env, ok)
+		}
+	}
+	// The primary bearer still honors the header (supervisor claims any user).
+	r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
+	r.Header.Set("Authorization", "Bearer owner-token")
+	r.Header.Set("X-Hub-Principal", "bob")
+	env, ok := g.authorizeControl(r)
+	if !ok || env.PrincipalID != "bob" {
+		t.Fatalf("owner token for bob: env=%v ok=%v", env, ok)
+	}
+	if code := call("owner-token", "mallory"); code != http.StatusUnauthorized {
+		t.Fatalf("unknown principal with owner token: %d", code)
 	}
 	// A token mapped to an envelope that no longer validates must not open
 	// the control surface even when the principal exists.

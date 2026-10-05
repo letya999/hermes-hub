@@ -24,12 +24,12 @@ func (g *Gateway) Handler() http.Handler {
 
 func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !g.controlTokenAccepted(token) {
-		return identity.Envelope{}, false
-	}
 	principal := r.Header.Get("X-Hub-Principal")
 	if principal == "" {
 		principal = r.Header.Get("X-Hub-User")
+	}
+	if !g.controlTokenAccepted(token, &principal) {
+		return identity.Envelope{}, false
 	}
 	user := g.user(principal)
 	if user.ID == "" {
@@ -47,8 +47,10 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 // controlTokenAccepted checks the primary control bearer and, when a tokens
 // file is configured, the enrolled sibling-space runtime tokens. The file is
 // re-read on every call: enrollment rewrites it in place and control-plane
-// calls are rare, so freshness beats caching.
-func (g *Gateway) controlTokenAccepted(token string) bool {
+// calls are rare, so freshness beats caching. A matched sibling token pins
+// the caller principal to the enrolled envelope — a borrowed token can never
+// claim a different user's identity through the header.
+func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 	if token == "" {
 		return false
 	}
@@ -74,7 +76,11 @@ func (g *Gateway) controlTokenAccepted(token string) bool {
 	if !ok {
 		return false
 	}
-	return env.Validate(env.PrincipalID, env.ContextID, env.RuntimeID, env.PolicyVersion) == nil
+	if env.Validate(env.PrincipalID, env.ContextID, env.RuntimeID, env.PolicyVersion) != nil {
+		return false
+	}
+	*principal = env.PrincipalID
+	return true
 }
 
 func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {

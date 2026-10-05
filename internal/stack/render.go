@@ -1282,6 +1282,13 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 			gateway[key] = value
 		}
 	}
+	// The managed runtime authenticates control-plane calls (credential forms,
+	// prepare outcomes, routine management) with its own HUB_RUNTIME_AUTH. In
+	// the infra owner's space that token becomes the gateway's primary control
+	// bearer; sibling-space tokens are admitted through toolhub-tokens.json.
+	if token := runtimeAuthToken(filepath.Join(dir, "runtime.auth")); token != "" {
+		gateway["HUB_COMMUNICATION_AUTH"] = token
+	}
 	if err := writeEnvFile(filepath.Join(dir, "runtime."+environment+".env"), runtime); err != nil {
 		return err
 	}
