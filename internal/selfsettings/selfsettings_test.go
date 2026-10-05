@@ -1,8 +1,12 @@
 package selfsettings
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -140,5 +144,110 @@ func TestMissingOverlayLoadsNil(t *testing.T) {
 	loaded, err := Load(filepath.Join(t.TempDir(), FileName))
 	if err != nil || loaded != nil {
 		t.Fatalf("missing overlay: %v %v", loaded, err)
+	}
+}
+
+func TestLoadCanonicalizesTypedValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	body := `{"compression.enabled": true, "compression.threshold": 0.6, "compression.threshold_tokens": 200000, "display.busy_input_mode": "queue"}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded["compression.enabled"] != true || loaded["compression.threshold"] != 0.6 || loaded["compression.threshold_tokens"] != int64(200000) {
+		t.Fatalf("loaded %v", loaded)
+	}
+}
+
+func TestValidatorsRejectWrongTypes(t *testing.T) {
+	if _, err := boolValue(42); err == nil {
+		t.Fatal("boolValue accepted int")
+	}
+	if _, err := floatRange(0, 1)("abc"); err == nil {
+		t.Fatal("floatRange accepted text")
+	}
+	if _, err := floatRange(0, 1)(math.NaN()); err == nil {
+		t.Fatal("floatRange accepted NaN")
+	}
+	if _, err := floatRange(0, 1)(math.Inf(1)); err == nil {
+		t.Fatal("floatRange accepted +Inf")
+	}
+	if _, err := intRange(0, 10)(1.5); err == nil {
+		t.Fatal("intRange accepted a fraction")
+	}
+	if _, err := intRange(0, 10)(true); err == nil {
+		t.Fatal("intRange accepted a bool")
+	}
+	if _, err := choice("a", "b")(3); err == nil {
+		t.Fatal("choice accepted non-string")
+	}
+	if _, err := choice("a", "b")(" a "); err != nil {
+		t.Fatal("choice rejected trimmed hit")
+	}
+	if got, _ := intRange(0, 10)(float64(7)); got != int64(7) {
+		t.Fatalf("intRange int64: %v", got)
+	}
+	if got, _ := intRange(0, 10)(7); got != int64(7) {
+		t.Fatalf("intRange int: %v", got)
+	}
+	if got, _ := floatRange(0, 10)(int(3)); got != 3.0 {
+		t.Fatalf("floatRange int: %v", got)
+	}
+}
+
+func TestLoadRejectsOversizedOverlay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	// maxBytes guard.
+	big := `{"compression.enabled": true, "` + strings.Repeat("x", maxBytes) + `": 1}`
+	if err := os.WriteFile(path, []byte(big), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("oversized overlay accepted")
+	}
+	// maxValues guard fires before per-key validation, so unknown keys count.
+	pairs := make([]string, 0, maxValues+1)
+	for i := 0; i <= maxValues; i++ {
+		pairs = append(pairs, fmt.Sprintf(`"k%d": 1`, i))
+	}
+	many := "{" + strings.Join(pairs, ",") + "}"
+	if err := os.WriteFile(path, []byte(many), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("overlay with too many keys accepted")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt JSON.
+	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("corrupt overlay accepted")
+	}
+}
+
+func TestMergeOverwritesScalarWithSection(t *testing.T) {
+	config := map[string]any{"display": "off"}
+	Merge(config, map[string]any{"display.busy_input_mode": "queue"})
+	if config["display"].(map[string]any)["busy_input_mode"] != "queue" {
+		t.Fatalf("merge: %v", config)
+	}
+}
+
+func TestAllowedKeysSortedAndBounded(t *testing.T) {
+	list := AllowedKeys()
+	if !slices.IsSorted(list) || len(list) == 0 || len(list) > maxValues {
+		t.Fatalf("allowed keys: %v", list)
+	}
+	for _, key := range list {
+		if _, ok := keys[key]; !ok {
+			t.Fatalf("allowed key %q missing validator", key)
+		}
 	}
 }
