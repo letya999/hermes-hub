@@ -138,7 +138,7 @@ func HealUserSoul(spaceDir, templatePath string) error {
 // GatewaySecretKeys stay in communication-hub. They are never injected into
 // Hermes runtime env or ToolHub connectors.
 func GatewaySecretKeys() []string {
-	return []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"}
+	return []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS", "HUB_CLIPROXY_MGMT_URL", "HUB_CLIPROXY_MGMT_KEY", "HUB_CLIPROXY_AUTH_INDEX"}
 }
 
 func GatewayOwnedSecret(key string) bool {
