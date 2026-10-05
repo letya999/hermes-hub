@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
@@ -287,5 +289,52 @@ func TestQuotaLinesDisabledOrFailing(t *testing.T) {
 	lines := g.quotaLines(context.Background())
 	if len(lines) != 1 || !strings.Contains(lines[0], "недоступно") {
 		t.Fatalf("failure not reported honestly: %v", lines)
+	}
+}
+
+func TestSetMyCommandsRegistersEveryScope(t *testing.T) {
+	var mu struct {
+		scopes   []string
+		commands []map[string]string
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/setMyCommands" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var payload struct {
+			Commands []map[string]string `json:"commands"`
+			Scope    map[string]string   `json:"scope"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		mu.scopes = append(mu.scopes, payload.Scope["type"])
+		mu.commands = payload.Commands
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+
+	api := newTelegramAPI(server.URL, "token", time.Second)
+	if err := api.SetMyCommands(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"default", "all_private_chats", "all_group_chats", "all_chat_administrators"} {
+		if !slices.Contains(mu.scopes, scope) {
+			t.Fatalf("scope %s not registered: %v", scope, mu.scopes)
+		}
+	}
+	if len(mu.commands) != len(botCommandInventory) {
+		t.Fatalf("menu size %d != inventory %d", len(mu.commands), len(botCommandInventory))
+	}
+	for i, c := range botCommandInventory {
+		if mu.commands[i]["command"] != c.Command || mu.commands[i]["description"] != c.Description {
+			t.Fatalf("menu drifted from inventory at %d: %v", i, mu.commands[i])
+		}
+	}
+	// /help renders exactly the registered inventory.
+	help := commandHelp()
+	for _, c := range botCommandInventory {
+		if !strings.Contains(help, "/"+c.Command+" — "+c.Description) {
+			t.Fatalf("help missing /%s", c.Command)
+		}
 	}
 }

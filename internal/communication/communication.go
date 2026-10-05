@@ -1142,6 +1142,7 @@ type TelegramAPI interface {
 	GetFile(context.Context, string) (TelegramFile, error)
 	DownloadFile(context.Context, string, io.Writer) error
 	SendVoice(context.Context, int64, int64, []byte, string) error
+	SetMyCommands(context.Context) error
 }
 
 type telegramAPI struct {
@@ -1657,6 +1658,9 @@ func (g *Gateway) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := g.api.SetMyCommands(ctx); err != nil {
+		log.Printf("gateway command menu registration failed: %v", err)
+	}
 	for {
 		updates, err := g.api.GetUpdates(ctx, offset, int(g.config.PollTimeout/time.Second))
 		if err != nil {
@@ -1875,24 +1879,56 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	return nil
 }
 
+// botCommandInventory is the single source of truth for supported slash
+// commands: it feeds both the Telegram menu (registered on every startup, so
+// stale scope registrations left by other adapters cannot linger) and /help.
+var botCommandInventory = []struct {
+	Command     string
+	Description string
+}{
+	{"new", "Новая сессия (отдельный контекст): /new [имя]"},
+	{"sessions", "Список сессий с датами"},
+	{"task", "Сессии: статус, /task use|rename|archive|delete|archived"},
+	{"style", "Стиль ответа сессии: /style [текст|reset]"},
+	{"usage", "Расход токенов сессии и лимиты подписки"},
+	{"session", "ID постоянной Hermes-сессии"},
+	{"status", "Занят ли Hermes"},
+	{"voice", "Доступность голосового ввода/ответов"},
+	{"routine", "Расписания"},
+	{"runat", "Разовое задание: /runat <RFC3339> <текст>"},
+	{"cancel", "Отменить джобу: /cancel <job-id>"},
+	{"approve", "Подтвердить: /approve <job-id> <request-id> <choice>"},
+	{"credentials", "Код брокера: /credentials <request-id> <code>"},
+	{"connections", "Список подключений"},
+	{"help", "Этот список команд"},
+}
+
 // commandHelp is the authoritative inventory of supported slash commands;
 // unknown commands are answered with it instead of reaching the model, so a
 // typo can never produce a fabricated confirmation.
 func commandHelp() string {
-	return "Команды:\n" +
-		"/new [имя] — новая сессия (отдельный контекст) и переключение на неё\n" +
-		"/sessions — список сессий с датами, /task — текущая\n" +
-		"/task use|rename|archive|delete|archived — управление сессиями\n" +
-		"/style [текст|reset] — стиль ответа текущей сессии\n" +
-		"/usage — расход токенов и лимиты подписки\n" +
-		"/session — id постоянной Hermes-сессии\n" +
-		"/status — занят ли Hermes\n" +
-		"/voice — доступность голосового ввода/ответов\n" +
-		"/routine — расписания, /runat — разовое задание\n" +
-		"/cancel <job-id>, /approve <job-id> <request-id> <choice>\n" +
-		"/credentials <request-id> <код> — Credential Broker\n" +
-		"/connections — список подключений\n" +
-		"/help — этот список"
+	var b strings.Builder
+	b.WriteString("Команды:")
+	for _, c := range botCommandInventory {
+		b.WriteString("\n/" + c.Command + " — " + c.Description)
+	}
+	return b.String()
+}
+
+// SetMyCommands registers the canonical menu on every Telegram scope. Without
+// this a stale scope registration (e.g. left by an upstream adapter) shadows
+// the default menu in private and group chats.
+func (t *telegramAPI) SetMyCommands(ctx context.Context) error {
+	commands := make([]map[string]string, 0, len(botCommandInventory))
+	for _, c := range botCommandInventory {
+		commands = append(commands, map[string]string{"command": c.Command, "description": c.Description})
+	}
+	for _, scope := range []string{"default", "all_private_chats", "all_group_chats", "all_chat_administrators"} {
+		if err := t.call(ctx, "setMyCommands", map[string]any{"commands": commands, "scope": map[string]any{"type": scope}}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // autoTitleMinMessages bounds title adoption: a session title is trusted once
