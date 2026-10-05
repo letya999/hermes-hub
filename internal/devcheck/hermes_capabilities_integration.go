@@ -113,8 +113,9 @@ func HermesCapabilityContract(ctx context.Context, image string) error {
 	}
 	// The probe must keep observing the upstream gaps it records: a self-signed
 	// room policy arming tools and literal-toolset sub-agents. If either stops
-	// reproducing, the compensating boundary (control-relay key denial, disabled
-	// compression/curator config) needs review rather than silent acceptance.
+	// reproducing, the compensating boundary (control-relay key denial, the
+	// api-server-only launch route that never enters the gateway hygiene loop,
+	// disabled curator config) needs review rather than silent acceptance.
 	if !slices.Contains(report.RoomForgedAgentArmed, "terminal") || !slices.Contains(report.RoomForgedHTTPArmed, "terminal") {
 		return fmt.Errorf("room-dispatch forgery did not arm tools upstream; boundary review needed")
 	}

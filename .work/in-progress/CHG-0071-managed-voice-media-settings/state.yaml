@@ -13,10 +13,14 @@ done:
   - communication.users.yaml with both Telegram IDs; sibling tokens accepted by comm-hub
   - CI matrix publishes stt/tts images (commit 6711725, PR #231)
   - both spaces re-rendered; store has rev2/rev1 profiles, 1.1.0 bindings
+  - sibling-token principal pinning + owner ControlAuth fix (comm-hub multi-user)
+  - user2 secrets trimmed to web/model keys only
 next:
-  - wait for CI image publish, pull server-built images
-  - recreate stack; verify supervisor spawn for both users
+  - wait for CI run 37377517749 (sha cb5de66) to publish images
+  - docker-pull dev/dev-control/stt/tts; recreate owner+user2 stacks
+  - restart host supervisor with rebuilt hubctl
   - live-verify settings_get/set, image gen, STT/TTS, /usage /sessions /connections, github prepare_source, isolation
 notes:
-  - CI run 37374261130 queued for 6711725
-  - toolhub-tokens.json enrolls local + telegram-480637186 sibling tokens
+  - CI cancels superseded runs; only cb5de66 build is authoritative
+  - toolhub-tokens.json enrolls local + telegram-480637186 sibling tokens (test-owner-2 removed)
+  - comm ControlAuth = owner runtime token; supervisor token in controlAuthExtra; siblings via tokens file
