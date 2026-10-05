@@ -153,7 +153,8 @@ func readOnlyToolNames(capabilities map[string]bool) map[string]bool {
 	}
 	names := map[string]bool{}
 	for _, spec := range HubToolsDefinition().Tools {
-		if spec.Effect == toolhub.WriteEffect && capabilities[spec.CapabilityID] {
+		family, _, _ := strings.Cut(spec.CapabilityID, ".")
+		if spec.Effect == toolhub.WriteEffect && (capabilities[spec.CapabilityID] || capabilities[family]) {
 			names[spec.Name] = true
 		}
 	}

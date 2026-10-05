@@ -110,7 +110,7 @@ func managedHermesConfig(s Settings) M {
 	for _, platform := range inventory.Platforms {
 		platforms[platform] = []string{}
 	}
-	return M{
+	out := M{
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
 		"agent":             M{"disabled_toolsets": disabledToolsets(s)},
@@ -135,4 +135,16 @@ func managedHermesConfig(s Settings) M {
 		"display":     M{"busy_input_mode": "queue", "long_running_notifications": true},
 		"timezone":    s.Timezone,
 	}
+	// Carved-out web toolsets keep the operator's provider selection; the
+	// managed egress relay decides which of their endpoints can actually be
+	// reached.
+	for _, name := range []string{"web", "search", "x_search"} {
+		if entry := s.Tools[name]; entry.Via == ToolViaNative {
+			if web := s.Web.config(); len(web) > 0 {
+				out["web"] = web
+			}
+			break
+		}
+	}
+	return out
 }

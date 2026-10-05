@@ -266,7 +266,7 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	for _, volume := range volumes {
 		mount := volume.(M)
 		target := mount["target"].(string)
-		if target == "/workspace" || target == "/archive" || target == "/state/google" || target == "/state/telegram" || target == "/state/browser" {
+		if target == "/archive" || target == "/state/google" || target == "/state/telegram" || target == "/state/browser" {
 			t.Fatalf("managed runtime retains broad data mount %s", target)
 		}
 		if target == "/state" && strings.Contains(mount["source"].(string), "/runtime") && !strings.Contains(mount["source"].(string), "/managed/") {
@@ -282,8 +282,18 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	if envFile := runtime["env_file"].([]any)[0].(M)["path"].(string); !strings.HasSuffix(envFile, "/managed-runtime.dev.env") {
 		t.Fatalf("managed runtime still receives broad secret file: %s", envFile)
 	}
-	if !strings.Contains(strings.Join(runtime["tmpfs"].([]string), ","), "/workspace:") {
-		t.Fatal("managed scratch workspace is not private tmpfs")
+	workspaceOK := false
+	for _, volume := range volumes {
+		mount := volume.(M)
+		if mount["target"] == "/workspace" && strings.Contains(mount["source"].(string), "/managed/") && mount["read_only"] != true {
+			workspaceOK = true
+		}
+	}
+	if !workspaceOK {
+		t.Fatal("managed workspace is not a durable bind under managed/<env>/workspace")
+	}
+	if strings.Contains(strings.Join(runtime["tmpfs"].([]string), ","), "/workspace:") {
+		t.Fatal("managed workspace must persist across respawns, not tmpfs")
 	}
 	for _, name := range []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"} {
 		if !slices.Contains(runtime["tmpfs"].([]string), "/state/hermes/"+name+":ro,mode=0555") {
@@ -472,5 +482,132 @@ func TestManagedOrganizationRuntimeDoesNotMountOrgDocuments(t *testing.T) {
 				t.Fatalf("managed organization documents mounted for infra=%t", infra)
 			}
 		}
+	}
+}
+
+func TestManagedEgressHosts(t *testing.T) {
+	dir := t.TempDir()
+	unmanaged := Settings{Schema: 1, User: "alice", Environment: "dev"}
+	if hosts := managedEgressHosts(unmanaged, dir); hosts != nil {
+		t.Fatalf("unmanaged egress: %v", hosts)
+	}
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+		CapabilityProfileID: "alice-default", CapabilityGeneration: 1,
+		Web: WebSettings{SearchBackend: "keenable", SearchProviders: []string{"ddgs"}},
+		Tools: map[string]ToolEntry{
+			"web":      {Via: ToolViaNative},
+			"files":    {Via: ToolViaToolHub},
+			"routines": {Via: ToolViaToolHub},
+			"hh":       {Via: ToolViaToolHub},
+		}}
+	hosts := managedEgressHosts(s, dir)
+	for _, want := range []string{"api.keenable.ai", "duckduckgo.com", "*.duckduckgo.com", "communication-hub", "api.hh.ru"} {
+		if !slices.Contains(hosts, want) {
+			t.Fatalf("egress host %s missing: %v", want, hosts)
+		}
+	}
+	s.Tools["files"] = ToolEntry{Via: ToolViaNative}
+	if hosts := managedEgressHosts(s, dir); !slices.Contains(hosts, "communication-hub") {
+		t.Fatalf("routines sibling host lost: %v", hosts)
+	}
+}
+
+func TestManagedEgressRelayRenders(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	if err := Init(dir, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.Model = "synthetic"
+	settings.ModelURL = "http://model-relay:8318/v1"
+	settings.Memory, settings.Ingress = false, nil
+	settings.Tools = map[string]ToolEntry{
+		"web":       {Via: ToolViaNative},
+		"search":    {Via: ToolViaNative},
+		"memory":    {Via: ToolViaNative},
+		"todo":      {Via: ToolViaNative},
+		"files":     {Via: ToolViaToolHub},
+		"documents": {Via: ToolViaToolHub},
+		"images":    {Via: ToolViaToolHub},
+		"artifacts": {Via: ToolViaToolHub},
+		"routines":  {Via: ToolViaToolHub},
+		"services":  {Via: ToolViaToolHub},
+		"image_gen": {Via: ToolViaToolHub},
+	}
+	settings.Web = WebSettings{SearchBackend: "keenable", ExtractBackend: "keenable", SearchProviders: []string{"keenable", "ddgs"}}
+	if err := WriteSpace(dir, settings); err != nil {
+		t.Fatal(err)
+	}
+	// A provider key must reach the managed runtime env — the spawned
+	// container has no other path to it.
+	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=k-test\nKEENABLE_API_KEY=kk-test\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selection := ExecutionSelection{Schema: 1, User: "alice", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
+	selectionBody, _ := json.Marshal(selection)
+	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("dev")), selectionBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# soul\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(dir, root, "dev"); err != nil {
+		t.Fatalf("managed render with egress: %v", err)
+	}
+	composeBody, err := os.ReadFile(filepath.Join(dir, "generated", "compose.dev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var composed M
+	if err := yaml.Unmarshal(composeBody, &composed); err != nil {
+		t.Fatal(err)
+	}
+	relay, ok := composed["services"].(M)["egress-relay"].(M)
+	if !ok {
+		t.Fatal("egress relay not rendered")
+	}
+	hosts := relay["environment"].(M)["HUB_EGRESS_RELAY_HOSTS"].(string)
+	for _, want := range []string{"api.keenable.ai", "duckduckgo.com", "hub-media", "communication-hub"} {
+		if !strings.Contains(hosts, want) {
+			t.Fatalf("egress allowlist misses %s: %s", want, hosts)
+		}
+	}
+	if networks := relay["networks"].(M); networks["hermes-hub-agent-alice-dev"] == nil || networks[sharedNetworkName] == nil {
+		t.Fatalf("egress relay must bridge agent and shared networks: %v", networks)
+	}
+	env, err := ReadSecrets(filepath.Join(dir, "managed-runtime.dev.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"HTTPS_PROXY":                   "http://egress-relay:8319",
+		"HTTP_PROXY":                    "http://egress-relay:8319",
+		"HUB_EGRESS_PROXY":              "http://egress-relay:8319",
+		"KEENABLE_API_KEY":              "kk-test",
+		"HUB_MEDIA_URL":                 "http://hub-media:8090",
+		"HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081",
+	} {
+		if env[key] != want {
+			t.Fatalf("managed env %s = %q, want %q", key, env[key], want)
+		}
+	}
+	if env["HUB_MEDIA_AUTH"] == "" || env["HUB_COMMUNICATION_AUTH"] == "" {
+		t.Fatal("managed env lost media or communication auth")
+	}
+	// The effective Hermes config carries the operator's provider selection.
+	effective, err := os.ReadFile(filepath.Join(dir, "generated", "hermes-effective.dev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(effective), "keenable") {
+		t.Fatal("managed effective config dropped web provider selection")
 	}
 }

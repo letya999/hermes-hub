@@ -1772,7 +1772,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	// workspace or connection directories ever enter the spawned runtime.
 	dirs := []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"}
 	if managed {
-		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache"}
+		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache", "managed/" + m.environment() + "/workspace"}
 	}
 	for _, name := range dirs {
 		path := filepath.Join(abs, filepath.FromSlash(name))
@@ -1960,7 +1960,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 			}
 		}
 	}
-	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}} {
+	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}} {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
 	}
 	effectiveConfig, err := m.materializeHermesConfig(binding, env)
@@ -1971,7 +1971,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if soul := filepath.Join(binding.ContextRoot, "SOUL.md"); fileExists(soul) {
 		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
 	}
-	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--shm-size", "1gb")
+	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
 	for _, name := range managedExtensionRootTmpfs {
 		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")
 	}
@@ -2077,6 +2077,7 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(secrets["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(binding.ContextRoot, "runtime", "self-services.json"),
 		NativeToolsets:     settings.NativeCarveouts(),
+		Web:                settings.Web,
 	}
 	if _, present := secrets["HUB_TOOLHUB_ENDPOINT"]; !present {
 		opts.ToolHubEndpoint = "http://toolhub:8090/mcp"

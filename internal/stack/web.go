@@ -2,7 +2,9 @@ package stack
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -130,6 +132,58 @@ func webRequiredEnv(backend string) []string {
 }
 
 var webExemptHostPattern = regexp.MustCompile(`^(\*\.)?[a-z0-9][a-z0-9.-]{0,252}$`)
+
+// webProviderEgressHosts pins the API hostnames each reviewed provider
+// reaches, mirrored from the pinned upstream plugin sources. The managed
+// egress relay allowlists exactly these names — a provider absent here gets
+// no outbound path. `searxng` is operator-hosted and resolves from
+// SEARXNG_URL at render; `ddgs` crawls DuckDuckGo's public frontends.
+var webProviderEgressHosts = map[string][]string{
+	"tavily":     {"api.tavily.com"},
+	"exa":        {"api.exa.ai", "mcp.exa.ai"},
+	"parallel":   {"api.parallel.ai", "search.parallel.ai"},
+	"perplexity": {"api.perplexity.ai"},
+	"firecrawl":  {"api.firecrawl.dev"},
+	"brave-free": {"api.search.brave.com"},
+	"keenable":   {"api.keenable.ai"},
+	"xai":        {"api.x.ai"},
+	"ddgs":       {"duckduckgo.com", "*.duckduckgo.com"},
+	// The managed Nous subscription alias resolves to the firecrawl upstream.
+	"nous": {"api.firecrawl.dev"},
+}
+
+// egressHosts returns the sorted deduplicated egress hosts the configured
+// providers need. `searxng` contributes the hostname of SEARXNG_URL, read
+// from the space secrets so the allowlist follows the operator's instance
+// rather than a hardcoded guess.
+func (w WebSettings) egressHosts(secrets map[string]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, backend := range w.backends() {
+		for _, host := range webProviderEgressHosts[backend] {
+			if !seen[host] {
+				seen[host] = true
+				out = append(out, host)
+			}
+		}
+		if backend == "searxng" {
+			if host := secretsURLHost(secrets["SEARXNG_URL"]); host != "" && !seen[host] {
+				seen[host] = true
+				out = append(out, host)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func secretsURLHost(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
 
 func (w WebSettings) backends() []string {
 	seen := map[string]bool{}

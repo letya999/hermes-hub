@@ -166,3 +166,39 @@ func TestRouteTableParsers(t *testing.T) {
 		t.Fatal("prefix v6 route flagged")
 	}
 }
+
+func TestManagedIsolationEgressRelay(t *testing.T) {
+	t.Run("present-and-reachable", func(t *testing.T) {
+		home := managedIsolationFixture(t)
+		t.Setenv("HUB_EGRESS_PROXY", "http://egress-relay:8319")
+		managedLookupHost = func(host string) error {
+			if host == "egress-relay" || host == "toolhub" || host == "model-relay" {
+				return nil
+			}
+			return errors.New("no such host")
+		}
+		managedDialTCP = func(address string) error {
+			if address == "egress-relay:8319" || address == "toolhub:8090" || address == "model-relay:8318" {
+				return nil
+			}
+			return errors.New("refused")
+		}
+		if err := verifyManagedIsolation(home); err != nil {
+			t.Fatalf("reviewed egress topology rejected: %v", err)
+		}
+	})
+	t.Run("foreign-proxy-denied", func(t *testing.T) {
+		home := managedIsolationFixture(t)
+		t.Setenv("HUB_EGRESS_PROXY", "http://attacker.example:3128")
+		if err := verifyManagedIsolation(home); err == nil {
+			t.Fatal("unreviewed egress proxy accepted")
+		}
+	})
+	t.Run("relay-unreachable", func(t *testing.T) {
+		home := managedIsolationFixture(t)
+		t.Setenv("HUB_EGRESS_PROXY", "http://egress-relay:8319")
+		if err := verifyManagedIsolation(home); err == nil {
+			t.Fatal("missing egress relay accepted")
+		}
+	})
+}

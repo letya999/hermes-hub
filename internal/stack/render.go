@@ -250,11 +250,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
 	}
 	if s.CapabilityMode == "managed" {
+		// The managed workspace is a durable bind, not tmpfs: admitted file,
+		// document, image and artifact writes must survive runtime respawns,
+		// which are the supervisor's normal lifecycle under managed mode.
 		stateVolumes = []any{
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "runtime")), "target": "/state"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "hermes")), "target": "/state/hermes"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "workspace")), "target": "/workspace"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 		}
@@ -344,7 +348,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	runtimeService["ports"] = ports
 	if s.CapabilityMode == "managed" {
 		runtimeService["extra_hosts"] = []string{}
-		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)), "/workspace:uid=10001,gid=10001,mode=0700",
+		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
 			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
 			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
 			"/state/hermes/bin:ro,mode=0555", "/state/hermes/node:ro,mode=0555", "/state/hermes/lsp:ro,mode=0555")
@@ -412,6 +416,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Services every spawned or secondary runtime resolves by name attach to the
 	// shared network; everything else stays on the project default.
 	sharedNetworks := []string{"default", sharedNetworkName}
+	var egressHosts []string
+	if s.CapabilityMode == "managed" {
+		egressHosts = managedEgressHosts(s, dir)
+	}
 	if s.CapabilityMode == "managed" {
 		modelRelay := cloneMap(common)
 		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
@@ -424,6 +432,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubRelay["extra_hosts"] = []string{}
 		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
 		services["toolhub-relay"] = toolhubRelay
+		if len(egressHosts) > 0 {
+			// The managed agent network has no default route; the reviewed
+			// web/sibling reachability for the runtime goes through this
+			// allowlisted forward proxy and nowhere else.
+			egressRelay := cloneMap(common)
+			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
+			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ",")}
+			egressRelay["extra_hosts"] = []string{}
+			egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
+			services["egress-relay"] = egressRelay
+		}
 	}
 	if infra {
 		cliproxy := cloneMap(common)
@@ -797,7 +816,7 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if s.CapabilityMode == "managed" {
-		for _, name := range []string{"runtime", "hermes", "home", "cache"} {
+		for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace"} {
 			if err = os.MkdirAll(filepath.Join(dir, "managed", s.Environment, name), 0700); err != nil {
 				return err
 			}
@@ -851,9 +870,38 @@ func RenderEnvironment(dir, root, environment string) error {
 		if modelKey == "" {
 			modelKey = orgSecrets["OPENAI_API_KEY"]
 		}
-		if err = writeEnvFile(filepath.Join(dir, "managed-runtime."+s.Environment+".env"), map[string]string{
+		managedEnv := map[string]string{
 			"OPENAI_API_KEY": modelKey, "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
-		}); err != nil {
+		}
+		// Spawned runtimes live on a route-less internal network: every
+		// reviewed outbound hop goes through the egress relay by proxy env.
+		// docker exec children inherit the container env, so the agenttools
+		// executor sees the same relay. NO_PROXY keeps the control relays
+		// direct — proxying them would loop back through egress anyway.
+		if len(managedEgressHosts(s, dir)) > 0 {
+			// Uppercase only: env files validate keys as [A-Z0-9_]* and every
+			// consumer (Go http.DefaultTransport, requests, httpx) honors it.
+			managedEnv["HTTP_PROXY"] = "http://egress-relay:8319"
+			managedEnv["HTTPS_PROXY"] = "http://egress-relay:8319"
+			managedEnv["NO_PROXY"] = "toolhub,model-relay,egress-relay,localhost,127.0.0.1"
+			managedEnv["HUB_EGRESS_PROXY"] = "http://egress-relay:8319"
+			for _, key := range s.Web.envKeys() {
+				if value := secrets[key]; value != "" {
+					managedEnv[key] = value
+				}
+			}
+		}
+		if slices.Contains(managedEgressHosts(s, dir), "hub-media") {
+			if auth, _ := ReadSecrets(filepath.Join(dir, "media.auth")); strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
+				managedEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
+				managedEnv["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
+			}
+		}
+		if slices.Contains(managedEgressHosts(s, dir), "communication-hub") {
+			managedEnv["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
+			managedEnv["HUB_COMMUNICATION_AUTH"] = runtimeAuthToken(filepath.Join(dir, "runtime.auth"))
+		}
+		if err = writeEnvFile(filepath.Join(dir, "managed-runtime."+s.Environment+".env"), managedEnv); err != nil {
 			return err
 		}
 	}
@@ -995,6 +1043,7 @@ func materializeHermesConfig(dir string, s Settings) error {
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
 		NativeToolsets:     s.nativeCarveouts(),
+		Web:                s.Web,
 	})
 }
 
@@ -1120,6 +1169,51 @@ func MaterializeGlobalSkills(dir string, s Settings) error {
 		}
 		return os.WriteFile(filepath.Join(dest, rel), body, mode)
 	})
+}
+
+// managedEgressHosts computes the host allowlist the managed egress relay
+// enforces: provider endpoints for carved-out native web toolsets plus the
+// shared-network siblings admitted agenttools executors legitimately reach.
+// Empty result means no egress relay is rendered at all.
+func managedEgressHosts(s Settings, dir string) []string {
+	if s.CapabilityMode != "managed" {
+		return nil
+	}
+	hosts := map[string]bool{}
+	webOn := s.Has("web")
+	for _, name := range []string{"web", "search", "x_search"} {
+		if entry := s.Tools[name]; entry.Via == ToolViaNative {
+			webOn = true
+		}
+	}
+	if webOn {
+		secrets, _ := ReadSecrets(filepath.Join(dir, "secrets."+s.Environment+".env"))
+		for _, host := range s.Web.egressHosts(secrets) {
+			hosts[host] = true
+		}
+	}
+	if s.Has("image_gen") {
+		// Image generation always goes through the hub-media sidecar; the
+		// runtime never holds provider keys.
+		hosts["hub-media"] = true
+	}
+	for name, entry := range s.Tools {
+		if entry.Via != ToolViaToolHub {
+			continue
+		}
+		switch name {
+		case "routines", "services":
+			hosts["communication-hub"] = true
+		case "hh":
+			hosts["api.hh.ru"] = true
+		}
+	}
+	out := make([]string, 0, len(hosts))
+	for host := range hosts {
+		out = append(out, host)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func writeRuntimeEnvFiles(dir, environment string, user, organization map[string]string, omit []string, extra map[string]string) error {

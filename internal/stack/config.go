@@ -743,14 +743,14 @@ func ReadSecrets(path string) (map[string]string, error) {
 		}
 		key, v, ok := strings.Cut(line, "=")
 		if !ok || !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(key) {
-			return nil, fmt.Errorf("invalid secrets.env line %d", i+1)
+			return nil, fmt.Errorf("invalid secrets.env line %d in %s", i+1, filepath.Base(path))
 		}
 		if _, ok = out[key]; ok {
-			return nil, fmt.Errorf("duplicate env key %s", key)
+			return nil, fmt.Errorf("duplicate env key %s in %s", key, filepath.Base(path))
 		}
 		v = strings.TrimSpace(v)
 		if strings.HasPrefix(v, "\"") || strings.HasPrefix(v, "'") {
-			return nil, fmt.Errorf("use literal unquoted values at line %d", i+1)
+			return nil, fmt.Errorf("use literal unquoted values at line %d in %s", i+1, filepath.Base(path))
 		}
 		out[key] = v
 	}

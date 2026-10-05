@@ -353,3 +353,24 @@ func TestWebSettingsRoundTripThroughSpaceFiles(t *testing.T) {
 		t.Fatalf("web settings did not round-trip: %#v", reloaded.Web)
 	}
 }
+
+func TestWebEgressHosts(t *testing.T) {
+	w := WebSettings{SearchBackend: "keenable", ExtractBackend: "firecrawl", SearchProviders: []string{"exa", "ddgs"}}
+	hosts := w.egressHosts(map[string]string{})
+	for _, want := range []string{"api.keenable.ai", "api.firecrawl.dev", "api.exa.ai", "mcp.exa.ai", "duckduckgo.com", "*.duckduckgo.com"} {
+		if !slices.Contains(hosts, want) {
+			t.Fatalf("egress host %s missing: %v", want, hosts)
+		}
+	}
+	// searxng resolves its instance host from the secret URL, not a guess.
+	w = WebSettings{SearchBackend: "searxng"}
+	if hosts := w.egressHosts(map[string]string{"SEARXNG_URL": "http://searx.internal:8888/"}); !slices.Equal(hosts, []string{"searx.internal"}) {
+		t.Fatalf("searxng egress host: %v", hosts)
+	}
+	if hosts := w.egressHosts(map[string]string{}); len(hosts) != 0 {
+		t.Fatalf("searxng without endpoint must contribute nothing: %v", hosts)
+	}
+	if hosts := (WebSettings{}).egressHosts(nil); len(hosts) != 0 {
+		t.Fatalf("empty web egress: %v", hosts)
+	}
+}

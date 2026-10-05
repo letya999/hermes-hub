@@ -89,7 +89,7 @@ func TestManagedRunArgsUseIsolatedAgentNetwork(t *testing.T) {
 		t.Fatalf("managed env files wrong: %v", envFiles)
 	}
 	managedDir := filepath.Join(root, "managed", "prod")
-	for _, pair := range [][2]string{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}} {
+	for _, pair := range [][2]string{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}} {
 		want := "type=bind,src=" + filepath.Join(managedDir, pair[0]) + ",dst=" + pair[1]
 		if !slices.Contains(args, want) {
 			t.Fatalf("managed mount missing %s: %s", want, joined)

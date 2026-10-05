@@ -1,0 +1,26 @@
+change: CHG-0070-managed-cutover
+status: in-progress
+phase: code
+updated: "2026-10"
+owner: operator
+summary: >
+  P4 executor hardening committed (75db9ba). Managed workspace is now a
+  durable bind (managed/<env>/workspace, compose + supervisor + normalize),
+  fine-grained capability ids live in the agenttools catalog with family
+  matching for ro grants, and a reviewed egress-relay (hub-runtime
+  egress-relay, host allowlist, CONNECT:443 + http forward) gives managed
+  web/media/communication paths without opening the agent network.
+done:
+  - P4 executor: durable leases, cancel frames, process-tree kill, detached cleanup (committed 75db9ba)
+  - agenttools catalog: operation-level capability ids + family-prefix ro matching
+  - render: managed workspace bind, egress-relay service, managed env proxy/media/comm keys
+  - supervisor: managed workspace bind + normalize managed/<env>/workspace
+  - hermes_capability: managed config emits operator web provider selection for carved-out toolsets
+  - managed_isolation: verifies egress-relay when HUB_EGRESS_PROXY set
+next:
+  - just check + commit + push
+  - policy/profile generation + preview + publish + agent-tools binding
+  - split settings into agent.yaml+workspace.yaml (no hh/transcription/browser)
+  - migration script + cutover + end-to-end verification
+blockers: []
+rollback: legacy settings.yaml preserved; select-execution static restores unmanaged path

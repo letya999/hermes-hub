@@ -53,7 +53,7 @@ func env(name, fallback string) string {
 
 func Run(args []string) error {
 	if len(args) != 1 {
-		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay or control-relay")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
 	switch args[0] {
 	case "model-relay":
@@ -62,6 +62,8 @@ func Run(args []string) error {
 		return runToolHubRelay(context.Background())
 	case "control-relay":
 		return runControlRelay(context.Background())
+	case "egress-relay":
+		return runEgressRelay()
 	case "verify-managed":
 		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
 			return errors.New("verify-managed requires managed capability mode")
@@ -83,7 +85,7 @@ func Run(args []string) error {
 		}
 		return supervise(args[0])
 	default:
-		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay or control-relay")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
 }
 
