@@ -8,6 +8,7 @@ import (
 )
 
 func TestSettingsGetListsAllowlistWithoutSecrets(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
 	v := fixture(t)
 	out, err := v.SettingsGet(Input{})
 	if err != nil {
@@ -31,6 +32,7 @@ func TestSettingsGetListsAllowlistWithoutSecrets(t *testing.T) {
 }
 
 func TestSettingsGetReportsSingleKey(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
 	v := fixture(t)
 	out, err := v.SettingsGet(Input{Key: "compression.enabled"})
 	if err != nil {
@@ -71,6 +73,7 @@ func TestSettingsGetProjectsEffectiveConfig(t *testing.T) {
 }
 
 func TestSettingsSetValidatesPersistsAndRestarts(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
 	v := fixture(t)
 	restarted := false
 	v.Restart = func() error { restarted = true; return nil }
@@ -110,6 +113,7 @@ func TestSettingsSetValidatesPersistsAndRestarts(t *testing.T) {
 }
 
 func TestSettingsSetReportsMissingRestart(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
 	v := fixture(t)
 	v.Restart = nil
 	out, err := v.SettingsSet(Input{Key: "compression.in_place", Value: "true"})
