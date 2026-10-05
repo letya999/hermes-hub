@@ -581,25 +581,43 @@ and current organization/tool authorization still apply. `/cancel <job_id>` is
 durable during queueing, startup and execution and never starts a new task.
 
 A verified owner keeps several independent task sessions inside one private DM.
-`/task new <name>` creates a task, `/task use <id|name|default>` switches the
-chat's current task, `/task rename`/`/task archive` mutate the task resolved
-for the message's audience, and `/tasks` lists live tasks. A message posted in
-a Telegram direct-messages topic resolves to its bound task; a first post in an
-unbound topic adopts one, and root-DM messages follow the current pointer. The
-implicit `default` task keeps the legacy `telegram-<chat>` conversation, so
-pre-task history and mappings remain valid. Each task owns its own durable
-Hermes session because the session id derives from the task conversation id;
-jobs, replies, streams, artifacts, voice, scheduled occurrences and
-continuation notices carry the originating task and topic id end to end.
+`/new [name]` or `/task new [name]` creates a task and switches to it; a
+nameless task carries a placeholder name flagged `name_auto` and adopts the
+upstream session title after its first real exchange. `/task use
+<id|name|default>` switches the chat's current task, `/task rename`,
+`/task archive`, `/task delete [id|name]` and `/task archived` mutate or list
+the task resolved for the message's audience, and `/tasks` (`/sessions`) lists
+live tasks with their creation dates. `/task delete` removes only the local
+registry record and routing state; the durable Hermes session stays upstream
+for audit. A message posted in a Telegram direct-messages topic resolves to
+its bound task; a first post in an unbound topic adopts one, and root-DM
+messages follow the current pointer. Forum-group topics are supported the same
+way: the bot accepts group messages only from verified users, topic messages
+carry `message_thread_id`, and replies return to the originating topic — group
+jobs deliver to the group chat rather than the sender's DM. Scheduled
+occurrences (`/runat`, `/routine`) remain private-DM only. Unknown slash
+commands are answered with the supported-command list and never reach the
+model. The implicit `default` task keeps the legacy `telegram-<chat>`
+conversation, so pre-task history and mappings remain valid. Each task owns
+its own durable Hermes session because the session id derives from the task
+conversation id; jobs, replies, streams, artifacts, voice and continuation
+notices carry the originating task and topic id end to end.
 `/style <text>` stores per-task presentation guidance (up to 1024 characters,
 no control characters) that rides each admitted run as Hermes `instructions`;
 the admitted run's snapshot is pinned on its durable mapping, so a later
 `/style` change affects subsequent runs only and never touches authorization
-or tool policy. `/usage` reports the task session's measured model, cumulative
-tokens, calls, cost and session-rotation count read back from the pinned
-Hermes session API; fields the upstream does not authoritatively expose —
-current-prompt context, the context window and provider limits — render
-`unknown` instead of an estimate.
+or tool policy. `/usage` reports the task session's measured model, title and
+start time, cumulative tokens, calls, cost and session-rotation count read
+back from the pinned Hermes session API; fields the upstream does not
+authoritatively expose — current-prompt context and the context window —
+render `unknown` instead of an estimate. When the operator configures
+`HUB_CLIPROXY_MGMT_URL`, `HUB_CLIPROXY_MGMT_KEY` and optionally
+`HUB_CLIPROXY_AUTH_INDEX` in the channel env file, `/usage` additionally
+queries the pinned CLIProxyAPI management surface (`auth-files`, then an
+authenticated `api-call` to the provider quota endpoint) and prints measured
+subscription limits with reset times; OAuth tokens stay inside the proxy. The
+result is cached for five minutes and failures render `недоступно` rather than
+a guess.
 
 Reconciliation reserves capacity for every restored non-stopped runtime. A
 missing idle container releases that capacity only after TTL and a durable

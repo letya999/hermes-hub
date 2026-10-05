@@ -421,7 +421,6 @@ func TestTaskCommandRejectsBadInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]string{
-		"/task new":     "Используйте /task new",
 		"/task use":     "Используйте /task use",
 		"/task rename":  "Используйте /task rename",
 		"/task bogus":   "Используйте /task",

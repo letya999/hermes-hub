@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
@@ -18,9 +19,6 @@ func (g *Gateway) taskCommand(user User, chatID, topic int64, task Task, text st
 	switch strings.ToLower(fields[1]) {
 	case "new":
 		name := strings.TrimSpace(strings.TrimPrefix(text, fields[0]+" "+fields[1]))
-		if name == "" {
-			return "Используйте /task new <имя>."
-		}
 		created, isNew, err := g.spool.CreateTask(user, chatID, topic, name, true)
 		if err != nil {
 			return "Задача отклонена: " + err.Error()
@@ -29,6 +27,9 @@ func (g *Gateway) taskCommand(user User, chatID, topic int64, task Task, text st
 			return "Задача уже есть — переключился на неё: " + taskLabel(created) + "."
 		}
 		answer := "Задача создана и выбрана: " + taskLabel(created) + "."
+		if created.NameAuto {
+			answer += " Название появится автоматически после первых сообщений; задать своё: /task rename <имя>."
+		}
 		if topic != 0 {
 			answer += " Этот топик теперь привязан к ней."
 		}
@@ -58,13 +59,31 @@ func (g *Gateway) taskCommand(user User, chatID, topic int64, task Task, text st
 			return "Не удалось архивировать: " + err.Error()
 		}
 		return "Задача " + taskLabel(archived) + " в архиве. Текущая — default."
+	case "archived", "archive-list":
+		return g.archivedTasksCommand(user, chatID)
+	case "delete":
+		selector := task.TaskID
+		if len(fields) >= 3 {
+			selector = strings.Join(fields[2:], " ")
+		}
+		deleted, err := g.spool.DeleteTaskBySelector(user, chatID, selector)
+		if err != nil {
+			return "Не удалось удалить: " + err.Error()
+		}
+		return "Задача " + taskLabel(deleted) + " удалена, текущая — default. Её Hermes-сессия сохранена наверху для аудита."
 	default:
-		return "Используйте /task, /task new <имя>, /task use <id|имя|default>, /task rename <имя>, /task archive."
+		return "Используйте /task, /task new [имя], /task use <id|имя|default>, /task rename <имя>, /task archive, /task archived, /task delete."
 	}
 }
 
 func (g *Gateway) taskStatus(user User, task Task) string {
 	answer := "Текущая задача: " + taskLabel(task) + "."
+	if !task.CreatedAt.IsZero() {
+		answer += " Создана " + task.CreatedAt.UTC().Format("02.01.2006 15:04") + " UTC."
+	}
+	if task.NameAuto {
+		answer += " Название будет присвоено автоматически."
+	}
 	if task.TopicID != 0 {
 		answer += " Топик #" + itoa64(task.TopicID) + "."
 	}
@@ -92,6 +111,9 @@ func (g *Gateway) tasksCommand(user User, chatID int64) string {
 	lines := []string{"Задачи:"}
 	for _, task := range tasks {
 		line := "- " + taskLabel(task)
+		if !task.CreatedAt.IsZero() {
+			line += " — " + task.CreatedAt.UTC().Format("02.01 15:04")
+		}
 		if task.TaskID == current.TaskID {
 			line += " — текущая"
 		}
@@ -100,7 +122,29 @@ func (g *Gateway) tasksCommand(user User, chatID int64) string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "Переключение: /task use <id|имя|default>. Новая: /task new <имя>.")
+	lines = append(lines, "Переключение: /task use <id|имя|default>. Новая: /new [имя]. Архив: /task archived.")
+	return strings.Join(lines, "\n")
+}
+
+// archivedTasksCommand lists tasks retired by /task archive; they keep their
+// Hermes session for audit but no longer accept messages.
+func (g *Gateway) archivedTasksCommand(user User, chatID int64) string {
+	tasks, err := g.spool.ListArchivedTasks(user, chatID)
+	if err != nil {
+		return "Не удалось получить архив задач."
+	}
+	if len(tasks) == 0 {
+		return "Архив пуст."
+	}
+	lines := []string{"Архив задач:"}
+	for _, task := range tasks {
+		line := "- " + taskLabel(task)
+		if !task.CreatedAt.IsZero() {
+			line += " — " + task.CreatedAt.UTC().Format("02.01 15:04")
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "Вернуть нельзя; новая сессия: /new [имя]. Удалить: /task delete внутри активной задачи.")
 	return strings.Join(lines, "\n")
 }
 
@@ -168,6 +212,15 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	if report.Model != "" {
 		lines = append(lines, "Модель: "+report.Model+".")
 	}
+	if report.Title != "" || report.StartedAt != "" {
+		line := "Название сессии: " + usageText(report.Title) + "."
+		if report.StartedAt != "" {
+			if when, perr := time.Parse(time.RFC3339, report.StartedAt); perr == nil {
+				line += " Создана " + when.UTC().Format("02.01.2006 15:04") + " UTC."
+			}
+		}
+		lines = append(lines, line)
+	}
 	contextText := "unknown"
 	if report.ContextTokens != nil && report.ContextWindow != nil && *report.ContextWindow > 0 {
 		contextText = strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
@@ -183,6 +236,7 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 		lines = append(lines, "Стоимость: оценка "+usageCost(report.EstimatedCostUSD)+", фактическая "+usageCost(report.ActualCostUSD)+".")
 	}
 	lines = append(lines, "Сжатий сессии: "+usageNum(report.Compactions)+usageSuffix(report.LastCompactionAt)+".")
+	lines = append(lines, g.quotaLines(ctx)...)
 	lines = append(lines, "Источник: "+report.Source+".")
 	return strings.Join(lines, "\n")
 }
@@ -192,6 +246,13 @@ func usageNum(v *int64) string {
 		return "unknown"
 	}
 	return strconv.FormatInt(*v, 10)
+}
+
+func usageText(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+	return v
 }
 
 func usageCost(v *float64) string {

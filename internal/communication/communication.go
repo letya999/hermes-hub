@@ -509,8 +509,9 @@ type Delivery struct {
 	Channel          string `json:"channel,omitempty"`
 	ChatID           int64  `json:"chat_id"`
 	TaskID           string `json:"task_id,omitempty"`
-	// TopicID is the Telegram direct-messages topic the delivery must land in;
-	// sent as direct_messages_topic_id, never message_thread_id.
+	// TopicID is the Telegram topic the delivery must land in; sent as
+	// direct_messages_topic_id for private chats or message_thread_id for
+	// group forum topics (see topicField).
 	TopicID      int64  `json:"topic_id,omitempty"`
 	SlackChannel string `json:"slack_channel,omitempty"`
 	SlackThread  string `json:"slack_thread,omitempty"`
@@ -866,7 +867,8 @@ func (s *Spool) EnqueueDelivery(d Delivery) error {
 		if d.DeliveryTargetID == "" {
 			d.DeliveryTargetID = transportID
 		}
-		if d.ChatID <= 0 || !identity.ValidID(d.ConversationID) || d.DeliveryTargetID != transportID {
+		// Group forum chats carry negative ids; zero stays invalid.
+		if d.ChatID == 0 || !identity.ValidID(d.ConversationID) || d.DeliveryTargetID != transportID {
 			return errors.New("invalid delivery identity")
 		}
 	case "slack_app":
@@ -1067,10 +1069,15 @@ type Message struct {
 	// topic (Bot API direct_messages_topic). It is distinct from
 	// message_thread_id — the two are not interchangeable.
 	DirectMessagesTopic *TGDirectTopic `json:"direct_messages_topic,omitempty"`
-	Voice               *TGMedia       `json:"voice,omitempty"`
-	Audio               *TGMedia       `json:"audio,omitempty"`
-	Document            *TGMedia       `json:"document,omitempty"`
-	Photo               []TGMedia      `json:"photo,omitempty"`
+	// MessageThreadID/IsTopicMessage carry group forum topics: a message
+	// posted inside a forum topic has is_topic_message=true and the topic id
+	// in message_thread_id.
+	MessageThreadID int64     `json:"message_thread_id,omitempty"`
+	IsTopicMessage  bool      `json:"is_topic_message,omitempty"`
+	Voice           *TGMedia  `json:"voice,omitempty"`
+	Audio           *TGMedia  `json:"audio,omitempty"`
+	Document        *TGMedia  `json:"document,omitempty"`
+	Photo           []TGMedia `json:"photo,omitempty"`
 }
 type TGUser struct {
 	ID int64 `json:"id"`
@@ -1079,13 +1086,32 @@ type TGDirectTopic struct {
 	TopicID int64 `json:"topic_id"`
 }
 
-// messageTopicID returns the verified private-chat topic of an inbound
-// message, or 0 for the root DM.
+// messageTopicID returns the topic of an inbound message: a private-chat
+// direct_messages_topic id or, in groups, a forum message_thread_id. Root
+// chats return 0.
 func messageTopicID(m *Message) int64 {
-	if m != nil && m.DirectMessagesTopic != nil && m.DirectMessagesTopic.TopicID > 0 {
+	if m == nil {
+		return 0
+	}
+	// DirectMessagesTopic only exists on private-chat topic updates; a group
+	// forum topic instead sets is_topic_message + message_thread_id.
+	if m.DirectMessagesTopic != nil && m.DirectMessagesTopic.TopicID > 0 {
 		return m.DirectMessagesTopic.TopicID
 	}
+	if m.IsTopicMessage && m.MessageThreadID > 0 {
+		return m.MessageThreadID
+	}
 	return 0
+}
+
+// topicField picks the Bot API reply parameter for a topic id: private chats
+// take direct_messages_topic_id, groups take message_thread_id. Group and
+// supergroup chat ids are negative; private chat ids are positive.
+func topicField(chatID int64) string {
+	if chatID < 0 {
+		return "message_thread_id"
+	}
+	return "direct_messages_topic_id"
 }
 
 type TGChat struct {
@@ -1116,6 +1142,7 @@ type TelegramAPI interface {
 	GetFile(context.Context, string) (TelegramFile, error)
 	DownloadFile(context.Context, string, io.Writer) error
 	SendVoice(context.Context, int64, int64, []byte, string) error
+	SetMyCommands(context.Context) error
 }
 
 type telegramAPI struct {
@@ -1188,7 +1215,7 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, te
 		payload["parse_mode"] = parseMode
 	}
 	if topicID > 0 {
-		payload["direct_messages_topic_id"] = topicID
+		payload[topicField(chatID)] = topicID
 	}
 	return t.call(ctx, "sendMessage", payload, nil)
 }
@@ -1202,7 +1229,7 @@ func (t *telegramAPI) SendDocument(ctx context.Context, chatID, topicID int64, n
 		return err
 	}
 	if topicID > 0 {
-		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+		if err := form.WriteField(topicField(chatID), strconv.FormatInt(topicID, 10)); err != nil {
 			return err
 		}
 	}
@@ -1238,7 +1265,7 @@ func (t *telegramAPI) SendVideo(ctx context.Context, chatID, topicID int64, name
 		return err
 	}
 	if topicID > 0 {
-		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+		if err := form.WriteField(topicField(chatID), strconv.FormatInt(topicID, 10)); err != nil {
 			return err
 		}
 	}
@@ -1277,7 +1304,7 @@ func (t *telegramAPI) SendPhoto(ctx context.Context, chatID, topicID int64, name
 		return err
 	}
 	if topicID > 0 {
-		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+		if err := form.WriteField(topicField(chatID), strconv.FormatInt(topicID, 10)); err != nil {
 			return err
 		}
 	}
@@ -1343,7 +1370,7 @@ func (t *telegramAPI) SendVoice(ctx context.Context, chatID, topicID int64, audi
 		return err
 	}
 	if topicID > 0 {
-		if err := form.WriteField("direct_messages_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
+		if err := form.WriteField(topicField(chatID), strconv.FormatInt(topicID, 10)); err != nil {
 			return err
 		}
 	}
@@ -1466,6 +1493,9 @@ type Gateway struct {
 	synthesizer Synthesizer
 	formsMu     sync.Mutex
 	forms       map[string]credentialForm
+	quotaMu     sync.Mutex
+	quotaCache  []string
+	quotaAt     time.Time
 }
 
 func New(config Config) (*Gateway, error) {
@@ -1628,6 +1658,9 @@ func (g *Gateway) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := g.api.SetMyCommands(ctx); err != nil {
+		log.Printf("gateway command menu registration failed: %v", err)
+	}
 	for {
 		updates, err := g.api.GetUpdates(ctx, offset, int(g.config.PollTimeout/time.Second))
 		if err != nil {
@@ -1665,13 +1698,14 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		text = strings.TrimSpace(message.Caption)
 	}
 	if message.Chat.Type != "private" {
-		if envstore.LooksLikeEnv(text) {
-			if _, ok := g.users[message.From.ID]; ok {
-				_ = g.api.DeleteMessage(ctx, message.Chat.ID, message.MessageID)
-				return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, "Группы не принимают секреты.")
-			}
+		// Groups only serve verified users; everyone else is ignored silently.
+		if _, ok := g.users[message.From.ID]; !ok {
+			return nil
 		}
-		return nil
+		if envstore.LooksLikeEnv(text) {
+			_ = g.api.DeleteMessage(ctx, message.Chat.ID, message.MessageID)
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, "Группы не принимают секреты.")
+		}
 	}
 	user, ok := g.users[message.From.ID]
 	if !ok {
@@ -1786,8 +1820,13 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply(g.sessionStatus(user, task))
 		case "task":
 			return reply(g.taskCommand(user, message.Chat.ID, topic, task, text))
-		case "tasks":
+		case "tasks", "sessions":
 			return reply(g.tasksCommand(user, message.Chat.ID))
+		case "new":
+			fields := strings.Fields(text)
+			return reply(g.taskCommand(user, message.Chat.ID, topic, task, "/task new"+strings.TrimPrefix(text, fields[0])))
+		case "topic":
+			return reply(g.taskStatus(user, task))
 		case "style":
 			return reply(g.styleCommand(user, message.Chat.ID, task, text))
 		case "usage":
@@ -1796,6 +1835,10 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply(g.voiceCommand())
 		case "routine":
 			return reply(g.routineCommand(user, message.From.ID, message.Chat.ID, task, text))
+		case "help":
+			return reply(commandHelp())
+		default:
+			return reply("Неизвестная команда /" + command + ".\n\n" + commandHelp())
 		}
 	}
 	if message.Voice != nil || message.Audio != nil {
@@ -1822,6 +1865,10 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64) error {
 	envelope := user.envelope(sender)
 	envelope.ConversationID = task.ConversationID
+	if channel == "telegram_bot" && chatID < 0 {
+		// Group forum jobs deliver to the group chat, not the sender's DM.
+		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(chatID, 10)
+	}
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, Sensitive: false, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
@@ -1830,6 +1877,94 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 		_ = g.api.SendChatAction(ctx, chatID, "typing")
 	}
 	return nil
+}
+
+// botCommandInventory is the single source of truth for supported slash
+// commands: it feeds both the Telegram menu (registered on every startup, so
+// stale scope registrations left by other adapters cannot linger) and /help.
+var botCommandInventory = []struct {
+	Command     string
+	Description string
+}{
+	{"new", "Новая сессия (отдельный контекст): /new [имя]"},
+	{"sessions", "Список сессий с датами"},
+	{"task", "Сессии: статус, /task use|rename|archive|delete|archived"},
+	{"style", "Стиль ответа сессии: /style [текст|reset]"},
+	{"usage", "Расход токенов сессии и лимиты подписки"},
+	{"session", "ID постоянной Hermes-сессии"},
+	{"status", "Занят ли Hermes"},
+	{"voice", "Доступность голосового ввода/ответов"},
+	{"routine", "Расписания"},
+	{"runat", "Разовое задание: /runat <RFC3339> <текст>"},
+	{"cancel", "Отменить джобу: /cancel <job-id>"},
+	{"approve", "Подтвердить: /approve <job-id> <request-id> <choice>"},
+	{"credentials", "Код брокера: /credentials <request-id> <code>"},
+	{"connections", "Список подключений"},
+	{"help", "Этот список команд"},
+}
+
+// commandHelp is the authoritative inventory of supported slash commands;
+// unknown commands are answered with it instead of reaching the model, so a
+// typo can never produce a fabricated confirmation.
+func commandHelp() string {
+	var b strings.Builder
+	b.WriteString("Команды:")
+	for _, c := range botCommandInventory {
+		b.WriteString("\n/" + c.Command + " — " + c.Description)
+	}
+	return b.String()
+}
+
+// SetMyCommands registers the canonical menu on every Telegram scope. Without
+// this a stale scope registration (e.g. left by an upstream adapter) shadows
+// the default menu in private and group chats.
+func (t *telegramAPI) SetMyCommands(ctx context.Context) error {
+	commands := make([]map[string]string, 0, len(botCommandInventory))
+	for _, c := range botCommandInventory {
+		commands = append(commands, map[string]string{"command": c.Command, "description": c.Description})
+	}
+	for _, scope := range []string{"default", "all_private_chats", "all_group_chats", "all_chat_administrators"} {
+		if err := t.call(ctx, "setMyCommands", map[string]any{"commands": commands, "scope": map[string]any{"type": scope}}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// autoTitleMinMessages bounds title adoption: a session title is trusted once
+// the conversation has at least one real exchange behind it.
+const autoTitleMinMessages = 2
+
+// maybeAutoTitle adopts the upstream Hermes session title as the task name.
+// Only tasks still carrying their auto-generated placeholder qualify — an
+// explicit operator name is never overwritten — and failures are silent: a
+// title is cosmetic, never worth failing or retrying a delivery for.
+func (g *Gateway) maybeAutoTitle(ctx context.Context, job Job) {
+	if !g.spool.TaskNameAuto(job.PrincipalID, job.TaskID) {
+		return
+	}
+	runner, ok := g.runner.(interface {
+		SessionUsage(context.Context, hubruntime.ExecuteRequest) (hubruntime.SessionUsage, error)
+	})
+	if !ok {
+		return
+	}
+	report, err := runner.SessionUsage(ctx, hubruntime.ExecuteRequest{
+		Envelope:       job.Envelope,
+		OrganizationID: g.config.OrganizationID,
+		UserID:         job.UserID,
+		ActorID:        job.ActorID,
+		ScopeID:        job.ScopeID,
+		Channel:        job.Channel,
+		Trigger:        "auto-title",
+		IdempotencyKey: "auto-title-" + job.ID,
+	})
+	if err != nil || !report.SessionFound || report.MessageCount == nil || *report.MessageCount < autoTitleMinMessages || strings.TrimSpace(report.Title) == "" {
+		return
+	}
+	if g.spool.AutoTitleTask(job.PrincipalID, job.TaskID, report.Title) {
+		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "». Переименовать: /task rename <имя>.", CreatedAt: g.now().UTC()})
+	}
 }
 
 func (g *Gateway) sessionStatus(user User, task Task) string {
@@ -1967,6 +2102,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
 				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
+				g.maybeAutoTitle(ctx, *job)
 			}
 			g.recordJob(*job, outcome)
 			if job.Sensitive {

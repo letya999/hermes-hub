@@ -292,8 +292,9 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 	if got := g.taskCommand(user, 11, 0, task, "/task new bad\x00name"); !strings.Contains(got, "отклонена") {
 		t.Fatalf("invalid name accepted: %q", got)
 	}
-	if got := g.taskCommand(user, 11, 0, task, "/task new"); !strings.Contains(got, "/task new <имя>") {
-		t.Fatalf("missing name hint wrong: %q", got)
+	// A nameless /task new creates an auto-named session.
+	if got := g.taskCommand(user, 11, 0, task, "/task new"); !strings.Contains(got, "создана") {
+		t.Fatalf("auto create wrong: %q", got)
 	}
 	if got := g.taskCommand(user, 11, 0, task, "/task new alpha"); !strings.Contains(got, "создана") {
 		t.Fatalf("create=%q", got)

@@ -11,6 +11,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0069](in-progress/CHG-0069-session-ux-and-quota/plan.md) | Session UX (new/list/switch/delete/archive/auto-title), forum topics, command inventory, provider quota in /usage — committed, live evidence pending |
 | [CHG-0068](in-progress/CHG-0068-usage-report/plan.md) | Issue 169: measured `/usage` from authoritative Hermes session fields — committed, live evidence pending |
 | [CHG-0067](in-progress/CHG-0067-task-style/plan.md) | Issue 168: per-task `/style` as admission-snapshotted run instructions — committed, live evidence pending |
 | [CHG-0066](in-progress/CHG-0066-task-sessions/plan.md) | Issue 167: durable tasks and Telegram DM topics in one private chat — committed, live evidence pending |

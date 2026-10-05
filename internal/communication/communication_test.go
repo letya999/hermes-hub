@@ -134,6 +134,7 @@ func (f *fakeAPI) SendVoice(_ context.Context, _ int64, _ int64, audio []byte, _
 	f.voices = append(f.voices, string(audio))
 	return f.err
 }
+func (f *fakeAPI) SetMyCommands(context.Context) error { return f.err }
 
 type fakeRunner struct {
 	mu   sync.Mutex
@@ -1461,6 +1462,7 @@ func (r *runAPI) GetFile(context.Context, string) (TelegramFile, error) {
 }
 func (r *runAPI) DownloadFile(context.Context, string, io.Writer) error         { return nil }
 func (r *runAPI) SendVoice(context.Context, int64, int64, []byte, string) error { return nil }
+func (r *runAPI) SetMyCommands(context.Context) error                           { return nil }
 
 func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	c := testConfig(t)

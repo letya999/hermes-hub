@@ -29,6 +29,8 @@ type SessionUsage struct {
 	Source            string    `json:"source"`
 	FetchedAt         time.Time `json:"fetched_at"`
 	Model             string    `json:"model,omitempty"`
+	Title             string    `json:"title,omitempty"`
+	StartedAt         string    `json:"started_at,omitempty"`
 	InputTokens       *int64    `json:"input_tokens"`
 	OutputTokens      *int64    `json:"output_tokens"`
 	CacheReadTokens   *int64    `json:"cache_read_tokens"`
@@ -133,6 +135,8 @@ func usageSessionRow(ctx context.Context, client *http.Client, base, auth, id st
 
 func usageFillSession(report *SessionUsage, row map[string]any) {
 	report.Model = usageString(row, "model")
+	report.Title = usageString(row, "title")
+	report.StartedAt = usageString(row, "started_at")
 	report.InputTokens = usageInt(row, "input_tokens")
 	report.OutputTokens = usageInt(row, "output_tokens")
 	report.CacheReadTokens = usageInt(row, "cache_read_tokens")
