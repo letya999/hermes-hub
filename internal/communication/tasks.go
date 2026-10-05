@@ -42,6 +42,7 @@ type Task struct {
 	Style          string    `json:"style,omitempty"`
 	StyleVersion   uint64    `json:"style_version,omitempty"`
 	Archived       bool      `json:"archived,omitempty"`
+	NameAuto       bool      `json:"name_auto,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
@@ -180,6 +181,10 @@ func newTaskID() string {
 // returns the existing live task so a replayed update cannot mint a second.
 func (s *Spool) CreateTask(user User, chatID, topicID int64, name string, makeCurrent bool) (Task, bool, error) {
 	name = strings.TrimSpace(name)
+	auto := name == ""
+	if auto {
+		name = "сессия " + time.Now().UTC().Format("02.01 15:04")
+	}
 	if !validTaskName(name) {
 		return Task{}, false, errors.New("invalid task name")
 	}
@@ -218,7 +223,7 @@ func (s *Spool) CreateTask(user User, chatID, topicID int64, name string, makeCu
 			}
 		}
 	}
-	task := Task{Schema: 1, TaskID: taskID, Name: name, PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", Peer: "telegram-" + strconv.FormatInt(user.TelegramIDs[0], 10), ChatID: chatID, TopicID: topicID, ConversationID: taskConversation(chatID, taskID), CreatedAt: now, UpdatedAt: now}
+	task := Task{Schema: 1, TaskID: taskID, Name: name, PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", Peer: "telegram-" + strconv.FormatInt(user.TelegramIDs[0], 10), ChatID: chatID, TopicID: topicID, ConversationID: taskConversation(chatID, taskID), NameAuto: auto, CreatedAt: now, UpdatedAt: now}
 	if err := s.materializeTaskLocked(task); err != nil {
 		return Task{}, false, err
 	}
@@ -470,6 +475,7 @@ func (s *Spool) RenameTask(user User, chatID int64, taskID, name string) (Task, 
 		return Task{}, err
 	}
 	task.Name = name
+	task.NameAuto = false
 	return task, s.materializeTaskLocked(task)
 }
 
@@ -503,6 +509,125 @@ func (s *Spool) ArchiveTask(user User, chatID int64, taskID string) (Task, error
 		return Task{}, err
 	}
 	return task, nil
+}
+
+// DeleteTask removes a live or archived task record: the topic binding and
+// current pointer are released and the chat falls back to the default task.
+// The upstream Hermes session is left for audit; only the owner's registry
+// entry and routing state are removed.
+func (s *Spool) DeleteTask(user User, chatID int64, taskID string) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, err := s.loadTaskLocked(user.ID, taskID)
+	if err != nil {
+		return Task{}, errors.New("task not found")
+	}
+	return s.deleteTaskLocked(user, chatID, task)
+}
+
+// DeleteTaskBySelector deletes a task addressed by id or unique name across
+// both live and archived records, so an archived task can be removed without
+// resurrecting it first.
+func (s *Spool) DeleteTaskBySelector(user User, chatID int64, selector string) (Task, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return Task{}, errors.New("missing task selector")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task, err := s.findTaskLocked(user, chatID, selector); err == nil {
+		return s.deleteTaskLocked(user, chatID, task)
+	}
+	tasks, err := s.listTasksLocked(user.ID)
+	if err != nil {
+		return Task{}, err
+	}
+	found, count := Task{}, 0
+	for _, task := range tasks {
+		if task.Archived && (task.TaskID == selector || task.Name == selector) {
+			found, count = task, count+1
+		}
+	}
+	if count > 1 {
+		return Task{}, errors.New("task name is ambiguous; use its id")
+	}
+	if count == 0 {
+		return Task{}, errors.New("task not found")
+	}
+	return s.deleteTaskLocked(user, chatID, found)
+}
+
+// deleteTaskLocked removes one resolved task record; caller holds the lock.
+func (s *Spool) deleteTaskLocked(user User, chatID int64, task Task) (Task, error) {
+	if task.ChatID != chatID {
+		return Task{}, errors.New("task belongs to a different chat")
+	}
+	if task.TaskID == defaultTaskID {
+		return Task{}, errors.New("the default task cannot be deleted")
+	}
+	if task.TopicID != 0 {
+		if err := os.Remove(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Task{}, err
+		}
+	}
+	if current, err := s.currentTaskLocked(user.ID, chatID); err == nil && current == task.TaskID {
+		if err := os.Remove(s.currentTaskPath(user.ID, chatID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Task{}, err
+		}
+	} else if err != nil {
+		return Task{}, err
+	}
+	if err := os.Remove(s.taskPath(user.ID, task.TaskID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Task{}, err
+	}
+	return task, nil
+}
+
+// ListArchivedTasks returns the owner's archived tasks, oldest first.
+func (s *Spool) ListArchivedTasks(user User, chatID int64) ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tasks, err := s.listTasksLocked(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := []Task{}
+	for _, task := range tasks {
+		if task.Archived {
+			out = append(out, task)
+		}
+	}
+	return out, nil
+}
+
+// AutoTitleTask renames an auto-named task once: explicit names and archived
+// tasks are never touched. Returns false when the task does not qualify.
+func (s *Spool) AutoTitleTask(principal, taskID, title string) bool {
+	title = strings.TrimSpace(title)
+	if !validTaskName(title) || taskID == "" || taskID == defaultTaskID {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, err := s.loadTaskLocked(principal, taskID)
+	if err != nil || task.Archived || !task.NameAuto {
+		return false
+	}
+	task.Name = title
+	task.NameAuto = false
+	return s.writeTaskLocked(task) == nil
+}
+
+// TaskNameAuto reports whether the task still carries its auto-generated
+// placeholder name, i.e. it is eligible for session-title adoption.
+func (s *Spool) TaskNameAuto(principal, taskID string) bool {
+	if taskID == "" || taskID == defaultTaskID {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, err := s.loadTaskLocked(principal, taskID)
+	return err == nil && task.NameAuto && !task.Archived
 }
 
 // SetTaskStyle writes or clears a task's presentation style, bumping the
