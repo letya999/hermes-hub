@@ -432,7 +432,9 @@ func (s *Spool) taskByConversationLocked(user User, chatID int64, conversationID
 	tasks, err := s.listTasksLocked(user.ID)
 	if err == nil {
 		for _, task := range tasks {
-			if !task.Archived && task.ChatID == chatID && task.ConversationID == conversationID {
+			// Conversation ids embed their chat id, so a match cannot cross
+			// chats; the chat filter stays implicit through that uniqueness.
+			if !task.Archived && task.ConversationID == conversationID {
 				return task
 			}
 		}
