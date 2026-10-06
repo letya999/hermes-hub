@@ -950,6 +950,45 @@ func TestServeSTTRespawnsDeadWorker(t *testing.T) {
 	}
 }
 
+// A worker-side domain error surfaces to the caller while the resident
+// process stays alive for the next request.
+func TestServeSTTWorkerErrorSurfaces(t *testing.T) {
+	oldArg := serveWorkerArg
+	serveWorkerArg = "-test.run=TestServeWorkerHelper"
+	defer func() { serveWorkerArg = oldArg }()
+	t.Setenv("GO_SERVE_HELPER", "1")
+	engine := &serveSTT{command: os.Args[0], requests: make(chan serveRequest)}
+	go engine.run()
+	if _, err := engine.Transcribe(context.Background(), "error-clip.wav", TranscribeOpts{}); err == nil {
+		t.Fatal("worker error must surface")
+	}
+	if !engine.Ready(context.Background()) {
+		t.Fatal("resident worker must stay alive after a domain error")
+	}
+	if _, err := engine.Transcribe(context.Background(), "empty-clip.wav", TranscribeOpts{}); err == nil {
+		t.Fatal("empty transcript must surface an error")
+	}
+}
+
+// A missing worker binary surfaces a start error instead of hanging.
+func TestServeSTTSpawnFailure(t *testing.T) {
+	engine := &serveSTT{command: "definitely-not-a-binary-xyz", requests: make(chan serveRequest)}
+	go engine.run()
+	if _, err := engine.Transcribe(context.Background(), "clip.wav", TranscribeOpts{}); err == nil {
+		t.Fatal("missing worker binary must fail")
+	}
+}
+
+// A canceled context returns before the run loop is even started.
+func TestServeSTTCancelBeforeSend(t *testing.T) {
+	engine := &serveSTT{command: os.Args[0], requests: make(chan serveRequest)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := engine.Transcribe(ctx, "clip.wav", TranscribeOpts{}); err == nil {
+		t.Fatal("canceled request must fail")
+	}
+}
+
 func TestServeWorkerHelper(t *testing.T) {
 	mode := os.Getenv("GO_SERVE_HELPER")
 	if mode == "" {
@@ -974,6 +1013,10 @@ func TestServeWorkerHelper(t *testing.T) {
 		}
 		if strings.Contains(path, "error") {
 			fmt.Printf("{\"error\":%q}\n", "cannot decode")
+			continue
+		}
+		if strings.Contains(path, "empty") {
+			fmt.Printf("{\"text\":\"\"}\n")
 			continue
 		}
 		fmt.Printf("{\"text\":%q}\n", "heard:"+path)
