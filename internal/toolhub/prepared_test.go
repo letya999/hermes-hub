@@ -111,6 +111,7 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 			return append(out, out[0], RecipeCandidate{Repository: "https://github.com/other/repo"}), nil
 		}),
 	}}
+	grantTestControlOperations(t, c.Store, "alice", "discover", "prepare_source")
 	body, err := c.Invoke(t.Context(), aliceAuth(), "discover", map[string]any{"query": "notion"})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +123,7 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 	if len(c.Store.onboardings) != 0 || len(c.Store.bindings) != 0 || len(c.Store.connections) != 0 {
 		t.Fatal("discovery mutated install state")
 	}
-	if err := c.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, c.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	resolved := false
@@ -247,7 +248,7 @@ func TestRegistryNameSearchWithoutPreparedEntryUsesGenericSelection(t *testing.T
 	if len(control.Store.onboardings) != 0 || len(control.Store.bindings) != 0 {
 		t.Fatal("registry discovery installed a connector")
 	}
-	if err := control.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, control.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	var reviewed ArtifactSource
@@ -313,7 +314,7 @@ func TestBareRepositoryURLSelectsPreparedPinnedCommit(t *testing.T) {
 		t.Fatalf("fixture entry moved: %+v", prepared.Source)
 	}
 	control := &ControlPlane{Store: NewStore(), Now: time.Now}
-	if err := control.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, control.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	drifted := ArtifactSource{Repository: prepared.Source.Repository, CommitSHA: strings.Repeat("f", 40)}
@@ -358,7 +359,7 @@ func TestRegistrySelectionPinsMutableRepositoryAndPreservesSubfolder(t *testing.
 	if candidate.Source.Subfolder != "servers/weather" {
 		t.Fatalf("registry subfolder lost: %+v", candidate.Source)
 	}
-	if err := control.Store.PutGrant(OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, control.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {

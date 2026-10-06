@@ -1,12 +1,13 @@
 name: CI
 on:
   push:
-    branches: [main, dev, feat/scoped-homes-communication-hub]
+    branches: [main, dev, feat/scoped-homes-communication-hub, feat/capability-profile-122]
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
   main-source:
@@ -35,6 +36,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          cache: 'npm'
           cache-dependency-path: docker/browser/package-lock.json
       - run: just check
       - run: just credential-broker-check
@@ -44,9 +46,46 @@ jobs:
           name: coverage
           path: |
             coverage.out
-  containers:
+  image:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [dev, prod, stt, tts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: '1.57.0'
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}"
+        env:
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }},mode=max
+      - if: matrix.target == 'dev' || matrix.target == 'prod'
+        run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}-control"
+        env:
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }},mode=max
+  containers:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +98,11 @@ jobs:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: '1.57.0'
-      - run: just docker-check "${{ matrix.target }}"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: just docker-check-prebuilt "${{ matrix.target }}"
       - if: matrix.target == 'prod'
         run: just credential-broker-docker-check

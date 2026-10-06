@@ -648,7 +648,7 @@ func TestApprovalRejectsChangedUnavailableAndExpandedPolicy(t *testing.T) {
 		t.Fatal("caller expanded organization")
 	}
 	path := filepath.Join(root, "settings.yaml")
-	if err := os.WriteFile(path, []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: []\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, browser]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.authorizeApproval(control); err == nil {
@@ -708,7 +708,7 @@ func TestScheduledExecutionReauthorizesPolicyBeforeRuntimeStart(t *testing.T) {
 	}, func(context.Context, string, string) error { return nil })
 	policy := controlTestPolicy(t, root)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", policy), JobID: "revoked-routine", IdempotencyKey: "revoked-routine", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", Trigger: "cron", Text: "scheduled work"}
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: []\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, browser]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := json.Marshal(request)
@@ -812,6 +812,48 @@ func TestExpireUncertainInterruptsUnobservableRun(t *testing.T) {
 	defer m.mu.Unlock()
 	if len(entry.leases) != 0 || entry.Leases != 0 || entry.State != Idle {
 		t.Fatalf("lease not freed after interrupt: leases=%v state=%s", entry.leases, entry.State)
+	}
+}
+
+// A run that reported an ID under a dead runtime generation can never be
+// cancelled — the durable control path rejects it on generation mismatch
+// forever. ExpireUncertain must interrupt it so the lease and the busy state
+// are released instead of pinning the runtime busy permanently.
+func TestExpireUncertainInterruptsDeadGeneration(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", controlTestPolicy(t, root)), JobID: "verify-set-1", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "verify-set-1", Text: "private"}
+	if _, _, err := m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	m.bindJobGeneration(request, runtime.Generation)
+	outcome := hubruntime.ExecuteResponse{JobID: request.JobID, RunID: "run-1", SessionID: "sess-1", RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+	if err := m.finishJobGeneration(request, outcome, outcome.Status, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	key := runtimeKey(b)
+	m.mu.Lock()
+	entry := m.items[key]
+	// The runtime container was recreated: a new generation means the owning
+	// process — and the run — is provably gone.
+	entry.Generation = "gen-recreated"
+	entry.State, entry.Leases = Busy, 1
+	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: "gen-dead", ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
+	m.mu.Unlock()
+	m.ExpireUncertain(context.Background(), time.Now())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.jobs[request.JobID].Status != "interrupted" {
+		t.Fatalf("dead-generation run kept retrying a cancel that can never land: %s", m.jobs[request.JobID].Status)
 	}
 }
 

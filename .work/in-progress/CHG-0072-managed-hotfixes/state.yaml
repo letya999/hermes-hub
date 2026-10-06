@@ -1,0 +1,52 @@
+schema: 1
+change: CHG-0072-managed-hotfixes
+status: in-progress
+phase: verify
+started: 2026-10-06
+owner: operator
+done:
+  - live diagnosis of all 5 reported defects + artifact dup (see plan.md)
+  - runtime POST /v1/restart-request (marker write, auth-gated)
+  - supervisor POST /v1/restart-request (lookup, forward, immediate apply when idle)
+  - toolhub ProjectionRevisions + RuntimeRestartNotifier (baseline, retry on failure, 4s cadence)
+  - toolhub GET /v1/connectors (principal bearer or control bearer + X-Hub-Principal)
+  - RefreshProjection no longer starves projections on first error
+  - comm-hub /connections HTTP fallback via HUB_TOOLHUB_URL + sibling token / control bearer
+  - HTTPRunner.Voice pins VOICE: convention into run instructions when TTS configured
+  - ExpireUncertain interrupts jobs whose recorded generation is dead
+  - runtime health passes degraded through instead of reporting unavailable
+  - MEDIA: bare-name markers resolve under artifacts/{images,documents,videos}; failed marker refs dedupe against delivered names
+  - stt-worker --serve resident mode + command-serve engine + render switch for hub-stt
+  - /usage: supervisor usageHTTP Acquire(LeaseLifecycle) spawns+pins runtime; comm-hub timeout 20s->120s; transient 503/404 retried once
+  - /connections: connectorLine/connectorToolName compact render (strips hub-<def>- prefix + 8-hex hash, count + 3 examples + ellipsis), both registry and HTTP paths
+  - documents.create format=html rejects document markup (doctype/html/head/body/style) with corrective error; XSS-escape contract (SPEC-0033) kept for plain text; tool description updated
+  - just check green: race suite, coverage 85.03%, vet/staticcheck/actionlint clean
+  - redeployed stack + host supervisor on new binaries; all containers healthy
+  - live verified: /v1/connectors per-principal isolation (owner=github-mcp-server ~45 tools, user2=hub-agent-tools, bogus=401)
+  - live verified: restart bridge end-to-end (restart-request -> marker -> deferred while busy -> consumed on idle restart; runtime endpoint 401 unauth)
+  - live verified: command-serve STT resident worker (11.1s cold -> 4.6s warm vs ~70-90s/call before)
+  - live verified: TTS endpoint synthesizes OGG (8.9s incl. warmup); user confirmed voice replies work
+  - live verified: /v1/usage ensure-path (stopped runtime -> spawn ~24s -> real hermes_session_db measurement -> lease release -> idle)
+  - live verified: hermes_readiness degraded passthrough (disk pressure reports honestly)
+  - repaired malformed PDF: unescaped document markup in artifacts/documents/artem_letyushev_resume.html, regenerated via chromium (78,985 bytes, 256 text ops, no escaped markup)
+  - disk cleanup: 16GB go-build cache, ~9GB stale ghcr prebuilt tags, 108 orphaned hermes-* test volumes, 3 stale relay containers -> host 37GB->53GB free (97%->95%)
+  - incident: cleanup removed live telegram-480637186 relay trio (toolhub DNS alias lost -> runtime spawn fail 'managed relay toolhub unreachable'); restored via compose.dev.yaml up -d, relays on new image, verified
+  - /usage render compacted per user request: tokens in/out + cache + context % (when measured) + compactions + subscription limits; session ids/model/cost/api-counts removed
+  - user-supplied regenerated HTML+PDF verified clean (real markup, CID glyphs, no escaped entities)
+  - rebuild + redeploy on compact renderer: 11 containers healthy; owner relays re-pinned to new image
+  - live re-verified: /v1/usage stopped-runtime spawn 25.1s -> session_found -> lease release; /v1/connectors per-principal on new images
+  - root cause of 'PDF not delivered' report: model never learned the artifact contract — run-305 response carried 0 artifacts (file was from a prior run, outside scan window; no MEDIA: marker). MCP ServerOptions.Instructions do not reach the model in managed mode
+  - fix: artifact-delivery convention injected into run instructions unconditionally (artifacts/ auto-delivers; MEDIA: <path> attaches earlier/elsewhere files); mirrored in agenttools MCP instructions
+  - fix: stageMediaArtifact remaps failed absolute paths containing /artifacts/ onto the workspace artifacts root (models quote $HOME/artifacts/...)
+  - tests: TestHTTPRunnerArtifactConventionInstruction, TestMediaMarkerHomeRootedPathRemapsToArtifacts; just check green 85.03%
+  - fix: durable run-start markers (/state/runstarts/<runID>, mtime=start, 24h sweep, state-dir guard) — recovered /v1/observe runs now restore the scan window instead of dropping artifacts
+  - tests: TestRunStartMarkersRestoreRecoveredScanWindow; just check re-run green 85.03% after marker changes
+  - rebuild attempt 1 failed at Dockerfile:53 git fetch of hermes-agent (HTTP/2 stream cancel, transient network) after ~50min apt; apt cache evicted again by hubctl 8GB prune -> retry is cold but snapshots ALL fixes incl. markers
+  - rebuild attempt 2 failed same fetch (HTTP/2 cancel at 710s); attempt 3 failed on corrupted Silero zip (PytorchStreamReader central directory) — degraded network truncates long streams; github.com reachable but slow (~200kB/s effective, 10s TTFB)
+  - build hardening: docker/Dockerfile git fetches (hermes-agent + CLIProxyAPI) forced to HTTP/1.1 with 4-try loop; Dockerfile.tts silero load retries ×4 with torch hub cache reset; piper/voices curl --retry 4 --retry-all-errors
+  - rebuild attempt 4: HTTP/1.1 fetch fix proven (hermes-agent fetched first-try in 174s, uv sync 511s done, hub-tts image exported) but failed at Dockerfile:57 npm ci ECONNRESET — same degraded network; hardened npm ci + stt/tts pip installs with the same ×4 retry loop
+  - docs updated: architecture.md (run-start markers under recovery; instruction-injected artifact contract) + SPEC-0037 (markers restore scan window, MEDIA: bare-name + $HOME-remap resolution, instruction-injection rationale)
+next:
+  - finish rebuild+redeploy (attempt 5 in progress, apt cold again), then Telegram round-trip: attach existing file via MEDIA:, fresh PDF auto-delivers
+  - after deploy: commit + push branch so CI (ci.yml image matrix dev/prod/stt/tts + *-control, gha cache) publishes GHCR images — future changes ride just docker-pull instead of ~50min cold local builds
+  - residual: host disk ~95% full keeps hermes_readiness=degraded; docker_data.vhdx ~120GB cannot shrink (WSL sparse disabled)

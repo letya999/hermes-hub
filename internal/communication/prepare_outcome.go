@@ -205,7 +205,8 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		return errNoPrepareChannel
 	}
 	now := g.now().UTC()
-	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: "telegram_bot", ChatID: user.TelegramIDs[0], Text: notice, CreatedAt: now}
+	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)
+	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: "telegram_bot", ChatID: bound.ChatID, TaskID: bound.TaskID, TopicID: bound.TopicID, Text: notice, CreatedAt: now}
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
 	}
@@ -214,10 +215,16 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		// push the agent to act on a phase that has not settled yet.
 		return nil
 	}
+	task := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)
+	envelope := caller
+	if task.ChatID < 0 {
+		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(task.ChatID, 10)
+	}
 	job := Job{
-		Envelope: caller, ID: key, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID,
+		Envelope: envelope, ID: key, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID,
 		ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "prepare", IdempotencyKey: key,
-		ChatID: user.TelegramIDs[0], Text: prepareContinuation(request), CreatedAt: now,
+		ChatID: task.ChatID, TaskID: task.TaskID, TopicID: task.TopicID,
+		Text: prepareContinuation(request), CreatedAt: now,
 	}
 	_, err := g.spool.Enqueue(job)
 	return err

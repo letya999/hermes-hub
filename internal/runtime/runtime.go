@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,11 +51,40 @@ func env(name, fallback string) string {
 	return fallback
 }
 
+// durationEnv reads a Go duration ("15m") or a bare seconds value; invalid
+// input falls back so a typo cannot disable the watchdog.
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return fallback
+}
+
 func Run(args []string) error {
 	if len(args) != 1 {
-		return errors.New("expected idle, gateway, prepare, serve or health")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
 	switch args[0] {
+	case "model-relay":
+		return runModelRelay(context.Background())
+	case "toolhub-relay":
+		return runToolHubRelay(context.Background())
+	case "control-relay":
+		return runControlRelay(context.Background())
+	case "egress-relay":
+		return runEgressRelay()
+	case "verify-managed":
+		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
+			return errors.New("verify-managed requires managed capability mode")
+		}
+		return managedPreflight()
 	case "health":
 		return Health(filepath.Join(state, "runtime.json"))
 	case "prepare":
@@ -64,16 +94,21 @@ func Run(args []string) error {
 		}
 		return Prepare([]string{state, workspace}, 10001, gid, chown)
 	case "idle", "gateway", "serve":
-		if err := loadSelfEnv(); err != nil {
-			return err
+		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
+			if err := loadSelfEnv(); err != nil {
+				return err
+			}
 		}
 		return supervise(args[0])
 	default:
-		return errors.New("expected idle, gateway, prepare, serve or health")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
 }
 
 func loadSelfEnv() error {
+	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
+		return errors.New("managed runtime forbids self-managed environment")
+	}
 	path := filepath.Join(state, envstore.FileName)
 	for _, key := range []string{"ATLASSIAN_EMAIL", "ATLASSIAN_API_TOKEN", "ATLASSIAN_BASIC_AUTH"} {
 		if err := os.Unsetenv(key); err != nil {
@@ -182,20 +217,55 @@ func supervise(mode string) error {
 		if err != nil || !restart {
 			return err
 		}
-		if err := loadSelfEnv(); err != nil {
-			return err
+		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
+			if err := loadSelfEnv(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
+// managedPreflight attests the mounted effective config and the container's
+// actual isolation before any managed Hermes process may start.
+func managedPreflight() error {
+	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
+	if os.Getenv("HERMES_BUNDLES_DIR") != filepath.Join(hermesHome, "skill-bundles") ||
+		os.Getenv("HERMES_ENABLE_PROJECT_PLUGINS") != "0" {
+		return fmt.Errorf("managed runtime forbids redirected extension discovery")
+	}
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		return fmt.Errorf("managed runtime config preflight: %w", err)
+	}
+	if err := stack.ValidateManagedEffectiveConfig(filepath.Join(hermesHome, "config.yaml"),
+		stack.Settings{Model: os.Getenv("HUB_MANAGED_MODEL_ID"), ModelURL: os.Getenv("HUB_MANAGED_MODEL_URL"), Timezone: os.Getenv("TZ")},
+		opts); err != nil {
+		return fmt.Errorf("managed runtime config preflight: %w", err)
+	}
+	if err := verifyManagedIsolation(hermesHome); err != nil {
+		return fmt.Errorf("managed runtime isolation unverified: %w", err)
+	}
+	return nil
+}
+
 func superviseOnce(mode string) (bool, error) {
+	managed := os.Getenv("HUB_CAPABILITY_MODE") == "managed"
+	if managed {
+		if err := managedPreflight(); err != nil {
+			return false, err
+		}
+	}
 	setUmask()
 	restartPath := filepath.Join(state, "restart.request")
 	if err := os.Remove(restartPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
 	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
-	for _, folder := range []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "browser"), filepath.Join(state, "cache"), filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "hooks"), filepath.Join(hermesHome, "plugins"), filepath.Join(hermesHome, "memories")} {
+	folders := []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "cache"), filepath.Join(hermesHome, "memories")}
+	if !managed {
+		folders = []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "browser"), filepath.Join(state, "cache"), filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "hooks"), filepath.Join(hermesHome, "plugins"), filepath.Join(hermesHome, "memories")}
+	}
+	for _, folder := range folders {
 		if err := os.MkdirAll(folder, 0770); err != nil {
 			return false, err
 		}
@@ -207,11 +277,14 @@ func superviseOnce(mode string) (bool, error) {
 	configDst := filepath.Join(hermesHome, "config.yaml")
 	if effectiveConfigWritable(configDst) {
 		var configErr error
-		if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
-			configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, materializeOptionsFromEnv())
-		} else {
-			// No rendered source mount (legacy/test run): mutate in place.
-			configErr = stack.ApplyHermesConfig(configDst, materializeOptionsFromEnv())
+		var opts stack.MaterializeOptions
+		if opts, configErr = materializeOptionsFromEnv(); configErr == nil {
+			if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
+				configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, opts)
+			} else {
+				// No rendered source mount (legacy/test run): mutate in place.
+				configErr = stack.ApplyHermesConfig(configDst, opts)
+			}
 		}
 		if configErr != nil {
 			return false, configErr

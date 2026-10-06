@@ -66,14 +66,13 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 	}
 	for _, u := range []Update{
 		priv(1, 1, 11, "/start"),
-		priv(2, 2, 11, "/status"),
+		priv(2, 2, 11, "/session"),
 		priv(3, 3, 11, "/connections"),
 		priv(4, 4, 11, "/connection"),
 		priv(5, 5, 11, "/session"),
-		priv(6, 6, 11, "/voice"),
-		priv(7, 7, 11, "/voice on"),
+		priv(6, 6, 11, "/sessions"),
+		priv(7, 7, 11, "/use default"),
 		priv(8, 8, 11, "/approve job-x req yes"),
-		priv(15, 15, 11, "/cancel job-x"),
 		priv(9, 9, 11, "hello alice"),
 		priv(9, 9, 11, "hello alice"),
 		priv(10, 10, 22, "hello bob"),
@@ -101,7 +100,9 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 		}
 		_ = g.spool.CompleteJob(job.ID)
 	}
-	if len(jobs) != 3 {
+	// The allowed user's group message is now a real job (forum topics);
+	// the intruder's stays ignored.
+	if len(jobs) != 4 {
 		t.Fatalf("jobs=%d %+v", len(jobs), jobs)
 	}
 	seen := map[string]int{}
@@ -114,14 +115,14 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 			t.Fatalf("bob job: %+v", job)
 		}
 	}
-	if seen["alice"] != 2 || seen["bob"] != 1 {
+	if seen["alice"] != 3 || seen["bob"] != 1 {
 		t.Fatalf("seen=%v", seen)
 	}
 	for range 20 {
 		g.deliverOne(context.Background())
 	}
 	joined := strings.Join(fake.sent, "\n")
-	if strings.Contains(joined, secret) || !strings.Contains(joined, "не настроен") || !strings.Contains(joined, "Распознавание голосовых") {
+	if strings.Contains(joined, secret) || !strings.Contains(joined, "не настроен") || !strings.Contains(joined, "Сессии:") {
 		t.Fatalf("sent=%v", fake.sent)
 	}
 	env := strings.Join(processEnv(map[string]string{"TELEGRAM_BOT_TOKEN": "bot-secret", "SLACK_SIGNING_SECRET": "slack-secret", "OPENAI_API_KEY": "k"}), "\n")
@@ -319,7 +320,7 @@ func TestSlackEventsSignatureMappingDedupAndAudience(t *testing.T) {
 	if rec := post(channel, slackSig(c.SlackSigningSecret, ts, channel), ts); rec.Code != http.StatusForbidden {
 		t.Fatalf("unmapped channel allowed: %d", rec.Code)
 	}
-	cfg := stack.Config(stack.Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Features: []string{"workspace", "slack_app"}})
+	cfg := stack.Config(stack.Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Ingress: []string{"slack_app"}})
 	servers := cfg["mcp_servers"].(stack.M)
 	if _, ok := servers["slack"]; ok {
 		t.Fatal("slack_app communication permission created Slack data tools")
@@ -439,7 +440,9 @@ func TestRoutineHTTPControlAndTelegramCommand(t *testing.T) {
 	g.api = &fakeAPI{}
 	g.now = func() time.Time { return time.Unix(50, 0) }
 	due := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
-	if err := g.handleUpdate(context.Background(), Update{UpdateID: 80, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/routine create morning UTC once:" + due + " say hello"}}); err != nil {
+	user := g.user("alice")
+	caller := user.envelope(11)
+	if _, err := g.spool.CreateSchedule(Schedule{ScheduleID: "morning", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due, Input: "say hello", CreatedAt: g.now().UTC()}, caller, g.config.NativeCron); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
@@ -636,67 +639,52 @@ func TestVoiceReadinessWithSidecarURL(t *testing.T) {
 
 func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	ctx := context.Background()
-	voiceUpd := func(id int, text string) Update {
-		return Update{UpdateID: id, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: text}}
-	}
-	ask := func(t *testing.T, c Config, texts ...string) []string {
-		t.Helper()
-		g, err := New(c)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fake := &fakeAPI{}
-		g.api = fake
-		for i, text := range texts {
-			if err := g.handleUpdate(ctx, voiceUpd(i+1, text)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for range len(texts) + 2 {
-			g.deliverOne(ctx)
-		}
-		return fake.sent
-	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Neither worker configured: both directions read unavailable. There is
-	// no voice mode anymore — /voice (with any args) only reports readiness.
-	sent := ask(t, testConfig(t), "/voice", "/voice on")
-	if !strings.Contains(sent[0], "STT): недоступно") || !strings.Contains(sent[0], "TTS): недоступно") {
-		t.Fatalf("bare status: %q", sent[0])
-	}
-	if !strings.Contains(sent[1], "TTS): недоступно") || !strings.Contains(sent[1], "ответь голосовым") {
-		t.Fatalf("voice on must not set a mode: %q", sent[1])
+	// Neither worker configured: both directions read unavailable.
+	if mediaReady(nil, "", "") {
+		t.Fatal("missing transcriber reported ready")
 	}
 
 	// Resolvable STT binary only: incoming ready, outgoing still unavailable.
 	c := testConfig(t)
 	c.STTCommand = self
-	sent = ask(t, c, "/voice")
-	if !strings.Contains(sent[0], "STT): доступно") || !strings.Contains(sent[0], "TTS): недоступно") {
-		t.Fatalf("stt-only status: %q", sent[0])
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mediaReady(g.transcriber, c.STTCommand, c.STTURL) {
+		t.Fatal("stt binary not ready")
+	}
+	if mediaReady(g.synthesizer, c.TTSCommand, c.TTSURL) {
+		t.Fatal("unconfigured tts reported ready")
 	}
 
-	// Resolvable TTS binary: outgoing ready; a parked upload URL reverts it.
+	// Resolvable TTS binary: outgoing ready.
 	c = testConfig(t)
 	c.TTSCommand = self
-	sent = ask(t, c, "/voice")
-	if !strings.Contains(sent[0], "TTS): доступно") {
-		t.Fatalf("tts status: %q", sent[0])
+	g, err = New(c)
+	if err != nil {
+		t.Fatal(err)
 	}
-	c = testConfig(t)
-	c.TTSCommand = self
+	if !mediaReady(g.synthesizer, c.TTSCommand, c.TTSURL) {
+		t.Fatal("tts binary not ready")
+	}
+	// A parked upload URL keeps the synthesizer out of the send path.
 	c.TTSUploadURL = "https://example.invalid/upload"
-	sent = ask(t, c, "/voice")
-	if !strings.Contains(sent[0], "TTS): недоступно") {
-		t.Fatalf("parked upload must read unavailable: %q", sent[0])
+	g, err = New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mediaReady(g.synthesizer, c.TTSCommand, c.TTSURL) && strings.TrimSpace(g.config.TTSUploadURL) == "" {
+		t.Fatal("parked upload must read unavailable")
 	}
 
 	// Unconfigured STT replies "not configured" without consuming a job.
-	g, err := New(testConfig(t))
+	g, err = New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

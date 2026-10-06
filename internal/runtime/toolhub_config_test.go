@@ -27,7 +27,11 @@ func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(dir, "config.yaml")
-	if err := stack.MaterializeHermesConfig(source, dest, materializeOptionsFromEnv()); err != nil {
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(dest)
@@ -38,7 +42,11 @@ func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", "http://127.0.0.1:8090/mcp")
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
 	t.Setenv("HUB_TOOLHUB_RECONNECT", "")
-	if err := stack.MaterializeHermesConfig(source, dest, materializeOptionsFromEnv()); err != nil {
+	opts, err = materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatal(err)
 	}
 	body, err = os.ReadFile(dest)
@@ -50,12 +58,36 @@ func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 		t.Fatalf("ToolHub config leaked or omitted token reference: %s", text)
 	}
 	t.Setenv("HUB_TOOLHUB_RECONNECT", "false")
-	if err := stack.MaterializeHermesConfig(source, dest, materializeOptionsFromEnv()); err != nil {
+	opts, err = materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatal(err)
 	}
 	body, err = os.ReadFile(dest)
 	if err != nil || strings.Contains(string(body), "mcp_reload_confirm") {
 		t.Fatalf("disabled reconnect still injected the approval: %s %v", body, err)
+	}
+}
+
+func TestMaterializeOptionsFromEnvCarriesNativeToolsets(t *testing.T) {
+	t.Setenv("HUB_CAPABILITY_MODE", "managed")
+	t.Setenv("HUB_NATIVE_TOOLSETS", "terminal, memory ,,todo")
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.Managed || len(opts.NativeToolsets) != 3 || opts.NativeToolsets[0] != "terminal" || opts.NativeToolsets[1] != "memory" || opts.NativeToolsets[2] != "todo" {
+		t.Fatalf("native toolsets lost in env transit: %+v", opts)
+	}
+	t.Setenv("HUB_NATIVE_TOOLSETS", "")
+	opts, err = materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opts.NativeToolsets; len(got) != 0 {
+		t.Fatalf("empty env produced grants: %v", got)
 	}
 }
 

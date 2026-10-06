@@ -1,0 +1,43 @@
+change: CHG-0070-managed-cutover
+status: in-progress
+phase: code
+updated: "2026-10"
+owner: operator
+summary: >
+  P4 executor hardening committed (75db9ba). Managed workspace is now a
+  durable bind (managed/<env>/workspace, compose + supervisor + normalize),
+  fine-grained capability ids live in the agenttools catalog with family
+  matching for ro grants, and a reviewed egress-relay (hub-runtime
+  egress-relay, host allowlist, CONNECT:443 + http forward) gives managed
+  web/media/communication paths without opening the agent network.
+done:
+  - P4 executor: durable leases, cancel frames, process-tree kill, detached cleanup (committed 75db9ba)
+  - agenttools catalog: operation-level capability ids + family-prefix ro matching
+  - render: managed workspace bind, egress-relay service, managed env proxy/media/comm keys
+  - supervisor: managed workspace bind + normalize managed/<env>/workspace
+  - hermes_capability: managed config emits operator web provider selection for carved-out toolsets
+  - managed_isolation: verifies egress-relay when HUB_EGRESS_PROXY set
+next:
+  - just check + commit + push
+  - policy/profile generation + preview + publish + agent-tools binding
+  - split settings into agent.yaml+workspace.yaml (no hh/transcription/browser)
+  - migration script + cutover + end-to-end verification
+blockers: []
+rollback: legacy settings.yaml preserved; select-execution static restores unmanaged path
+cutover_progress:
+  - store: definition hub-agent-tools v1.0.0 + binding bind-6063a0658beb4f9eb1503a00
+  - policy telegram-8275678764-default-policy rev1 (26 rules) + profile rev1 (22 selections) confirmed in runtime/toolhub/store.json
+  - settings split: agent.yaml + workspace.yaml (schema 3); settings.yaml -> settings.yaml.unmanaged.bak
+  - managed/dev/ state migrated via migrate-managed-state.sh (cp+prune; Windows: use sh not bash=WSL, not tar=bsdtar)
+  - supervisor running on 0.0.0.0:8876 (killed stale hermes-hub-private hubctl-supervisor PID 30392)
+  - execution.dev.json applied: mode=supervisor url=http://host.docker.internal:8876 native_cron=disabled compat=0.3.0; cron snapshot pin verified 869228c, 0 active jobs
+  - render: hermes-runtime removed; model-relay/toolhub-relay/egress-relay present; agent net internal
+  - cutover.exe (.tmpgen) reproduces select-execution apply with volume-name spool proof (Windows named volumes have no host path)
+  - hubctl up: first attempt died on github fetch (HTTP/2 stream cancel); retry rebuilding 375MB apt layer
+  - pending: build completes, containers healthy, bot e2e, runtime spawn via supervisor, isolation+egress verify
+  - DEPLOYED: images patched host-side (github fetch died twice on ~110KB/s link; binaries built with identical CGO_ENABLED=0 -trimpath -s -w flags onto the same pinned-Hermes base, docker build patch layer). stack up: 9 containers healthy
+  - verified: agent net internal no-default-route; toolhub/model-relay/egress-relay resolve, cliproxy does not; egress CONNECT keenable=404(real) vs evil.example=denied; comm-hub->supervisor http://host.docker.internal:8876 authed OK
+  - LIVE e2e: Telegram messages answered end-to-end via managed spawn; capability projection lists 22 toolhub tools
+  - fixed: managed preflight web mismatch (HUB_MANAGED_WEB JSON transit) + HUB_CAPABILITY_ENVIRONMENT prod-in-dev (stack.Read -> ReadEnvironment), committed 4308da2
+  - found+fixed live: toolhub managed dispatch denied every call ("requires durable audit") — render now emits HUB_AUDIT_LEDGER=/state/toolhub/audit.jsonl; stale 20-min run reconciled and delivered
+  - watchdogs: HUB_SUPERVISOR_JOB_TIMEOUT (default 130s, supervisor->runtime HTTP) + HUB_RUN_STALL_TIMEOUT (default 15m, in-runtime updated_at/event stall detector with confirmed stop); supervisor passes stall env to spawned containers; docs + tests added

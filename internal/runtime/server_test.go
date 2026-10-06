@@ -107,6 +107,45 @@ func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 	}
 }
 
+func TestPersistentHermesForwardsAdmittedInstructions(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_ORGANIZATION_ID", "personal")
+	var gotInstructions any
+	var gotBody bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			gotBody = true
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			gotInstructions = body["instructions"]
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"run_id":"run-1","status":"started"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/run-1":
+			_, _ = w.Write([]byte(`{"status":"completed","output":"done"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	port := api.Listener.Addr().(*net.TCPAddr).Port
+	t.Setenv("HUB_HERMES_API_HOST", "127.0.0.1")
+	t.Setenv("HUB_HERMES_API_PORT", fmt.Sprint(port))
+	request := validExecuteRequest("alice", "personal", "styled-run", "hello")
+	request.Instructions = "Presentation style requested for this task:\nlaconic"
+	req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, request)))
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	rec := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !gotBody || gotInstructions != request.Instructions {
+		t.Fatalf("status=%d instructions=%v body=%s", rec.Code, gotInstructions, rec.Body.String())
+	}
+}
+
 func TestPersistentHermesCancellationStopsAdmittedRun(t *testing.T) {
 	var stopped atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -549,6 +588,57 @@ func TestRuntimeRestartOnlySchedulesWithPendingRequest(t *testing.T) {
 	}
 }
 
+// /v1/restart-request writes the deferred marker without signaling the
+// process: the supervisor uses it after a projection change on a busy
+// runtime, and the post-delivery /v1/restart poll consumes it later.
+func TestRuntimeRestartRequestWritesMarkerWithoutSignaling(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	called := make(chan struct{}, 1)
+	oldSignal := signalRuntimeProcess
+	signalRuntimeProcess = func() { called <- struct{}{} }
+	defer func() { signalRuntimeProcess = oldSignal }()
+	handler := runtimeHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/restart-request", nil)
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":true`) {
+		t.Fatalf("restart-request response: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "restart.request")); err != nil {
+		t.Fatal("restart marker was not written")
+	}
+	select {
+	case <-called:
+		t.Fatal("restart-request signaled the process instead of deferring")
+	case <-time.After(50 * time.Millisecond):
+	}
+	// Unauthorized and wrong-method requests write nothing.
+	for _, attempt := range []func() *httptest.ResponseRecorder{
+		func() *httptest.ResponseRecorder {
+			r := httptest.NewRequest(http.MethodPost, "/v1/restart-request", nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w
+		},
+		func() *httptest.ResponseRecorder {
+			r := httptest.NewRequest(http.MethodGet, "/v1/restart-request", nil)
+			r.Header.Set("Authorization", "Bearer runtime-secret")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w
+		},
+	} {
+		if w := attempt(); w.Code != http.StatusUnauthorized {
+			t.Fatalf("restart-request rejected with %d, want 401", w.Code)
+		}
+	}
+}
+
 func TestSelfEnvProtectedFormUpdatesBoundRuntimeOnly(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_USER_ID", "alice")
@@ -599,6 +689,24 @@ func TestSelfEnvProtectedFormUpdatesBoundRuntimeOnly(t *testing.T) {
 	}
 }
 
+func TestManagedRuntimeRejectsSelfEnvironmentUpdate(t *testing.T) {
+	t.Setenv("HUB_CAPABILITY_MODE", "managed")
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	request := httptest.NewRequest(http.MethodPost, "/v1/self-env", strings.NewReader(`{}`))
+	request.Header.Set("Authorization", "Bearer runtime-secret")
+	recorder := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("managed self-env status=%d", recorder.Code)
+	}
+	if _, err := os.Stat(filepath.Join(state, envstore.FileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed self-env wrote state: %v", err)
+	}
+}
+
 func TestHermesGatewayEnvironmentPinsAuthenticatedAPI(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_HERMES_API_PORT", "9000")
@@ -627,6 +735,64 @@ func TestRuntimeReadyReportsUnavailableHermes(t *testing.T) {
 	runtimeHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unavailable readiness status=%d", rec.Code)
+	}
+}
+
+func TestPersistentHermesStallsWithoutProgress(t *testing.T) {
+	t.Setenv("HUB_RUN_STALL_TIMEOUT", "300ms")
+	stopped := false
+	stopCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusConflict)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "stall-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs/stall-1/stop":
+			stopCalls++
+			stopped = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/stall-1":
+			if stopped {
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "running", "updated_at": 1})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", Text: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "stalled") || stopCalls != 1 || result.Status != "cancelled" {
+		t.Fatalf("result=%+v err=%v stops=%d", result, err, stopCalls)
+	}
+}
+
+func TestDurationEnv(t *testing.T) {
+	t.Setenv("HUB_TEST_DURATION", "")
+	if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 5*time.Second {
+		t.Fatalf("empty fallback=%s", got)
+	}
+	t.Setenv("HUB_TEST_DURATION", "90s")
+	if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 90*time.Second {
+		t.Fatalf("duration parse=%s", got)
+	}
+	t.Setenv("HUB_TEST_DURATION", "45")
+	if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 45*time.Second {
+		t.Fatalf("bare seconds=%s", got)
+	}
+	for _, bad := range []string{"abc", "0", "-5s", "0s"} {
+		t.Setenv("HUB_TEST_DURATION", bad)
+		if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != 5*time.Second {
+			t.Fatalf("%q accepted=%s", bad, got)
+		}
 	}
 }
 

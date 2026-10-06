@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -21,12 +23,13 @@ func (g *Gateway) Handler() http.Handler {
 }
 
 func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
-	if g.config.ControlAuth == "" || r.Header.Get("Authorization") != "Bearer "+g.config.ControlAuth {
-		return identity.Envelope{}, false
-	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	principal := r.Header.Get("X-Hub-Principal")
 	if principal == "" {
 		principal = r.Header.Get("X-Hub-User")
+	}
+	if !g.controlTokenAccepted(token, &principal) {
+		return identity.Envelope{}, false
 	}
 	user := g.user(principal)
 	if user.ID == "" {
@@ -39,6 +42,45 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 		return user.slackEnvelope(user.SlackIDs[0].TeamID, user.SlackIDs[0].UserID), true
 	}
 	return identity.Envelope{}, false
+}
+
+// controlTokenAccepted checks the primary control bearer and, when a tokens
+// file is configured, the enrolled sibling-space runtime tokens. The file is
+// re-read on every call: enrollment rewrites it in place and control-plane
+// calls are rare, so freshness beats caching. A matched sibling token pins
+// the caller principal to the enrolled envelope — a borrowed token can never
+// claim a different user's identity through the header.
+func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
+	if token == "" {
+		return false
+	}
+	if g.config.ControlAuth != "" && token == g.config.ControlAuth {
+		return true
+	}
+	if slices.Contains(g.config.controlAuthExtra, token) {
+		return true
+	}
+	path := strings.TrimSpace(g.config.ControlTokensFile)
+	if path == "" {
+		return false
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || len(body) > 1<<20 {
+		return false
+	}
+	var entries map[string]identity.Envelope
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return false
+	}
+	env, ok := entries[token]
+	if !ok {
+		return false
+	}
+	if env.Validate(env.PrincipalID, env.ContextID, env.RuntimeID, env.PolicyVersion) != nil {
+		return false
+	}
+	*principal = env.PrincipalID
+	return true
 }
 
 func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
@@ -139,53 +181,4 @@ func decodeJSON(r *http.Request, v any) error {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func (g *Gateway) routineCommand(user User, sender, chatID int64, text string) string {
-	fields := strings.Fields(text)
-	caller := user.envelope(sender)
-	if len(fields) < 2 {
-		return "Используйте /routine list|create|pause|delete."
-	}
-	switch strings.ToLower(fields[1]) {
-	case "list":
-		items, err := g.spool.ListSchedules(caller)
-		if err != nil {
-			return "Не удалось получить расписания."
-		}
-		if len(items) == 0 {
-			return "Нет расписаний."
-		}
-		lines := []string{"Расписания:"}
-		for _, item := range items {
-			state := "on"
-			if item.Paused || !item.Enabled {
-				state = "paused"
-			}
-			lines = append(lines, item.ScheduleID+" "+state+" "+item.Expression)
-		}
-		return strings.Join(lines, "\n")
-	case "create":
-		if len(fields) < 6 {
-			return "Используйте /routine create <id> <tz> <once:RFC3339|m h dom mon dow> <задание>."
-		}
-		input := strings.Join(fields[5:], " ")
-		_, err := g.spool.CreateSchedule(Schedule{ScheduleID: fields[2], Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: chatID, Timezone: fields[3], Expression: fields[4], Input: input, CreatedAt: g.now().UTC()}, caller, g.config.NativeCron)
-		if err != nil {
-			return "Расписание отклонено."
-		}
-		return "Расписание сохранено."
-	case "pause":
-		if len(fields) != 3 || g.spool.PauseSchedule(fields[2], caller) != nil {
-			return "Не удалось приостановить расписание."
-		}
-		return "Расписание приостановлено."
-	case "delete":
-		if len(fields) != 3 || g.spool.DeleteSchedule(fields[2], caller) != nil {
-			return "Не удалось удалить расписание."
-		}
-		return "Расписание удалено."
-	default:
-		return "Используйте /routine list|create|pause|delete."
-	}
 }

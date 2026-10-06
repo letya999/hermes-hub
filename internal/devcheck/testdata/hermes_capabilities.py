@@ -1,0 +1,458 @@
+"""Pinned-upstream integration fixture, launched only by the Go devcheck driver.
+
+No user mounts, external network, real credentials, upstream patches or mocked
+Hermes dispatch. A loopback HTTP model fixture deliberately emits forbidden calls.
+This proves the selected admission paths, not container escape resistance or the
+future ToolHub policy. JSON output contains only synthetic evidence and inventory.
+"""
+
+import hashlib
+import inspect
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import threading
+import time
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PIN = sys.argv[1]
+assert Path("/opt/hermes/.git/HEAD").read_text().strip() == PIN, "wrong upstream pin"
+home = Path(os.environ["HERMES_HOME"])
+home.mkdir(parents=True, exist_ok=True)
+Path(os.environ["HOME"]).mkdir(parents=True, exist_ok=True)
+canary = Path("/tmp/capability-canary")
+canary.write_text("unchanged")
+
+import yaml
+from tools.registry import discover_builtin_tools, registry
+from toolsets import TOOLSETS, resolve_toolset
+from hermes_cli.tools_config import _get_platform_tools
+from model_tools import get_tool_definitions
+from gateway.config import Platform, PlatformConfig
+
+imported_modules = discover_builtin_tools()
+registered = sorted(registry.get_all_tool_names())
+members = {name: sorted(resolve_toolset(name)) for name in sorted(TOOLSETS)}
+inventory = {
+    "registered": registered,
+    "entries": {entry.name: {
+        "toolset": entry.toolset, "schema": entry.schema,
+        "requires_env": entry.requires_env,
+        "conditional": entry.check_fn is not None,
+        "dynamic_schema": entry.dynamic_schema_overrides is not None,
+    } for entry in registry.get_all_entries()},
+    "aliases": registry.get_registered_toolset_aliases(),
+    "imported_modules": sorted(imported_modules),
+    # Hash source even when optional module imports fail. A registry-only diff
+    # cannot detect a conditional registration in an unimportable module.
+    "tool_sources": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                     for path in sorted(Path("/opt/hermes/tools").glob("*.py"))},
+    "toolsets": members,
+    "declared": sorted({tool for group in members.values() for tool in group}),
+}
+assert "terminal" in registered and "write_file" in registered
+platforms = sorted({"cli", "cron", "subagent"} | {item.value for item in Platform})
+disabled = sorted(set(TOOLSETS) | {registry.get_toolset_for_tool(name) for name in registered} - {None})
+config = json.loads(sys.argv[2])
+assert sorted(config["platform_toolsets"]) == platforms, "rendered platform inventory drift"
+assert all(not config["platform_toolsets"][platform] for platform in platforms), "native platform enabled"
+assert sorted(config["agent"]["disabled_toolsets"]) == disabled, "rendered disabled-toolset inventory drift"
+assert not config["mcp_servers"] and config["plugins"]["enabled"] == [], "unreviewed extensions"
+assert config["memory"] == {"memory_enabled": False, "user_profile_enabled": False}
+assert config["stt"]["enabled"] is False and config["security"]["allow_lazy_installs"] is False
+
+# A valid on-disk hook executes at discovery despite hooks: {} in YAML. The
+# managed runtime must therefore mount an empty, host-validated hook root.
+hook_dir = home / "hooks" / "synthetic_probe"
+hook_dir.mkdir(parents=True)
+(hook_dir / "HOOK.yaml").write_text("name: synthetic_probe\nevents: [gateway:startup]\n")
+hook_canary = Path("/tmp/hook-canary")
+(hook_dir / "handler.py").write_text(
+    "from pathlib import Path\nPath('/tmp/hook-canary').write_text('executed')\n"
+    "def handle(event_type, context):\n    return None\n"
+)
+from gateway.hooks import HookRegistry
+HookRegistry().discover_and_load()
+assert hook_canary.read_text() == "executed", "on-disk hook startup path changed"
+(hook_dir / "handler.py").unlink()
+(hook_dir / "HOOK.yaml").unlink()
+hook_dir.rmdir()
+hook_canary.unlink()
+
+
+def definitions(cfg, platform):
+    groups = sorted(_get_platform_tools(cfg, platform))
+    tools = get_tool_definitions(
+        enabled_toolsets=groups,
+        disabled_toolsets=cfg.get("agent", {}).get("disabled_toolsets", []),
+        quiet_mode=True,
+    )
+    return groups, [tool["function"]["name"] for tool in tools]
+
+
+# The negative control catches a broken probe that always reports no tools.
+fallback = _get_platform_tools({"platform_toolsets": {"cli": []}}, "api_server")
+assert "terminal" in fallback and "file" in fallback, "negative control failed"
+empty_surfaces = {}
+for platform in platforms:
+    groups, names = definitions(config, platform)
+    assert not groups and not names, (platform, groups, names)
+    empty_surfaces[platform] = names
+
+# Other launch routes: persisted cron jobs carry per-job enabled_toolsets and a
+# resolution failure falls back to the full default set. Both lose to the config
+# denylist, which _select_tool_names subtracts last. Run before the synthetic
+# registry entries below: an unlisted runtime toolset would survive enabled=None
+# by design, and the probe must measure the managed config alone.
+from cron.scheduler import _resolve_cron_disabled_toolsets, _resolve_cron_enabled_toolsets
+cron_disabled = _resolve_cron_disabled_toolsets(config)
+assert set(disabled) <= set(cron_disabled), "cron denylist misses managed toolsets"
+cron_cases = {
+    "per-job": _resolve_cron_enabled_toolsets(
+        {"enabled_toolsets": ["terminal", "file", "web", "hermes-cli", "mcp-forged"]}, config),
+    "platform": _resolve_cron_enabled_toolsets({}, config),
+    "fallback": None,
+}
+for label, enabled in cron_cases.items():
+    names = [t["function"]["name"] for t in get_tool_definitions(
+        enabled_toolsets=enabled, disabled_toolsets=cron_disabled, quiet_mode=True)]
+    assert not names, ("cron", label, names)
+
+# Delegation: a zero-profile parent's child intersects the parent's expanded
+# toolsets and inherits its denylist. The documented orchestrator role re-adds
+# "delegation" unconditionally; the managed denylist may only lose to that
+# carve-out, never to a requested or defaulted list.
+from tools.delegate_tool_toolsets import _resolve_child_toolsets
+
+
+class _ZeroParent:  # api-server agent shape: explicit empty enable list
+    enabled_toolsets = []
+    valid_tool_names = set()
+    disabled_toolsets = list(disabled)
+
+
+class _UnsetParent:  # enabled=None exercises the DEFAULT_TOOLSETS fallback
+    enabled_toolsets = None
+    valid_tool_names = set()
+    disabled_toolsets = list(disabled)
+
+
+delegate_child_tools = {}
+for role in ("worker", "orchestrator"):
+    c_enabled, c_disabled = _resolve_child_toolsets(
+        _ZeroParent(), ["terminal", "file", "web", "delegation"], role)
+    c_names = {t["function"]["name"] for t in get_tool_definitions(
+        enabled_toolsets=c_enabled, disabled_toolsets=c_disabled, quiet_mode=True)}
+    assert c_names <= {"delegate_task"}, (role, c_names)
+    delegate_child_tools[role] = sorted(c_names)
+u_enabled, u_disabled = _resolve_child_toolsets(_UnsetParent(), None, "worker")
+assert set(u_enabled) == {"terminal", "file", "web"}, "DEFAULT_TOOLSETS fallback changed"
+assert not get_tool_definitions(enabled_toolsets=u_enabled, disabled_toolsets=u_disabled, quiet_mode=True), \
+    "delegate default fallback survived the managed denylist"
+
+# Startup ingress beyond extension dirs: ~/.hermes/.env loads with override=True
+# at gateway start and again per turn, so a writable-state .env would re-point
+# pinned env after the host-side attestation. Demonstrate the mechanism on a
+# synthetic home; the managed launcher denies both files' presence.
+dotenv_home = Path("/tmp/dotenv-demo")
+dotenv_home.mkdir()
+(dotenv_home / ".env").write_text("CAPPROBE_SENTINEL=overridden\nHERMES_BUNDLES_DIR=/tmp/evil\n")
+bundles_prev = os.environ.get("HERMES_BUNDLES_DIR")
+os.environ["CAPPROBE_SENTINEL"] = "original"
+os.environ["HERMES_BUNDLES_DIR"] = "/pinned"
+from hermes_cli.env_loader import load_hermes_dotenv
+assert load_hermes_dotenv(hermes_home=str(dotenv_home), load_external_secrets=False), "dotenv not loaded"
+dotenv_override = (os.environ.get("CAPPROBE_SENTINEL") == "overridden"
+                   and os.environ.get("HERMES_BUNDLES_DIR") == "/tmp/evil")
+os.environ.pop("CAPPROBE_SENTINEL", None)
+if bundles_prev is None:
+    os.environ.pop("HERMES_BUNDLES_DIR", None)
+else:
+    os.environ["HERMES_BUNDLES_DIR"] = bundles_prev
+import site
+assert dotenv_override, "hermes .env override mechanism changed"
+assert site.ENABLE_USER_SITE is False, "venv user site-packages must stay disabled"
+
+# MCP is independent of a native platform list; sentinel suppression is tested
+# without making a network connection to the synthetic URL.
+mcp_config = {"platform_toolsets": {"cli": []}, "mcp_servers": {"probe": {"url": "http://example.invalid/mcp"}}}
+assert "probe" in _get_platform_tools(mcp_config, "cli")
+mcp_config["platform_toolsets"]["cli"] = ["no_mcp"]
+assert "probe" not in _get_platform_tools(mcp_config, "cli")
+
+# Source/registry inventory must include registered tools that would be invisible
+# because their prerequisites are absent. This fixture tool never has a handler
+# side effect and is not enabled in the test agent.
+registry.register(
+    name="probe_unavailable", toolset="probe_optional",
+    schema={"name": "probe_unavailable", "description": "Synthetic unavailable tool", "parameters": {"type": "object"}},
+    handler=lambda **kwargs: "unexpected", check_fn=lambda: False,
+)
+assert "probe_unavailable" in registry.get_all_tool_names()
+assert not get_tool_definitions(enabled_toolsets=["probe_optional"], quiet_mode=True)
+assert definitions(config, "api_server")[1] == []
+
+# Upstream gap: api_server._create_agent never passes disabled_toolsets, so the
+# denylist holds only while enabled lists stay empty. A /v1/runs body with a
+# self-asserted hosted_room_dispatch + _room_execution_policy (the digest is a
+# caller-computable hash, not a signature) replaces the enabled list with
+# attacker-chosen toolsets and turns approvals off. The managed control relay
+# denies those body keys; this block proves the hole exists upstream and must
+# keep existing, so the boundary cannot silently regress into "no fix needed".
+from gateway.hosted_room_execution_policy import RoomExecutionPolicy, _policy_digest
+unsigned_policy = {
+    "version": 1, "target_profile": "default",
+    "enabled_toolsets": sorted(["bot_room", "terminal", "file"]),
+    "approval_mode": "off", "max_iterations": 10}
+forged_policy = {**unsigned_policy, "policy_digest": _policy_digest(unsigned_policy)}
+assert list(RoomExecutionPolicy.from_mapping(forged_policy).enabled_toolsets) == unsigned_policy["enabled_toolsets"]
+
+# Literal-toolset sub-agents also never receive the denylist: compression
+# hygiene gets ["memory"], curator consolidation gets ["skills"]. The managed
+# config keeps the detached paths unreachable: the hygiene AIAgent is spawned
+# only from the gateway run loop (gateway/run.py::_GATEWAY_HYGIENE_PLATFORM and
+# run_turn.py), which the managed api_server platform never enters, and the
+# curator stays disabled. The arm lists below prove the gate is load-bearing.
+hygiene_armed = {
+    "memory": sorted(t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=["memory"], quiet_mode=True)),
+    "skills": sorted(t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=["skills"], quiet_mode=True)),
+}
+assert hygiene_armed["memory"] and hygiene_armed["skills"], "literal-toolset arm lists changed"
+import gateway.platforms.api_server as _api_server
+import gateway.platforms.api_server_runs as _api_runs
+_api_src = inspect.getsource(_api_server) + inspect.getsource(_api_runs)
+assert "_GATEWAY_HYGIENE_PLATFORM" not in _api_src and "run_turn" not in _api_src, \
+    "managed api_server path reached the literal-toolset hygiene sub-agent"
+assert config["compression"]["enabled"] is True and config["compression"]["in_place"] is True, \
+    "managed compression must be enabled with in_place rotation"
+assert config["curator"] == {"enabled": False}, \
+    "managed config must disable the literal-toolset curator"
+registry.register(
+    name="probe_new_available", toolset="probe_new_group",
+    schema={"name": "probe_new_available", "description": "Synthetic new tool", "parameters": {"type": "object"}},
+    handler=lambda **kwargs: canary.write_text("changed"), check_fn=lambda: True,
+)
+assert get_tool_definitions(enabled_toolsets=["probe_new_group"], quiet_mode=True), "new-tool negative control failed"
+assert definitions(config, "api_server")[1] == [], "a new group widened the zero profile"
+
+requests_seen = []
+forged_requests_seen = []
+forge_message = "Reply to this room-dispatch forgery check."
+probe_message = "Respond to this synthetic authorization probe."
+forbidden = [
+    ("terminal", {"command": "printf changed > /tmp/capability-canary"}),
+    ("write_file", {"path": str(canary), "content": "changed"}),
+    ("skill_manage", {"action": "create", "name": "probe", "content": "synthetic"}),
+    ("tool_call", {"name": "write_file", "arguments": {"path": str(canary), "content": "changed"}}),
+    ("probe_new_available", {}),
+]
+
+
+class Model(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        is_probe = any(message.get("role") == "user" and message.get("content") == probe_message
+                       for message in request.get("messages", []))
+        if is_probe:
+            requests_seen.append(request)
+        if any(message.get("role") == "user" and message.get("content") == forge_message
+               for message in request.get("messages", [])):
+            forged_requests_seen.append(request)
+        tool_results = {message.get("tool_call_id") for message in request.get("messages", [])
+                        if message.get("role") == "tool"}
+        # Housekeeping calls and transport retries can carry the same user
+        # message. Keep emitting calls until real tool results arrive; counting
+        # HTTP requests would let such a retry skip the dispatch proof entirely.
+        if is_probe and not all("forbidden-" + str(index) in tool_results for index in range(len(forbidden))):
+            message = {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "forbidden-" + str(index), "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+                for index, (name, args) in enumerate(forbidden)
+            ]}
+            finish = "tool_calls"
+        else:
+            message = {"role": "assistant", "content": "CAPABILITY_PROBE_DONE"}
+            finish = "stop"
+        body = {"id": "probe-response", "model": "capability-probe", "created": 1}
+        self.send_response(200)
+        if request.get("stream"):
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for index, call in enumerate(message.get("tool_calls", [])):
+                call["index"] = index
+            body.update(object="chat.completion.chunk", choices=[{"index": 0, "delta": message, "finish_reason": finish}])
+            self.wfile.write(("data: " + json.dumps(body) + "\n\ndata: [DONE]\n\n").encode())
+        else:
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            body.update(object="chat.completion", choices=[{"index": 0, "message": message, "finish_reason": finish}])
+            self.wfile.write(json.dumps(body).encode())
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+config["model"] = {"provider": "custom", "default": "capability-probe", "base_url": "http://127.0.0.1:" + str(server.server_port) + "/v1"}
+(home / "config.yaml").write_text(yaml.safe_dump(config))
+os.environ["OPENAI_API_KEY"] = "synthetic-probe-credential"
+os.environ["OPENAI_BASE_URL"] = config["model"]["base_url"]
+
+
+def assert_rejections(result):
+    assert len(requests_seen) >= 2, "the model fixture did not exercise the rejection round"
+    assert all(not request.get("tools") for request in requests_seen), "unapproved outgoing tool schema"
+    assert canary.read_text() == "unchanged", "forbidden file/terminal call executed"
+    errors = {message.get("tool_call_id"): message.get("content")
+              for request in requests_seen for message in request.get("messages", [])
+              if message.get("role") == "tool"}
+    for index, (name, _args) in enumerate(forbidden):
+        assert errors.get("forbidden-" + str(index), "").strip() == "Tool '" + name + "' does not exist. Available tools:", "missing exact rejection evidence for " + name
+    assert "CAPABILITY_PROBE_DONE" in json.dumps(result), "conversation failed before completion"
+
+
+def api_request(path, data=None, authenticated=True):
+    headers = {"Content-Type": "application/json"}
+    if authenticated:
+        headers["Authorization"] = "Bearer synthetic-capability-api-credential"
+    request = Request("http://127.0.0.1:9125" + path, headers=headers,
+                      data=json.dumps(data).encode() if data is not None else None)
+    with urlopen(request, timeout=10) as response:
+        return response.status, json.load(response)
+
+
+gateway = None
+gateway_log = None
+try:
+    from gateway.platforms.api_server import APIServerAdapter
+    adapter = APIServerAdapter(PlatformConfig())
+    agent = adapter._create_agent(session_id="capability-probe")
+    assert agent.tools == [] and agent.valid_tool_names == set(), "API construction widened zero profile"
+    # Upstream gap, recorded: the same constructor arms attacker-chosen toolsets
+    # for a self-signed room dispatch/policy body because disabled_toolsets is
+    # never consulted on this path. The managed boundary is the control relay,
+    # which denies both body keys before Hermes can see them.
+    room_forged_agent = adapter._create_agent(
+        session_id="capability-forge", room_dispatch={}, room_execution_policy=forged_policy)
+    room_forged_armed = sorted(room_forged_agent.valid_tool_names)
+    assert room_forged_armed and "terminal" in room_forged_armed, "room policy forgery no longer arms tools"
+    from hermes_cli.config import load_config as _load_managed_config
+    from agent import curator as _curator
+    _managed_config = _load_managed_config()
+    assert _managed_config.get("compression", {}).get("enabled") is True, "managed compression gate drifted"
+    assert not _curator.is_enabled() and not _curator.should_run_now(), "managed curator gate drifted"
+    result = agent.run_conversation(probe_message)
+    assert_rejections(result)
+    agent_request_count = len(requests_seen)
+    requests_seen.clear()
+
+    # Exercise the same HTTP admission route used by hub-runtime in a separate
+    # native process. The Go container boundary still forbids external network.
+    gateway_log = Path("/tmp/gateway.log").open("w+")
+    gateway = subprocess.Popen(
+        ["hermes", "gateway", "run", "--no-supervise", "--force"],
+        stdout=gateway_log, stderr=subprocess.STDOUT,
+        env=dict(os.environ, API_SERVER_ENABLED="true", API_SERVER_HOST="127.0.0.1",
+                 API_SERVER_PORT="9125", API_SERVER_KEY="synthetic-capability-api-credential",
+                 HERMES_GATEWAY_NO_TTY="true"),
+    )
+    deadline = time.monotonic() + 60
+    while True:
+        assert gateway.poll() is None, "native gateway exited before admission"
+        try:
+            status, _ = api_request("/health")
+            if status == 200:
+                break
+        except (HTTPError, URLError, TimeoutError):
+            pass
+        assert time.monotonic() < deadline, "native API health deadline"
+        time.sleep(0.2)
+    run_body = {"input": probe_message, "session_id": "capability-http", "provider": "custom", "model": "capability-probe"}
+    try:
+        api_request("/v1/runs", run_body, authenticated=False)
+        raise AssertionError("unauthenticated run admitted")
+    except HTTPError as error:
+        assert error.code == 401, "unexpected unauthenticated run response"
+    status, _ = api_request("/api/sessions", {"id": "capability-http", "title": "Synthetic capability probe"})
+    assert status == 201, "synthetic session creation failed"
+    status, admission = api_request("/v1/runs", run_body)
+    assert status == 202 and admission.get("run_id"), "native run admission failed"
+    deadline = time.monotonic() + 60
+    while True:
+        status, result = api_request("/v1/runs/" + admission["run_id"])
+        assert status == 200, "native run lookup failed"
+        if result.get("status") in {"completed", "failed", "cancelled", "interrupted"}:
+            break
+        assert time.monotonic() < deadline, "native run completion deadline"
+        time.sleep(0.2)
+    assert result.get("status") == "completed", "native zero-profile run failed: " + str(result.get("status"))
+    assert_rejections(result)
+
+    # Wire-level proof of the upstream room-policy hole: a plain API-key caller
+    # can self-assert hosted_room_dispatch and _room_execution_policy. The
+    # managed boundary denies those keys in the control relay (unit-covered),
+    # so this run is expected to arm tools upstream and must keep doing so.
+    forged_requests_seen.clear()
+    forged_body = dict(run_body, hosted_room_dispatch={}, _room_execution_policy=forged_policy,
+                       input=forge_message)
+    status, admission = api_request("/v1/runs", forged_body)
+    assert status == 202 and admission.get("run_id"), "forged room-dispatch run not admitted upstream"
+    deadline = time.monotonic() + 60
+    while True:
+        status, result = api_request("/v1/runs/" + admission["run_id"])
+        assert status == 200, "forged run lookup failed"
+        if result.get("status") in {"completed", "failed", "cancelled", "interrupted"}:
+            break
+        assert time.monotonic() < deadline, "forged run completion deadline"
+        time.sleep(0.2)
+    room_forged_http_tools = sorted({tool["function"]["name"]
+                                   for request in forged_requests_seen
+                                   for tool in request.get("tools") or []
+                                   if isinstance(tool.get("function"), dict)})
+    assert "terminal" in room_forged_http_tools, "forged HTTP run did not arm tools upstream"
+finally:
+    if gateway is not None:
+        gateway.terminate()
+        try:
+            gateway.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            gateway.kill()
+            gateway.wait(timeout=5)
+    if gateway_log is not None:
+        if sys.exc_info()[0] is not None:
+            gateway_log.seek(0)
+            print("NATIVE_GATEWAY_DIAGNOSTICS=" + gateway_log.read()[-2000:], file=sys.stderr)
+        gateway_log.close()
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+encoded = json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode()
+print("CAPABILITY_REPORT=" + json.dumps({
+    "schema": 1,
+    "pin": PIN,
+    "inventory_sha256": hashlib.sha256(encoded).hexdigest(),
+    "inventory": inventory,
+    "empty_surfaces": empty_surfaces,
+    "api_agent_forged_calls_rejected": [name for name, _ in forbidden],
+    "api_http_forged_calls_rejected": [name for name, _ in forbidden],
+    "agent_fixture_requests": agent_request_count,
+    "http_fixture_requests": len(requests_seen),
+    "canary_unchanged": True,
+    "disk_hook_import_executed": True,
+    "cron_toolsets_denied": sorted(cron_cases),
+    "delegate_child_tools": delegate_child_tools,
+    "dotenv_override_executed": dotenv_override,
+    "user_site_disabled": not site.ENABLE_USER_SITE,
+    "room_forged_agent_armed": room_forged_armed,
+    "room_forged_http_armed": room_forged_http_tools,
+    "hygiene_armed": hygiene_armed,
+    "limits": ["No live provider", "Channel adapters and alternate entrypoints are resolver-only, not launched",
+               "Room-dispatch forgery is an unpatched upstream gap; the managed control relay denies its body keys",
+               "No mutable-grant revocation or OS isolation proof"],
+}, sort_keys=True))

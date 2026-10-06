@@ -1,0 +1,38 @@
+schema: 1
+change: CHG-0071-managed-voice-media-settings
+status: in-progress
+phase: deploy-verify
+started: 2026-10-06
+owner: operator
+done:
+  - internal/selfsettings package (reviewed allowlist, typed validation, atomic overlay)
+  - compression enabled + image_gen block in managed effective config
+  - settings_get/settings_set tools, settings family, catalog 1.1.0, digest 0e1e9ef2
+  - profile control_operations + self_install fields for managed GitHub MCP install
+  - spaces/telegram-480637186 created (infra:false, managed, 24 selections)
+  - communication.users.yaml with both Telegram IDs; sibling tokens accepted by comm-hub
+  - CI matrix publishes stt/tts images (commit 6711725, PR #231)
+  - both spaces re-rendered; store has rev2/rev1 profiles, 1.1.0 bindings
+  - sibling-token principal pinning + owner ControlAuth fix (comm-hub multi-user)
+  - user2 secrets trimmed to web/model keys only
+  - server images pulled under sha 0058ebb2… (dev, dev-control, stt, tts), tagged 0.3.0-dev*
+  - supervisor restarted on rebuilt hubctl; owner stack + user2 relays up
+  - comm-hub spool_dir fixed in communication.users.yaml; stack recreated
+  - LIVE: user1 managed runtime gen-183/185; user2 gen-184/186 on own internal net
+  - LIVE: settings_get both users → 21 keys; settings_set → overlay persisted → runtime restart → threshold_tokens=150000 in effective config
+  - LIVE: compression enabled in effective config (in_place, micro_compact off)
+  - LIVE: image_generate → 465KB artifact via hub-media→cliproxy→workspace
+  - LIVE: github-mcp-server prepare_source admitted for BOTH users (self-install grant; pinned commit 85598ba6); build in background; enable needs user's real GH token (human step by design)
+  - LIVE: hub-stt/hub-tts healthy on :8090; real TTS(ogg)→WAV→STT roundtrip transcribed
+  - LIVE: sibling token pin — user2 token + forged X-Hub-Principal=user1 resolved to user2 scope; owner cannot list user2 routines
+next:
+  - user-driven Telegram checks: /usage /sessions /connections /new /use in the real bot (no HTTP hook; comm-hub handles them in-band)
+  - finish github-mcp onboarding after user supplies GH credential (required_credentials → confirm → enable)
+  - voice note e2e via real Telegram message (comm-hub CommandTranscriber path)
+  - final just check + docs/state closeout
+notes:
+  - CI cancels superseded runs; only cb5de66 build is authoritative
+  - toolhub-tokens.json enrolls local + telegram-480637186 sibling tokens (test-owner-2 removed)
+  - comm ControlAuth = owner runtime token; supervisor token in controlAuthExtra; siblings via tokens file
+  - POST /v1/routines requires client-supplied schedule_id matching spoolIDPattern
+  - tts-worker: silero fails on en voice, espeak-ng fallback works; stt-worker takes WAV (RIFF) only

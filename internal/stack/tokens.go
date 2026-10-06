@@ -107,6 +107,12 @@ func runtimeTokenEnvelope(s Settings) (identity.Envelope, error) {
 		DeliveryTargetID:   "toolhub",
 		PolicyVersion:      PolicyVersion(s),
 	}
+	if s.CapabilityMode == "managed" {
+		if !idPattern.MatchString(s.CapabilityProfileID) || (s.Environment != "dev" && s.Environment != "prod") || s.CapabilityGeneration == 0 {
+			return identity.Envelope{}, fmt.Errorf("managed runtime token identity is incomplete")
+		}
+		envelope.CapabilityProfile, envelope.Environment, envelope.Generation = s.CapabilityProfileID, s.Environment, s.CapabilityGeneration
+	}
 	if err := envelope.Validate(envelope.PrincipalID, envelope.ContextID, envelope.RuntimeID, envelope.PolicyVersion); err != nil {
 		return identity.Envelope{}, err
 	}

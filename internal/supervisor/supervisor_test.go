@@ -224,6 +224,113 @@ func TestRestartSkipsAbsentRuntime(t *testing.T) {
 	}
 }
 
+// restartRequestHTTP is the ToolHub→supervisor bridge: it marks the owning
+// runtime's deferred-restart marker. Busy keeps the marker for the
+// post-delivery poll; idle applies /v1/restart immediately; absent is a no-op.
+func TestRestartRequestMarksOwnedRuntimeByState(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		state     State
+		wantApply bool
+	}{
+		{"busy defers", Busy, false},
+		{"idle applies", Idle, true},
+		{"ready applies", Ready, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			marked, applied := false, false
+			runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer secret" {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				switch r.URL.Path {
+				case "/v1/restart-request":
+					marked = true
+				case "/v1/restart":
+					applied = true
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer runtimeAPI.Close()
+			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+			normalized, err := m.normalize(binding(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.mu.Lock()
+			m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: tc.state}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+			m.mu.Unlock()
+			body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice", "runtime_id": "alice"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+			httpRequest.Header.Set("Authorization", "Bearer secret")
+			recorder := httptest.NewRecorder()
+			m.Handler().ServeHTTP(recorder, httpRequest)
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":true`) {
+				t.Fatalf("restart-request status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !marked || applied != tc.wantApply {
+				t.Fatalf("marked=%v applied=%v want applied=%v", marked, applied, tc.wantApply)
+			}
+		})
+	}
+}
+
+func TestRestartRequestSkipsAbsentRuntime(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":false`) {
+		t.Fatalf("absent runtime restart-request → %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRestartRequestCannotMarkAnotherPrincipal(t *testing.T) {
+	called := false
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	// Identity fields are lookup keys only: a request naming a different
+	// principal never reaches alice's runtime.
+	body, err := json.Marshal(map[string]string{"principal_id": "mallory", "context_id": "mallory", "runtime_id": "mallory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":false`) || called {
+		t.Fatalf("foreign principal reached a runtime: %d %s called=%v", recorder.Code, recorder.Body.String(), called)
+	}
+	// An unauthenticated request never reaches the handler at all.
+	httpRequest = httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	recorder = httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthed restart-request → %d, want 401", recorder.Code)
+	}
+}
+
 func TestArtifactForwardReachesOwningRuntime(t *testing.T) {
 	var gotName, gotAuth string
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +383,70 @@ func TestArtifactForwardReachesOwningRuntime(t *testing.T) {
 	delete(m.items, runtimeKey(normalized))
 	m.mu.Unlock()
 	if recorder := call("/v1/artifact", "secret", body); recorder.Code != http.StatusNotFound {
+		t.Fatalf("absent runtime=%d", recorder.Code)
+	}
+}
+
+func TestUsageForwardReachesOwningRuntime(t *testing.T) {
+	var gotAuth, gotConversation string
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var request hubruntime.UsageRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotConversation = request.ConversationID
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"hub.session_usage","session_id":"s-1","declared_session_id":"s-1","session_found":true,"source":"hermes_session_db"}`))
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	envelope.ConversationID = "telegram-11-t-aabbccdd"
+	request := hubruntime.UsageRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "usage", IdempotencyKey: "usage"}}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(target, auth string, body []byte) *httptest.ResponseRecorder {
+		httpRequest := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer "+auth)
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		return recorder
+	}
+	recorder := call("/v1/usage", "secret", body)
+	if recorder.Code != http.StatusOK || gotConversation != "telegram-11-t-aabbccdd" || gotAuth != "Bearer secret" {
+		t.Fatalf("forward status=%d conversation=%q auth=%q body=%q", recorder.Code, gotConversation, gotAuth, recorder.Body.String())
+	}
+	var report hubruntime.SessionUsage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &report); err != nil || report.SessionID != "s-1" || !report.SessionFound {
+		t.Fatalf("usage body=%s err=%v", recorder.Body.String(), err)
+	}
+	if recorder := call("/v1/usage", "wrong", body); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", recorder.Code)
+	}
+	foreign := request
+	foreign.UserID = "bob"
+	foreignBody, _ := json.Marshal(foreign)
+	if recorder := call("/v1/usage", "secret", foreignBody); recorder.Code != http.StatusConflict {
+		t.Fatalf("foreign binding=%d", recorder.Code)
+	}
+	m.mu.Lock()
+	delete(m.items, runtimeKey(normalized))
+	m.mu.Unlock()
+	// An absent runtime is ensured like a message would spawn it; in this
+	// environment the spawn fails, so the lookup surfaces as 503, not 404.
+	if recorder := call("/v1/usage", "secret", body); recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("absent runtime=%d", recorder.Code)
 	}
 }
@@ -1495,5 +1666,55 @@ func TestRunArgsHealsStubSoulAndEnrollsSibling(t *testing.T) {
 	soul, _ = os.ReadFile(filepath.Join(alice, "SOUL.md"))
 	if string(soul) != "mine\n" {
 		t.Fatalf("edited soul overwritten: %q", soul)
+	}
+}
+
+func TestDurationEnv(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", 5 * time.Second}, {"90s", 90 * time.Second}, {"10m", 10 * time.Minute},
+		{"45", 45 * time.Second}, {"abc", 5 * time.Second}, {"0", 5 * time.Second}, {"-5s", 5 * time.Second},
+	} {
+		t.Setenv("HUB_TEST_DURATION", tc.raw)
+		if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != tc.want {
+			t.Fatalf("durationEnv(%q)=%s want %s", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestRunArgsPassesStallTimeout(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	ctx := filepath.Join(root, "spaces", "alice")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{"runtime.auth": "HUB_RUNTIME_AUTH=secret\n", "hermes.dev.yaml": "model: {}"} {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	settings := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\n"
+	if err := os.WriteFile(filepath.Join(ctx, "settings.yaml"), []byte(settings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-alice", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(rawArgs, " "), "HUB_RUN_STALL_TIMEOUT") {
+		t.Fatal("stall timeout env propagated while unset")
+	}
+	t.Setenv("HUB_RUN_STALL_TIMEOUT", "90s")
+	rawArgs, err = m.runArgs(binding(ctx), "hermes-context-alice", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(rawArgs, " "), "HUB_RUN_STALL_TIMEOUT=90s") {
+		t.Fatalf("run args missing stall timeout: %s", strings.Join(rawArgs, " "))
 	}
 }

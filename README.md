@@ -13,7 +13,7 @@ release archive; Go is only needed when building from source. Linux example:
 
 ```bash
 ./bin/hubctl-linux-amd64 init --user artem
-# Edit spaces/artem/settings.yaml and spaces/artem/secrets.prod.env locally.
+# Edit spaces/artem/agent.yaml and spaces/artem/secrets.prod.env locally.
 ./bin/hubctl-linux-amd64 doctor --user artem
 ./bin/hubctl-linux-amd64 up --user artem --env prod
 ./bin/hubctl-linux-amd64 chat --user artem
@@ -28,10 +28,11 @@ agent image larger than the small Go CLI. The first build downloads pinned upstr
 ## Organizations, users and environments
 
 The namespace is **spaces/<id>** for both users and organizations. Every home has a
-`scope.yaml`; user homes also have `settings.yaml`, SOUL, secrets and persistent
+`scope.yaml`; user homes also have `agent.yaml` (runtime config) and
+`workspace.yaml` (capability intent), SOUL, secrets and persistent
 `hermes/`, `connections/`, `workspace/` and `archive/` directories. An organization
 home contains membership, approved features/MCP servers, shared material and policy.
-The user can narrow that policy with `disabled_mcp`, but cannot expand it. Public
+The user can narrow that policy by denying entries in `tools:` (`name: off`), but cannot expand it. Public
 authentication/routing is not part of this local control plane: the caller must map
 an authenticated principal to one user space before starting its runtime.
 
@@ -87,6 +88,13 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | Other services | Arbitrary configured stdio/HTTP MCP; external services remain external |
 
 Default features are workspace, browser, hh, web and deep_research. Image generation is the separate opt-in `image_gen` feature: provider, model, and delivery are configured there. Delivery `workspace` keeps the file in that user's workspace; delivery `url` returns the provider URL. All account integrations are opt-in.
+The frozen per-capability matrix — availability, surface, credentials,
+limits and revocation — is [SPEC-0040](specs/active/SPEC-0040-capability-profile.md).
+The accepted default-deny successor is [SPEC-0041](specs/active/SPEC-0041-default-deny-capabilities.md)
+with [isolation and acceptance requirements](specs/active/SPEC-0042-capability-isolation-and-proof.md).
+Implementation is in progress; the [audit](docs/capability-boundary-audit.md) and
+[phased plan](.work/in-progress/CHG-0065-capability-enforcement/plan.md) separate
+current evidence from the target guarantees.
 Hermes works without CareerGo and JobFetch. If you run an external MCP service, add
 its URL and token reference under mcp_servers; see [connections](docs/integrations.md).
 An explicit owner message containing connector `KEY=value` lines is intercepted

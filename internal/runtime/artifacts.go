@@ -60,6 +60,53 @@ var artifactMimes = map[string]string{
 
 func artifactRoot() string { return filepath.Join(workspace, "artifacts") }
 
+// runStartsDir keeps one zero-byte marker per admitted run; the file's mtime
+// is the run's start bound. observeHermesRun recovers it after an interruption
+// so scanArtifacts still attributes files the original run produced.
+func runStartsDir() string { return filepath.Join(state, "runstarts") }
+
+func markRunStart(runID string) {
+	if !validHermesRunID(runID) {
+		return
+	}
+	// /state exists only in a deployed runtime; refusing to create it keeps
+	// test runs from sprouting a stray directory on the host filesystem.
+	if info, err := os.Stat(state); err != nil || !info.IsDir() {
+		return
+	}
+	dir := runStartsDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, runID), nil, 0600)
+	// Sweep markers older than a day — runs never outlive that, and the
+	// directory would otherwise accumulate one file per admission.
+	cutoff := time.Now().Add(-24 * time.Hour)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
+// runStartFor returns the recorded admission bound for a recovered run, or the
+// zero time when no marker exists — scanArtifacts then lists nothing, exactly
+// like before the marker contract existed.
+func runStartFor(runID string) time.Time {
+	if !validHermesRunID(runID) {
+		return time.Time{}
+	}
+	info, err := os.Stat(filepath.Join(runStartsDir(), runID))
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
 // scanArtifacts lists files the run produced under artifacts/documents,
 // artifacts/images and artifacts/videos. The run-start timestamp bounds
 // attribution; a zero time (recovered observation) lists nothing.
@@ -165,11 +212,35 @@ func stageMediaArtifact(raw string) (ArtifactRef, bool) {
 	if !filepath.IsAbs(candidate) {
 		candidate = filepath.Join(root, filepath.FromSlash(candidate))
 	}
+	if !filepath.IsAbs(raw) && filepath.Base(filepath.FromSlash(raw)) == filepath.FromSlash(raw) {
+		// Models often emit a bare filename for a file they just wrote under
+		// artifacts/. Resolve those before treating the marker as missing.
+		for _, bucket := range []string{"images", "documents", "videos"} {
+			if alt := filepath.Join(root, "artifacts", bucket, filepath.FromSlash(raw)); fileExists(alt) {
+				candidate = alt
+				break
+			}
+		}
+	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return ArtifactRef{}, false
 	}
 	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil || resolved != resolvedRoot && !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
+		// Models routinely quote artifact paths under the agent home
+		// ($HOME/artifacts/...) although the tools tree is the workspace; remap
+		// a failed absolute candidate onto the artifacts root before giving up.
+		if filepath.IsAbs(raw) {
+			if i := strings.Index(filepath.ToSlash(candidate), "/artifacts/"); i >= 0 {
+				tail := filepath.ToSlash(candidate)[i+len("/artifacts/"):]
+				if alt, altErr := filepath.EvalSymlinks(filepath.Join(artifactRoot(), filepath.FromSlash(tail))); altErr == nil &&
+					strings.HasPrefix(alt, resolvedRoot+string(os.PathSeparator)) {
+					resolved, err = alt, nil
+				}
+			}
+		}
+	}
 	if err != nil || resolved != resolvedRoot && !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
 		return ArtifactRef{}, false
 	}
@@ -224,9 +295,19 @@ func copyBounded(src, dst string, size int64) error {
 }
 
 // mergeArtifacts combines window-scanned and MEDIA-referenced files, keeping
-// the first ref for each artifact path.
+// the first ref for each artifact path. A failed marker ref whose name a
+// delivered ref already carries is dropped: reporting "delivery failed" for a
+// file that did arrive is noise, not information.
 func mergeArtifacts(groups ...[]ArtifactRef) []ArtifactRef {
 	seen := map[string]bool{}
+	delivered := map[string]bool{}
+	for _, group := range groups {
+		for _, ref := range group {
+			if ref.Path != "" {
+				delivered[ref.Name] = true
+			}
+		}
+	}
 	var out []ArtifactRef
 	for _, group := range groups {
 		for _, ref := range group {
@@ -237,11 +318,19 @@ func mergeArtifacts(groups ...[]ArtifactRef) []ArtifactRef {
 			if seen[key] || len(out) >= artifactMaxCount {
 				continue
 			}
+			if ref.Path == "" && delivered[ref.Name] {
+				continue
+			}
 			seen[key] = true
 			out = append(out, ref)
 		}
 	}
 	return out
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func validArtifactRel(rel string) bool {

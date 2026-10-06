@@ -3,11 +3,22 @@
 Use todo / in-progress / done directories for active change folders. A folder contains
 plan.md and state.yaml. Task progress belongs here, never in current architecture docs.
 
-No changes are in progress. Follow-ups live as GitHub issues #73 (live ToolHive/VPS),
-#74 (Hermes reconnect), #166/#170/#172 (live channel acceptance evidence).
+The table tracks current change records. Issue 122's broader default-deny design
+is CHG-0065; its implementation is in progress. Issues 167-169 (task sessions,
+per-task style, measured usage) shipped as CHG-0066/0067/0068 and closed
+2026-10-06. Live deployment follow-ups
+also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#172
+(live channel acceptance evidence).
 
 | Change | State |
 |---|---|
+| [CHG-0069](in-progress/CHG-0069-session-ux-and-quota/plan.md) | Session UX (new/list/switch/delete/archive/auto-title), forum topics, command inventory, provider quota in /usage — committed, live evidence pending |
+| [CHG-0068](done/CHG-0068-usage-report/plan.md) | Issue 169 closed: measured `/usage` live-verified end-to-end 2026-10-06 |
+| [CHG-0067](done/CHG-0067-task-style/plan.md) | Issue 168 closed: per-task `/style` admission-snapshotted; instructions channel live-verified |
+| [CHG-0066](done/CHG-0066-task-sessions/plan.md) | Issue 167 closed: durable tasks + DM topics live on the deployed bot |
+| [CHG-0065](in-progress/CHG-0065-capability-enforcement/plan.md) | Issue 122: accepted ADR-0031/0032, frozen SPEC-0041/0042; P0 probes and P1 grant hardening in progress |
+| [CHG-0064](in-progress/CHG-0064-capability-profile/plan.md) | Issue 122 earlier matrix/name-reservation scope; broader enforcement continues in CHG-0065 |
+| [CHG-0063](in-progress/CHG-0063-media-generation-service/plan.md) | hub-media: sidecar for media generation |
 | [CHG-0062](in-progress/CHG-0062-media-sidecars/plan.md) | Issue 170 redo: standalone hub-stt/hub-tts services (separate images), swappable engines, async long-audio jobs |
 | [CHG-0061](in-progress/CHG-0061-voice-readiness/plan.md) | Issue 170: separate STT/TTS readiness in `/voice`, honest unavailable state |
 | [CHG-0060](in-progress/CHG-0060-artifact-delivery/plan.md) | Issue 172: run artifact handoff and chat delivery — committed, live smoke pending |
@@ -55,3 +66,5 @@ No changes are in progress. Follow-ups live as GitHub issues #73 (live ToolHive/
 | [CHG-0005](done/CHG-0005-self-env/plan.md) | User self-env and independent Telegram paths implemented |
 | [CHG-0004](done/CHG-0004-multitenant-knowledge/plan.md) | Organization/user scope overlay implemented |
 | [CHG-0001-bootstrap](done/CHG-0001-bootstrap/plan.md) | Implemented; local gates passed |
+| [CHG-0002](done/CHG-0002-standalone/plan.md) | Completed; local checks passed |
+| [CHG-0003](done/CHG-0003-go-first-tooling/plan.md) | Go-first tooling in progress |

@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func TestInitNeverOverwrites(t *testing.T) {
@@ -29,7 +27,7 @@ func TestInitNeverOverwrites(t *testing.T) {
 	if err != nil || secrets["OPENAI_API_KEY"] != "" {
 		t.Fatal(err)
 	}
-	s, err := Read(filepath.Join(d, "settings.yaml"))
+	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,14 +37,18 @@ func TestInitNeverOverwrites(t *testing.T) {
 }
 func TestValidation(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	for _, modify := range []func(*Settings){func(s *Settings) { s.User = "../other" }, func(s *Settings) { s.Features = []string{"telegram_write"} }, func(s *Settings) { s.Features = []string{"google_write"} }, func(s *Settings) { s.Features = []string{"missing"} }, func(s *Settings) { s.ModelURL = "http://" + "user:secret" + "@host/v1" }, func(s *Settings) { s.Timezone = "invalid/zone" }, func(s *Settings) { s.BrowserPort = 8000 }} {
+	for _, modify := range []func(*Settings){func(s *Settings) { s.User = "../other" }, func(s *Settings) {
+		s.Tools = map[string]ToolEntry{"telegram_user": {Via: "off", Tools: map[string]bool{"write": true}}}
+	}, func(s *Settings) {
+		s.Tools = map[string]ToolEntry{"google": {Via: "mcp", Tools: map[string]bool{"bogus": true}}}
+	}, func(s *Settings) { s.Ingress = []string{"bogus"} }, func(s *Settings) { s.ModelURL = "http://" + "user:secret" + "@host/v1" }, func(s *Settings) { s.Timezone = "invalid/zone" }, func(s *Settings) { s.BrowserPort = 8000 }} {
 		copy := s
 		modify(&copy)
 		if copy.Validate() == nil {
 			t.Fatal("invalid config accepted")
 		}
 	}
-	s.Features = []string{"telegram"}
+	s.Tools, s.Ingress = testTools("telegram"), testIngress("telegram")
 	secrets := map[string]string{"OPENAI_API_KEY": "x", "TELEGRAM_BOT_TOKEN": "x", "TELEGRAM_ALLOWED_USERS": "*"}
 	if !strings.Contains(strings.Join(Doctor(s, secrets), " "), "numeric owner") {
 		t.Fatal("wildcard owner accepted")
@@ -64,21 +66,20 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSSHConfig(t, d) // the all-features render includes ssh; it fails closed without a config
-	s, _ := Read(filepath.Join(d, "settings.yaml"))
+	s, _ := Read(d)
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.GoogleEmail = "me@example.org"
 	s.DesktopURL = "http://host.docker.internal:8765/mcp"
 	s.DraftsURL = "http://host.docker.internal:8766/mcp"
+	var featureNames []string
 	for _, f := range Features {
-		s.Features = append(s.Features, f.Name)
+		featureNames = append(featureNames, f.Name)
 	}
-	s.Features = nil
-	for _, f := range Features {
-		s.Features = append(s.Features, f.Name)
+	s.Tools, s.Ingress = testTools(featureNames...), testIngress(featureNames...)
+	if err := saveSpace(d, s); err != nil {
+		t.Fatal(err)
 	}
-	b, _ := yaml.Marshal(s)
-	_ = os.WriteFile(filepath.Join(d, "settings.yaml"), b, 0600)
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
 	}
@@ -129,11 +130,11 @@ func TestRenderAllFeatures(t *testing.T) {
 	if args := servers["browser_guest"].(M)["args"].([]string); !slices.Contains(args, "--isolated") {
 		t.Fatalf("guest browser must use an in-memory profile: %v", args)
 	}
-	s.Features = []string{"telegram_user", "google", "google_write"}
-	if servers := Config(s)["mcp_servers"].(M); len(servers) != 0 {
+	s.Tools, s.Ingress = testTools("telegram_user", "google", "google_write"), testIngress("telegram_user", "google", "google_write")
+	if servers := Config(s)["mcp_servers"].(M); len(servers) != 1 || servers["hub"] == nil {
 		t.Fatalf("connector features produced direct MCP servers: %v", servers)
 	}
-	s.Features = []string{"gitlab"}
+	s.Tools, s.Ingress = testTools("gitlab"), testIngress("gitlab")
 	s.GitLabHost = "gitlab.example.com"
 	s.Environment = "prod"
 	composeEnv := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)["environment"].(M)
@@ -146,7 +147,7 @@ func TestRenderAllFeatures(t *testing.T) {
 	if composeEnv["HUB_RUNTIME_GENERATION"] != "static-me-prod" {
 		t.Fatalf("static runtime generation missing: %#v", composeEnv["HUB_RUNTIME_GENERATION"])
 	}
-	s.Features = []string{"atlassian"}
+	s.Tools, s.Ingress = testTools("atlassian"), testIngress("atlassian")
 	if _, ok := Config(s)["mcp_servers"].(M)["atlassian"]; ok {
 		t.Fatal("direct Atlassian MCP config leaked")
 	}
@@ -182,14 +183,14 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	settings, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	settings.Features = []string{"workspace", "telegram", "atlassian"}
-	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+	settings.Tools, settings.Ingress = testTools("workspace", "telegram", "atlassian"), testIngress("workspace", "telegram", "atlassian")
+	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
 	secrets := "OPENAI_API_KEY=model\nTELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\nJIRA_API_TOKEN=provider\n"
@@ -210,8 +211,13 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=model") || strings.Contains(string(runtimeEnv), "TELEGRAM_BOT_TOKEN") || strings.Contains(string(runtimeEnv), "TELEGRAM_ALLOWED_USERS") {
 		t.Fatalf("runtime env boundary broken: %q", runtimeEnv)
 	}
-	if string(gatewayEnv) != "TELEGRAM_ALLOWED_USERS=11\nTELEGRAM_BOT_TOKEN=bot\n" {
+	// The gateway's primary control bearer is this space's runtime token;
+	// sibling spaces authenticate through toolhub-tokens.json instead.
+	if !strings.HasPrefix(string(gatewayEnv), "HUB_COMMUNICATION_AUTH=") || !strings.Contains(string(gatewayEnv), "TELEGRAM_ALLOWED_USERS=11\nTELEGRAM_BOT_TOKEN=bot\n") {
 		t.Fatalf("gateway env boundary broken: %q", gatewayEnv)
+	}
+	if strings.Contains(string(gatewayEnv), "OPENAI_API_KEY") || strings.Contains(string(gatewayEnv), "JIRA_API_TOKEN") {
+		t.Fatalf("provider secret leaked into gateway env: %q", gatewayEnv)
 	}
 	services := Compose(settings, root, d)["services"].(M)
 	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "toolhub", "workload-controller", "credential-broker"} {
@@ -234,7 +240,7 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 
 func TestComposeSupervisorModeOmitsResidentRuntime(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	services := Compose(s, "/source", "/space")["services"].(M)
 	if _, ok := services["hermes-runtime"]; ok {
 		t.Fatal("supervisor mode still starts resident Hermes runtime")
@@ -263,7 +269,7 @@ func TestComposeMountsCommunicationUsersWhenPresent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "communication.users.yaml"), []byte("organization_id: personal\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	gateway := Compose(s, dir, dir)["services"].(M)["communication-hub"].(M)
 	if gateway["environment"].(M)["HUB_COMMUNICATION_CONFIG"] != "/config/communication.users.yaml" {
 		t.Fatalf("users config missing: %#v", gateway["environment"])
@@ -280,17 +286,13 @@ func TestComposeMountsCommunicationUsersWhenPresent(t *testing.T) {
 	}
 }
 
-func saveSettings(path string, settings Settings) error {
-	b, err := yaml.Marshal(settings)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0600)
-}
+// saveSpace keeps the historical test helper name; the canonical pair
+// writer lives next to readSpace.
+func saveSpace(dir string, settings Settings) error { return WriteSpace(dir, settings) }
 
 func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	s.Features = []string{"telegram"}
+	s.Tools, s.Ingress = testTools("telegram"), testIngress("telegram")
 	config := Config(s)
 	if _, ok := config["mcp_servers"].(M)["telegram_user"]; ok {
 		t.Fatal("bot gateway enabled personal Telegram MCP")
@@ -299,7 +301,7 @@ func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	if _, ok := services["communication-hub"]; !ok {
 		t.Fatal("bot gateway service missing")
 	}
-	s.Features = []string{"telegram_user"}
+	s.Tools, s.Ingress = testTools("telegram_user"), testIngress("telegram_user")
 	config = Config(s)
 	if _, ok := config["mcp_servers"].(M)["telegram_user"]; ok {
 		t.Fatal("personal Telegram MCP is served through ToolHub, not embedded")
@@ -311,7 +313,7 @@ func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 }
 
 func TestSelfEnvKeysIncludeCatalogConnectors(t *testing.T) {
-	s := Settings{Features: []string{"telegram", "gitlab", "atlassian"}, MCP: map[string]MCPServer{"custom": {URL: "https://example.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${CUSTOM_TOKEN}"}}}}
+	s := Settings{Tools: testTools("telegram", "gitlab", "atlassian"), Ingress: testIngress("telegram", "gitlab", "atlassian"), MCP: map[string]MCPServer{"custom": {URL: "https://example.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${CUSTOM_TOKEN}"}}}}
 	keys := strings.Join(selfEnvKeys(s), ",")
 	if !strings.Contains(keys, "OPENAI_API_KEY") || !strings.Contains(keys, "FIRECRAWL_API_KEY") || strings.Contains(keys, "TELEGRAM_BOT_TOKEN") || !strings.Contains(keys, "GITLAB_TOKEN") || !strings.Contains(keys, "JIRA_URL") || !strings.Contains(keys, "JIRA_USERNAME") || !strings.Contains(keys, "JIRA_API_TOKEN") || !strings.Contains(keys, "CUSTOM_TOKEN") || !strings.Contains(keys, "TELEGRAM_API_ID") {
 		t.Fatalf("unexpected self-env keys: %s", keys)
@@ -367,7 +369,7 @@ func TestSecretParsing(t *testing.T) {
 }
 
 func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"workspace", "slack_app"}, Memory: true}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}
 	cfg := Config(s)
 	if _, ok := cfg["mcp_servers"].(M)["slack"]; ok {
 		t.Fatal("slack_app created Slack read/write tools")
@@ -414,7 +416,7 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 }
 
 func TestComposeKeepsDockerInControlImage(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	services := Compose(s, "/source", "/space")["services"].(M)
 	if !s.DiagnosticsEnabled() || services["toolhub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_DIR"] != "/diagnostics" || services["communication-hub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_ENABLED"] != "true" {
 		t.Fatal("default diagnostics not wired")
@@ -449,7 +451,7 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 
 func TestDiagnosticsCanBeDisabled(t *testing.T) {
 	off := false
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram"}, Diagnostics: &off}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), Diagnostics: &off}
 	services := Compose(s, "/source", "/space")["services"].(M)
 	if s.DiagnosticsEnabled() || services["toolhub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_DIR"] != nil || services["communication-hub"].(M)["environment"].(M)["HUB_DIAGNOSTICS_ENABLED"] != "false" {
 		t.Fatal("diagnostics: false ignored")
@@ -457,7 +459,7 @@ func TestDiagnosticsCanBeDisabled(t *testing.T) {
 }
 
 func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SlackEventsPort: 9091, Features: []string{"slack_app"}}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SlackEventsPort: 9091, Tools: testTools("slack_app"), Ingress: testIngress("slack_app")}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -474,11 +476,7 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := yaml.Marshal(Settings{Schema: 1, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"workspace", "slack_app"}, Memory: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), encoded, 0600); err != nil {
+	if err := saveSpace(dir, Settings{Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}); err != nil {
 		t.Fatal(err)
 	}
 	dev, err := ReadEnvironment(dir, "dev")
@@ -491,7 +489,7 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 }
 
 func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Features: []string{"telegram", "transcription"}}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram", "transcription"), Ingress: testIngress("telegram", "transcription")}
 	services := Compose(s, "/source", "/space")["services"].(M)
 	gw := services["communication-hub"].(M)
 	env := gw["environment"].(M)
@@ -548,13 +546,13 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	settings, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -605,7 +603,7 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 
 func TestSecondarySpaceRendersNoSharedInfra(t *testing.T) {
 	off := false
-	s := Settings{Schema: 1, Environment: "prod", User: "bob", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Features: []string{"telegram"}, BrowserPort: 6080, OAuthPort: 8000, Infra: &off}
+	s := Settings{Schema: 1, Environment: "prod", User: "bob", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Tools: testTools("telegram"), Ingress: testIngress("telegram"), BrowserPort: 6080, OAuthPort: 8000, Infra: &off}
 	rendered := Compose(s, "/source", "/space")
 	services := rendered["services"].(M)
 	if _, ok := services["hermes-runtime"]; ok {
@@ -630,7 +628,7 @@ func TestSecondarySpaceRendersNoSharedInfra(t *testing.T) {
 }
 
 func TestInfraRenderOwnsSharedNetwork(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Features: []string{"telegram"}, BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Tools: testTools("telegram"), Ingress: testIngress("telegram"), BrowserPort: 6080, OAuthPort: 8000}
 	rendered := Compose(s, "/source", "/space")
 	services := rendered["services"].(M)
 	for _, name := range []string{"toolhub", "credential-broker", "cliproxy", "communication-hub"} {
@@ -661,13 +659,13 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(filepath.Join(d, "settings.yaml"))
+	settings, err := Read(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	if err := saveSettings(filepath.Join(d, "settings.yaml"), settings); err != nil {
+	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -694,21 +692,22 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 
 func TestBrowserCapabilityReadOnlyByDefault(t *testing.T) {
 	for _, features := range [][]string{{"browser"}, {"browser", "browser_act"}, {"browser_act"}, {"meet"}} {
-		servers := Config(Settings{Features: features})["mcp_servers"].(M)
+		s := Settings{Tools: testTools(features...), Ingress: testIngress(features...)}
+		servers := Config(s)["mcp_servers"].(M)
 		persistent, hasPersistent := servers["browser"].(M)
 		guest, hasGuest := servers["browser_guest"].(M)
 		switch {
-		case slices.Contains(features, "browser"):
+		case s.Has("browser"):
 			if !hasPersistent || !hasGuest {
 				t.Fatalf("browser feature must render both profiles: %v", servers)
 			}
 			for name, server := range map[string]M{"browser": persistent, "browser_guest": guest} {
 				include := server["tools"].(MCPTools).Include
 				for _, mutation := range browserMutationTools {
-					if slices.Contains(include, mutation) && !slices.Contains(features, "browser_act") {
+					if slices.Contains(include, mutation) && !s.Has("browser_act") {
 						t.Fatalf("%s leaks mutation %s without browser_act", name, mutation)
 					}
-					if !slices.Contains(include, mutation) && slices.Contains(features, "browser_act") {
+					if !slices.Contains(include, mutation) && s.Has("browser_act") {
 						t.Fatalf("browser_act did not enable %s on %s", mutation, name)
 					}
 				}
@@ -731,13 +730,13 @@ func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settingsPath := filepath.Join(d, "settings.yaml")
-	body, _ := os.ReadFile(settingsPath)
-	body = []byte(strings.Replace(string(body), "features:", "mcp_servers:\n    browser_guest:\n        url: https://evil.invalid/mcp\nfeatures:", 1))
-	if err := os.WriteFile(settingsPath, body, 0600); err != nil {
+	workspacePath := filepath.Join(d, "workspace.yaml")
+	body, _ := os.ReadFile(workspacePath)
+	body = append(body, []byte("mcp:\n    browser_guest:\n        url: https://evil.invalid/mcp\n")...)
+	if err := os.WriteFile(workspacePath, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Read(settingsPath); err == nil {
+	if _, err := Read(d); err == nil {
 		t.Fatal("user MCP claimed the reserved browser_guest name")
 	}
 }

@@ -25,7 +25,7 @@ lint:
 
 docs-check:
     go run ./cmd/devcheck docs
-    go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= -config-file .github/actionlint.yaml .github/workflows/ci.yml .github/workflows/runner.yml
+    go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= -config-file .github/actionlint.yaml .github/workflows/ci.yml .github/workflows/runner.yml .github/workflows/prune-images.yml
 
 fmt:
     gofmt -w cmd internal
@@ -50,7 +50,32 @@ docker-check target="prod":
     docker run --rm --entrypoint docker hermes-hub:test-control --version
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
+    go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
+    go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
+    go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
+    go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
     go run ./cmd/devcheck docker-clean
+
+# Pull the CI-built GHCR image for HEAD (edge-<target> fallback) and retag it
+# locally. Requires `docker login ghcr.io` once on this machine.
+docker-pull target="prod":
+    go run ./cmd/devcheck docker-pull hermes-hub:test {{target}}
+    go run ./cmd/devcheck docker-pull hermes-hub:test-control {{target}}-control
+
+# Same gate as docker-check but on the pulled image: no local build stage.
+docker-check-prebuilt target="prod": (docker-pull target)
+    docker run --rm --entrypoint docker hermes-hub:test-control --version
+    go run ./cmd/devcheck docker-smoke hermes-hub:test
+    go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
+    go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
+    go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
+    go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
+    go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
+    go run ./cmd/devcheck docker-clean
+
+# Probe the pinned upstream without rebuilding or accessing user/provider data.
+capability-check image="hermes-hub:test":
+    go run -tags integration ./cmd/devcheck hermes-capability-contract {{image}}
 
 # Reclaim superseded hermes-hub tags, dangling images and orphan build
 # resources; normal mode keeps up to 8 GB of BuildKit cache. Deep drops it.

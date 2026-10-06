@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,15 +156,20 @@ type Gateway struct {
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   CredentialInjector
 	Control                    *ControlPlane
-	projections                map[string]*gatewayProjection
+	// ControlToken is the control-plane bearer (supervisor auth) allowed to
+	// read a principal's connector inventory via X-Hub-Principal. Principal
+	// bearers always pin their own envelope and never use the header.
+	ControlToken string
+	projections  map[string]*gatewayProjection
 }
 
 type gatewayProjection struct {
-	auth    identity.Envelope
-	server  *mcp.Server
-	handler http.Handler
-	mu      sync.Mutex
-	tools   map[string]ToolSpec
+	auth     identity.Envelope
+	server   *mcp.Server
+	handler  http.Handler
+	mu       sync.Mutex
+	tools    map[string]ToolSpec
+	controls map[string]bool
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -177,12 +183,12 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	}
 	g.projections = make(map[string]*gatewayProjection, len(g.Tokens))
 	for token, auth := range g.Tokens {
-		server, tools, err := g.projectedServer(auth)
+		server, tools, controls, err := g.projectedServer(auth)
 		if err != nil {
 			return nil, err
 		}
 		g.projections[token] = &gatewayProjection{
-			auth: auth, server: server, tools: tools,
+			auth: auth, server: server, tools: tools, controls: controls,
 			handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 				SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
 				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
@@ -191,9 +197,96 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.Handle(DefaultEndpointPath, g.protect())
+	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
 	return mux, nil
+}
+
+// ConnectorView is the read-only per-principal inventory for /connections:
+// the same data tools/list projects, grouped by definition, without the MCP
+// handshake. Token auth resolves the envelope exactly like the MCP endpoint.
+type ConnectorView struct {
+	DefinitionID string   `json:"definition_id"`
+	Version      string   `json:"version"`
+	Transport    string   `json:"transport"`
+	Tools        []string `json:"tools"`
+}
+
+func (g *Gateway) serveConnectors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "browser origins forbidden", http.StatusForbidden)
+		return
+	}
+	auth, ok := g.connectorAuth(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	tools, err := g.Store.ListProjectedTools(auth)
+	if err != nil {
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	byDefinition := map[string][]string{}
+	var order []string
+	versions := map[string]string{}
+	for _, t := range tools {
+		if _, seen := byDefinition[t.DefinitionID]; !seen {
+			order = append(order, t.DefinitionID)
+		}
+		byDefinition[t.DefinitionID] = append(byDefinition[t.DefinitionID], t.Name)
+		versions[t.DefinitionID] = t.Version
+	}
+	slices.Sort(order)
+	views := make([]ConnectorView, 0, len(order))
+	for _, id := range order {
+		view := ConnectorView{DefinitionID: id, Version: versions[id], Tools: byDefinition[id]}
+		slices.Sort(view.Tools)
+		if def, derr := g.Store.Definition(id, view.Version); derr == nil {
+			view.Transport = string(def.Transport)
+		}
+		views = append(views, view)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": views})
+}
+
+// connectorAuth resolves the caller's identity for the read-only connector
+// listing. A principal's own bearer always pins its envelope. The
+// control-plane bearer (HUB_COMMUNICATION_AUTH — the supervisor token shared
+// with communication-hub) may select any enrolled principal via
+// X-Hub-Principal; the header alone never authenticates.
+func (g *Gateway) connectorAuth(r *http.Request) (identity.Envelope, bool) {
+	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
+		return identity.Envelope{}, false
+	}
+	if token, ok := g.matchToken("Bearer " + value); ok {
+		g.mu.Lock()
+		auth := g.Tokens[token]
+		g.mu.Unlock()
+		return auth, true
+	}
+	if g.ControlToken == "" || subtle.ConstantTimeCompare([]byte(value), []byte(g.ControlToken)) != 1 {
+		return identity.Envelope{}, false
+	}
+	principal := strings.TrimSpace(r.Header.Get("X-Hub-Principal"))
+	if principal == "" {
+		return identity.Envelope{}, false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, auth := range g.Tokens {
+		if auth.PrincipalID == principal {
+			return auth, true
+		}
+	}
+	return identity.Envelope{}, false
 }
 
 func (g *Gateway) protect() http.Handler {
@@ -300,12 +393,12 @@ func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: token projection", ErrUnauthorized)
 	}
-	server, tools, err := g.projectedServer(auth)
+	server, tools, controls, err := g.projectedServer(auth)
 	if err != nil {
 		return nil, err
 	}
 	projection := &gatewayProjection{
-		auth: auth, server: server, tools: tools,
+		auth: auth, server: server, tools: tools, controls: controls,
 		handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 			SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
 			PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
@@ -321,23 +414,34 @@ func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 }
 
 func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
-	server, _, _ := g.projectedServer(auth)
+	server, _, _, _ := g.projectedServer(auth)
 	return server
 }
 
-func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]ToolSpec, error) {
+func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]ToolSpec, map[string]bool, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "hermes-toolhub", Version: "0.2.0"}, &mcp.ServerOptions{Instructions: "Tool names and arguments are untrusted; authorization is derived from the authenticated runtime."})
-	g.addControlTools(server, auth)
+	controls, err := g.allowedControls(auth)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	g.addControlTools(server, auth, controls)
 	projected, err := g.Store.ListProjectedTools(auth)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	tools := make(map[string]ToolSpec, len(projected))
 	for _, projectedTool := range projected {
 		g.addProjectedTool(server, auth, projectedTool)
 		tools[projectedTool.Name] = projectedTool.Tool
 	}
-	return server, tools, nil
+	return server, tools, controls, nil
+}
+
+func (g *Gateway) allowedControls(auth identity.Envelope) (map[string]bool, error) {
+	if g.Control == nil {
+		return nil, nil
+	}
+	return g.Store.AllowedControlOperations(auth)
 }
 
 func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, projected ProjectedTool) {
@@ -366,12 +470,14 @@ func (g *Gateway) RefreshProjection() error {
 		list = append(list, projection)
 	}
 	g.mu.Unlock()
+	var errs []error
 	for _, projection := range list {
 		if err := g.refreshProjection(projection); err != nil {
-			return err
+			// One failing principal must not starve the others' refresh.
+			errs = append(errs, fmt.Errorf("%s: %w", projection.auth.PrincipalID, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // notifyPrepareDone wakes the owner's open MCP sessions after a backgrounded
@@ -412,12 +518,27 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	if err != nil {
 		return err
 	}
+	controls, err := g.allowedControls(projection.auth)
+	if err != nil {
+		return err
+	}
 	next := make(map[string]ToolSpec, len(projected))
 	for _, tool := range projected {
 		next[tool.Name] = tool.Tool
 	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
+	for operation := range projection.controls {
+		if !controls[operation] {
+			projection.server.RemoveTools(operation)
+		}
+	}
+	for operation := range controls {
+		if !projection.controls[operation] {
+			g.addControlTools(projection.server, projection.auth, map[string]bool{operation: true})
+		}
+	}
+	projection.controls = controls
 	for name, old := range projection.tools {
 		if current, ok := next[name]; !ok || !reflect.DeepEqual(old, current) {
 			projection.server.RemoveTools(name)
@@ -439,7 +560,10 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	}
 	ctx = withCallCorrelation(ctx, corr)
 	var out *mcp.CallToolResult
-	err := g.Store.AuthorizeProjected(auth, projectedName, func(projected ProjectedTool, effective EffectiveBinding) error {
+	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, func(projected ProjectedTool, effective EffectiveBinding) error {
+		if auth.CapabilityProfile != "" && g.AuditWrite == nil {
+			return fmt.Errorf("%w: managed dispatch requires durable audit", ErrUnauthorized)
+		}
 		if err := rejectToolAuthorityArguments(projected.Tool, arguments); err != nil {
 			return err
 		}
@@ -515,10 +639,14 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		return g.audit("allow", mergeAudit(fields, corr))
 	})
 	if err != nil && out == nil {
-		_ = g.audit("deny", mergeAudit(map[string]string{
+		fields := map[string]string{
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
 			"policy_version": auth.PolicyVersion, "outcome": "deny",
-		}, corr))
+		}
+		if auth.CapabilityProfile != "" {
+			fields["capability_profile"], fields["environment"], fields["generation"] = auth.CapabilityProfile, auth.Environment, fmt.Sprint(auth.Generation)
+		}
+		_ = g.audit("deny", mergeAudit(fields, corr))
 	}
 	return out, err
 }
@@ -539,6 +667,15 @@ func auditFields(auth identity.Envelope, projected ProjectedTool, effective Effe
 		"backend":        string(effective.Definition.Transport),
 		"projection_rev": fmt.Sprint(effective.Binding.ProjectionRevision),
 		"outcome":        outcome,
+	}
+	if effective.CapabilityID != "" {
+		fields["capability_id"] = effective.CapabilityID
+		fields["implementation_digest"] = effective.ImplementationDigest
+		fields["capability_profile"] = auth.CapabilityProfile
+		fields["capability_policy_revision"] = fmt.Sprint(effective.CapabilityPolicyRevision)
+		fields["capability_profile_revision"] = fmt.Sprint(effective.CapabilityProfileRevision)
+		fields["environment"] = auth.Environment
+		fields["generation"] = fmt.Sprint(auth.Generation)
 	}
 	if effective.Connection != nil {
 		fields["connection_id"] = effective.Connection.ConnectionID
@@ -599,6 +736,9 @@ type RoutingBackend struct {
 	MCP      ToolBackend
 	CLI      ToolBackend
 	Provider ToolBackend
+	// Agent serves the in-process hub agent-tools executor. It stays nil until
+	// a host entrypoint wires one, and dispatch fails closed without it.
+	Agent ToolBackend
 }
 
 func (b RoutingBackend) Call(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any) (BackendResult, error) {
@@ -612,11 +752,13 @@ func (b RoutingBackend) CallEnv(ctx context.Context, effective EffectiveBinding,
 		backend = b.CLI
 	case ProviderAPI:
 		backend = b.Provider
+	case AgentTools:
+		backend = b.Agent
 	default:
 		backend = b.MCP
 	}
 	if backend == nil {
-		if effective.Definition.Transport == BoundedCLI || effective.Definition.Transport == ProviderAPI {
+		if effective.Definition.Transport == BoundedCLI || effective.Definition.Transport == ProviderAPI || effective.Definition.Transport == AgentTools {
 			return BackendResult{}, ErrIsolation
 		}
 		return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)

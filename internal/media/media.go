@@ -430,6 +430,13 @@ func documentBody(format, text string) ([]byte, string, error) {
 	var err error
 	switch format {
 	case "html":
+		// The html format escapes plain text into an article shell (stored
+		// artifacts must not carry active markup). Reject markup-shaped input
+		// instead of storing a page of visible entities — file_write is the
+		// tool for writing raw markup.
+		if markupDocument(text) {
+			return nil, "", errors.New("html documents escape the supplied text for safety; pass plain text, or write markup with file_write")
+		}
 		body = []byte(htmlDocument(text))
 	case "pdf":
 		body, err = pdfBytes(text)
@@ -454,6 +461,20 @@ func documentBody(format, text string) ([]byte, string, error) {
 
 func htmlDocument(text string) string {
 	return "<!DOCTYPE html>\n<meta charset=\"utf-8\">\n<article>\n" + htmlEscape(text) + "\n</article>\n"
+}
+
+// markupDocument reports whether the supplied text is markup rather than
+// plain text: a full document marker anywhere, or a tag fragment with a
+// closing/self-closing pair. Such input belongs in file_write, not the
+// escaped-article html format.
+func markupDocument(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, marker := range []string{"<!doctype", "<html", "<head", "<body"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return strings.HasPrefix(lower, "<") && (strings.Contains(lower, "</") || strings.Contains(lower, "/>"))
 }
 
 func (s *Session) remove(rel string) (map[string]any, error) {

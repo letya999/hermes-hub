@@ -229,7 +229,10 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	for _, name := range o.Features {
 		allowed[name] = true
 	}
-	for _, name := range s.Features {
+	for _, name := range s.featureList() {
+		if name == "workspace" {
+			continue
+		}
 		if !allowed[name] {
 			return s, fmt.Errorf("feature %q is not enabled for organization %q", name, s.Organization)
 		}
@@ -240,14 +243,15 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	if len(s.MCP) > 0 {
 		return s, fmt.Errorf("user MCP definitions are not allowed in organization scope; add them to the organization")
 	}
-	for _, name := range s.DisabledMCP {
-		if _, ok := o.MCP[name]; !ok {
-			return s, fmt.Errorf("MCP %q is not approved by organization %q", name, s.Organization)
-		}
+	// A user's `off` entries narrow the organization MCP set; entries that
+	// name something else are ordinary self-denies and need no approval.
+	disabled := map[string]bool{}
+	for _, name := range s.disabledMCPNames() {
+		disabled[name] = true
 	}
 	mcp := make(map[string]MCPServer, len(o.MCP))
 	for name, server := range o.MCP {
-		if !slices.Contains(s.DisabledMCP, name) {
+		if !disabled[name] {
 			mcp[name] = server
 		}
 	}
@@ -270,7 +274,34 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 
 func (s Settings) OrgScoped() bool { return s.Organization != "" }
 
+// orgActionTool maps an organization write-action to the tools: entry whose
+// access mode governs it. An `access: ro` entry strips the action from the
+// effective set — the rendered HUB_ORG_ACTIONS env and every settings-side
+// check see the same answer.
+var orgActionTool = map[string]string{
+	"hh.apply":       "hh",
+	"slack.write":    "slack",
+	"telegram.write": "telegram_user",
+	"google.write":   "google",
+}
+
+// effectiveOrgActions subtracts write-actions governed by an `access: ro`
+// tools entry from the organization-granted set.
+func (s Settings) effectiveOrgActions() []string {
+	out := make([]string, 0, len(s.OrgActions))
+	for _, action := range s.OrgActions {
+		if tool, ok := orgActionTool[action]; ok && s.toolEntry(tool).Access == ToolAccessRO {
+			continue
+		}
+		out = append(out, action)
+	}
+	return out
+}
+
 func (s Settings) AllowsOrgAction(action string) bool {
+	if tool, ok := orgActionTool[action]; ok && s.toolEntry(tool).Access == ToolAccessRO {
+		return false
+	}
 	if !s.OrgScoped() {
 		return true
 	}

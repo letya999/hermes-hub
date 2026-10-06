@@ -227,7 +227,7 @@ func (m *Manager) runtimeHealth(ctx context.Context, address, auth string) (hubr
 	if health.Connected < 0 || health.Degraded < 0 || health.Unknown < 0 || health.Connected > 64 || health.Degraded > 64 || health.Unknown > 64 || health.Connected+health.Degraded+health.Unknown > 64 || health.ExternalConnections != "not_probed" {
 		return health, errors.New("invalid connection health bounds")
 	}
-	if health.HermesReadiness != "ready" && health.HermesReadiness != "unavailable" {
+	if health.HermesReadiness != "ready" && health.HermesReadiness != "degraded" && health.HermesReadiness != "unavailable" {
 		return health, errors.New("invalid Hermes health")
 	}
 	switch health.ConnectorHealth {

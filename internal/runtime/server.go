@@ -40,6 +40,10 @@ type ExecuteRequest struct {
 	Trigger        string `json:"trigger"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Text           string `json:"text"`
+	// Instructions is the hub-pinned presentation guidance for this admitted
+	// run (ephemeral system prompt upstream). It is never a synthetic user
+	// message and never carries authorization.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // SelfEnvRequest is the private protected-form-to-runtime contract. It is
@@ -103,10 +107,14 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.control(w, r)
 	case "/v1/restart":
 		s.restart(w, r)
+	case "/v1/restart-request":
+		s.restartRequest(w, r)
 	case "/v1/self-env":
 		s.selfEnv(w, r)
 	case "/v1/artifact":
 		s.artifact(w, r)
+	case "/v1/usage":
+		s.usage(w, r)
 	default:
 		writeRuntimeError(w, http.StatusNotFound, "not found")
 	}
@@ -241,18 +249,26 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 		RunID string `json:"run_id"`
 	}
 	runStart := time.Now()
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, map[string]any{"input": request.Text, "session_id": sessionID}, &admission, request.IdempotencyKey); err != nil {
+	runBody := map[string]any{"input": request.Text, "session_id": sessionID}
+	if request.Instructions != "" {
+		runBody["instructions"] = request.Instructions
+	}
+	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, runBody, &admission, request.IdempotencyKey); err != nil {
 		return ExecuteResponse{}, err
 	}
 	if admission.RunID == "" {
 		return ExecuteResponse{}, errors.New("hermes returned no run ID")
 	}
+	markRunStart(admission.RunID)
 	known := ExecuteResponse{JobID: request.JobID, SessionID: sessionID, RunID: admission.RunID, RuntimeGeneration: os.Getenv("HUB_RUNTIME_GENERATION"), Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 	return s.observeHermesRunWindow(ctx, known, emit, runStart)
 }
 
 func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
-	return s.observeHermesRunWindow(ctx, known, emit, time.Time{})
+	// A recovered observation never knew the run's start; the durable marker
+	// recorded at admission restores the artifact-scan window so files the
+	// interrupted run produced still deliver.
+	return s.observeHermesRunWindow(ctx, known, emit, runStartFor(known.RunID))
 }
 
 func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error, runStart time.Time) (ExecuteResponse, error) {
@@ -273,6 +289,11 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 	}
 	progress := 0
 	lastApproval := ""
+	// Stall watchdog: a run whose Hermes-side update timestamp stops moving
+	// for stallTimeout is hung (e.g. a severed upstream model stream) — stop
+	// it instead of polling until the hard deadline.
+	stallTimeout := durationEnv("HUB_RUN_STALL_TIMEOUT", 15*time.Minute)
+	lastProgress, lastRunUpdate := time.Now(), float64(0)
 	deadline := time.Now().Add(hermesRunTimeout)
 	for time.Now().Before(deadline) {
 		var status struct {
@@ -281,10 +302,19 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 			Error     string         `json:"error"`
 			Approval  nativeRunEvent `json:"approval"`
 			SessionID string         `json:"session_id"`
+			UpdatedAt float64        `json:"updated_at"`
 		}
 		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+admission.RunID, auth, nil, &status); err != nil {
 			known.Status, known.LastEvent = "uncertain", "run.unknown"
 			return known, err
+		}
+		if status.UpdatedAt > lastRunUpdate {
+			lastRunUpdate, lastProgress = status.UpdatedAt, time.Now()
+		} else if stallTimeout > 0 && time.Since(lastProgress) > stallTimeout {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
+			cancel()
+			return result, fmt.Errorf("hermes run stalled (no update for %s)", stallTimeout)
 		}
 		if status.SessionID != "" && status.SessionID != sessionID {
 			known.Status = "uncertain"
@@ -329,6 +359,7 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 				events = nil // Pinned Hermes destroys SSE transport on disconnect; poll durable status.
 				continue
 			}
+			lastProgress = time.Now() // A live event stream is progress by itself.
 			if event.RunID != admission.RunID {
 				known.Status, known.LastEvent = "uncertain", "run.unknown"
 				return known, errors.New("hermes stream returned another run")
@@ -571,6 +602,9 @@ func validateExecuteRequest(request ExecuteRequest) error {
 	if len(request.IdempotencyKey) > 256 || len(request.Text) == 0 || len(request.Text) > maxPromptBytes {
 		return errors.New("invalid prompt")
 	}
+	if len(request.Instructions) > 4096 || strings.ContainsRune(request.Instructions, '\x00') {
+		return errors.New("invalid instructions")
+	}
 	return nil
 }
 
@@ -593,9 +627,29 @@ func (s *runtimeHTTP) restart(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// restartRequest writes the deferred restart marker without signaling. The
+// managed ToolHub cannot reach this state dir, so the supervisor relays
+// projection changes here; the restart itself is applied by /v1/restart when
+// the runtime is between runs.
+func (s *runtimeHTTP) restartRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) {
+		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err := os.WriteFile(filepath.Join(state, "restart.request"), nil, 0600); err != nil {
+		writeRuntimeError(w, http.StatusInternalServerError, "restart marker unavailable")
+		return
+	}
+	writeRuntimeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+}
+
 func (s *runtimeHTTP) selfEnv(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || !s.authorized(r) {
 		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
+		writeRuntimeError(w, http.StatusForbidden, "self-managed environment disabled")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)

@@ -23,23 +23,30 @@ var (
 )
 
 type Event struct {
-	Schema             int       `json:"schema"`
-	EventID            string    `json:"event_id"`
-	At                 time.Time `json:"at"`
-	Kind               string    `json:"kind"`
-	PrincipalID        string    `json:"principal_id"`
-	ContextID          string    `json:"context_id,omitempty"`
-	RuntimeID          string    `json:"runtime_id,omitempty"`
-	ConnectionID       string    `json:"connection_id,omitempty"`
-	PolicyRevision     string    `json:"policy_revision,omitempty"`
-	CredentialRevision uint64    `json:"credential_revision,omitempty"`
-	ProjectionRevision uint64    `json:"projection_revision,omitempty"`
-	Outcome            string    `json:"outcome"`
-	JobID              string    `json:"job_id,omitempty"`
-	HermesRunID        string    `json:"hermes_run_id,omitempty"`
-	ToolCallID         string    `json:"tool_call_id,omitempty"`
-	CorrelationID      string    `json:"correlation_id,omitempty"`
-	Name               string    `json:"name,omitempty"`
+	Schema                    int       `json:"schema"`
+	EventID                   string    `json:"event_id"`
+	At                        time.Time `json:"at"`
+	Kind                      string    `json:"kind"`
+	PrincipalID               string    `json:"principal_id"`
+	ContextID                 string    `json:"context_id,omitempty"`
+	RuntimeID                 string    `json:"runtime_id,omitempty"`
+	ConnectionID              string    `json:"connection_id,omitempty"`
+	PolicyRevision            string    `json:"policy_revision,omitempty"`
+	CredentialRevision        uint64    `json:"credential_revision,omitempty"`
+	ProjectionRevision        uint64    `json:"projection_revision,omitempty"`
+	CapabilityID              string    `json:"capability_id,omitempty"`
+	CapabilityProfile         string    `json:"capability_profile,omitempty"`
+	ImplementationDigest      string    `json:"implementation_digest,omitempty"`
+	CapabilityPolicyRevision  uint64    `json:"capability_policy_revision,omitempty"`
+	CapabilityProfileRevision uint64    `json:"capability_profile_revision,omitempty"`
+	Environment               string    `json:"environment,omitempty"`
+	Generation                uint64    `json:"generation,omitempty"`
+	Outcome                   string    `json:"outcome"`
+	JobID                     string    `json:"job_id,omitempty"`
+	HermesRunID               string    `json:"hermes_run_id,omitempty"`
+	ToolCallID                string    `json:"tool_call_id,omitempty"`
+	CorrelationID             string    `json:"correlation_id,omitempty"`
+	Name                      string    `json:"name,omitempty"`
 	// Receipt is a bounded provider mutation proof such as a Slack
 	// channel:timestamp pair. It never carries a credential or message body.
 	Receipt string `json:"receipt,omitempty"`
@@ -142,6 +149,11 @@ func validate(event Event) error {
 	}
 	if len(event.Receipt) > 256 {
 		return fmt.Errorf("%w: receipt is too large", ErrInvalid)
+	}
+	for _, value := range []string{event.CapabilityID, event.CapabilityProfile, event.ImplementationDigest, event.Environment} {
+		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("%w: capability metadata", ErrInvalid)
+		}
 	}
 	return nil
 }

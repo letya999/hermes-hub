@@ -44,6 +44,7 @@ type fakeAPI struct {
 	updates   []Update
 	sent      []string
 	modes     []string
+	topics    []int64
 	docs      []string
 	photos    []string
 	videos    []string
@@ -62,7 +63,7 @@ func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
 	defer f.mu.Unlock()
 	return f.updates, f.err
 }
-func (f *fakeAPI) SendMessage(_ context.Context, _ int64, text, parseMode string) error {
+func (f *fakeAPI) SendMessage(_ context.Context, _ int64, topicID int64, text, parseMode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -73,9 +74,10 @@ func (f *fakeAPI) SendMessage(_ context.Context, _ int64, text, parseMode string
 	}
 	f.sent = append(f.sent, text)
 	f.modes = append(f.modes, parseMode)
+	f.topics = append(f.topics, topicID)
 	return nil
 }
-func (f *fakeAPI) SendDocument(_ context.Context, _ int64, name, caption string, data []byte) error {
+func (f *fakeAPI) SendDocument(_ context.Context, _ int64, _ int64, name, caption string, data []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -87,7 +89,7 @@ func (f *fakeAPI) SendDocument(_ context.Context, _ int64, name, caption string,
 	f.docs = append(f.docs, name+"\x00"+string(data))
 	return nil
 }
-func (f *fakeAPI) SendPhoto(_ context.Context, _ int64, name, caption string, data []byte) error {
+func (f *fakeAPI) SendPhoto(_ context.Context, _ int64, _ int64, name, caption string, data []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.photoErr != nil {
@@ -96,7 +98,7 @@ func (f *fakeAPI) SendPhoto(_ context.Context, _ int64, name, caption string, da
 	f.photos = append(f.photos, name+"\x00"+string(data))
 	return f.err
 }
-func (f *fakeAPI) SendVideo(_ context.Context, _ int64, name, caption string, data []byte) error {
+func (f *fakeAPI) SendVideo(_ context.Context, _ int64, _ int64, name, caption string, data []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.videoErr != nil {
@@ -126,12 +128,13 @@ func (f *fakeAPI) DownloadFile(_ context.Context, _ string, w io.Writer) error {
 	}
 	return err
 }
-func (f *fakeAPI) SendVoice(_ context.Context, _ int64, audio []byte, _ string) error {
+func (f *fakeAPI) SendVoice(_ context.Context, _ int64, _ int64, audio []byte, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.voices = append(f.voices, string(audio))
 	return f.err
 }
+func (f *fakeAPI) SetMyCommands(context.Context) error { return f.err }
 
 type fakeRunner struct {
 	mu   sync.Mutex
@@ -535,7 +538,7 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	if err := g.handleUpdate(context.Background(), base(1, 1, "/start", 11)); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(context.Background(), base(2, 2, "/status", 11)); err != nil {
+	if err := g.handleUpdate(context.Background(), base(2, 2, "/session", 11)); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.handleUpdate(context.Background(), base(3, 3, "/connections", 11)); err != nil {
@@ -656,7 +659,7 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	if updates, err := api.GetUpdates(context.Background(), 1, 1); err != nil || len(updates) != 0 {
 		t.Fatal(updates, err)
 	}
-	if err := api.SendMessage(context.Background(), 1, "hi", ""); err != nil {
+	if err := api.SendMessage(context.Background(), 1, 0, "hi", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := api.DeleteMessage(context.Background(), 1, 2); err != nil {
@@ -688,10 +691,10 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	if err := files.DownloadFile(context.Background(), "../escape", io.Discard); err == nil {
 		t.Fatal("escaped telegram file path")
 	}
-	if err := files.SendVoice(context.Background(), 11, []byte("ogg"), "caption"); err != nil {
+	if err := files.SendVoice(context.Background(), 11, 0, []byte("ogg"), "caption"); err != nil {
 		t.Fatal(err)
 	}
-	if err := files.SendVoice(context.Background(), 11, nil, ""); err == nil {
+	if err := files.SendVoice(context.Background(), 11, 0, nil, ""); err == nil {
 		t.Fatal("empty voice accepted")
 	}
 	if err := files.SendChatAction(context.Background(), 11, "typing"); err != nil {
@@ -710,22 +713,22 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	}))
 	defer uploads.Close()
 	upload := newTelegramAPI(uploads.URL, "token", time.Second)
-	if err := upload.SendPhoto(context.Background(), 7, "a.png", "cap", []byte("png-bytes")); err != nil {
+	if err := upload.SendPhoto(context.Background(), 7, 0, "a.png", "cap", []byte("png-bytes")); err != nil {
 		t.Fatal(err)
 	}
-	if err := upload.SendDocument(context.Background(), 7, "a.md", "", []byte("doc-bytes")); err != nil {
+	if err := upload.SendDocument(context.Background(), 7, 0, "a.md", "", []byte("doc-bytes")); err != nil {
 		t.Fatal(err)
 	}
-	if err := upload.SendVideo(context.Background(), 7, "a.mp4", "cap", []byte("mp4-bytes")); err != nil {
+	if err := upload.SendVideo(context.Background(), 7, 0, "a.mp4", "cap", []byte("mp4-bytes")); err != nil {
 		t.Fatal(err)
 	}
-	if err := upload.SendVideo(context.Background(), 7, "", "", []byte("mp4-bytes")); err == nil {
+	if err := upload.SendVideo(context.Background(), 7, 0, "", "", []byte("mp4-bytes")); err == nil {
 		t.Fatal("nameless video accepted")
 	}
-	if err := upload.SendVideo(context.Background(), 7, "a.mp4", "", nil); err == nil {
+	if err := upload.SendVideo(context.Background(), 7, 0, "a.mp4", "", nil); err == nil {
 		t.Fatal("empty video accepted")
 	}
-	if err := upload.SendPhoto(context.Background(), 7, "a.png", "", nil); err == nil {
+	if err := upload.SendPhoto(context.Background(), 7, 0, "a.png", "", nil); err == nil {
 		t.Fatal("empty photo accepted")
 	}
 	config := testConfig(t)
@@ -1359,10 +1362,10 @@ func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := g.queueDelivery(context.Background(), "telegram-5-secret", 11, "private-form-link"); err != nil {
+	if err := g.queueDelivery(context.Background(), "telegram-5-secret", 11, 0, "private-form-link"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.queueDelivery(context.Background(), "telegram-6-reply", 11, "normal answer"); err != nil {
+	if err := g.queueDelivery(context.Background(), "telegram-6-reply", 11, 0, "normal answer"); err != nil {
 		t.Fatal(err)
 	}
 	for range 8 {
@@ -1440,14 +1443,14 @@ func (r *runAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, erro
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (r *runAPI) SendMessage(context.Context, int64, string, string) error { return nil }
-func (r *runAPI) SendDocument(context.Context, int64, string, string, []byte) error {
+func (r *runAPI) SendMessage(context.Context, int64, int64, string, string) error { return nil }
+func (r *runAPI) SendDocument(context.Context, int64, int64, string, string, []byte) error {
 	return nil
 }
-func (r *runAPI) SendPhoto(context.Context, int64, string, string, []byte) error {
+func (r *runAPI) SendPhoto(context.Context, int64, int64, string, string, []byte) error {
 	return nil
 }
-func (r *runAPI) SendVideo(context.Context, int64, string, string, []byte) error {
+func (r *runAPI) SendVideo(context.Context, int64, int64, string, string, []byte) error {
 	return nil
 }
 func (r *runAPI) DeleteMessage(context.Context, int64, int) error { return nil }
@@ -1457,8 +1460,9 @@ func (r *runAPI) SendChatAction(context.Context, int64, string) error {
 func (r *runAPI) GetFile(context.Context, string) (TelegramFile, error) {
 	return TelegramFile{}, nil
 }
-func (r *runAPI) DownloadFile(context.Context, string, io.Writer) error  { return nil }
-func (r *runAPI) SendVoice(context.Context, int64, []byte, string) error { return nil }
+func (r *runAPI) DownloadFile(context.Context, string, io.Writer) error         { return nil }
+func (r *runAPI) SendVoice(context.Context, int64, int64, []byte, string) error { return nil }
+func (r *runAPI) SetMyCommands(context.Context) error                           { return nil }
 
 func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	c := testConfig(t)
@@ -1556,5 +1560,77 @@ func TestEnvHelpers(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_WORKERS", "0")
 	if workersFromEnv() != 4 {
 		t.Fatal("workersFromEnv fallback")
+	}
+}
+
+func TestControlAuthAcceptsEnrolledSiblingToken(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "owner-token"
+	// A second user joined: the enrolled sibling token both proves service
+	// identity and pins the principal — the header cannot override it.
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "bob", "state"), 0700)
+	_ = os.MkdirAll(filepath.Join(root, "bob", "workspace"), 0700)
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: filepath.Join(root, "bob", "state"), WorkspaceDir: filepath.Join(root, "bob", "workspace")})
+	sibling := identity.TelegramEnvelope("bob", 22, "bob", "policy-bob")
+	tokensFile := filepath.Join(root, "toolhub-tokens.json")
+	body, _ := json.Marshal(map[string]identity.Envelope{"sibling-runtime-token": sibling})
+	if err := os.WriteFile(tokensFile, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.ControlTokensFile = tokensFile
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(token, principal string) int {
+		r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		r.Header.Set("X-Hub-Principal", principal)
+		w := httptest.NewRecorder()
+		g.Handler().ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := call("sibling-runtime-token", "bob"); code != http.StatusOK {
+		t.Fatalf("sibling token rejected: %d", code)
+	}
+	if code := call("owner-token", "alice"); code != http.StatusOK {
+		t.Fatalf("owner token rejected: %d", code)
+	}
+	if code := call("forged-token", "bob"); code != http.StatusUnauthorized {
+		t.Fatalf("forged token accepted: %d", code)
+	}
+	// A sibling token pins the enrolled principal: the header cannot borrow a
+	// different user's identity.
+	for _, claimed := range []string{"alice", "mallory", ""} {
+		r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
+		r.Header.Set("Authorization", "Bearer sibling-runtime-token")
+		r.Header.Set("X-Hub-Principal", claimed)
+		env, ok := g.authorizeControl(r)
+		if !ok || env.PrincipalID != "bob" {
+			t.Fatalf("sibling token claimed %q: env=%v ok=%v", claimed, env, ok)
+		}
+	}
+	// The primary bearer still honors the header (supervisor claims any user).
+	r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
+	r.Header.Set("Authorization", "Bearer owner-token")
+	r.Header.Set("X-Hub-Principal", "bob")
+	env, ok := g.authorizeControl(r)
+	if !ok || env.PrincipalID != "bob" {
+		t.Fatalf("owner token for bob: env=%v ok=%v", env, ok)
+	}
+	if code := call("owner-token", "mallory"); code != http.StatusUnauthorized {
+		t.Fatalf("unknown principal with owner token: %d", code)
+	}
+	// A token mapped to an envelope that no longer validates must not open
+	// the control surface even when the principal exists.
+	bad, _ := json.Marshal(map[string]identity.Envelope{"stale-token": {PrincipalID: "bob"}})
+	if err := os.WriteFile(tokensFile, bad, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := call("stale-token", "bob"); code != http.StatusUnauthorized {
+		t.Fatalf("stale invalid envelope accepted: %d", code)
 	}
 }

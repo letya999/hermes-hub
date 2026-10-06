@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-09-27
+last_verified: 2026-10-02
 ---
 # Operations
 
@@ -22,10 +22,10 @@ lines; later cycles take at most 5000 lines per container, and one container
 whose `docker logs` fails is skipped without stalling the others. Secrets are
 redacted at collection time, so the combined file never stores tokens or
 passwords in plaintext. To opt out, set `diagnostics: false` in the
-infra-owning space's `settings.yaml` and run `hubctl up` again.
+infra-owning space's `agent.yaml` and run `hubctl up` again.
 
-Users inspect their own diagnostics through the ToolHub `diagnostics` control
-operation. It returns the caller's connector workloads plus bounded,
+Users with an explicit `control-operation` grant for `diagnostics` inspect their
+own diagnostics through that ToolHub operation. It returns the caller's connector workloads plus bounded,
 redacted log lines from their runtime and workload containers. Scope comes
 from the authenticated principal, context and live binding state — never from
 tool arguments — so host logs, platform containers and other users' data stay
@@ -36,6 +36,266 @@ ID, or `runtime`). Secrets are redacted again at projection and host-supervisor
 lines appear only when they name the caller's own runtime container as a whole
 token. Requests are capped per principal and globally, so a single caller
 cannot starve diagnostics for others.
+
+ToolHub control operations are denied by default, including `discover`, `status`,
+`prepare_source`, `required_credentials`, `confirm`, `enable`, `rotate`, `disable`,
+`revoke`, `remove`, `diagnostics` and generic `invoke`. The host operator grants
+each selected operation separately; a catalog or self-install grant does not
+grant control operations. Self-install additionally requires its own explicit
+active grant. A matching disabled/revoked grant wins over a matching active grant.
+For example, using the protected registry path for the selected deployment:
+
+```text
+hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status --confirm
+hubctl grant --user alice --toolhub-store /protected/toolhub/store.json --kind control-operation --operation status --status revoked --revision 2 --confirm
+```
+
+Grant revision 1 is the default; changing a record requires a higher revision.
+Older writes cannot undo a revoke. The next request on an existing MCP session
+refreshes the projection and checks the current grant. These principal-scoped
+grants are the legacy path. Managed profiles below do not inherit them.
+
+Every operator mutation requires the explicit `--confirm` human act. Without it
+the command prints the canonical review digest and refuses to write; with it the
+command stamps `{digest, issued_by, confirmed_at}` onto the record before the
+store runs its own checks. The digest is recomputed at admission over the record
+minus its confirmation, so a confirmation never covers bytes it did not review,
+and `confirmation.issued_by` must equal the record's `issued_by` — one operator
+identity cannot stamp for another, and `model`/`hermes` can never mint one.
+`--issuer` (default `operator`) names the confirming identity. Unconfirmed
+records are rejected by the store itself, not just by the CLI, so persisted
+history proves the human act for every policy, profile and grant change.
+Grant changes are now durable lifecycle records alongside policy and profile
+changes and are replayed on restart in commit order.
+
+### Managed capability policy (implementation primitive)
+
+`hubctl capability` publishes an operator-reviewed JSON policy or profile to the
+protected registry. It is a host command, with no corresponding agent MCP method:
+
+```text
+hubctl capability --kind policy --file reviewed-policy.json --toolhub-store /protected/toolhub/store.json --confirm
+hubctl capability --kind profile --file reviewed-profile.json --toolhub-store /protected/toolhub/store.json --confirm
+```
+
+`--kind group --file reviewed-group.json` validates a capability group for
+authoring: it prints the canonical JSON and its review digest and never writes
+the registry. Groups have no standalone authority; the enclosing policy or
+profile revision's confirmation covers them.
+
+A policy contains `schema`, `policy_id`, optional `organization`, explicit
+`members`, `revision`, `issued_by`, `issued_at` (RFC3339), `reason`, `status`,
+`ceiling`, `defaults` and optional `denies`. Each allow carries the exact
+`capability_id`, `implementation_digest`, `action`, `resource`, optional
+`connection_id`/`path_prefix`, positive `limits.output_bytes` and
+`limits.timeout_seconds`, and optional `expires_at`. Denies carry the same tuple
+with zero limits. Defaults must fit within the ceiling; an empty policy grants
+nothing. A personal policy has exactly one member and no organization.
+Optional `default_groups` hold reviewed snapshots with `group_id`, positive
+`revision` and explicit `members` containing the same complete allow tuples.
+Members must fit the ceiling. A changed list needs a new group and policy
+revision; the group name never authorizes future members.
+
+A profile binds `profile_id`, `principal_id`, `context_id`, `runtime_id`,
+`environment` (`dev`/`prod`), `generation` and `policy_version` to `policy_id` and
+`policy_revision`. It has the same schema/revision/issuer/time/reason/status
+metadata, optional personal `allows`/`denies`, and explicit `selections`.
+Optional `allow_groups` use the same fixed snapshot format and cannot exceed
+the current ceiling. A changed personal group needs a new group and profile
+revision. Existing snapshots are not widened by a later group.
+Each selection names one capability, definition ID/version/digest, upstream tool
+name, unique projected `name`, and optional connection. A definition's reviewed
+tool contract declares its capability, required action/resource pairs, relative
+path arguments and any fixed string argument constraints. The digest covers the
+whole immutable definition, including schemas and that contract.
+
+The authenticated envelope opts into this evaluator with `capability_profile`,
+`environment` and `generation`. A missing/stale profile, membership or policy
+denies admission. Organization/default and personal rules intersect the ceiling;
+matching denies win. Names and installed credentials do not grant access. All
+required action/resource pairs must pass before credential injection. Bare binding
+calls, old projected names and legacy control operations are denied for
+managed profiles unless the profile itself admits them: `control_operations`
+lists the reviewed connector lifecycle operations (discover, prepare_source,
+status, required_credentials, confirm, enable, rotate, disable, revoke,
+remove, diagnostics) and `self_install` admits the GitHub-source install grant;
+both are profile fields, so a principal without them still fails closed.
+Call admission requires a durable audit writer
+(`HUB_AUDIT_LEDGER` in the endpoint); disk failure prevents dispatch.
+
+Policy/profile publication and its complete issuer/scope/revision history share
+one atomic registry snapshot. Reload reconstructs current authority from ordered
+history; stale writers and duplicate/conflicting revisions cannot resurrect it.
+Publication records contain metadata, never credentials. Call records include
+capability/profile revisions, implementation digest, environment and generation;
+they omit private arguments and response contents.
+
+`--kind preview --file draft-profile.json --toolhub-store <path>` prints the
+human-reviewable old-to-new diff a migration or profile change needs before
+apply. It evaluates the unconfirmed draft with the same evaluator and
+admission checks publication and dispatch run: each selection is either
+admitted with its scopes and tightened limits or quarantined with its deny
+reason, and the diff lists `added`, `removed` and `changed` projected names.
+The old side is evaluated under its own pinned policy revision (replayed from
+capability history when superseded), so a policy bump shows as `changed`
+scopes rather than an empty old set. Preview never writes the store and never
+requires `--confirm`; applying the identical confirmed record admits exactly
+the previewed surface. `--kind connectors` prints the versioned connector
+recommendation manifest (SPEC-0041 CP-07): every family is `opt_in`, including
+the reviewed `hh` connector, which exists only as the agenttools `hh`
+capability behind an explicit grant — never a core or default feature.
+
+These primitives are not a completed deployment boundary. Rendering does not yet
+provision managed identities or isolated roots, legacy deployments remain outside
+the guarantee, and human consent/migration still need CHG-0065.
+Path prefixes are logical authorization constraints, not filesystem containment.
+Admission currently holds the existing store lock and a shared disk fence through
+the bounded call; a revoke waits for that call before committing. Executor leases,
+cancellation and confirmed process-tree stops remain P4 work. Do not roll this out
+as full SPEC-0041/0042 compliance.
+
+### Agent-tools executor (hub-owned catalog)
+
+Managed runtimes expose exactly one MCP server — the ToolHub relay. The local
+hub tools (files, documents, images, artifacts, services, routines, HeadHunter,
+SSH) are not a second MCP surface inside the runtime: they are the built-in
+`hub-agent-tools` ToolHub definition, dispatched over a private per-call
+executor. Install is an operator act on the protected registry:
+
+```text
+hubctl capability --kind agent-tools \
+  --toolhub-store /protected/toolhub/store.json \
+  --principal alice --context alice --runtime alice --policy-version policy-abc12345
+```
+
+The command registers the compiled-in definition and creates its binding for
+the supplied identity; nothing is reachable until a confirmed profile selects
+individual tools. Dispatch resolves to the `agent-tools` transport and reaches
+the executor over `docker exec` (`HUB_AGENT_EXEC_MODE=supervisor` derives the
+supervisor container name; `HUB_AGENT_EXEC_CONTAINER=<name>` pins a fixed
+container). Calls travel over `hubctl tools-daemon` — one persistent framed
+channel per owning runtime container, multiplexed by frame id, so an
+admitted call costs a frame rather than a process spawn. The daemon is
+per-user by construction (sessions key on the resolved container); a
+resolver that returns a shared container name is the documented extension
+point for group- or deployment-wide executors. `hubctl tools-exec` remains
+the one-shot form for the pack/apply legs of sandboxed runs. Both carry the
+same contract — bounded framed requests with verbatim admitted capability
+scopes, bounded results, no authority fields — and the channel fails closed
+when unconfigured. Admitted path prefixes become `os.Root` sub-roots inside
+the executor, so a handler bug cannot widen a grant into a traversal;
+projected tool descriptions name the admitted scope. An agent cannot reach
+the Docker socket, so it cannot invoke the executor or forge scopes.
+`hubctl tools` remains the unmanaged local stdio surface only.
+
+### The `tools:` surface (operator level)
+
+A space keeps two YAML files with different owners. `agent.yaml` is
+operator-owned runtime config — identity, model, timezone, ports,
+capability mode/profile pin, hooks, memory and infra flags. `workspace.yaml`
+is capability intent — the `tools:` map, `ingress:` channels, workspace
+mounts and raw `mcp:` server definitions. Legacy `settings.yaml` keeps
+reading and migrates into the same model; keys placed in the wrong file of
+the pair are rejected, not merged.
+
+One `tools:` map in `workspace.yaml` is the whole capability surface —
+toolsets, ToolHub families, MCP connectors and explicit denies share one
+vocabulary. Each entry picks a backend, scalar or mapping:
+
+```yaml
+tools:
+  terminal: native            # upstream toolset inside the runtime
+  file: toolhub               # managed executor, per-call admission
+  browser: mcp:playwright     # ToolHub-mediated connector (slack, github, ...)
+  github: mcp                 # connector capability (via ToolHub when managed)
+  gitea: mcp-raw:gitea        # raw mcp: definition rendered into mcp_servers
+  code_exec: off              # explicit deny; absent means denied
+  ssh:
+    via: toolhub
+    access: ro                # write-effect tools denied inside the executor
+    tools: {shell: false, tunnel: false}
+  file:
+    via: toolhub
+    only: [file_read, file_list]
+    paths: [docs, inbox]
+    limits: {output_bytes: 65536, timeout_seconds: 30}
+ingress: [telegram]           # transport channels, never agent tools
+workspace:
+  mounts:
+    - {from: docs, to: /docs, mode: ro}
+    - {from: org:docs, to: /orgdocs}   # organization dirs are always ro
+mcp:
+  gitea: {url: https://gitea.example/mcp}   # referenced by via: mcp-raw only
+```
+
+The embedded `internal/stack/defaults/{agent,workspace}.yaml` pair seeds
+every new space; `init` substitutes `user`/`organization`, allocates ports
+and never overwrites. Schema-1 `settings.yaml` files keep reading:
+`features`, `native_toolsets` and `disabled_mcp` migrate into this surface
+at parse time and are rejected when mixed with the new keys.
+
+`tools:` declares visibility, not authority — ToolHub profiles and grants
+in the protected store still govern what an admitted call may do.
+
+* `native` re-enables a reviewed upstream toolset for that runtime. The
+  reviewed set is the same carve-out list as before — platform adapters,
+  `delegation`, `bot_room`, `a2a`, `coding`, `hermes-*` and
+  `context_engine` are never approved (they open listeners inside the
+  agent or spawn sub-agents with literal toolsets that bypass the
+  denylist). Native entries render into `agent.disabled_toolsets` and are
+  attested in-runtime via `HUB_NATIVE_TOOLSETS`. They bypass ToolHub
+  admission on every call: no per-call check, no call audit, revocation
+  only on respawn. A carved-out `terminal` runs without the `code_exec`
+  disposable sandbox — bounded by the container's own isolation but with
+  full workspace/state reach. Grant it only to runtimes whose operator
+  accepts that weaker boundary.
+* `toolhub` marks a managed family (files, documents, images, artifacts,
+  routines, services, hh, ssh, image_gen, code_exec) as visible intent;
+  admission still needs a matching ToolHub grant.
+* `mcp[:server]` selects a ToolHub-mediated connector. The connector runs
+  on the hub side and calls are admitted through ToolHub — it never
+  appears in the runtime's `mcp_servers` section.
+* `mcp-raw[:server]` renders a `mcp:` definition (or an organization-
+  provided one) directly into the runtime's `mcp_servers`. Managed mode
+  only permits organization-scoped definitions.
+* `settings` exposes the reviewed self-settings surface. Values live in a
+  JSON overlay (`HUB_SELF_SETTINGS_PATH`, rendered at `self-settings.json`
+  under the managed runtime state dir) that both the supervisor
+  materialization and the runtime-side attestation load, so the effective
+  config stays identical on both sides of the boundary. `settings_get`
+  returns only reviewed keys; `settings_set` validates types, applies the
+  overlay atomically and returns `restart_required` keys — the runtime
+  restarts itself rather than mutating live state. Arbitrary config keys
+  are never accepted; the allowlist lives in `internal/selfsettings`.
+
+Managed effective config enables Hermes compression
+(`compression.enabled`, `in_place`, `micro_compact`) with a fixed
+`threshold_tokens` budget so sessions compact predictably regardless of
+model window size. Compression is safe there because managed runtimes run
+the api-server path — the detached hygiene/curator sub-agents that bypass
+`disabled_toolsets` never spawn, and `ContextCompressor` is an auxiliary
+LLM call with no tool surface.
+
+`access: ro` makes an entry read-only where the boundary can prove it:
+ToolHub entries deny every write-effect tool inside the executor
+(`HUB_TOOLS_RO`), connector write actions drop out of `HUB_ORG_ACTIONS`,
+browser loses its mutation tools, and an `mcp-raw` server gains a
+`tools.exclude` filter (reviewed mutation table, or a mandatory explicit
+`except:` for servers the hub has not reviewed). `access: ro` on a native
+toolset is a validation error — upstream grants toolsets whole, so the
+hub would be promising a filter it cannot enforce.
+
+```text
+hubctl capability --kind tools                                   # backend vocabulary + reviewed native set
+hubctl capability --kind tools --settings <space>                # compiled plan
+hubctl capability --kind tools --settings <space>/workspace.yaml \
+  --set terminal=native,browser=mcp:playwright+ro --confirm      # surgical write
+```
+
+`--set name=backend` upserts entries; `--set name=` removes them; `+ro`
+sets `access: ro`. The write edits only the `tools:` mapping, re-validates
+the whole file pair through the spawn parser and swaps atomically. Native
+changes take effect on restart or re-spawn.
 
 The gateway records authorized private Telegram input and delivered replies,
 including job IDs and user IDs where available. HTTP operations in Hermes
@@ -210,6 +470,34 @@ fully prunes it and additionally drops
 `HUB_BUILD_CACHE=1` recreates on the next artifact build. Run it only while no
 artifact build is in flight.
 
+`devcheck docker-build` accepts optional `HUB_DOCKER_CACHE_FROM` and
+`HUB_DOCKER_CACHE_TO` environment variables; each non-empty value is forwarded
+to `docker build` as `--cache-from`/`--cache-to`. The build always passes
+`--load` so the tagged image lands in the local daemon even when the selected
+builder uses the `docker-container` driver. CI sets these to
+`type=gha,scope=hermes-hub-<target>` so GitHub-hosted runs reuse remote
+BuildKit cache instead of rebuilding the base layers; local runs without the
+variables behave exactly as before.
+
+CI publishes hub images to GHCR so consumers pull instead of building. The
+`image` workflow job runs `devcheck docker-publish <target>` per matrix leg
+(both `<target>` and `<target>-control`), pushing the immutable
+`ghcr.io/<owner>/<repo>/hermes-hub:<sha>-<target>` tag and moving
+`edge-<target>`. The `containers` job then runs `just docker-check-prebuilt`,
+which resolves the image for `HEAD` via `devcheck docker-pull` — the sha tag
+first, `edge-<target>` as fallback — retags it as `hermes-hub:test*` and runs
+the same smoke/contract/canary chain without a build stage. Every published
+image carries the `org.opencontainers.image.revision` label (from
+`ARG GIT_SHA`); `docker-pull` warns when the pulled revision differs from
+local `HEAD`, which is the signal to either push or build locally.
+
+Local use needs a one-time `docker login ghcr.io` (a PAT or
+`gh auth token` with `read:packages`). `just docker-pull` alone only stages
+the image; `just docker-check-prebuilt` stages and runs the full gate.
+`HUB_REGISTRY_REPO` overrides the owner/repo resolution for mirrors. A weekly
+`prune-images` workflow deletes GHCR versions beyond the newest eight while
+keeping `edge-*` tags, so published image storage stays bounded.
+
 To reclaim physical Windows disk space after Docker cleanup, double-click
 `scripts/reclaim-docker-disk.cmd` and accept the administrator prompt. It
 stops Docker Desktop and WSL, removes three previously identified temporary
@@ -256,6 +544,18 @@ HUB_SUPERVISOR_AUTH=<host-control-token> hubctl supervisor --spaces spaces
 HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8876 hubctl render --dir spaces/alice
 ```
 
+Two watchdog knobs bound long-running jobs. `HUB_SUPERVISOR_JOB_TIMEOUT`
+(default `130s`) is the supervisor's per-request HTTP timeout toward the
+runtime: when it elapses the job stream ends and the durable job is marked
+`uncertain`, while the runtime keeps executing and reconciliation observes it
+to a terminal state. Raise it for routinely long jobs. `HUB_RUN_STALL_TIMEOUT`
+(default `15m`) lives inside the runtime: if the Hermes run `updated_at`
+timestamp and the event stream both stay silent for that interval, the runtime
+issues a confirmed stop and fails the job as stalled instead of polling until
+the hard run timeout. Both accept Go durations (`130s`, `10m`) or bare
+seconds; the supervisor passes `HUB_RUN_STALL_TIMEOUT` into spawned runtime
+containers.
+
 The runtime uses pinned Hermes `/api/sessions` and `/v1/runs` for each accepted job.
 Persistent execution supports normalized event streaming, durable admission metadata
 and a spool event journal. Back up the spool's `events/` directory together with
@@ -286,9 +586,9 @@ or an unmigrated native Hermes cron. Disabling a pin does not cancel current
 jobs or remove user files; normal idle retention resumes. Pins require the
 private supervisor token and the same saved owner envelope for removal.
 
-A verified private owner may enqueue a one-shot task with
-`/runat <RFC3339 timestamp with timezone> <task>`. The communication spool saves
-its occurrence before acknowledging it. Due occurrences become ordinary jobs
+A verified private owner may enqueue one-shot and recurring tasks through the
+schedules HTTP API (`/v1/routines`). The communication spool saves each
+occurrence before acknowledging it. Due occurrences become ordinary jobs
 with `trigger=cron`; the normal supervisor execution path wakes the context.
 Duplicate ticks and restart reuse the same occurrence key. Inputs containing
 credential assignments are rejected. Catch-up is limited to one hour and each
@@ -311,8 +611,48 @@ commands can wait for `/approve <job_id> <request_id> <choice>` in the initiatin
 private conversation. The saved request expires after two minutes; the supervisor
 confirms native cancellation before releasing its approval hold. A lost decision
 acknowledgement is observed without repeating approval. Native deny/hardline rules
-and current organization/tool authorization still apply. `/cancel <job_id>` is
-durable during queueing, startup and execution and never starts a new task.
+and current organization/tool authorization still apply.
+
+A verified owner keeps several independent task sessions inside one private DM.
+`/new [name]` creates a task and switches to it; a nameless task carries a
+placeholder name flagged `name_auto` and adopts the upstream session title
+after its first real exchange. `/use <id|name|default>` switches the chat's
+current task, `/delete [id|name]` removes the task resolved for the message's
+audience (the local registry record and routing only; the durable Hermes
+session stays upstream for audit), and `/sessions` lists live tasks with their
+creation dates. `/session` reports the current task's name, creation date,
+bound topic and durable session id. A message posted in a Telegram
+direct-messages topic resolves to its bound task; a first post in an unbound
+topic adopts one, and root-DM messages follow the current pointer. Forum-group
+topics are supported the same way: the bot accepts group messages only from
+verified users, topic messages carry `message_thread_id`, and replies return
+to the originating topic — group jobs deliver to the group chat rather than
+the sender's DM. Scheduled occurrences remain private-DM only. Unknown slash
+commands are answered with the supported-command list and never reach the
+model, and the gateway registers that same list as the bot's command menu on
+every startup across all Telegram scopes, so a foreign adapter's stale menu
+cannot shadow it. The implicit `default` task keeps the legacy
+`telegram-<chat>` conversation, so pre-task history and mappings remain valid.
+Each task owns its own durable Hermes session because the session id derives
+from the task conversation id; jobs, replies, streams, artifacts, voice and
+continuation notices carry the originating task and topic id end to end.
+Task records may carry per-task presentation guidance (`style`, up to 1024
+characters, no control characters) that rides each admitted run as Hermes
+`instructions`; the admitted run's snapshot is pinned on its durable mapping,
+so a later style change affects subsequent runs only and never touches
+authorization or tool policy. `/usage` reports the task session's measured
+model, title and
+start time, cumulative tokens, calls, cost and session-rotation count read
+back from the pinned Hermes session API; fields the upstream does not
+authoritatively expose — current-prompt context and the context window —
+render `unknown` instead of an estimate. When the operator configures
+`HUB_CLIPROXY_MGMT_URL`, `HUB_CLIPROXY_MGMT_KEY` and optionally
+`HUB_CLIPROXY_AUTH_INDEX` in the channel env file, `/usage` additionally
+queries the pinned CLIProxyAPI management surface (`auth-files`, then an
+authenticated `api-call` to the provider quota endpoint) and prints measured
+subscription limits with reset times; OAuth tokens stay inside the proxy. The
+result is cached for five minutes and failures render `недоступно` rather than
+a guess.
 
 Reconciliation reserves capacity for every restored non-stopped runtime. A
 missing idle container releases that capacity only after TTL and a durable
@@ -409,7 +749,7 @@ See SPEC-0016 and CHG-0018 for acceptance and current evidence.
 
 ## SSH capability
 
-`ssh` in `settings.yaml` features exposes bounded SSH to owner-configured
+`ssh` in `workspace.yaml` `tools:` exposes bounded SSH to owner-configured
 hosts. `ssh_write`, `ssh_shell` and `ssh_tunnel` stack on it; each requires
 `ssh`. Render fails when `connections/ssh/config.yaml` is missing or invalid;
 `doctor` reports the same gap. The directory is mounted read-only at

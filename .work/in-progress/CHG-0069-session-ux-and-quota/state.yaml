@@ -1,0 +1,8 @@
+change: CHG-0069-session-ux-and-quota
+status: in_progress
+branch: feat/session-ux-quota
+base: dev
+notes:
+  - unit tests green; just check pending
+  - env added to spaces/telegram-8275678764/communication.dev.env
+  - live Telegram verification pending

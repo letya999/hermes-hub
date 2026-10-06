@@ -205,18 +205,18 @@ func TestTelegramOutputLimitsPreserveLongUnicodeResult(t *testing.T) {
 	}))
 	defer server.Close()
 	api := newTelegramAPI(server.URL, "token", 0)
-	if err := api.SendMessage(context.Background(), 11, text, "HTML"); err != nil {
+	if err := api.SendMessage(context.Background(), 11, 0, text, "HTML"); err != nil {
 		t.Fatal(err)
 	}
-	if err := api.SendDocument(context.Background(), 11, "answer.md", "", []byte(text)); err != nil {
+	if err := api.SendDocument(context.Background(), 11, 0, "answer.md", "", []byte(text)); err != nil {
 		t.Fatal(err)
 	}
 	for _, invalid := range []string{"", string([]byte{255}), strings.Repeat("x", 2*1024*1024+1)} {
-		if err := api.SendMessage(context.Background(), 11, invalid, ""); err == nil {
+		if err := api.SendMessage(context.Background(), 11, 0, invalid, ""); err == nil {
 			t.Error("invalid output dispatched")
 		}
 	}
-	if err := api.SendDocument(context.Background(), 11, "answer.md", "", nil); err == nil {
+	if err := api.SendDocument(context.Background(), 11, 0, "answer.md", "", nil); err == nil {
 		t.Error("empty document dispatched")
 	}
 	if calls != 2 {

@@ -25,19 +25,23 @@ type Schedule struct {
 	ScopeID        string            `json:"scope_id"`
 	Channel        string            `json:"channel"`
 	ChatID         int64             `json:"chat_id,omitempty"`
-	SlackChannel   string            `json:"slack_channel,omitempty"`
-	SlackThread    string            `json:"slack_thread,omitempty"`
-	Timezone       string            `json:"timezone"`
-	Expression     string            `json:"expression"`
-	JobKind        string            `json:"job_kind"`
-	Input          string            `json:"input"`
-	Enabled        bool              `json:"enabled"`
-	Paused         bool              `json:"paused"`
-	NextDue        time.Time         `json:"next_due"`
-	CatchUpWindow  time.Duration     `json:"catch_up_window_ns"`
-	NativeCronRef  string            `json:"native_cron_ref,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
+	// TaskID/TopicID snapshot the task the routine was created in: occurrence
+	// jobs rebind their conversation and deliver back to the same topic.
+	TaskID        string        `json:"task_id,omitempty"`
+	TopicID       int64         `json:"topic_id,omitempty"`
+	SlackChannel  string        `json:"slack_channel,omitempty"`
+	SlackThread   string        `json:"slack_thread,omitempty"`
+	Timezone      string        `json:"timezone"`
+	Expression    string        `json:"expression"`
+	JobKind       string        `json:"job_kind"`
+	Input         string        `json:"input"`
+	Enabled       bool          `json:"enabled"`
+	Paused        bool          `json:"paused"`
+	NextDue       time.Time     `json:"next_due"`
+	CatchUpWindow time.Duration `json:"catch_up_window_ns"`
+	NativeCronRef string        `json:"native_cron_ref,omitempty"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
 }
 
 func (s *Spool) CreateSchedule(in Schedule, caller identity.Envelope, nativeCron string) (Schedule, error) {
@@ -217,7 +221,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			}
 			continue
 		}
-		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
+		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
 		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, Job: job}
 		if err := validateOccurrence(occ, item.Envelope); err != nil {
 			continue

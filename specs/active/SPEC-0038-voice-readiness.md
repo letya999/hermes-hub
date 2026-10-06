@@ -18,6 +18,9 @@ title: Voice readiness reporting (issue #170)
    stripped from the visible reply and routed to TTS. A marker-only reply is
    voice-only; visible text plus a marker sends both. If synthesis or sending
    fails, the spoken payload falls back to text — an answer is never dropped.
+   The convention is advertised on the run's pinned instructions whenever the
+   gateway has a synthesizer configured, so managed runtimes that never see
+   the host tools-server instructions still learn the marker.
    Synthesized audio is sent in memory and never written to the spool,
    workspace or media `/data`; the spoken text stays the canonical durable
    record. Slack never gets voice messages.

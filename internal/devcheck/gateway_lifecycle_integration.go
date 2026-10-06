@@ -66,6 +66,15 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		if err := stack.InitEnvironment(dir, name, "prod"); err != nil {
 			return err
 		}
+		// Init seeds the schema-3 agent.yaml/workspace.yaml pair, which takes
+		// precedence over a settings.yaml found beside it. This fixture stands
+		// in for a pre-migration space where settings.yaml is authoritative, so
+		// the seeded pair is removed before the legacy file is written.
+		for _, seeded := range []string{"agent.yaml", "workspace.yaml"} {
+			if err := os.Remove(filepath.Join(dir, seeded)); err != nil {
+				return err
+			}
+		}
 		settings := "schema: 1\nuser: " + name + "\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [workspace, telegram]\nmodel: gpt-4o-mini\nmodel_url: " + providerURL + "\n"
 		if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), []byte(settings), 0600); err != nil {
 			return err

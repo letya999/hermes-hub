@@ -15,9 +15,18 @@ and must not be exposed as a public tenant endpoint.
 
 - `POST /api/sessions` with `{"id":"...","title":"..."}` creates a durable empty
   session; `GET /api/sessions/{id}` and `/messages` resume and inspect it after a
-  gateway restart.
+  gateway restart. `GET /api/sessions/{id}` reports measured cumulative fields
+  (`model`, `input_tokens`, `output_tokens`, `cache_read_tokens`,
+  `cache_write_tokens`, `reasoning_tokens`, `api_call_count`, `message_count`,
+  `tool_call_count`, `estimated_cost_usd`, `actual_cost_usd`, `ended_at`,
+  `last_active`, `parent_session_id`); `GET /api/sessions/{id}/messages?limit=0`
+  returns the effective `session_id` after a session rotation, and walking
+  `parent_session_id` bounds the measured rotation lineage. The pinned API
+  exposes no authoritative current-prompt context or context-window figure.
 - `POST /v1/runs` with `{"input":"...","session_id":"..."}` admits an asynchronous
-  run. `Idempotency-Key` is durable for 24h:
+  run. An optional `"instructions"` string becomes the run's ephemeral system
+  prompt; the hub re-applies a task's style on every run because the field does
+  not persist on the session. `Idempotency-Key` is durable for 24h:
   the same key and payload replay the same `run_id`, while a different payload is
   HTTP 409 `idempotency_key_conflict`.
 - `GET /v1/runs/{id}` reports `queued`, `running`, `completed`, `failed`, `cancelled`

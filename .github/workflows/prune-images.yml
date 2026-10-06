@@ -1,0 +1,23 @@
+name: Prune GHCR images
+on:
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+permissions:
+  packages: write
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [hermes-hub]
+    steps:
+      - uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: ${{ matrix.package }}
+          package-type: container
+          min-versions-to-keep: 8
+          ignore-versions: '^(edge-|latest)'
+          token: ${{ secrets.GITHUB_TOKEN }}

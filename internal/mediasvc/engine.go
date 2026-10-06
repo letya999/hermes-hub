@@ -1,6 +1,7 @@
 package mediasvc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +50,10 @@ func sttEngine(c Config) (STTEngine, error) {
 		return remoteSTT{base: c.Upstream, key: c.UpstreamKey, client: &http.Client{Timeout: 10 * time.Minute}}, nil
 	case "command":
 		return commandSTT{command: c.Command}, nil
+	case "command-serve":
+		worker := &serveSTT{command: c.Command, requests: make(chan serveRequest)}
+		go worker.run()
+		return worker, nil
 	case "sherpa":
 		return newSherpaSTT(c)
 	}
@@ -90,6 +96,176 @@ func (e commandSTT) Transcribe(ctx context.Context, wav string, _ TranscribeOpts
 }
 
 func (e commandSTT) Ready(context.Context) bool { return true }
+
+// ---- command-serve engine: the command worker kept resident. The worker
+// speaks a one-line protocol (wav path in, JSON line out) so the model loads
+// once per service lifetime instead of once per call — faster-whisper spends
+// tens of seconds on WhisperModel() under `command`, which dominated voice
+// latency. A single run goroutine serializes requests: whisper is CPU-bound
+// and a resident process cannot be shared safely anyway.
+
+type serveRequest struct {
+	path    string
+	ctx     context.Context
+	respond chan<- serveResponse
+}
+
+type serveResponse struct {
+	text string
+	err  error
+}
+
+type serveWorker struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Reader
+}
+
+type serveSTT struct {
+	command  string
+	requests chan serveRequest
+	ready    atomic.Bool
+}
+
+func (e *serveSTT) Transcribe(ctx context.Context, wav string, _ TranscribeOpts) ([]Segment, error) {
+	respond := make(chan serveResponse, 1)
+	select {
+	case e.requests <- serveRequest{path: wav, ctx: ctx, respond: respond}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	res := <-respond
+	if res.err != nil {
+		return nil, res.err
+	}
+	return []Segment{{Text: res.text}}, nil
+}
+
+func (e *serveSTT) Ready(context.Context) bool { return e.ready.Load() }
+
+// run owns the worker process; each loop iteration serves exactly one
+// request so a dead or hung worker never corrupts the next caller's stream.
+func (e *serveSTT) run() {
+	var worker *serveWorker
+	kill := func() {
+		if worker != nil {
+			_ = worker.stdin.Close()
+			_ = worker.cmd.Process.Kill()
+			_ = worker.cmd.Wait()
+			worker = nil
+			e.ready.Store(false)
+		}
+	}
+	defer kill()
+	for req := range e.requests {
+		res := e.serve(req, &worker, kill)
+		select {
+		case req.respond <- res:
+		default:
+		}
+	}
+}
+
+// serve handles one request against the current worker, spawning it on
+// demand (the {"ready":true} handshake waits out the model load) and
+// dropping it on any stream break so the next request respawns clean.
+func (e *serveSTT) serve(req serveRequest, worker **serveWorker, kill func()) serveResponse {
+	if *worker == nil {
+		w, ready, err := spawnServeWorker(e.command)
+		if err != nil {
+			return serveResponse{err: errors.New("stt engine failed to start")}
+		}
+		select {
+		case line := <-ready:
+			if line.Error != "" || !line.Ready {
+				w.kill()
+				return serveResponse{err: errors.New("stt engine failed to start")}
+			}
+			*worker = w
+			e.ready.Store(true)
+		case <-req.ctx.Done():
+			w.kill()
+			return serveResponse{err: req.ctx.Err()}
+		}
+	}
+	if _, err := io.WriteString((*worker).stdin, req.path+"\n"); err != nil {
+		kill()
+		return serveResponse{err: errors.New("stt engine failed")}
+	}
+	select {
+	case line := <-readWorkerLine((*worker).stdout):
+		if line.Error != "" {
+			if line.Error == "stream" {
+				kill()
+				return serveResponse{err: errors.New("stt engine failed")}
+			}
+			return serveResponse{err: errors.New(line.Error)}
+		}
+		if line.Text == "" {
+			return serveResponse{err: errors.New("empty transcript")}
+		}
+		return serveResponse{text: line.Text}
+	case <-req.ctx.Done():
+		kill()
+		return serveResponse{err: req.ctx.Err()}
+	}
+}
+
+type serveLine struct {
+	Ready bool   `json:"ready"`
+	Text  string `json:"text"`
+	Error string `json:"error"`
+}
+
+func (w *serveWorker) kill() {
+	_ = w.stdin.Close()
+	_ = w.cmd.Process.Kill()
+	_ = w.cmd.Wait()
+}
+
+// serveWorkerArg is the resident-mode flag passed to the command worker; a
+// var so tests can point it at the helper-process runner.
+var serveWorkerArg = "--serve"
+
+func spawnServeWorker(command string) (*serveWorker, <-chan serveLine, error) {
+	cmd := exec.Command(command, serveWorkerArg)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, nil, err
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	worker := &serveWorker{cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 64<<10)}
+	return worker, readWorkerLine(worker.stdout), nil
+}
+
+// readWorkerLine returns the worker's next stdout line decoded as JSON. A
+// read/parse failure reports the sentinel "stream" error so the caller drops
+// the process instead of trusting a corrupted frame.
+func readWorkerLine(r *bufio.Reader) <-chan serveLine {
+	ch := make(chan serveLine, 1)
+	go func() {
+		raw, err := r.ReadBytes('\n')
+		if err != nil {
+			ch <- serveLine{Error: "stream"}
+			return
+		}
+		var line serveLine
+		if err := json.Unmarshal(raw, &line); err != nil {
+			ch <- serveLine{Error: "stream"}
+			return
+		}
+		ch <- line
+	}()
+	return ch
+}
 
 type commandTTS struct{ command string }
 

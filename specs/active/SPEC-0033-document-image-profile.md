@@ -18,7 +18,8 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
 3. Supported documents are txt, md, csv, html, pdf, xlsx, and pptx. Markdown was
    already supported. Extract accepts htm as html. HTML extract drops well-formed
    script, style, noscript, and comments; it is a text extract, not a browser.
-   HTML create escapes plain text into an article. pdf, xlsx, and pptx are simple
+   HTML create escapes plain text into an article and rejects markup-shaped
+   input (raw html belongs to file_write). pdf, xlsx, and pptx are simple
    text packages in this process. pdf is wrapped text with an embedded Go Regular
    font. Extract reads text-showing operators and FlateDecode streams whose
    length is a direct integer. An encrypted PDF fails closed. There is no OCR.
