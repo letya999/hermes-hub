@@ -40,7 +40,11 @@ func TestHealthSeparatesNativeReadinessAndConnectionsAndDropsPrivateDetails(t *t
 		t.Fatalf("health=%+v", h)
 	}
 	state = "degraded"
-	if h := call(); h.HermesReadiness != "unavailable" || h.ConnectorHealth != "degraded" {
+	if h := call(); h.HermesReadiness != "degraded" || h.ConnectorHealth != "degraded" {
+		t.Fatalf("health=%+v", h)
+	}
+	state = "failed"
+	if h := call(); h.HermesReadiness != "unavailable" {
 		t.Fatalf("health=%+v", h)
 	}
 	for _, method := range []string{"GET", "POST"} {

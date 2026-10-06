@@ -15,11 +15,11 @@ COPY internal/credentialbroker ./internal/credentialbroker
 COPY internal/identity ./internal/identity
 RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-stt ./cmd/hub-stt
 
-FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
+FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS stt
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 # faster-whisper alone: the command STT engine; no messaging/voice extras.
-RUN pip install --no-cache-dir faster-whisper==1.2.1
+RUN for i in 1 2 3 4; do if pip install --no-cache-dir faster-whisper==1.2.1; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done
 COPY --from=go_build /hub-stt /usr/local/bin/hub-stt
 COPY docker/media/stt-worker /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/stt-worker

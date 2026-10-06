@@ -1,7 +1,6 @@
 package communication
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -137,12 +136,13 @@ func TestOccurrenceRejectsWrongOwnerSecretsRevocationAndExpiredCatchup(t *testin
 }
 
 func TestRunAtCommandPersistsVerifiedOccurrenceWithoutImmediateExecution(t *testing.T) {
-	s, _, g := occurrenceFixture(t)
-	update := Update{UpdateID: 77, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/runat 1970-01-01T00:01:40Z scheduled work"}}
-	if err := g.handleUpdate(context.Background(), update); err != nil {
+	s, o, g := occurrenceFixture(t)
+	o.DueAt = time.Unix(100, 0)
+	o.Job.Trigger = ""
+	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(context.Background(), update); err != nil {
+	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
@@ -150,7 +150,7 @@ func TestRunAtCommandPersistsVerifiedOccurrenceWithoutImmediateExecution(t *test
 		t.Fatalf("occurrences=%d err=%v", len(entries), err)
 	}
 	if job, err := s.ClaimJob(); err != nil || job != nil {
-		t.Fatal("runat executed early")
+		t.Fatal("occurrence executed early")
 	}
 	if err := s.DispatchDueOccurrences(time.Unix(100, 0), g.authorizeOccurrence); err != nil {
 		t.Fatal(err)

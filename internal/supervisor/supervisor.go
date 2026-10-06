@@ -26,6 +26,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -278,7 +279,9 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Now = time.Now
 	}
 	if cfg.HTTP == nil {
-		cfg.HTTP = &http.Client{Timeout: 130 * time.Second}
+		// Long runs outlive the default cap: the stream severs but the run
+		// keeps executing and reconciles later. Tune via HUB_SUPERVISOR_JOB_TIMEOUT.
+		cfg.HTTP = &http.Client{Timeout: durationEnv("HUB_SUPERVISOR_JOB_TIMEOUT", 130*time.Second)}
 	}
 	if cfg.Command == nil {
 		cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -993,6 +996,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.selfEnv(w, r)
 	case "/v1/restart":
 		m.restartHTTP(w, r)
+	case "/v1/restart-request":
+		m.restartRequestHTTP(w, r)
 	case "/v1/artifact":
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
@@ -1103,6 +1108,79 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(response.StatusCode)
 }
 
+// restartRequestHTTP marks a managed runtime for a deferred restart. ToolHub
+// calls it when a principal's tool projection changes: the managed ToolHub
+// container cannot write the runtime's state dir itself, so it asks the
+// supervisor, which owns the runtime entry and its auth. Identity fields are a
+// lookup key, not an authorization grant — they can only mark that principal's
+// own runtime. A busy runtime keeps the marker for the post-delivery restart
+// poll; an idle one is signaled immediately; a stopped runtime needs nothing.
+func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	defer r.Body.Close()
+	var request struct {
+		PrincipalID string `json:"principal_id"`
+		ContextID   string `json:"context_id"`
+		RuntimeID   string `json:"runtime_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restart request"})
+		return
+	}
+	m.mu.Lock()
+	var entry *runtimeEntry
+	for _, candidate := range m.items {
+		if candidate.Runtime.PrincipalID == request.PrincipalID && candidate.Runtime.ContextID == request.ContextID && (request.RuntimeID == "" || candidate.Runtime.RuntimeID == request.RuntimeID) {
+			entry = candidate
+			break
+		}
+	}
+	running := entry != nil && entry.Container != "" && (entry.State == Ready || entry.State == Busy || entry.State == Idle)
+	if !running {
+		m.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
+		return
+	}
+	address, auth, idle := entry.Address, entry.auth, entry.State == Idle || entry.State == Ready
+	m.mu.Unlock()
+	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	marker.Header.Set("Authorization", "Bearer "+auth)
+	response, err := m.cfg.HTTP.Do(marker)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime marker refused"})
+		return
+	}
+	applied := false
+	if idle {
+		// No run is in flight: apply the deferred restart now instead of
+		// waiting for the next delivered job.
+		apply, aerr := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart", nil)
+		if aerr == nil {
+			apply.Header.Set("Authorization", "Bearer "+auth)
+			if resp, derr := m.cfg.HTTP.Do(apply); derr == nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+				resp.Body.Close()
+				applied = resp.StatusCode == http.StatusOK
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "applied": applied})
+}
+
 // artifactHTTP forwards one bounded artifact fetch to the runtime bound to the
 // request envelope. No lease: the gateway asks while the runtime is answering
 // the job, so a lookup-only forward never keeps a runtime alive for it.
@@ -1172,19 +1250,15 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	m.mu.Lock()
-	entry := m.items[runtimeKey(binding)]
-	running := entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) && entry.Address != ""
-	address := ""
-	if running {
-		address = entry.Address
-	}
-	m.mu.Unlock()
-	if !running {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "runtime unavailable"})
+	// Usage is a user command: a stopped runtime is spawned exactly like a
+	// message would spawn it, and the lifecycle lease pins it for the query.
+	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	if err != nil || runtime.Address == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/usage", bytes.NewReader(body))
+	defer m.ReleaseLease(lease.ID)
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/usage", bytes.NewReader(body))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
 		return
@@ -1742,7 +1816,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	settings, settingsErr := stack.Read(abs)
+	settings, settingsErr := stack.ReadEnvironment(abs, m.environment())
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return Binding{}, fmt.Errorf("context settings unavailable: %w", settingsErr)
 	}
@@ -1772,7 +1846,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	// workspace or connection directories ever enter the spawned runtime.
 	dirs := []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"}
 	if managed {
-		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache"}
+		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache", "managed/" + m.environment() + "/workspace"}
 	}
 	for _, name := range dirs {
 		path := filepath.Join(abs, filepath.FromSlash(name))
@@ -1826,7 +1900,9 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 
 func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) ([]string, error) {
 	env := m.environment()
-	settings, settingsErr := stack.Read(binding.ContextRoot)
+	// Environment-aware: the managed env contract (HUB_CAPABILITY_ENVIRONMENT,
+	// dev port offsets, execution selection) must match the rendered compose.
+	settings, settingsErr := stack.ReadEnvironment(binding.ContextRoot, env)
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return nil, settingsErr
 	}
@@ -1920,6 +1996,9 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if generation != "" {
 		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
 	}
+	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
+		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
+	}
 	args = append(args, m.cfg.Image, "serve")
 	return args, nil
 }
@@ -1960,7 +2039,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 			}
 		}
 	}
-	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}} {
+	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}} {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
 	}
 	effectiveConfig, err := m.materializeHermesConfig(binding, env)
@@ -1971,7 +2050,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if soul := filepath.Join(binding.ContextRoot, "SOUL.md"); fileExists(soul) {
 		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
 	}
-	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--shm-size", "1gb")
+	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
 	for _, name := range managedExtensionRootTmpfs {
 		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")
 	}
@@ -1979,6 +2058,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
 	if generation != "" {
 		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
+	}
+	// Operator-tunable run watchdog rides into the spawned runtime when set.
+	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
+		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
 	args = append(args, m.cfg.Image, "serve")
 	return args, nil
@@ -2077,6 +2160,11 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(secrets["HUB_TOOLHUB_RECONNECT"]), "false"),
 		SelfServicesPath:   filepath.Join(binding.ContextRoot, "runtime", "self-services.json"),
 		NativeToolsets:     settings.NativeCarveouts(),
+		Web:                settings.Web,
+		ImageGen:           settings.ManagedImageGenGrant(),
+	}
+	if settings.CapabilityMode == "managed" {
+		opts.SelfSettingsPath = filepath.Join(binding.ContextRoot, "managed", env, "runtime", selfsettings.FileName)
 	}
 	if _, present := secrets["HUB_TOOLHUB_ENDPOINT"]; !present {
 		opts.ToolHubEndpoint = "http://toolhub:8090/mcp"
@@ -2251,6 +2339,22 @@ func (m *Manager) environment() string {
 func envOr(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
+	}
+	return fallback
+}
+
+// durationEnv reads a Go duration ("130s", "15m") or a bare seconds value.
+// Invalid or empty values fall back so a typo cannot disable the cap.
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
 	}
 	return fallback
 }

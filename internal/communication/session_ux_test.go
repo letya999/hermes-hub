@@ -96,15 +96,16 @@ func TestTaskDeleteAndArchivedList(t *testing.T) {
 		}
 		g.deliverOne(ctx)
 	}
-	send(1, "/task new alpha")
-	send(2, "/task archive")
-	send(3, "/task archived")
-	joined := strings.Join(fake.sent, "\n")
-	if !strings.Contains(joined, "Архив задач:") || !strings.Contains(joined, "alpha") {
-		t.Fatalf("archive list: %v", fake.sent)
+	send(1, "/new alpha")
+	current, err := g.spool.ResolveTask(user, 11, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.spool.ArchiveTask(user, 11, current.TaskID); err != nil {
+		t.Fatal(err)
 	}
 	archived, err := g.spool.ListArchivedTasks(user, 11)
-	if err != nil || len(archived) != 1 {
+	if err != nil || len(archived) != 1 || archived[0].Name != "alpha" {
 		t.Fatalf("archived=%v err=%v", archived, err)
 	}
 	// Deleting an archived task by id removes its record.
@@ -115,12 +116,12 @@ func TestTaskDeleteAndArchivedList(t *testing.T) {
 		t.Fatal("archived task survived delete")
 	}
 	// Deleting the current live task resets the pointer to default.
-	send(4, "/task new beta")
-	send(5, "/task delete")
+	send(2, "/new beta")
+	send(3, "/delete")
 	if !strings.Contains(fake.sent[len(fake.sent)-1], "удалена") {
 		t.Fatalf("delete reply: %v", fake.sent)
 	}
-	current, err := g.spool.ResolveTask(user, 11, 0, false)
+	current, err = g.spool.ResolveTask(user, 11, 0, false)
 	if err != nil || current.TaskID != defaultTaskID {
 		t.Fatalf("current after delete: %+v", current)
 	}

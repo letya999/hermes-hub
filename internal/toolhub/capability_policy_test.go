@@ -1145,3 +1145,143 @@ func TestProfileRollbackRestoresOnlyReviewedSurface(t *testing.T) {
 		}
 	}
 }
+
+// A managed profile opts its own principal into the reviewed control-op set
+// and the self-install pipeline. Bindings materialized through that pipeline
+// (provenance: the onboarding record under the same policy generation) project
+// and dispatch like unmanaged installs; everything else still fails closed.
+func TestManagedSelfInstallAndControlOperations(t *testing.T) {
+	s, auth, _, profile := managedStore(t)
+	if err := s.RequireControlOperation(auth, "prepare_source"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("control op before profile grant: %v", err)
+	}
+	if err := s.RequireSelfInstall(auth); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("self-install before profile grant: %v", err)
+	}
+
+	// Operator publishes a new revision carrying the install surface.
+	profile.Revision++
+	profile.ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "disable", "diagnostics"}
+	profile.SelfInstall = true
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range profile.ControlOperations {
+		if err := s.RequireControlOperation(auth, op); err != nil {
+			t.Fatalf("profile-granted op %s denied: %v", op, err)
+		}
+	}
+	for _, op := range []string{"rotate", "revoke", "remove", "invoke", "grant"} {
+		if err := s.RequireControlOperation(auth, op); err == nil {
+			t.Fatalf("unlisted control op %s admitted", op)
+		}
+	}
+	if err := s.RequireSelfInstall(auth); err != nil {
+		t.Fatalf("profile-granted self-install denied: %v", err)
+	}
+
+	// The pipeline's durable result: a definition, an enabled self-install
+	// onboarding and its binding under the managed policy generation.
+	definition := remoteDefinition()
+	definition.DefinitionID, definition.Version = "github-self", "0.1.0"
+	definition.Credentials = nil
+	definition.Tools = []ToolSpec{{Name: "repo_list", Effect: ReadEffect}}
+	if err := s.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion,
+		WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 2}
+	if err := s.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	bindingID := DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	onboarding := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-self-1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: OnboardingSelfInstall, Phase: PhaseEnabled,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, BindingID: bindingID,
+		SourceURL: "https://github.com/example/repo", Revision: 1, CreatedAt: time.Now().UTC()}
+	if err := s.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+
+	projected, err := s.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := ProjectedToolName(definition.DefinitionID, definition.Version, "repo_list")
+	found := false
+	for _, tool := range projected {
+		if tool.Name == name {
+			found = true
+		}
+	}
+	if !found || len(projected) != 2 {
+		t.Fatalf("self-installed tool not projected: %v", projected)
+	}
+	dispatched := false
+	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
+		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+			dispatched = true
+			return BackendResult{Text: "ok"}, nil
+		})}
+	if _, err := g.CallAuthorized(t.Context(), auth, name, map[string]any{}); err != nil || !dispatched {
+		t.Fatalf("self-installed call denied: %v", err)
+	}
+
+	// A catalog onboarding does not admit the binding; nor does a pre-managed
+	// policy generation or another principal's pipeline.
+	other := onboarding
+	other.OnboardingID, other.Mode = "onboard-self-2", OnboardingCatalog
+	if err := s.PutOnboarding(other); err != nil {
+		t.Fatal(err)
+	}
+	staleDef := remoteDefinition()
+	staleDef.DefinitionID, staleDef.Version, staleDef.Credentials = "stale-self", "0.0.1", nil
+	staleDef.Tools = []ToolSpec{{Name: "peek", Effect: ReadEffect}}
+	if err := s.RegisterDefinition(staleDef); err != nil {
+		t.Fatal(err)
+	}
+	staleID := DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, staleDef.DefinitionID, staleDef.Version, "", "")
+	stale := onboarding
+	stale.OnboardingID, stale.PolicyVersion, stale.BindingID = "onboard-self-3", "policy-0", staleID
+	stale.DefinitionID, stale.DefinitionVersion = staleDef.DefinitionID, staleDef.Version
+	if err := s.PutOnboarding(stale); err != nil {
+		t.Fatal(err)
+	}
+	staleBinding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, DefinitionID: staleDef.DefinitionID, DefinitionVersion: staleDef.Version, PolicyVersion: "policy-0",
+		WorkloadClass: staleDef.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 3}
+	if err := s.PutBinding(staleBinding); err != nil {
+		t.Fatal(err)
+	}
+	for _, denied := range []string{ProjectedToolName(staleDef.DefinitionID, staleDef.Version, "peek")} {
+		if _, err := g.CallAuthorized(t.Context(), auth, denied, map[string]any{}); err == nil {
+			t.Fatalf("non-self-install binding %s dispatched under managed", denied)
+		}
+	}
+
+	// Dropping the profile grant fails closed: no tools, no ops, no install.
+	profile.Revision++
+	profile.SelfInstall = false
+	profile.ControlOperations = nil
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 1 {
+		t.Fatalf("self-install surface survived grant removal: %v %v", tools, err)
+	}
+	if err := s.RequireControlOperation(auth, "status"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("control op survived grant removal: %v", err)
+	}
+	if err := s.RequireSelfInstall(auth); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("self-install survived grant removal: %v", err)
+	}
+
+	// Structural validation: unlisted operations cannot be published at all.
+	bad := profile
+	bad.Revision++
+	bad.ControlOperations = []string{"prepare_source", "nuke"}
+	if err := putProfile(t, s, bad); err == nil {
+		t.Fatal("unreviewed control operation published")
+	}
+}

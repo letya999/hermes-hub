@@ -211,8 +211,13 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=model") || strings.Contains(string(runtimeEnv), "TELEGRAM_BOT_TOKEN") || strings.Contains(string(runtimeEnv), "TELEGRAM_ALLOWED_USERS") {
 		t.Fatalf("runtime env boundary broken: %q", runtimeEnv)
 	}
-	if string(gatewayEnv) != "TELEGRAM_ALLOWED_USERS=11\nTELEGRAM_BOT_TOKEN=bot\n" {
+	// The gateway's primary control bearer is this space's runtime token;
+	// sibling spaces authenticate through toolhub-tokens.json instead.
+	if !strings.HasPrefix(string(gatewayEnv), "HUB_COMMUNICATION_AUTH=") || !strings.Contains(string(gatewayEnv), "TELEGRAM_ALLOWED_USERS=11\nTELEGRAM_BOT_TOKEN=bot\n") {
 		t.Fatalf("gateway env boundary broken: %q", gatewayEnv)
+	}
+	if strings.Contains(string(gatewayEnv), "OPENAI_API_KEY") || strings.Contains(string(gatewayEnv), "JIRA_API_TOKEN") {
+		t.Fatalf("provider secret leaked into gateway env: %q", gatewayEnv)
 	}
 	services := Compose(settings, root, d)["services"].(M)
 	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "toolhub", "workload-controller", "credential-broker"} {

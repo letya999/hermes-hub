@@ -114,7 +114,15 @@ type CapabilityProfile struct {
 	Allows         []CapabilityRule      `json:"allows,omitempty"`
 	AllowGroups    []CapabilityGroup     `json:"allow_groups,omitempty"`
 	Denies         []CapabilityRule      `json:"denies,omitempty"`
-	Confirmation   *Confirmation         `json:"confirmation,omitempty"`
+	// ControlOperations is the reviewed allowlist of control-plane operations
+	// the managed principal's runtime token may invoke. Names must come from
+	// ControlOperations; absent means none, and legacy grants never leak in.
+	ControlOperations []string `json:"control_operations,omitempty"`
+	// SelfInstall admits the GitHub-source prepare path for this principal.
+	// Installation stays a distinct grant (SPEC-0041 CP-05): the pipeline
+	// still requires the single-use human confirmation and enable phases.
+	SelfInstall  bool          `json:"self_install,omitempty"`
+	Confirmation *Confirmation `json:"confirmation,omitempty"`
 }
 
 // Policy history is the persisted authority. Current maps are rebuilt from it,
@@ -404,6 +412,16 @@ func (p CapabilityProfile) validateStructure() error {
 		}
 		names[selection.Name], capabilities[key] = true, true
 	}
+	if len(p.ControlOperations) > len(ControlOperations) {
+		return fmt.Errorf("%w: too many control operations", ErrInvalid)
+	}
+	seenOps := map[string]bool{}
+	for _, operation := range p.ControlOperations {
+		if !slices.Contains(ControlOperations, operation) || seenOps[operation] {
+			return fmt.Errorf("%w: reviewed control operation", ErrInvalid)
+		}
+		seenOps[operation] = true
+	}
 	return nil
 }
 
@@ -628,8 +646,99 @@ func (s *Store) managedToolsLocked(auth identity.Envelope) ([]ProjectedTool, err
 			return nil, err
 		}
 	}
+	seen := make(map[string]bool, len(result))
+	for _, tool := range result {
+		seen[tool.Name] = true
+	}
+	for _, tool := range s.managedSelfInstallToolsLocked(auth, profile) {
+		if seen[tool.Name] {
+			continue
+		}
+		seen[tool.Name] = true
+		result = append(result, tool)
+	}
 	slices.SortFunc(result, func(a, b ProjectedTool) int { return strings.Compare(a.Name, b.Name) })
 	return result, nil
+}
+
+// managedSelfInstallsLocked returns the active bindings this principal
+// materialized through the self-install pipeline under the current managed
+// policy generation. Provenance is the onboarding record: it carries the
+// authenticated confirmation the binding was enabled under, so bindings from
+// before the managed era (different policy_version) never leak in.
+func (s *Store) managedSelfInstallsLocked(auth identity.Envelope, profile CapabilityProfile) map[string]bool {
+	if !profile.SelfInstall {
+		return nil
+	}
+	admitted := map[string]bool{}
+	for _, onboarding := range s.onboardings {
+		if onboarding.Mode != OnboardingSelfInstall || onboarding.BindingID == "" ||
+			onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID ||
+			onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
+			continue
+		}
+		if onboarding.Phase != PhaseConfirmed && onboarding.Phase != PhaseEnabled && onboarding.Phase != PhaseDisabled {
+			continue
+		}
+		admitted[onboarding.BindingID] = true
+	}
+	return admitted
+}
+
+func (s *Store) managedSelfInstallToolsLocked(auth identity.Envelope, profile CapabilityProfile) []ProjectedTool {
+	admitted := s.managedSelfInstallsLocked(auth, profile)
+	if len(admitted) == 0 {
+		return nil
+	}
+	result := []ProjectedTool{}
+	for _, binding := range s.bindings {
+		if !admitted[binding.ToolBindingID] || binding.Status != ActiveStatus {
+			continue
+		}
+		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+		if err != nil {
+			continue
+		}
+		effective.CapabilityProfileID, effective.CapabilityProfileRevision = profile.ProfileID, profile.Revision
+		effective.CapabilityPolicyID, effective.CapabilityPolicyRevision = profile.PolicyID, profile.PolicyRevision
+		effective.ImplementationDigest = DefinitionDigest(effective.Definition)
+		for _, tool := range effective.Definition.Tools {
+			result = append(result, ProjectedTool{
+				Name:         ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, tool.Name),
+				BindingID:    effective.Binding.ToolBindingID,
+				DefinitionID: effective.Definition.DefinitionID,
+				Version:      effective.Definition.Version,
+				Tool:         tool,
+			})
+		}
+	}
+	return result
+}
+
+// managedSelfInstallToolLocked is the dispatch side of
+// managedSelfInstallToolsLocked: same provenance gate, exact projected name.
+func (s *Store) managedSelfInstallToolLocked(auth identity.Envelope, profile CapabilityProfile, name string) (ProjectedTool, EffectiveBinding, error) {
+	admitted := s.managedSelfInstallsLocked(auth, profile)
+	for _, binding := range s.bindings {
+		if !admitted[binding.ToolBindingID] || binding.Status != ActiveStatus {
+			continue
+		}
+		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+		if err != nil {
+			continue
+		}
+		for _, tool := range effective.Definition.Tools {
+			if ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, tool.Name) != name {
+				continue
+			}
+			effective.CapabilityProfileID, effective.CapabilityProfileRevision = profile.ProfileID, profile.Revision
+			effective.CapabilityPolicyID, effective.CapabilityPolicyRevision = profile.PolicyID, profile.PolicyRevision
+			effective.ImplementationDigest = DefinitionDigest(effective.Definition)
+			return ProjectedTool{Name: name, BindingID: binding.ToolBindingID, DefinitionID: effective.Definition.DefinitionID,
+				Version: effective.Definition.Version, Tool: tool}, effective, nil
+		}
+	}
+	return ProjectedTool{}, EffectiveBinding{}, fmt.Errorf("%w: projected tool", ErrNotFound)
 }
 
 // ProfilePreviewEntry is one selection's dispatch outcome in a preview: either
@@ -855,7 +964,7 @@ func (s *Store) managedToolLocked(auth identity.Envelope, name string, arguments
 			break
 		}
 	}
-	return ProjectedTool{}, EffectiveBinding{}, fmt.Errorf("%w: projected tool", ErrNotFound)
+	return s.managedSelfInstallToolLocked(auth, profile, name)
 }
 
 // capabilityRuleDecision returns one allow/ceiling intersection. Never merge

@@ -107,13 +107,13 @@ func TestRoutineHTTPCreateUpdateDeleteAndCommands(t *testing.T) {
 		t.Fatalf("missing auth: %d", denied.Code)
 	}
 	for _, text := range []string{
-		"/routine",
-		"/routine list",
-		"/routine create second UTC once:" + due + " say later",
-		"/routine pause second",
-		"/routine delete second",
-		"/voice",
-		"/voice off",
+		"/session",
+		"/sessions",
+		"/use default",
+		"/use missing",
+		"/delete default",
+		"/help",
+		"/approve",
 		"/session",
 	} {
 		if err := g.handleUpdate(context.Background(), Update{UpdateID: len(text), Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: text}}); err != nil {
@@ -394,10 +394,10 @@ func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 	if updRec.Code != http.StatusForbidden {
 		t.Fatalf("update missing: %d", updRec.Code)
 	}
-	if err := g.handleUpdate(context.Background(), Update{UpdateID: 204, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/routine pause missing"}}); err != nil {
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 204, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/use missing"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(context.Background(), Update{UpdateID: 205, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/routine delete missing"}}); err != nil {
+	if err := g.handleUpdate(context.Background(), Update{UpdateID: 205, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/delete missing"}}); err != nil {
 		t.Fatal(err)
 	}
 }

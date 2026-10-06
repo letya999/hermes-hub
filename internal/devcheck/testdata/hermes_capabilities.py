@@ -7,6 +7,7 @@ future ToolHub policy. JSON output contains only synthetic evidence and inventor
 """
 
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -212,14 +213,24 @@ assert list(RoomExecutionPolicy.from_mapping(forged_policy).enabled_toolsets) ==
 
 # Literal-toolset sub-agents also never receive the denylist: compression
 # hygiene gets ["memory"], curator consolidation gets ["skills"]. The managed
-# config disables both paths; the arm lists below prove the gate is load-bearing.
+# config keeps the detached paths unreachable: the hygiene AIAgent is spawned
+# only from the gateway run loop (gateway/run.py::_GATEWAY_HYGIENE_PLATFORM and
+# run_turn.py), which the managed api_server platform never enters, and the
+# curator stays disabled. The arm lists below prove the gate is load-bearing.
 hygiene_armed = {
     "memory": sorted(t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=["memory"], quiet_mode=True)),
     "skills": sorted(t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=["skills"], quiet_mode=True)),
 }
 assert hygiene_armed["memory"] and hygiene_armed["skills"], "literal-toolset arm lists changed"
-assert config["compression"] == {"enabled": False} and config["curator"] == {"enabled": False}, \
-    "managed config must disable the literal-toolset sub-agents"
+import gateway.platforms.api_server as _api_server
+import gateway.platforms.api_server_runs as _api_runs
+_api_src = inspect.getsource(_api_server) + inspect.getsource(_api_runs)
+assert "_GATEWAY_HYGIENE_PLATFORM" not in _api_src and "run_turn" not in _api_src, \
+    "managed api_server path reached the literal-toolset hygiene sub-agent"
+assert config["compression"]["enabled"] is True and config["compression"]["in_place"] is True, \
+    "managed compression must be enabled with in_place rotation"
+assert config["curator"] == {"enabled": False}, \
+    "managed config must disable the literal-toolset curator"
 registry.register(
     name="probe_new_available", toolset="probe_new_group",
     schema={"name": "probe_new_available", "description": "Synthetic new tool", "parameters": {"type": "object"}},
@@ -333,7 +344,7 @@ try:
     from hermes_cli.config import load_config as _load_managed_config
     from agent import curator as _curator
     _managed_config = _load_managed_config()
-    assert _managed_config.get("compression", {}).get("enabled") is False, "managed compression gate drifted"
+    assert _managed_config.get("compression", {}).get("enabled") is True, "managed compression gate drifted"
     assert not _curator.is_enabled() and not _curator.should_run_now(), "managed curator gate drifted"
     result = agent.run_conversation(probe_message)
     assert_rejections(result)

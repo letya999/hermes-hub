@@ -452,10 +452,23 @@ func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition ToolDefi
 }
 
 func (s *Store) RequireSelfInstall(auth identity.Envelope) error {
-	// Managed installation awaits the separately authenticated human flow; legacy
-	// principal-only grants must not enable that unproven route.
+	// Managed installation is admitted only by an operator-confirmed profile
+	// field — never by legacy principal grants. The pipeline still runs the
+	// authenticated single-use confirmation before a binding materializes.
 	if auth.CapabilityProfile != "" {
-		return fmt.Errorf("%w: managed installation is not admitted", ErrUnauthorized)
+		if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+			return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		}
+		if err := s.Reload(); err != nil {
+			return err
+		}
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		profile, _, err := s.capabilityProfileLocked(auth)
+		if err != nil || !profile.SelfInstall {
+			return fmt.Errorf("%w: managed installation is not admitted", ErrUnauthorized)
+		}
+		return nil
 	}
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
@@ -502,8 +515,16 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 	defer s.mu.RUnlock()
 	allowed := map[string]bool{}
 	if auth.CapabilityProfile != "" {
-		_, _, err := s.capabilityProfileLocked(auth)
-		return allowed, err
+		profile, _, err := s.capabilityProfileLocked(auth)
+		if err != nil {
+			return allowed, err
+		}
+		for _, operation := range profile.ControlOperations {
+			if slices.Contains(ControlOperations, operation) {
+				allowed[operation] = true
+			}
+		}
+		return allowed, nil
 	}
 	for _, operation := range append(slices.Clone(ControlOperations), "invoke") {
 		if s.controlAllowedLocked(auth, operation) {

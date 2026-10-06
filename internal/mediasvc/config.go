@@ -139,13 +139,16 @@ func ConfigFromEnv(role string) (Config, error) {
 		if c.Upstream == "" {
 			c.Upstream = "https://fal.run"
 		}
-	case "command", "sherpa":
+	case "command", "command-serve", "sherpa":
 		if c.Role == RoleMedia {
 			return c, fmt.Errorf("HUB_MEDIA_ENGINE=%s is not a media engine", c.Engine)
 		}
-		if c.Engine == "command" {
+		if c.Engine == "command-serve" && c.Role == RoleTTS {
+			return c, errors.New("HUB_MEDIA_ENGINE=command-serve is an STT engine")
+		}
+		if c.Engine == "command" || c.Engine == "command-serve" {
 			if strings.TrimSpace(c.Command) == "" {
-				return c, errors.New("HUB_MEDIA_COMMAND is required for the command engine")
+				return c, fmt.Errorf("HUB_MEDIA_COMMAND is required for the %s engine", c.Engine)
 			}
 		} else if c.ModelDir == "" {
 			return c, errors.New("HUB_MEDIA_MODEL_DIR is required for the sherpa engine")
@@ -158,7 +161,7 @@ func ConfigFromEnv(role string) (Config, error) {
 			return c, errors.New("HUB_MEDIA_UPSTREAM_KEY is required for the elevenlabs engine")
 		}
 	default:
-		return c, fmt.Errorf("HUB_MEDIA_ENGINE must be remote, command, sherpa, fal or elevenlabs, not %q", c.Engine)
+		return c, fmt.Errorf("HUB_MEDIA_ENGINE must be remote, command, command-serve, sherpa, fal or elevenlabs, not %q", c.Engine)
 	}
 	if c.Role == RoleMedia {
 		if c.ImageModel == "" {

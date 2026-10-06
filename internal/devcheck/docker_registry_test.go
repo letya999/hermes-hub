@@ -117,3 +117,25 @@ func TestDockerPublishPushesShaAndEdgeTags(t *testing.T) {
 		t.Fatal("empty sha accepted")
 	}
 }
+
+func TestDockerPublishSidecarTargetsUseOwnDockerfiles(t *testing.T) {
+	t.Setenv("HUB_DOCKER_CACHE_FROM", "")
+	t.Setenv("HUB_DOCKER_CACHE_TO", "")
+	for _, target := range []string{"stt", "tts"} {
+		var got []string
+		if err := dockerPublish(context.Background(), target, "o/r", "sha123", func(ctx context.Context, args ...string) error {
+			got = append(got, args...)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"build", "--target", target,
+			"-t", "ghcr.io/o/r/hermes-hub:sha123-" + target,
+			"-t", "ghcr.io/o/r/hermes-hub:edge-" + target,
+			"--push", "--build-arg", "GIT_SHA=sha123",
+			"-f", "docker/Dockerfile." + target, "."}
+		if !slices.Equal(got, want) {
+			t.Fatalf("unexpected %s publish args: %v", target, got)
+		}
+	}
+}

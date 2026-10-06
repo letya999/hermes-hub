@@ -232,8 +232,15 @@ func (s Settings) Validate() error {
 		if _, err := ManagedCapabilityInventory(); err != nil {
 			return err
 		}
-		if len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" || s.ImageGen != (media.ImageGen{}) {
+		if len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" {
 			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not hooks or native extensions")
+		}
+		// image_gen stays an operator key: under managed mode the block carries
+		// only the normalized grant (provider/model/delivery) into the effective
+		// config — admission still goes through the ToolHub capability, so an
+		// operator block without the toolhub selection is a rejected ambiguity.
+		if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub {
+			return fmt.Errorf("image_gen belongs to a tools.image_gen: toolhub selection under managed mode")
 		}
 		// Under managed mode raw MCP servers may only come from the
 		// organization catalog (merged in by ApplyOrganization); definitions
@@ -743,14 +750,14 @@ func ReadSecrets(path string) (map[string]string, error) {
 		}
 		key, v, ok := strings.Cut(line, "=")
 		if !ok || !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(key) {
-			return nil, fmt.Errorf("invalid secrets.env line %d", i+1)
+			return nil, fmt.Errorf("invalid secrets.env line %d in %s", i+1, filepath.Base(path))
 		}
 		if _, ok = out[key]; ok {
-			return nil, fmt.Errorf("duplicate env key %s", key)
+			return nil, fmt.Errorf("duplicate env key %s in %s", key, filepath.Base(path))
 		}
 		v = strings.TrimSpace(v)
 		if strings.HasPrefix(v, "\"") || strings.HasPrefix(v, "'") {
-			return nil, fmt.Errorf("use literal unquoted values at line %d", i+1)
+			return nil, fmt.Errorf("use literal unquoted values at line %d in %s", i+1, filepath.Base(path))
 		}
 		out[key] = v
 	}

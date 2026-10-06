@@ -938,6 +938,36 @@ func (s *Store) ProjectionRevision(auth identity.Envelope) (uint64, error) {
 	return s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)], nil
 }
 
+// ProjectionTarget identifies one runtime projection and its monotonic
+// revision. Used by the restart notifier to tell the supervisor which runtime
+// needs a marker after its projection changed.
+type ProjectionTarget struct {
+	PrincipalID string `json:"principal_id"`
+	ContextID   string `json:"context_id"`
+	RuntimeID   string `json:"runtime_id"`
+	Revision    uint64 `json:"revision"`
+}
+
+// ProjectionRevisions snapshots every runtime projection revision. Keys come
+// only from persisted bindings, so a token-file enrolment alone never creates
+// a target.
+func (s *Store) ProjectionRevisions() ([]ProjectionTarget, error) {
+	if err := s.Reload(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ProjectionTarget, 0, len(s.projectionRevisions))
+	for key, revision := range s.projectionRevisions {
+		parts := strings.SplitN(key, "\x00", 3)
+		if len(parts) != 3 || revision == 0 {
+			continue
+		}
+		out = append(out, ProjectionTarget{PrincipalID: parts[0], ContextID: parts[1], RuntimeID: parts[2], Revision: revision})
+	}
+	return out, nil
+}
+
 func definitionKey(id, version string) string { return id + "@" + version }
 
 func (s *Store) RegisterDefinition(definition ToolDefinition) error {

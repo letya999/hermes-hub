@@ -114,8 +114,13 @@ The authenticated envelope opts into this evaluator with `capability_profile`,
 denies admission. Organization/default and personal rules intersect the ceiling;
 matching denies win. Names and installed credentials do not grant access. All
 required action/resource pairs must pass before credential injection. Bare binding
-calls, old projected names, self-install and legacy control operations are denied
-for managed profiles. Call admission requires a durable audit writer
+calls, old projected names and legacy control operations are denied for
+managed profiles unless the profile itself admits them: `control_operations`
+lists the reviewed connector lifecycle operations (discover, prepare_source,
+status, required_credentials, confirm, enable, rotate, disable, revoke,
+remove, diagnostics) and `self_install` admits the GitHub-source install grant;
+both are profile fields, so a principal without them still fails closed.
+Call admission requires a durable audit writer
 (`HUB_AUDIT_LEDGER` in the endpoint); disk failure prevents dispatch.
 
 Policy/profile publication and its complete issuer/scope/revision history share
@@ -253,6 +258,23 @@ in the protected store still govern what an admitted call may do.
 * `mcp-raw[:server]` renders a `mcp:` definition (or an organization-
   provided one) directly into the runtime's `mcp_servers`. Managed mode
   only permits organization-scoped definitions.
+* `settings` exposes the reviewed self-settings surface. Values live in a
+  JSON overlay (`HUB_SELF_SETTINGS_PATH`, rendered at `self-settings.json`
+  under the managed runtime state dir) that both the supervisor
+  materialization and the runtime-side attestation load, so the effective
+  config stays identical on both sides of the boundary. `settings_get`
+  returns only reviewed keys; `settings_set` validates types, applies the
+  overlay atomically and returns `restart_required` keys — the runtime
+  restarts itself rather than mutating live state. Arbitrary config keys
+  are never accepted; the allowlist lives in `internal/selfsettings`.
+
+Managed effective config enables Hermes compression
+(`compression.enabled`, `in_place`, `micro_compact`) with a fixed
+`threshold_tokens` budget so sessions compact predictably regardless of
+model window size. Compression is safe there because managed runtimes run
+the api-server path — the detached hygiene/curator sub-agents that bypass
+`disabled_toolsets` never spawn, and `ContextCompressor` is an auxiliary
+LLM call with no tool surface.
 
 `access: ro` makes an entry read-only where the boundary can prove it:
 ToolHub entries deny every write-effect tool inside the executor
@@ -522,6 +544,18 @@ HUB_SUPERVISOR_AUTH=<host-control-token> hubctl supervisor --spaces spaces
 HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8876 hubctl render --dir spaces/alice
 ```
 
+Two watchdog knobs bound long-running jobs. `HUB_SUPERVISOR_JOB_TIMEOUT`
+(default `130s`) is the supervisor's per-request HTTP timeout toward the
+runtime: when it elapses the job stream ends and the durable job is marked
+`uncertain`, while the runtime keeps executing and reconciliation observes it
+to a terminal state. Raise it for routinely long jobs. `HUB_RUN_STALL_TIMEOUT`
+(default `15m`) lives inside the runtime: if the Hermes run `updated_at`
+timestamp and the event stream both stay silent for that interval, the runtime
+issues a confirmed stop and fails the job as stalled instead of polling until
+the hard run timeout. Both accept Go durations (`130s`, `10m`) or bare
+seconds; the supervisor passes `HUB_RUN_STALL_TIMEOUT` into spawned runtime
+containers.
+
 The runtime uses pinned Hermes `/api/sessions` and `/v1/runs` for each accepted job.
 Persistent execution supports normalized event streaming, durable admission metadata
 and a spool event journal. Back up the spool's `events/` directory together with
@@ -552,9 +586,9 @@ or an unmigrated native Hermes cron. Disabling a pin does not cancel current
 jobs or remove user files; normal idle retention resumes. Pins require the
 private supervisor token and the same saved owner envelope for removal.
 
-A verified private owner may enqueue a one-shot task with
-`/runat <RFC3339 timestamp with timezone> <task>`. The communication spool saves
-its occurrence before acknowledging it. Due occurrences become ordinary jobs
+A verified private owner may enqueue one-shot and recurring tasks through the
+schedules HTTP API (`/v1/routines`). The communication spool saves each
+occurrence before acknowledging it. Due occurrences become ordinary jobs
 with `trigger=cron`; the normal supervisor execution path wakes the context.
 Duplicate ticks and restart reuse the same occurrence key. Inputs containing
 credential assignments are rejected. Catch-up is limited to one hour and each
@@ -577,36 +611,37 @@ commands can wait for `/approve <job_id> <request_id> <choice>` in the initiatin
 private conversation. The saved request expires after two minutes; the supervisor
 confirms native cancellation before releasing its approval hold. A lost decision
 acknowledgement is observed without repeating approval. Native deny/hardline rules
-and current organization/tool authorization still apply. `/cancel <job_id>` is
-durable during queueing, startup and execution and never starts a new task.
+and current organization/tool authorization still apply.
 
 A verified owner keeps several independent task sessions inside one private DM.
-`/new [name]` or `/task new [name]` creates a task and switches to it; a
-nameless task carries a placeholder name flagged `name_auto` and adopts the
-upstream session title after its first real exchange. `/task use
-<id|name|default>` switches the chat's current task, `/task rename`,
-`/task archive`, `/task delete [id|name]` and `/task archived` mutate or list
-the task resolved for the message's audience, and `/tasks` (`/sessions`) lists
-live tasks with their creation dates. `/task delete` removes only the local
-registry record and routing state; the durable Hermes session stays upstream
-for audit. A message posted in a Telegram direct-messages topic resolves to
-its bound task; a first post in an unbound topic adopts one, and root-DM
-messages follow the current pointer. Forum-group topics are supported the same
-way: the bot accepts group messages only from verified users, topic messages
-carry `message_thread_id`, and replies return to the originating topic — group
-jobs deliver to the group chat rather than the sender's DM. Scheduled
-occurrences (`/runat`, `/routine`) remain private-DM only. Unknown slash
+`/new [name]` creates a task and switches to it; a nameless task carries a
+placeholder name flagged `name_auto` and adopts the upstream session title
+after its first real exchange. `/use <id|name|default>` switches the chat's
+current task, `/delete [id|name]` removes the task resolved for the message's
+audience (the local registry record and routing only; the durable Hermes
+session stays upstream for audit), and `/sessions` lists live tasks with their
+creation dates. `/session` reports the current task's name, creation date,
+bound topic and durable session id. A message posted in a Telegram
+direct-messages topic resolves to its bound task; a first post in an unbound
+topic adopts one, and root-DM messages follow the current pointer. Forum-group
+topics are supported the same way: the bot accepts group messages only from
+verified users, topic messages carry `message_thread_id`, and replies return
+to the originating topic — group jobs deliver to the group chat rather than
+the sender's DM. Scheduled occurrences remain private-DM only. Unknown slash
 commands are answered with the supported-command list and never reach the
-model. The implicit `default` task keeps the legacy `telegram-<chat>`
-conversation, so pre-task history and mappings remain valid. Each task owns
-its own durable Hermes session because the session id derives from the task
-conversation id; jobs, replies, streams, artifacts, voice and continuation
-notices carry the originating task and topic id end to end.
-`/style <text>` stores per-task presentation guidance (up to 1024 characters,
-no control characters) that rides each admitted run as Hermes `instructions`;
-the admitted run's snapshot is pinned on its durable mapping, so a later
-`/style` change affects subsequent runs only and never touches authorization
-or tool policy. `/usage` reports the task session's measured model, title and
+model, and the gateway registers that same list as the bot's command menu on
+every startup across all Telegram scopes, so a foreign adapter's stale menu
+cannot shadow it. The implicit `default` task keeps the legacy
+`telegram-<chat>` conversation, so pre-task history and mappings remain valid.
+Each task owns its own durable Hermes session because the session id derives
+from the task conversation id; jobs, replies, streams, artifacts, voice and
+continuation notices carry the originating task and topic id end to end.
+Task records may carry per-task presentation guidance (`style`, up to 1024
+characters, no control characters) that rides each admitted run as Hermes
+`instructions`; the admitted run's snapshot is pinned on its durable mapping,
+so a later style change affects subsequent runs only and never touches
+authorization or tool policy. `/usage` reports the task session's measured
+model, title and
 start time, cumulative tokens, calls, cost and session-rotation count read
 back from the pinned Hermes session API; fields the upstream does not
 authoritatively expose — current-prompt context and the context window —

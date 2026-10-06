@@ -142,6 +142,62 @@ func TestToolsDaemonServesFramedCalls(t *testing.T) {
 	}
 }
 
+// A cancel frame for a missing call is a no-op: it must neither crash the
+// daemon nor starve the framed calls around it.
+func TestToolsDaemonIgnoresUnknownCancel(t *testing.T) {
+	ctx := context.Background()
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "docs", "a.txt"), []byte("scoped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_WORKSPACE", workspace)
+	scopes := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	frames := []toolhub.AgentExecFrame{
+		{ID: 1, AgentExecRequest: toolhub.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
+		{ID: 99, Cancel: true},
+		{ID: 2, Cancel: true},
+		{ID: 2, AgentExecRequest: toolhub.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
+	}
+	var input bytes.Buffer
+	for _, frame := range frames {
+		if err := json.NewEncoder(&input).Encode(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdinFile := filepath.Join(t.TempDir(), "frames.ndjson")
+	if err := os.WriteFile(stdinFile, input.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in, err := os.Open(stdinFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdin
+	os.Stdin = in
+	out := captureOutput(t, func() error { return run(ctx, []string{"tools-daemon"}) })
+	os.Stdin = old
+	_ = in.Close()
+	replies := map[uint64]toolhub.AgentExecResult{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var reply toolhub.AgentExecReply
+		if err := json.Unmarshal([]byte(line), &reply); err != nil {
+			t.Fatalf("daemon emitted a non-frame line: %q", line)
+		}
+		replies[reply.ID] = reply.AgentExecResult
+	}
+	if len(replies) != 2 {
+		t.Fatalf("cancel frames disturbed real calls: %+v", replies)
+	}
+	for _, id := range []uint64{1, 2} {
+		if body, ok := replies[id].Result.(map[string]any); !ok || body["text"] != "scoped" {
+			t.Fatalf("call %d lost its result: %+v", id, replies[id])
+		}
+	}
+}
+
 func TestToolsDaemonRejectsMalformedFrame(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("HUB_WORKSPACE", workspace)

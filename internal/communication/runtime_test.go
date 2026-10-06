@@ -60,6 +60,55 @@ func TestHTTPRunnerContract(t *testing.T) {
 	}
 }
 
+// Voice advertises the VOICE: convention through run instructions only when
+// the gateway actually has a synthesizer — managed runtimes see no tools
+// server instructions, so the channel itself carries the contract.
+func TestHTTPRunnerVoiceConventionInstruction(t *testing.T) {
+	var gotInstructions string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request hubruntime.ExecuteRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotInstructions = request.Instructions
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply"})
+	}))
+	defer server.Close()
+	job := Job{Text: "speak"}
+	if _, err := (HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client(), Voice: true}).Run(context.Background(), job, User{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotInstructions, "VOICE:") {
+		t.Fatalf("voice convention missing from instructions: %q", gotInstructions)
+	}
+	gotInstructions = ""
+	if _, err := (HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client()}).Run(context.Background(), job, User{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(gotInstructions, "VOICE:") {
+		t.Fatalf("voice convention advertised without a synthesizer: %q", gotInstructions)
+	}
+}
+
+// The artifact-delivery contract is always advertised — unmanaged runtimes get
+// it from the tools server, managed ones see only ToolHub, so without this the
+// model concludes the channel cannot take files and tells the user so.
+func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
+	var gotInstructions string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request hubruntime.ExecuteRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotInstructions = request.Instructions
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply"})
+	}))
+	defer server.Close()
+	job := Job{Text: "make a pdf"}
+	if _, err := (HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client()}).Run(context.Background(), job, User{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotInstructions, "artifacts/") || !strings.Contains(gotInstructions, "MEDIA:") {
+		t.Fatalf("artifact convention missing from instructions: %q", gotInstructions)
+	}
+}
+
 func TestSupervisedRunnerUsesJobsEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/jobs" || r.Header.Get("Authorization") != "Bearer synthetic" {

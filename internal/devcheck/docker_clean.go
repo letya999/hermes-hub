@@ -55,7 +55,7 @@ func dockerBuild(ctx context.Context, image, target, sha string, run dockerExec)
 	if validRef(sha) {
 		args = append(args, "--build-arg", "GIT_SHA="+sha)
 	}
-	return run(ctx, append(append(args, cacheArgs()...), "-f", "docker/Dockerfile", ".")...)
+	return run(ctx, append(append(args, cacheArgs()...), "-f", targetDockerfile(target), ".")...)
 }
 
 var composeImagePattern = regexp.MustCompile(`(?m)^\s*image:\s*hermes-hub:(\S+)\s*$`)

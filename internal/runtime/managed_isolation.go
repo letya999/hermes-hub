@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -140,6 +141,21 @@ func verifyManagedIsolation(hermesHome string) error {
 	for _, address := range []string{"toolhub:8090", "model-relay:8318"} {
 		if err := managedDialTCP(address); err != nil {
 			return fmt.Errorf("managed relay %s refused: %w", address, err)
+		}
+	}
+	// When the operator enabled managed egress, the only outbound path is the
+	// reviewed allowlist relay — verify it exists rather than letting web or
+	// sibling calls fail open later.
+	if proxy := strings.TrimSpace(os.Getenv("HUB_EGRESS_PROXY")); proxy != "" {
+		u, err := url.Parse(proxy)
+		if err != nil || u.Hostname() != "egress-relay" {
+			return fmt.Errorf("managed egress proxy is not the reviewed relay")
+		}
+		if err := managedLookupHost("egress-relay"); err != nil {
+			return fmt.Errorf("managed egress relay unreachable: %w", err)
+		}
+		if err := managedDialTCP(u.Host); err != nil {
+			return fmt.Errorf("managed egress relay refused: %w", err)
 		}
 	}
 	return nil

@@ -55,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [dev, prod]
+        target: [dev, prod, stt, tts]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -70,9 +70,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - run: |
-          go run ./cmd/devcheck docker-publish "${{ matrix.target }}"
-          go run ./cmd/devcheck docker-publish "${{ matrix.target }}-control"
+      - run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}"
+        env:
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }},mode=max
+      - if: matrix.target == 'dev' || matrix.target == 'prod'
+        run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}-control"
         env:
           HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
           HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }},mode=max

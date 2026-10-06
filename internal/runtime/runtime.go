@@ -51,9 +51,25 @@ func env(name, fallback string) string {
 	return fallback
 }
 
+// durationEnv reads a Go duration ("15m") or a bare seconds value; invalid
+// input falls back so a typo cannot disable the watchdog.
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return fallback
+}
+
 func Run(args []string) error {
 	if len(args) != 1 {
-		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay or control-relay")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
 	switch args[0] {
 	case "model-relay":
@@ -62,6 +78,8 @@ func Run(args []string) error {
 		return runToolHubRelay(context.Background())
 	case "control-relay":
 		return runControlRelay(context.Background())
+	case "egress-relay":
+		return runEgressRelay()
 	case "verify-managed":
 		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
 			return errors.New("verify-managed requires managed capability mode")
@@ -83,7 +101,7 @@ func Run(args []string) error {
 		}
 		return supervise(args[0])
 	default:
-		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay or control-relay")
+		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
 }
 
@@ -215,9 +233,13 @@ func managedPreflight() error {
 		os.Getenv("HERMES_ENABLE_PROJECT_PLUGINS") != "0" {
 		return fmt.Errorf("managed runtime forbids redirected extension discovery")
 	}
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		return fmt.Errorf("managed runtime config preflight: %w", err)
+	}
 	if err := stack.ValidateManagedEffectiveConfig(filepath.Join(hermesHome, "config.yaml"),
 		stack.Settings{Model: os.Getenv("HUB_MANAGED_MODEL_ID"), ModelURL: os.Getenv("HUB_MANAGED_MODEL_URL"), Timezone: os.Getenv("TZ")},
-		materializeOptionsFromEnv()); err != nil {
+		opts); err != nil {
 		return fmt.Errorf("managed runtime config preflight: %w", err)
 	}
 	if err := verifyManagedIsolation(hermesHome); err != nil {
@@ -255,11 +277,14 @@ func superviseOnce(mode string) (bool, error) {
 	configDst := filepath.Join(hermesHome, "config.yaml")
 	if effectiveConfigWritable(configDst) {
 		var configErr error
-		if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
-			configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, materializeOptionsFromEnv())
-		} else {
-			// No rendered source mount (legacy/test run): mutate in place.
-			configErr = stack.ApplyHermesConfig(configDst, materializeOptionsFromEnv())
+		var opts stack.MaterializeOptions
+		if opts, configErr = materializeOptionsFromEnv(); configErr == nil {
+			if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
+				configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, opts)
+			} else {
+				// No rendered source mount (legacy/test run): mutate in place.
+				configErr = stack.ApplyHermesConfig(configDst, opts)
+			}
 		}
 		if configErr != nil {
 			return false, configErr

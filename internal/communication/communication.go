@@ -99,37 +99,47 @@ func (user User) slackEnvelope(teamID, slackUser string) identity.Envelope {
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
-	Supervised         bool                    `yaml:"-"`
-	OrganizationID     string                  `yaml:"organization_id"`
-	Users              []User                  `yaml:"users"`
-	TelegramToken      string                  `yaml:"-"`
-	APIBaseURL         string                  `yaml:"api_base_url,omitempty"`
-	SlackSigningSecret string                  `yaml:"-"`
-	SlackBotToken      string                  `yaml:"-"`
-	ControlAuth        string                  `yaml:"-"`
-	ListenAddr         string                  `yaml:"-"`
-	FormOrigin         string                  `yaml:"-"`
-	NativeCron         string                  `yaml:"-"`
-	STTCommand         string                  `yaml:"-"`
-	TTSCommand         string                  `yaml:"-"`
-	STTURL             string                  `yaml:"-"`
-	STTAuth            string                  `yaml:"-"`
-	TTSURL             string                  `yaml:"-"`
-	TTSAuth            string                  `yaml:"-"`
-	TTSVoice           string                  `yaml:"-"`
-	TTSUploadURL       string                  `yaml:"-"`
-	STTTimeout         time.Duration           `yaml:"-"`
-	MediaMaxDuration   int                     `yaml:"-"`
-	SpoolDir           string                  `yaml:"spool_dir"`
-	RuntimeURL         string                  `yaml:"-"`
-	RuntimeAuth        string                  `yaml:"-"`
-	PollTimeout        time.Duration           `yaml:"-"`
-	HermesCommand      string                  `yaml:"-"`
-	CredentialStore    string                  `yaml:"-"`
-	CredentialKeyFile  string                  `yaml:"-"`
-	ToolHubStore       string                  `yaml:"-"`
-	AuditLedger        string                  `yaml:"-"`
-	BrokerApprove      credentialbroker.Config `yaml:"-"`
+	Supervised         bool   `yaml:"-"`
+	OrganizationID     string `yaml:"organization_id"`
+	Users              []User `yaml:"users"`
+	TelegramToken      string `yaml:"-"`
+	APIBaseURL         string `yaml:"api_base_url,omitempty"`
+	SlackSigningSecret string `yaml:"-"`
+	SlackBotToken      string `yaml:"-"`
+	ControlAuth        string `yaml:"-"`
+	// ControlTokensFile optionally points at the infra owner's
+	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
+	// equally valid control-plane bearers. The principal still comes from
+	// X-Hub-Principal — the token only proves the caller is a hub service.
+	ControlTokensFile string        `yaml:"-"`
+	controlAuthExtra  []string      `yaml:"-"`
+	ListenAddr        string        `yaml:"-"`
+	FormOrigin        string        `yaml:"-"`
+	NativeCron        string        `yaml:"-"`
+	STTCommand        string        `yaml:"-"`
+	TTSCommand        string        `yaml:"-"`
+	STTURL            string        `yaml:"-"`
+	STTAuth           string        `yaml:"-"`
+	TTSURL            string        `yaml:"-"`
+	TTSAuth           string        `yaml:"-"`
+	TTSVoice          string        `yaml:"-"`
+	TTSUploadURL      string        `yaml:"-"`
+	STTTimeout        time.Duration `yaml:"-"`
+	MediaMaxDuration  int           `yaml:"-"`
+	SpoolDir          string        `yaml:"spool_dir"`
+	RuntimeURL        string        `yaml:"-"`
+	RuntimeAuth       string        `yaml:"-"`
+	PollTimeout       time.Duration `yaml:"-"`
+	HermesCommand     string        `yaml:"-"`
+	CredentialStore   string        `yaml:"-"`
+	CredentialKeyFile string        `yaml:"-"`
+	ToolHubStore      string        `yaml:"-"`
+	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
+	// used by /connections when the local registry is unavailable in
+	// broker-approve mode. The caller's token comes from ControlTokensFile.
+	ToolHubURL    string                  `yaml:"-"`
+	AuditLedger   string                  `yaml:"-"`
+	BrokerApprove credentialbroker.Config `yaml:"-"`
 	// Workers bounds concurrent job execution; contexts serialize per
 	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
 	Workers int `yaml:"-"`
@@ -357,6 +367,12 @@ func fillChannelSecrets(config *Config) {
 		config.SlackBotToken = os.Getenv("SLACK_BOT_TOKEN")
 	}
 	config.ControlAuth = envOr("HUB_COMMUNICATION_AUTH", config.RuntimeAuth)
+	config.ControlTokensFile = os.Getenv("HUB_COMMUNICATION_TOKENS_FILE")
+	// The supervisor's own bearer is a control-plane peer too: ToolHub's
+	// prepare-outcome posts and sibling runtimes authenticate with it.
+	if token := strings.TrimSpace(os.Getenv("HUB_SUPERVISOR_AUTH")); token != "" && token != config.ControlAuth {
+		config.controlAuthExtra = append(config.controlAuthExtra, token)
+	}
 	config.ListenAddr = os.Getenv("HUB_COMMUNICATION_LISTEN")
 	config.FormOrigin = os.Getenv("HUB_COMMUNICATION_FORM_ORIGIN")
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
@@ -368,6 +384,7 @@ func fillChannelSecrets(config *Config) {
 	config.TTSAuth = envOr("HUB_TTS_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
 	config.TTSVoice = os.Getenv("HUB_TTS_VOICE")
 	config.TTSUploadURL = os.Getenv("HUB_TTS_UPLOAD_URL")
+	config.ToolHubURL = strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), "/")
 }
 
 func parseSlackLinks(raw string) []SlackLink {
@@ -1542,16 +1559,17 @@ func New(config Config) (*Gateway, error) {
 			slackUsers[link.key()] = user
 		}
 	}
+	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand)
 	runner := Runner(HermesRunner{Command: config.HermesCommand})
 	if config.RuntimeURL != "" {
-		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised}
+		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}
 	}
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
 	secretService, ledger, err := openCredentialSurface(config)
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand), forms: map[string]credentialForm{}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: map[string]credentialForm{}}
 	if config.SlackBotToken != "" {
 		g.slack = newSlackAPI(config.SlackBotToken)
 	}
@@ -1757,32 +1775,11 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply("Не удалось открыть задачу.")
 		}
 		switch command {
-		case "runat":
+		case "approve":
 			fields := strings.Fields(text)
-			answer := "Используйте /runat <дата RFC3339 с часовым поясом> <задание>."
-			if len(fields) >= 3 {
-				due, err := time.Parse(time.RFC3339, fields[1])
-				if err == nil && due.After(g.now()) {
-					input := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, fields[0])), fields[1]))
-					caller := user.envelope(message.From.ID)
-					job := Job{Envelope: caller, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: message.Chat.ID, TaskID: task.TaskID, TopicID: task.TopicID, Text: input}
-					err = g.spool.PutOccurrence(RoutineOccurrence{ScheduleID: "telegram-" + strconv.Itoa(update.UpdateID), Revision: 1, DueAt: due, Job: job}, caller)
-					if err == nil {
-						answer = "Задание по расписанию сохранено."
-					} else {
-						answer = "Задание отклонено: проверьте текст и время."
-					}
-				}
-			}
-			return reply(answer)
-		case "cancel", "approve":
-			fields := strings.Fields(text)
-			answer := "Используйте /cancel <job-id> или /approve <job-id> <request-id> <choice>."
+			answer := "Используйте /approve <job-id> <request-id> <choice>."
 			var err error
-			if command == "cancel" && len(fields) == 2 {
-				_, err = g.spool.RequestCancel(fields[1], callerForJob(fields[1]))
-				answer = "Запрос отмены сохранен."
-			} else if command == "approve" && len(fields) == 4 {
+			if len(fields) == 4 {
 				err = g.spool.RequestApproval(fields[1], callerForJob(fields[1]), fields[2], fields[3])
 				answer = "Ответ на подтверждение сохранен."
 			}
@@ -1808,33 +1805,20 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply(answer)
 		case "start":
 			return reply("Готово. Вы подключены к своему Hermes-пространству.")
-		case "status":
-			state := "свободен"
-			if g.busy.Load() > 0 {
-				state = "обрабатывает сообщение"
-			}
-			return reply("Hermes: " + state + ".")
-		case "connections", "connection":
-			return reply(connectionList(user))
-		case "session":
-			return reply(g.sessionStatus(user, task))
-		case "task":
-			return reply(g.taskCommand(user, message.Chat.ID, topic, task, text))
-		case "tasks", "sessions":
-			return reply(g.tasksCommand(user, message.Chat.ID))
 		case "new":
-			fields := strings.Fields(text)
-			return reply(g.taskCommand(user, message.Chat.ID, topic, task, "/task new"+strings.TrimPrefix(text, fields[0])))
-		case "topic":
+			return reply(g.newTaskCommand(user, message.Chat.ID, topic, text))
+		case "sessions":
+			return reply(g.sessionsCommand(user, message.Chat.ID))
+		case "use":
+			return reply(g.useCommand(user, message.Chat.ID, text))
+		case "delete":
+			return reply(g.deleteCommand(user, message.Chat.ID, task, text))
+		case "session":
 			return reply(g.taskStatus(user, task))
-		case "style":
-			return reply(g.styleCommand(user, message.Chat.ID, task, text))
 		case "usage":
 			return reply(g.usageCommand(ctx, user, message.From.ID, task))
-		case "voice":
-			return reply(g.voiceCommand())
-		case "routine":
-			return reply(g.routineCommand(user, message.From.ID, message.Chat.ID, task, text))
+		case "connections", "connection":
+			return reply(g.connectionsCommand(user, message.From.ID))
 		case "help":
 			return reply(commandHelp())
 		default:
@@ -1886,21 +1870,16 @@ var botCommandInventory = []struct {
 	Command     string
 	Description string
 }{
+	{"start", "Подключиться к своему Hermes-пространству"},
 	{"new", "Новая сессия (отдельный контекст): /new [имя]"},
 	{"sessions", "Список сессий с датами"},
-	{"task", "Сессии: статус, /task use|rename|archive|delete|archived"},
-	{"style", "Стиль ответа сессии: /style [текст|reset]"},
+	{"use", "Переключиться на сессию: /use <id|имя|default>"},
+	{"delete", "Удалить сессию: /delete [id|имя]"},
+	{"session", "Текущая сессия: имя, дата, session id"},
 	{"usage", "Расход токенов сессии и лимиты подписки"},
-	{"session", "ID постоянной Hermes-сессии"},
-	{"status", "Занят ли Hermes"},
-	{"voice", "Доступность голосового ввода/ответов"},
-	{"routine", "Расписания"},
-	{"runat", "Разовое задание: /runat <RFC3339> <текст>"},
-	{"cancel", "Отменить джобу: /cancel <job-id>"},
-	{"approve", "Подтвердить: /approve <job-id> <request-id> <choice>"},
+	{"connections", "Подключения и коннекторы ToolHub"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
-	{"connections", "Список подключений"},
-	{"help", "Этот список команд"},
+	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
 }
 
 // commandHelp is the authoritative inventory of supported slash commands;
@@ -1963,26 +1942,8 @@ func (g *Gateway) maybeAutoTitle(ctx context.Context, job Job) {
 		return
 	}
 	if g.spool.AutoTitleTask(job.PrincipalID, job.TaskID, report.Title) {
-		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "». Переименовать: /task rename <имя>.", CreatedAt: g.now().UTC()})
+		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "».", CreatedAt: g.now().UTC()})
 	}
-}
-
-func (g *Gateway) sessionStatus(user User, task Task) string {
-	mapping, found, err := g.spool.SessionFor(user.ID, user.ID, task.ConversationID)
-	if err != nil || !found || mapping.SessionID == "" {
-		return "Задача " + taskLabel(task) + ": постоянная Hermes-сессия ещё не создана."
-	}
-	return "Задача " + taskLabel(task) + ". Сессия: " + mapping.SessionID + "."
-}
-
-// voiceReadiness reports incoming STT and outgoing TTS availability separately:
-// a configured-but-unresolvable worker binary, a sidecar that does not answer
-// /healthz, or a parked upload URL all still mean "unavailable", so /voice
-// never promises a channel that cannot send.
-func (g *Gateway) voiceReadiness() (sttReady, ttsReady bool) {
-	sttReady = mediaReady(g.transcriber, g.config.STTCommand, g.config.STTURL)
-	ttsReady = mediaReady(g.synthesizer, g.config.TTSCommand, g.config.TTSURL) && strings.TrimSpace(g.config.TTSUploadURL) == ""
-	return
 }
 
 // mediaReady resolves readiness for either an embedded command worker (binary
@@ -2003,19 +1964,6 @@ func mediaReady(impl any, command, url string) bool {
 		return h.Healthy(ctx)
 	}
 	return true
-}
-
-func readyWord(ready bool) string {
-	if ready {
-		return "доступно"
-	}
-	return "недоступно"
-}
-
-func (g *Gateway) voiceCommand() string {
-	sttReady, ttsReady := g.voiceReadiness()
-	status := "Распознавание голосовых (STT): " + readyWord(sttReady) + ". Озвучка ответов (TTS): " + readyWord(ttsReady) + "."
-	return status + " Отдельного режима нет: попросите в сообщении ответить голосовым — например, «ответь голосовым» — и придёт голосовое сообщение."
 }
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID, topicID int64, messageID int, text string) error {
@@ -2418,6 +2366,171 @@ func signalRestartAfterDelivery(stateDir string) error {
 		return err
 	}
 	return process.Signal(os.Interrupt)
+}
+
+// connectionsCommand answers /connections: the operator-facing connection
+// catalog plus the ToolHub tool inventory projected for this principal —
+// builtin agent tools, bounded CLIs, containerized and remote MCP servers.
+func (g *Gateway) connectionsCommand(user User, sender int64) string {
+	answer := connectionList(user)
+	if g.secrets == nil || g.secrets.Registry == nil {
+		// Broker-approve mode keeps the ToolHub store inside the ToolHub
+		// container; ask it over the control endpoint instead.
+		if lines, ok := g.toolHubConnectorsHTTP(user); ok {
+			return answer + lines
+		}
+		return answer + "\nКоннекторы ToolHub: реестр недоступен."
+	}
+	tools, err := g.secrets.Registry.ListProjectedTools(user.envelope(sender))
+	if err != nil {
+		return answer + "\nКоннекторы ToolHub: не удалось получить список."
+	}
+	if len(tools) == 0 {
+		return answer + "\nКоннекторы ToolHub: нет."
+	}
+	kind := map[string]string{}
+	for _, t := range tools {
+		if _, seen := kind[t.DefinitionID]; seen {
+			continue
+		}
+		label := string(t.Tool.Effect)
+		if def, derr := g.secrets.Registry.Definition(t.DefinitionID, t.Version); derr == nil {
+			label = string(def.Transport)
+		}
+		kind[t.DefinitionID] = label
+	}
+	lines := []string{"", "Коннекторы ToolHub:"}
+	seen := map[string]bool{}
+	for _, t := range tools {
+		if seen[t.DefinitionID] {
+			continue
+		}
+		seen[t.DefinitionID] = true
+		var names []string
+		for _, o := range tools {
+			if o.DefinitionID == t.DefinitionID {
+				names = append(names, o.Name)
+			}
+		}
+		lines = append(lines, "- "+connectorLine(t.DefinitionID, kind[t.DefinitionID], names))
+	}
+	return answer + strings.Join(lines, "\n")
+}
+
+// connectorLine renders one ToolHub connector compactly: the hashed projected
+// names are stripped back to their readable form and long inventories collapse
+// to a count plus a few examples.
+func connectorLine(definitionID, transport string, names []string) string {
+	clean := make([]string, 0, len(names))
+	for _, name := range names {
+		clean = append(clean, connectorToolName(definitionID, name))
+	}
+	label := definitionID
+	if transport != "" {
+		label += " [" + transport + "]"
+	}
+	if len(clean) <= 6 {
+		return label + " — " + strconv.Itoa(len(clean)) + " инструментов: " + strings.Join(clean, ", ")
+	}
+	return label + " — " + strconv.Itoa(len(clean)) + " инструментов: " + strings.Join(clean[:3], ", ") + ", …"
+}
+
+// connectorToolName strips the "hub-<definition>-" prefix and the trailing
+// dedup hash that projection adds to every tool name.
+func connectorToolName(definitionID, name string) string {
+	name = strings.TrimPrefix(name, "hub-"+definitionID+"-")
+	if i := strings.LastIndex(name, "-"); i > 0 && len(name)-i == 9 {
+		if _, err := strconv.ParseUint(name[i+1:], 16, 32); err == nil {
+			name = name[:i]
+		}
+	}
+	return name
+}
+
+// toolHubConnectorsHTTP renders the ToolHub inventory through
+// HUB_TOOLHUB_URL/v1/connectors when the local registry file is unreachable
+// (broker-approve mode never mounts the store into the gateway). A sibling
+// token from ControlTokensFile pins the caller's own principal; otherwise the
+// supervisor/owner bearer goes with X-Hub-Principal, matching ToolHub's
+// control-token contract. The header never substitutes for the token.
+func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
+	base := strings.TrimRight(strings.TrimSpace(g.config.ToolHubURL), "/")
+	if base == "" {
+		return "", false
+	}
+	token, header := g.toolHubCredential(user.ID)
+	if token == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/connectors", nil)
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if header != "" {
+		req.Header.Set("X-Hub-Principal", header)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var payload struct {
+		Connectors []struct {
+			DefinitionID string   `json:"definition_id"`
+			Transport    string   `json:"transport"`
+			Tools        []string `json:"tools"`
+		} `json:"connectors"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return "", false
+	}
+	if len(payload.Connectors) == 0 {
+		return "\nКоннекторы ToolHub: нет.", true
+	}
+	lines := []string{"", "Коннекторы ToolHub:"}
+	for _, c := range payload.Connectors {
+		label := c.Transport
+		if label == "" {
+			label = "mcp"
+		}
+		lines = append(lines, "- "+connectorLine(c.DefinitionID, label, c.Tools))
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+// toolHubCredential picks the bearer for a /v1/connectors call. A sibling
+// token enrolled in ControlTokensFile pins exactly this principal. Without
+// one, only supervised mode falls back to RuntimeAuth — there it is the
+// supervisor bearer, which ToolHub accepts as a control token selecting any
+// enrolled principal via X-Hub-Principal. In unsupervised mode RuntimeAuth is
+// the owner's own token, which pins the owner regardless of the header, so
+// pairing it with a sibling's principal would silently render the wrong
+// principal's inventory.
+func (g *Gateway) toolHubCredential(userID string) (token, principalHeader string) {
+	if path := strings.TrimSpace(g.config.ControlTokensFile); path != "" {
+		if body, err := os.ReadFile(path); err == nil {
+			var entries map[string]identity.Envelope
+			if json.Unmarshal(body, &entries) == nil {
+				for candidate, envelope := range entries {
+					if envelope.PrincipalID == userID && len(candidate) >= 32 {
+						return candidate, ""
+					}
+				}
+			}
+		}
+	}
+	if g.config.Supervised {
+		if auth := strings.TrimSpace(g.config.RuntimeAuth); auth != "" {
+			return auth, userID
+		}
+	}
+	return "", ""
 }
 
 func connectionList(user User) string {

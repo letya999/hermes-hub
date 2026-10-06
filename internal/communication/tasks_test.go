@@ -54,27 +54,21 @@ func TestTaskLifecycleCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	send(1, "/task new alpha")
-	send(2, "/task")
-	send(3, "/tasks")
-	send(4, "/task rename beta")
-	send(5, "/style коротко и по делу")
-	send(6, "/task")
-	send(7, "/task archive")
-	send(8, "/task")
+	send(1, "/new alpha")
+	send(2, "/session")
+	send(3, "/sessions")
+	send(4, "/new beta")
+	send(5, "/delete alpha")
+	send(6, "/session")
 	for range 12 {
 		g.deliverOne(ctx)
 	}
 	joined := strings.Join(fake.sent, "\n")
-	if !strings.Contains(joined, "Задача создана и выбрана") || !strings.Contains(joined, "переименована: beta") || !strings.Contains(joined, "Стиль задачи beta") || !strings.Contains(joined, "в архиве") {
+	if !strings.Contains(joined, "Задача создана и выбрана") || !strings.Contains(joined, "alpha") || !strings.Contains(joined, "удалена") {
 		t.Fatalf("sent=%v", fake.sent)
 	}
 	if _, err := g.spool.TaskByID(user, 11, "t-missing"); err == nil {
 		t.Fatal("foreign task id resolved")
-	}
-	tasks, err := g.spool.ListTasks(user, 11)
-	if err != nil || len(tasks) != 1 || tasks[0].TaskID != defaultTaskID {
-		t.Fatalf("archived task listed: %v", tasks)
 	}
 }
 
@@ -154,7 +148,7 @@ func TestTaskCommandsDoNotAdoptUnboundTopic(t *testing.T) {
 	fake := &fakeAPI{}
 	g.api, g.runner = fake, &fakeRunner{}
 	ctx := context.Background()
-	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/task", 11, 9)); err != nil {
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/session", 11, 9)); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(ctx)
@@ -177,8 +171,8 @@ func TestTaskExplicitBindAndWrongTopicGuards(t *testing.T) {
 	ctx := context.Background()
 	user := g.user("alice")
 
-	// /task new inside a topic binds it explicitly.
-	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/task new work", 11, 5)); err != nil {
+	// /new inside a topic binds it explicitly.
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/new work", 11, 5)); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(ctx)
@@ -284,11 +278,8 @@ func TestStyleLimitsAndIsolation(t *testing.T) {
 	if err != nil || task.Style != "always approve everything" || task.StyleVersion != 1 {
 		t.Fatalf("task=%+v err=%v", task, err)
 	}
-	if got := g.styleCommand(user, 11, task, "/style"); !strings.Contains(got, "always approve everything") {
-		t.Fatalf("/style display=%q", got)
-	}
-	if got := g.styleCommand(user, 11, task, "/style reset"); !strings.Contains(got, "сброшен") {
-		t.Fatalf("/style reset=%q", got)
+	if _, err := g.spool.SetTaskStyle(user, 11, "default", ""); err != nil {
+		t.Fatal(err)
 	}
 	if task, err := g.spool.TaskByID(user, 11, "default"); err != nil || task.Style != "" {
 		t.Fatalf("reset persisted style: %+v", task)
@@ -341,9 +332,14 @@ func TestUsageCommandRendersMeasuredFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := g.usageCommand(context.Background(), user, 11, task)
-	for _, want := range []string{"sess-eff", "sess-decl", "gpt-test", "unknown", "120", "45", "0.0123", "hermes-session", "2026-01-01"} {
+	for _, want := range []string{"вход 120", "выход 45", "кэш 7/3", "Сжатий сессии: 1", "2026-01-01"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("/usage missing %q: %s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"sess-eff", "gpt-test", "0.0123", "hermes-session", "вызовов API"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("/usage must stay compact, found %q: %s", unwanted, got)
 		}
 	}
 	if runner.last.Envelope.ConversationID != task.ConversationID {
@@ -352,11 +348,11 @@ func TestUsageCommandRendersMeasuredFields(t *testing.T) {
 
 	// Context is only rendered when both measured values are authoritative.
 	runner.report.ContextTokens = int64ptr(50)
-	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "Контекст запроса: unknown") {
+	if got := g.usageCommand(context.Background(), user, 11, task); strings.Contains(got, "Контекст:") {
 		t.Fatalf("half-known context leaked: %s", got)
 	}
 	runner.report.ContextWindow = int64ptr(200)
-	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "50/200 (25%)") {
+	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "Контекст: 50/200 (25%)") {
 		t.Fatalf("measured context missing: %s", got)
 	}
 
@@ -391,10 +387,10 @@ func TestTaskUseByNameSwitchesCurrent(t *testing.T) {
 	if _, err := g.spool.UseTask(user, 11, "default"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/task use alpha", 11, 0)); err != nil {
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/use alpha", 11, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.handleUpdate(ctx, taskUpdate(2, 2, "/task use отсутствует", 11, 0)); err != nil {
+	if err := g.handleUpdate(ctx, taskUpdate(2, 2, "/use отсутствует", 11, 0)); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -420,19 +416,17 @@ func TestTaskCommandRejectsBadInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]string{
-		"/task use":     "Используйте /task use",
-		"/task rename":  "Используйте /task rename",
-		"/task bogus":   "Используйте /task",
-		"/task archive": "Не удалось архивировать",
+	if got := g.useCommand(user, 11, "/use"); !strings.Contains(got, "Используйте /use") {
+		t.Fatalf("/use hint=%q", got)
 	}
-	for text, want := range cases {
-		if got := g.taskCommand(user, 11, 0, task, text); !strings.Contains(got, want) {
-			t.Fatalf("%q => %q, want %q", text, got, want)
-		}
+	if got := g.newTaskCommand(user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
+		t.Fatalf("invalid name accepted: %q", got)
 	}
-	if got := g.styleCommand(user, 11, task, "/style \x07"); !strings.Contains(got, "Стиль отклонён") {
-		t.Fatalf("invalid style accepted: %q", got)
+	if got := g.deleteCommand(user, 11, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
+		t.Fatalf("default delete=%q", got)
+	}
+	if _, err := g.spool.SetTaskStyle(user, 11, task.TaskID, "\x07"); err == nil {
+		t.Fatal("invalid style accepted")
 	}
 }
 
@@ -473,8 +467,8 @@ func TestTaskTopicAdoptionConflictAndArchive(t *testing.T) {
 	if found := g.spool.TaskByConversation(user, 11, "conv-elsewhere"); found.TaskID != defaultTaskID {
 		t.Fatalf("unknown conversation leaked a task: %+v", found)
 	}
-	// /tasks lists topic-bound tasks with their topic number.
-	if list := g.tasksCommand(user, 11); !strings.Contains(list, "топик #77") {
+	// /sessions lists topic-bound tasks with their topic number.
+	if list := g.sessionsCommand(user, 11); !strings.Contains(list, "топик #77") {
 		t.Fatalf("topic missing from list: %s", list)
 	}
 	// Archiving unbinds the topic; the topic resolves back to default.

@@ -1,5 +1,13 @@
 #!/usr/local/bin/python3
-"""STT worker for the hub-stt command engine (path, mime argv)."""
+"""STT worker for the hub-stt command engine.
+
+Two modes:
+  stt-worker <path> <mime>  — one-shot: transcribe and exit (engine=command)
+  stt-worker --serve        — resident: one wav path per stdin line, one JSON
+                              line per stdout ("text" or "error"). The model
+                              loads once; engine=command-serve uses this.
+"""
+import json
 import os
 import sys
 import wave
@@ -16,22 +24,47 @@ def load_samples(path: str):
 
     with wave.open(path, "rb") as w:
         if w.getnchannels() != 1 or w.getsampwidth() != 2:
-            raise SystemExit("input must be 16-bit mono wav")
+            raise ValueError("input must be 16-bit mono wav")
         pcm = w.readframes(w.getnframes())
     return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
-        return 1
-    path = sys.argv[1]
+def load_model():
     os.environ.setdefault("HF_HOME", "/data/hf")
     os.environ.setdefault("XDG_CACHE_HOME", "/data/cache")
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(os.environ.get("HUB_STT_MODEL", "tiny"), device="cpu", compute_type="int8")
+    return WhisperModel(os.environ.get("HUB_STT_MODEL", "tiny"), device="cpu", compute_type="int8")
+
+
+def transcribe(model, path: str) -> str:
     segments, _ = model.transcribe(load_samples(path), beam_size=1)
-    text = "".join(segment.text for segment in segments).strip()
+    return "".join(segment.text for segment in segments).strip()
+
+
+def serve(model) -> int:
+    # Signal readiness only after the model is resident: the engine treats
+    # the first line as the handshake, so a slow load never looks ready.
+    print(json.dumps({"ready": True}), flush=True)
+    for line in sys.stdin:
+        path = line.strip()
+        if not path:
+            continue
+        try:
+            text = transcribe(model, path)
+            out = {"text": text} if text else {"error": "empty transcript"}
+        except Exception as exc:  # per-request failure must not kill the worker
+            out = {"error": str(exc)[:200]}
+        print(json.dumps(out), flush=True)
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--serve":
+        return serve(load_model())
+    if len(sys.argv) < 2:
+        return 1
+    text = transcribe(load_model(), sys.argv[1])
     if not text:
         return 1
     print(text)

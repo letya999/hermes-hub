@@ -257,6 +257,85 @@ func TestMergeArtifactsDedupesAndBounds(t *testing.T) {
 	}
 }
 
+// A bare-name MEDIA: marker for a file the run already wrote under
+// artifacts/ resolves instead of erroring; and a failed marker never
+// double-reports a name the scan already delivered.
+func TestMediaMarkerBasenameResolvesUnderArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	writeArtifact(t, artifactRoot(), "images/unicorn.jpg", "jpg-bytes")
+	_, refs := extractMediaArtifacts("MEDIA: unicorn.jpg")
+	if len(refs) != 1 || refs[0].Path != "images/unicorn.jpg" || refs[0].Error != "" {
+		t.Fatalf("bare marker: %+v", refs)
+	}
+	merged := mergeArtifacts(
+		[]ArtifactRef{{Name: "unicorn.jpg", Path: "images/unicorn.jpg", Mime: "image/jpeg", Size: 9}},
+		[]ArtifactRef{{Name: "unicorn.jpg", Error: "media file unavailable"}},
+	)
+	if len(merged) != 1 || merged[0].Path != "images/unicorn.jpg" {
+		t.Fatalf("delivered file must not gain a phantom failure: %+v", merged)
+	}
+	// A genuinely missing marker still surfaces its error.
+	merged = mergeArtifacts(
+		[]ArtifactRef{{Name: "unicorn.jpg", Path: "images/unicorn.jpg"}},
+		[]ArtifactRef{{Name: "missing.png", Error: "media file unavailable"}},
+	)
+	if len(merged) != 2 || merged[1].Error == "" {
+		t.Fatalf("real failures stay explicit: %+v", merged)
+	}
+}
+
+// Models quote artifact paths under the agent home ($HOME/artifacts/...) while
+// the tools tree is the workspace — a failed absolute marker is remapped onto
+// the artifacts root instead of reporting the file missing.
+func TestMediaMarkerHomeRootedPathRemapsToArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	writeArtifact(t, artifactRoot(), "documents/report.pdf", "pdf-bytes")
+	outside := filepath.Join(t.TempDir(), "home", "artifacts", "documents", "report.pdf")
+	_, refs := extractMediaArtifacts("MEDIA: " + outside)
+	if len(refs) != 1 || refs[0].Path != "documents/report.pdf" || refs[0].Error != "" {
+		t.Fatalf("home-rooted marker: %+v", refs)
+	}
+	// An absolute path without an artifacts segment still fails honestly.
+	_, refs = extractMediaArtifacts("MEDIA: " + filepath.Join(t.TempDir(), "elsewhere", "report.pdf"))
+	if len(refs) != 1 || refs[0].Error == "" {
+		t.Fatalf("outside marker must still error: %+v", refs)
+	}
+}
+
+// A recovered observation has no in-memory run start; the durable marker
+// written at admission restores the scan window so interrupted runs still
+// deliver the files they produced.
+func TestRunStartMarkersRestoreRecoveredScanWindow(t *testing.T) {
+	dir := t.TempDir()
+	oldW, oldS := workspace, state
+	workspace, state = dir, filepath.Join(t.TempDir(), "state")
+	defer func() { workspace, state = oldW, oldS }()
+	if err := os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if got := runStartFor("run_absent"); !got.IsZero() {
+		t.Fatalf("missing marker must stay zero: %v", got)
+	}
+	if got := runStartFor("../escape"); !got.IsZero() {
+		t.Fatalf("invalid run id must stay zero: %v", got)
+	}
+	markRunStart("run_ok")
+	got := runStartFor("run_ok")
+	if got.IsZero() || time.Since(got) > time.Minute {
+		t.Fatalf("marker did not record a recent start: %v", got)
+	}
+	writeArtifact(t, artifactRoot(), "documents/report.pdf", "pdf")
+	if refs := scanArtifacts(got); len(refs) != 1 || refs[0].Path != "documents/report.pdf" {
+		t.Fatalf("recovered window lost the run's file: %+v", refs)
+	}
+}
+
 func TestArtifactLimitBuckets(t *testing.T) {
 	if artifactLimit("videos/clip.mp4") != videoMaxBytes {
 		t.Fatal("video bucket bound")

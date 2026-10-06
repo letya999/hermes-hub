@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +37,19 @@ type MaterializeOptions struct {
 	// this runtime's denylist (settings.yaml `tools:` entries with
 	// `via: native`, or HUB_NATIVE_TOOLSETS inside the container).
 	NativeToolsets []string
+	// Web is the operator's provider selection rendered into the managed
+	// config when a web toolset is carved out. The managed egress relay —
+	// not this section — decides which endpoints are reachable.
+	Web WebSettings
+	// ImageGen is the operator's provider grant rendered into the managed
+	// config: an empty struct renders no image_gen block and the runtime
+	// grant stays inactive even when the capability profile selects it.
+	ImageGen media.ImageGen
+	// SelfSettingsPath is the runtime-owned settings overlay merged onto the
+	// managed effective config at materialize time and re-merged onto the
+	// expected config at attestation, so both sides compute identical bytes.
+	// Empty disables the overlay.
+	SelfSettingsPath string
 }
 
 // MaterializeHermesConfig renders the effective Hermes config on the host so
@@ -67,6 +82,9 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 		if err := ApplyHermesConfig(name, opts); err != nil {
 			return err
 		}
+		if err := applySelfSettings(name, opts); err != nil {
+			return err
+		}
 		if err := os.Chmod(name, 0644); err != nil {
 			return err
 		}
@@ -95,7 +113,7 @@ func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
 		if err := ValidateNativeToolsets(opts.NativeToolsets); err != nil {
 			return fmt.Errorf("native_toolsets: %w", err)
 		}
-		if err := validateManagedSourceConfig(configPath, opts.NativeToolsets); err != nil {
+		if err := validateManagedSourceConfig(configPath, opts); err != nil {
 			return err
 		}
 	} else {
@@ -108,7 +126,7 @@ func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
 
 // The selected model and timezone may vary, but capability-bearing fields
 // must exactly match the generated zero template. Extra YAML is denied.
-func validateManagedSourceConfig(configPath string, nativeToolsets []string) error {
+func validateManagedSourceConfig(configPath string, opts MaterializeOptions) error {
 	body, err := os.ReadFile(configPath) // #nosec G304 -- host-owned materialization path.
 	if err != nil {
 		return err
@@ -127,7 +145,14 @@ func validateManagedSourceConfig(configPath string, nativeToolsets []string) err
 	if !nameOK || !urlOK || !zoneOK {
 		return fmt.Errorf("invalid managed model identity")
 	}
-	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone, Tools: nativeToolsEntries(nativeToolsets)}))
+	tools := nativeToolsEntries(opts.NativeToolsets)
+	if opts.ImageGen != (media.ImageGen{}) {
+		// The normalized grant riding the env is the enabled marker; the
+		// reconstructed tool entry reproduces Has("image_gen") so the
+		// expected source matches the operator-rendered file.
+		tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
+	}
+	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen}))
 	if err != nil {
 		return err
 	}
@@ -139,6 +164,37 @@ func validateManagedSourceConfig(configPath string, nativeToolsets []string) err
 		return fmt.Errorf("managed Hermes source differs from the reviewed zero-capability template")
 	}
 	return nil
+}
+
+// applySelfSettings merges the runtime-owned settings overlay onto the
+// materialized effective config, still inside the caller's atomic window.
+// Re-validation on load means a hand-edited overlay fails materialization
+// rather than sneaking past the reviewed allowlist.
+func applySelfSettings(configPath string, opts MaterializeOptions) error {
+	if opts.SelfSettingsPath == "" {
+		return nil
+	}
+	values, err := selfsettings.Load(opts.SelfSettingsPath)
+	if err != nil {
+		return fmt.Errorf("self-settings overlay: %w", err)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	if err != nil {
+		return err
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal(body, &config); err != nil {
+		return fmt.Errorf("read materialized config: %w", err)
+	}
+	selfsettings.Merge(config, values)
+	updated, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("write materialized config: %w", err)
+	}
+	return os.WriteFile(configPath, updated, 0660)
 }
 
 // ValidateManagedEffectiveConfig prevents Hermes from falling back to its
@@ -167,6 +223,15 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	for name, entry := range nativeToolsEntries(opts.NativeToolsets) {
 		s.Tools[name] = entry
 	}
+	if opts.ImageGen != (media.ImageGen{}) {
+		// A non-empty grant is the enabled marker for the reconstruction:
+		// render sites only emit it when Has("image_gen") held.
+		s.Tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
+	}
+	// The operator's web provider selection rides HUB_MANAGED_WEB into the
+	// container; without it a carved-out web block can never be reproduced.
+	s.Web = opts.Web
+	s.ImageGen = opts.ImageGen
 	expected := managedHermesConfig(s)
 	expected["mcp_servers"] = M{"toolhub": M{
 		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,
@@ -174,6 +239,13 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	}}
 	if opts.ToolHubReconnect {
 		expected["approvals"] = M{"mcp_reload_confirm": false}
+	}
+	if opts.SelfSettingsPath != "" {
+		values, err := selfsettings.Load(opts.SelfSettingsPath)
+		if err != nil {
+			return fmt.Errorf("self-settings overlay: %w", err)
+		}
+		selfsettings.Merge(expected, values)
 	}
 	wantBody, err := yaml.Marshal(expected)
 	if err != nil {

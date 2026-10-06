@@ -9,71 +9,57 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
-// taskCommand implements /task, /task new|use|rename|archive. Tasks are
-// owner-scoped by construction: the resolved user is the only authority.
-func (g *Gateway) taskCommand(user User, chatID, topic int64, task Task, text string) string {
+// newTaskCommand implements /new [имя]: create a session task and switch to
+// it. Tasks are owner-scoped by construction: the resolved user is the only
+// authority.
+func (g *Gateway) newTaskCommand(user User, chatID, topic int64, text string) string {
 	fields := strings.Fields(text)
-	if len(fields) == 1 {
-		return g.taskStatus(user, task)
+	name := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
+	created, isNew, err := g.spool.CreateTask(user, chatID, topic, name, true)
+	if err != nil {
+		return "Задача отклонена: " + err.Error()
 	}
-	switch strings.ToLower(fields[1]) {
-	case "new":
-		name := strings.TrimSpace(strings.TrimPrefix(text, fields[0]+" "+fields[1]))
-		created, isNew, err := g.spool.CreateTask(user, chatID, topic, name, true)
-		if err != nil {
-			return "Задача отклонена: " + err.Error()
-		}
-		if !isNew {
-			return "Задача уже есть — переключился на неё: " + taskLabel(created) + "."
-		}
-		answer := "Задача создана и выбрана: " + taskLabel(created) + "."
-		if created.NameAuto {
-			answer += " Название появится автоматически после первых сообщений; задать своё: /task rename <имя>."
-		}
-		if topic != 0 {
-			answer += " Этот топик теперь привязан к ней."
-		}
-		return answer
-	case "use", "switch", "resume":
-		if len(fields) < 3 {
-			return "Используйте /task use <id|имя|default>."
-		}
-		selected, err := g.spool.UseTask(user, chatID, strings.Join(fields[2:], " "))
-		if err != nil {
-			return "Задача не найдена: " + err.Error()
-		}
-		return "Текущая задача: " + taskLabel(selected) + "."
-	case "rename":
-		name := strings.TrimSpace(strings.TrimPrefix(text, fields[0]+" "+fields[1]))
-		if name == "" {
-			return "Используйте /task rename <новое имя>."
-		}
-		renamed, err := g.spool.RenameTask(user, chatID, task.TaskID, name)
-		if err != nil {
-			return "Не удалось переименовать: " + err.Error()
-		}
-		return "Задача переименована: " + taskLabel(renamed) + ". История и сессия сохранены."
-	case "archive":
-		archived, err := g.spool.ArchiveTask(user, chatID, task.TaskID)
-		if err != nil {
-			return "Не удалось архивировать: " + err.Error()
-		}
-		return "Задача " + taskLabel(archived) + " в архиве. Текущая — default."
-	case "archived", "archive-list":
-		return g.archivedTasksCommand(user, chatID)
-	case "delete":
-		selector := task.TaskID
-		if len(fields) >= 3 {
-			selector = strings.Join(fields[2:], " ")
-		}
-		deleted, err := g.spool.DeleteTaskBySelector(user, chatID, selector)
-		if err != nil {
-			return "Не удалось удалить: " + err.Error()
-		}
-		return "Задача " + taskLabel(deleted) + " удалена, текущая — default. Её Hermes-сессия сохранена наверху для аудита."
-	default:
-		return "Используйте /task, /task new [имя], /task use <id|имя|default>, /task rename <имя>, /task archive, /task archived, /task delete."
+	if !isNew {
+		return "Задача уже есть — переключился на неё: " + taskLabel(created) + "."
 	}
+	answer := "Задача создана и выбрана: " + taskLabel(created) + "."
+	if created.NameAuto {
+		answer += " Название появится автоматически после первых сообщений."
+	}
+	if topic != 0 {
+		answer += " Этот топик теперь привязан к ней."
+	}
+	return answer
+}
+
+// useCommand implements /use <id|имя|default>: switch the chat's current
+// session. Posting afterwards follows the selected task's conversation.
+func (g *Gateway) useCommand(user User, chatID int64, text string) string {
+	fields := strings.Fields(text)
+	if len(fields) < 2 {
+		return "Используйте /use <id|имя|default>."
+	}
+	selected, err := g.spool.UseTask(user, chatID, strings.Join(fields[1:], " "))
+	if err != nil {
+		return "Задача не найдена: " + err.Error()
+	}
+	return "Текущая задача: " + taskLabel(selected) + "."
+}
+
+// deleteCommand implements /delete [id|имя]: bare removes the current task,
+// a selector removes the named one. The upstream Hermes session is kept for
+// audit; only the registry record and routing are removed.
+func (g *Gateway) deleteCommand(user User, chatID int64, task Task, text string) string {
+	fields := strings.Fields(text)
+	selector := task.TaskID
+	if len(fields) >= 2 {
+		selector = strings.Join(fields[1:], " ")
+	}
+	deleted, err := g.spool.DeleteTaskBySelector(user, chatID, selector)
+	if err != nil {
+		return "Не удалось удалить: " + err.Error()
+	}
+	return "Задача " + taskLabel(deleted) + " удалена, текущая — default. Её Hermes-сессия сохранена наверху для аудита."
 }
 
 func (g *Gateway) taskStatus(user User, task Task) string {
@@ -91,15 +77,13 @@ func (g *Gateway) taskStatus(user User, task Task) string {
 	if err == nil && found && mapping.SessionID != "" {
 		answer += " Сессия: " + mapping.SessionID + "."
 	}
-	if task.Style != "" {
-		answer += " Стиль: " + task.Style
-	}
 	return answer
 }
 
-// tasksCommand lists the owner's live tasks in this chat with the current one
-// marked. Archived tasks stay in the spool for audit but are not listed.
-func (g *Gateway) tasksCommand(user User, chatID int64) string {
+// sessionsCommand implements /sessions: the owner's live tasks in this chat
+// with the current one marked. Archived tasks stay in the spool for audit but
+// are not listed.
+func (g *Gateway) sessionsCommand(user User, chatID int64) string {
 	tasks, err := g.spool.ListTasks(user, chatID)
 	if err != nil {
 		return "Не удалось получить список задач."
@@ -108,7 +92,7 @@ func (g *Gateway) tasksCommand(user User, chatID int64) string {
 	if resolveErr != nil {
 		return "Не удалось получить список задач."
 	}
-	lines := []string{"Задачи:"}
+	lines := []string{"Сессии:"}
 	for _, task := range tasks {
 		line := "- " + taskLabel(task)
 		if !task.CreatedAt.IsZero() {
@@ -122,62 +106,14 @@ func (g *Gateway) tasksCommand(user User, chatID int64) string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "Переключение: /task use <id|имя|default>. Новая: /new [имя]. Архив: /task archived.")
+	lines = append(lines, "Переключение: /use <id|имя|default>. Новая: /new [имя]. Удалить: /delete [id|имя].")
 	return strings.Join(lines, "\n")
 }
 
-// archivedTasksCommand lists tasks retired by /task archive; they keep their
-// Hermes session for audit but no longer accept messages.
-func (g *Gateway) archivedTasksCommand(user User, chatID int64) string {
-	tasks, err := g.spool.ListArchivedTasks(user, chatID)
-	if err != nil {
-		return "Не удалось получить архив задач."
-	}
-	if len(tasks) == 0 {
-		return "Архив пуст."
-	}
-	lines := []string{"Архив задач:"}
-	for _, task := range tasks {
-		line := "- " + taskLabel(task)
-		if !task.CreatedAt.IsZero() {
-			line += " — " + task.CreatedAt.UTC().Format("02.01 15:04")
-		}
-		lines = append(lines, line)
-	}
-	lines = append(lines, "Вернуть нельзя; новая сессия: /new [имя]. Удалить: /task delete внутри активной задачи.")
-	return strings.Join(lines, "\n")
-}
-
-// styleCommand implements /style [text|reset]. Style is presentation guidance
-// only: it rides every run as a trusted instruction, never as a user message,
-// and never touches authorization or tool policy.
-func (g *Gateway) styleCommand(user User, chatID int64, task Task, text string) string {
-	fields := strings.Fields(text)
-	if len(fields) == 1 {
-		if task.Style == "" {
-			return "Стиль не задан. Используйте /style <текст> или /style reset. Действует только на задачу " + taskLabel(task) + "."
-		}
-		return "Стиль задачи " + taskLabel(task) + " (v" + itoaU(task.StyleVersion) + "): " + task.Style
-	}
-	arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
-	if strings.EqualFold(arg, "reset") {
-		updated, err := g.spool.SetTaskStyle(user, chatID, task.TaskID, "")
-		if err != nil {
-			return "Не удалось сбросить стиль."
-		}
-		return "Стиль сброшен для задачи " + taskLabel(updated) + "."
-	}
-	updated, err := g.spool.SetTaskStyle(user, chatID, task.TaskID, arg)
-	if err != nil {
-		return "Стиль отклонён: до 1024 символов, без управляющих символов."
-	}
-	return "Стиль задачи " + taskLabel(updated) + " обновлён (v" + itoaU(updated.StyleVersion) + "). Применится со следующего запуска."
-}
-
-// usageCommand implements /usage: only measured upstream fields are rendered;
-// anything the pinned API does not carry prints "unknown" instead of an
-// estimate. Cumulative billed counters and current-prompt context are kept as
-// separate lines on purpose.
+// usageCommand implements /usage: a compact report — tokens burned, context
+// window fill, compactions, and subscription limits with reset times. Only
+// measured upstream fields are rendered; missing counters print "unknown"
+// instead of an estimate.
 func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, task Task) string {
 	runner, ok := g.runner.(interface {
 		SessionUsage(context.Context, hubruntime.ExecuteRequest) (hubruntime.SessionUsage, error)
@@ -187,7 +123,7 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	}
 	envelope := user.envelope(sender)
 	envelope.ConversationID = task.ConversationID
-	report, err := runner.SessionUsage(ctx, hubruntime.ExecuteRequest{
+	request := hubruntime.ExecuteRequest{
 		Envelope:       envelope,
 		OrganizationID: g.config.OrganizationID,
 		UserID:         user.ID,
@@ -196,49 +132,44 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 		Channel:        "telegram_bot",
 		Trigger:        "usage",
 		IdempotencyKey: "usage",
-	})
+	}
+	report, err := runner.SessionUsage(ctx, request)
+	if err != nil && usageTransient(err) {
+		// The supervisor ensures the runtime before measuring; one retry
+		// covers the window where it dies between acquire and forward.
+		timer := time.NewTimer(3 * time.Second)
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
+		report, err = runner.SessionUsage(ctx, request)
+	}
 	if err != nil {
+		if usageTransient(err) {
+			return "Измерение расхода недоступно: сессионный рантайм не поднялся. Повторите /usage через минуту."
+		}
 		return "Измерение расхода недоступно: " + err.Error()
 	}
 	if !report.SessionFound {
 		return "Задача " + taskLabel(task) + ": постоянная Hermes-сессия ещё не создана."
 	}
-	lines := []string{"Задача " + taskLabel(task) + "."}
-	if report.SessionID != report.DeclaredSessionID {
-		lines = append(lines, "Сессия (эффективная): "+report.SessionID+" — продолжение "+report.DeclaredSessionID+".")
-	} else {
-		lines = append(lines, "Сессия: "+report.SessionID+".")
-	}
-	if report.Model != "" {
-		lines = append(lines, "Модель: "+report.Model+".")
-	}
-	if report.Title != "" || report.StartedAt != "" {
-		line := "Название сессии: " + usageText(report.Title) + "."
-		if report.StartedAt != "" {
-			if when, perr := time.Parse(time.RFC3339, report.StartedAt); perr == nil {
-				line += " Создана " + when.UTC().Format("02.01.2006 15:04") + " UTC."
-			}
-		}
-		lines = append(lines, line)
-	}
-	contextText := "unknown"
+	lines := []string{"Расход сессии: вход " + usageNum(report.InputTokens) + ", выход " + usageNum(report.OutputTokens) +
+		", кэш " + usageNum(report.CacheReadTokens) + "/" + usageNum(report.CacheWriteTokens) + "."}
+	contextLine := "Сжатий сессии: " + usageNum(report.Compactions) + usageSuffix(report.LastCompactionAt) + "."
 	if report.ContextTokens != nil && report.ContextWindow != nil && *report.ContextWindow > 0 {
-		contextText = strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
-			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%)"
+		contextLine = "Контекст: " + strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
+			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%). " + contextLine
 	}
-	lines = append(lines, "Контекст запроса: "+contextText+".")
-	lines = append(lines, "Накоплено по сессии: вход "+usageNum(report.InputTokens)+", выход "+usageNum(report.OutputTokens)+
-		", кэш "+usageNum(report.CacheReadTokens)+"/"+usageNum(report.CacheWriteTokens)+
-		", рассуждения "+usageNum(report.ReasoningTokens)+".")
-	lines = append(lines, "Сообщений "+usageNum(report.MessageCount)+", вызовов API "+usageNum(report.APICallCount)+
-		", вызовов инструментов "+usageNum(report.ToolCallCount)+".")
-	if report.EstimatedCostUSD != nil || report.ActualCostUSD != nil {
-		lines = append(lines, "Стоимость: оценка "+usageCost(report.EstimatedCostUSD)+", фактическая "+usageCost(report.ActualCostUSD)+".")
-	}
-	lines = append(lines, "Сжатий сессии: "+usageNum(report.Compactions)+usageSuffix(report.LastCompactionAt)+".")
+	lines = append(lines, contextLine)
 	lines = append(lines, g.quotaLines(ctx)...)
-	lines = append(lines, "Источник: "+report.Source+".")
 	return strings.Join(lines, "\n")
+}
+
+// usageTransient reports lookup-path failures worth one retry: the runtime is
+// mid-spawn (404/503) or died between acquire and forward (502).
+func usageTransient(err error) bool {
+	return strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "503")
 }
 
 func usageNum(v *int64) string {
@@ -246,20 +177,6 @@ func usageNum(v *int64) string {
 		return "unknown"
 	}
 	return strconv.FormatInt(*v, 10)
-}
-
-func usageText(v string) string {
-	if v == "" {
-		return "unknown"
-	}
-	return v
-}
-
-func usageCost(v *float64) string {
-	if v == nil {
-		return "unknown"
-	}
-	return "$" + strconv.FormatFloat(*v, 'f', 4, 64)
 }
 
 func usageSuffix(at string) string {
@@ -271,8 +188,4 @@ func usageSuffix(at string) string {
 
 func itoa64(v int64) string {
 	return strconv.FormatInt(v, 10)
-}
-
-func itoaU(v uint64) string {
-	return strconv.FormatUint(v, 10)
 }

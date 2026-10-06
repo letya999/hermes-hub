@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -184,6 +185,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		Store: store, Backend: config.Backend, Tokens: tokens,
 		primaryToken: config.Token, tokensFile: config.TokensFile,
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
+		// Rendered as the supervisor bearer so communication-hub can list a
+		// principal's connectors without holding that principal's token.
+		ControlToken: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
 	}
 	var secrets credstore.Backend
 	var injector CredentialInjector
@@ -341,6 +345,13 @@ func envOr(name, fallback string) string {
 // fails closed.
 func agentBackendFromEnv() ToolBackend {
 	docker := envOr("HUB_DOCKER_BIN", "docker")
+	// Durable executor leases sit next to the ToolHub store: a restart keeps
+	// quarantining bindings whose sandbox stop was never confirmed.
+	if store := os.Getenv("HUB_TOOLHUB_STORE"); store != "" {
+		if err := SetScratchLeasePath(filepath.Join(filepath.Dir(store), "executor-leases.json")); err != nil {
+			fmt.Fprintf(os.Stderr, "toolhub: scratch lease file disabled: %v\n", err)
+		}
+	}
 	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
 		resolve := FixedAgentContainer(container)
 		return AgentExecBackend{Exec: DaemonAgentExec([]string{docker}, resolve), Scratch: DockerScratchExec([]string{docker}, resolve, DockerAgentExec([]string{docker}, resolve))}

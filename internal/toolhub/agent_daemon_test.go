@@ -44,6 +44,13 @@ func TestDaemonDockerHelper(t *testing.T) {
 		if json.Unmarshal(line, &frame) != nil {
 			os.Exit(4)
 		}
+		if frame.Cancel {
+			// Record the cancel without replying: the caller already left.
+			mark, _ := os.OpenFile(filepath.Join(state, "cancels"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			fmt.Fprintln(mark, frame.ID)
+			_ = mark.Close()
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(state, "die-on-call")); err == nil {
 			os.Exit(3)
 		}
@@ -173,6 +180,36 @@ func TestAgentExecPoolHonorsCallerDeadline(t *testing.T) {
 	defer cancel()
 	if _, err := pool.Exec(ctx, effective, AgentExecRequest{Tool: "slow"}); err == nil {
 		t.Fatal("deadline-exceeded call returned success")
+	}
+}
+
+// A cancelled call must propagate a cancel frame into the daemon: the
+// in-flight execution stops instead of finishing unobserved.
+func TestAgentExecPoolSendsCancelFrame(t *testing.T) {
+	docker, state := fakeDaemon(t)
+	pool := NewAgentExecPool(docker, fixedContainer("runtime-1", nil))
+	defer pool.Close()
+	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-1"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := pool.Exec(ctx, effective, AgentExecRequest{Tool: "slow"})
+		done <- err
+	}()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("cancelled call returned success")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if body, err := os.ReadFile(filepath.Join(state, "cancels")); err == nil && len(body) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no cancel frame reached the daemon")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

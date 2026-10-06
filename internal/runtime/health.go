@@ -51,8 +51,14 @@ func (s *runtimeHTTP) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	health := RuntimeHealth{HermesReadiness: "unavailable", ConnectorHealth: "not_configured", ExternalConnections: "not_probed"}
-	if native.Readiness.Status == "ok" {
+	// Pass Hermes' own verdict through: "degraded" means serving with a
+	// non-critical check failed (e.g. disk pressure), not "unavailable" —
+	// collapsing it hid real state and made healthy runtimes look broken.
+	switch native.Readiness.Status {
+	case "ok":
 		health.HermesReadiness = "ready"
+	case "degraded":
+		health.HermesReadiness = "degraded"
 	}
 	for _, platform := range native.Platforms {
 		state := platform.State
