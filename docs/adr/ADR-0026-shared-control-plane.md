@@ -66,3 +66,23 @@ keeps its inode. The infra owner's own token is not an extra entry. ToolHub
 reloads that file when authentication misses the in-memory map, so a sibling
 added after process start is accepted on the next handshake. A runtime that
 already parked the MCP server still has to start again before it will retry.
+
+## Amendment 2026-10: socket scope and per-environment broker state
+
+The shared control plane's Docker socket is not ambient authority. ToolHub
+and the workload controller mount it only when the rendered surface can drive
+containers (managed mode, a `via: toolhub`/`via: mcp` tool, or diagnostics),
+and every object-bearing call — inspect/exec/logs/lifecycle on containers,
+rm/inspect on networks and volumes — is checked against the owning scope:
+the `com.docker.compose.project` label, a `hermes-hub.scope` label stamped at
+spawn, or attachment to the space's managed agent network. Foreign objects
+deny and are logged; names a spawned object cannot label (ToolHive workloads)
+are registered at spawn instead. A workload id colliding with another
+project's object can no longer reach or destroy it.
+
+The credential broker's encrypted state volume, previously one pinned
+host-wide name (`hermes-credential-broker-real-prod-20260918`), is split per
+environment: render declares `hermes-credential-broker-<env>` external, so a
+dev stack cannot attach prod credential material. The legacy singleton stays
+reachable through `HUB_BROKER_STATE_VOLUME` for deployments that need the
+migration window; new renders never silently attach it.

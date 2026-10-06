@@ -59,8 +59,44 @@ type genericController struct {
 	config     GenericControllerConfig
 	command    func(context.Context, string, ...string) ([]byte, error)
 	commandEnv func(context.Context, map[string]string, string, ...string) ([]byte, error)
+	scope      *dockerScope
 	mu         sync.Mutex // ponytail: one controller lock; split only after measured contention.
 	workloads  map[string]genericWorkload
+}
+
+// docker runs one docker argv through the project-scope guard: inspect, exec,
+// logs and lifecycle verbs on foreign containers, networks or volumes are
+// denied before the socket sees them. Other binaries only get the operand
+// check — ToolHive removes containers by caller-shaped workload ids.
+func (c *genericController) docker(ctx context.Context, args ...string) ([]byte, error) {
+	if c.scope == nil {
+		return c.command(ctx, "docker", args...)
+	}
+	return c.scope.runScoped(ctx, c.command, "docker", args...)
+}
+
+func (c *genericController) toolhive(ctx context.Context, args ...string) ([]byte, error) {
+	if c.scope == nil {
+		return c.command(ctx, c.config.ToolHiveBinary, args...)
+	}
+	return c.scope.runScoped(ctx, c.command, c.config.ToolHiveBinary, args...)
+}
+
+// scopeLabel is the hermes-hub.scope marker stamped on every object the
+// controller spawns; the guard later proves ownership through it. Empty when
+// the deployment carries no scope identity (socketless or unscoped test).
+func (c *genericController) scopeLabel() string {
+	if c.scope == nil {
+		return ""
+	}
+	return "hermes-hub.scope=" + c.scope.project
+}
+
+func (c *genericController) scopeLabelArgs() []string {
+	if label := c.scopeLabel(); label != "" {
+		return []string{"--label", label}
+	}
+	return nil
 }
 
 type genericContainer struct {
@@ -137,7 +173,9 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	if noSymlinkPath(config.StateRoot) != nil || noSymlinkPath(config.SeccompProfile) != nil {
 		return nil, ErrIsolation
 	}
-	return &genericController{config: config, command: localCommand, commandEnv: isolatedCommandEnv, workloads: map[string]genericWorkload{}}, nil
+	controller := &genericController{config: config, command: localCommand, commandEnv: isolatedCommandEnv, workloads: map[string]genericWorkload{}}
+	controller.scope = newDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
+	return controller, nil
 }
 
 // isolatedCommandEnv prevents the trusted ToolHive control process from
@@ -382,7 +420,7 @@ func writeGenericReceipt(w http.ResponseWriter, workload genericWorkload) {
 }
 
 func (c *genericController) start(ctx context.Context, plan controllerPlan) (genericWorkload, error) {
-	if _, err := c.command(ctx, c.config.ToolHiveBinary, "version"); err != nil {
+	if _, err := c.toolhive(ctx, "version"); err != nil {
 		return genericWorkload{}, err
 	}
 	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
@@ -394,7 +432,7 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	if len(plan.Execution.TCPForwards) != 0 && !c.config.DockerFallback {
 		return genericWorkload{}, fmt.Errorf("%w: tcp forwards require the Docker fallback companion", ErrIsolation)
 	}
-	help, err := c.command(ctx, c.config.ToolHiveBinary, "run", "--help")
+	help, err := c.toolhive(ctx, "run", "--help")
 	if err != nil {
 		return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", ErrIsolation)
 	}
@@ -422,15 +460,15 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		if started {
 			return
 		}
-		_, _ = c.command(ctx, c.config.ToolHiveBinary, "rm", plan.WorkloadID)
-		_, _ = c.command(ctx, "docker", "rm", "--force", plan.WorkloadID, proxyName)
-		_, _ = c.command(ctx, "docker", "network", "rm", network)
-		_, _ = c.command(ctx, "docker", "volume", "rm", proxyVol)
+		_, _ = c.toolhive(ctx, "rm", plan.WorkloadID)
+		_, _ = c.docker(ctx, "rm", "--force", plan.WorkloadID, proxyName)
+		_, _ = c.docker(ctx, "network", "rm", network)
+		_, _ = c.docker(ctx, "volume", "rm", proxyVol)
 	}()
-	if _, err := c.command(ctx, "docker", "network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp", network); err != nil {
+	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), network)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.command(ctx, "docker", "volume", "create", "--label", "hermes-hub.role=generic-mcp", proxyVol); err != nil {
+	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), proxyVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
 	proxyConfig, err := genericProxyConfig(plan.Execution.Egress)
@@ -451,18 +489,18 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		return genericWorkload{}, err
 	}
 	limits := []string{"--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs)}
-	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, limits...)
-	args = append(args, plan.SidecarImages[0])
-	if _, err := c.command(ctx, "docker", args...); err != nil {
+	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.scopeLabelArgs()...)
+	args = append(append(args, limits...), plan.SidecarImages[0])
+	if _, err := c.docker(ctx, args...); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.command(ctx, "docker", "cp", fileName, proxyName+":/etc/squid/squid.conf"); err != nil {
+	if _, err := c.docker(ctx, "cp", fileName, proxyName+":/etc/squid/squid.conf"); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.command(ctx, "docker", "network", "connect", "bridge", proxyName); err != nil {
+	if _, err := c.docker(ctx, "network", "connect", "bridge", proxyName); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.command(ctx, "docker", "start", proxyName); err != nil {
+	if _, err := c.docker(ctx, "start", proxyName); err != nil {
 		return genericWorkload{}, err
 	}
 	ip, err := c.proxyIP(ctx, proxyName, network)
@@ -512,8 +550,13 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	if _, err := c.commandEnv(ctx, commandEnv, c.config.ToolHiveBinary, toolArgs...); err != nil {
 		return genericWorkload{}, err
 	}
+	// ToolHive cannot stamp hub labels; the spawned name registers as owned
+	// so later scope-checked inspect/rm see it as ours.
+	if c.scope != nil {
+		c.scope.register(plan.WorkloadID)
+	}
 	if err := waitLocalWorkload(ctx, func() error {
-		_, err := c.command(ctx, "docker", "inspect", plan.WorkloadID)
+		_, err := c.docker(ctx, "inspect", plan.WorkloadID)
 		return err
 	}); err != nil {
 		return genericWorkload{}, err
@@ -545,7 +588,7 @@ func toolHiveSupportsRuntime(help string) bool {
 }
 
 func (c *genericController) proxyIP(ctx context.Context, name, network string) (string, error) {
-	body, err := c.command(ctx, "docker", "inspect", name, "--format", "{{json .NetworkSettings.Networks}}")
+	body, err := c.docker(ctx, "inspect", name, "--format", "{{json .NetworkSettings.Networks}}")
 	if err != nil {
 		return "", err
 	}
@@ -566,7 +609,7 @@ func (c *genericController) inspect(ctx context.Context, workload genericWorkloa
 	if workload.dockerFallback {
 		inspectArgs = append(inspectArgs, workload.relayName)
 	}
-	body, err := c.command(ctx, "docker", inspectArgs...)
+	body, err := c.docker(ctx, inspectArgs...)
 	if err != nil {
 		return AdmissionReceipt{}, err
 	}
@@ -736,27 +779,27 @@ func (c *genericController) removeWorkload(ctx context.Context, workload generic
 		if workload.remoteState != "" {
 			_, _ = c.commandEnv(ctx, fallbackToolHiveEnv(workload.remoteState, nil), c.config.ToolHiveBinary, "rm", workload.remoteName)
 		} else {
-			_, _ = c.command(ctx, c.config.ToolHiveBinary, "rm", workload.remoteName)
+			_, _ = c.toolhive(ctx, "rm", workload.remoteName)
 		}
 	}
 	names := []string{workload.plan.WorkloadID, workload.proxyName}
 	if workload.relayName != "" {
 		names = append(names, workload.relayName)
 	}
-	if _, err := c.command(ctx, "docker", append([]string{"rm", "--force"}, names...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"rm", "--force"}, names...)...); err != nil {
 		return err
 	}
-	_, _ = c.command(ctx, "docker", "network", "rm", "hermes-"+workload.plan.WorkloadID)
-	_, _ = c.command(ctx, "docker", "volume", "rm", workload.proxyVol)
+	_, _ = c.docker(ctx, "network", "rm", "hermes-"+workload.plan.WorkloadID)
+	_, _ = c.docker(ctx, "volume", "rm", workload.proxyVol)
 	if workload.bridgeVol != "" {
-		_, _ = c.command(ctx, "docker", "volume", "rm", workload.bridgeVol)
+		_, _ = c.docker(ctx, "volume", "rm", workload.bridgeVol)
 	}
 	if workload.relayVol != "" {
-		_, _ = c.command(ctx, "docker", "volume", "rm", workload.relayVol)
+		_, _ = c.docker(ctx, "volume", "rm", workload.relayVol)
 	}
 	if !keepState {
 		for _, volume := range workload.stateVols {
-			_, _ = c.command(ctx, "docker", "volume", "rm", volume)
+			_, _ = c.docker(ctx, "volume", "rm", volume)
 		}
 	}
 	if workload.remoteState != "" {

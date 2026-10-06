@@ -389,6 +389,14 @@ Set that path as `credential_mount_root` in the generic controller config. The
 controller passes it as a read-only `--volume` and tears down the workload after
 the call; without this shared path the request is rejected.
 
+The Broker's own state lives in one external volume per environment,
+`hermes-credential-broker-<env>` — a dev stack renders `-dev` and can never
+attach prod credential material. The volume is `external`, so create it once
+per environment (`docker volume create hermes-credential-broker-prod`).
+Deployments that still rely on the pre-split singleton pin it explicitly with
+`HUB_BROKER_STATE_VOLUME=hermes-credential-broker-real-prod-20260918` in the
+render environment.
+
 The selected user home contains persistent Hermes, connection, workspace and archive
 data. An organization home is mounted read-only for members. Dev/prod selects separate
 generated env files and Docker targets but does not create another user namespace. Never
@@ -541,6 +549,24 @@ In supervisor mode, keep the selected owner's sidecar services running. The runt
 joins `hermes-hub-<user>-<env>_default` and mounts that project's
 `broker-secrets-runtime` volume read-only; the default shared runtime network is not
 used for owner jobs.
+
+### Docker socket boundary
+
+Only ToolHub and the workload controller ever mount `/var/run/docker.sock`,
+and only when the rendered surface can use it: a space with no
+`via: toolhub`/`via: mcp` capability, no managed mode and `diagnostics: false`
+gets no socket mount at all — diagnostics itself is a Docker consumer (the
+collector reads `docker ps`/`logs`), so opting out also disables collection.
+Inside the socket-bearing services every `inspect`, `exec`, `logs`, `rm`,
+`cp`, `start`/`stop` and `network`/`volume` operation is scope-checked
+(`HUB_DOCKER_SCOPE` = `hermes-hub-<user>-<env>`): an object must carry the
+compose project label, the `hermes-hub.scope` label the hub stamps on
+spawned networks, volumes and containers, or sit on that space's managed
+agent network (`HUB_DOCKER_AGENT_NET`). ToolHive cannot stamp labels, so the
+controller registers names it just spawned; anything else — including a
+caller-shaped workload id that collides with another project's container or a
+shared network like `hermes-hub-control` — is denied before the socket sees
+it and logged as `docker-scope: denied`.
 
 Example from the repository root:
 
