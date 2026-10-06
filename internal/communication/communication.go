@@ -30,6 +30,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -1743,7 +1744,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if visible == "" && (message.Document != nil || len(message.Photo) > 0) {
 			visible = "[file message]"
 		}
-		log.Printf("gateway telegram-received user=%q update_id=%d chat_id=%d message_id=%d text=%q", user.ID, update.UpdateID, message.Chat.ID, message.MessageID, visible)
+		log.Printf("gateway telegram-received user=%q update_id=%d chat_id=%d message_id=%d text=%q", user.ID, update.UpdateID, message.Chat.ID, message.MessageID, diagnostics.Redact(visible))
 	}
 	if edited {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), "Изменение сообщения не перезапускает задачу. Используйте новое сообщение или /cancel.")
@@ -2122,7 +2123,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		if strings.HasSuffix(delivery.ID, "-secret") {
 			visible = "[credential response redacted]"
 		}
-		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d text=%q", delivery.JobID, delivery.ID, delivery.ChatID, visible)
+		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d text=%q", delivery.JobID, delivery.ID, delivery.ChatID, diagnostics.Redact(visible))
 	}
 	_ = g.spool.CompleteDelivery(delivery.ID)
 	if delivery.JobID != "" {

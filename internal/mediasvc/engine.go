@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -492,7 +493,20 @@ func apiURL(base, tail string) string {
 	return base + "/v1" + tail
 }
 
+// probeOKTTL bounds upstream health probes: Docker's 30s healthcheck reaches
+// Ready() each tick, and cliproxy logs every GET /v1/models — ~3k lines/day of
+// noise per stack. A healthy result is reused within the TTL; failures always
+// probe again so recovery is detected on the next call.
+var (
+	probeOKTTL  = 5 * time.Minute
+	probeCache  sync.Map // url -> time.Time until which "healthy" is cached
+	probeNowFn  = time.Now
+)
+
 func probe(ctx context.Context, client *http.Client, url, key string) bool {
+	if until, ok := probeCache.Load(url); ok && probeNowFn().Before(until.(time.Time)) {
+		return true
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false
@@ -509,5 +523,9 @@ func probe(ctx context.Context, client *http.Client, url, key string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	probeCache.Store(url, probeNowFn().Add(probeOKTTL))
+	return true
 }

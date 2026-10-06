@@ -377,6 +377,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeService["command"] = []string{"idle"}
 	}
 	runtimeService["healthcheck"] = M{"test": []string{"CMD", "hub-runtime", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
+	// The inner Python gateway freezes its event loop for up to ~15s while
+	// stopping MCP servers on SIGTERM (upstream known issue); under Docker's
+	// default 10s grace it is SIGKILLed and the lifecycle ledger records a
+	// false UNCLEAN death on every routine restart.
+	runtimeService["stop_grace_period"] = "30s"
 	if s.CapabilityMode == "managed" {
 		runtimeService["networks"] = []string{managedAgentNetwork(s)}
 	}
