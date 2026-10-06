@@ -1817,7 +1817,16 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		case "session":
 			return reply(g.taskStatus(user, task))
 		case "usage":
-			return reply(g.usageCommand(ctx, user, message.From.ID, task))
+			// Measuring usage means up to minutes of sequential HTTP work
+			// (supervisor ensure, session row, lineage, quota calls); run it
+			// beside the poll or one /usage would stall every later update.
+			go func() {
+				usageCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				answer := g.usageCommand(usageCtx, user, message.From.ID, task)
+				_ = g.queueDelivery(context.Background(), "telegram-"+strconv.Itoa(update.UpdateID)+"-usage", message.Chat.ID, topic, answer)
+			}()
+			return reply("Измеряю расход…")
 		case "connections", "connection":
 			return reply(g.connectionsCommand(user, message.From.ID))
 		case "help":
