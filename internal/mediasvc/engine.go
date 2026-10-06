@@ -498,9 +498,9 @@ func apiURL(base, tail string) string {
 // noise per stack. A healthy result is reused within the TTL; failures always
 // probe again so recovery is detected on the next call.
 var (
-	probeOKTTL  = 5 * time.Minute
-	probeCache  sync.Map // url -> time.Time until which "healthy" is cached
-	probeNowFn  = time.Now
+	probeOKTTL = 5 * time.Minute
+	probeCache sync.Map // url -> time.Time until which "healthy" is cached
+	probeNowFn = time.Now
 )
 
 func probe(ctx context.Context, client *http.Client, url, key string) bool {
