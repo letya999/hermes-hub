@@ -5,16 +5,17 @@ plan.md and state.yaml. Task progress belongs here, never in current architectur
 
 The table tracks current change records. Issue 122's broader default-deny design
 is CHG-0065; its implementation is in progress. Issues 167-169 (task sessions,
-per-task style, measured usage) are CHG-0066/0067/0068. Live deployment follow-ups
+per-task style, measured usage) shipped as CHG-0066/0067/0068 and closed
+2026-10-06. Live deployment follow-ups
 also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#172
 (live channel acceptance evidence).
 
 | Change | State |
 |---|---|
 | [CHG-0069](in-progress/CHG-0069-session-ux-and-quota/plan.md) | Session UX (new/list/switch/delete/archive/auto-title), forum topics, command inventory, provider quota in /usage — committed, live evidence pending |
-| [CHG-0068](in-progress/CHG-0068-usage-report/plan.md) | Issue 169: measured `/usage` from authoritative Hermes session fields — committed, live evidence pending |
-| [CHG-0067](in-progress/CHG-0067-task-style/plan.md) | Issue 168: per-task `/style` as admission-snapshotted run instructions — committed, live evidence pending |
-| [CHG-0066](in-progress/CHG-0066-task-sessions/plan.md) | Issue 167: durable tasks and Telegram DM topics in one private chat — committed, live evidence pending |
+| [CHG-0068](done/CHG-0068-usage-report/plan.md) | Issue 169 closed: measured `/usage` live-verified end-to-end 2026-10-06 |
+| [CHG-0067](done/CHG-0067-task-style/plan.md) | Issue 168 closed: per-task `/style` admission-snapshotted; instructions channel live-verified |
+| [CHG-0066](done/CHG-0066-task-sessions/plan.md) | Issue 167 closed: durable tasks + DM topics live on the deployed bot |
 | [CHG-0065](in-progress/CHG-0065-capability-enforcement/plan.md) | Issue 122: accepted ADR-0031/0032, frozen SPEC-0041/0042; P0 probes and P1 grant hardening in progress |
 | [CHG-0064](in-progress/CHG-0064-capability-profile/plan.md) | Issue 122 earlier matrix/name-reservation scope; broader enforcement continues in CHG-0065 |
 | [CHG-0063](in-progress/CHG-0063-media-generation-service/plan.md) | hub-media: sidecar for media generation |
