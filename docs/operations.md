@@ -561,6 +561,58 @@ joins `hermes-hub-<user>-<env>_default` and mounts that project's
 `broker-secrets-runtime` volume read-only; the default shared runtime network is not
 used for owner jobs.
 
+### Capacity measurement (dev host, 2026-10-07)
+
+Best-effort M6 capacity data for #46, measured on the author's Windows dev
+host — **not** the Linux VPS target. Treat absolute numbers as dev-host
+samples; rerun the protocol on the target VPS before fixing SLOs.
+
+Host: Windows 11 Pro 22631, 16 cores / 32 GiB; Docker Desktop on WSL2
+(kernel 6.6.87.2), engine 29.4.3 linux/amd64, VM budget 15.47 GiB.
+Runtime image `hermes-hub:0.3.0-dev`, id `sha256:dc8df91990b8…`, 1.19 GiB.
+Commit `baeafd4`. Commands: `POST /v1/leases` / `DELETE /v1/leases/<id>`
+against `hubctl supervisor --spaces spaces --env dev --runtime-image
+hermes-hub:0.3.0-dev --supervisor-listen 0.0.0.0:8876`, plus
+`docker stats --no-stream` / `docker inspect` point samples.
+
+Measured (single samples, one dev space):
+
+| phase | result |
+|---|---|
+| cold lease → runtime Ready | 59.4 s |
+| restore after scale-to-zero → Ready | 78.0 s |
+| warm lease on running runtime | 0.58 s |
+| idle deadline → container removed | <45 s (reaper ≤5 s + stop grace ~40 s) |
+| warm TTL | 5 min (default `--warm-ttl`) |
+| managed runtime RSS (warm) | ~395–403 MiB (cap 1 GiB, 2 CPU, 256 pids) |
+| runtime ctl sidecar RSS | ~8 MiB |
+| runtime CPU during cold start | ~100 % of 2-core cap for ~20–40 s |
+
+Always-on footprint for one dev stack (`hermes-hub-<user>-dev`),
+point-in-time RSS: communication-hub 13.7 MiB, credential-broker 10.3 MiB,
+toolhub 73–80 MiB, workload-controller 8.8 MiB, cliproxy 15.1 MiB,
+hub-media 7.3 MiB, hub-stt 2.7 MiB, hub-tts 2.8 MiB, three relays ~6.3 MiB
+each, supervisor host process ~25.6 MiB → **≈160 MiB per user stack**, plus
+`hermes-context-*` per active/warm context (~410 MiB each, bounded by
+`--max-runtimes 8`).
+
+Registered-user model (20–200 users, this host class): always-on memory
+scales linearly with registered stacks — 20 users ≈ 3.2 GiB, 100 ≈ 16 GiB,
+200 ≈ 32 GiB — so a ~16 GiB VM fits roughly 90 stacks before headroom for
+warm runtimes (8 slots × ~410 MiB ≈ 3.3 GiB) and burst CPU disappears.
+The concurrency bound is what makes scale-to-zero viable: 200 registered
+users never mean 200 resident Hermes processes — `--max-runtimes` (8) caps
+live contexts and the lease semaphore queues the rest; crash-loop denial
+stops retry storms after 3 crashes inside the backoff window
+(`next_retry_at`, covered by `reconcile_test.go`). Cold-start latency
+(59–78 s here, dominated by image-side init and connector startup inside
+the 2-core cap) is the user-visible cost; deriving production SLOs requires
+repeating this protocol on the actual VPS and adding the document/image and
+connector-reconnect runs this session could not cover.
+
+Rollback: the v0.2.1 one-shot runtime artifact remains the drain/stop/audit
+rollback; degraded mode is native static per-user Compose (no supervisor).
+
 ### Docker socket boundary
 
 Only ToolHub and the workload controller ever mount `/var/run/docker.sock`,

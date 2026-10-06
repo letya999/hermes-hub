@@ -1,15 +1,20 @@
 schema: 1
 change: CHG-0074-host-hygiene
 status: in-progress
-phase: implement
+phase: verify
 started: 2026-10-07
 owner: devin
 done:
   - '#226: removed 11 orphan harness networks (captest/hermes-supervisor/hermes-work/hermes-gateway/toolhive/test-owner) on this host; listed containers were already gone'
   - '#226: docker-clean sweeps aged (>10min) exited residue containers (work-*, captest*, hermes-context-*, hermes-contract-*, hermes-cap-*, hermes-mgsup-*) and dangling hermes-*/captest*/toolhive-* networks (standing control/runtime nets exempt); age guard protects in-progress harnesses'
   - '#222: collector scoped to owning compose project label + user agent network; per-call 15s deadline + 2min cycle budget; stopped containers drained once and marked; output moved to spaces/<user>/diagnostics/; host-supervisor lines filtered to owner whole-token mentions; render injects scope env + read-only supervisor.log bind'
-  - 'unit tests: diagnostics (scoping, drain-once, stall-bound, owner filter) + devcheck residue sweep green'
+  - '#224: truthful child-exit errors (named child + nil-err safe), gateway stop grace for upstream SIGTERM drain, stable test ports, Redact on gateway message-text logs, cliproxy /v1/models probe memoized'
+  - '#223: /usage runs async beside the poll — immediate Измеряю расход… reply, 2min background timeout, lineage capped at 4 hops with ≥N rendering'
+  - '#221: dockerscope guard on every toolhub/controller Docker op (inspect/logs/exec/rm/cp/start-stop/network/volume) by compose-project label + scope label + owning agent net + ToolHive name registry; denials audited; socket mount rendered only when the surface needs it'
+  - '#225: broker volume rendered per-env (hermes-credential-broker-<env>); legacy singleton only via explicit HUB_BROKER_STATE_VOLUME override; ADR-0026 amended'
+  - '#171: gateway logs default to IDs/status/text_len (no bodies); HUB_LOG_CONTENT_UNTIL opt-in bounded ≤1h ahead, redacted via diagnostics.Redact; malformed value fails startup'
+  - '#46: live dev-host measurement — cold 59.4s / warm-lease 0.58s / restore 78.0s / idle→removed <45s; runtime ~400MiB(1GiB cap)+8MiB ctl; per-user always-on ≈160MiB; 20-200 user model documented in docs/operations.md; NOT a Linux VPS run'
+  - 'unit tests: diagnostics scoping/drain-once, devcheck sweep, dockerscope guard, usage async/lineage cap, content-log window — all green (several under -race)'
 next:
-  - '#224 runtime supervisor hygiene'
-  - '#223 /usage async'
-  - '#221 socket surface, #225 broker volume, #171 logging policy, #46 capacity'
+  - 'just check full gate + coverage >=85%'
+  - 'final commit; issues remain OPEN until merged'
