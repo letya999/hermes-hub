@@ -176,7 +176,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	}
 	control.AdmitWithCredentials = func(_ context.Context, _ ToolDefinition, _ map[string]string) (ToolDefinition, error) {
 		admitCalls++
-		return ToolDefinition{}, errors.New("Telegram session rejected")
+		return ToolDefinition{}, errors.New("Telegram session rejected fake-session")
 	}
 	retry, err := control.newOnboarding(auth, OnboardingSelfInstall, "telegram-broker-retry", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
 	if err != nil {
@@ -186,7 +186,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	if err != nil || failed["phase"] != PhaseAwaitingCreds || grants.Load() != 3 || releases.Load() != 2 || revocations.Load() != 2 {
 		t.Fatalf("bad session did not stay pending and clean up: %+v %v", failed, err)
 	}
-	if failed["tools_confirmed"] != false || !strings.HasPrefix(failed["error"].(string), "Проверка не прошла") {
+	if failed["tools_confirmed"] != false || !strings.HasPrefix(failed["error"].(string), "Проверка не прошла") || strings.Contains(failed["error"].(string), "fake-session") {
 		t.Fatalf("failed Broker admission was not reported: %+v", failed)
 	}
 	if _, err := control.status(auth, map[string]any{"onboarding_id": retry.OnboardingID}); err != nil || admitCalls != 2 {

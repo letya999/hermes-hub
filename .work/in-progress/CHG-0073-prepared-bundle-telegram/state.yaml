@@ -12,9 +12,13 @@ evidence:
   - 12 stable IDs are discoverable; google-workspace, slack and careergo are blocked with missing contracts and no candidate ID
   - Telegram source pin and optional proxy dependency verified against the local fork and its remote commit
   - Broker credential gate, owner-bound admission lease, temporary grant cleanup, permanent binding grant, failed-session reauth and private preflight proxy covered by Go tests; real Docker internal-network integration passed
+  - Contracted admission now replaces upstream probe errors with a safe failure message; a regression test makes the provider echo the submitted session and verifies it stays out of status
+  - Fresh QR/phone challenge and expected account ID collection are documented against the selected fork and the local JobFetch example
   - just security passed with no affected Go vulnerabilities or npm audit findings
   - just check passed with at least 85 percent own Go statement coverage
 remaining:
   - Live Telegram login and message read remain unverified; automatic execution review blocked the authorized local-session probe without a detailed reason
+  - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
+  - Send/reply/delete receipts are supported by a separate existing adapter and fixtures, not demonstrated in the prepared Broker entry or against Telegram
   - No provider write or provider revocation was exercised
   - Prebuilt Docker gate remains unverified; GHCR image pull stalled and was interrupted

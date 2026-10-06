@@ -125,9 +125,10 @@ admitted only after the owner submits a working session. `list_accounts` is
 the read probe; verify one bounded dialog/history read after enablement.
 ToolHub obtains a short-lived Broker lease for this admission probe, releases
 it and revokes its temporary grant before confirmation. Confirmation creates
-the separate owner workload grant. If admission fails, `status` records the
-error and `rotate` opens a new Broker request; the ToolHub localhost credential
-form is not used for this contracted entry.
+the separate owner workload grant. If admission fails, `status` records a
+generic failure without upstream error text; `rotate` opens a new Broker
+request. The ToolHub localhost credential form is not used for this contracted
+entry.
 
 The source's `TELEGRAM_EXPOSED_TOOLS=read-only` is fixed for this prepared
 entry, with transcription off. The generic workload is per owner and the
@@ -138,10 +139,19 @@ peers; use the existing account adapter when that narrower dialog policy is
 required. Do not run the same StringSession simultaneously
 through JobFetch or another IP: create a distinct Telegram device session for
 the Hub. The `job_ftch` pattern uses a local Telethon `.session` file plus API
-ID/hash; use it only as a local format reference. Generate or convert the
-owner's own session locally with the selected source's login utility, then
-paste the StringSession into the protected form, never ordinary chat. Never
-copy a `.session` file, OTP or API hash into the repository or a channel.
+ID/hash; use it only as a local format reference. For a fresh Hub device, run
+the pinned fork's `session_string_generator.py` locally. Put API ID/hash from
+`my.telegram.org/apps` in its ignored `.env`, set
+`TELEGRAM_DEVICE_MODEL=hermes-hub ToolHub`, then run
+`uv run session_string_generator.py --qr` (or `--phone`) in that directory.
+Scan the QR in Telegram Devices or enter the phone code and two-factor password
+in that local terminal. Decline its optional `.env` write if you do not need a
+local copy. Enter the resulting StringSession and numeric `get_me().id` only
+in the Broker form. For the same account, the local `job_ftch` login helper's
+`Authenticated as: ... id=...` output is another way to obtain that ID. The
+fork's generator creates a new session; it does not convert an existing
+`.session` file. Never copy a `.session` file, OTP or API hash into the
+repository or a channel.
 
 For reconnect, call `status`, check the expected user ID and restart the owner
 workload. For rotation or re-authentication, create a new Telegram device

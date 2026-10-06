@@ -60,7 +60,13 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 	if len(injection.Mounts) != 0 {
 		return ToolDefinition{}, fmt.Errorf("%w: credentialed tools/list does not support Broker file mounts", ErrIsolation)
 	}
-	return c.AdmitWithCredentials(ctx, definition, injection.Environment)
+	admitted, err = c.AdmitWithCredentials(ctx, definition, injection.Environment)
+	if err != nil {
+		// The upstream error can echo a submitted StringSession. Keep it out of
+		// onboarding state and channel responses.
+		return ToolDefinition{}, fmt.Errorf("%w: authenticated tools/list failed", ErrIsolation)
+	}
+	return admitted, nil
 }
 
 func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config) CredentialInjector {

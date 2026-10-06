@@ -21,7 +21,8 @@ protected login because this source connects to MTProto at startup. Runtime
 and credentialed preflight use owner-isolated network egress. Credentialed
 preflight obtains a temporary owner-bound Broker grant and lease,
 releases the lease and revokes the grant before confirmation. A failed probe
-keeps the install pending for Broker rotation; it cannot fall back to a local
+keeps the install pending for Broker rotation without returning upstream error
+text that may contain the session; it cannot fall back to a local
 ToolHub secret. Confirmation mints a distinct owner workload grant. The
 prepared entry exposes the source's read-only tool set, with transcription disabled;
 send/reply/delete require separate explicit write authorization. Revocation
