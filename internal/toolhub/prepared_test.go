@@ -15,7 +15,7 @@ import (
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := PreparedCatalog()
-	if err != nil || len(entries) != 10 {
+	if err != nil || len(entries) != 11 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
@@ -32,6 +32,9 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 			}
 			if entry.Language == "python" {
 				files = map[string]string{"pyproject.toml": "[project]\nname = \"mcp-atlassian\"\n\n[project.scripts]\nmcp-atlassian = \"mcp_atlassian:main\"\n"}
+			}
+			if entry.ID == "telegram" {
+				files = map[string]string{"pyproject.toml": "[project]\nname = \"telegram-mcp\"\n\n[project.scripts]\ntelegram-mcp = \"main:main\"\n\n[project.optional-dependencies]\nproxy = [\"python-socks>=2.4.3\"]\n"}
 			}
 			if entry.Language == "rust" {
 				files = map[string]string{"Cargo.toml": "[package]\nname = \"txttsql-mcp\"\n", "Cargo.lock": "{}", "src/main.rs": "fn main() {}"}
@@ -60,7 +63,7 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 				if err != nil || len(inferred.Entrypoint) > len(entry.Entrypoint) || !slices.Equal(inferred.Entrypoint, entry.Entrypoint[:len(inferred.Entrypoint)]) {
 					t.Fatalf("inferred entrypoint %v %v", inferred.Entrypoint, err)
 				}
-				recipe, generated, err := GenerateArtifactRecipe(context, "", "", entry.Entrypoint)
+				recipe, generated, err := GenerateArtifactRecipe(context, "", "", entry.Entrypoint, entry.PythonExtras...)
 				if err != nil || !slices.Equal(recipe.Entrypoint, entry.Entrypoint) {
 					t.Fatalf("recipe %v %v", recipe.Entrypoint, err)
 				}
@@ -407,6 +410,12 @@ func TestPreparedPreflightNetworkAppliesToDeclaringEntryOnly(t *testing.T) {
 		definition.Source.CommitSHA = entry.Source.CommitSHA
 		definition.Source.Subfolder = entry.Source.Subfolder
 		packet := ImportedArtifact{Definition: definition, Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
+		if entry.AuthBeforeToolsList {
+			if _, _, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir()); !errors.Is(err, ErrIsolation) {
+				t.Fatalf("%s must defer tools/list until protected login: %v", entry.ID, err)
+			}
+			continue
+		}
 		if _, _, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir()); err != nil {
 			t.Fatalf("%s preflight: %v", entry.ID, err)
 		}

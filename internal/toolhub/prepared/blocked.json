@@ -1,0 +1,23 @@
+[
+  {
+    "id": "google-workspace",
+    "name": "Google Workspace",
+    "reason": "No reviewed exact-source generic MCP recipe and Broker contract for Calendar, Drive, Gmail, Docs, Sheets and Slides together; the prepared google-calendar entry covers Calendar only.",
+    "runbook": "docs/prepared-connectors.md#blocked-bundle-entries",
+    "handoff": "Google Workspace bundle installation is blocked. Use the existing opt-in Google Workspace path or request review of an exact MCP source and OAuth contract; never paste credentials in chat."
+  },
+  {
+    "id": "slack",
+    "name": "Slack personal data",
+    "reason": "The pinned korotovsky/slack-mcp-server source lacks a reviewed generic Broker overlay, per-user user-token preflight and live read/write split; the existing Slack App and ToolHub Slack OAuth paths are separate.",
+    "runbook": "docs/prepared-connectors.md#blocked-bundle-entries",
+    "handoff": "Slack prepared installation is blocked pending source review and a user-token Broker contract. Use the existing opt-in ToolHub Slack data path for now."
+  },
+  {
+    "id": "careergo",
+    "name": "CareerGo with JobFetch import",
+    "reason": "No exact CareerGo MCP source revision, license, tool contract or verified JobFetch import API is selected; an external business service must remain opt-in.",
+    "runbook": "docs/prepared-connectors.md#blocked-bundle-entries",
+    "handoff": "CareerGo and JobFetch import are blocked until an exact MCP source and provider contract are reviewed. Continue using an explicitly configured external MCP if available."
+  }
+]

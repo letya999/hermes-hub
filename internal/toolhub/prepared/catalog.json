@@ -93,7 +93,7 @@
     "handoff": "Install https://github.com/letya999/txttsql-mcp as the reviewed read-only SQL engine. In the protected Broker form paste the sources JSON pointing each source at its managed forward (127.0.0.1:15432/15433/15434) and give the real host:port endpoints; database names, schemas and roles stay inside the sources JSON, not tool arguments. Verify list_sources, then do not change provider data without an explicit instruction."
   },
   {
-    "id": "dbhub", "name": "DBHub (fallback SQL)", "license": "MIT",
+    "id": "dbhub", "aliases": ["sql"], "name": "DBHub (fallback SQL)", "license": "MIT",
     "source": {"repository": "https://github.com/bytebase/dbhub", "commit_sha": "8c09c868894f1ea011565ec35215ac36e5638c1f"},
     "language": "node", "entrypoint": ["node", "/app/dist/index.js"],
     "connection": {"fields": [
@@ -176,5 +176,25 @@
     "read_tools": ["list_commands", "describe_commands", "invoke_read_command"], "probe_tool": "list_commands",
     "runbook": "docs/prepared-connectors.md#datalens",
     "handoff": "Install https://github.com/datalens-tech/datalens-mcp; reuse or rotate my existing Broker connection. In the protected Broker form give the organization ID and the Authorization header value — Bearer <iam-token> for cloud (IAM tokens expire in 12h) or OAuth <token> with an API URL override for an internal installation. Verify list_commands and one read through invoke_read_command, for example getWorkbooksList. Workbook, dashboard and entry changes stay a separate explicit instruction."
+  },
+  {
+    "id": "telegram", "name": "Personal Telegram", "license": "Apache-2.0",
+    "source": {"repository": "https://github.com/letya999/telegram-mcp", "commit_sha": "26f1632b2b07cca16fa8f172fe645477921db9ed"},
+    "language": "python", "python_extras": ["proxy"], "entrypoint": ["/opt/venv/bin/telegram-mcp"],
+    "connection": {"fields": [
+      {"name": "TELEGRAM_API_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TELEGRAM_API_ID"},
+      {"name": "TELEGRAM_API_HASH", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "TELEGRAM_API_HASH"},
+      {"name": "TELEGRAM_SESSION_STRING", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "TELEGRAM_SESSION_STRING"},
+      {"name": "TELEGRAM_EXPECTED_USER_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TELEGRAM_EXPECTED_USER_ID"}
+    ]},
+    "contract_id": "telegram-session", "contract_revision": 1, "stateful": false,
+    "auth_before_tools_list": true,
+    "runtime_environment": {"TELEGRAM_EXPOSED_TOOLS": "read-only", "TELEGRAM_TRANSCRIBE": "off", "TELEGRAM_DEVICE_MODEL": "hermes-hub ToolHub"},
+    "proxy_environment": ["TELEGRAM_PROXY_HOST", "TELEGRAM_PROXY_PORT"],
+    "egress": ["91.108.56.0/22", "91.108.4.0/22", "91.108.8.0/22", "91.108.16.0/22", "91.108.12.0/22", "149.154.160.0/20", "91.105.192.0/23", "91.108.20.0/22", "185.76.151.0/24"],
+    "read_tools": ["list_accounts", "get_chats", "list_chats", "get_chat", "get_history", "get_messages", "list_messages", "search_messages", "search_global"],
+    "probe_tool": "list_accounts",
+    "runbook": "docs/prepared-connectors.md#personal-telegram",
+    "handoff": "Call prepare_source once with https://github.com/letya999/telegram-mcp. Enter API ID, API hash, a personal StringSession and expected numeric user ID only in the protected Broker form. Verify list_accounts and a bounded history read. Bot credentials and provider writes are outside this read-only entry."
   }
 ]

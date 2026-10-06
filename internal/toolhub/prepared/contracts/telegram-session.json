@@ -1,0 +1,19 @@
+{
+  "id": "telegram-session",
+  "revision": 1,
+  "title": "Personal Telegram MTProto session (separate from the bot)",
+  "storage": "local",
+  "fields": [
+    {"id": "api_id", "label": "Telegram API ID from my.telegram.org/apps", "kind": "string", "required": true, "max_bytes": 20},
+    {"id": "api_hash", "label": "Telegram API hash", "kind": "secret", "required": true, "max_bytes": 128},
+    {"id": "session", "label": "Personal StringSession (never bot token)", "kind": "secret", "required": true, "max_bytes": 8192},
+    {"id": "expected_user_id", "label": "Expected numeric Telegram user ID", "kind": "string", "required": true, "max_bytes": 20}
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {"type": "env", "field": "api_id", "target": "TELEGRAM_API_ID"},
+    {"type": "env", "field": "api_hash", "target": "TELEGRAM_API_HASH"},
+    {"type": "env", "field": "session", "target": "TELEGRAM_SESSION_STRING"},
+    {"type": "env", "field": "expected_user_id", "target": "TELEGRAM_EXPECTED_USER_ID"}
+  ]
+}

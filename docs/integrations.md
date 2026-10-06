@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-30
+last_verified: 2026-10-07
 ---
 # Integration contracts
 
@@ -767,7 +767,7 @@ cannot satisfy a needed source.
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
 | Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai; hub `hub-web` plugin adds `web_providers` + `web_search_multi` fan-out + `web_cache` cleanup | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
-| Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
+| Telegram account | [letya999/telegram-mcp](https://github.com/letya999/telegram-mcp), `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults to `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
 | Google | Official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019); the third-party Workspace MCP is not in the default hub image | ToolHub remote read grants per product |
