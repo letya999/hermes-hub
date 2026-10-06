@@ -107,6 +107,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.control(w, r)
 	case "/v1/restart":
 		s.restart(w, r)
+	case "/v1/restart-request":
+		s.restartRequest(w, r)
 	case "/v1/self-env":
 		s.selfEnv(w, r)
 	case "/v1/artifact":
@@ -257,12 +259,16 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 	if admission.RunID == "" {
 		return ExecuteResponse{}, errors.New("hermes returned no run ID")
 	}
+	markRunStart(admission.RunID)
 	known := ExecuteResponse{JobID: request.JobID, SessionID: sessionID, RunID: admission.RunID, RuntimeGeneration: os.Getenv("HUB_RUNTIME_GENERATION"), Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 	return s.observeHermesRunWindow(ctx, known, emit, runStart)
 }
 
 func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
-	return s.observeHermesRunWindow(ctx, known, emit, time.Time{})
+	// A recovered observation never knew the run's start; the durable marker
+	// recorded at admission restores the artifact-scan window so files the
+	// interrupted run produced still deliver.
+	return s.observeHermesRunWindow(ctx, known, emit, runStartFor(known.RunID))
 }
 
 func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error, runStart time.Time) (ExecuteResponse, error) {
@@ -619,6 +625,22 @@ func (s *runtimeHTTP) restart(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(250 * time.Millisecond)
 		signalRuntimeProcess()
 	}()
+}
+
+// restartRequest writes the deferred restart marker without signaling. The
+// managed ToolHub cannot reach this state dir, so the supervisor relays
+// projection changes here; the restart itself is applied by /v1/restart when
+// the runtime is between runs.
+func (s *runtimeHTTP) restartRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) {
+		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err := os.WriteFile(filepath.Join(state, "restart.request"), nil, 0600); err != nil {
+		writeRuntimeError(w, http.StatusInternalServerError, "restart marker unavailable")
+		return
+	}
+	writeRuntimeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
 }
 
 func (s *runtimeHTTP) selfEnv(w http.ResponseWriter, r *http.Request) {

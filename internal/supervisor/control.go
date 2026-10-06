@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -283,6 +284,18 @@ func (m *Manager) ExpireUncertain(ctx context.Context, now time.Time) {
 		if !expired {
 			continue
 		}
+		// The runtime generation that owned the run is a liveness proof: a new
+		// generation (or a gone entry) means the run's process is dead, so the
+		// durable cancel can never reach it — interrupt instead of replaying a
+		// cancel that fails on generation mismatch forever.
+		ownerEntry := m.items[uncertainOwnerKey(record)]
+		if ownerEntry == nil || (record.Generation != "" && ownerEntry.Generation != record.Generation) {
+			record.Status = "interrupted"
+			record.UpdatedAt = now.UTC()
+			m.jobs[key] = record
+			_ = m.persistLocked()
+			continue
+		}
 		if record.Response.RunID == "" {
 			// The run never reported an ID: nothing can observe or cancel it
 			// through the durable path, so it can never settle on its own.
@@ -309,6 +322,18 @@ func (m *Manager) ExpireUncertain(ctx context.Context, now time.Time) {
 		}
 		cancel()
 	}
+}
+
+// uncertainOwnerKey maps a job record back to its runtime entry the way
+// bindingFor computes contextID from the scope.
+func uncertainOwnerKey(record jobRecord) string {
+	contextID := record.Request.ContextID
+	if strings.HasPrefix(record.Request.ScopeID, "user:") {
+		contextID = strings.TrimPrefix(record.Request.ScopeID, "user:")
+	} else if strings.HasPrefix(record.Request.ScopeID, "organization:") {
+		contextID = strings.TrimPrefix(record.Request.ScopeID, "organization:")
+	}
+	return record.Request.PrincipalID + "\x00" + contextID + "\x00" + "gateway"
 }
 
 type controlSink struct{ header http.Header }

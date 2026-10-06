@@ -139,7 +139,10 @@ runtime boundary. The supervisor records admission and run status; the communica
 spool records event receipts and repairs outbox handoff on restart. SSE disconnects
 fall back to the pinned durable run-status API because upstream SSE has no replay
 cursor. Recovery observes an admitted run through `/v1/resume` and `/v1/observe`
-instead of resubmitting its prompt. Approval response routing and periodic lifecycle
+instead of resubmitting its prompt. Admission stamps a `/state/runstarts/<runID>`
+marker whose mtime preserves the artifact scan window, so an interrupted run's
+files still attribute correctly when the observation resumes (SPEC-0037).
+Approval response routing and periodic lifecycle
 reconciliation remain tracked in CHG-0017 until their delivery evidence is complete.
 
 Organization skills are configured through upstream Hermes `skills.external_dirs` and
@@ -167,6 +170,11 @@ Files generated under `workspace/artifacts/{documents,images,videos}` during a r
 cross the private contract through `POST /v1/artifact` while the runtime is
 answering, stage into the outbox and reach the chat as Telegram
 photos/documents/videos with durable per-artifact progress (SPEC-0037).
+The model learns this contract from the run instructions, not MCP server
+metadata — managed mode does not surface `ServerOptions.Instructions` — so
+every managed prompt pins the convention: `artifacts/` auto-delivers on
+completion and an explicit `MEDIA: <path>` line attaches files produced
+earlier or outside the deliverable root.
 `hermes-runtime` owns the selected scope homes, provider credentials
 and configuration. Rollback mode runs one Hermes process per job; target mode keeps
 one pinned Gateway warm per active context. It is not published on a public host port.
@@ -415,7 +423,15 @@ is served by the supervisor and routed to the correct user's spawned runtime
 by the job's durable identity; the restart-after-delivery hook carries that
 identity so the spawned Hermes still gets bounced per turn. A restart for an
 absent or stopped runtime is a successful no-op — the next lease spawns a
-fresh container.
+fresh container. ToolHub cannot write the spawned runtime's state dir, so a
+projection change is relayed as `POST /v1/restart-request` on the supervisor
+(`{principal_id, context_id, runtime_id}` — a lookup key, not a grant): the
+supervisor forwards it to the runtime's own `/v1/restart-request`, which
+writes the deferred marker, and applies `/v1/restart` immediately when the
+entry is idle. Communication-hub reads the per-principal connector inventory
+through ToolHub's `GET /v1/connectors` when the local registry file is absent
+(broker-approve mode): a sibling token pins its own envelope, or the
+supervisor bearer selects an enrolled principal via `X-Hub-Principal`.
 `HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store injects the same entry
 for a runtime-local ToolHub. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
 against the existing store and never creates a second ownership registry. ToolHive v0.48.0 remains an

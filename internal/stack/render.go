@@ -582,8 +582,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		if supervisorURL == "" {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"})
+			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub:8090"
 		} else {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH}"
+			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
 		gateway["env_file"] = gatewayEnvFiles
 		gateway["environment"] = gatewayEnvironment
@@ -627,9 +629,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				// last build overwrite the image other services run.
 				svc["image"] = "hermes-hub-" + role + ":0.3.0-" + s.Environment
 				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile." + role}
+				engine := "command"
+				if role == "stt" {
+					// command-serve keeps stt-worker resident: faster-whisper
+					// spends tens of seconds on WhisperModel() per cold exec,
+					// which dominated voice-message latency.
+					engine = "command-serve"
+				}
 				svc["environment"] = M{
 					"HUB_MEDIA_LISTEN": "0.0.0.0:8090",
-					"HUB_MEDIA_ENGINE": "command", "HUB_MEDIA_COMMAND": "/usr/local/bin/" + role + "-worker",
+					"HUB_MEDIA_ENGINE": engine, "HUB_MEDIA_COMMAND": "/usr/local/bin/" + role + "-worker",
 					"HUB_MEDIA_DATA": "/data", "HUB_MEDIA_WORKERS": "2",
 					"HUB_MEDIA_INPUT_ROOT": "/inputs",
 					"HF_HOME":              "/data/hf", "XDG_CACHE_HOME": "/data/cache",

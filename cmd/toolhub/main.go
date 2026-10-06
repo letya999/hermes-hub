@@ -46,10 +46,12 @@ func run() error {
 		go diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second)
 	}
 	refresher := handler.(interface{ RefreshProjection() error })
+	restartNotify := toolhub.RuntimeRestartNotifierFromEnv()
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		pending := false
+		ticks := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -63,6 +65,18 @@ func run() error {
 				} else {
 					pending = false
 				}
+				// list_changed only reaches clients holding an open stream;
+				// the restart marker guarantees the next session reload. The
+				// revision snapshot reloads the store file, so it runs on a
+				// slower cadence than the projection ticker.
+				if restartNotify != nil && ticks%8 == 0 {
+					if targets, err := store.ProjectionRevisions(); err == nil {
+						if err := restartNotify.Notify(targets); err != nil {
+							fmt.Fprintln(os.Stderr, "ToolHub restart notify:", err)
+						}
+					}
+				}
+				ticks++
 			}
 		}
 	}()

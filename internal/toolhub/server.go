@@ -185,6 +185,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		Store: store, Backend: config.Backend, Tokens: tokens,
 		primaryToken: config.Token, tokensFile: config.TokensFile,
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
+		// Rendered as the supervisor bearer so communication-hub can list a
+		// principal's connectors without holding that principal's token.
+		ControlToken: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
 	}
 	var secrets credstore.Backend
 	var injector CredentialInjector

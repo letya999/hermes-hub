@@ -996,6 +996,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.selfEnv(w, r)
 	case "/v1/restart":
 		m.restartHTTP(w, r)
+	case "/v1/restart-request":
+		m.restartRequestHTTP(w, r)
 	case "/v1/artifact":
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
@@ -1106,6 +1108,79 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(response.StatusCode)
 }
 
+// restartRequestHTTP marks a managed runtime for a deferred restart. ToolHub
+// calls it when a principal's tool projection changes: the managed ToolHub
+// container cannot write the runtime's state dir itself, so it asks the
+// supervisor, which owns the runtime entry and its auth. Identity fields are a
+// lookup key, not an authorization grant — they can only mark that principal's
+// own runtime. A busy runtime keeps the marker for the post-delivery restart
+// poll; an idle one is signaled immediately; a stopped runtime needs nothing.
+func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	defer r.Body.Close()
+	var request struct {
+		PrincipalID string `json:"principal_id"`
+		ContextID   string `json:"context_id"`
+		RuntimeID   string `json:"runtime_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restart request"})
+		return
+	}
+	m.mu.Lock()
+	var entry *runtimeEntry
+	for _, candidate := range m.items {
+		if candidate.Runtime.PrincipalID == request.PrincipalID && candidate.Runtime.ContextID == request.ContextID && (request.RuntimeID == "" || candidate.Runtime.RuntimeID == request.RuntimeID) {
+			entry = candidate
+			break
+		}
+	}
+	running := entry != nil && entry.Container != "" && (entry.State == Ready || entry.State == Busy || entry.State == Idle)
+	if !running {
+		m.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
+		return
+	}
+	address, auth, idle := entry.Address, entry.auth, entry.State == Idle || entry.State == Ready
+	m.mu.Unlock()
+	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	marker.Header.Set("Authorization", "Bearer "+auth)
+	response, err := m.cfg.HTTP.Do(marker)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime marker refused"})
+		return
+	}
+	applied := false
+	if idle {
+		// No run is in flight: apply the deferred restart now instead of
+		// waiting for the next delivered job.
+		apply, aerr := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart", nil)
+		if aerr == nil {
+			apply.Header.Set("Authorization", "Bearer "+auth)
+			if resp, derr := m.cfg.HTTP.Do(apply); derr == nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+				resp.Body.Close()
+				applied = resp.StatusCode == http.StatusOK
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "applied": applied})
+}
+
 // artifactHTTP forwards one bounded artifact fetch to the runtime bound to the
 // request envelope. No lease: the gateway asks while the runtime is answering
 // the job, so a lookup-only forward never keeps a runtime alive for it.
@@ -1175,19 +1250,15 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	m.mu.Lock()
-	entry := m.items[runtimeKey(binding)]
-	running := entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) && entry.Address != ""
-	address := ""
-	if running {
-		address = entry.Address
-	}
-	m.mu.Unlock()
-	if !running {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "runtime unavailable"})
+	// Usage is a user command: a stopped runtime is spawned exactly like a
+	// message would spawn it, and the lifecycle lease pins it for the query.
+	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	if err != nil || runtime.Address == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/usage", bytes.NewReader(body))
+	defer m.ReleaseLease(lease.ID)
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/usage", bytes.NewReader(body))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
 		return

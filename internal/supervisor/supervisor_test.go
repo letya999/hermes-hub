@@ -224,6 +224,113 @@ func TestRestartSkipsAbsentRuntime(t *testing.T) {
 	}
 }
 
+// restartRequestHTTP is the ToolHub→supervisor bridge: it marks the owning
+// runtime's deferred-restart marker. Busy keeps the marker for the
+// post-delivery poll; idle applies /v1/restart immediately; absent is a no-op.
+func TestRestartRequestMarksOwnedRuntimeByState(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		state     State
+		wantApply bool
+	}{
+		{"busy defers", Busy, false},
+		{"idle applies", Idle, true},
+		{"ready applies", Ready, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			marked, applied := false, false
+			runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer secret" {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				switch r.URL.Path {
+				case "/v1/restart-request":
+					marked = true
+				case "/v1/restart":
+					applied = true
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer runtimeAPI.Close()
+			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+			normalized, err := m.normalize(binding(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.mu.Lock()
+			m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: tc.state}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+			m.mu.Unlock()
+			body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice", "runtime_id": "alice"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+			httpRequest.Header.Set("Authorization", "Bearer secret")
+			recorder := httptest.NewRecorder()
+			m.Handler().ServeHTTP(recorder, httpRequest)
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":true`) {
+				t.Fatalf("restart-request status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !marked || applied != tc.wantApply {
+				t.Fatalf("marked=%v applied=%v want applied=%v", marked, applied, tc.wantApply)
+			}
+		})
+	}
+}
+
+func TestRestartRequestSkipsAbsentRuntime(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":false`) {
+		t.Fatalf("absent runtime restart-request → %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRestartRequestCannotMarkAnotherPrincipal(t *testing.T) {
+	called := false
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	// Identity fields are lookup keys only: a request naming a different
+	// principal never reaches alice's runtime.
+	body, err := json.Marshal(map[string]string{"principal_id": "mallory", "context_id": "mallory", "runtime_id": "mallory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":false`) || called {
+		t.Fatalf("foreign principal reached a runtime: %d %s called=%v", recorder.Code, recorder.Body.String(), called)
+	}
+	// An unauthenticated request never reaches the handler at all.
+	httpRequest = httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	recorder = httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthed restart-request → %d, want 401", recorder.Code)
+	}
+}
+
 func TestArtifactForwardReachesOwningRuntime(t *testing.T) {
 	var gotName, gotAuth string
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +444,9 @@ func TestUsageForwardReachesOwningRuntime(t *testing.T) {
 	m.mu.Lock()
 	delete(m.items, runtimeKey(normalized))
 	m.mu.Unlock()
-	if recorder := call("/v1/usage", "secret", body); recorder.Code != http.StatusNotFound {
+	// An absent runtime is ensured like a message would spawn it; in this
+	// environment the spawn fails, so the lookup surfaces as 503, not 404.
+	if recorder := call("/v1/usage", "secret", body); recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("absent runtime=%d", recorder.Code)
 	}
 }

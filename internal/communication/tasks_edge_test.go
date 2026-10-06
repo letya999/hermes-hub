@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // writeRawTask stores a task record verbatim, bypassing store validation, so
@@ -337,16 +335,16 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 	}
 }
 
-func TestUsageCommandSameSessionBranch(t *testing.T) {
+// A transient lookup failure (spawn in flight or a dead runtime the
+// supervisor could not raise) retries once and then explains instead of
+// surfacing a bare code.
+func TestUsageCommandStoppedRuntimeMessage(t *testing.T) {
 	c := testConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &usageStubRunner{report: hubruntime.SessionUsage{
-		SessionID: "sess-1", DeclaredSessionID: "sess-1", SessionFound: true,
-		Source: "hermes-session",
-	}}
+	runner := &usageStubRunner{err: errors.New("usage query returned HTTP 503")}
 	g.api, g.runner = &fakeAPI{}, runner
 	user := g.user("alice")
 	task, err := g.spool.ResolveTask(user, 11, 0, false)
@@ -354,7 +352,13 @@ func TestUsageCommandSameSessionBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := g.usageCommand(context.Background(), user, 11, task)
-	if !strings.Contains(got, "Сессия: sess-1.") || strings.Contains(got, "продолжение") {
-		t.Fatalf("same-session report=%q", got)
+	if !strings.Contains(got, "рантайм не поднялся") {
+		t.Fatalf("stopped-runtime message=%q", got)
+	}
+	// A non-404 failure stays a plain unavailable answer, no retry.
+	runner.err = errors.New("connection refused")
+	got = g.usageCommand(context.Background(), user, 11, task)
+	if !strings.Contains(got, "Измерение расхода недоступно: connection refused") {
+		t.Fatalf("generic error message=%q", got)
 	}
 }

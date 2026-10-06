@@ -588,6 +588,57 @@ func TestRuntimeRestartOnlySchedulesWithPendingRequest(t *testing.T) {
 	}
 }
 
+// /v1/restart-request writes the deferred marker without signaling the
+// process: the supervisor uses it after a projection change on a busy
+// runtime, and the post-delivery /v1/restart poll consumes it later.
+func TestRuntimeRestartRequestWritesMarkerWithoutSignaling(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	called := make(chan struct{}, 1)
+	oldSignal := signalRuntimeProcess
+	signalRuntimeProcess = func() { called <- struct{}{} }
+	defer func() { signalRuntimeProcess = oldSignal }()
+	handler := runtimeHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/restart-request", nil)
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":true`) {
+		t.Fatalf("restart-request response: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "restart.request")); err != nil {
+		t.Fatal("restart marker was not written")
+	}
+	select {
+	case <-called:
+		t.Fatal("restart-request signaled the process instead of deferring")
+	case <-time.After(50 * time.Millisecond):
+	}
+	// Unauthorized and wrong-method requests write nothing.
+	for _, attempt := range []func() *httptest.ResponseRecorder{
+		func() *httptest.ResponseRecorder {
+			r := httptest.NewRequest(http.MethodPost, "/v1/restart-request", nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w
+		},
+		func() *httptest.ResponseRecorder {
+			r := httptest.NewRequest(http.MethodGet, "/v1/restart-request", nil)
+			r.Header.Set("Authorization", "Bearer runtime-secret")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w
+		},
+	} {
+		if w := attempt(); w.Code != http.StatusUnauthorized {
+			t.Fatalf("restart-request rejected with %d, want 401", w.Code)
+		}
+	}
+}
+
 func TestSelfEnvProtectedFormUpdatesBoundRuntimeOnly(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_USER_ID", "alice")

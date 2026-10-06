@@ -332,9 +332,14 @@ func TestUsageCommandRendersMeasuredFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := g.usageCommand(context.Background(), user, 11, task)
-	for _, want := range []string{"sess-eff", "sess-decl", "gpt-test", "unknown", "120", "45", "0.0123", "hermes-session", "2026-01-01"} {
+	for _, want := range []string{"вход 120", "выход 45", "кэш 7/3", "Сжатий сессии: 1", "2026-01-01"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("/usage missing %q: %s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"sess-eff", "gpt-test", "0.0123", "hermes-session", "вызовов API"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("/usage must stay compact, found %q: %s", unwanted, got)
 		}
 	}
 	if runner.last.Envelope.ConversationID != task.ConversationID {
@@ -343,11 +348,11 @@ func TestUsageCommandRendersMeasuredFields(t *testing.T) {
 
 	// Context is only rendered when both measured values are authoritative.
 	runner.report.ContextTokens = int64ptr(50)
-	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "Контекст запроса: unknown") {
+	if got := g.usageCommand(context.Background(), user, 11, task); strings.Contains(got, "Контекст:") {
 		t.Fatalf("half-known context leaked: %s", got)
 	}
 	runner.report.ContextWindow = int64ptr(200)
-	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "50/200 (25%)") {
+	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "Контекст: 50/200 (25%)") {
 		t.Fatalf("measured context missing: %s", got)
 	}
 

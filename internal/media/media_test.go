@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -472,6 +473,31 @@ func TestDocumentsAreSeparateEffects(t *testing.T) {
 	htm, err := s.Extract(ctx, "page.htm")
 	if err != nil || htm["format"] != "html" || htm["text"] != "from htm" {
 		t.Fatal(htm, err)
+	}
+}
+
+// Markup-shaped input must be rejected instead of escaping a document into a
+// page of visible entities — the model reaches for file_write instead.
+func TestDocumentCreateRejectsMarkupInput(t *testing.T) {
+	s, _ := openSession(t)
+	ctx := context.Background()
+	for _, markup := range []string{
+		"<!DOCTYPE html>\n<html><body><h1>x</h1></body></html>",
+		"<html><body>resume</body></html>",
+		"<h1>Title</h1><p>body</p>",
+		"<div><br/></div>",
+	} {
+		if _, err := s.Create(ctx, "m"+strconv.Itoa(len(markup)), "html", markup); err == nil || !strings.Contains(err.Error(), "file_write") {
+			t.Fatalf("markup stored as html: %.30s", markup)
+		}
+	}
+	created, err := s.Create(ctx, "plain", "html", "Тег <b> упоминается в тексте")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Extract(ctx, created["path"].(string))
+	if err != nil || !strings.Contains(out["text"].(string), "<b>") {
+		t.Fatal(out, err)
 	}
 }
 

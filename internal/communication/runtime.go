@@ -27,6 +27,9 @@ type HTTPRunner struct {
 	Limit   time.Duration
 	Spool   *Spool
 	Resume  bool
+	// Voice advertises the VOICE: reply convention in run instructions; it is
+	// set only when the gateway actually has a synthesizer configured.
+	Voice bool
 }
 
 const defaultHTTPRunTimeout = 30 * time.Minute
@@ -70,6 +73,20 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		} else {
 			return RunOutcome{}, styleErr
 		}
+	}
+	// The artifact-delivery contract lives on the host-side tools server in
+	// unmanaged deployments; managed runtimes see only ToolHub, so the channel
+	// itself advertises it. Models otherwise conclude chat cannot take files.
+	if instructions != "" {
+		instructions += "\n"
+	}
+	instructions += "Files written under the workspace `artifacts/` directory (documents, images, videos) are delivered to the chat automatically when the run finishes — no marker needed. To attach a file produced in an earlier run or stored elsewhere in the workspace, put `MEDIA: <workspace path>` on its own line in the reply; marker lines are routing metadata and never shown. Never tell the user that the chat cannot receive file attachments."
+	if r.Voice {
+		// The VOICE: marker convention lives on the host-side tools server in
+		// unmanaged deployments; managed runtimes see only ToolHub, so the
+		// channel itself advertises it whenever synthesis is configured.
+		instructions += "\n"
+		instructions += "To answer with a voice message, put `VOICE: <spoken text>` on its own line in the reply — the channel synthesizes and sends it as a voice message; when VOICE: is the only line, the reply is voice-only and no text message is sent. Do that when the user asks for a spoken or voice answer; otherwise answer in text. Synthesized audio is never stored."
 	}
 	body, err := json.Marshal(hubruntime.ExecuteRequest{
 		Envelope:       job.Envelope,
@@ -294,7 +311,9 @@ func (r HTTPRunner) SessionUsage(ctx context.Context, request hubruntime.Execute
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+r.Auth)
-	client := &http.Client{Timeout: 20 * time.Second}
+	// The supervisor ensures the runtime before forwarding, so a cold spawn
+	// rides inside this request — the budget must cover container start.
+	client := &http.Client{Timeout: 120 * time.Second}
 	if r.HTTP != nil {
 		client = r.HTTP
 	}

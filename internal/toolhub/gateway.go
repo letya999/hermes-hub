@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,7 +156,11 @@ type Gateway struct {
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   CredentialInjector
 	Control                    *ControlPlane
-	projections                map[string]*gatewayProjection
+	// ControlToken is the control-plane bearer (supervisor auth) allowed to
+	// read a principal's connector inventory via X-Hub-Principal. Principal
+	// bearers always pin their own envelope and never use the header.
+	ControlToken string
+	projections  map[string]*gatewayProjection
 }
 
 type gatewayProjection struct {
@@ -192,9 +197,96 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.Handle(DefaultEndpointPath, g.protect())
+	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
 	return mux, nil
+}
+
+// ConnectorView is the read-only per-principal inventory for /connections:
+// the same data tools/list projects, grouped by definition, without the MCP
+// handshake. Token auth resolves the envelope exactly like the MCP endpoint.
+type ConnectorView struct {
+	DefinitionID string   `json:"definition_id"`
+	Version      string   `json:"version"`
+	Transport    string   `json:"transport"`
+	Tools        []string `json:"tools"`
+}
+
+func (g *Gateway) serveConnectors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "browser origins forbidden", http.StatusForbidden)
+		return
+	}
+	auth, ok := g.connectorAuth(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	tools, err := g.Store.ListProjectedTools(auth)
+	if err != nil {
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	byDefinition := map[string][]string{}
+	var order []string
+	versions := map[string]string{}
+	for _, t := range tools {
+		if _, seen := byDefinition[t.DefinitionID]; !seen {
+			order = append(order, t.DefinitionID)
+		}
+		byDefinition[t.DefinitionID] = append(byDefinition[t.DefinitionID], t.Name)
+		versions[t.DefinitionID] = t.Version
+	}
+	slices.Sort(order)
+	views := make([]ConnectorView, 0, len(order))
+	for _, id := range order {
+		view := ConnectorView{DefinitionID: id, Version: versions[id], Tools: byDefinition[id]}
+		slices.Sort(view.Tools)
+		if def, derr := g.Store.Definition(id, view.Version); derr == nil {
+			view.Transport = string(def.Transport)
+		}
+		views = append(views, view)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": views})
+}
+
+// connectorAuth resolves the caller's identity for the read-only connector
+// listing. A principal's own bearer always pins its envelope. The
+// control-plane bearer (HUB_COMMUNICATION_AUTH — the supervisor token shared
+// with communication-hub) may select any enrolled principal via
+// X-Hub-Principal; the header alone never authenticates.
+func (g *Gateway) connectorAuth(r *http.Request) (identity.Envelope, bool) {
+	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
+		return identity.Envelope{}, false
+	}
+	if token, ok := g.matchToken("Bearer " + value); ok {
+		g.mu.Lock()
+		auth := g.Tokens[token]
+		g.mu.Unlock()
+		return auth, true
+	}
+	if g.ControlToken == "" || subtle.ConstantTimeCompare([]byte(value), []byte(g.ControlToken)) != 1 {
+		return identity.Envelope{}, false
+	}
+	principal := strings.TrimSpace(r.Header.Get("X-Hub-Principal"))
+	if principal == "" {
+		return identity.Envelope{}, false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, auth := range g.Tokens {
+		if auth.PrincipalID == principal {
+			return auth, true
+		}
+	}
+	return identity.Envelope{}, false
 }
 
 func (g *Gateway) protect() http.Handler {
@@ -378,12 +470,14 @@ func (g *Gateway) RefreshProjection() error {
 		list = append(list, projection)
 	}
 	g.mu.Unlock()
+	var errs []error
 	for _, projection := range list {
 		if err := g.refreshProjection(projection); err != nil {
-			return err
+			// One failing principal must not starve the others' refresh.
+			errs = append(errs, fmt.Errorf("%s: %w", projection.auth.PrincipalID, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // notifyPrepareDone wakes the owner's open MCP sessions after a backgrounded

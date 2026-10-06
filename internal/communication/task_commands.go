@@ -110,10 +110,10 @@ func (g *Gateway) sessionsCommand(user User, chatID int64) string {
 	return strings.Join(lines, "\n")
 }
 
-// usageCommand implements /usage: only measured upstream fields are rendered;
-// anything the pinned API does not carry prints "unknown" instead of an
-// estimate. Cumulative billed counters and current-prompt context are kept as
-// separate lines on purpose.
+// usageCommand implements /usage: a compact report — tokens burned, context
+// window fill, compactions, and subscription limits with reset times. Only
+// measured upstream fields are rendered; missing counters print "unknown"
+// instead of an estimate.
 func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, task Task) string {
 	runner, ok := g.runner.(interface {
 		SessionUsage(context.Context, hubruntime.ExecuteRequest) (hubruntime.SessionUsage, error)
@@ -123,7 +123,7 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	}
 	envelope := user.envelope(sender)
 	envelope.ConversationID = task.ConversationID
-	report, err := runner.SessionUsage(ctx, hubruntime.ExecuteRequest{
+	request := hubruntime.ExecuteRequest{
 		Envelope:       envelope,
 		OrganizationID: g.config.OrganizationID,
 		UserID:         user.ID,
@@ -132,49 +132,44 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 		Channel:        "telegram_bot",
 		Trigger:        "usage",
 		IdempotencyKey: "usage",
-	})
+	}
+	report, err := runner.SessionUsage(ctx, request)
+	if err != nil && usageTransient(err) {
+		// The supervisor ensures the runtime before measuring; one retry
+		// covers the window where it dies between acquire and forward.
+		timer := time.NewTimer(3 * time.Second)
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
+		report, err = runner.SessionUsage(ctx, request)
+	}
 	if err != nil {
+		if usageTransient(err) {
+			return "Измерение расхода недоступно: сессионный рантайм не поднялся. Повторите /usage через минуту."
+		}
 		return "Измерение расхода недоступно: " + err.Error()
 	}
 	if !report.SessionFound {
 		return "Задача " + taskLabel(task) + ": постоянная Hermes-сессия ещё не создана."
 	}
-	lines := []string{"Задача " + taskLabel(task) + "."}
-	if report.SessionID != report.DeclaredSessionID {
-		lines = append(lines, "Сессия (эффективная): "+report.SessionID+" — продолжение "+report.DeclaredSessionID+".")
-	} else {
-		lines = append(lines, "Сессия: "+report.SessionID+".")
-	}
-	if report.Model != "" {
-		lines = append(lines, "Модель: "+report.Model+".")
-	}
-	if report.Title != "" || report.StartedAt != "" {
-		line := "Название сессии: " + usageText(report.Title) + "."
-		if report.StartedAt != "" {
-			if when, perr := time.Parse(time.RFC3339, report.StartedAt); perr == nil {
-				line += " Создана " + when.UTC().Format("02.01.2006 15:04") + " UTC."
-			}
-		}
-		lines = append(lines, line)
-	}
-	contextText := "unknown"
+	lines := []string{"Расход сессии: вход " + usageNum(report.InputTokens) + ", выход " + usageNum(report.OutputTokens) +
+		", кэш " + usageNum(report.CacheReadTokens) + "/" + usageNum(report.CacheWriteTokens) + "."}
+	contextLine := "Сжатий сессии: " + usageNum(report.Compactions) + usageSuffix(report.LastCompactionAt) + "."
 	if report.ContextTokens != nil && report.ContextWindow != nil && *report.ContextWindow > 0 {
-		contextText = strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
-			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%)"
+		contextLine = "Контекст: " + strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
+			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%). " + contextLine
 	}
-	lines = append(lines, "Контекст запроса: "+contextText+".")
-	lines = append(lines, "Накоплено по сессии: вход "+usageNum(report.InputTokens)+", выход "+usageNum(report.OutputTokens)+
-		", кэш "+usageNum(report.CacheReadTokens)+"/"+usageNum(report.CacheWriteTokens)+
-		", рассуждения "+usageNum(report.ReasoningTokens)+".")
-	lines = append(lines, "Сообщений "+usageNum(report.MessageCount)+", вызовов API "+usageNum(report.APICallCount)+
-		", вызовов инструментов "+usageNum(report.ToolCallCount)+".")
-	if report.EstimatedCostUSD != nil || report.ActualCostUSD != nil {
-		lines = append(lines, "Стоимость: оценка "+usageCost(report.EstimatedCostUSD)+", фактическая "+usageCost(report.ActualCostUSD)+".")
-	}
-	lines = append(lines, "Сжатий сессии: "+usageNum(report.Compactions)+usageSuffix(report.LastCompactionAt)+".")
+	lines = append(lines, contextLine)
 	lines = append(lines, g.quotaLines(ctx)...)
-	lines = append(lines, "Источник: "+report.Source+".")
 	return strings.Join(lines, "\n")
+}
+
+// usageTransient reports lookup-path failures worth one retry: the runtime is
+// mid-spawn (404/503) or died between acquire and forward (502).
+func usageTransient(err error) bool {
+	return strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "503")
 }
 
 func usageNum(v *int64) string {
@@ -182,20 +177,6 @@ func usageNum(v *int64) string {
 		return "unknown"
 	}
 	return strconv.FormatInt(*v, 10)
-}
-
-func usageText(v string) string {
-	if v == "" {
-		return "unknown"
-	}
-	return v
-}
-
-func usageCost(v *float64) string {
-	if v == nil {
-		return "unknown"
-	}
-	return "$" + strconv.FormatFloat(*v, 'f', 4, 64)
 }
 
 func usageSuffix(at string) string {

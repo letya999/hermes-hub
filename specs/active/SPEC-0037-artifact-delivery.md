@@ -9,16 +9,29 @@ Frozen: 2026-10-06. Issue 172.
    root modified inside the run window (mtime >= run start - 2 s), bounded
    to 8 files of <= 8 MiB each — <= 48 MiB under `videos`, below the 50 MB
    Telegram bot upload bound — and attaches `{name, path, mime, size}` refs
-   to the terminal `ExecuteResponse`. Observed/recovered runs without a
-   run-start timestamp list nothing by the window scan alone.
+   to the terminal `ExecuteResponse`. Admission stamps a zero-byte
+   `/state/runstarts/<runID>` marker whose mtime is the run's start bound;
+   an observed/recovered run restores its window from that marker (markers
+   sweep after ~24 h). A recovered run with no marker — admitted before the
+   marker contract or in an environment without a state dir — still lists
+   nothing by the window scan alone.
 1a. Upstream `MEDIA:<path>` reply markers are a second, explicit source: the
    runtime strips marker lines from the visible text, resolves each path
    inside the workspace (EvalSymlinks containment, regular file, 0 < size <=
    8 MiB), stages it under `artifacts/images|documents` — copied there when a
-   tool wrote it elsewhere, e.g. the workspace root — and attaches a ref. A
-   marker pointing at an unusable file yields a ref with `error`, never a
-   silent drop. This source needs no run-start window, so recovered runs
-   still deliver named files.
+   tool wrote it elsewhere, e.g. the workspace root — and attaches a ref.
+   Bare filenames resolve against `artifacts/{images,documents,videos}`, and
+   an absolute path that fails literal resolution but contains an
+   `/artifacts/` segment is remapped onto the workspace artifacts root
+   (models quote `$HOME/artifacts/...`), still under the same containment
+   and size checks. A marker pointing at an unusable file yields a ref with
+   `error`, never a silent drop. This source needs no run-start window, so
+   recovered runs still deliver named files.
+1b. The convention reaches the model through the managed run instructions —
+   managed mode does not surface MCP `ServerOptions.Instructions` — so every
+   managed prompt pins it: files under `artifacts/` deliver automatically on
+   completion, and `MEDIA: <path>` attaches a file produced earlier or
+   outside the deliverable root.
 
 2. `POST /v1/artifact` on the runtime serves exactly one file by relative
    path: two segments, root ∈ {documents, images, videos}, clean basename, Lstat

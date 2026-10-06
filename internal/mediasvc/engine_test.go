@@ -1,10 +1,12 @@
 package mediasvc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -907,5 +909,73 @@ func TestWavDurationAndTranscriptText(t *testing.T) {
 	}
 	if !strings.Contains(toSRT([]Segment{{Start: 1, End: 2.5, Text: "x", Speaker: "speaker-9"}}), "[speaker-9]") {
 		t.Fatal("srt lost speaker prefix")
+	}
+}
+
+// command-serve keeps the worker resident: one process answers many
+// requests. The helper doubles as the worker via -test.run so no external
+// interpreter is needed.
+func TestServeSTTKeepsWorkerResident(t *testing.T) {
+	oldArg := serveWorkerArg
+	serveWorkerArg = "-test.run=TestServeWorkerHelper"
+	defer func() { serveWorkerArg = oldArg }()
+	t.Setenv("GO_SERVE_HELPER", "1")
+	engine := &serveSTT{command: os.Args[0], requests: make(chan serveRequest)}
+	go engine.run()
+	for i := 0; i < 3; i++ {
+		segments, err := engine.Transcribe(context.Background(), "clip-"+string(rune('a'+i))+".wav", TranscribeOpts{})
+		if err != nil || len(segments) != 1 || segments[0].Text != "heard:clip-"+string(rune('a'+i))+".wav" {
+			t.Fatalf("request %d: %v %+v", i, err, segments)
+		}
+	}
+	if !engine.Ready(context.Background()) {
+		t.Fatal("resident worker did not report ready")
+	}
+}
+
+// A dead worker is dropped and respawned on the next request rather than
+// poisoning the stream for every caller after it.
+func TestServeSTTRespawnsDeadWorker(t *testing.T) {
+	oldArg := serveWorkerArg
+	serveWorkerArg = "-test.run=TestServeWorkerHelper"
+	defer func() { serveWorkerArg = oldArg }()
+	t.Setenv("GO_SERVE_HELPER", "die")
+	engine := &serveSTT{command: os.Args[0], requests: make(chan serveRequest)}
+	go engine.run()
+	if _, err := engine.Transcribe(context.Background(), "clip.wav", TranscribeOpts{}); err == nil {
+		t.Fatal("dead worker must surface an error")
+	}
+	if engine.Ready(context.Background()) {
+		t.Fatal("dead worker still reporting ready")
+	}
+}
+
+func TestServeWorkerHelper(t *testing.T) {
+	mode := os.Getenv("GO_SERVE_HELPER")
+	if mode == "" {
+		return
+	}
+	if mode == "die" {
+		os.Exit(1)
+	}
+	// Handshake first, then one JSON line per stdin path.
+	if _, err := os.Stdout.WriteString("{\"ready\":true}\n"); err != nil {
+		os.Exit(1)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			os.Exit(0)
+		}
+		path := strings.TrimSpace(line)
+		if path == "" {
+			continue
+		}
+		if strings.Contains(path, "error") {
+			fmt.Printf("{\"error\":%q}\n", "cannot decode")
+			continue
+		}
+		fmt.Printf("{\"text\":%q}\n", "heard:"+path)
 	}
 }
