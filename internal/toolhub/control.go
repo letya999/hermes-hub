@@ -47,6 +47,7 @@ type ControlPlane struct {
 	RecipeCatalogs []RecipeCatalog
 	OAuth          *oauth.Broker
 	Injector       CredentialInjector
+	admissionMu    sync.Mutex
 	oauthMu        sync.Mutex
 	oauthFlows     map[string]*preparedOAuthFlow
 	Now            func() time.Time
@@ -59,6 +60,7 @@ type ControlPlane struct {
 	ConfirmationTTL  time.Duration
 	Ready            func(context.Context, EffectiveBinding) error
 	Broker           *credentialbroker.Config
+	BrokerRuntime    *credentialbroker.Config
 	discoveryMu      sync.Mutex
 	discoveryChoices map[string]discoverySelection
 	// Release asks the workload controller to stop a running workload. Revoke
@@ -389,7 +391,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		}
 	}
 	if review.AdmissionPending {
-		return c.acceptCredentialGate(auth, preparing, review)
+		return c.acceptCredentialGate(ctx, auth, preparing, review)
 	}
 	if err := c.bindReviewedContract(ctx, auth, &review.Definition); err != nil {
 		return failPrepare(err)
@@ -461,9 +463,13 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) acceptCredentialGate(auth identity.Envelope, preparing Onboarding, review SourceReview) (map[string]any, error) {
+func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.Envelope, preparing Onboarding, review SourceReview) (map[string]any, error) {
 	definition := review.Definition
-	if len(requiredSecretNames(definition)) == 0 {
+	brokerGate := definition.CredentialContractID != ""
+	if brokerGate && (c.Broker == nil || !c.Broker.Enabled()) {
+		return nil, fmt.Errorf("%w: reviewed credential Broker is required for authenticated preflight", ErrIsolation)
+	}
+	if len(requiredSecretNames(definition)) == 0 && !brokerGate {
 		return nil, fmt.Errorf("%w: credential gate named no secrets", ErrInvalid)
 	}
 	names := requiredCredentialNames(definition)
@@ -514,13 +520,23 @@ func (c *ControlPlane) acceptCredentialGate(auth identity.Envelope, preparing On
 		onboarding.DefinitionVersion = definition.Version
 	}
 	onboarding.ReviewDigest = ""
-	onboarding.FormNonce = randomNonce()
-	onboarding.FormExpires = c.now().Add(c.ttl())
+	if brokerGate {
+		onboarding.FormNonce = ""
+		onboarding.FormExpires = time.Time{}
+	} else {
+		onboarding.FormNonce = randomNonce()
+		onboarding.FormExpires = c.now().Add(c.ttl())
+	}
 	onboarding.ConfirmationNonce = ""
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
+	}
+	if brokerGate {
+		if err := c.ensureBrokerRequest(ctx, auth, &onboarding, definition); err != nil {
+			return nil, err
+		}
 	}
 	return c.statusBody(onboarding, false), nil
 }
@@ -962,7 +978,10 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 				onboarding.ConfirmationNonce = randomNonce()
 				onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 				onboarding.Revision++
-				return c.Store.PutOnboarding(*onboarding)
+				if err := c.Store.PutOnboarding(*onboarding); err != nil {
+					return err
+				}
+				return c.refreshBrokerRequest(ctx, auth, onboarding)
 			}
 		}
 	}
@@ -1032,7 +1051,13 @@ func brokerCredentialActive(ctx context.Context, control *brokerclient.Client, i
 }
 
 func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding) error {
-	if c == nil || c.Broker == nil || !c.Broker.Enabled() || onboarding == nil || onboarding.BrokerRequestID == "" {
+	if c == nil || c.Broker == nil || !c.Broker.Enabled() || onboarding == nil {
+		return nil
+	}
+	if onboarding.BrokerRequestID == "" {
+		if onboarding.AdmissionPending && onboarding.BrokerCredentialID != "" {
+			return c.completeBrokerAdmission(ctx, auth, onboarding, onboarding.BrokerCredentialID)
+		}
 		return nil
 	}
 	control, err := c.Broker.New(auth, "broker:control")
@@ -1048,6 +1073,9 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 	onboarding.BrokerContractRevision = request.ContractRevision
 	changed := false
 	if request.Status == "ready" && request.CredentialID != "" {
+		if onboarding.AdmissionPending {
+			return c.completeBrokerAdmission(ctx, auth, onboarding, request.CredentialID)
+		}
 		if onboarding.BrokerCredentialID != request.CredentialID || onboarding.Locator != request.CredentialID || onboarding.Phase == PhaseAwaitingCreds {
 			onboarding.BrokerCredentialID = request.CredentialID
 			onboarding.Locator = request.CredentialID
@@ -1064,6 +1092,67 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		onboarding.Revision++
 		return c.Store.PutOnboarding(*onboarding)
 	}
+	return nil
+}
+
+func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identity.Envelope, onboarding *Onboarding, credentialID string) error {
+	c.admissionMu.Lock()
+	defer c.admissionMu.Unlock()
+	current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil {
+		return err
+	}
+	if !current.AdmissionPending {
+		*onboarding = current
+		return nil
+	}
+	if current.BrokerRequestID != onboarding.BrokerRequestID || current.BrokerCredentialID != "" && current.BrokerCredentialID != credentialID && current.BrokerRotateCredentialID != current.BrokerCredentialID {
+		return ErrStale
+	}
+	if strings.HasPrefix(current.Error, "Проверка не прошла") {
+		*onboarding = current
+		return nil
+	}
+	definition, err := c.definitionOf(current)
+	if err != nil {
+		return err
+	}
+	admitted, err := c.admitWithBrokerCredential(ctx, auth, current, definition, credentialID)
+	if err == nil && !c.selfInstallUsable(admitted) {
+		err = fmt.Errorf("%w: admitted Broker definition differs from reviewed entry", ErrUnauthorized)
+	}
+	if err == nil {
+		err = c.registerAdmittedDefinition(&admitted, current.PrincipalID)
+	}
+	latest, readErr := c.Store.OnboardingFor(auth, current.OnboardingID)
+	if readErr != nil {
+		return readErr
+	}
+	if !latest.AdmissionPending || latest.Phase != current.Phase || latest.BrokerRequestID != current.BrokerRequestID || latest.BrokerRotateCredentialID != current.BrokerRotateCredentialID {
+		return ErrStale
+	}
+	latest.BrokerCredentialID, latest.Locator = credentialID, credentialID
+	latest.FormNonce, latest.FormExpires = "", time.Time{}
+	if err != nil {
+		latest.Phase = PhaseAwaitingCreds
+		latest.Error = "Проверка не прошла. " + credentialProbeFailure(err)
+	} else {
+		latest.Definition = &admitted
+		latest.DefinitionID, latest.DefinitionVersion = admitted.DefinitionID, admitted.Version
+		latest.Permissions, latest.Effects = toolNames(admitted), effectNames(admitted)
+		latest.ReviewDigest = admitted.Source.ReviewDigest
+		latest.AdmissionPending = false
+		latest.Error = ""
+		latest.Phase = PhaseAwaitingConfirm
+		latest.ConfirmationNonce = randomNonce()
+		latest.ConfirmationExpires = c.now().Add(c.ttl())
+		latest.ConfirmationUsed = false
+	}
+	latest.Revision++
+	if err := c.Store.PutOnboarding(latest); err != nil {
+		return err
+	}
+	*onboarding = latest
 	return nil
 }
 
@@ -1112,15 +1201,14 @@ func (c *ControlPlane) regenerateBrokerRequest(ctx context.Context, auth identit
 	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds {
 		return nil
 	}
-	// A credential gate has no confirmed tool contract and usually no reviewed
-	// broker contract. The protected loopback form is the path; asking the
-	// broker for a contract that cannot exist yet would fail status polling.
-	if onboarding.AdmissionPending {
-		return nil
-	}
 	definition, err := c.definitionOf(*onboarding)
 	if err != nil {
 		return err
+	}
+	// Unprepared servers with no reviewed contract still use the protected
+	// loopback form. A prepared authenticated source resumes through Broker.
+	if onboarding.AdmissionPending && definition.CredentialContractID == "" {
+		return nil
 	}
 	return c.ensureBrokerRequest(ctx, auth, onboarding, definition)
 }
@@ -1164,6 +1252,9 @@ func (c *ControlPlane) refreshCredentialForm(onboarding *Onboarding) error {
 	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds {
 		return nil
 	}
+	if onboarding.BrokerRequestID != "" || onboarding.AdmissionPending && onboarding.BrokerCredentialID != "" {
+		return nil
+	}
 	now := c.now()
 	if onboarding.FormNonce != "" && now.Before(onboarding.FormExpires) {
 		return nil
@@ -1190,14 +1281,14 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	if err != nil {
 		return nil, err
 	}
+	if err := c.refreshBrokerRequest(ctx, auth, &onboarding); err != nil {
+		return nil, err
+	}
 	definition, err := c.definitionOf(onboarding)
 	if err != nil {
 		return nil, err
 	}
 	if err := rejectEscalation(definition, args); err != nil {
-		return nil, err
-	}
-	if err := c.refreshBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	if onboarding.Phase == PhaseAwaitingOAuth {
@@ -1409,6 +1500,7 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 		onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
 		onboarding.BrokerAttempts++
 		onboarding.Phase = PhaseAwaitingCreds
+		onboarding.Error = ""
 		onboarding.ConfirmationNonce = ""
 		onboarding.ConfirmationUsed = false
 		onboarding.Revision++
@@ -1722,6 +1814,9 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	if err != nil {
 		return err
 	}
+	if onboarding.AdmissionPending && onboarding.Definition != nil && onboarding.Definition.CredentialContractID != "" {
+		return fmt.Errorf("%w: contracted credentials must be submitted to Broker", ErrUnauthorized)
+	}
 	if onboarding.FormNonce == "" || nonce != onboarding.FormNonce {
 		return fmt.Errorf("%w: form nonce", ErrUnauthorized)
 	}
@@ -2029,14 +2124,22 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 		body["instructions"] = "Ask the user to open the credential URL, submit the form, then call this tool again."
 		if onboarding.AdmissionPending {
 			body["tools_confirmed"] = false
-			body["instructions"] = "The server did not answer tools/list until credentials exist. The channel notice already contains the loopback form URL on this host at 127.0.0.1:8090. Do not send a second link. Do not invent a CORS, browser-host, or blocked-port failure. Do not ask for a token in chat. The form lists the field names from the server or its connection recipe. The shortest set is open; submit only that set unless the user opens another. tools/list runs after a successful submit."
-			switch {
-			case strings.HasPrefix(onboarding.Error, "Проверяю поля"):
-				body["instructions"] = "A credential submit is being checked with the server. Tell the user to wait. Do not repeat an older form error and do not ask for a token in chat."
-			case strings.Contains(onboarding.Error, "набор") || strings.Contains(onboarding.Error, "Не заполнено") || strings.Contains(onboarding.Error, "рецепт"):
-				body["instructions"] = "The previous form submit was rejected before the server was contacted. Read error and tell the user that text. Send the current form URL from required_credentials. Do not invent a network, CORS, or host failure, and do not ask for a token in chat."
-			case strings.HasPrefix(onboarding.Error, "Проверка не прошла"):
-				body["instructions"] = "The credential check already ran. Read error and tell the user that text. Do not repeat an older rejection and do not ask for a token in chat. The form remains available from required_credentials."
+			if onboarding.BrokerContractID != "" {
+				body["instructions"] = "The server needs provider login before tools/list. Open the Credential Broker authorization_url, enter credentials there, then call status. Never ask for a session in chat."
+				if strings.HasPrefix(onboarding.Error, "Проверка не прошла") {
+					body["next_action"] = "rotate"
+					body["instructions"] = "The Broker credential failed admission. Read the recorded error; rotate this onboarding to enter a fresh credential."
+				}
+			} else {
+				body["instructions"] = "The server did not answer tools/list until credentials exist. The channel notice already contains the loopback form URL on this host at 127.0.0.1:8090. Do not send a second link. Do not invent a CORS, browser-host, or blocked-port failure. Do not ask for a token in chat. The form lists the field names from the server or its connection recipe. The shortest set is open; submit only that set unless the user opens another. tools/list runs after a successful submit."
+				switch {
+				case strings.HasPrefix(onboarding.Error, "Проверяю поля"):
+					body["instructions"] = "A credential submit is being checked with the server. Tell the user to wait. Do not repeat an older form error and do not ask for a token in chat."
+				case strings.Contains(onboarding.Error, "набор") || strings.Contains(onboarding.Error, "Не заполнено") || strings.Contains(onboarding.Error, "рецепт"):
+					body["instructions"] = "The previous form submit was rejected before the server was contacted. Read error and tell the user that text. Send the current form URL from required_credentials. Do not invent a network, CORS, or host failure, and do not ask for a token in chat."
+				case strings.HasPrefix(onboarding.Error, "Проверка не прошла"):
+					body["instructions"] = "The credential check already ran. Read error and tell the user that text. Do not repeat an older rejection and do not ask for a token in chat. The form remains available from required_credentials."
+				}
 			}
 		}
 	case PhaseAwaitingConfirm:

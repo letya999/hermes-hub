@@ -123,6 +123,11 @@ before it serves MCP. It connects to Telegram before `tools/list`, so the first
 prepare returns a protected credential request and the real tool list is
 admitted only after the owner submits a working session. `list_accounts` is
 the read probe; verify one bounded dialog/history read after enablement.
+ToolHub obtains a short-lived Broker lease for this admission probe, releases
+it and revokes its temporary grant before confirmation. Confirmation creates
+the separate owner workload grant. If admission fails, `status` records the
+error and `rotate` opens a new Broker request; the ToolHub localhost credential
+form is not used for this contracted entry.
 
 The source's `TELEGRAM_EXPOSED_TOOLS=read-only` is fixed for this prepared
 entry, with transcription off. The generic workload is per owner and the

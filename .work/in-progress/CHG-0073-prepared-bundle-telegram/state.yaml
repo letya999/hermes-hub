@@ -7,13 +7,13 @@ steps:
   - name: telegram-prepared-entry
     status: done
   - name: verification-and-documentation
-    status: in-progress
+    status: done
 evidence:
   - 12 stable IDs are discoverable; google-workspace, slack and careergo are blocked with missing contracts and no candidate ID
   - Telegram source pin and optional proxy dependency verified against the local fork and its remote commit
-  - Broker credential gate, private preflight proxy and cleanup covered by Go tests; real Docker internal-network integration passed
+  - Broker credential gate, owner-bound admission lease, temporary grant cleanup, permanent binding grant, failed-session reauth and private preflight proxy covered by Go tests; real Docker internal-network integration passed
   - just security passed with no affected Go vulnerabilities or npm audit findings
-  - just check passed on the final code with 85.02 percent own Go statement coverage
+  - just check passed with at least 85 percent own Go statement coverage
 remaining:
   - Live Telegram login and message read remain unverified; automatic execution review blocked the authorized local-session probe without a detailed reason
   - No provider write or provider revocation was exercised
