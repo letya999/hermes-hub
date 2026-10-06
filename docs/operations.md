@@ -29,6 +29,17 @@ redacted at collection time, so the combined file never stores tokens or
 passwords in plaintext. To opt out, set `diagnostics: false` in the
 infra-owning space's `agent.yaml` and run `hubctl up` again.
 
+Gateway message logs carry IDs, status and text length — never message
+bodies. Bracketed class markers (`[voice message]`, `[file message]`,
+`[credential input redacted]`) still print, so a crash or restart is
+diagnosable by `update_id`, `job_id`, `delivery_id` and status alone. When an
+incident genuinely needs message text, set `HUB_LOG_CONTENT_UNTIL` to an
+RFC3339 instant in the channel env file and restart: inside that window the
+same lines include text after the credential redactor runs, and the value is
+clamped to at most one hour ahead so a typo cannot pin capture open. Once it
+expires the lines return to `text_len=` automatically — verify by grepping a
+collected line for `text_len=` after the deadline.
+
 Users with an explicit `control-operation` grant for `diagnostics` inspect their
 own diagnostics through that ToolHub operation. It returns the caller's connector workloads plus bounded,
 redacted log lines from their runtime and workload containers. Scope comes

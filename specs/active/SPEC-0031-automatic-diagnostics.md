@@ -16,7 +16,14 @@ Frozen: 2026-09-26. Supersedes SPEC-0030's explicit-export requirement.
    100 MB; Docker and host source logs are also bounded.
 3. Service HTTP boundaries log method, bounded route and duration without
    request bodies, query strings or credential-bearing URL segments.
-4. Authorized Telegram input, including edits, and delivered text replies are
-   logged. Unknown senders are not. Credential input and one-time
-   credential-form replies are redacted to preserve the existing secret
-   handling boundary.
+4. Authorized Telegram input and delivered text replies log sender, update,
+   chat and message IDs plus text length — never the message body — so
+   incident forensics works without storing conversations. Class markers
+   (`[voice message]`, `[file message]`, `[credential input redacted]`)
+   print instead of content. Unknown senders are not logged.
+5. An explicit content-capture window, `HUB_LOG_CONTENT_UNTIL` (RFC3339,
+   clamped to at most one hour ahead), lets a diagnosed incident include
+   message text in those same lines. The window expires on its own; inside
+   it text still passes the credential redactor, so tokens and secrets
+   never log even during capture. Malformed values fail render instead of
+   silently leaving capture on.
