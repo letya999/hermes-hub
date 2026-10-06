@@ -9,16 +9,21 @@ explicit legacy alias. `render` writes generated files under
 `spaces/<user>/generated/`, `up` builds and starts the selected runtime, `down` stops
 it without deleting data, and `logs` tails the selected Compose project.
 
-Diagnostics are on by default. The shared ToolHub collects new stdout/stderr
-lines from every `hermes-*` and `work-*` Docker container across users every
-15 seconds and appends them automatically to `.local/hermes-diagnostics.txt`;
-no export command is needed. The file rolls over at 100 MB, and its small cursor file
-keeps the collector from replaying lines after restart. The host supervisor
-mirrors its own request/lifecycle logs to `.local/supervisor.log` (10 MB cap),
-which is also copied into the combined file. Compose and supervised runtimes
-retain Docker's rotating `local` logs (10 MB × 3 files per container). The
-first collection of an already running container starts with its last 1000
-lines; later cycles take at most 5000 lines per container, and one container
+Diagnostics are on by default. Each stack's ToolHub collects new
+stdout/stderr lines every 15 seconds — scoped to its own Compose project
+label plus runtime containers attached to that user's agent network — and
+appends them to `spaces/<user>/diagnostics/hermes-diagnostics.txt`. No
+export command is needed. The file rolls over at 100 MB, and its small
+cursor file keeps the collector from replaying lines after restart. Each
+`docker ps`/`docker logs` call is individually deadline-bound and one
+collection pass is capped, so a stalled daemon or an oversized log fetch
+cannot starve the cycle; stopped containers are drained once and marked,
+never retried into failure spam. The host supervisor mirrors its own
+request/lifecycle logs to `.local/supervisor.log` (10 MB cap), which each
+collector reads read-only and copies only lines naming that space's owner
+as a whole token. Compose and supervised runtimes
+retain Docker's rotating `local` logs (10 MB × 3 files per container).
+Later cycles take at most 5000 lines per container, and one container
 whose `docker logs` fails is skipped without stalling the others. Secrets are
 redacted at collection time, so the combined file never stores tokens or
 passwords in plaintext. To opt out, set `diagnostics: false` in the
@@ -303,8 +308,8 @@ runtime, ToolHub, supervisor, communication hub and Credential Broker record
 method, bounded route and duration; request bodies and query strings are not
 logged. Credential input (`KEY=value`, `/credentials`, `/broker-approve`) and
 one-time credential replies are redacted. Treat the combined file as private:
-it contains personal conversations and service output. `.local/` is ignored
-by Git; review and redact before sharing it.
+it contains personal conversations and service output. `.local/` and
+`spaces/` are ignored by Git; review and redact before sharing them.
 
 When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
 sender IDs from the configured allowlist to user scopes, writes durable jobs and replies

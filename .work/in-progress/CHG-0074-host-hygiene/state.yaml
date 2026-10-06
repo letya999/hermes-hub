@@ -1,0 +1,15 @@
+schema: 1
+change: CHG-0074-host-hygiene
+status: in-progress
+phase: implement
+started: 2026-10-07
+owner: devin
+done:
+  - '#226: removed 11 orphan harness networks (captest/hermes-supervisor/hermes-work/hermes-gateway/toolhive/test-owner) on this host; listed containers were already gone'
+  - '#226: docker-clean sweeps aged (>10min) exited residue containers (work-*, captest*, hermes-context-*, hermes-contract-*, hermes-cap-*, hermes-mgsup-*) and dangling hermes-*/captest*/toolhive-* networks (standing control/runtime nets exempt); age guard protects in-progress harnesses'
+  - '#222: collector scoped to owning compose project label + user agent network; per-call 15s deadline + 2min cycle budget; stopped containers drained once and marked; output moved to spaces/<user>/diagnostics/; host-supervisor lines filtered to owner whole-token mentions; render injects scope env + read-only supervisor.log bind'
+  - 'unit tests: diagnostics (scoping, drain-once, stall-bound, owner filter) + devcheck residue sweep green'
+next:
+  - '#224 runtime supervisor hygiene'
+  - '#223 /usage async'
+  - '#221 socket surface, #225 broker volume, #171 logging policy, #46 capacity'

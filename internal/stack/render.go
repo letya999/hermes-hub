@@ -501,7 +501,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubVolumes := []any{stateBind, dockerSock, brokerSecrets("toolhub"), brokerMaterializedMount}
 		if s.DiagnosticsEnabled() {
 			toolhubEnv["HUB_DIAGNOSTICS_DIR"] = "/diagnostics"
-			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local")), "target": "/diagnostics"})
+			toolhubEnv["HUB_DIAGNOSTICS_PROJECT"] = "hermes-hub-" + s.User + "-" + s.Environment
+			toolhubEnv["HUB_DIAGNOSTICS_AGENT_NET"] = managedAgentNetwork(s)
+			toolhubEnv["HUB_DIAGNOSTICS_OWNER"] = s.User
+			toolhubVolumes = append(toolhubVolumes,
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "diagnostics")), "target": "/diagnostics"},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "supervisor.log")), "target": "/diagnostics/supervisor.log", "read_only": true})
 		}
 		// Extra principal tokens for secondary spaces: one JSON map per deploy,
 		// mounted read-only. Rendered only when the operator wrote the file.
@@ -857,7 +862,21 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if s.RendersInfra() && s.DiagnosticsEnabled() {
-		if err := os.MkdirAll(filepath.Join(root, ".local"), 0700); err != nil {
+		// Per-user diagnostics live under the space; the repo-level .local only
+		// hosts the shared host-supervisor log, bind-mounted read-only so a
+		// missing file can never materialize as a directory inside the stack.
+		if err := os.MkdirAll(filepath.Join(dir, "diagnostics"), 0700); err != nil {
+			return err
+		}
+		localDir := filepath.Join(root, ".local")
+		if err := os.MkdirAll(localDir, 0700); err != nil {
+			return err
+		}
+		hostLog, err := os.OpenFile(filepath.Join(localDir, "supervisor.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		if err := hostLog.Close(); err != nil {
 			return err
 		}
 	}
