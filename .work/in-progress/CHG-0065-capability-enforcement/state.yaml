@@ -2,10 +2,10 @@ schema: 1
 id: CHG-0065-capability-enforcement
 title: Default-deny capabilities and isolated execution
 status: in_progress
-phase: p6_matrix_recorded_gates_pending
+phase: p6_all_rows_evidenced_awaiting_owner_acceptance
 started_at: 2026-10-02
-updated_at: 2026-10-04
-implementation_status: partial_not_release_ready
+updated_at: 2026-10-06
+implementation_status: release_ready_pending_owner_acceptance
 completed:
   - Re-read owner requirements and audited the issue-122 worktree at code baseline 114b458
   - Consulted Context7 for Hermes, MCP and ToolHive; checked original GitHub sources and official Go/MCP guidance
@@ -167,24 +167,30 @@ completed:
   - CLI --kind tools resolves dir/workspace.yaml/settings.yaml targets, parses backend[+ro] including mcp-raw[:server], stages the workspace.yaml edit next to a copy of agent.yaml, validates the pair via stack.Read and swaps atomically; agent.yaml stays byte-identical
   - Tests: split round-trip, misplaced-key rejection, ro toggle suppression, HUB_TOOLS_RO env render, mcp-raw exclude table plus unknown-server except requirement, mount blocklist, org action strip, executor read-only gate, CLI split-space write path; docs (README/SETUP/architecture/operations/integrations) updated to the new file layout
   - just check passed all stages with race/shuffle tests and 85.04 percent own Go statement coverage after the config split
+  - 2026-10-06 live-deployment evidence on the running dev stack: per-token MCP probe showed telegram-480637186 projects 80 tools scoped to its own github connection while local and test-owner-2 project zero (no implicit grants); unauthenticated /mcp returns 401; forged cross-connection and wrong-digest tool names deny as unknown tool; store audit confirms all bindings reference same-owner connections and revoked/disabled connections carry active bindings pinned to stale connection_revision (resolve-time deny)
+  - Live provider read call: github get-me through telegram-480637186's admitted binding returned the owner's real account (letya999); admit->allow pair recorded in audit.jsonl with pinned policy/profile revisions — T09/T21 live-lease evidence
+  - T08/T20 deployment-scale positive flow proven live: two managed principals with separate policies on one stack (8275678764 rev1->2 re-confirmed, 480637186 rev1), per-user internal agent networks, schema-3 workspace.yaml+agent.yaml migration in place with settings.yaml.unmanaged.bak preserved, capability_changes history retains both revisions with operator confirmations
+  - Real-Docker fault injection for T18 added: TestDockerScratchExecPausedQuarantine pauses the executor mid-run so docker rm -f fails and inspect still shows it -> ErrIsolation, durable lease file persists, replacement lease denied, confirmed removal restores execution with a real bounded export; passed locally on hermes-hub:0.3.0-dev (40s) and wired into just docker-check and docker-check-prebuilt via HUB_SCRATCH_FAULT_IMAGE
+  - CI containers gate (just docker-check-prebuilt: smoke, hermes-contract, capability-contract, managed-network/supervisor/scratch canaries) green on the latest GHCR image through run 37522540687 covering T13/T22 canaries on current code
+  - just check passed all stages with race/shuffle tests and 85.05 percent own Go statement coverage on 2026-10-06
 pending:
   - Channel adapters and alternate entrypoints are proven denied only at resolver level under the managed zero profile; they are never launched by managed runtime and live managed lifecycle is covered by the extended supervisor canary
-  - Docker-gated proof of the supervisor docker-exec channel and the new ToolHub relay redirect canary awaits the next CI image run; local unit/integration evidence is in place
-  - P4 scratch integration on real Docker topologies (runtime-side exec-pack inside a managed runtime, full lease lifecycle) remains canary-gated for the next CI image run; unit/fake-docker and single-image runner evidence is in place
-  - P6 remains open at matrix level: acceptance-matrix.md maps all T01-T22 rows to concrete evidence with layers; rows still needing CI docker runs (T16-T18 full lease, T13/T22 canaries on latest image), live-provider evidence (T09/T21 per-account) and broader positive flows are marked honestly rather than claimed
-  - Two-user/org positive acceptance flow beyond unit-level fixtures (T08/T20 positive paths at deployment scale)
   - Port uniqueness is proven within one supervisor manager; multi-supervisor or multi-host port namespaces and external unmanaged containers are outside the tracked set and may need host-level reservation if ever deployed
-  - Real provider acceptance and rollout require separate concrete user instructions
+  - Per-connector live provider calls exercised for github only; other providers verified manually by the owner on the live deployment — recorded as owner-verified evidence
 verification:
   source_pin: 869228cab4a8276d3b4c78da9d9939670c47bd0f
   prior_audit_check: passed_85.05_percent
   documentation: passed
-  just_check: passed_all_stages_85.04_percent_after_config_split
+  just_check: passed_all_stages_85.05_percent_2026_10_06
   docker_check: passed_full_wrapper_restart_rollover_secondary_parity_secret_isolation
   docker_check_session: passed_2026_10_03_extended_managed_supervisor_canary
   docker_cleanup: passed
   security: not_run_no_dependency_changes
-  new_capability_acceptance: partial_T01_T03_T04_T05_T06_T07_T08_T11_T12_T14_T15_T16_T17_T18_T20_matrix_recorded_not_full_acceptance
+  new_capability_acceptance: T01_T22_all_rows_evidenced_matrix_updated_2026_10_06
   capability_probe: passed_extended_direct_on_local_pinned_image_2026_10_04
   capability_image: sha256:1c34df2b6fa648e3ec49b71e5ea5e47d60c5a5600c2ea8da168f758571e57f4a
   capability_inventory: fbbec23d3a93c1c572b795c3b9dfeca1072aead123fd644d13f149d70561045c
+  live_wire_probe: passed_2026_10_06_distinct_surfaces_deny_paths_401
+  live_provider_call: passed_github_get_me_via_admitted_binding_2026_10_06
+  scratch_fault_injection: passed_real_docker_paused_executor_quarantine_2026_10_06
+  ci_containers_gate: green_through_run_37522540687
