@@ -16,9 +16,12 @@ evidence:
   - Fresh QR/phone challenge and expected account ID collection are documented against the selected fork and the local JobFetch example
   - just security passed with no affected Go vulnerabilities or npm audit findings
   - just check passed with at least 85 percent own Go statement coverage
+  - Selected telegram-mcp fork tests passed for send operation IDs, fake end-to-end flows and side-effect annotations (28 passed); its broader Windows runtime run had one path-format expectation failure (110 passed, 1 failed)
+  - Full local Docker images built via just docker-check; runtime smoke, Hermes contract, capability contract, managed network, supervisor, scratch workload and scratch fault canaries passed on the built images; the initial contract run exposed a test-only degraded-readiness mismatch, corrected and rerun successfully
+  - just check rerun after the integration assertion fix passed with 85.02 percent own Go statement coverage; just docker-clean completed
 remaining:
   - Live Telegram login and message read remain unverified; automatic execution review blocked the authorized local-session probe without a detailed reason
   - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
   - Send/reply/delete receipts are supported by a separate existing adapter and fixtures, not demonstrated in the prepared Broker entry or against Telegram
   - No provider write or provider revocation was exercised
-  - Prebuilt Docker gate remains unverified; GHCR image pull stalled and was interrupted
+  - GHCR prebuilt-image pull remains unverified; the corresponding local Docker build and runtime canaries passed separately
