@@ -895,6 +895,15 @@ func TestMaterializeBindingRegrantsForNewDefinitionVersion(t *testing.T) {
 	if next.DefinitionVersion != "1.0.1" || next.CredentialRevision != 2 || next.ConnectionID != "conn-existing" {
 		t.Fatalf("unexpected upgraded binding: %+v", next)
 	}
+	if _, err := store.Resolve(auth, binding.ToolBindingID); err == nil {
+		t.Fatal("previous version retained access after credential upgrade")
+	}
+	if _, err := store.Resolve(auth, next.ToolBindingID); err != nil {
+		t.Fatalf("upgraded version was not admitted: %v", err)
+	}
+	if _, err := store.Definition(stale.DefinitionID, stale.Version); err != nil {
+		t.Fatalf("previous version was not retained for rollback review: %v", err)
+	}
 	reference := store.credentials[next.CredentialRefID]
 	if reference.BrokerGrantID != "grant_2" || reference.Locator != "credential_1" {
 		t.Fatalf("new binding kept stale grant: %+v", reference)
