@@ -90,6 +90,37 @@ func TestRenderedServiceBoundaries(t *testing.T) {
 	}
 }
 
+func TestDockerSocketFollowsWorkloadSurface(t *testing.T) {
+	off := false
+	socketless := Settings{Schema: 1, Environment: "prod", User: "artem", Diagnostics: &off, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	services := Compose(socketless, "/source", "/host/spaces/artem")["services"].(M)
+	for _, name := range []string{"toolhub", "workload-controller"} {
+		for _, raw := range services[name].(M)["volumes"].([]any) {
+			if strings.Contains(fmt.Sprint(raw.(M)["source"]), "docker.sock") {
+				t.Fatalf("docker socket mounted into %s without workload features", name)
+			}
+		}
+	}
+	withWork := socketless
+	withWork.Tools = testTools("workspace", "telegram", "hh=toolhub")
+	services = Compose(withWork, "/source", "/host/spaces/artem")["services"].(M)
+	for _, name := range []string{"toolhub", "workload-controller"} {
+		found := false
+		for _, raw := range services[name].(M)["volumes"].([]any) {
+			if strings.Contains(fmt.Sprint(raw.(M)["source"]), "docker.sock") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("docker socket missing from %s with toolhub workload features", name)
+		}
+		env := services[name].(M)["environment"].(M)
+		if env["HUB_DOCKER_SCOPE"] != "hermes-hub-artem-prod" || env["HUB_DOCKER_AGENT_NET"] == "" {
+			t.Fatalf("docker scope env missing on %s: %v", name, env)
+		}
+	}
+}
+
 func TestScopeValidationAndSingleDocument(t *testing.T) {
 	for _, scope := range []Scope{
 		{Kind: "unknown", ID: "alice"},
