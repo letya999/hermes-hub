@@ -266,6 +266,15 @@ func TestLocalControllerStartFixedCommands(t *testing.T) {
 	}
 }
 
+func TestTelegramProxyConfigRejectsForeignEgress(t *testing.T) {
+	if _, err := telegramProxyConfig([]string{"10.0.0.0/8"}); err == nil {
+		t.Fatal("foreign egress accepted")
+	}
+	if _, err := telegramProxyConfig(telegramIPv4); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestContainerCIDREgress(t *testing.T) {
 	if noSymlinkPath(filepath.ToSlash(t.TempDir())) != nil || noSymlinkPath("relative") == nil {
 		t.Fatal("path normalization boundary")
