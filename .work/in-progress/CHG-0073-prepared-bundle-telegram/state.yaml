@@ -30,6 +30,8 @@ evidence:
   - On the second owner, revoke removed the advertised Telegram tools and denied the former invocation; reinstall through a new onboarding and Broker submission reached enabled and list_accounts succeeded again
   - Removing that revoked installation reached removed while the replacement stayed enabled and its live list_accounts call still succeeded
   - All 11 ready and 3 blocked prepared entries have working runbook anchors and handoffs; ready entries have exact pins and Broker contracts, while the blocked entries expose their missing evidence
+  - The running ToolHub discover operation returned all 12 requested bundle IDs: nine prepared (including the sql alias) and three blocked; optional external registry warnings did not suppress prepared results
+  - Two live Telegram workloads occupied separate Docker networks, each with private /run and /tmp tmpfs, and had no shared writable Docker mounts; both owner tokens still completed list_accounts
   - The version-upgrade regression now asserts that the old binding loses authorization, the new binding resolves, and the old definition remains available for rollback review
   - just check passed after the upgrade regression change with 85.01 percent own Go statement coverage
   - An exact URL for the fork's earlier eb7294f revision was reviewed and built in a separate onboarding, but its unprepared server exited before tools/list because it lacked required API inputs; that failed onboarding was removed, and both live owner connections still passed list_accounts afterwards
