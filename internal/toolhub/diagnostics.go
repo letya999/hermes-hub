@@ -360,10 +360,5 @@ func diagParseLine(line string, scope diagScope) (time.Time, string, string, boo
 // a substring match could leak lines about foreign containers that merely
 // extend the caller's container prefix (hermes-context-<hash>-extra).
 func mentionsContainer(line, name string) bool {
-	for _, field := range strings.Fields(line) {
-		if strings.Trim(field, `"',.;:()[]{}<>`) == name {
-			return true
-		}
-	}
-	return false
+	return diagcollect.TokenMentioned(line, name)
 }

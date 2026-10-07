@@ -216,6 +216,22 @@ func (s Settings) imageCredential() string {
 // project); only explicitly secondary spaces opt out.
 func (s Settings) RendersInfra() bool       { return s.Infra == nil || *s.Infra }
 func (s Settings) DiagnosticsEnabled() bool { return s.Diagnostics == nil || *s.Diagnostics }
+
+// usesDockerSocket reports whether the rendered surface can drive the Docker
+// engine: toolhub-managed executors, ToolHub connector workloads, the managed
+// agent channel and the diagnostics collector all consume it. A stack of
+// native and mcp-raw tools with diagnostics off mounts no socket at all.
+func (s Settings) usesDockerSocket() bool {
+	if s.CapabilityMode == "managed" || s.DiagnosticsEnabled() {
+		return true
+	}
+	for _, entry := range s.Tools {
+		if entry.Via == ToolViaToolHub || entry.Via == ToolViaMCP {
+			return true
+		}
+	}
+	return false
+}
 func (s Settings) Validate() error {
 	if s.CapabilityMode != "" && s.CapabilityMode != "managed" {
 		return fmt.Errorf("capability_mode must be managed or absent for an unmigrated deployment")

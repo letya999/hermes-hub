@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0074-host-hygiene
+status: in-progress
+phase: verify
+started: 2026-10-07
+owner: devin
+done:
+  - '#226: removed 11 orphan harness networks (captest/hermes-supervisor/hermes-work/hermes-gateway/toolhive/test-owner) on this host; listed containers were already gone'
+  - '#226: docker-clean sweeps aged (>10min) exited residue containers (work-*, captest*, hermes-context-*, hermes-contract-*, hermes-cap-*, hermes-mgsup-*) and dangling hermes-*/captest*/toolhive-* networks (standing control/runtime nets exempt); age guard protects in-progress harnesses'
+  - '#222: collector scoped to owning compose project label + user agent network; per-call 15s deadline + 2min cycle budget; stopped containers drained once and marked; output moved to spaces/<user>/diagnostics/; host-supervisor lines filtered to owner whole-token mentions; render injects scope env + read-only supervisor.log bind'
+  - '#224: truthful child-exit errors (named child + nil-err safe), gateway stop grace for upstream SIGTERM drain, stable test ports, Redact on gateway message-text logs, cliproxy /v1/models probe memoized'
+  - '#223: /usage runs async beside the poll — immediate Измеряю расход… reply, 2min background timeout, lineage capped at 4 hops with ≥N rendering'
+  - '#221: dockerscope guard on every toolhub/controller Docker op (inspect/logs/exec/rm/cp/start-stop/network/volume) by compose-project label + scope label + owning agent net + ToolHive name registry; denials audited; socket mount rendered only when the surface needs it'
+  - '#225: broker volume rendered per-env (hermes-credential-broker-<env>); legacy singleton only via explicit HUB_BROKER_STATE_VOLUME override; ADR-0026 amended'
+  - '#171: gateway logs default to IDs/status/text_len (no bodies); HUB_LOG_CONTENT_UNTIL opt-in bounded ≤1h ahead, redacted via diagnostics.Redact; malformed value fails startup'
+  - '#46: live dev-host measurement — cold 59.4s / warm-lease 0.58s / restore 78.0s / idle→removed <45s; runtime ~400MiB(1GiB cap)+8MiB ctl; per-user always-on ≈160MiB; 20-200 user model documented in docs/operations.md; NOT a Linux VPS run'
+  - 'unit tests: diagnostics scoping/drain-once, devcheck sweep, dockerscope guard, usage async/lineage cap, content-log window — all green (several under -race)'
+  - 'e2e: live supervisor lease/spawn/idle/scale-to-zero/restore on real Docker (cold 59.4s, warm 0.58s, restore 78.0s)'
+  - 'e2e: real-Docker integration tests — dockerscope denies 12 foreign ops + allows labelled/agent-net/missing; collector drains only project-owned container'
+  - 'e2e: render verified — managed space gets 2 socket mounts + scope env + RO supervisor.log bind; diagnostics:false space gets 0 socket mounts; broker-state=hermes-credential-broker-dev (external, created on host)'
+  - 'CI run 37578949989 on tip db08de4 green: checks + image dev/prod/stt/tts + containers dev/prod'
+  - 'e2e: live dev stack re-rendered and recreated — toolhub/workload-controller run with HUB_DOCKER_SCOPE; communication-hub healthy; collector writes spaces/<u>/diagnostics/ (project-scoped, no foreign names); broker migrated to hermes-credential-broker-dev (volume bootstrapped from the legacy singleton — content copy, rollback = HUB_BROKER_STATE_VOLUME pin)'
+  - 'e2e: stack recreated on the CI image (ghcr sha-db08de4a…-dev + -dev-control) — all 11 services up with the new code in containers; found dev-side store seam: invalid proxy_environment names (TELEGRAM_PROXY_HOST/PORT) crash-looped toolhub, migrated records to environment, documented'
+  - 'host fix: Windows Credential Manager was full (770 stale device-key.device_* creds) breaking docker login; cleaned, login works'
+  - 'note: a concurrent render from the sibling worktree (codex/issues-39-115-telegram) regenerated the space compose on ITS schema (telegram_auth) — my worktree cannot render that space; the stack keeps running the branch-built image (old image was GC-reaped mid-pull), all services healthy'
+next:
+  - 'issues remain OPEN until merged; compose.dev.yaml.bak + store.json.bak kept as rollback artifacts; telegram-branch side should re-render/rebuild when it deploys'

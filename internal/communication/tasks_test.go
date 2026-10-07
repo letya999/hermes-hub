@@ -371,6 +371,81 @@ func TestUsageCommandRendersMeasuredFields(t *testing.T) {
 	}
 }
 
+func TestUsageCommandMarksTruncatedLineage(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &usageStubRunner{report: hubruntime.SessionUsage{
+		SessionFound: true, Compactions: int64ptr(4), CompactionsTruncated: true,
+	}}
+	g.runner = runner
+	user := g.user("alice")
+	task, err := g.spool.ResolveTask(user, 11, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "Сжатий сессии: ≥4") {
+		t.Fatalf("capped lineage not marked: %s", got)
+	}
+}
+
+type blockingUsageRunner struct {
+	fakeRunner
+	release  chan struct{}
+	finished chan struct{}
+	report   hubruntime.SessionUsage
+}
+
+func (b *blockingUsageRunner) SessionUsage(_ context.Context, _ hubruntime.ExecuteRequest) (hubruntime.SessionUsage, error) {
+	<-b.release
+	close(b.finished)
+	return b.report, nil
+}
+
+// A slow /usage measurement must not hold the update poll: handleUpdate
+// returns with an ack and the report arrives as a second delivery.
+func TestUsageUpdateRunsBesideUpdatePoll(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	runner := &blockingUsageRunner{release: make(chan struct{}), finished: make(chan struct{}),
+		report: hubruntime.SessionUsage{SessionFound: true, InputTokens: int64ptr(3)}}
+	g.api, g.runner = fake, runner
+	ctx := context.Background()
+	user := g.user("alice")
+	if _, err := g.spool.ResolveTask(user, 11, 0, true); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/usage", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("/usage blocked the update poll for %s", elapsed)
+	}
+	g.deliverOne(ctx)
+	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "Измеряю расход") {
+		t.Fatalf("no immediate ack: %v", fake.sent)
+	}
+
+	close(runner.release)
+	<-runner.finished
+	deadline := time.Now().Add(5 * time.Second)
+	for len(fake.sent) < 2 && time.Now().Before(deadline) {
+		g.deliverOne(ctx)
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(fake.sent) != 2 || !strings.Contains(fake.sent[1], "Расход сессии: вход 3") {
+		t.Fatalf("async usage report not delivered: %v", fake.sent)
+	}
+}
+
 func TestTaskUseByNameSwitchesCurrent(t *testing.T) {
 	c := testConfig(t)
 	g, err := New(c)

@@ -345,6 +345,9 @@ func envOr(name, fallback string) string {
 // fails closed.
 func agentBackendFromEnv() ToolBackend {
 	docker := envOr("HUB_DOCKER_BIN", "docker")
+	// The docker socket sees every host container; scope checks keep exec,
+	// inspect and lifecycle ops inside this stack's own project.
+	SetDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"))
 	// Durable executor leases sit next to the ToolHub store: a restart keeps
 	// quarantining bindings whose sandbox stop was never confirmed.
 	if store := os.Getenv("HUB_TOOLHUB_STORE"); store != "" {

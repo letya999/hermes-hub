@@ -377,6 +377,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeService["command"] = []string{"idle"}
 	}
 	runtimeService["healthcheck"] = M{"test": []string{"CMD", "hub-runtime", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
+	// The inner Python gateway freezes its event loop for up to ~15s while
+	// stopping MCP servers on SIGTERM (upstream known issue); under Docker's
+	// default 10s grace it is SIGKILLed and the lifecycle ledger records a
+	// false UNCLEAN death on every routine restart.
+	runtimeService["stop_grace_period"] = "30s"
 	if s.CapabilityMode == "managed" {
 		runtimeService["networks"] = []string{managedAgentNetwork(s)}
 	}
@@ -498,10 +503,21 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
 			toolhubEnv[key] = value
 		}
-		toolhubVolumes := []any{stateBind, dockerSock, brokerSecrets("toolhub"), brokerMaterializedMount}
+		dockerScope := "hermes-hub-" + s.User + "-" + s.Environment
+		toolhubEnv["HUB_DOCKER_SCOPE"] = dockerScope
+		toolhubEnv["HUB_DOCKER_AGENT_NET"] = managedAgentNetwork(s)
+		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount}
+		if s.usesDockerSocket() {
+			toolhubVolumes = append(toolhubVolumes, dockerSock)
+		}
 		if s.DiagnosticsEnabled() {
 			toolhubEnv["HUB_DIAGNOSTICS_DIR"] = "/diagnostics"
-			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local")), "target": "/diagnostics"})
+			toolhubEnv["HUB_DIAGNOSTICS_PROJECT"] = "hermes-hub-" + s.User + "-" + s.Environment
+			toolhubEnv["HUB_DIAGNOSTICS_AGENT_NET"] = managedAgentNetwork(s)
+			toolhubEnv["HUB_DIAGNOSTICS_OWNER"] = s.User
+			toolhubVolumes = append(toolhubVolumes,
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "diagnostics")), "target": "/diagnostics"},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "supervisor.log")), "target": "/diagnostics/supervisor.log", "read_only": true})
 		}
 		// Extra principal tokens for secondary spaces: one JSON map per deploy,
 		// mounted read-only. Rendered only when the operator wrote the file.
@@ -526,8 +542,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		controller := cloneMap(common)
 		controller["image"] = toolhub["image"]
 		controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
-		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HOME": "/tmp", "TZ": s.Timezone}
-		controller["volumes"] = []any{stateBind, dockerSock, brokerMaterializedMount}
+		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
+		controllerVolumes := []any{stateBind, brokerMaterializedMount}
+		if s.usesDockerSocket() {
+			controllerVolumes = append(controllerVolumes, dockerSock)
+		}
+		controller["volumes"] = controllerVolumes
 		controller["ports"] = []string{"127.0.0.1:8545:8545"}
 		services["workload-controller"] = controller
 
@@ -741,7 +761,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 	if infra {
 		volumes["communication-hub-data"] = M{}
-		volumes["broker-state"] = M{"external": true, "name": "hermes-credential-broker-real-prod-20260918"}
+		// The broker store is a singleton per environment, not per host: a dev
+		// stack must never attach prod credential material. Operators migrating
+		// the pre-split volume set HUB_BROKER_STATE_VOLUME to its legacy name.
+		brokerState := "hermes-credential-broker-" + s.Environment
+		if override := strings.TrimSpace(os.Getenv("HUB_BROKER_STATE_VOLUME")); override != "" {
+			brokerState = override
+		}
+		volumes["broker-state"] = M{"external": true, "name": brokerState}
 		volumes["broker-materialized"] = M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
@@ -873,7 +900,21 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if s.RendersInfra() && s.DiagnosticsEnabled() {
-		if err := os.MkdirAll(filepath.Join(root, ".local"), 0700); err != nil {
+		// Per-user diagnostics live under the space; the repo-level .local only
+		// hosts the shared host-supervisor log, bind-mounted read-only so a
+		// missing file can never materialize as a directory inside the stack.
+		if err := os.MkdirAll(filepath.Join(dir, "diagnostics"), 0700); err != nil {
+			return err
+		}
+		localDir := filepath.Join(root, ".local")
+		if err := os.MkdirAll(localDir, 0700); err != nil {
+			return err
+		}
+		hostLog, err := os.OpenFile(filepath.Join(localDir, "supervisor.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		if err := hostLog.Close(); err != nil {
 			return err
 		}
 	}
