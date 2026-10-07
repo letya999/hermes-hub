@@ -726,6 +726,11 @@ The supervisor URL must be reachable from both the host CLI and the gateway cont
 configure its listener on the intended private interface and provide
 `HUB_SUPERVISOR_AUTH` to the CLI and Compose invocation. The default loopback listener
 alone is not reachable from a Docker container through `host.docker.internal`.
+Give each local Hub installation its own supervisor port. A port occupied by another
+installation may answer health checks but reject this gateway's bearer with HTTP 401;
+the containers can still appear healthy while every bot job fails before Hermes starts.
+When changing ports, update the selected `supervisor_url`, render the context again,
+and recreate Communication Hub and ToolHub so both use the new address.
 The supervisor creates its runtime network on demand; runtime ports stay loopback-only.
 
 For rollback, drain and stop the selected context again and select
