@@ -10,7 +10,7 @@ steps:
   - name: local-docker-check
     status: done
   - name: live-account-acceptance
-    status: pending
+    status: done
   - name: qr-handoff-image-refresh
     status: done
 evidence:
@@ -21,7 +21,7 @@ evidence:
   - staged secret scan found no leaks
   - opt-in dev image built and Communication Hub, ToolHub and Credential Broker started from the new images
   - local gateway port 127.0.0.1:8081 responds; nonexistent Telegram invitation returns 404
-  - fresh QR scan, account login and live Telegram MCP admission require the account owner and remain unverified
+  - owner scanned the QR and saved a fresh personal session; Broker accepted it and ToolHub reached awaiting-confirm
   - fixed the prepare continuation that followed a native QR invitation with a Broker form link; HTTP regression and tagged race suite pass
   - just check passed for the fix with 85.00 percent own Go statement coverage
   - local dev gateway runs the updated binary through a temporary read-only mount; a fresh QR invitation was delivered and its page returned HTTP 200
@@ -31,3 +31,5 @@ evidence:
   - reused the existing job_ftch application API pair only in the ignored local Communication Hub env; the owner session is still a fresh QR login
   - optional server-side API pair now starts QR after browser claim without asking the owner to enter app credentials
   - a separate ignored telegram-auth.dev.env survives hubctl regeneration; restarted container sees the configured API pair and delivered a fresh invitation
+  - stale workload-controller container rejected Telegram proxy host and port names; recreated it from the already built current control image
+  - ToolHub confirm and enable reached enabled; live list_accounts, list_chats(limit=1) and get_history(limit=1) returned successfully without exposing chat contents
