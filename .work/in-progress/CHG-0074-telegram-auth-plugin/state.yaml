@@ -8,10 +8,15 @@ steps:
   - name: tests-and-gates
     status: done
   - name: local-docker-check
-    status: in-progress
+    status: done
+  - name: live-account-acceptance
+    status: pending
 evidence:
   - just check passed with 85.01 percent own Go statement coverage
   - just security passed with no reachable Go vulnerabilities and no npm audit findings
   - tagged Communication Hub race tests and staticcheck passed
   - Credential Broker Linux race suite and OpenAPI drift check passed
   - staged secret scan found no leaks
+  - opt-in dev image built and Communication Hub, ToolHub and Credential Broker started from the new images
+  - local gateway port 127.0.0.1:8081 responds; nonexistent Telegram invitation returns 404
+  - fresh QR scan, account login and live Telegram MCP admission require the account owner and remain unverified

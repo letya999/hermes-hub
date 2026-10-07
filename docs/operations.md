@@ -457,7 +457,11 @@ classic builder.
 
 Pass service names after the flags to build or restart only those services,
 for example `hubctl up --dir spaces/alice --env dev communication-hub toolhub`.
-This keeps unrelated speech and media images out of a gateway-only rebuild.
+Scoped `up` skips dependencies; select them explicitly if they also need a
+restart. This keeps unrelated runtime, speech and media images out of a
+gateway-only rebuild. After a successful `hubctl build` of the selected
+services, `hubctl up --no-build` starts those existing images without another
+build attempt.
 
 Rebuilds of the tagged hub image used to leave the superseded generation
 dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove

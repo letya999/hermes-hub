@@ -532,6 +532,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["workload-controller"] = controller
 
 		broker := cloneMap(common)
+		if s.Has("telegram_auth") {
+			broker["image"] = "hermes-hub-telegram-auth:0.3.0-" + s.Environment
+		}
 		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
 		// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
 		// controller without exposing Broker's encrypted store to MCP workloads.

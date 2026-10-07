@@ -420,9 +420,13 @@ func TestTelegramAuthUsesOptionalSingleProcessGatewayImage(t *testing.T) {
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	gw := Compose(s, "/source", "/space")["services"].(M)["communication-hub"].(M)
+	services := Compose(s, "/source", "/space")["services"].(M)
+	gw := services["communication-hub"].(M)
 	if gw["entrypoint"].([]string)[0] != "communication-hub" || gw["build"].(M)["target"] != "dev-telegram-auth" || gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
 		t.Fatalf("optional auth image not selected: %#v", gw)
+	}
+	if services["credential-broker"].(M)["image"] != gw["image"] {
+		t.Fatal("Telegram Broker endpoint must run from the built optional image")
 	}
 	s.Tools = testTools("workspace")
 	s.Ingress = testIngress("workspace")
