@@ -185,9 +185,25 @@ the workload, and `remove` cleans the installation. In Telegram Devices,
 terminate the old device session after local revoke; Broker revoke alone
 cannot invalidate MTProto authorization at Telegram. Upgrade by changing the
 reviewed commit explicitly, retaining the old artifact/review digest for
-rollback, then repeating admission and read verification. No Telegram send,
-reply or delete is granted by this prepared entry; those effects use the
-separate explicitly granted Telegram account write definition.
+rollback, then repeating admission and read verification. The prepared entry
+defaults to reads. On an explicit user request to enable sending, call
+`prepare_source` with `{"onboarding_id":"<enabled Telegram onboarding>","telegram_send":true}`.
+This reviews the same pinned artifact with `TELEGRAM_EXPOSED_TOOLS=read-only+send_message`
+using a temporary owner-bound Broker lease. It retains the existing session;
+no QR login, session export or credential submission is needed. Only
+`send_message` may be added; read tools, image, entrypoint and credential
+contract must remain identical. Confirm the returned nonce and call `enable`
+for the new onboarding ID. The existing connection receives a new binding
+grant and the old binding loses authorization. A failed probe leaves the
+working read connection intact. Concurrent retries reuse one upgrade.
+Use the new onboarding ID for subsequent lifecycle operations.
+
+Test an explicitly authorized send to Saved Messages (`chat_id: "me"`) with a
+unique `operation_id` and verify its provider message-ID receipt. Retrying
+the same operation ID uses Telegram's deduplication. Other recipients need
+the user's actual sending instruction. Reply and delete remain unavailable
+through this prepared mode; the separate Telegram account write definition
+describes those broader effects.
 
 Handoff: “Install the pinned `letya999/telegram-mcp` personal connector with
 `prepare_source`. I will enter API ID, API hash, a separate StringSession and

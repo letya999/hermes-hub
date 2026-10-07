@@ -150,6 +150,9 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 }
 
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
+	if _, requested := args["telegram_send"]; requested {
+		return c.prepareTelegramSend(ctx, auth, args)
+	}
 	requestKey := argString(args, "request_key")
 	if requestKey != "" {
 		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != PhaseFailed && existing.Phase != PhaseRemoved {

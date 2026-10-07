@@ -1,10 +1,10 @@
 schema: 1
 id: CHG-0066-task-sessions
 title: Task sessions and Telegram DM topics (issue 167)
-status: in_progress
-phase: verification
+status: complete
+phase: closed
 started_at: 2026-10-04
-updated_at: 2026-10-04
+updated_at: 2026-10-06
 completed:
   - branch feat/tasks-style-usage-167 off dev
   - audited gateway/spool/stream/runtime/supervisor paths; sessionIDFor makes
@@ -25,5 +25,9 @@ completed:
   - just check green (85.05% >= 85%); docs/operations.md updated
   - docker-check green: image build, runtime+supervisor smoke, real pinned
     Hermes 0.21.0 contract probe (hub-stt fixture skipped, pre-existing)
-pending:
-  - live Telegram DM-topics smoke requires a real bot — not claimed from mocks
+pending: []
+closed:
+  - live deployment evidence: real bot runs per-task Hermes sessions with
+    distinct titles/usage (e.g. image-generation task session), /new /sessions
+    /use exercised live, two Telegram users isolated
+  - issue 167 closed 2026-10-06 with evidence comment

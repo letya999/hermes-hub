@@ -8,7 +8,14 @@ steps:
     status: done
   - name: verification-and-documentation
     status: done
+  - name: existing-session-send-upgrade
+    status: done
 evidence:
+  - The repaired managed-profile upgrade was deployed through hubctl build and up; live authenticated tools/list admitted 57 unchanged reads plus send_message using the existing Broker credential, without QR or credential submission
+  - The owner-approved Saved Messages send completed through the projected MCP tool with a confirmed provider receipt and message ID; a subsequent list_accounts call succeeded, the Broker credential ID stayed unchanged, the foreign owner upgrade was denied, and the other owner's Telegram projection remained empty
+  - Final just check passed with race/shuffle, format, vet, staticcheck, docs and actionlint at 85.01 percent own Go statement coverage; managed and legacy profiles and persisted JSON schema formatting are covered by the send regression tests
+  - Existing-session send upgrade regression passed for owner-bound Broker grants, foreign-owner denial, failed-probe cleanup with the read binding intact, concurrent retry reuse, exact read contract preservation, restricted send-only addition and immutable version cutover
+  - just check passed after the send upgrade with 85.01 percent own Go statement coverage; no dependencies changed
   - Requirement-by-requirement acceptance and the remaining live upgrade gap are recorded in acceptance.md
   - 12 stable IDs are discoverable; google-workspace, slack and careergo are blocked with missing contracts and no candidate ID
   - Telegram source pin and optional proxy dependency verified against the local fork and its remote commit
@@ -40,6 +47,5 @@ evidence:
 remaining:
   - A live upgrade to a different reviewed Telegram source pin remains unverified; origin HEAD is still the current 26f1632 pin, and an older unprepared pin cannot substitute for the reviewed Broker contract
   - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
-  - The prepared Broker entry remains read-only; the live write receipts above use the separate explicit-write adapter, not a prepared Broker write binding
   - Provider-side session termination was not exercised; local revoke does not invalidate a Telegram device session
   - GHCR prebuilt-image pull remains unverified; the corresponding local Docker build and runtime canaries passed separately

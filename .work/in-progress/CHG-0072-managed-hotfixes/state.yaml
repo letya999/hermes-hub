@@ -45,8 +45,14 @@ done:
   - rebuild attempt 2 failed same fetch (HTTP/2 cancel at 710s); attempt 3 failed on corrupted Silero zip (PytorchStreamReader central directory) — degraded network truncates long streams; github.com reachable but slow (~200kB/s effective, 10s TTFB)
   - build hardening: docker/Dockerfile git fetches (hermes-agent + CLIProxyAPI) forced to HTTP/1.1 with 4-try loop; Dockerfile.tts silero load retries ×4 with torch hub cache reset; piper/voices curl --retry 4 --retry-all-errors
   - rebuild attempt 4: HTTP/1.1 fetch fix proven (hermes-agent fetched first-try in 174s, uv sync 511s done, hub-tts image exported) but failed at Dockerfile:57 npm ci ECONNRESET — same degraded network; hardened npm ci + stt/tts pip installs with the same ×4 retry loop
+  - rebuild attempt 5 succeeded (~35min): all 11 stack containers + 3 owner relays healthy on new images; host supervisor swapped to new hubctl binary (PID swapped via .tmpgen)
+  - live verified on new deploy: /v1/usage stopped-runtime spawn 47.4s -> session_found; /v1/artifact served real PDF (160397B, %PDF-1.4) in 435ms; instruction string + runstarts code present in deployed binaries
+  - pushed feat/session-ux-quota to origin (commit e73dce8); CI dispatched via workflow_dispatch — all 4 image jobs + both containers gates green, images published to GHCR; checks job failed on coverage 84.99% < 85% (shuffle-dependent margin)
+  - coverage bump: TestServeSTTWorkerErrorSurfaces/SpawnFailure/CancelBeforeSend added -> local 85.05%; pushed dff025f + redispatched CI
+  - flake noted: TestMediaBrokerResolverErrors fails intermittently under -race -shuffle ('lease not released' after 32s) — broker code untouched, passes isolated and same-seed; pre-existing timing flake
+  - deleted stray artifacts nul + toolhub.exe before commit
   - docs updated: architecture.md (run-start markers under recovery; instruction-injected artifact contract) + SPEC-0037 (markers restore scan window, MEDIA: bare-name + $HOME-remap resolution, instruction-injection rationale)
 next:
-  - finish rebuild+redeploy (attempt 5 in progress, apt cold again), then Telegram round-trip: attach existing file via MEDIA:, fresh PDF auto-delivers
-  - after deploy: commit + push branch so CI (ci.yml image matrix dev/prod/stt/tts + *-control, gha cache) publishes GHCR images — future changes ride just docker-pull instead of ~50min cold local builds
+  - await CI run 37519185327 (checks should now pass with coverage bump); images already published from first run
+  - Telegram round-trip: attach existing file via MEDIA:, fresh PDF auto-delivers from artifacts/
   - residual: host disk ~95% full keeps hermes_readiness=degraded; docker_data.vhdx ~120GB cannot shrink (WSL sparse disabled)
