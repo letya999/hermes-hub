@@ -26,8 +26,11 @@ evidence:
   - Current just check passed race/shuffle tests, format, vet, staticcheck, docs and actionlint with 85.00 percent own Go statement coverage
   - Real Docker two-owner generic workload gate passed: one immutable image with separate credentials, state volumes and networks, plus cross-owner denial and revoke; this does not substitute for a second live Telegram account
   - The pinned standalone Telegram account adapter used the owner-approved low-value JobFetch session to send a self-message, reply and delete both in Saved Messages through restricted Docker egress; Telegram returned message-ID receipts and two deletion pts receipts, and the temporary credential file was cleared and removed
+  - A second live Telegram owner used the pinned source through the same ToolHub and Broker flow: credentials were submitted through the local protected form, the connection reached enabled, and list_accounts/get_me succeeded; access to the first owner's onboarding was denied
+  - On the second owner, revoke removed the advertised Telegram tools and denied the former invocation; reinstall through a new onboarding and Broker submission reached enabled and list_accounts succeeded again
+  - After the bot's 15:25 task failure, the own supervisor and runtime recovered; the bot completed the account-list request at 15:29 and a follow-up request for recent outgoing messages at 15:37 through the live MCP connection
 remaining:
-  - Revoke/reinstall/upgrade and two-owner isolation need an issue-specific acceptance record; generic fixtures and one owner read do not prove the full Telegram lifecycle
+  - A live upgrade to a different reviewed Telegram source pin remains unverified; generic upgrade fixtures passed but no newer approved source pin is available
   - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
   - The prepared Broker entry remains read-only; the live write receipts above use the separate explicit-write adapter, not a prepared Broker write binding
   - Provider-side session termination was not exercised; local revoke does not invalidate a Telegram device session
