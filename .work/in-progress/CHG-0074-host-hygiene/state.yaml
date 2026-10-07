@@ -22,5 +22,6 @@ done:
   - 'e2e: live dev stack re-rendered and recreated — toolhub/workload-controller run with HUB_DOCKER_SCOPE; communication-hub healthy; collector writes spaces/<u>/diagnostics/ (project-scoped, no foreign names); broker migrated to hermes-credential-broker-dev (volume bootstrapped from the legacy singleton — content copy, rollback = HUB_BROKER_STATE_VOLUME pin)'
   - 'e2e: stack recreated on the CI image (ghcr sha-db08de4a…-dev + -dev-control) — all 11 services up with the new code in containers; found dev-side store seam: invalid proxy_environment names (TELEGRAM_PROXY_HOST/PORT) crash-looped toolhub, migrated records to environment, documented'
   - 'host fix: Windows Credential Manager was full (770 stale device-key.device_* creds) breaking docker login; cleaned, login works'
+  - 'note: a concurrent render from the sibling worktree (codex/issues-39-115-telegram) regenerated the space compose on ITS schema (telegram_auth) — my worktree cannot render that space; the stack keeps running the branch-built image (old image was GC-reaped mid-pull), all services healthy'
 next:
-  - 'issues remain OPEN until merged; compose.dev.yaml.bak + store.json.bak kept as rollback artifacts'
+  - 'issues remain OPEN until merged; compose.dev.yaml.bak + store.json.bak kept as rollback artifacts; telegram-branch side should re-render/rebuild when it deploys'
