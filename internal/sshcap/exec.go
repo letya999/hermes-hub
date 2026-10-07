@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -74,13 +75,16 @@ func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult,
 	}
 	limit := h.outputLimit()
 	var outBuf, errBuf bytes.Buffer
-	waitOut := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(2)
 	go func() {
+		defer readers.Done()
 		_, _ = io.Copy(&outBuf, io.LimitReader(stdout, limit+1))
-		close(waitOut)
 	}()
-	_, _ = io.Copy(&errBuf, io.LimitReader(stderr, limit+1))
-	<-waitOut
+	go func() {
+		defer readers.Done()
+		_, _ = io.Copy(&errBuf, io.LimitReader(stderr, limit+1))
+	}()
 	done := make(chan error, 1)
 	go func() { done <- session.Wait() }()
 	var waitErr error
@@ -88,7 +92,12 @@ func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult,
 	case waitErr = <-done:
 	case <-ctx.Done():
 		_ = session.Close()
+		_ = client.Close()
 		<-done
+		waitErr = ctx.Err()
+	}
+	readers.Wait()
+	if ctx.Err() != nil && waitErr == nil {
 		waitErr = ctx.Err()
 	}
 	truncated := outBuf.Len() > int(limit) || errBuf.Len() > int(limit)
