@@ -470,7 +470,7 @@ released images and cap the local BuildKit cache at 8 GB. They leave running
 containers, named volumes and other projects' containers intact; the cache
 cap applies to the selected shared Docker builder. `just docker-clean` (also the last step of
 `just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
-`spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
+`spaces/*/compose*.yaml` or `spaces/*/generated/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
 dangling image layers and orphan `hermes-build-*` containers/networks/volumes.
 Ordinary cleanup caps the local BuildKit cache at 8 GB; `just docker-clean --deep`
 fully prunes it and additionally drops

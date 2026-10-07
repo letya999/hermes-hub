@@ -161,6 +161,20 @@ func TestDockerCleanPropagatesListingErrors(t *testing.T) {
 	if err := dockerClean(context.Background(), ancestorFails, map[string]bool{"test": true}, false); err != nil {
 		t.Fatal(err)
 	}
+	for _, check := range []struct {
+		command string
+		deep    bool
+	}{{"buildx", false}, {"builder", true}} {
+		failsOnPrune := func(_ context.Context, args ...string) ([]byte, error) {
+			if args[0] == check.command {
+				return nil, fmt.Errorf("prune failed")
+			}
+			return nil, nil
+		}
+		if err := dockerClean(context.Background(), failsOnPrune, map[string]bool{"test": true}, check.deep); err == nil {
+			t.Fatalf("%s prune failure accepted", check.command)
+		}
+	}
 }
 
 func TestDockerCleanPropagatesTagScanError(t *testing.T) {
@@ -170,15 +184,6 @@ func TestDockerCleanPropagatesTagScanError(t *testing.T) {
 	}
 	if err := DockerClean(context.Background(), root, false); err == nil {
 		t.Fatal("unreadable compose layout accepted")
-	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker CLI unavailable")
-	}
-	if _, err := cliDocker(context.Background(), "info", "--format", "{{.ServerVersion}}"); err != nil {
-		t.Skip("docker daemon unavailable")
-	}
-	if err := DockerClean(context.Background(), t.TempDir(), false); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -264,11 +269,18 @@ func TestActiveImageTagsKeepsComposeReferences(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(space, "compose.prod.yml"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
+	generated := filepath.Join(space, "generated")
+	if err := os.MkdirAll(generated, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "compose.dev.yaml"), []byte("services:\n  runtime:\n    image: hermes-hub:0.3.0-dev\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	keep, err := activeImageTags(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !keep["9.9.9-prod"] || !keep["test"] || keep["1"] {
+	if !keep["9.9.9-prod"] || !keep["0.3.0-dev"] || !keep["test"] || keep["1"] {
 		t.Fatalf("unexpected keep set: %v", keep)
 	}
 	broken := filepath.Join(root, "spaces", "broken")
