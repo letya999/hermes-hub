@@ -21,8 +21,12 @@ evidence:
   - just check rerun after the integration assertion fix passed with 85.02 percent own Go statement coverage; just docker-clean completed
   - Optional telegram-account adapter image built from the selected pinned fork; its five no-network account/receipt tests passed inside the read-only container, and the image reports the exact pinned commit; no provider account was used
   - Separate Telegram write definition now describes send/reply/delete and its explicit grant and provider receipt accurately
+  - Owner completed a fresh QR login for the prepared Telegram connection; ToolHub reached enabled and live list_accounts, list_chats and get_history calls succeeded without recording message contents
+  - After moving this dev stack off an unrelated supervisor on port 8876, the bot completed a real Telegram MCP account-list request through its own supervisor on port 8877; ToolHub admitted the call and the gateway delivered the reply
+  - Current just check passed race/shuffle tests, format, vet, staticcheck, docs and actionlint with 85.00 percent own Go statement coverage
+  - Real Docker two-owner generic workload gate passed: one immutable image with separate credentials, state volumes and networks, plus cross-owner denial and revoke; this does not substitute for a second live Telegram account
 remaining:
-  - Live Telegram login and message read remain unverified; automatic execution review blocked the authorized local-session probe without a detailed reason
+  - Restart/reconnect/revoke/reinstall/upgrade and two-owner isolation need an issue-specific acceptance record; generic fixtures and one owner read do not prove the full Telegram lifecycle
   - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
   - Send/reply/delete receipts are supported by a separate existing adapter and fixtures, not demonstrated in the prepared Broker entry or against Telegram
   - No provider write or provider revocation was exercised
