@@ -32,9 +32,10 @@ evidence:
   - All 11 ready and 3 blocked prepared entries have working runbook anchors and handoffs; ready entries have exact pins and Broker contracts, while the blocked entries expose their missing evidence
   - The version-upgrade regression now asserts that the old binding loses authorization, the new binding resolves, and the old definition remains available for rollback review
   - just check passed after the upgrade regression change with 85.01 percent own Go statement coverage
+  - An exact URL for the fork's earlier eb7294f revision was reviewed and built in a separate onboarding, but its unprepared server exited before tools/list because it lacked required API inputs; that failed onboarding was removed, and both live owner connections still passed list_accounts afterwards
   - After the bot's 15:25 task failure, the own supervisor and runtime recovered; the bot completed the account-list request at 15:29 and a follow-up request for recent outgoing messages at 15:37 through the live MCP connection
 remaining:
-  - A live upgrade to a different reviewed Telegram source pin remains unverified; generic upgrade fixtures passed but no newer approved source pin is available
+  - A live upgrade to a different reviewed Telegram source pin remains unverified; origin HEAD is still the current 26f1632 pin, and an older unprepared pin cannot substitute for the reviewed Broker contract
   - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
   - The prepared Broker entry remains read-only; the live write receipts above use the separate explicit-write adapter, not a prepared Broker write binding
   - Provider-side session termination was not exercised; local revoke does not invalidate a Telegram device session
