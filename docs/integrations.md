@@ -81,8 +81,11 @@ per call and wiped by Go after execution; there is no unattended login.
 
 `connector revoke` immediately blocks local calls and revokes ciphertext.
 To invalidate the imported session at Telegram itself, explicitly terminate
-it in Telegram Devices. Telegram does not use OAuth refresh. Neither fixtures
-nor the Docker SDK tests establish live login, sending or provider revocation.
+it in Telegram Devices. Telegram does not use OAuth refresh. The pinned adapter
+has completed a live self-message send, reply and deletion through restricted
+Docker egress on a separate owner-approved account, with message-ID and deletion
+`pts` receipts. This does not validate write access through the read-only prepared
+Broker entry or provider-side session termination.
 
 ## ToolHub command boundary
 

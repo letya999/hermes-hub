@@ -25,9 +25,10 @@ evidence:
   - After moving this dev stack off an unrelated supervisor on port 8876, both Communication Hub and ToolHub were recreated while the Telegram binding stayed enabled; the bot then completed a real account-list request through its own supervisor on port 8877, proving this restart/reconnect path
   - Current just check passed race/shuffle tests, format, vet, staticcheck, docs and actionlint with 85.00 percent own Go statement coverage
   - Real Docker two-owner generic workload gate passed: one immutable image with separate credentials, state volumes and networks, plus cross-owner denial and revoke; this does not substitute for a second live Telegram account
+  - The pinned standalone Telegram account adapter used the owner-approved low-value JobFetch session to send a self-message, reply and delete both in Saved Messages through restricted Docker egress; Telegram returned message-ID receipts and two deletion pts receipts, and the temporary credential file was cleared and removed
 remaining:
   - Revoke/reinstall/upgrade and two-owner isolation need an issue-specific acceptance record; generic fixtures and one owner read do not prove the full Telegram lifecycle
   - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
-  - Send/reply/delete receipts are supported by a separate existing adapter and fixtures, not demonstrated in the prepared Broker entry or against Telegram
-  - No provider write or provider revocation was exercised
+  - The prepared Broker entry remains read-only; the live write receipts above use the separate explicit-write adapter, not a prepared Broker write binding
+  - Provider-side session termination was not exercised; local revoke does not invalidate a Telegram device session
   - GHCR prebuilt-image pull remains unverified; the corresponding local Docker build and runtime canaries passed separately
