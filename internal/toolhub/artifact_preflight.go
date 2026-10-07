@@ -28,6 +28,9 @@ func PreflightImportedArtifact(ctx context.Context, imported ImportedArtifact, a
 	if _, err := storedArtifactLoader(ctx, artifactsDir, imported.Artifact.ArchiveDigest, imported.Definition.Source.Image, 8<<30); err != nil {
 		return ImportedArtifact{}, ConfirmedToolContract{}, err
 	}
+	if err := preparedCredentialGate(ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA, Subfolder: imported.Definition.Source.Subfolder}); err != nil {
+		return imported, ConfirmedToolContract{}, err
+	}
 	listCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	if prepared, ok, _ := preparedForSource(ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA, Subfolder: imported.Definition.Source.Subfolder}); ok && prepared.PreflightNetwork {
@@ -67,6 +70,9 @@ func PreflightPublishedArtifact(ctx context.Context, imported ImportedArtifact) 
 	}
 	if err := publishedImagePull(ctx, imported.Definition.Source.Image, imported.Definition.Source.Digest); err != nil {
 		return ImportedArtifact{}, ConfirmedToolContract{}, err
+	}
+	if err := preparedCredentialGate(ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA, Subfolder: imported.Definition.Source.Subfolder}); err != nil {
+		return imported, ConfirmedToolContract{}, err
 	}
 	listCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -501,6 +507,19 @@ func listMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 		return nil, err
 	}
 	defer cleanup()
+	if probeOptionsFrom(ctx).allowNetwork {
+		if entry, ok, lookupErr := preparedForSource(ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA, Subfolder: imported.Definition.Source.Subfolder}); lookupErr != nil {
+			return nil, lookupErr
+		} else if ok && entry.AuthBeforeToolsList {
+			network, proxyURL, stop, err := startPreparedProbeProxy(ctx, imported.Definition.Execution.Egress)
+			if err != nil {
+				return nil, err
+			}
+			defer stop()
+			credentialArgs = append(credentialArgs, "--network", network, "--env", "HTTP_PROXY="+proxyURL, "--env", "HTTPS_PROXY="+proxyURL)
+			credentialArgs = append(credentialArgs, proxyEnvironmentArgs(imported.Definition, proxyURL)...)
+		}
+	}
 	args := preflightDockerRunArgs(imported, name, []string{"--rm", "-i"}, preflightCommandArgs(imported), credentialArgs...)
 	if probeOptionsFrom(ctx).allowNetwork {
 		// The unauthenticated probe stays on --network none. A second probe

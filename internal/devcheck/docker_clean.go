@@ -84,8 +84,13 @@ func cliDocker(ctx context.Context, args ...string) ([]byte, error) {
 // compose files; "test" is always kept because docker-check produces it.
 func activeImageTags(root string) (map[string]bool, error) {
 	keep := map[string]bool{"test": true}
-	for _, pattern := range []string{"compose*.yaml", "compose*.yml"} {
-		matches, _ := filepath.Glob(filepath.Join(root, "spaces", "*", pattern))
+	for _, pattern := range []string{
+		filepath.Join(root, "spaces", "*", "compose*.yaml"),
+		filepath.Join(root, "spaces", "*", "compose*.yml"),
+		filepath.Join(root, "spaces", "*", "generated", "compose*.yaml"),
+		filepath.Join(root, "spaces", "*", "generated", "compose*.yml"),
+	} {
+		matches, _ := filepath.Glob(pattern)
 		for _, name := range matches {
 			body, err := os.ReadFile(name) // #nosec G304 -- globbed inside the project tree.
 			if err != nil {

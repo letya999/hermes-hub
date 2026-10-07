@@ -9,7 +9,29 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+func TestPrepareNoticeWaitsForTelegramLogin(t *testing.T) {
+	cfg := testConfig(t)
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := prepareOutcomeRequest{OnboardingID: "onboard-qr", Phase: "awaiting-credentials", ContractID: "telegram-session"}
+	if err := gateway.deliverPrepareNotice(cfg.Users[0], identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), "prepare-qr", "Open QR", request, true); err != nil {
+		t.Fatal(err)
+	}
+	notices, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+	if err != nil || len(notices) != 1 {
+		t.Fatalf("notices=%v err=%v", notices, err)
+	}
+	jobs, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("QR login enqueued continuation: jobs=%v err=%v", jobs, err)
+	}
+}
 
 func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 	cfg := testConfig(t)

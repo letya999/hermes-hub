@@ -85,6 +85,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["source"] = map[string]any{"type": "string"}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
+		properties["telegram_send"] = map[string]any{"type": "boolean", "description": "Only on the user's explicit request to enable sending: true with the enabled Telegram onboarding_id upgrades that owner's existing session to reads plus send_message. No new login. Then confirm the returned nonce and enable."}
 		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id."
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."

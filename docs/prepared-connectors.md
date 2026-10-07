@@ -1,6 +1,6 @@
 ---
 description: Exact-source prepared catalog, generic lifecycle and connector runbooks.
-last_verified: 2026-09-30
+last_verified: 2026-10-07
 ---
 # Prepared connectors
 
@@ -96,6 +96,131 @@ Upgrade by reviewing the new SHA and catalog data, retaining the old artifact
 and evidence. `disable` removes projection, `revoke` denies further access and
 releases the workload, and `remove` also cleans its workspace. Shared immutable
 artifacts must not be deleted while another owner uses them.
+
+## Bundle IDs and one-operation start
+
+Call ToolHub `prepare_source` once with the repository URL shown in a ready
+entry's handoff, for example `{"source":"https://github.com/letya999/telegram-mcp","request_key":"telegram-personal-1"}`.
+This starts the same exact-source review, restricted build, Broker, preflight,
+confirmation and owner binding as a direct GitHub install. Continue with
+`status`, `required_credentials`, the protected Broker form, `confirm` and
+`enable`; `prepare_source` alone does not connect an account. `discover` accepts
+each of the twelve bundle IDs and returns its pin or a `blocked` reason.
+`sql` discovers the reviewed `dbhub` entry; `txttsql` is separate. Notion and
+Google Calendar remain additional prepared entries. An entry with status
+`blocked` has no selectable `candidate_id`.
+
+## Personal Telegram
+
+Source: [letya999/telegram-mcp](https://github.com/letya999/telegram-mcp),
+commit `26f1632b2b07cca16fa8f172fe645477921db9ed` (Apache-2.0).
+Generated Python artifact installs the source-declared `proxy` extra and runs
+`/opt/venv/bin/telegram-mcp` over stdio. This is a personal MTProto session,
+separate from Communication Hub's Bot API token and scope. The reviewed Broker
+contract `telegram-session` accepts API ID, API hash, StringSession and expected
+numeric user ID in the protected form. The server verifies the account ID
+before it serves MCP. It connects to Telegram before `tools/list`, so the first
+prepare returns a protected credential request and the real tool list is
+admitted only after the owner submits a working session. `list_accounts` is
+the read probe; verify one bounded dialog/history read after enablement.
+ToolHub obtains a short-lived Broker lease for this admission probe, releases
+it and revokes its temporary grant before confirmation. Confirmation creates
+the separate owner workload grant. If admission fails, `status` records a
+generic failure without upstream error text; `rotate` opens a new Broker
+request. The ToolHub localhost credential form is not used for this contracted
+entry.
+
+The source's `TELEGRAM_EXPOSED_TOOLS=read-only` is fixed for this prepared
+entry, with transcription off. The generic workload is per owner and the
+controller supplies the private egress proxy host and port to Telethon. The
+session string is encrypted by Broker at rest; temporary caches and locks stay
+inside that owner's workload. The upstream read-only mode does not filter bot
+peers; use the existing account adapter when that narrower dialog policy is
+required. Do not run the same StringSession simultaneously
+through JobFetch or another IP: create a distinct Telegram device session for
+the Hub. The `job_ftch` pattern uses a local Telethon `.session` file plus API
+ID/hash; use it only as a local format reference. For a fresh Hub device, run
+the pinned fork's `session_string_generator.py` locally. Put API ID/hash from
+`my.telegram.org/apps` in its ignored `.env`, set
+`TELEGRAM_DEVICE_MODEL=hermes-hub ToolHub`, then run
+`uv run session_string_generator.py --qr` (or `--phone`) in that directory.
+Scan the QR in Telegram Devices or enter the phone code and two-factor password
+in that local terminal. Decline its optional `.env` write if you do not need a
+local copy. Enter the resulting StringSession and numeric `get_me().id` only
+in the Broker form. For the same account, the local `job_ftch` login helper's
+`Authenticated as: ... id=...` output is another way to obtain that ID. The
+fork's generator creates a new session; it does not convert an existing
+`.session` file. Set `telegram_auth: true` alongside `ingress: [telegram]`
+and render/build the dev stack to enable an opt-in Communication Hub image.
+That image also offers
+a local QR page when ToolHub sends a Telegram Broker credential request. It
+uses Go MTProto in the same gateway process, shows the QR only at the
+loopback-bound page, handles a two-step password there and creates a new
+Telethon-compatible StringSession in memory. After the owner confirms the
+numeric account ID, the gateway signs a Telegram-only submission to Credential
+Broker. The Broker enforces the exact owner, reviewed `telegram-session`
+contract, pending request and expiry. The session never enters bot messages,
+job state, logs or a local file. A new QR can be requested if the process or
+request expires. The existing protected Broker form remains the fallback.
+The QR invitation is sent to the Telegram chat. If the Hub has no configured
+application API pair, enter API ID/hash on that page. Scan the QR in Telegram
+Devices. Once the page says
+the session was transferred, ask the bot to continue the Telegram connection.
+For a simpler local setup, put `HUB_TELEGRAM_AUTH_API_ID` and
+`HUB_TELEGRAM_AUTH_API_HASH` in the ignored
+`spaces/<user>/telegram-auth.<dev|prod>.env` file. `hubctl up` preserves this
+file, whereas it regenerates `communication.<dev|prod>.env`.
+The QR starts after the owner clicks the invitation, without asking for these
+values in the browser. The Telegram account is selected by the account that
+scans the QR; the API pair identifies the client application, not that account.
+While the QR invitation is active, the gateway does not send a second Broker
+form through an automatic continuation.
+Never copy a `.session` file, OTP or API hash into the repository or a channel.
+
+For reconnect, call `status`, check the expected user ID and restart the owner
+workload. For rotation or re-authentication, create a new Telegram device
+session locally, call ToolHub `rotate` for the onboarding ID and submit it in
+the Broker form. `disable` unprojects tools, `revoke` blocks calls and releases
+the workload, and `remove` cleans the installation. In Telegram Devices,
+terminate the old device session after local revoke; Broker revoke alone
+cannot invalidate MTProto authorization at Telegram. Upgrade by changing the
+reviewed commit explicitly, retaining the old artifact/review digest for
+rollback, then repeating admission and read verification. The prepared entry
+defaults to reads. On an explicit user request to enable sending, call
+`prepare_source` with `{"onboarding_id":"<enabled Telegram onboarding>","telegram_send":true}`.
+This reviews the same pinned artifact with `TELEGRAM_EXPOSED_TOOLS=read-only+send_message`
+using a temporary owner-bound Broker lease. It retains the existing session;
+no QR login, session export or credential submission is needed. Only
+`send_message` may be added; read tools, image, entrypoint and credential
+contract must remain identical. Confirm the returned nonce and call `enable`
+for the new onboarding ID. The existing connection receives a new binding
+grant and the old binding loses authorization. A failed probe leaves the
+working read connection intact. Concurrent retries reuse one upgrade.
+Use the new onboarding ID for subsequent lifecycle operations.
+
+Test an explicitly authorized send to Saved Messages (`chat_id: "me"`) with a
+unique `operation_id` and verify its provider message-ID receipt. Retrying
+the same operation ID uses Telegram's deduplication. Other recipients need
+the user's actual sending instruction. Reply and delete remain unavailable
+through this prepared mode; the separate Telegram account write definition
+describes those broader effects.
+
+Handoff: “Install the pinned `letya999/telegram-mcp` personal connector with
+`prepare_source`. I will enter API ID, API hash, a separate StringSession and
+expected user ID only in the protected form. Verify `list_accounts` and a
+bounded history read; leave sends and deletes disabled.”
+
+## Blocked bundle entries
+
+`google-workspace` is blocked as a *single generic prepared artifact*: the
+Google Calendar entry only covers Calendar, while the existing official remote
+Workspace services use a separate opt-in ToolHub path. A reviewed exact source,
+OAuth/Broker contract and product tool schemas are needed before promotion.
+`slack` is blocked pending a reviewed `korotovsky/slack-mcp-server` generic
+recipe, user-token Broker overlay and provider preflight; the current Slack
+data OAuth path remains opt-in. `careergo` is blocked pending an exact MCP
+source, license, tool contract and JobFetch import API. No credentials or
+approval may be inferred from these catalog placeholders.
 
 ## Notion
 

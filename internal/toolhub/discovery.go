@@ -136,20 +136,35 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 	if err != nil {
 		return nil, err
 	}
+	blocked, err := BlockedCatalog()
+	if err != nil {
+		return nil, err
+	}
 	var candidates []DiscoveryCandidate
 	for _, entry := range entries {
-		if !strings.Contains(strings.ToLower(entry.ID+" "+entry.Name+" "+entry.Source.Repository), query) {
+		if !strings.Contains(strings.ToLower(entry.ID+" "+strings.Join(entry.Aliases, " ")+" "+entry.Name+" "+entry.Source.Repository), query) {
 			continue
 		}
-		candidates = append(candidates, DiscoveryCandidate{Name: entry.Name, Source: entry.Source, PreparedID: entry.ID, Credentials: entry.Connection.Fields,
+		preparedID := entry.ID
+		for _, alias := range entry.Aliases {
+			if alias == query {
+				preparedID = alias
+			}
+		}
+		candidates = append(candidates, DiscoveryCandidate{Name: entry.Name, Source: entry.Source, PreparedID: preparedID, Credentials: entry.Connection.Fields,
 			Reason: "Reviewed exact-source entry; generic build, Broker and live validation required", Status: "prepared", Runbook: entry.Runbook, Handoff: entry.Handoff})
+	}
+	for _, entry := range blocked {
+		if strings.Contains(strings.ToLower(entry.ID+" "+entry.Name), query) {
+			candidates = append(candidates, DiscoveryCandidate{Name: entry.Name, PreparedID: entry.ID, Reason: entry.Reason, Status: "blocked", Runbook: entry.Runbook, Handoff: entry.Handoff})
+		}
 	}
 	slices.SortFunc(candidates, func(a, b DiscoveryCandidate) int { return strings.Compare(a.PreparedID, b.PreparedID) })
 	if len(candidates) > 5 {
 		candidates = candidates[:5]
 	}
 	var warnings []string
-	if len(candidates) > 0 && len(c.RecipeCatalogs) > 0 {
+	if len(candidates) > 0 && candidates[0].Status == "prepared" && len(c.RecipeCatalogs) > 0 {
 		lookup, _ := recipeLookup(candidates[0].Source)
 		lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
@@ -215,6 +230,9 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 		return nil, fmt.Errorf("%w: discovery capacity reached; retry after expiry", ErrInvalid)
 	}
 	for i := range candidates {
+		if candidates[i].Status == "blocked" {
+			continue
+		}
 		candidates[i].ID = randomNonce()
 		c.discoveryChoices[candidates[i].ID] = discoverySelection{Candidate: candidates[i], Owner: auth, Expires: c.now().Add(c.ttl())}
 	}

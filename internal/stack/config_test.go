@@ -415,6 +415,35 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 	}
 }
 
+func TestTelegramAuthUsesOptionalSingleProcessGatewayImage(t *testing.T) {
+	dir := t.TempDir()
+	authEnv := filepath.Join(dir, "telegram-auth.dev.env")
+	if err := os.WriteFile(authEnv, []byte("HUB_TELEGRAM_AUTH_API_ID=123\nHUB_TELEGRAM_AUTH_API_HASH="+strings.Repeat("a", 32)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), TelegramAuth: true, Memory: true}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	services := Compose(s, "/source", dir)["services"].(M)
+	gw := services["communication-hub"].(M)
+	if gw["entrypoint"].([]string)[0] != "communication-hub" || gw["build"].(M)["target"] != "dev-telegram-auth" || gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
+		t.Fatalf("optional auth image not selected: %#v", gw)
+	}
+	if services["credential-broker"].(M)["image"] != gw["image"] {
+		t.Fatal("Telegram Broker endpoint must run from the built optional image")
+	}
+	files := gw["env_file"].([]any)
+	if len(files) < 2 || files[1].(M)["path"] != filepath.ToSlash(authEnv) {
+		t.Fatal("private Telegram app credentials were not mounted")
+	}
+	s.Tools = testTools("workspace")
+	s.Ingress = testIngress("workspace")
+	if s.Validate() == nil {
+		t.Fatal("auth without Telegram channel accepted")
+	}
+}
+
 func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	services := Compose(s, "/source", "/space")["services"].(M)

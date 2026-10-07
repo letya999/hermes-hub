@@ -24,6 +24,7 @@ import (
 	"github.com/letya999/credential-broker/identity"
 	"github.com/letya999/credential-broker/internal/safenet"
 	"github.com/letya999/credential-broker/internal/strictjson"
+	"github.com/letya999/credential-broker/provider"
 )
 
 type Config struct {
@@ -153,7 +154,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/v1/runtime/") {
 		audience = "broker:runtime"
 	}
-	if strings.HasPrefix(r.URL.Path, "/v1/requests/") && strings.HasSuffix(r.URL.Path, "/approve") {
+	if strings.HasPrefix(r.URL.Path, "/v1/requests/") && (strings.HasSuffix(r.URL.Path, "/approve") || strings.HasSuffix(r.URL.Path, "/telegram-submit")) {
 		audience = "broker:approve"
 	}
 	limit := int64(64 << 10)
@@ -230,6 +231,13 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 		var in v1.Approve
 		if e = decode(data, &in); e == nil {
 			e = s.b.Approve(a, parts[2], in.Code)
+		}
+	case len(parts) == 4 && parts[1] == "requests" && parts[3] == "telegram-submit" && r.Method == "POST":
+		var in v1.TelegramSubmit
+		if e = decode(data, &in); e == nil {
+			values := provider.Bundle{"api_id": []byte(in.APIID), "api_hash": []byte(in.APIHash), "session": []byte(in.Session), "expected_user_id": []byte(in.ExpectedUserID)}
+			defer values.Wipe()
+			e = s.b.SubmitTelegram(r.Context(), a, parts[2], values)
 		}
 	case len(parts) == 4 && parts[1] == "requests" && parts[3] == "cancel" && r.Method == "POST":
 		if !noBody(data) {

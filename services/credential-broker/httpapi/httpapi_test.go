@@ -62,6 +62,44 @@ type httpFixture struct {
 func apiContract() contract.Contract {
 	return contract.Contract{ID: "pat", Revision: 1, Title: `API <script>alert(1)</script>`, Storage: "local", Fields: []contract.Field{{ID: "token", Kind: "secret", Label: "API token", Required: true, MaxBytes: 1024}}, Deliveries: []contract.Delivery{{Type: "env", Field: "token", Target: "TOKEN"}}}
 }
+
+func TestTelegramAuthSubmitIsOwnerAndContractBound(t *testing.T) {
+	c := contract.Contract{ID: "telegram-session", Revision: 1, Title: "Telegram", Storage: "local", Fields: []contract.Field{
+		{ID: "api_id", Label: "API ID", Kind: "string", Required: true, MaxBytes: 20},
+		{ID: "api_hash", Label: "API hash", Kind: "secret", Required: true, MaxBytes: 128},
+		{ID: "session", Label: "Session", Kind: "secret", Required: true, MaxBytes: 8192},
+		{ID: "expected_user_id", Label: "Account ID", Kind: "string", Required: true, MaxBytes: 20},
+	}, Deliveries: []contract.Delivery{{Type: "env", Field: "session", Target: "TELEGRAM_SESSION_STRING"}}}
+	f := fixtureHTTP(t, c, safenet.Policy{}, nil)
+	request := f.create()
+	path := "/v1/requests/" + request.ID + "/telegram-submit"
+	input := map[string]string{"api_id": "123", "api_hash": "fixture-hash", "session": "SENTINEL_SESSION", "expected_user_id": "42"}
+	if w := f.api("POST", path, "broker:control", actor, input); w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong audience: %d", w.Code)
+	}
+	bob := actor
+	bob.PrincipalID = "bob"
+	if w := f.api("POST", path, "broker:approve", bob, input); w.Code != http.StatusNotFound {
+		t.Fatalf("wrong owner: %d", w.Code)
+	}
+	otherContext := actor
+	otherContext.ContextID = "other"
+	if w := f.api("POST", path, "broker:approve", otherContext, input); w.Code != http.StatusNotFound {
+		t.Fatalf("wrong context: %d", w.Code)
+	}
+	w := f.api("POST", path, "broker:approve", actor, input)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "SENTINEL_SESSION") {
+		t.Fatalf("submit status %d", w.Code)
+	}
+	if w := f.api("POST", path, "broker:approve", actor, input); w.Code == http.StatusOK {
+		t.Fatal("replayed Telegram submit")
+	}
+	other := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
+	otherRequest := other.create()
+	if w := other.api("POST", "/v1/requests/"+otherRequest.ID+"/telegram-submit", "broker:approve", actor, input); w.Code != http.StatusNotFound {
+		t.Fatalf("wrong contract: %d", w.Code)
+	}
+}
 func fixtureHTTP(t *testing.T, c contract.Contract, np safenet.Policy, op *broker.OAuthProvider) *httpFixture {
 	t.Helper()
 	root := t.TempDir()

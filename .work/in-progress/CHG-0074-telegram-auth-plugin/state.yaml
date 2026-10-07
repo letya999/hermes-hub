@@ -1,0 +1,35 @@
+status: in-progress
+branch: feat/issues-39-115-telegram
+steps:
+  - name: communication-hub-qr-plugin
+    status: done
+  - name: broker-owner-bound-transfer
+    status: done
+  - name: tests-and-gates
+    status: done
+  - name: local-docker-check
+    status: done
+  - name: live-account-acceptance
+    status: done
+  - name: qr-handoff-image-refresh
+    status: done
+evidence:
+  - just check passed with 85.01 percent own Go statement coverage
+  - just security passed with no reachable Go vulnerabilities and no npm audit findings
+  - tagged Communication Hub race tests and staticcheck passed
+  - Credential Broker Linux race suite and OpenAPI drift check passed
+  - staged secret scan found no leaks
+  - opt-in dev image built and Communication Hub, ToolHub and Credential Broker started from the new images
+  - local gateway port 127.0.0.1:8081 responds; nonexistent Telegram invitation returns 404
+  - owner scanned the QR and saved a fresh personal session; Broker accepted it and ToolHub reached awaiting-confirm
+  - fixed the prepare continuation that followed a native QR invitation with a Broker form link; HTTP regression and tagged race suite pass
+  - just check passed for the fix with 85.00 percent own Go statement coverage
+  - local dev gateway runs the updated binary through a temporary read-only mount; a fresh QR invitation was delivered and its page returned HTTP 200
+  - full opt-in image rebuilt through hubctl and Communication Hub recreated from that image without the temporary binary mount
+  - browser claim rejected the owner before QR generation; replaced strict Origin dependence with a form CSRF token and browser cookie binding
+  - tagged Communication Hub race suite passed; local dev gateway serves the new claim form and delivered a fresh invitation
+  - reused the existing job_ftch application API pair only in the ignored local Communication Hub env; the owner session is still a fresh QR login
+  - optional server-side API pair now starts QR after browser claim without asking the owner to enter app credentials
+  - a separate ignored telegram-auth.dev.env survives hubctl regeneration; restarted container sees the configured API pair and delivered a fresh invitation
+  - stale workload-controller container rejected Telegram proxy host and port names; recreated it from the already built current control image
+  - ToolHub confirm and enable reached enabled; live list_accounts, list_chats(limit=1) and get_history(limit=1) returned successfully without exposing chat contents

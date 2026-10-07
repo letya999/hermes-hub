@@ -158,6 +158,16 @@ func testConfig(t *testing.T) Config {
 	return Config{OrganizationID: "personal", TelegramToken: "token", SpoolDir: filepath.Join(root, "spool"), PollTimeout: time.Second, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: filepath.Join(root, "alice", "state"), WorkspaceDir: filepath.Join(root, "alice", "workspace"), Features: []string{"workspace", "github"}, ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}}}
 }
 
+func TestFillChannelSecretsTelegramAuthAPI(t *testing.T) {
+	t.Setenv("HUB_TELEGRAM_AUTH_API_ID", "123")
+	t.Setenv("HUB_TELEGRAM_AUTH_API_HASH", strings.Repeat("a", 32))
+	var config Config
+	fillChannelSecrets(&config)
+	if config.TelegramAuthAPIID != "123" || config.TelegramAuthAPIHash != strings.Repeat("a", 32) {
+		t.Fatal("Telegram auth API credentials not loaded from environment")
+	}
+}
+
 func TestConfigAndYAML(t *testing.T) {
 	c := testConfig(t)
 	if err := c.Validate(); err != nil {

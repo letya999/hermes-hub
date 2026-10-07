@@ -138,9 +138,12 @@ type Config struct {
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
-	ToolHubURL    string                  `yaml:"-"`
-	AuditLedger   string                  `yaml:"-"`
-	BrokerApprove credentialbroker.Config `yaml:"-"`
+	ToolHubURL          string                  `yaml:"-"`
+	TelegramAuthEnabled bool                    `yaml:"-"`
+	TelegramAuthAPIID   string                  `yaml:"-"`
+	TelegramAuthAPIHash string                  `yaml:"-"`
+	AuditLedger         string                  `yaml:"-"`
+	BrokerApprove       credentialbroker.Config `yaml:"-"`
 	// Workers bounds concurrent job execution; contexts serialize per
 	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
 	Workers int `yaml:"-"`
@@ -290,6 +293,7 @@ func ConfigFromEnv() (Config, error) {
 		config.ToolHubStore = os.Getenv("HUB_TOOLHUB_STORE")
 		config.AuditLedger = os.Getenv("HUB_AUDIT_LEDGER")
 		config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
+		config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
 		if err != nil {
 			return Config{}, err
 		}
@@ -328,6 +332,7 @@ func ConfigFromEnv() (Config, error) {
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
 	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit)}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
+	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
 	if err != nil {
 		return Config{}, err
 	}
@@ -376,6 +381,8 @@ func fillChannelSecrets(config *Config) {
 	}
 	config.ListenAddr = os.Getenv("HUB_COMMUNICATION_LISTEN")
 	config.FormOrigin = os.Getenv("HUB_COMMUNICATION_FORM_ORIGIN")
+	config.TelegramAuthAPIID = os.Getenv("HUB_TELEGRAM_AUTH_API_ID")
+	config.TelegramAuthAPIHash = os.Getenv("HUB_TELEGRAM_AUTH_API_HASH")
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
 	config.STTCommand = os.Getenv("HUB_STT_COMMAND")
 	config.TTSCommand = os.Getenv("HUB_TTS_COMMAND")
@@ -1495,25 +1502,26 @@ func processEnv(userEnv map[string]string) []string {
 }
 
 type Gateway struct {
-	config      Config
-	users       map[int64]User
-	slackUsers  map[string]User
-	spool       *Spool
-	api         TelegramAPI
-	slack       SlackAPI
-	runner      Runner
-	restart     func(context.Context, hubruntime.ExecuteRequest) error
-	busy        atomic.Int32
-	now         func() time.Time
-	secrets     *secrets.Service
-	audit       *audit.Ledger
-	transcriber Transcriber
-	synthesizer Synthesizer
-	formsMu     sync.Mutex
-	forms       map[string]credentialForm
-	quotaMu     sync.Mutex
-	quotaCache  []string
-	quotaAt     time.Time
+	config       Config
+	users        map[int64]User
+	slackUsers   map[string]User
+	spool        *Spool
+	api          TelegramAPI
+	slack        SlackAPI
+	runner       Runner
+	restart      func(context.Context, hubruntime.ExecuteRequest) error
+	busy         atomic.Int32
+	now          func() time.Time
+	secrets      *secrets.Service
+	audit        *audit.Ledger
+	transcriber  Transcriber
+	synthesizer  Synthesizer
+	formsMu      sync.Mutex
+	forms        map[string]credentialForm
+	telegramAuth *telegramAuthState
+	quotaMu      sync.Mutex
+	quotaCache   []string
+	quotaAt      time.Time
 	// contentUntil bounds the explicit content-capture window: inside it
 	// message logs carry redacted text, outside only lengths and IDs.
 	contentUntil time.Time
@@ -1574,6 +1582,12 @@ func New(config Config) (*Gateway, error) {
 		return nil, err
 	}
 	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: map[string]credentialForm{}}
+	if config.TelegramAuthEnabled {
+		g.telegramAuth, err = newTelegramAuthState(config)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// HUB_LOG_CONTENT_UNTIL is the explicit content-capture switch: an
 	// RFC3339 instant up to one hour ahead after which logs drop message
 	// text again. A malformed or far-future value must never silently pin
@@ -2160,7 +2174,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	}
 	if delivery.Channel == "telegram_bot" && os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
 		visible := limitTelegramText(delivery.Text)
-		if strings.HasSuffix(delivery.ID, "-secret") {
+		if strings.HasSuffix(delivery.ID, "-secret") || strings.Contains(delivery.Text, "/credentials/") || strings.Contains(delivery.Text, "/telegram-auth/") || strings.Contains(delivery.Text, "form_url=") {
 			visible = "[credential response redacted]"
 		}
 		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d %s", delivery.JobID, delivery.ID, delivery.ChatID, g.contentField(visible))

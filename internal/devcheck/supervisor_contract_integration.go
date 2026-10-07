@@ -517,11 +517,14 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 		return fmt.Errorf("real native health comparison unavailable")
 	}
 	expected := "unavailable"
-	if health.Readiness.Status == "ok" {
+	switch health.Readiness.Status {
+	case "ok":
 		expected = "ready"
+	case "degraded":
+		expected = "degraded"
 	}
 	if pinned.HermesReadiness != expected {
-		return fmt.Errorf("layered readiness differs from native observation")
+		return fmt.Errorf("layered readiness %s differs from native observation %s (expected %s)", pinned.HermesReadiness, health.Readiness.Status, expected)
 	}
 	fmt.Printf("Real layered health passed: process running; native readiness %s; connections %s\n", health.Readiness.Status, pinned.ConnectorHealth)
 	if err := supervisorOrphanSmoke(ctx, m, pinned, image); err != nil {

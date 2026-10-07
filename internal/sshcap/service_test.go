@@ -186,8 +186,12 @@ func TestExecBoundsAndCancellation(t *testing.T) {
 	f2 := openFixture(t, slow, Grants{}, "    commands: [\"*\"]\n", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
+	started := time.Now()
 	if _, err = f2.svc.Exec(ctx, "box", "hang"); !errors.Is(err, ErrUnavailable) {
 		t.Fatal("cancelled exec", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("cancelled exec returned after %s", elapsed)
 	}
 }
 

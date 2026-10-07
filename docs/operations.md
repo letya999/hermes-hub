@@ -505,6 +505,14 @@ materialize as extra images. Setting `DOCKER_BUILDKIT=0` globally is still
 discouraged because raw `docker compose` outside hubctl/just would use the
 classic builder.
 
+Pass service names after the flags to build or restart only those services,
+for example `hubctl up --dir spaces/alice --env dev communication-hub toolhub`.
+Scoped `up` skips dependencies; select them explicitly if they also need a
+restart. This keeps unrelated runtime, speech and media images out of a
+gateway-only rebuild. After a successful `hubctl build` of the selected
+services, `hubctl up --no-build` starts those existing images without another
+build attempt.
+
 Rebuilds of the tagged hub image used to leave the superseded generation
 dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove
 stopped `hermes-hub-*` containers that pin dangling generations, prune the
@@ -512,7 +520,7 @@ released images and cap the local BuildKit cache at 8 GB. They leave running
 containers, named volumes and other projects' containers intact; the cache
 cap applies to the selected shared Docker builder. `just docker-clean` (also the last step of
 `just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
-`spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
+`spaces/*/compose*.yaml` or `spaces/*/generated/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
 dangling image layers and orphan `hermes-build-*` containers/networks/volumes.
 Ordinary cleanup caps the local BuildKit cache at 8 GB; `just docker-clean --deep`
 fully prunes it and additionally drops
@@ -838,6 +846,11 @@ The supervisor URL must be reachable from both the host CLI and the gateway cont
 configure its listener on the intended private interface and provide
 `HUB_SUPERVISOR_AUTH` to the CLI and Compose invocation. The default loopback listener
 alone is not reachable from a Docker container through `host.docker.internal`.
+Give each local Hub installation its own supervisor port. A port occupied by another
+installation may answer health checks but reject this gateway's bearer with HTTP 401;
+the containers can still appear healthy while every bot job fails before Hermes starts.
+When changing ports, update the selected `supervisor_url`, render the context again,
+and recreate Communication Hub and ToolHub so both use the new address.
 The supervisor creates its runtime network on demand; runtime ports stay loopback-only.
 
 For rollback, drain and stop the selected context again and select

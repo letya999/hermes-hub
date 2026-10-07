@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_LINK_MODE=copy
 COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/telegram
-RUN git init && git remote add origin https://github.com/chigwell/telegram-mcp.git && git fetch --depth 1 origin c9460f8ded6e2457bd70ebabfad840b58d23645d && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra proxy
+RUN git init && git remote add origin https://github.com/letya999/telegram-mcp.git && git fetch --depth 1 origin 26f1632b2b07cca16fa8f172fe645477921db9ed && git checkout --detach FETCH_HEAD && uv sync --python /usr/local/bin/python --frozen --no-dev --extra proxy
 COPY docker/telegram-account-mcp.py /opt/hub/telegram-account-mcp.py
 COPY docker/telegram-account-login.py /opt/hub/telegram-account-login.py
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /tmp -s /usr/sbin/nologin agent

@@ -13,12 +13,14 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // GenerateArtifactRecipe supplies our Dockerfile, not an upstream Dockerfile.
 // An optional literal entrypoint resolves ambiguous servers; no host build runs.
 // The base image is a trusted pinned toolchain selection, never source advice.
-func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, entrypoint []string) (ArtifactRecipe, []byte, error) {
+func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, entrypoint []string, pythonExtras ...string) (ArtifactRecipe, []byte, error) {
 	if len(contextBytes) > 72<<20 {
 		return ArtifactRecipe{}, nil, fmt.Errorf("%w: oversized context", ErrInvalid)
 	}
@@ -166,13 +168,25 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 			}
 		}
 	case "python":
+		if len(pythonExtras) > 0 && files["pyproject.toml"] == nil {
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Python extras require pyproject.toml", ErrInvalid)
+		}
+		for _, extra := range pythonExtras {
+			if !identity.ValidID(extra) || !bytes.Contains(files["pyproject.toml"], []byte("[project.optional-dependencies]")) || !bytes.Contains(files["pyproject.toml"], []byte(extra+" =")) {
+				return ArtifactRecipe{}, nil, fmt.Errorf("%w: Python extra is not source-declared", ErrInvalid)
+			}
+		}
 		lines = append(lines, "RUN "+runPrefix+"python -m venv /opt/venv")
 		if files["requirements.txt"] != nil {
 			lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install -r requirements.txt")
 			locks = []string{"requirements.txt"}
 		}
 		if files["pyproject.toml"] != nil {
-			lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install .")
+			installTarget := "."
+			if len(pythonExtras) > 0 {
+				installTarget = "\".[" + strings.Join(pythonExtras, ",") + "]\""
+			}
+			lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install "+installTarget)
 			scripts := artifactTOMLSection(files[manifest], "project.scripts")
 			primary := artifactTOMLSection(files[manifest], "project")["name"]
 			if scripts[primary] != "" {

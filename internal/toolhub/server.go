@@ -197,7 +197,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		return nil, err
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
-	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), DiagnosticsDir: envOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), DiagnosticsDir: envOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
 	if ready := readinessBackend(config.Backend); ready != nil {
 		control.Ready = func(ctx context.Context, effective EffectiveBinding) (readyErr error) {
 			if gateway.Injector == nil {

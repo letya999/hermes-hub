@@ -552,6 +552,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["workload-controller"] = controller
 
 		broker := cloneMap(common)
+		if s.Has("telegram_auth") {
+			broker["image"] = "hermes-hub-telegram-auth:0.3.0-" + s.Environment
+		}
 		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
 		// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
 		// controller without exposing Broker's encrypted store to MCP workloads.
@@ -572,8 +575,21 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		gateway := cloneMap(common)
 		gateway["entrypoint"] = []string{"communication-hub"}
+		if s.Has("telegram_auth") {
+			gateway["image"] = "hermes-hub-telegram-auth:0.3.0-" + s.Environment
+			gateway["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-telegram-auth"}
+		}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
+		if s.Has("telegram_auth") {
+			authEnv := filepath.Join(dir, "telegram-auth."+s.Environment+".env")
+			if info, err := os.Stat(authEnv); err == nil && info.Mode().IsRegular() {
+				gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(authEnv), "format": "raw"})
+			}
+		}
 		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		if s.Has("telegram_auth") {
+			gatewayEnvironment["HUB_TELEGRAM_AUTH_ENABLED"] = "true"
+		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_APPROVE_", "communication", "hermes-communication") {
 			gatewayEnvironment[key] = value
 		}
