@@ -80,6 +80,10 @@ func (g *Gateway) telegramAuthInvite(owner identity.Envelope, request prepareOut
 	if err != nil {
 		return ""
 	}
+	csrf, err := randomFormToken()
+	if err != nil {
+		return ""
+	}
 	origin, err := g.formOrigin()
 	if err != nil {
 		return ""
@@ -109,7 +113,7 @@ func (g *Gateway) telegramAuthInvite(owner identity.Envelope, request prepareOut
 	if len(g.telegramAuth.attempts) >= 8 {
 		return ""
 	}
-	attempt := &telegramAuthAttempt{owner: owner, requestID: request.BrokerRequestID, expires: g.now().Add(telegramAuthTTL), status: "new"}
+	attempt := &telegramAuthAttempt{owner: owner, requestID: request.BrokerRequestID, expires: g.now().Add(telegramAuthTTL), csrf: csrf, status: "new"}
 	g.telegramAuth.attempts[id] = attempt
 	time.AfterFunc(telegramAuthTTL, func() { g.expireTelegramAuth(id, attempt) })
 	return origin + "/telegram-auth/" + id
@@ -148,7 +152,7 @@ func (g *Gateway) authAttempt(id string) *telegramAuthAttempt {
 }
 
 func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
-	if !communicationLoopbackHTTP(r) || r.Header.Get("Origin") != "" && r.Header.Get("Origin") != g.config.FormOrigin || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+	if !communicationLoopbackHTTP(r) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -169,23 +173,26 @@ func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	if a.browser == "" && r.Method == http.MethodGet && len(parts) == 1 {
+		csrf := a.csrf
 		a.mu.Unlock()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><main><h1>Telegram QR вход</h1><p>Продолжайте только если сами запросили подключение Telegram.</p><form method="post" action="/telegram-auth/`+parts[0]+`/claim"><button>Начать</button></form></main></html>`)
+		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><main><h1>Telegram QR вход</h1><p>Продолжайте только если сами запросили подключение Telegram.</p><form method="post" action="/telegram-auth/`+parts[0]+`/claim"><input type="hidden" name="csrf" value="`+html.EscapeString(csrf)+`"><button>Начать</button></form></main></html>`)
 		return
 	}
-	if a.browser == "" && r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "claim" && r.Header.Get("Origin") == g.config.FormOrigin {
-		var tokenErr error
-		a.browser, tokenErr = randomFormToken()
-		if tokenErr == nil {
-			a.csrf, tokenErr = randomFormToken()
+	if a.browser == "" && r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "claim" {
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		if r.ParseForm() != nil || subtle.ConstantTimeCompare([]byte(r.PostForm.Get("csrf")), []byte(a.csrf)) != 1 {
+			a.mu.Unlock()
+			http.Error(w, "invalid form", http.StatusForbidden)
+			return
 		}
+		browser, tokenErr := randomFormToken()
 		if tokenErr != nil {
-			a.browser, a.csrf = "", ""
 			a.mu.Unlock()
 			http.Error(w, "login unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		a.browser = browser
 		http.SetCookie(w, &http.Cookie{Name: "tg_auth_browser", Value: a.browser, Path: "/telegram-auth/" + parts[0], HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600})
 		a.mu.Unlock()
 		http.Redirect(w, r, "/telegram-auth/"+parts[0], http.StatusSeeOther)

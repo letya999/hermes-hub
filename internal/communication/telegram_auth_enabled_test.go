@@ -101,6 +101,10 @@ func TestTelegramAuthInviteAndBrowserBinding(t *testing.T) {
 	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), "Начать") || len(first.Result().Cookies()) != 0 {
 		t.Fatalf("preview claimed invite: %d", first.Code)
 	}
+	csrf := g.authAttempt(strings.TrimPrefix(path, "/telegram-auth/")).csrf
+	if !strings.Contains(first.Body.String(), `name="csrf" value="`+csrf+`"`) {
+		t.Fatal("claim form has no CSRF token")
+	}
 	foreign := httptest.NewRequest(http.MethodPost, link+"/claim", nil)
 	foreign.Header.Set("Origin", "https://example.com")
 	rejectedClaim := httptest.NewRecorder()
@@ -108,8 +112,10 @@ func TestTelegramAuthInviteAndBrowserBinding(t *testing.T) {
 	if rejectedClaim.Code != http.StatusForbidden {
 		t.Fatalf("foreign claim: %d", rejectedClaim.Code)
 	}
-	claim := httptest.NewRequest(http.MethodPost, link+"/claim", nil)
-	claim.Header.Set("Origin", cfg.FormOrigin)
+	claim := httptest.NewRequest(http.MethodPost, link+"/claim", strings.NewReader("csrf="+csrf))
+	claim.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	claim.Header.Set("Origin", "null")
+	claim.Header.Set("Sec-Fetch-Site", "cross-site")
 	claimed := httptest.NewRecorder()
 	g.Handler().ServeHTTP(claimed, claim)
 	if claimed.Code != http.StatusSeeOther || len(claimed.Result().Cookies()) != 1 {

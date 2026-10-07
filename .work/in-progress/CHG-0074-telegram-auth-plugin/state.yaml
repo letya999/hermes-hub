@@ -26,3 +26,5 @@ evidence:
   - just check passed for the fix with 85.00 percent own Go statement coverage
   - local dev gateway runs the updated binary through a temporary read-only mount; a fresh QR invitation was delivered and its page returned HTTP 200
   - full image rebuild remains pending because the base runtime layer must download 375 MB of system packages
+  - browser claim rejected the owner before QR generation; replaced strict Origin dependence with a form CSRF token and browser cookie binding
+  - tagged Communication Hub race suite passed; local dev gateway serves the new claim form and delivered a fresh invitation
