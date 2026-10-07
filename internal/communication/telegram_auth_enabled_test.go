@@ -73,6 +73,50 @@ func TestTelethonStringSession(t *testing.T) {
 	}
 }
 
+func TestTelegramAuthUsesConfiguredAPIWithoutForm(t *testing.T) {
+	cfg := Config{FormOrigin: "http://localhost:8081", BrokerApprove: credentialbroker.Config{URL: "https://broker.example"}, TelegramAuthAPIID: "123", TelegramAuthAPIHash: strings.Repeat("0", 32)}
+	state, err := newTelegramAuthState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.apiID != 123 || state.apiHash != cfg.TelegramAuthAPIHash {
+		t.Fatal("configured API was not loaded")
+	}
+	for _, bad := range []Config{{TelegramAuthAPIID: "123"}, {TelegramAuthAPIHash: strings.Repeat("0", 32)}, {TelegramAuthAPIID: "abc", TelegramAuthAPIHash: strings.Repeat("0", 32)}} {
+		bad.FormOrigin, bad.BrokerApprove = cfg.FormOrigin, cfg.BrokerApprove
+		if _, err := newTelegramAuthState(bad); err == nil {
+			t.Fatal("invalid configured API accepted")
+		}
+	}
+	g := &Gateway{config: cfg, now: func() time.Time { return time.Unix(0, 0) }, telegramAuth: state}
+	owner := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	link := g.telegramAuthInvite(owner, prepareOutcomeRequest{Phase: "awaiting-credentials", ContractID: "telegram-session", BrokerRequestID: "request_1"})
+	preview := httptest.NewRecorder()
+	g.Handler().ServeHTTP(preview, httptest.NewRequest(http.MethodGet, link, nil))
+	id := strings.TrimPrefix(link, cfg.FormOrigin+"/telegram-auth/")
+	a := g.authAttempt(id)
+	claim := httptest.NewRequest(http.MethodPost, link+"/claim", strings.NewReader("csrf="+a.csrf))
+	claim.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	claimed := httptest.NewRecorder()
+	g.Handler().ServeHTTP(claimed, claim)
+	if claimed.Code != http.StatusSeeOther {
+		t.Fatalf("claim=%d", claimed.Code)
+	}
+	a.mu.Lock()
+	status := a.status
+	a.mu.Unlock()
+	if status == "new" {
+		t.Fatal("configured API did not start QR login")
+	}
+	page := httptest.NewRequest(http.MethodGet, link, nil)
+	page.AddCookie(claimed.Result().Cookies()[0])
+	response := httptest.NewRecorder()
+	g.Handler().ServeHTTP(response, page)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `name="api_id"`) {
+		t.Fatal("configured API still asks user for credentials")
+	}
+}
+
 func TestTelegramAuthInviteAndBrowserBinding(t *testing.T) {
 	cfg := Config{FormOrigin: "http://localhost:8081", BrokerApprove: credentialbroker.Config{URL: "https://broker.example"}}
 	state, err := newTelegramAuthState(cfg)

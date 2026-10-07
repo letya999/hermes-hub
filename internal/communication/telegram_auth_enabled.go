@@ -35,6 +35,8 @@ const telegramAuthTTL = 10 * time.Minute
 type telegramAuthState struct {
 	mu       sync.Mutex
 	attempts map[string]*telegramAuthAttempt
+	apiID    int
+	apiHash  string
 }
 
 type telegramAuthAttempt struct {
@@ -63,7 +65,15 @@ func newTelegramAuthState(config Config) (*telegramAuthState, error) {
 	if err != nil || u.Scheme != "http" || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1") || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 		return nil, errors.New("telegram authentication origin must be local HTTP")
 	}
-	return &telegramAuthState{attempts: map[string]*telegramAuthAttempt{}}, nil
+	state := &telegramAuthState{attempts: map[string]*telegramAuthAttempt{}}
+	if config.TelegramAuthAPIID != "" || config.TelegramAuthAPIHash != "" {
+		state.apiID, err = strconv.Atoi(strings.TrimSpace(config.TelegramAuthAPIID))
+		state.apiHash = strings.TrimSpace(config.TelegramAuthAPIHash)
+		if err != nil || !validTelegramAPI(state.apiID, state.apiHash) {
+			return nil, errors.New("invalid configured Telegram API credentials")
+		}
+	}
+	return state, nil
 }
 
 func (g *Gateway) registerTelegramAuth(mux *http.ServeMux) {
@@ -195,6 +205,9 @@ func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
 		a.browser = browser
 		http.SetCookie(w, &http.Cookie{Name: "tg_auth_browser", Value: a.browser, Path: "/telegram-auth/" + parts[0], HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600})
 		a.mu.Unlock()
+		if g.telegramAuth.apiID != 0 {
+			g.beginTelegramAuth(a, g.telegramAuth.apiID, g.telegramAuth.apiHash)
+		}
 		http.Redirect(w, r, "/telegram-auth/"+parts[0], http.StatusSeeOther)
 		return
 	}
@@ -308,21 +321,32 @@ func (g *Gateway) telegramAuthPage(w http.ResponseWriter, id string, a *telegram
 func (g *Gateway) telegramAuthStart(w http.ResponseWriter, r *http.Request, id string, a *telegramAuthAttempt) {
 	apiID, err := strconv.Atoi(r.PostForm.Get("api_id"))
 	apiHash := strings.TrimSpace(r.PostForm.Get("api_hash"))
-	if err != nil || apiID <= 0 || apiID >= 1<<31 || len(apiHash) != 32 || !allHex(apiHash) {
+	if err != nil || !validTelegramAPI(apiID, apiHash) {
 		http.Error(w, "invalid Telegram API credentials", http.StatusBadRequest)
 		return
 	}
+	if !g.beginTelegramAuth(a, apiID, apiHash) {
+		http.Error(w, "login already started", http.StatusConflict)
+		return
+	}
+	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther)
+}
+
+func validTelegramAPI(id int, hash string) bool {
+	return id > 0 && id < 1<<31 && len(hash) == 32 && allHex(hash)
+}
+
+func (g *Gateway) beginTelegramAuth(a *telegramAuthAttempt, apiID int, apiHash string) bool {
 	a.mu.Lock()
 	if a.status != "new" {
 		a.mu.Unlock()
-		http.Error(w, "login already started", http.StatusConflict)
-		return
+		return false
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), a.expires)
 	a.apiID, a.apiHash, a.status, a.cancel, a.password = apiID, apiHash, "connecting", cancel, make(chan string, 1)
 	a.mu.Unlock()
 	go g.runTelegramAuth(ctx, a)
-	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther)
+	return true
 }
 
 func allHex(s string) bool {

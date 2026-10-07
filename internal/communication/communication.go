@@ -139,6 +139,8 @@ type Config struct {
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
 	ToolHubURL          string                  `yaml:"-"`
 	TelegramAuthEnabled bool                    `yaml:"-"`
+	TelegramAuthAPIID   string                  `yaml:"-"`
+	TelegramAuthAPIHash string                  `yaml:"-"`
 	AuditLedger         string                  `yaml:"-"`
 	BrokerApprove       credentialbroker.Config `yaml:"-"`
 	// Workers bounds concurrent job execution; contexts serialize per
@@ -378,6 +380,8 @@ func fillChannelSecrets(config *Config) {
 	}
 	config.ListenAddr = os.Getenv("HUB_COMMUNICATION_LISTEN")
 	config.FormOrigin = os.Getenv("HUB_COMMUNICATION_FORM_ORIGIN")
+	config.TelegramAuthAPIID = os.Getenv("HUB_TELEGRAM_AUTH_API_ID")
+	config.TelegramAuthAPIHash = os.Getenv("HUB_TELEGRAM_AUTH_API_HASH")
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
 	config.STTCommand = os.Getenv("HUB_STT_COMMAND")
 	config.TTSCommand = os.Getenv("HUB_TTS_COMMAND")
