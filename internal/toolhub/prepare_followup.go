@@ -47,12 +47,14 @@ func postPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		return
 	}
 	payload := map[string]any{
-		"onboarding_id": onboarding.OnboardingID,
-		"phase":         onboarding.Phase,
-		"definition_id": onboarding.DefinitionID,
-		"repository":    onboarding.SourceURL,
-		"detail":        publicPrepareError(errString(onboarding.Error)),
-		"form_url":      credentialNoticeURL(onboarding),
+		"onboarding_id":     onboarding.OnboardingID,
+		"phase":             onboarding.Phase,
+		"definition_id":     onboarding.DefinitionID,
+		"contract_id":       onboarding.BrokerContractID,
+		"broker_request_id": onboarding.BrokerRequestID,
+		"repository":        onboarding.SourceURL,
+		"detail":            publicPrepareError(errString(onboarding.Error)),
+		"form_url":          credentialNoticeURL(onboarding),
 	}
 	if event != "" {
 		payload["event"] = event

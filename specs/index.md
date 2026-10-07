@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0044](active/SPEC-0044-communication-telegram-auth.md) | Frozen: opt-in Communication Hub QR login and owner-bound Broker transfer |
 | [SPEC-0043](active/SPEC-0043-prepared-bundle.md) | Frozen: 12-ID bundle discovery, blocked evidence and personal Telegram admission |
 | [SPEC-0042](active/SPEC-0042-capability-isolation-and-proof.md) | Frozen: execution isolation, file/shell boundaries and T01-T22 acceptance; implementation in CHG-0065 |
 | [SPEC-0041](active/SPEC-0041-default-deny-capabilities.md) | Frozen successor to SPEC-0040 defaults: complete inventory, explicit profiles/grants, routing and revocation; implementation in CHG-0065 |

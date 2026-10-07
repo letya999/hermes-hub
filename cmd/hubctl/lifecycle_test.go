@@ -77,11 +77,17 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 			t.Fatal(op, err)
 		}
 	}
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "communication-hub", "toolhub"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "--", "--no-cache"}); err == nil {
+		t.Fatal("compose option accepted as a service")
+	}
 	if err := run(context.Background(), []string{"exec", "--dir", d, "--", "hermes", "skills", "list"}); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
-	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), " build communication-hub toolhub") || !strings.Contains(string(b), "--remove-orphans communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
 	for _, fail := range []string{"build", "up"} {

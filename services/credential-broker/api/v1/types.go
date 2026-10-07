@@ -35,6 +35,12 @@ type Request struct {
 type Approve struct {
 	Code string `json:"code"`
 }
+type TelegramSubmit struct {
+	APIID          string `json:"api_id"`
+	APIHash        string `json:"api_hash"`
+	Session        string `json:"session"`
+	ExpectedUserID string `json:"expected_user_id"`
+}
 type GrantRequest struct {
 	ContractID       string `json:"contract_id"`
 	ContractRevision int    `json:"contract_revision"`

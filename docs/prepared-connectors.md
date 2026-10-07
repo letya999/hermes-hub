@@ -150,8 +150,19 @@ local copy. Enter the resulting StringSession and numeric `get_me().id` only
 in the Broker form. For the same account, the local `job_ftch` login helper's
 `Authenticated as: ... id=...` output is another way to obtain that ID. The
 fork's generator creates a new session; it does not convert an existing
-`.session` file. Never copy a `.session` file, OTP or API hash into the
-repository or a channel.
+`.session` file. Set `telegram_auth: true` alongside `ingress: [telegram]`
+and render/build the dev stack to enable an opt-in Communication Hub image.
+That image also offers
+a local QR page when ToolHub sends a Telegram Broker credential request. It
+uses Go MTProto in the same gateway process, shows the QR only at the
+loopback-bound page, handles a two-step password there and creates a new
+Telethon-compatible StringSession in memory. After the owner confirms the
+numeric account ID, the gateway signs a Telegram-only submission to Credential
+Broker. The Broker enforces the exact owner, reviewed `telegram-session`
+contract, pending request and expiry. The session never enters bot messages,
+job state, logs or a local file. A new QR can be requested if the process or
+request expires. The existing protected Broker form remains the fallback.
+Never copy a `.session` file, OTP or API hash into the repository or a channel.
 
 For reconnect, call `status`, check the expected user ID and restart the owner
 workload. For rotation or re-authentication, create a new Telegram device

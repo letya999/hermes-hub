@@ -160,8 +160,15 @@ func run(ctx context.Context, args []string) error {
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if f.NArg() != 0 && op != "exec" {
+	if f.NArg() != 0 && op != "exec" && op != "build" && op != "up" {
 		return fmt.Errorf("unexpected arguments")
+	}
+	if op == "build" || op == "up" {
+		for _, service := range f.Args() {
+			if strings.HasPrefix(service, "-") {
+				return fmt.Errorf("invalid service %q", service)
+			}
+		}
 	}
 	if *dir == "" {
 		*dir = filepath.Join("spaces", *profile)
@@ -325,13 +332,13 @@ func run(ctx context.Context, args []string) error {
 				fmt.Fprintln(os.Stderr, "hubctl: Docker cleanup:", cleanupErr)
 			}
 		}()
-		if err = docker("build"); err != nil {
+		if err = docker(append([]string{"build"}, f.Args()...)...); err != nil {
 			return err
 		}
 		if op == "build" {
 			return nil
 		}
-		if err := docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"); err != nil {
+		if err := docker(append([]string{"up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"}, f.Args()...)...); err != nil {
 			return err
 		}
 		return nil

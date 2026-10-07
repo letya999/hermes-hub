@@ -415,6 +415,22 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 	}
 }
 
+func TestTelegramAuthUsesOptionalSingleProcessGatewayImage(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), TelegramAuth: true, Memory: true}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	gw := Compose(s, "/source", "/space")["services"].(M)["communication-hub"].(M)
+	if gw["entrypoint"].([]string)[0] != "communication-hub" || gw["build"].(M)["target"] != "dev-telegram-auth" || gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
+		t.Fatalf("optional auth image not selected: %#v", gw)
+	}
+	s.Tools = testTools("workspace")
+	s.Ingress = testIngress("workspace")
+	if s.Validate() == nil {
+		t.Fatal("auth without Telegram channel accepted")
+	}
+}
+
 func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	services := Compose(s, "/source", "/space")["services"].(M)

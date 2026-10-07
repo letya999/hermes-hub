@@ -455,6 +455,10 @@ materialize as extra images. Setting `DOCKER_BUILDKIT=0` globally is still
 discouraged because raw `docker compose` outside hubctl/just would use the
 classic builder.
 
+Pass service names after the flags to build or restart only those services,
+for example `hubctl up --dir spaces/alice --env dev communication-hub toolhub`.
+This keeps unrelated speech and media images out of a gateway-only rebuild.
+
 Rebuilds of the tagged hub image used to leave the superseded generation
 dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove
 stopped `hermes-hub-*` containers that pin dangling generations, prune the

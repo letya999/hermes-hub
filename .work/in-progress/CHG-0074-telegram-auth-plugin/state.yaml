@@ -1,0 +1,17 @@
+status: in-progress
+branch: feat/issues-39-115-telegram
+steps:
+  - name: communication-hub-qr-plugin
+    status: done
+  - name: broker-owner-bound-transfer
+    status: done
+  - name: tests-and-gates
+    status: done
+  - name: local-docker-check
+    status: in-progress
+evidence:
+  - just check passed with 85.01 percent own Go statement coverage
+  - just security passed with no reachable Go vulnerabilities and no npm audit findings
+  - tagged Communication Hub race tests and staticcheck passed
+  - Credential Broker Linux race suite and OpenAPI drift check passed
+  - staged secret scan found no leaks

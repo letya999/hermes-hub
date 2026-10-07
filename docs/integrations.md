@@ -854,7 +854,11 @@ URLs recorded in SPEC-0020. Remote MCP discovers `authorization_endpoint` and
 `token_endpoint` via RFC 9728 and RFC 8414. Tokens persist only in the encrypted
 store. Live provider login is a later milestone.
 
-`communication-hub` never mounts scope homes or receives provider credentials. It sends
+`communication-hub` never mounts scope homes. Its opt-in `telegram_auth` build
+temporarily holds a fresh Telegram MTProto session in memory while the owner
+confirms QR login, then sends it through an owner-signed, Telegram-only Broker
+request. It never writes the session to the channel spool or logs. All other
+provider credentials remain outside the gateway. The hub sends
 the immutable job envelope to `hermes-runtime` over a private Bearer-authenticated HTTP
 contract. Runtime binding rejects mismatched user, organization, actor or scope before
 opening a path; failed and uncertain results are not blindly replayed.
