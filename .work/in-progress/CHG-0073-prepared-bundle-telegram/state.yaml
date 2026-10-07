@@ -9,6 +9,7 @@ steps:
   - name: verification-and-documentation
     status: done
 evidence:
+  - Requirement-by-requirement acceptance and the remaining live upgrade gap are recorded in acceptance.md
   - 12 stable IDs are discoverable; google-workspace, slack and careergo are blocked with missing contracts and no candidate ID
   - Telegram source pin and optional proxy dependency verified against the local fork and its remote commit
   - Broker credential gate, owner-bound admission lease, temporary grant cleanup, permanent binding grant, failed-session reauth and private preflight proxy covered by Go tests; real Docker internal-network integration passed
