@@ -15,6 +15,10 @@ done:
   - '#171: gateway logs default to IDs/status/text_len (no bodies); HUB_LOG_CONTENT_UNTIL opt-in bounded ≤1h ahead, redacted via diagnostics.Redact; malformed value fails startup'
   - '#46: live dev-host measurement — cold 59.4s / warm-lease 0.58s / restore 78.0s / idle→removed <45s; runtime ~400MiB(1GiB cap)+8MiB ctl; per-user always-on ≈160MiB; 20-200 user model documented in docs/operations.md; NOT a Linux VPS run'
   - 'unit tests: diagnostics scoping/drain-once, devcheck sweep, dockerscope guard, usage async/lineage cap, content-log window — all green (several under -race)'
+  - 'e2e: live supervisor lease/spawn/idle/scale-to-zero/restore on real Docker (cold 59.4s, warm 0.58s, restore 78.0s)'
+  - 'e2e: real-Docker integration tests — dockerscope denies 12 foreign ops + allows labelled/agent-net/missing; collector drains only project-owned container'
+  - 'e2e: render verified — managed space gets 2 socket mounts + scope env + RO supervisor.log bind; diagnostics:false space gets 0 socket mounts; broker-state=hermes-credential-broker-dev (external, created on host)'
+  - 'CI run 37576968106 green: checks(just check+credential-broker-check+security) + image dev/prod/stt/tts published + containers dev/prod canary suite'
 next:
-  - 'just check full gate + coverage >=85%'
-  - 'final commit; issues remain OPEN until merged'
+  - 're-dispatch CI on tip commit'
+  - 'issues remain OPEN until merged'
