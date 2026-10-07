@@ -3,10 +3,14 @@
 package communication
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +20,40 @@ import (
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+func TestPrepareOutcomeSendsQRWithoutFormContinuation(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "control-token"
+	cfg.FormOrigin = "http://localhost:8081"
+	cfg.BrokerApprove = credentialbroker.Config{URL: "https://broker.example"}
+	cfg.TelegramAuthEnabled = true
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := prepareOutcomeRequest{OnboardingID: "onboard-qr", Phase: "awaiting-credentials", ContractID: "telegram-session", BrokerRequestID: "request-qr", Repository: "https://github.com/example/telegram-mcp"}
+	body, _ := json.Marshal(request)
+	req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer control-token")
+	req.Header.Set("X-Hub-Principal", "alice")
+	rec := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("prepare outcome=%d body=%s", rec.Code, rec.Body.String())
+	}
+	notices, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+	if err != nil || len(notices) != 1 {
+		t.Fatalf("notices=%v err=%v", notices, err)
+	}
+	notice, err := os.ReadFile(filepath.Join(cfg.SpoolDir, "outbox", "pending", notices[0].Name()))
+	if err != nil || !bytes.Contains(notice, []byte("/telegram-auth/")) || !bytes.Contains(notice, []byte("продолжи подключение Telegram")) {
+		t.Fatalf("QR notice missing: err=%v", err)
+	}
+	jobs, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("QR login enqueued form continuation: jobs=%v err=%v", jobs, err)
+	}
+}
 
 func TestTelethonStringSession(t *testing.T) {
 	key := make([]byte, 256)

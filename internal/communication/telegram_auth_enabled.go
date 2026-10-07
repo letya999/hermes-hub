@@ -290,7 +290,7 @@ func (g *Gateway) telegramAuthPage(w http.ResponseWriter, id string, a *telegram
 	case "saving":
 		b.WriteString(`<p>Передаю сессию в Broker…</p>`)
 	case "done":
-		b.WriteString(`<p>Сессия передана. Вернитесь в Hermes и проверьте подключение.</p>`)
+		b.WriteString(`<p>Сессия передана. Вернитесь в чат и напишите боту «продолжи подключение Telegram».</p>`)
 	default:
 		b.WriteString(`<p>Вход не завершён. Запросите новую ссылку подключения.</p>`)
 	}

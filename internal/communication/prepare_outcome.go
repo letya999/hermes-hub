@@ -25,7 +25,7 @@ type prepareOutcomeRequest struct {
 }
 
 // handlePrepareOutcome turns a finished ToolHub prepare into a channel reply
-// and a continuation job. The MCP logging nudge never reaches Telegram.
+// and, when no user login is pending, a continuation job.
 func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	caller, ok := g.authorizeControl(r)
 	if !ok {
@@ -82,7 +82,7 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	loginURL := g.telegramAuthInvite(caller, request)
 	notice := prepareOutcomeNotice(request, loginURL)
 	key := prepareOutcomeKey(request, loginURL)
-	if err := g.deliverPrepareNotice(user, caller, key, notice, request); err != nil {
+	if err := g.deliverPrepareNotice(user, caller, key, notice, request, loginURL != ""); err != nil {
 		http.Error(w, "prepare outcome rejected", http.StatusBadRequest)
 		return
 	}
@@ -136,14 +136,14 @@ func prepareOutcomeNotice(request prepareOutcomeRequest, loginURL string) string
 	}
 	switch request.Phase {
 	case "awaiting-credentials":
-		text := "Подготовка MCP для " + repo + " собрала образ. Сервер ждёт данные в защищённой форме."
 		if request.ContractID == "telegram-session" && loginURL != "" {
-			text += " Для входа через QR откройте на этом компьютере: " + loginURL + " Сессию в чат отправлять не нужно."
+			text := "Для подключения Telegram откройте на этом компьютере: " + loginURL + " Введите API ID и API hash, затем создайте QR и подтвердите вход в приложении Telegram. После входа напишите боту «продолжи подключение Telegram». Сессию в чат отправлять не нужно."
 			if request.FormURL != "" {
 				text += " Запасная форма: " + request.FormURL
 			}
 			return text
 		}
+		text := "Подготовка MCP для " + repo + " собрала образ. Сервер ждёт данные в защищённой форме."
 		if formURL := strings.TrimSpace(request.FormURL); formURL != "" {
 			text += " Откройте её на этом компьютере: " + formURL
 		} else {
@@ -222,7 +222,7 @@ func loopbackCredentialURL(raw string) bool {
 	return strings.HasPrefix(parsed.Path, "/credentials/")
 }
 
-func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key, notice string, request prepareOutcomeRequest) error {
+func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key, notice string, request prepareOutcomeRequest, waitingForLogin bool) error {
 	if len(user.TelegramIDs) == 0 {
 		return errNoPrepareChannel
 	}
@@ -232,9 +232,8 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
 	}
-	if request.Event != "" {
-		// Interim progress is a channel notice only; a continuation job would
-		// push the agent to act on a phase that has not settled yet.
+	if request.Event != "" || waitingForLogin {
+		// Wait for user action before resuming the agent.
 		return nil
 	}
 	task := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)

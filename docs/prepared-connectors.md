@@ -162,6 +162,11 @@ Broker. The Broker enforces the exact owner, reviewed `telegram-session`
 contract, pending request and expiry. The session never enters bot messages,
 job state, logs or a local file. A new QR can be requested if the process or
 request expires. The existing protected Broker form remains the fallback.
+The QR invitation is sent to the Telegram chat; enter API ID/hash on that
+page to display the QR, then scan it in Telegram Devices. Once the page says
+the session was transferred, ask the bot to continue the Telegram connection.
+While the QR invitation is active, the gateway does not send a second Broker
+form through an automatic continuation.
 Never copy a `.session` file, OTP or API hash into the repository or a channel.
 
 For reconnect, call `status`, check the expected user ID and restart the owner
