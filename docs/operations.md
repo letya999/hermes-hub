@@ -424,6 +424,16 @@ Run it while the broker is stopped, then `docker compose up -d`. To stay on
 the singleton instead, pin `HUB_BROKER_STATE_VOLUME` and re-render — no copy
 needed. Do not point dev and prod renders at the same volume again.
 
+A related upgrade seam: current ToolHub validates `proxy_environment` names —
+every entry must end in `_PROXY` (split `*_PROXY_HOST`/`*_PROXY_PORT` pairs are
+rejected because the controller fills proxy params with the egress URL, and a
+HOST field receiving a URL is meaningless). A store written before that rule
+(`runtime/toolhub/store.json`) can hold now-invalid names and the service will
+refuse to start with `invalid or duplicate proxy environment parameter`.
+Move the offending names from `proxy_environment` to `environment` and restart
+toolhub — the vars then carry user-supplied values instead of the egress URL,
+which is what split host/port connectors expect.
+
 The selected user home contains persistent Hermes, connection, workspace and archive
 data. An organization home is mounted read-only for members. Dev/prod selects separate
 generated env files and Docker targets but does not create another user namespace. Never

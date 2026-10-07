@@ -20,5 +20,7 @@ done:
   - 'e2e: render verified — managed space gets 2 socket mounts + scope env + RO supervisor.log bind; diagnostics:false space gets 0 socket mounts; broker-state=hermes-credential-broker-dev (external, created on host)'
   - 'CI run 37578949989 on tip db08de4 green: checks + image dev/prod/stt/tts + containers dev/prod'
   - 'e2e: live dev stack re-rendered and recreated — toolhub/workload-controller run with HUB_DOCKER_SCOPE; communication-hub healthy; collector writes spaces/<u>/diagnostics/ (project-scoped, no foreign names); broker migrated to hermes-credential-broker-dev (volume bootstrapped from the legacy singleton — content copy, rollback = HUB_BROKER_STATE_VOLUME pin)'
+  - 'e2e: stack recreated on the CI image (ghcr sha-db08de4a…-dev + -dev-control) — all 11 services up with the new code in containers; found dev-side store seam: invalid proxy_environment names (TELEGRAM_PROXY_HOST/PORT) crash-looped toolhub, migrated records to environment, documented'
+  - 'host fix: Windows Credential Manager was full (770 stale device-key.device_* creds) breaking docker login; cleaned, login works'
 next:
-  - 'issues remain OPEN until merged; compose.dev.yaml.bak kept as rollback artifact'
+  - 'issues remain OPEN until merged; compose.dev.yaml.bak + store.json.bak kept as rollback artifacts'
