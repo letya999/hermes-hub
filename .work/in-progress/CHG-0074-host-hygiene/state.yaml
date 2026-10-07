@@ -18,7 +18,7 @@ done:
   - 'e2e: live supervisor lease/spawn/idle/scale-to-zero/restore on real Docker (cold 59.4s, warm 0.58s, restore 78.0s)'
   - 'e2e: real-Docker integration tests — dockerscope denies 12 foreign ops + allows labelled/agent-net/missing; collector drains only project-owned container'
   - 'e2e: render verified — managed space gets 2 socket mounts + scope env + RO supervisor.log bind; diagnostics:false space gets 0 socket mounts; broker-state=hermes-credential-broker-dev (external, created on host)'
-  - 'CI run 37576968106 green: checks(just check+credential-broker-check+security) + image dev/prod/stt/tts published + containers dev/prod canary suite'
+  - 'CI run 37578949989 on tip db08de4 green: checks + image dev/prod/stt/tts + containers dev/prod'
+  - 'e2e: live dev stack re-rendered and recreated — toolhub/workload-controller run with HUB_DOCKER_SCOPE; communication-hub healthy; collector writes spaces/<u>/diagnostics/ (project-scoped, no foreign names); broker migrated to hermes-credential-broker-dev (volume bootstrapped from the legacy singleton — content copy, rollback = HUB_BROKER_STATE_VOLUME pin)'
 next:
-  - 're-dispatch CI on tip commit'
-  - 'issues remain OPEN until merged'
+  - 'issues remain OPEN until merged; compose.dev.yaml.bak kept as rollback artifact'
