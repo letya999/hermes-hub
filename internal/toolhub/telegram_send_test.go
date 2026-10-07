@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
@@ -203,6 +204,39 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		if err != nil || len(tools) != 3 {
 			t.Fatalf("managed projection lost read or send tools: %v %v", tools, err)
 		}
+	}
+}
+
+func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
+	c := &ControlPlane{Store: NewStore()}
+	auth := aliceAuth()
+	grantTestControlOperations(t, c.Store, "alice", "prepare_source")
+	if err := putGrant(t, c.Store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"telegram_send": true, "onboarding_id": "missing"}
+	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); err == nil {
+		t.Fatal("missing onboarding accepted")
+	}
+	original := Onboarding{Schema: SchemaVersion, OnboardingID: "telegram-read", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: OnboardingSelfInstall, Phase: PhaseAwaitingConfirm, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now()}
+	if err := c.Store.PutOnboarding(original); err != nil {
+		t.Fatal(err)
+	}
+	args["onboarding_id"] = original.OnboardingID
+	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unconfirmed session accepted: %v", err)
+	}
+	original.Phase, original.BrokerCredentialID = PhaseEnabled, "credential"
+	if err := c.Store.PutOnboarding(original); err != nil {
+		t.Fatal(err)
+	}
+	upgrade := original
+	upgrade.OnboardingID, upgrade.IdempotencyKey, upgrade.Phase = "telegram-send-upgrade", "telegram-send:"+original.OnboardingID, PhaseRemoved
+	if err := c.Store.PutOnboarding(upgrade); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("removed upgrade accepted: %v", err)
 	}
 }
 
