@@ -166,8 +166,10 @@ The QR invitation is sent to the Telegram chat. If the Hub has no configured
 application API pair, enter API ID/hash on that page. Scan the QR in Telegram
 Devices. Once the page says
 the session was transferred, ask the bot to continue the Telegram connection.
-For a simpler local setup, set `HUB_TELEGRAM_AUTH_API_ID` and
-`HUB_TELEGRAM_AUTH_API_HASH` in the ignored Communication Hub environment file.
+For a simpler local setup, put `HUB_TELEGRAM_AUTH_API_ID` and
+`HUB_TELEGRAM_AUTH_API_HASH` in the ignored
+`spaces/<user>/telegram-auth.<dev|prod>.env` file. `hubctl up` preserves this
+file, whereas it regenerates `communication.<dev|prod>.env`.
 The QR starts after the owner clicks the invitation, without asking for these
 values in the browser. The Telegram account is selected by the account that
 scans the QR; the API pair identifies the client application, not that account.
