@@ -19,6 +19,8 @@ evidence:
   - Selected telegram-mcp fork tests passed for send operation IDs, fake end-to-end flows and side-effect annotations (28 passed); its broader Windows runtime run had one path-format expectation failure (110 passed, 1 failed)
   - Full local Docker images built via just docker-check; runtime smoke, Hermes contract, capability contract, managed network, supervisor, scratch workload and scratch fault canaries passed on the built images; the initial contract run exposed a test-only degraded-readiness mismatch, corrected and rerun successfully
   - just check rerun after the integration assertion fix passed with 85.02 percent own Go statement coverage; just docker-clean completed
+  - Optional telegram-account adapter image built from the selected pinned fork; its five no-network account/receipt tests passed inside the read-only container, and the image reports the exact pinned commit; no provider account was used
+  - Separate Telegram write definition now describes send/reply/delete and its explicit grant and provider receipt accurately
 remaining:
   - Live Telegram login and message read remain unverified; automatic execution review blocked the authorized local-session probe without a detailed reason
   - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
