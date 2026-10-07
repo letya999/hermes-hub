@@ -647,6 +647,28 @@ func TestInfraRenderOwnsSharedNetwork(t *testing.T) {
 	}
 }
 
+// The broker store is a singleton per environment: a dev render must never
+// silently attach the prod credential volume. Only the explicit
+// HUB_BROKER_STATE_VOLUME override may move it (the pre-split migration path).
+func TestBrokerStateVolumeIsPerEnvironment(t *testing.T) {
+	for _, env := range []string{"dev", "prod"} {
+		s := Settings{Schema: 1, Environment: env, User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Tools: testTools("telegram"), Ingress: testIngress("telegram"), BrowserPort: 6080, OAuthPort: 8000}
+		brokerState := Compose(s, "/source", "/space")["volumes"].(M)["broker-state"].(M)
+		if brokerState["external"] != true || brokerState["name"] != "hermes-credential-broker-"+env {
+			t.Fatalf("%s render attached %v instead of its own environment volume", env, brokerState)
+		}
+	}
+}
+
+func TestBrokerStateVolumeOverride(t *testing.T) {
+	t.Setenv("HUB_BROKER_STATE_VOLUME", "hermes-credential-broker-real-prod-20260918")
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Tools: testTools("telegram"), Ingress: testIngress("telegram"), BrowserPort: 6080, OAuthPort: 8000}
+	brokerState := Compose(s, "/source", "/space")["volumes"].(M)["broker-state"].(M)
+	if brokerState["name"] != "hermes-credential-broker-real-prod-20260918" {
+		t.Fatalf("legacy migration override lost: %v", brokerState)
+	}
+}
+
 func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	d := t.TempDir()
 	root := t.TempDir()

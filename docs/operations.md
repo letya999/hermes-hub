@@ -408,6 +408,22 @@ Deployments that still rely on the pre-split singleton pin it explicitly with
 `HUB_BROKER_STATE_VOLUME=hermes-credential-broker-real-prod-20260918` in the
 render environment.
 
+The broker does not bootstrap an empty volume — it exits with
+`cannot read configuration` until `config.json` and its key/ledger material
+exist. Migrating a stack off the pre-split singleton therefore means
+copying the volume content, not just creating the volume:
+
+```sh
+docker run --rm --user root \
+  -v hermes-credential-broker-real-prod-20260918:/from \
+  -v hermes-credential-broker-dev:/to \
+  --entrypoint sh hermes-hub:0.3.0-dev -c 'cp -a /from/. /to/'
+```
+
+Run it while the broker is stopped, then `docker compose up -d`. To stay on
+the singleton instead, pin `HUB_BROKER_STATE_VOLUME` and re-render — no copy
+needed. Do not point dev and prod renders at the same volume again.
+
 The selected user home contains persistent Hermes, connection, workspace and archive
 data. An organization home is mounted read-only for members. Dev/prod selects separate
 generated env files and Docker targets but does not create another user namespace. Never
