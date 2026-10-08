@@ -509,6 +509,8 @@ func TestServeStartsPinnedGatewayChild(t *testing.T) {
 	t.Setenv("HUB_PERSISTENT_HERMES", "false")
 	t.Setenv("HUB_BROWSER", "false")
 	t.Setenv("HUB_MEET", "false")
+	// A fixed 0.0.0.0:8080 bind flakes on hosts where the port is taken.
+	t.Setenv("HUB_RUNTIME_LISTEN", "127.0.0.1:0")
 	if err := supervise("serve"); err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
 	"slices"
 	"strings"
@@ -18,6 +19,9 @@ import (
 //
 //go:embed prepared/catalog.json
 var preparedCatalogJSON []byte
+
+//go:embed prepared/blocked.json
+var blockedCatalogJSON []byte
 
 //go:embed prepared/contracts/*.json
 var preparedContractFiles embed.FS
@@ -42,10 +46,12 @@ func (entry PreparedEntry) BrokerContract() (contract.Contract, error) {
 
 type PreparedEntry struct {
 	ID                 string                     `json:"id"`
+	Aliases            []string                   `json:"aliases,omitempty"`
 	Name               string                     `json:"name"`
 	Source             ArtifactSource             `json:"source"`
 	License            string                     `json:"license"`
 	Language           string                     `json:"language"`
+	PythonExtras       []string                   `json:"python_extras,omitempty"`
 	Entrypoint         []string                   `json:"entrypoint"`
 	Connection         ConnectionRecipe           `json:"connection"`
 	ContractID         string                     `json:"contract_id"`
@@ -66,6 +72,9 @@ type PreparedEntry struct {
 	// before they can speak MCP at all. The credentialed probe already runs
 	// with network; unprepared sources keep --network none.
 	PreflightNetwork bool `json:"preflight_network,omitempty"`
+	// AuthBeforeToolsList is for servers that connect to the provider before
+	// speaking MCP. The protected form is required before a real tools/list.
+	AuthBeforeToolsList bool `json:"auth_before_tools_list,omitempty"`
 	// ContextSources merges additional pinned repositories into the build
 	// context — the reviewed equivalent of a Makefile vendoring step.
 	ContextSources []ArtifactOverlay `json:"context_sources,omitempty"`
@@ -80,6 +89,42 @@ type PreparedEntry struct {
 	OAuth            *PreparedOAuth   `json:"oauth,omitempty"`
 	Runbook          string           `json:"runbook"`
 	Handoff          string           `json:"handoff"`
+}
+
+// Blocked entries are discoverable bundle slots, not installation authority.
+type BlockedEntry struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Reason  string `json:"reason"`
+	Runbook string `json:"runbook"`
+	Handoff string `json:"handoff"`
+}
+
+func BlockedCatalog() ([]BlockedEntry, error) {
+	var entries []BlockedEntry
+	decoder := json.NewDecoder(bytes.NewReader(blockedCatalogJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&entries); err != nil || decoder.Decode(new(any)) != io.EOF || len(entries) > 32 {
+		return nil, fmt.Errorf("%w: blocked catalog", ErrInvalid)
+	}
+	ready, err := PreparedCatalog()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, entry := range ready {
+		seen[entry.ID] = true
+		for _, alias := range entry.Aliases {
+			seen[alias] = true
+		}
+	}
+	for _, entry := range entries {
+		if !identity.ValidID(entry.ID) || seen[entry.ID] || entry.Name == "" || entry.Reason == "" || entry.Runbook == "" || entry.Handoff == "" {
+			return nil, fmt.Errorf("%w: incomplete or duplicate blocked entry", ErrInvalid)
+		}
+		seen[entry.ID] = true
+	}
+	return entries, nil
 }
 
 // ProbeCandidate names a reviewed read-only probe that applies only when its
@@ -120,6 +165,20 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		_, sourceErr := entry.Source.ArchiveURL()
 		if sourceErr != nil || !identity.ValidID(entry.ID) || seen[entry.ID] || seen[entry.Source.Repository] || entry.Name == "" || entry.License == "" || entry.Runbook == "" || entry.Handoff == "" || len(entry.Entrypoint) == 0 || len(entry.ReadTools) == 0 || entry.ProbeTool != "" && !slices.Contains(entry.ReadTools, entry.ProbeTool) || entry.ProbeTool != "" && len(entry.ProbeTools) > 0 {
 			return nil, fmt.Errorf("%w: incomplete or duplicate prepared entry", ErrInvalid)
+		}
+		if len(entry.PythonExtras) > 4 || len(entry.PythonExtras) > 0 && entry.Language != "python" {
+			return nil, fmt.Errorf("%w: unsupported prepared Python extras", ErrInvalid)
+		}
+		for _, extra := range entry.PythonExtras {
+			if !identity.ValidID(extra) {
+				return nil, fmt.Errorf("%w: invalid prepared Python extra", ErrInvalid)
+			}
+		}
+		for _, alias := range entry.Aliases {
+			if !identity.ValidID(alias) || seen[alias] || alias == entry.ID {
+				return nil, fmt.Errorf("%w: duplicate prepared alias", ErrInvalid)
+			}
+			seen[alias] = true
 		}
 		requiredFields := map[string]bool{}
 		for _, field := range entry.Connection.Fields {
@@ -193,6 +252,9 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		if len(entry.PreflightEnvironment) > 16 {
 			return nil, fmt.Errorf("%w: prepared preflight environment", ErrInvalid)
 		}
+		if entry.AuthBeforeToolsList && (entry.ProbeTool == "" || len(entry.Connection.Fields) == 0) {
+			return nil, fmt.Errorf("%w: authenticated preflight needs credentials and a read probe", ErrInvalid)
+		}
 		for name, value := range entry.PreflightEnvironment {
 			if !credentialPattern.MatchString(name) || secretName(name) || len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n") {
 				return nil, fmt.Errorf("%w: prepared preflight environment", ErrInvalid)
@@ -209,6 +271,20 @@ func parsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		seen[entry.ID], seen[entry.Source.Repository] = true, true
 	}
 	return entries, nil
+}
+
+func preparedCredentialGate(source ArtifactSource) error {
+	entry, ok, err := preparedForSource(source)
+	if err != nil || !ok || !entry.AuthBeforeToolsList {
+		return err
+	}
+	var names []string
+	for _, field := range entry.Connection.Fields {
+		if field.Required {
+			names = append(names, field.Name)
+		}
+	}
+	return &CredentialGate{Names: names, Detail: "Provider login is required before this MCP can list tools; enter credentials in the protected Broker form, then verify the read probe."}
 }
 
 func preparedForSource(source ArtifactSource) (PreparedEntry, bool, error) {
@@ -286,8 +362,17 @@ func runtimeEnvironmentArgs(definition ToolDefinition) []string {
 // can never point at an unreviewed proxy.
 func proxyEnvironmentArgs(definition ToolDefinition, proxyURL string) []string {
 	var args []string
+	parsed, _ := url.Parse(proxyURL)
 	for _, name := range slices.Sorted(slices.Values(definition.ProxyEnvironment)) {
-		args = append(args, "--env", name+"="+proxyURL)
+		value := proxyURL
+		switch {
+		case strings.HasSuffix(name, "_PROXY_HOST"):
+			value = parsed.Hostname()
+			args = append(args, "--env", strings.TrimSuffix(name, "HOST")+"TYPE=http")
+		case strings.HasSuffix(name, "_PROXY_PORT"):
+			value = parsed.Port()
+		}
+		args = append(args, "--env", name+"="+value)
 	}
 	return args
 }

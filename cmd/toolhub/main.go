@@ -43,7 +43,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
-		go diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second)
+		scope := diagnostics.Scope{
+			Project:  os.Getenv("HUB_DIAGNOSTICS_PROJECT"),
+			AgentNet: os.Getenv("HUB_DIAGNOSTICS_AGENT_NET"),
+			Owner:    os.Getenv("HUB_DIAGNOSTICS_OWNER"),
+		}
+		go diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second, scope)
 	}
 	refresher := handler.(interface{ RefreshProjection() error })
 	restartNotify := toolhub.RuntimeRestartNotifierFromEnv()

@@ -34,6 +34,7 @@ type Settings struct {
 	// means denied.
 	Tools           map[string]ToolEntry `yaml:"tools,omitempty"`
 	Ingress         []string             `yaml:"ingress,omitempty"`
+	TelegramAuth    bool                 `yaml:"telegram_auth,omitempty"`
 	Workspace       Workspace            `yaml:"workspace,omitempty"`
 	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
 	Hooks           map[string]any       `yaml:"hooks,omitempty"`
@@ -66,6 +67,10 @@ type Settings struct {
 	SpaceDir              string   `yaml:"-"`
 	OrganizationRole      string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
+	// gov is the per-load tool-governance view (issue 139): the evaluated
+	// decisions and cap:read overrides the render consumers enforce. Nil when
+	// the Settings were built without Read — the load path is the boundary.
+	gov *toolGovernance
 	// ImageGen configures the opt-in image_gen capability. Empty fields use
 	// cliproxy, that provider's default model, and workspace delivery.
 	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
@@ -215,6 +220,22 @@ func (s Settings) imageCredential() string {
 // project); only explicitly secondary spaces opt out.
 func (s Settings) RendersInfra() bool       { return s.Infra == nil || *s.Infra }
 func (s Settings) DiagnosticsEnabled() bool { return s.Diagnostics == nil || *s.Diagnostics }
+
+// usesDockerSocket reports whether the rendered surface can drive the Docker
+// engine: toolhub-managed executors, ToolHub connector workloads, the managed
+// agent channel and the diagnostics collector all consume it. A stack of
+// native and mcp-raw tools with diagnostics off mounts no socket at all.
+func (s Settings) usesDockerSocket() bool {
+	if s.CapabilityMode == "managed" || s.DiagnosticsEnabled() {
+		return true
+	}
+	for _, entry := range s.Tools {
+		if entry.Via == ToolViaToolHub || entry.Via == ToolViaMCP {
+			return true
+		}
+	}
+	return false
+}
 func (s Settings) Validate() error {
 	if s.CapabilityMode != "" && s.CapabilityMode != "managed" {
 		return fmt.Errorf("capability_mode must be managed or absent for an unmigrated deployment")
@@ -299,6 +320,9 @@ func (s Settings) Validate() error {
 	}
 	if s.Has("telegram_write") && !s.Has("telegram_user") {
 		return fmt.Errorf("telegram_write requires telegram_user")
+	}
+	if s.TelegramAuth && !s.Has("telegram") {
+		return fmt.Errorf("telegram_auth requires telegram")
 	}
 	if s.Has("google_write") && !s.Has("google") {
 		return fmt.Errorf("google_write requires google")
@@ -635,7 +659,10 @@ func finishRead(s Settings, dir string) (Settings, error) {
 	} else if !os.IsNotExist(scopeErr) {
 		return s, scopeErr
 	}
-	return s, s.Validate()
+	if err := s.Validate(); err != nil {
+		return s, err
+	}
+	return s, applyGovernance(&s)
 }
 
 // ReadEnvironment selects runtime settings without making dev/prod a user namespace.
@@ -652,6 +679,11 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 		}
 		s, e = ApplyOrganization(org, s, orgDir)
 		if e != nil {
+			return s, e
+		}
+		// The merged organization catalog is the org_mcp surface; re-run
+		// governance so org-scope rules and the org floor apply to it too.
+		if e = applyGovernance(&s); e != nil {
 			return s, e
 		}
 	}

@@ -32,7 +32,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | capability | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -102,6 +102,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "grant" {
 		return runGrant(ctx, args[1:])
 	}
+	if op == "governance" {
+		return runGovernance(ctx, args[1:])
+	}
 	if op == "capability" {
 		return runCapability(args[1:])
 	}
@@ -141,6 +144,7 @@ func run(ctx context.Context, args []string) error {
 	archive := f.String("archive", "/archive", "read-only archive root")
 	config := f.String("config", "companion.yaml", "native bridge config")
 	apply := f.Bool("apply", false, "apply migration; default is dry-run")
+	noBuild := f.Bool("no-build", false, "start existing images without rebuilding (up only)")
 	stateSource := f.String("state-volume", "", "legacy runtime state directory")
 	toolHubStore := f.String("toolhub-store", "", "absolute ToolHub registry path")
 	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
@@ -160,8 +164,18 @@ func run(ctx context.Context, args []string) error {
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if f.NArg() != 0 && op != "exec" {
+	if f.NArg() != 0 && op != "exec" && op != "build" && op != "up" {
 		return fmt.Errorf("unexpected arguments")
+	}
+	if op == "build" || op == "up" {
+		for _, service := range f.Args() {
+			if strings.HasPrefix(service, "-") {
+				return fmt.Errorf("invalid service %q", service)
+			}
+		}
+	}
+	if *noBuild && op != "up" {
+		return fmt.Errorf("--no-build is only valid with up")
 	}
 	if *dir == "" {
 		*dir = filepath.Join("spaces", *profile)
@@ -309,29 +323,38 @@ func run(ctx context.Context, args []string) error {
 		return dockerCmd(append(append([]string{}, prefix...), a...)...).Run()
 	}
 	if op == "build" || op == "up" {
-		if os.Getenv("DOCKER_BUILDKIT") == "0" {
-			fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
-		}
-		// A previous build may have been killed before its cleanup ran.
-		if err := pruneDanglingImages(ctx, dockerOutput); err != nil {
-			return err
-		}
-		defer func() {
-			// A failed build can also leave dangling layers and stopped containers.
-			// Cleanup must not hide the original build/up error.
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if cleanupErr := pruneDanglingImages(cleanupCtx, dockerOutput); cleanupErr != nil {
-				fmt.Fprintln(os.Stderr, "hubctl: Docker cleanup:", cleanupErr)
+		if !*noBuild {
+			if os.Getenv("DOCKER_BUILDKIT") == "0" {
+				fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
 			}
-		}()
-		if err = docker("build"); err != nil {
-			return err
+			// A previous build may have been killed before its cleanup ran.
+			if err := pruneDanglingImages(ctx, dockerOutput); err != nil {
+				return err
+			}
+			defer func() {
+				// A failed build can also leave dangling layers and stopped containers.
+				// Cleanup must not hide the original build/up error.
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				if cleanupErr := pruneDanglingImages(cleanupCtx, dockerOutput); cleanupErr != nil {
+					fmt.Fprintln(os.Stderr, "hubctl: Docker cleanup:", cleanupErr)
+				}
+			}()
+			if err = docker(append([]string{"build"}, f.Args()...)...); err != nil {
+				return err
+			}
 		}
 		if op == "build" {
 			return nil
 		}
-		if err := docker("up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"); err != nil {
+		upArgs := []string{"up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"}
+		if *noBuild {
+			upArgs = append(upArgs, "--no-build")
+		}
+		if len(f.Args()) > 0 {
+			upArgs = append(upArgs, "--no-deps")
+		}
+		if err := docker(append(upArgs, f.Args()...)...); err != nil {
 			return err
 		}
 		return nil

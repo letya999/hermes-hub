@@ -1,0 +1,29 @@
+schema: 1
+id: CHG-0076-tool-governance
+title: Tool governance — inventory, scoped policy, grants, enforcement planes
+status: in_progress
+phase: verification
+started_at: 2026-10-07
+updated_at: 2026-10-07
+issues: [139]
+completed:
+  - governance document model (inventory axes, trust derivation, rules, grants, history)
+  - evaluation order (deny > grant > user > org > global > default > section > unknown)
+  - GovernanceStore: path binding, flock+atomic writes, fail-closed load, in-memory default
+  - stack applyGovernance: explicit-deny fails read, implicit filtering, cap:read narrowing, migration seed
+  - render-time consumers (Config, disabledToolsets, rawMCPServers, readOnlyCapabilities)
+  - generated tool-policy snapshot + HUB_TOOL_POLICY mount
+  - gateway filtering at list/materialization/refresh + admitGoverned call-time gate
+  - agenttools Tools.ToolPolicy load + dispatch gate (direct and ExecCall)
+  - grant_request control op + /grants/ loopback acknowledge form (nonce, TTL, rotation)
+  - hubctl governance CLI (status, rule, grant, revoke) with --confirm digest gate
+  - migration user_mcp preservation when governance is absent
+  - identity.Envelope.Organization + HUB_ORGANIZATION_ID propagation
+  - regression tests: ordering, unknown-section deny, persistence, concurrency, grants,
+    render filtering, executor denial, CLI, HTTP contract, migration
+  - SPEC-0046 written; docs/specs updated
+  - just check green (85.08% own coverage)
+notes:
+  - GovernanceStore.Update must use saveGovernanceLocked (SaveGovernance re-takes flock)
+  - capability CLI tests pin HUB_TOOL_GOVERNANCE: staged-write validation re-reads from scratch dir
+  - rule ids and grant ids use identity.ValidID alphabet; governanceID sanitizes

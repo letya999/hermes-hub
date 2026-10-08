@@ -9,20 +9,36 @@ explicit legacy alias. `render` writes generated files under
 `spaces/<user>/generated/`, `up` builds and starts the selected runtime, `down` stops
 it without deleting data, and `logs` tails the selected Compose project.
 
-Diagnostics are on by default. The shared ToolHub collects new stdout/stderr
-lines from every `hermes-*` and `work-*` Docker container across users every
-15 seconds and appends them automatically to `.local/hermes-diagnostics.txt`;
-no export command is needed. The file rolls over at 100 MB, and its small cursor file
-keeps the collector from replaying lines after restart. The host supervisor
-mirrors its own request/lifecycle logs to `.local/supervisor.log` (10 MB cap),
-which is also copied into the combined file. Compose and supervised runtimes
-retain Docker's rotating `local` logs (10 MB × 3 files per container). The
-first collection of an already running container starts with its last 1000
-lines; later cycles take at most 5000 lines per container, and one container
+Diagnostics are on by default. Each stack's ToolHub collects new
+stdout/stderr lines every 15 seconds — scoped to its own Compose project
+label plus runtime containers attached to that user's agent network — and
+appends them to `spaces/<user>/diagnostics/hermes-diagnostics.txt`. No
+export command is needed. The file rolls over at 100 MB, and its small
+cursor file keeps the collector from replaying lines after restart. Each
+`docker ps`/`docker logs` call is individually deadline-bound and one
+collection pass is capped, so a stalled daemon or an oversized log fetch
+cannot starve the cycle; stopped containers are drained once and marked,
+never retried into failure spam. The host supervisor mirrors its own
+request/lifecycle logs to `.local/supervisor.log` (10 MB cap), which each
+collector reads read-only and copies only lines naming that space's owner
+as a whole token. Compose and supervised runtimes
+retain Docker's rotating `local` logs (10 MB × 3 files per container).
+Later cycles take at most 5000 lines per container, and one container
 whose `docker logs` fails is skipped without stalling the others. Secrets are
 redacted at collection time, so the combined file never stores tokens or
 passwords in plaintext. To opt out, set `diagnostics: false` in the
 infra-owning space's `agent.yaml` and run `hubctl up` again.
+
+Gateway message logs carry IDs, status and text length — never message
+bodies. Bracketed class markers (`[voice message]`, `[file message]`,
+`[credential input redacted]`) still print, so a crash or restart is
+diagnosable by `update_id`, `job_id`, `delivery_id` and status alone. When an
+incident genuinely needs message text, set `HUB_LOG_CONTENT_UNTIL` to an
+RFC3339 instant in the channel env file and restart: inside that window the
+same lines include text after the credential redactor runs, and the value is
+clamped to at most one hour ahead so a typo cannot pin capture open. Once it
+expires the lines return to `text_len=` automatically — verify by grepping a
+collected line for `text_len=` after the deadline.
 
 Users with an explicit `control-operation` grant for `diagnostics` inspect their
 own diagnostics through that ToolHub operation. It returns the caller's connector workloads plus bounded,
@@ -42,7 +58,10 @@ ToolHub control operations are denied by default, including `discover`, `status`
 `revoke`, `remove`, `diagnostics` and generic `invoke`. The host operator grants
 each selected operation separately; a catalog or self-install grant does not
 grant control operations. Self-install additionally requires its own explicit
-active grant. A matching disabled/revoked grant wins over a matching active grant.
+active grant. `prepare_source` also admits `remote_url`: an owner-scoped hosted
+MCP endpoint (public HTTPS only — SSRF and redirect targets deny), probed for a
+real MCP handshake, with header credentials collected through the protected form
+(SPEC-0045). A matching disabled/revoked grant wins over a matching active grant.
 For example, using the protected registry path for the selected deployment:
 
 ```text
@@ -237,6 +256,56 @@ at parse time and are rejected when mixed with the new keys.
 `tools:` declares visibility, not authority — ToolHub profiles and grants
 in the protected store still govern what an admitted call may do.
 
+### Tool governance (issue 139)
+
+A second host-owned document, `governance.json` beside `store.json` in the
+ToolHub dir, decides which sections a space may emit at all. Sections cover
+every surface: `native:<toolset>`, `hub:<family>`, the dynamic `toolhub`
+projections, `hub:tools` (the executor server), `hub:browser`, and the two
+MCP catalogs `user_mcp`/`org_mcp`. Each entry carries deterministic axes —
+owner, official, dynamic, prepared, effect — and the trust tier is derived
+from them, never stored. Rules are scoped `global`/`org`/`user`/`default`
+with `allow`, `deny` or `cap:read`; grants are the only per-principal
+widening path: host-created, expiring, nonce-acknowledged, revocable.
+
+Evaluation is fixed: a deny at any real scope wins; then an unexpired grant;
+then rules in user→org→global→default precedence (exact sections before
+attribute matches); then the inventoried section default; unknown sections
+deny. The shipped posture denies `native:terminal`, `native:code_execution`,
+`user_mcp` and external/unprepared dynamic installs; everything else ships
+allowed. A missing file seeds that posture, preserving a pre-governance
+space's already-selected deny-default sections as recorded user-scope
+migration allows — `user_mcp` is never preserved by the reader (only the
+migration tool records it, once, and never over an existing document).
+
+Enforcement is at every plane: `stack.Read` refuses denied explicit wishes
+and filters implicit emissions; ToolHub drops denied tools from `tools/list`
+and re-evaluates after admission, before credential injection, on every
+call; and the hub executors enforce a rendered `tool-policy.<env>.json`
+snapshot (capability ids only — no rules, reasons or other principals' data)
+mounted read-only at `/config/tool-policy.json`.
+
+Operator surface — host only, the agent has no write path:
+
+```sh
+hubctl governance                              # status for the pinned/derived document
+hubctl governance --kind rule --scope user --user alice \
+    --section native:terminal --effect allow --reason "reviewed" --confirm
+hubctl governance --kind grant --user alice --section user_mcp \
+    --expires 72h --reason "host approved" --confirm
+hubctl governance --kind revoke --grant <grant-id> --reason "cleanup"
+```
+
+Mutations require `--confirm` (the same digest gate as `hubctl grant`).
+`--governance` pins the file; otherwise it derives from `--toolhub-store`,
+`--dir`, or `HUB_TOOL_GOVERNANCE`/`HUB_TOOLHUB_STORE`. Unlocking `user_mcp`
+for a principal is the grant ceremony: the host creates a pending grant, the
+agent calls `grant_request`, the user opens the loopback-only
+`/grants/<id>?nonce=` URL and confirms — GET renders the grant details, POST
+activates. The nonce rotates on each request and expires in 15 minutes, so
+a stale link can never activate, and returning the URL activates nothing on
+its own.
+
 * `native` re-enables a reviewed upstream toolset for that runtime. The
   reviewed set is the same carve-out list as before — platform adapters,
   `delegation`, `bot_room`, `a2a`, `coding`, `hermes-*` and
@@ -303,8 +372,8 @@ runtime, ToolHub, supervisor, communication hub and Credential Broker record
 method, bounded route and duration; request bodies and query strings are not
 logged. Credential input (`KEY=value`, `/credentials`, `/broker-approve`) and
 one-time credential replies are redacted. Treat the combined file as private:
-it contains personal conversations and service output. `.local/` is ignored
-by Git; review and redact before sharing it.
+it contains personal conversations and service output. `.local/` and
+`spaces/` are ignored by Git; review and redact before sharing them.
 
 When Telegram is enabled, gateway mode supervises `hub-communication`. It maps numeric
 sender IDs from the configured allowlist to user scopes, writes durable jobs and replies
@@ -384,6 +453,40 @@ Set that path as `credential_mount_root` in the generic controller config. The
 controller passes it as a read-only `--volume` and tears down the workload after
 the call; without this shared path the request is rejected.
 
+The Broker's own state lives in one external volume per environment,
+`hermes-credential-broker-<env>` — a dev stack renders `-dev` and can never
+attach prod credential material. The volume is `external`, so create it once
+per environment (`docker volume create hermes-credential-broker-prod`).
+Deployments that still rely on the pre-split singleton pin it explicitly with
+`HUB_BROKER_STATE_VOLUME=hermes-credential-broker-real-prod-20260918` in the
+render environment.
+
+The broker does not bootstrap an empty volume — it exits with
+`cannot read configuration` until `config.json` and its key/ledger material
+exist. Migrating a stack off the pre-split singleton therefore means
+copying the volume content, not just creating the volume:
+
+```sh
+docker run --rm --user root \
+  -v hermes-credential-broker-real-prod-20260918:/from \
+  -v hermes-credential-broker-dev:/to \
+  --entrypoint sh hermes-hub:0.3.0-dev -c 'cp -a /from/. /to/'
+```
+
+Run it while the broker is stopped, then `docker compose up -d`. To stay on
+the singleton instead, pin `HUB_BROKER_STATE_VOLUME` and re-render — no copy
+needed. Do not point dev and prod renders at the same volume again.
+
+A related upgrade seam: current ToolHub validates `proxy_environment` names —
+every entry must end in `_PROXY` (split `*_PROXY_HOST`/`*_PROXY_PORT` pairs are
+rejected because the controller fills proxy params with the egress URL, and a
+HOST field receiving a URL is meaningless). A store written before that rule
+(`runtime/toolhub/store.json`) can hold now-invalid names and the service will
+refuse to start with `invalid or duplicate proxy environment parameter`.
+Move the offending names from `proxy_environment` to `environment` and restart
+toolhub — the vars then carry user-supplied values instead of the egress URL,
+which is what split host/port connectors expect.
+
 The selected user home contains persistent Hermes, connection, workspace and archive
 data. An organization home is mounted read-only for members. Dev/prod selects separate
 generated env files and Docker targets but does not create another user namespace. Never
@@ -455,6 +558,14 @@ materialize as extra images. Setting `DOCKER_BUILDKIT=0` globally is still
 discouraged because raw `docker compose` outside hubctl/just would use the
 classic builder.
 
+Pass service names after the flags to build or restart only those services,
+for example `hubctl up --dir spaces/alice --env dev communication-hub toolhub`.
+Scoped `up` skips dependencies; select them explicitly if they also need a
+restart. This keeps unrelated runtime, speech and media images out of a
+gateway-only rebuild. After a successful `hubctl build` of the selected
+services, `hubctl up --no-build` starts those existing images without another
+build attempt.
+
 Rebuilds of the tagged hub image used to leave the superseded generation
 dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove
 stopped `hermes-hub-*` containers that pin dangling generations, prune the
@@ -462,7 +573,7 @@ released images and cap the local BuildKit cache at 8 GB. They leave running
 containers, named volumes and other projects' containers intact; the cache
 cap applies to the selected shared Docker builder. `just docker-clean` (also the last step of
 `just docker-check`) removes stale `hermes-hub:*` tags not referenced by any
-`spaces/*/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
+`spaces/*/compose*.yaml` or `spaces/*/generated/compose*.yaml`, stopped `hermes-*` containers that pin dangling images,
 dangling image layers and orphan `hermes-build-*` containers/networks/volumes.
 Ordinary cleanup caps the local BuildKit cache at 8 GB; `just docker-clean --deep`
 fully prunes it and additionally drops
@@ -536,6 +647,76 @@ In supervisor mode, keep the selected owner's sidecar services running. The runt
 joins `hermes-hub-<user>-<env>_default` and mounts that project's
 `broker-secrets-runtime` volume read-only; the default shared runtime network is not
 used for owner jobs.
+
+### Capacity measurement (dev host, 2026-10-07)
+
+Best-effort M6 capacity data for #46, measured on the author's Windows dev
+host — **not** the Linux VPS target. Treat absolute numbers as dev-host
+samples; rerun the protocol on the target VPS before fixing SLOs.
+
+Host: Windows 11 Pro 22631, 16 cores / 32 GiB; Docker Desktop on WSL2
+(kernel 6.6.87.2), engine 29.4.3 linux/amd64, VM budget 15.47 GiB.
+Runtime image `hermes-hub:0.3.0-dev`, id `sha256:dc8df91990b8…`, 1.19 GiB.
+Commit `baeafd4`. Commands: `POST /v1/leases` / `DELETE /v1/leases/<id>`
+against `hubctl supervisor --spaces spaces --env dev --runtime-image
+hermes-hub:0.3.0-dev --supervisor-listen 0.0.0.0:8876`, plus
+`docker stats --no-stream` / `docker inspect` point samples.
+
+Measured (single samples, one dev space):
+
+| phase | result |
+|---|---|
+| cold lease → runtime Ready | 59.4 s |
+| restore after scale-to-zero → Ready | 78.0 s |
+| warm lease on running runtime | 0.58 s |
+| idle deadline → container removed | <45 s (reaper ≤5 s + stop grace ~40 s) |
+| warm TTL | 5 min (default `--warm-ttl`) |
+| managed runtime RSS (warm) | ~395–403 MiB (cap 1 GiB, 2 CPU, 256 pids) |
+| runtime ctl sidecar RSS | ~8 MiB |
+| runtime CPU during cold start | ~100 % of 2-core cap for ~20–40 s |
+
+Always-on footprint for one dev stack (`hermes-hub-<user>-dev`),
+point-in-time RSS: communication-hub 13.7 MiB, credential-broker 10.3 MiB,
+toolhub 73–80 MiB, workload-controller 8.8 MiB, cliproxy 15.1 MiB,
+hub-media 7.3 MiB, hub-stt 2.7 MiB, hub-tts 2.8 MiB, three relays ~6.3 MiB
+each, supervisor host process ~25.6 MiB → **≈160 MiB per user stack**, plus
+`hermes-context-*` per active/warm context (~410 MiB each, bounded by
+`--max-runtimes 8`).
+
+Registered-user model (20–200 users, this host class): always-on memory
+scales linearly with registered stacks — 20 users ≈ 3.2 GiB, 100 ≈ 16 GiB,
+200 ≈ 32 GiB — so a ~16 GiB VM fits roughly 90 stacks before headroom for
+warm runtimes (8 slots × ~410 MiB ≈ 3.3 GiB) and burst CPU disappears.
+The concurrency bound is what makes scale-to-zero viable: 200 registered
+users never mean 200 resident Hermes processes — `--max-runtimes` (8) caps
+live contexts and the lease semaphore queues the rest; crash-loop denial
+stops retry storms after 3 crashes inside the backoff window
+(`next_retry_at`, covered by `reconcile_test.go`). Cold-start latency
+(59–78 s here, dominated by image-side init and connector startup inside
+the 2-core cap) is the user-visible cost; deriving production SLOs requires
+repeating this protocol on the actual VPS and adding the document/image and
+connector-reconnect runs this session could not cover.
+
+Rollback: the v0.2.1 one-shot runtime artifact remains the drain/stop/audit
+rollback; degraded mode is native static per-user Compose (no supervisor).
+
+### Docker socket boundary
+
+Only ToolHub and the workload controller ever mount `/var/run/docker.sock`,
+and only when the rendered surface can use it: a space with no
+`via: toolhub`/`via: mcp` capability, no managed mode and `diagnostics: false`
+gets no socket mount at all — diagnostics itself is a Docker consumer (the
+collector reads `docker ps`/`logs`), so opting out also disables collection.
+Inside the socket-bearing services every `inspect`, `exec`, `logs`, `rm`,
+`cp`, `start`/`stop` and `network`/`volume` operation is scope-checked
+(`HUB_DOCKER_SCOPE` = `hermes-hub-<user>-<env>`): an object must carry the
+compose project label, the `hermes-hub.scope` label the hub stamps on
+spawned networks, volumes and containers, or sit on that space's managed
+agent network (`HUB_DOCKER_AGENT_NET`). ToolHive cannot stamp labels, so the
+controller registers names it just spawned; anything else — including a
+caller-shaped workload id that collides with another project's container or a
+shared network like `hermes-hub-control` — is denied before the socket sees
+it and logged as `docker-scope: denied`.
 
 Example from the repository root:
 
@@ -718,6 +899,11 @@ The supervisor URL must be reachable from both the host CLI and the gateway cont
 configure its listener on the intended private interface and provide
 `HUB_SUPERVISOR_AUTH` to the CLI and Compose invocation. The default loopback listener
 alone is not reachable from a Docker container through `host.docker.internal`.
+Give each local Hub installation its own supervisor port. A port occupied by another
+installation may answer health checks but reject this gateway's bearer with HTTP 401;
+the containers can still appear healthy while every bot job fails before Hermes starts.
+When changing ports, update the selected `supervisor_url`, render the context again,
+and recreate Communication Hub and ToolHub so both use the new address.
 The supervisor creates its runtime network on demand; runtime ports stay loopback-only.
 
 For rollback, drain and stop the selected context again and select

@@ -188,6 +188,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// Rendered as the supervisor bearer so communication-hub can list a
 		// principal's connectors without holding that principal's token.
 		ControlToken: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
+		// Tool governance sits beside the registry; the env pin exists for
+		// deployments that keep the policy document elsewhere.
+		Governance: NewGovernanceStore(envOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
 	}
 	var secrets credstore.Backend
 	var injector CredentialInjector
@@ -197,7 +200,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		return nil, err
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
-	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), DiagnosticsDir: envOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), DiagnosticsDir: envOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
 	if ready := readinessBackend(config.Backend); ready != nil {
 		control.Ready = func(ctx context.Context, effective EffectiveBinding) (readyErr error) {
 			if gateway.Injector == nil {
@@ -230,11 +233,15 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	control.AdmitWithCredentials = func(ctx context.Context, definition ToolDefinition, secrets map[string]string) (ToolDefinition, error) {
+		if definition.Transport == RemoteMCP {
+			return admitRemoteDefinition(ctx, definition, secrets)
+		}
 		return admitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
 	control.Injector = gateway.Injector
 	control.PrepareDone = gateway.notifyPrepareDone
+	control.Governance = gateway.Governance
 	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)
@@ -345,6 +352,9 @@ func envOr(name, fallback string) string {
 // fails closed.
 func agentBackendFromEnv() ToolBackend {
 	docker := envOr("HUB_DOCKER_BIN", "docker")
+	// The docker socket sees every host container; scope checks keep exec,
+	// inspect and lifecycle ops inside this stack's own project.
+	SetDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"))
 	// Durable executor leases sit next to the ToolHub store: a restart keeps
 	// quarantining bindings whose sandbox stop was never confirmed.
 	if store := os.Getenv("HUB_TOOLHUB_STORE"); store != "" {

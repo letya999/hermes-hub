@@ -295,7 +295,11 @@ func superviseOnce(mode string) (bool, error) {
 	}
 
 	var children []*exec.Cmd
-	exits := make(chan error, 8)
+	type childExit struct {
+		name string
+		err  error
+	}
+	exits := make(chan childExit, 8)
 	remaining := 0
 	var server *http.Server
 	serverErr := make(chan error, 1)
@@ -314,7 +318,7 @@ func superviseOnce(mode string) (bool, error) {
 		}
 		children = append(children, cmd)
 		remaining++
-		go func() { exits <- cmd.Wait() }()
+		go func() { exits <- childExit{name, cmd.Wait()} }()
 		return nil
 	}
 	start := func(name string, args ...string) error {
@@ -429,9 +433,14 @@ func superviseOnce(mode string) (bool, error) {
 				return false, err
 			}
 			return false, nil
-		case err := <-exits:
+		case exit := <-exits:
 			remaining--
-			return false, fmt.Errorf("supervised process exited: %w", err)
+			if exit.err == nil {
+				// A clean exit still loses the incident if it is reported as
+				// %!w(<nil>): say which child chose to stop.
+				return false, fmt.Errorf("supervised process %s exited cleanly", exit.name)
+			}
+			return false, fmt.Errorf("supervised process %s exited: %w", exit.name, exit.err)
 		}
 	}
 }

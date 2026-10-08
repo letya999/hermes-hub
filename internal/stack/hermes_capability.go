@@ -100,6 +100,14 @@ func disabledToolsets(s Settings) []string {
 			disabled = append(disabled, name)
 		}
 	}
+	// Tool governance is a second, independent fence: a carve-out whose
+	// native:<name> section is denied goes back onto the emitted denylist.
+	for _, name := range carveouts {
+		if !s.govAllows("native:"+name) && !slices.Contains(disabled, name) {
+			disabled = append(disabled, name)
+		}
+	}
+	slices.Sort(disabled)
 	return disabled
 }
 

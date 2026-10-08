@@ -50,11 +50,18 @@ type SessionUsage struct {
 	// ended_at. In-place compactions leave no row and are not fabricated.
 	Compactions      *int64 `json:"compactions"`
 	LastCompactionAt string `json:"last_compaction_at,omitempty"`
-	LastActive       string `json:"last_active,omitempty"`
+	// CompactionsTruncated marks the lineage walk stopped at the hop cap with
+	// more ancestors present; consumers render Compactions as a lower bound
+	// (≥N) instead of an exact count.
+	CompactionsTruncated bool   `json:"compactions_truncated,omitempty"`
+	LastActive           string `json:"last_active,omitempty"`
 }
 
 const usageSourceHermesSessionDB = "hermes_session_db"
-const usageMaxLineageHops = 16
+
+// usageMaxLineageHops bounds the sequential parent walk: each hop is one
+// HTTP call and a deep lineage kept /usage busy for minutes.
+const usageMaxLineageHops = 4
 
 func (s *runtimeHTTP) usage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || !s.authorized(r) {
@@ -168,6 +175,7 @@ func usageFillLineage(ctx context.Context, client *http.Client, base, auth strin
 		}
 		parent = usageString(prow, "parent_session_id")
 	}
+	report.CompactionsTruncated = parent != "" && !seen[parent]
 	report.Compactions = &hops
 }
 

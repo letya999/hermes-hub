@@ -2,6 +2,10 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0046](active/SPEC-0046-tool-governance.md) | Frozen: tool-governance inventory, scoped rules, expiring grants and multi-plane enforcement (issue 139; CHG-0076) |
+| [SPEC-0045](active/SPEC-0045-remote-mcp.md) | Frozen: owner-scoped remote MCP registration, admission, header credentials and projection (issues 83–85, 96; CHG-0075) |
+| [SPEC-0044](active/SPEC-0044-communication-telegram-auth.md) | Frozen: opt-in Communication Hub QR login and owner-bound Broker transfer |
+| [SPEC-0043](active/SPEC-0043-prepared-bundle.md) | Frozen: 12-ID bundle discovery, blocked evidence and personal Telegram admission |
 | [SPEC-0042](active/SPEC-0042-capability-isolation-and-proof.md) | Frozen: execution isolation, file/shell boundaries and T01-T22 acceptance; implementation in CHG-0065 |
 | [SPEC-0041](active/SPEC-0041-default-deny-capabilities.md) | Frozen successor to SPEC-0040 defaults: complete inventory, explicit profiles/grants, routing and revocation; implementation in CHG-0065 |
 | [SPEC-0040](active/SPEC-0040-capability-profile.md) | Frozen earlier capability matrix; defaults/enforcement superseded by SPEC-0041/0042 |

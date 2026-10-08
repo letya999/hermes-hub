@@ -171,7 +171,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 		AdmissionDetail: "Authentication required: Either SLACK_MCP_XOXP_TOKEN, SLACK_MCP_XOXB_TOKEN, or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN must be provided",
 		AdmissionGroups: [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}},
 	}
-	body, err := control.acceptCredentialGate(aliceAuth(), preparing, review)
+	body, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, review)
 	instructions, _ := body["instructions"].(string)
 	if err != nil || body["phase"] != PhaseAwaitingCreds || body["tools_confirmed"] != false || strings.Contains(instructions, "one token field") || !strings.Contains(instructions, "field names") {
 		t.Fatalf("body=%v err=%v", body, err)
@@ -355,7 +355,7 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXB_TOKEN", Required: true},
 	}
-	if _, err := control.acceptCredentialGate(aliceAuth(), preparing, SourceReview{
+	if _, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, SourceReview{
 		Definition: definition, AdmissionPending: true, AdmissionDetail: "token required",
 		AdmissionGroups: [][]string{{"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}},
 	}); err != nil {
@@ -407,7 +407,7 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 		draft.Tools = nil
 		auth := aliceAuth()
 		auth.PrincipalID, auth.ContextID = principal, principal
-		if _, err := control.acceptCredentialGate(auth, onboarding, SourceReview{Definition: draft, AdmissionPending: true, AdmissionDetail: "token required", AdmissionGroups: [][]string{{"SLACK_MCP_XOXP_TOKEN"}}}); err != nil {
+		if _, err := control.acceptCredentialGate(t.Context(), auth, onboarding, SourceReview{Definition: draft, AdmissionPending: true, AdmissionDetail: "token required", AdmissionGroups: [][]string{{"SLACK_MCP_XOXP_TOKEN"}}}); err != nil {
 			t.Fatal(err)
 		}
 		return onboarding

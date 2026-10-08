@@ -1,0 +1,51 @@
+status: in-progress
+issues: [39, 115]
+branch: feat/issues-39-115-telegram
+steps:
+  - name: bundle-discovery
+    status: done
+  - name: telegram-prepared-entry
+    status: done
+  - name: verification-and-documentation
+    status: done
+  - name: existing-session-send-upgrade
+    status: done
+evidence:
+  - The repaired managed-profile upgrade was deployed through hubctl build and up; live authenticated tools/list admitted 57 unchanged reads plus send_message using the existing Broker credential, without QR or credential submission
+  - The owner-approved Saved Messages send completed through the projected MCP tool with a confirmed provider receipt and message ID; a subsequent list_accounts call succeeded, the Broker credential ID stayed unchanged, the foreign owner upgrade was denied, and the other owner's Telegram projection remained empty
+  - Final just check passed with race/shuffle, format, vet, staticcheck, docs and actionlint at 85.01 percent own Go statement coverage; managed and legacy profiles and persisted JSON schema formatting are covered by the send regression tests
+  - Existing-session send upgrade regression passed for owner-bound Broker grants, foreign-owner denial, failed-probe cleanup with the read binding intact, concurrent retry reuse, exact read contract preservation, restricted send-only addition and immutable version cutover
+  - just check passed after the send upgrade with 85.01 percent own Go statement coverage; no dependencies changed
+  - Requirement-by-requirement acceptance and the remaining live upgrade gap are recorded in acceptance.md
+  - 12 stable IDs are discoverable; google-workspace, slack and careergo are blocked with missing contracts and no candidate ID
+  - Telegram source pin and optional proxy dependency verified against the local fork and its remote commit
+  - Broker credential gate, owner-bound admission lease, temporary grant cleanup, permanent binding grant, failed-session reauth and private preflight proxy covered by Go tests; real Docker internal-network integration passed
+  - Contracted admission now replaces upstream probe errors with a safe failure message; a regression test makes the provider echo the submitted session and verifies it stays out of status
+  - Fresh QR/phone challenge and expected account ID collection are documented against the selected fork and the local JobFetch example
+  - just security passed with no affected Go vulnerabilities or npm audit findings
+  - just check passed with at least 85 percent own Go statement coverage
+  - Selected telegram-mcp fork tests passed for send operation IDs, fake end-to-end flows and side-effect annotations (28 passed); its broader Windows runtime run had one path-format expectation failure (110 passed, 1 failed)
+  - Full local Docker images built via just docker-check; runtime smoke, Hermes contract, capability contract, managed network, supervisor, scratch workload and scratch fault canaries passed on the built images; the initial contract run exposed a test-only degraded-readiness mismatch, corrected and rerun successfully
+  - just check rerun after the integration assertion fix passed with 85.02 percent own Go statement coverage; just docker-clean completed
+  - Optional telegram-account adapter image built from the selected pinned fork; its five no-network account/receipt tests passed inside the read-only container, and the image reports the exact pinned commit; no provider account was used
+  - Separate Telegram write definition now describes send/reply/delete and its explicit grant and provider receipt accurately
+  - Owner completed a fresh QR login for the prepared Telegram connection; ToolHub reached enabled and live list_accounts, list_chats and get_history calls succeeded without recording message contents
+  - After moving this dev stack off an unrelated supervisor on port 8876, both Communication Hub and ToolHub were recreated while the Telegram binding stayed enabled; the bot then completed a real account-list request through its own supervisor on port 8877, proving this restart/reconnect path
+  - Current just check passed race/shuffle tests, format, vet, staticcheck, docs and actionlint with 85.00 percent own Go statement coverage
+  - Real Docker two-owner generic workload gate passed: one immutable image with separate credentials, state volumes and networks, plus cross-owner denial and revoke; this does not substitute for a second live Telegram account
+  - The pinned standalone Telegram account adapter used the owner-approved low-value JobFetch session to send a self-message, reply and delete both in Saved Messages through restricted Docker egress; Telegram returned message-ID receipts and two deletion pts receipts, and the temporary credential file was cleared and removed
+  - A second live Telegram owner used the pinned source through the same ToolHub and Broker flow: credentials were submitted through the local protected form, the connection reached enabled, and list_accounts/get_me succeeded; access to the first owner's onboarding was denied
+  - On the second owner, revoke removed the advertised Telegram tools and denied the former invocation; reinstall through a new onboarding and Broker submission reached enabled and list_accounts succeeded again
+  - Removing that revoked installation reached removed while the replacement stayed enabled and its live list_accounts call still succeeded
+  - All 11 ready and 3 blocked prepared entries have working runbook anchors and handoffs; ready entries have exact pins and Broker contracts, while the blocked entries expose their missing evidence
+  - The running ToolHub discover operation returned all 12 requested bundle IDs: nine prepared (including the sql alias) and three blocked; optional external registry warnings did not suppress prepared results
+  - Two live Telegram workloads occupied separate Docker networks, each with private /run and /tmp tmpfs, and had no shared writable Docker mounts; both owner tokens still completed list_accounts
+  - The version-upgrade regression now asserts that the old binding loses authorization, the new binding resolves, and the old definition remains available for rollback review
+  - just check passed after the upgrade regression change with 85.01 percent own Go statement coverage
+  - An exact URL for the fork's earlier eb7294f revision was reviewed and built in a separate onboarding, but its unprepared server exited before tools/list because it lacked required API inputs; that failed onboarding was removed, and both live owner connections still passed list_accounts afterwards
+  - After the bot's 15:25 task failure, the own supervisor and runtime recovered; the bot completed the account-list request at 15:29 and a follow-up request for recent outgoing messages at 15:37 through the live MCP connection
+remaining:
+  - A live upgrade to a different reviewed Telegram source pin remains unverified; origin HEAD is still the current 26f1632 pin, and an older unprepared pin cannot substitute for the reviewed Broker contract
+  - The prepared entry is StringSession-only; persistent SQLite session-file mode is not integrated with Broker state
+  - Provider-side session termination was not exercised; local revoke does not invalidate a Telegram device session
+  - GHCR prebuilt-image pull remains unverified; the corresponding local Docker build and runtime canaries passed separately

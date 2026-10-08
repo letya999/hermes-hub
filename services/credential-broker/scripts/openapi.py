@@ -55,6 +55,7 @@ def build():
     add('/v1/requests','post','createRequest','Idempotent credential enrollment','Request','CreateRequest',status=201)
     add('/v1/requests/{request_id}','get','getRequest','Enrollment status','Request')
     add('/v1/requests/{request_id}/approve','post','approve','Approve exact browser pairing code',input='Approve',aud='broker:approve')
+    add('/v1/requests/{request_id}/telegram-submit','post','telegramSubmit','Owner-bound Telegram QR session transfer from Communication Hub',input='TelegramSubmit',aud='broker:approve')
     add('/v1/requests/{request_id}/cancel','post','cancel','Cancel enrollment')
     add('/v1/credentials/{credential_id}','get','getCredential','Opaque credential metadata','Credential')
     add('/v1/credentials/{credential_id}','delete','deleteCredential','Delete managed secret versions; preserve imported source')

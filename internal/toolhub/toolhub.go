@@ -149,7 +149,8 @@ type ToolDefinition struct {
 	Environment                []string          `json:"environment,omitempty"`
 	RuntimeEnvironment         map[string]string `json:"runtime_environment,omitempty"`
 	// ProxyEnvironment names env vars the artifact expects to carry its
-	// outbound proxy URL. The runtime fills each with the audited egress
+	// outbound proxy URL, or paired *_PROXY_HOST / *_PROXY_PORT settings.
+	// The runtime fills each with the audited egress
 	// proxy; neither the definition nor the owner supplies the value, so a
 	// reviewed name can never redirect egress off the allowlisted proxy.
 	ProxyEnvironment []string        `json:"proxy_environment,omitempty"`
@@ -214,6 +215,12 @@ type CredentialInput struct {
 	Name       string `json:"name"`
 	Required   bool   `json:"required"`
 	PerRequest bool   `json:"per_request"`
+	// Delivery routes the admitted value. Empty and "env" mean workload
+	// environment. "http_header" (remote-mcp only) sends the value as the
+	// Target header with Prefix prepended — the value never lands on disk.
+	Delivery string `json:"delivery,omitempty"`
+	Target   string `json:"target,omitempty"`
+	Prefix   string `json:"prefix,omitempty"`
 }
 
 // groupedCredentialInput reports whether the credential name is a member of an
@@ -371,6 +378,21 @@ func (d ToolDefinition) Validate() error {
 		if !credentialPattern.MatchString(input.Name) || seen[input.Name] {
 			return fmt.Errorf("%w: invalid or duplicate credential input %q", ErrInvalid, input.Name)
 		}
+		switch input.Delivery {
+		case "", "env":
+			if input.Target != "" || input.Prefix != "" {
+				return fmt.Errorf("%w: credential header fields require http_header delivery", ErrInvalid)
+			}
+		case "http_header":
+			if d.Transport != RemoteMCP {
+				return fmt.Errorf("%w: header credential delivery requires remote-mcp", ErrInvalid)
+			}
+			if err := validateHeaderDelivery(input); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%w: unknown credential delivery %q", ErrInvalid, input.Delivery)
+		}
 		if d.Workload.Class == Shared && !input.PerRequest {
 			return fmt.Errorf("%w: shared workload requires per-request credentials", ErrInvalid)
 		}
@@ -380,10 +402,15 @@ func (d ToolDefinition) Validate() error {
 		return fmt.Errorf("%w: too many proxy environment parameters", ErrInvalid)
 	}
 	for _, name := range d.ProxyEnvironment {
-		if !credentialPattern.MatchString(name) || !strings.HasSuffix(name, "_PROXY") || strings.Contains(name, "NO_PROXY") || seen[name] {
+		if !credentialPattern.MatchString(name) || !(strings.HasSuffix(name, "_PROXY") || strings.HasSuffix(name, "_PROXY_HOST") || strings.HasSuffix(name, "_PROXY_PORT")) || strings.Contains(name, "NO_PROXY") || seen[name] {
 			return fmt.Errorf("%w: invalid or duplicate proxy environment parameter %q", ErrInvalid, name)
 		}
 		seen[name] = true
+	}
+	for _, name := range d.ProxyEnvironment {
+		if strings.HasSuffix(name, "_PROXY_HOST") && !seen[strings.TrimSuffix(name, "HOST")+"PORT"] || strings.HasSuffix(name, "_PROXY_PORT") && !seen[strings.TrimSuffix(name, "PORT")+"HOST"] {
+			return fmt.Errorf("%w: incomplete proxy address pair", ErrInvalid)
+		}
 	}
 	for _, group := range d.CredentialGroups {
 		if len(group) == 0 {

@@ -1,10 +1,10 @@
 schema: 1
 id: CHG-0067-task-style
 title: Per-task communication style (issue 168)
-status: in_progress
-phase: verification
+status: complete
+phase: closed
 started_at: 2026-10-04
-updated_at: 2026-10-04
+updated_at: 2026-10-06
 completed:
   - verified pinned /v1/runs instructions field -> ephemeral_system_prompt
   - design: style snapshot pinned on JobMapping at admission
@@ -17,5 +17,9 @@ completed:
   - just check green; SPEC-0011 records the instructions field
   - docker-check green: image build, runtime+supervisor smoke, real pinned
     Hermes 0.21.0 contract probe (hub-stt fixture skipped, pre-existing)
-pending:
-  - live provider style effect requires real Hermes run — not claimed
+pending: []
+closed:
+  - instructions channel to the managed model verified live end-to-end via the
+    VOICE: convention (TTS replies work); style rides the identical /v1/runs
+    instructions field pinned at admission
+  - issue 168 closed 2026-10-06 with evidence comment

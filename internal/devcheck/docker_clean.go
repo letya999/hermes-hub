@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // dockerRunner executes one docker CLI call and returns its combined output.
@@ -83,8 +84,13 @@ func cliDocker(ctx context.Context, args ...string) ([]byte, error) {
 // compose files; "test" is always kept because docker-check produces it.
 func activeImageTags(root string) (map[string]bool, error) {
 	keep := map[string]bool{"test": true}
-	for _, pattern := range []string{"compose*.yaml", "compose*.yml"} {
-		matches, _ := filepath.Glob(filepath.Join(root, "spaces", "*", pattern))
+	for _, pattern := range []string{
+		filepath.Join(root, "spaces", "*", "compose*.yaml"),
+		filepath.Join(root, "spaces", "*", "compose*.yml"),
+		filepath.Join(root, "spaces", "*", "generated", "compose*.yaml"),
+		filepath.Join(root, "spaces", "*", "generated", "compose*.yml"),
+	} {
+		matches, _ := filepath.Glob(pattern)
 		for _, name := range matches {
 			body, err := os.ReadFile(name) // #nosec G304 -- globbed inside the project tree.
 			if err != nil {
@@ -151,11 +157,21 @@ func dockerClean(ctx context.Context, run dockerRunner, keep map[string]bool, de
 	} else {
 		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
 			name, status, _ := strings.Cut(line, "\t")
-			if !isBuildResource(name, "hermes-builder-", "hermes-build-proxy-", "hermes-build-seed-") || strings.HasPrefix(status, "Up") {
+			if strings.HasPrefix(status, "Up") {
 				continue
 			}
-			if _, err := run(ctx, "rm", name); err == nil {
-				fmt.Println("removed orphan build container:", name)
+			switch {
+			case isBuildResource(name, "hermes-builder-", "hermes-build-proxy-", "hermes-build-seed-"):
+				if _, err := run(ctx, "rm", name); err == nil {
+					fmt.Println("removed orphan build container:", name)
+				}
+			case residueContainer(name) && (strings.HasPrefix(status, "Exited") || strings.HasPrefix(status, "Dead")):
+				if !dockerOlderThan(ctx, run, name, residueMinAge) {
+					continue
+				}
+				if _, err := run(ctx, "rm", name); err == nil {
+					fmt.Println("removed residue container:", name)
+				}
 			}
 		}
 	}
@@ -168,6 +184,22 @@ func dockerClean(ctx context.Context, run dockerRunner, keep map[string]bool, de
 			}
 			if _, err := run(ctx, "network", "rm", name); err == nil {
 				fmt.Println("removed orphan build network:", name)
+			}
+		}
+	}
+	// Killed devcheck canaries and toolhub workloads leave stopped containers
+	// and unattached networks behind; deferred cleanup cannot run when the
+	// harness process itself dies. The age guard protects resources whose
+	// harness is still mid-setup.
+	if body, err := run(ctx, "network", "ls", "--filter", "dangling=true", "--format", "{{.Name}}"); err != nil {
+		return fmt.Errorf("dangling network listing failed: %w", err)
+	} else {
+		for _, name := range strings.Fields(string(body)) {
+			if !residueNetwork(name) || !dockerOlderThan(ctx, run, name, residueMinAge) {
+				continue
+			}
+			if _, err := run(ctx, "network", "rm", name); err == nil {
+				fmt.Println("removed residue network:", name)
 			}
 		}
 	}
@@ -193,4 +225,43 @@ func isBuildResource(name string, prefixes ...string) bool {
 		}
 	}
 	return false
+}
+
+// residueMinAge keeps resources younger than this out of the sweep: a harness
+// creates a network and attaches containers within seconds, so anything fresh
+// is still in progress rather than residue.
+const residueMinAge = 10 * time.Minute
+
+// residueContainer reports whether a stopped container name belongs to a
+// devcheck canary or an ephemeral toolhub/toolhive workload. Live compose
+// stacks (hermes-hub-<project>-*) and other projects' containers never match.
+func residueContainer(name string) bool {
+	return isBuildResource(name, "work-", "captest", "hermes-context-",
+		"hermes-contract-", "hermes-cap-", "hermes-capabilities-", "hermes-mgsup-")
+}
+
+// residueNetwork reports whether an unattached network name belongs to a
+// devcheck canary or a toolhub workload. Standing infrastructure networks
+// (control/runtime) are exempt: they are recreated on demand, but keeping them
+// avoids churn. Compose per-stack networks (hermes-hub-*_default, agent nets)
+// do match — when dangling they are recreated on the next up.
+func residueNetwork(name string) bool {
+	switch name {
+	case "hermes-hub-control", "hermes-hub-runtime":
+		return false
+	}
+	return strings.HasPrefix(name, "hermes-") ||
+		strings.HasPrefix(name, "captest") ||
+		strings.HasPrefix(name, "toolhive-")
+}
+
+// dockerOlderThan reports whether a container or network was created more
+// than minAge ago. Uninspectable or unparseable objects are kept.
+func dockerOlderThan(ctx context.Context, run dockerRunner, name string, minAge time.Duration) bool {
+	body, err := run(ctx, "inspect", "--format", "{{.Created}}", name)
+	if err != nil {
+		return false
+	}
+	created, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(body)))
+	return err == nil && time.Since(created) > minAge
 }

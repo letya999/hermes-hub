@@ -156,7 +156,12 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	}
 	lines := []string{"Расход сессии: вход " + usageNum(report.InputTokens) + ", выход " + usageNum(report.OutputTokens) +
 		", кэш " + usageNum(report.CacheReadTokens) + "/" + usageNum(report.CacheWriteTokens) + "."}
-	contextLine := "Сжатий сессии: " + usageNum(report.Compactions) + usageSuffix(report.LastCompactionAt) + "."
+	compactions := usageNum(report.Compactions)
+	if report.CompactionsTruncated && report.Compactions != nil {
+		// Hop-capped lineage is a lower bound, never a silent truncation.
+		compactions = "≥" + compactions
+	}
+	contextLine := "Сжатий сессии: " + compactions + usageSuffix(report.LastCompactionAt) + "."
 	if report.ContextTokens != nil && report.ContextWindow != nil && *report.ContextWindow > 0 {
 		contextLine = "Контекст: " + strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
 			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%). " + contextLine

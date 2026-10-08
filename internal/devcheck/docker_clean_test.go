@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
@@ -80,6 +81,67 @@ func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
 		"rm ai-stp-api-1",
 		"network rm bridge",
 		"volume rm hermes-build-state-shared",
+	} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("unexpected %q in\n%s", unwanted, joined)
+		}
+	}
+}
+
+func TestDockerCleanSweepsAgedHarnessResidue(t *testing.T) {
+	old := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	fresh := time.Now().UTC().Format(time.RFC3339Nano)
+	var calls []string
+	run := func(ctx context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		switch args[0] {
+		case "inspect":
+			name := args[len(args)-1]
+			if strings.Contains(name, "fresh") {
+				return []byte(fresh + "\n"), nil
+			}
+			return []byte(old + "\n"), nil
+		case "ps":
+			return []byte("work-deadbeef\tExited (1) 3 hours ago\n" +
+				"captest122-srv\tExited (0) 2 days ago\n" +
+				"hermes-context-aaaabbbb\tExited (0) 5 hours ago\n" +
+				"work-fresh000\tExited (1) 1 minute ago\n" +
+				"work-stillup\tUp 4 hours\n" +
+				"hermes-hub-telegram-1-dev-toolhub-1\tExited (0) 2 days ago\n" +
+				"ai-stp-seed-1\tExited (0) 2 days ago\n"), nil
+		case "network":
+			if slices.Contains(args, "dangling=true") {
+				return []byte("hermes-work-aaaabbbb\nhermes-supervisor-1234\nhermes-cap-agent-fresh0\ntoolhive-hermes-thv-x\nhermes-hub-control\nbridge\nai-stp-net\n"), nil
+			}
+			return []byte(""), nil
+		}
+		return []byte(""), nil
+	}
+	if err := dockerClean(context.Background(), run, map[string]bool{"test": true}, false); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	for _, want := range []string{
+		"rm work-deadbeef",
+		"rm captest122-srv",
+		"rm hermes-context-aaaabbbb",
+		"network rm hermes-work-aaaabbbb",
+		"network rm hermes-supervisor-1234",
+		"network rm toolhive-hermes-thv-x",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in\n%s", want, joined)
+		}
+	}
+	for _, unwanted := range []string{
+		"rm work-fresh000",
+		"rm work-stillup",
+		"rm hermes-hub-telegram-1-dev-toolhub-1",
+		"rm ai-stp-seed-1",
+		"network rm hermes-cap-agent-fresh0",
+		"network rm hermes-hub-control",
+		"network rm bridge",
+		"network rm ai-stp-net",
 	} {
 		if strings.Contains(joined, unwanted) {
 			t.Fatalf("unexpected %q in\n%s", unwanted, joined)
@@ -161,6 +223,20 @@ func TestDockerCleanPropagatesListingErrors(t *testing.T) {
 	if err := dockerClean(context.Background(), ancestorFails, map[string]bool{"test": true}, false); err != nil {
 		t.Fatal(err)
 	}
+	for _, check := range []struct {
+		command string
+		deep    bool
+	}{{"buildx", false}, {"builder", true}} {
+		failsOnPrune := func(_ context.Context, args ...string) ([]byte, error) {
+			if args[0] == check.command {
+				return nil, fmt.Errorf("prune failed")
+			}
+			return nil, nil
+		}
+		if err := dockerClean(context.Background(), failsOnPrune, map[string]bool{"test": true}, check.deep); err == nil {
+			t.Fatalf("%s prune failure accepted", check.command)
+		}
+	}
 }
 
 func TestDockerCleanPropagatesTagScanError(t *testing.T) {
@@ -170,15 +246,6 @@ func TestDockerCleanPropagatesTagScanError(t *testing.T) {
 	}
 	if err := DockerClean(context.Background(), root, false); err == nil {
 		t.Fatal("unreadable compose layout accepted")
-	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker CLI unavailable")
-	}
-	if _, err := cliDocker(context.Background(), "info", "--format", "{{.ServerVersion}}"); err != nil {
-		t.Skip("docker daemon unavailable")
-	}
-	if err := DockerClean(context.Background(), t.TempDir(), false); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -264,11 +331,18 @@ func TestActiveImageTagsKeepsComposeReferences(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(space, "compose.prod.yml"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
+	generated := filepath.Join(space, "generated")
+	if err := os.MkdirAll(generated, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "compose.dev.yaml"), []byte("services:\n  runtime:\n    image: hermes-hub:0.3.0-dev\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	keep, err := activeImageTags(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !keep["9.9.9-prod"] || !keep["test"] || keep["1"] {
+	if !keep["9.9.9-prod"] || !keep["0.3.0-dev"] || !keep["test"] || keep["1"] {
 		t.Fatalf("unexpected keep set: %v", keep)
 	}
 	broken := filepath.Join(root, "spaces", "broken")

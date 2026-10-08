@@ -1,10 +1,10 @@
 schema: 1
 id: CHG-0068-usage-report
 title: Real task/session usage report (issue 169)
-status: in_progress
-phase: verification
+status: complete
+phase: closed
 started_at: 2026-10-04
-updated_at: 2026-10-04
+updated_at: 2026-10-06
 completed:
   - verified pinned session/messages payload shape and pagination;
     resolve_resume_session_id exposes the effective session id
@@ -22,5 +22,9 @@ completed:
   - just check green; SPEC-0011 records the measured session fields
   - docker-check green: image build, runtime+supervisor smoke, real pinned
     Hermes 0.21.0 contract probe (hub-stt fixture skipped, pre-existing)
-pending:
-  - real-session figures need a live Hermes deployment — mock fixtures only
+pending: []
+closed:
+  - live /v1/usage verified 2026-10-06: stopped runtime spawned under lease
+    (~47s), real session measured (session_found, input/output tokens),
+    lease released to idle; compact render shipped the same day
+  - issue 169 closed 2026-10-06 with evidence comment

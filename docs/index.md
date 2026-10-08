@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-10-04
+last_verified: 2026-10-07
 ---
 # Documentation
 
@@ -10,8 +10,8 @@ last_verified: 2026-10-04
 |---|---|---|
 | [capability-boundary-audit.md](capability-boundary-audit.md) | Issue 122 current gaps, pinned-Hermes probes and Context7/GitHub evidence for proposed enforcement | 2026-10-02 |
 | [architecture.md](architecture.md) | Current components and capability enforcement progress | 2026-10-02 |
-| [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-09-28 |
-| [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, generic lifecycle and handoffs | 2026-09-27 |
+| [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-10-07 |
+| [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, bundle states, generic lifecycle and handoffs | 2026-10-07 |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup | 2026-09-15 |
 | [operations.md](operations.md) | Deployment, runtime lifecycle, explicit control grants, backup and recovery | 2026-10-02 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-28 |

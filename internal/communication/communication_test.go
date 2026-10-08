@@ -158,6 +158,16 @@ func testConfig(t *testing.T) Config {
 	return Config{OrganizationID: "personal", TelegramToken: "token", SpoolDir: filepath.Join(root, "spool"), PollTimeout: time.Second, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: filepath.Join(root, "alice", "state"), WorkspaceDir: filepath.Join(root, "alice", "workspace"), Features: []string{"workspace", "github"}, ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}}}
 }
 
+func TestFillChannelSecretsTelegramAuthAPI(t *testing.T) {
+	t.Setenv("HUB_TELEGRAM_AUTH_API_ID", "123")
+	t.Setenv("HUB_TELEGRAM_AUTH_API_HASH", strings.Repeat("a", 32))
+	var config Config
+	fillChannelSecrets(&config)
+	if config.TelegramAuthAPIID != "123" || config.TelegramAuthAPIHash != strings.Repeat("a", 32) {
+		t.Fatal("Telegram auth API credentials not loaded from environment")
+	}
+}
+
 func TestConfigAndYAML(t *testing.T) {
 	c := testConfig(t)
 	if err := c.Validate(); err != nil {
@@ -1372,8 +1382,15 @@ func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
 		g.deliverOne(context.Background())
 	}
 	got := output.String()
-	if !strings.Contains(got, "ordinary question") || !strings.Contains(got, "normal answer") || !strings.Contains(got, "update_id=1") || strings.Contains(got, "private-value") || strings.Contains(got, "private-form-link") || strings.Contains(got, "unknown-user-text") || strings.Contains(got, "secret-code") {
-		t.Fatal(got)
+	// Message bodies never reach normal logs: the line keeps its IDs and a
+	// length so incidents stay diagnosable without storing conversations.
+	for _, leaked := range []string{"ordinary question", "normal answer", "private-value", "private-form-link", "unknown-user-text", "secret-code"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("message text leaked into normal logs: %q\n%s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "update_id=1") || !strings.Contains(got, "text_len=") {
+		t.Fatalf("diagnostic line lost IDs/lengths:\n%s", got)
 	}
 	g.recordJob(Job{ID: "telegram-1", UserID: "alice"}, RunOutcome{RunID: "run-1", Status: "completed"})
 	if !strings.Contains(output.String(), "gateway job user=\"alice\" job_id=\"telegram-1\" run_id=\"run-1\"") {

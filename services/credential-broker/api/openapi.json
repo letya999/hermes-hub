@@ -406,6 +406,30 @@
           "code"
         ]
       },
+      "TelegramSubmit": {
+        "type": "object",
+        "properties": {
+          "api_id": {
+            "type": "string"
+          },
+          "api_hash": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "expected_user_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "api_id",
+          "api_hash",
+          "session",
+          "expected_user_id"
+        ]
+      },
       "GrantRequest": {
         "type": "object",
         "properties": {
@@ -1002,6 +1026,60 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Approve"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/requests/{request_id}/telegram-submit": {
+      "post": {
+        "operationId": "telegramSubmit",
+        "summary": "Owner-bound Telegram QR session transfer from Communication Hub",
+        "x-required-audience": "broker:approve",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramSubmit"
               }
             }
           }

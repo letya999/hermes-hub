@@ -151,6 +151,11 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		dockerArgv = []string{"docker"}
 	}
 	run := func(ctx context.Context, stdin io.Reader, args ...string) (stdout, stderr []byte, err error) {
+		if scope := currentDockerScope(); scope != nil {
+			if gerr := scope.guardDocker(ctx, args); gerr != nil {
+				return nil, nil, gerr
+			}
+		}
 		cmd := exec.CommandContext(ctx, dockerArgv[0], append(dockerArgv[1:], args...)...)
 		cmd.Stdin = stdin
 		var out, errb bytes.Buffer
@@ -225,8 +230,11 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		args := []string{"run", "--name", name, "--network", "none", "--read-only",
 			"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", "10001:10001",
 			"--tmpfs", "/scratch:rw,exec,size=64m", "--tmpfs", "/outputs:rw,size=64m", "--tmpfs", "/tmp:rw,size=16m",
-			"--memory", "256m", "--cpus", "0.5", "--pids-limit", "64", "--stop-timeout", "2",
-			"-i", "--entrypoint", "hubctl", image, "exec-scratch"}
+			"--memory", "256m", "--cpus", "0.5", "--pids-limit", "64", "--stop-timeout", "2"}
+		if scope := currentDockerScope(); scope != nil {
+			args = append(args, "--label", "hermes-hub.scope="+scope.project)
+		}
+		args = append(args, "-i", "--entrypoint", "hubctl", image, "exec-scratch")
 		stdout, stderr, runErr := run(lease, bytes.NewReader(body), args...)
 		stopped, stopErr := confirmStopped(cleanCtx, run, name)
 		if !stopped {

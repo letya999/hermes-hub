@@ -107,7 +107,13 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 		config.Execution.Egress = []string{"127.0.0.1"}
 	}
 	config.ProxyEnvironment = mergeProxyEnvironment(config.ProxyEnvironment, discoverProxyEnvironment(contextBytes), claimedEnvironmentNames(config))
-	recipe, generated, err := GenerateArtifactRecipe(contextBytes, config.Language, config.BaseImage, config.Entrypoint)
+	var pythonExtras []string
+	if entry, ok, lookupErr := preparedForSource(source); lookupErr != nil {
+		return ImportedArtifact{}, lookupErr
+	} else if ok {
+		pythonExtras = entry.PythonExtras
+	}
+	recipe, generated, err := GenerateArtifactRecipe(contextBytes, config.Language, config.BaseImage, config.Entrypoint, pythonExtras...)
 	if err != nil {
 		return ImportedArtifact{}, err
 	}

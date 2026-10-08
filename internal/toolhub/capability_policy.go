@@ -220,6 +220,8 @@ func confirmationTarget(record any) (**Confirmation, string) {
 		return &r.Confirmation, r.IssuedBy
 	case *Grant:
 		return &r.Confirmation, r.IssuedBy
+	case *ToolGrant:
+		return &r.Confirmation, r.GrantedBy
 	}
 	return nil, ""
 }

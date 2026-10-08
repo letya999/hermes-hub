@@ -236,6 +236,34 @@ func (b *Broker) Submit(ctx context.Context, id, raw, csrf string, values provid
 	_, e = b.ready(&r, ref, true, &s)
 	return e
 }
+
+// SubmitTelegram accepts a fresh personal session from the signed
+// Communication Hub QR plugin. The signer is owner-bound; this route is only
+// valid for the reviewed Telegram contract and a pending request.
+func (b *Broker) SubmitTelegram(ctx context.Context, a identity.Actor, id string, values provider.Bundle) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.live() {
+		return ErrUnavailable
+	}
+	r, ok := b.requests[id]
+	if !ok || !requestBy(a, r) || r.View.ContractID != "telegram-session" || r.View.ContractRevision != 1 {
+		return ErrNotFound
+	}
+	if !b.now().Before(r.View.ExpiresAt) || r.View.Status != "pending" {
+		return ErrExpired
+	}
+	c := b.catalog[r.ContractKey]
+	if c.ValidateValues(values) != nil {
+		return ErrInvalid
+	}
+	ref, err := b.cfg.Providers.Put(ctx, c.Storage, values)
+	if err != nil {
+		return ErrUnavailable
+	}
+	_, err = b.ready(&r, ref, true, nil)
+	return err
+}
 func (b *Broker) ready(r *requestRecord, ref provider.Ref, managed bool, s *sessionRecord) (credentialRecord, error) {
 	id := r.RotateID
 	rev := uint64(1)

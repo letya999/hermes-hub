@@ -1,6 +1,6 @@
 ---
 description: Connector contracts, scope rules and source pins.
-last_verified: 2026-09-30
+last_verified: 2026-10-07
 ---
 # Integration contracts
 
@@ -81,8 +81,11 @@ per call and wiped by Go after execution; there is no unattended login.
 
 `connector revoke` immediately blocks local calls and revokes ciphertext.
 To invalidate the imported session at Telegram itself, explicitly terminate
-it in Telegram Devices. Telegram does not use OAuth refresh. Neither fixtures
-nor the Docker SDK tests establish live login, sending or provider revocation.
+it in Telegram Devices. Telegram does not use OAuth refresh. The pinned adapter
+has completed a live self-message send, reply and deletion through restricted
+Docker egress on a separate owner-approved account, with message-ID and deletion
+`pts` receipts. This does not validate write access through the read-only prepared
+Broker entry or provider-side session termination.
 
 ## ToolHub command boundary
 
@@ -767,7 +770,7 @@ cannot satisfy a needed source.
 | Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
 | Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai; hub `hub-web` plugin adds `web_providers` + `web_search_multi` fan-out + `web_cache` cleanup | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
-| Telegram account | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp), `c9460f8ded6e2457bd70ebabfad840b58d23645d` | Python stdio; TELEGRAM_EXPOSED_TOOLS server allowlist |
+| Telegram account | [letya999/telegram-mcp](https://github.com/letya999/telegram-mcp), `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults to `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate |
 | Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
 | Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
 | Google | Official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019); the third-party Workspace MCP is not in the default hub image | ToolHub remote read grants per product |
@@ -780,7 +783,11 @@ cannot satisfy a needed source.
 | Memory Bank | [letya999/memory_bank_setup](https://github.com/letya999/memory_bank_setup), `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | Documentation separation and change-folder conventions |
 
 The GitHub row is the opt-in remote MCP only (`https://api.githubcopilot.com/mcp/`
-with a `GITHUB_TOKEN` bearer); it is independent of `prepare_source`
+with a `GITHUB_TOKEN` bearer), registered per owner through `prepare_source`
+`remote_url` (SPEC-0045): the endpoint must be a public HTTPS MCP destination —
+private names, IP literals, redirects and non-MCP responses are refused — the
+token is collected by the protected loopback form and injected as
+`Authorization: Bearer` on the admitted call only. It is independent of `prepare_source`
 self-install, which only inspects the pinned repository as metadata and builds
 from the generated `.hub` recipe, never the upstream Dockerfile. The two paths
 also keep separate credentials: the remote connector takes `GITHUB_TOKEN`,
@@ -854,7 +861,11 @@ URLs recorded in SPEC-0020. Remote MCP discovers `authorization_endpoint` and
 `token_endpoint` via RFC 9728 and RFC 8414. Tokens persist only in the encrypted
 store. Live provider login is a later milestone.
 
-`communication-hub` never mounts scope homes or receives provider credentials. It sends
+`communication-hub` never mounts scope homes. Its opt-in `telegram_auth` build
+temporarily holds a fresh Telegram MTProto session in memory while the owner
+confirms QR login, then sends it through an owner-signed, Telegram-only Broker
+request. It never writes the session to the channel spool or logs. All other
+provider credentials remain outside the gateway. The hub sends
 the immutable job envelope to `hermes-runtime` over a private Bearer-authenticated HTTP
 contract. Runtime binding rejects mismatched user, organization, actor or scope before
 opening a path; failed and uncertain results are not blindly replayed.

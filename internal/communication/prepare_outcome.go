@@ -12,18 +12,20 @@ import (
 )
 
 type prepareOutcomeRequest struct {
-	OnboardingID string `json:"onboarding_id"`
-	Phase        string `json:"phase"`
-	DefinitionID string `json:"definition_id"`
-	Repository   string `json:"repository"`
-	Detail       string `json:"detail"`
-	FormURL      string `json:"form_url"`
-	Event        string `json:"event"`
-	Tools        int    `json:"tools"`
+	OnboardingID    string `json:"onboarding_id"`
+	Phase           string `json:"phase"`
+	DefinitionID    string `json:"definition_id"`
+	ContractID      string `json:"contract_id"`
+	BrokerRequestID string `json:"broker_request_id"`
+	Repository      string `json:"repository"`
+	Detail          string `json:"detail"`
+	FormURL         string `json:"form_url"`
+	Event           string `json:"event"`
+	Tools           int    `json:"tools"`
 }
 
 // handlePrepareOutcome turns a finished ToolHub prepare into a channel reply
-// and a continuation job. The MCP logging nudge never reaches Telegram.
+// and, when no user login is pending, a continuation job.
 func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	caller, ok := g.authorizeControl(r)
 	if !ok {
@@ -60,6 +62,14 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
 	}
+	if request.ContractID != "" && !identity.ValidID(request.ContractID) {
+		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
+		return
+	}
+	if request.BrokerRequestID != "" && !identity.ValidID(request.BrokerRequestID) {
+		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
+		return
+	}
 	if !loopbackCredentialURL(request.FormURL) {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
@@ -69,9 +79,10 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown principal", http.StatusForbidden)
 		return
 	}
-	notice := prepareOutcomeNotice(request)
-	key := prepareOutcomeKey(request)
-	if err := g.deliverPrepareNotice(user, caller, key, notice, request); err != nil {
+	loginURL := g.telegramAuthInvite(caller, request)
+	notice := prepareOutcomeNotice(request, loginURL)
+	key := prepareOutcomeKey(request, loginURL)
+	if err := g.deliverPrepareNotice(user, caller, key, notice, request, loginURL != ""); err != nil {
 		http.Error(w, "prepare outcome rejected", http.StatusBadRequest)
 		return
 	}
@@ -100,7 +111,7 @@ func knownPrepareEvent(event string) bool {
 	}
 }
 
-func prepareOutcomeNotice(request prepareOutcomeRequest) string {
+func prepareOutcomeNotice(request prepareOutcomeRequest, loginURL string) string {
 	repo := strings.TrimSpace(request.Repository)
 	if repo == "" {
 		repo = "репозиторий"
@@ -125,6 +136,13 @@ func prepareOutcomeNotice(request prepareOutcomeRequest) string {
 	}
 	switch request.Phase {
 	case "awaiting-credentials":
+		if request.ContractID == "telegram-session" && loginURL != "" {
+			text := "Для подключения Telegram откройте на этом компьютере: " + loginURL + " Введите API ID и API hash, затем создайте QR и подтвердите вход в приложении Telegram. После входа напишите боту «продолжи подключение Telegram». Сессию в чат отправлять не нужно."
+			if request.FormURL != "" {
+				text += " Запасная форма: " + request.FormURL
+			}
+			return text
+		}
 		text := "Подготовка MCP для " + repo + " собрала образ. Сервер ждёт данные в защищённой форме."
 		if formURL := strings.TrimSpace(request.FormURL); formURL != "" {
 			text += " Откройте её на этом компьютере: " + formURL
@@ -165,7 +183,7 @@ func prepareContinuation(request prepareOutcomeRequest) string {
 // prepareOutcomeKey changes when a new form link is minted. Reusing the
 // onboarding id with the previous link's payload made the notice return 400
 // and the channel never received the fresh URL.
-func prepareOutcomeKey(request prepareOutcomeRequest) string {
+func prepareOutcomeKey(request prepareOutcomeRequest, loginURL string) string {
 	key := "prepare-" + request.OnboardingID + "-" + request.Phase
 	if request.Event != "" {
 		key += "-" + request.Event
@@ -178,6 +196,10 @@ func prepareOutcomeKey(request prepareOutcomeRequest) string {
 	}
 	if form := strings.TrimSpace(request.FormURL); form != "" {
 		sum := sha256.Sum256([]byte(form))
+		key += "-" + hex.EncodeToString(sum[:4])
+	}
+	if loginURL != "" {
+		sum := sha256.Sum256([]byte(loginURL))
 		key += "-" + hex.EncodeToString(sum[:4])
 	}
 	return key
@@ -200,7 +222,7 @@ func loopbackCredentialURL(raw string) bool {
 	return strings.HasPrefix(parsed.Path, "/credentials/")
 }
 
-func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key, notice string, request prepareOutcomeRequest) error {
+func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key, notice string, request prepareOutcomeRequest, waitingForLogin bool) error {
 	if len(user.TelegramIDs) == 0 {
 		return errNoPrepareChannel
 	}
@@ -210,9 +232,8 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
 	}
-	if request.Event != "" {
-		// Interim progress is a channel notice only; a continuation job would
-		// push the agent to act on a phase that has not settled yet.
+	if request.Event != "" || waitingForLogin {
+		// Wait for user action before resuming the agent.
 		return nil
 	}
 	task := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)
