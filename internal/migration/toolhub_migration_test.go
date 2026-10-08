@@ -168,3 +168,80 @@ func TestToolHubMigrationApplyRejectsUnwritableParent(t *testing.T) {
 		t.Fatal("missing settings accepted")
 	}
 }
+
+// applyToolHubStore: an existing store is swapped aside as a rollback copy
+// and the fresh store lands atomically; the report points at the backup.
+func TestApplyToolHubStoreRollback(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "store.json")
+	original := []byte(`{"schema":1,"revision":7}`)
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	report := ToolHubMigrationReport{}
+	if err := applyToolHubStore(toolhub.NewStore(), path, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.RollbackPath != path+".rollback" || report.RollbackOnFailure {
+		t.Fatalf("rollback report: %+v", report)
+	}
+	backup, err := os.ReadFile(report.RollbackPath)
+	if err != nil || string(backup) != string(original) {
+		t.Fatalf("original not preserved in rollback copy: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("new store missing: %v", err)
+	}
+	// Nested path creates the parent dir.
+	nested := filepath.Join(root, "a", "b", "store.json")
+	if err := applyToolHubStore(toolhub.NewStore(), nested, &ToolHubMigrationReport{}); err != nil {
+		t.Fatalf("nested path: %v", err)
+	}
+}
+
+// preserveLegacyUserMCP: seeds a migration allow only when the space declares
+// MCP and no governance document exists; an existing document is untouched.
+func TestPreserveLegacyUserMCP(t *testing.T) {
+	root := t.TempDir()
+	settings := "schema: 1\nuser: alice\ntimezone: UTC\nmcp_servers:\n  remote:\n    url: https://example.invalid/mcp\n"
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(settings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	govPath := filepath.Join(root, "runtime", "toolhub", "governance.json")
+	if err := preserveLegacyUserMCP(root, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := toolhub.LoadGovernance(govPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := doc.Evaluate("alice", "", toolhub.SectionUserMCP, nil, time.Now()); !d.Allowed() {
+		t.Fatalf("migration allow missing: %+v", d)
+	}
+	if d := doc.Evaluate("bob", "", toolhub.SectionUserMCP, nil, time.Now()); d.Allowed() {
+		t.Fatalf("migration allow leaked: %+v", d)
+	}
+	// Second run is a no-op — the existing document is authoritative.
+	doc.Revision = 99
+	if err := toolhub.SaveGovernance(govPath, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := preserveLegacyUserMCP(root, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _ := toolhub.LoadGovernance(govPath)
+	if reloaded.Revision != 99 {
+		t.Fatal("existing governance doc was rewritten")
+	}
+	// Spaces without MCP declarations seed nothing.
+	empty := t.TempDir()
+	if err := os.WriteFile(filepath.Join(empty, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preserveLegacyUserMCP(empty, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, "runtime", "toolhub", "governance.json")); !os.IsNotExist(err) {
+		t.Fatal("governance seeded without mcp declarations")
+	}
+}

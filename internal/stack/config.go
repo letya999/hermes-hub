@@ -67,6 +67,10 @@ type Settings struct {
 	SpaceDir              string   `yaml:"-"`
 	OrganizationRole      string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
+	// gov is the per-load tool-governance view (issue 139): the evaluated
+	// decisions and cap:read overrides the render consumers enforce. Nil when
+	// the Settings were built without Read — the load path is the boundary.
+	gov *toolGovernance
 	// ImageGen configures the opt-in image_gen capability. Empty fields use
 	// cliproxy, that provider's default model, and workspace delivery.
 	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
@@ -655,7 +659,10 @@ func finishRead(s Settings, dir string) (Settings, error) {
 	} else if !os.IsNotExist(scopeErr) {
 		return s, scopeErr
 	}
-	return s, s.Validate()
+	if err := s.Validate(); err != nil {
+		return s, err
+	}
+	return s, applyGovernance(&s)
 }
 
 // ReadEnvironment selects runtime settings without making dev/prod a user namespace.
@@ -672,6 +679,11 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 		}
 		s, e = ApplyOrganization(org, s, orgDir)
 		if e != nil {
+			return s, e
+		}
+		// The merged organization catalog is the org_mcp surface; re-run
+		// governance so org-scope rules and the org floor apply to it too.
+		if e = applyGovernance(&s); e != nil {
 			return s, e
 		}
 	}

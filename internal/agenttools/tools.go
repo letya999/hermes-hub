@@ -64,18 +64,23 @@ type Tools struct {
 	HHEnabled, OrgScoped             bool
 	OrgActions                       map[string]bool
 	ReadOnlyTools                    map[string]bool
-	StateDir                         string
-	ToolHub                          *toolhub.Store
-	ToolHubAuth                      identity.Envelope
-	SSH                              *sshcap.Service
-	SSHGrants                        sshcap.Grants
-	sshErr                           error
-	Restart                          func() error
-	CommunicationURL                 string
-	CommunicationAuth                string
-	Media                            *media.Session
-	mu                               sync.Mutex
-	lock, envLock                    *flock.Flock
+	// ToolPolicy is the rendered tool-governance extract (HUB_TOOL_POLICY):
+	// deny/deny-all/refuse-read only decisions compiled per capability
+	// family. Nil on unmanaged runtimes — the env pin is only rendered with
+	// the managed mount.
+	ToolPolicy        *toolhub.ToolPolicySnapshot
+	StateDir          string
+	ToolHub           *toolhub.Store
+	ToolHubAuth       identity.Envelope
+	SSH               *sshcap.Service
+	SSHGrants         sshcap.Grants
+	sshErr            error
+	Restart           func() error
+	CommunicationURL  string
+	CommunicationAuth string
+	Media             *media.Session
+	mu                sync.Mutex
+	lock, envLock     *flock.Flock
 }
 
 var signalRuntime = func(process *os.Process) {
@@ -139,7 +144,18 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 	if communicationAuth == "" {
 		communicationAuth = os.Getenv("HUB_RUNTIME_AUTH")
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	toolPolicy, err := loadToolPolicy()
+	if err != nil {
+		_ = w.Close()
+		if a != nil {
+			_ = a.Close()
+		}
+		if o != nil {
+			_ = o.Close()
+		}
+		return nil, err
+	}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	t.openSSH()
 	return t, nil
 }
@@ -161,6 +177,22 @@ func readOnlyToolNames(capabilities map[string]bool) map[string]bool {
 		}
 	}
 	return names
+}
+
+// loadToolPolicy reads the rendered governance extract. The env pin arrives
+// only with the managed /config mount, so a set pin with a missing or
+// corrupt file is a hard failure — the executor refuses to start rather than
+// guessing at authority.
+func loadToolPolicy() (*toolhub.ToolPolicySnapshot, error) {
+	path := strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY"))
+	if path == "" {
+		return nil, nil
+	}
+	policy, err := toolhub.LoadToolPolicy(path)
+	if err != nil {
+		return nil, fmt.Errorf("tool policy: %w", err)
+	}
+	return policy, nil
 }
 
 func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {

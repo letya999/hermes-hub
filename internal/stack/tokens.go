@@ -103,6 +103,7 @@ func runtimeTokenEnvelope(s Settings) (identity.Envelope, error) {
 		ExternalIdentityID: s.User,
 		ContextID:          contextID,
 		RuntimeID:          s.User,
+		Organization:       s.Organization,
 		ConversationID:     "toolhub",
 		DeliveryTargetID:   "toolhub",
 		PolicyVersion:      PolicyVersion(s),

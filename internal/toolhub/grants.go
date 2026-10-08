@@ -21,6 +21,7 @@ const (
 	PublicationUser       string    = "user"
 	OnboardingCatalog     string    = "catalog"
 	OnboardingSelfInstall string    = "self-install"
+	OnboardingRemote      string    = "remote-mcp"
 	PhasePreparing        string    = "preparing"
 	PhaseReview           string    = "review"
 	PhaseAwaitingCreds    string    = "awaiting-credentials"
@@ -34,7 +35,7 @@ const (
 	PhaseFailed           string    = "failed"
 )
 
-var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics"}
+var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics", "grant_request"}
 
 type Grant struct {
 	Schema            int           `json:"schema"`
@@ -234,7 +235,7 @@ func (o Onboarding) Validate() error {
 	if o.Schema != SchemaVersion || !identity.ValidID(o.OnboardingID) || !identity.ValidID(o.PrincipalID) || !identity.ValidID(o.ContextID) || !identity.ValidID(o.RuntimeID) || !identity.ValidID(o.PolicyVersion) || o.Revision == 0 {
 		return fmt.Errorf("%w: onboarding identity", ErrInvalid)
 	}
-	if o.Mode != OnboardingCatalog && o.Mode != OnboardingSelfInstall {
+	if o.Mode != OnboardingCatalog && o.Mode != OnboardingSelfInstall && o.Mode != OnboardingRemote {
 		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
 	}
 	switch o.Phase {

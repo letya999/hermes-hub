@@ -44,6 +44,9 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 // call dispatches to one handler. ws, ar and org are the call-scoped roots;
 // handlers for non-filesystem capabilities ignore them.
 func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.Root) (any, error) {
+	if reason := t.toolPolicyDeny(name); reason != "" {
+		return nil, errors.New(reason)
+	}
 	if t.ReadOnlyTools[name] {
 		return nil, fmt.Errorf("%s is read-only on this runtime", name)
 	}
@@ -115,6 +118,35 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+// toolPolicyDeny re-checks the rendered governance extract at dispatch — the
+// plane-3 fence that keeps a mid-session denial effective even for a binding
+// whose scopes were admitted before the rule landed. Capability families are
+// the snapshot's unit; a write-effect tool of a read-only family refuses
+// exactly like HUB_TOOLS_RO.
+func (t *Tools) toolPolicyDeny(name string) string {
+	p := t.ToolPolicy
+	if p == nil {
+		return ""
+	}
+	if p.DenyAll {
+		return name + " is denied by tool governance on this runtime"
+	}
+	for _, spec := range HubToolsDefinition().Tools {
+		if spec.Name != name {
+			continue
+		}
+		family, _, _ := strings.Cut(spec.CapabilityID, ".")
+		if p.Denied(spec.CapabilityID) || p.Denied(family) {
+			return name + " is denied by tool governance on this runtime"
+		}
+		if spec.Effect == toolhub.WriteEffect && (p.CappedReadOnly(spec.CapabilityID) || p.CappedReadOnly(family)) {
+			return name + " is read-only on this runtime"
+		}
+		return ""
+	}
+	return ""
 }
 
 func (t *Tools) sshDispatch(ctx context.Context, name string, r Input) (any, error) {

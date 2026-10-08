@@ -215,6 +215,12 @@ type CredentialInput struct {
 	Name       string `json:"name"`
 	Required   bool   `json:"required"`
 	PerRequest bool   `json:"per_request"`
+	// Delivery routes the admitted value. Empty and "env" mean workload
+	// environment. "http_header" (remote-mcp only) sends the value as the
+	// Target header with Prefix prepended — the value never lands on disk.
+	Delivery string `json:"delivery,omitempty"`
+	Target   string `json:"target,omitempty"`
+	Prefix   string `json:"prefix,omitempty"`
 }
 
 // groupedCredentialInput reports whether the credential name is a member of an
@@ -371,6 +377,21 @@ func (d ToolDefinition) Validate() error {
 		}
 		if !credentialPattern.MatchString(input.Name) || seen[input.Name] {
 			return fmt.Errorf("%w: invalid or duplicate credential input %q", ErrInvalid, input.Name)
+		}
+		switch input.Delivery {
+		case "", "env":
+			if input.Target != "" || input.Prefix != "" {
+				return fmt.Errorf("%w: credential header fields require http_header delivery", ErrInvalid)
+			}
+		case "http_header":
+			if d.Transport != RemoteMCP {
+				return fmt.Errorf("%w: header credential delivery requires remote-mcp", ErrInvalid)
+			}
+			if err := validateHeaderDelivery(input); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%w: unknown credential delivery %q", ErrInvalid, input.Delivery)
 		}
 		if d.Workload.Class == Shared && !input.PerRequest {
 			return fmt.Errorf("%w: shared workload requires per-request credentials", ErrInvalid)

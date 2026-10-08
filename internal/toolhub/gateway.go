@@ -156,6 +156,10 @@ type Gateway struct {
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   CredentialInjector
 	Control                    *ControlPlane
+	// Governance is the host-owned tool policy document (issue 139). Nil
+	// keeps the legacy projection behavior; a configured but unreadable
+	// document fails every projection closed.
+	Governance *GovernanceStore
 	// ControlToken is the control-plane bearer (supervisor auth) allowed to
 	// read a principal's connector inventory via X-Hub-Principal. Principal
 	// bearers always pin their own envelope and never use the header.
@@ -199,6 +203,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle(DefaultEndpointPath, g.protect())
 	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
+	mux.Handle("/grants/", http.HandlerFunc(g.serveGrantAck))
 	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
 	return mux, nil
 }
@@ -229,6 +234,10 @@ func (g *Gateway) serveConnectors(w http.ResponseWriter, r *http.Request) {
 	}
 	tools, err := g.Store.ListProjectedTools(auth)
 	if err != nil {
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if tools, err = g.filterProjectedTools(auth, tools); err != nil {
 		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -429,6 +438,9 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if projected, err = g.filterProjectedTools(auth, projected); err != nil {
+		return nil, nil, nil, err
+	}
 	tools := make(map[string]ToolSpec, len(projected))
 	for _, projectedTool := range projected {
 		g.addProjectedTool(server, auth, projectedTool)
@@ -518,6 +530,9 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	if err != nil {
 		return err
 	}
+	if projected, err = g.filterProjectedTools(projection.auth, projected); err != nil {
+		return err
+	}
 	controls, err := g.allowedControls(projection.auth)
 	if err != nil {
 		return err
@@ -560,7 +575,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	}
 	ctx = withCallCorrelation(ctx, corr)
 	var out *mcp.CallToolResult
-	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, func(projected ProjectedTool, effective EffectiveBinding) error {
+	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected ProjectedTool, effective EffectiveBinding) error {
 		if auth.CapabilityProfile != "" && g.AuditWrite == nil {
 			return fmt.Errorf("%w: managed dispatch requires durable audit", ErrUnauthorized)
 		}
@@ -637,7 +652,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			fields["receipt"] = receipt
 		}
 		return g.audit("allow", mergeAudit(fields, corr))
-	})
+	}))
 	if err != nil && out == nil {
 		fields := map[string]string{
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
@@ -873,6 +888,9 @@ type MCPBackend struct {
 type WorkloadAdmission func(context.Context, EffectiveBinding) error
 
 func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding, environment map[string]string) (readyErr error) {
+	if effective.Definition.Transport == RemoteMCP && remoteDefinitionEndpoint(effective) {
+		return b.remoteReady(ctx, effective, environment)
+	}
 	if effective.Definition.Transport != ContainerMCP {
 		return nil
 	}
@@ -1022,6 +1040,9 @@ func (b MCPBackend) Call(ctx context.Context, effective EffectiveBinding, tool T
 func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
 	if strings.HasPrefix(effective.Definition.DefinitionID, "google-workspace-") {
 		return (GoogleWorkspaceBackend{HTTP: b.HTTPClient}).CallEnv(ctx, effective, tool, arguments, environment)
+	}
+	if effective.Definition.Transport == RemoteMCP && remoteDefinitionEndpoint(effective) {
+		return b.callRemoteMCP(ctx, effective, tool, arguments, environment)
 	}
 	if effective.Connection == nil && effective.Definition.Transport != ContainerMCP {
 		return BackendResult{}, fmt.Errorf("%w: backend connection", ErrInvalid)

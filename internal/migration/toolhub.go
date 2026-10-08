@@ -10,10 +10,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"gopkg.in/yaml.v3"
 )
 
 type ToolHubMigrationOptions struct {
@@ -48,6 +50,13 @@ type ToolHubMigrationReport struct {
 func MigrateToolHub(options ToolHubMigrationOptions) (ToolHubMigrationReport, error) {
 	if options.Directory == "" || options.User == "" {
 		return ToolHubMigrationReport{}, errors.New("migration directory and user are required")
+	}
+	// A pre-governance space carrying mcp:/mcp_servers declarations needs the
+	// user_mcp migration allow recorded before Read evaluates governance —
+	// the operator running this tool is the host authority the grant model
+	// requires; absent the preserve, Read fails closed on the section.
+	if merr := preserveLegacyUserMCP(options.Directory, options.User); merr != nil {
+		return ToolHubMigrationReport{}, fmt.Errorf("tool governance seed: %w", merr)
 	}
 	settings, err := stack.Read(options.Directory)
 	if err != nil {
@@ -272,4 +281,43 @@ func generatedMCPPresent(directory string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// preserveLegacyUserMCP records the user_mcp migration allow for spaces that
+// already declare mcp servers. Only runs when the shared governance document
+// is absent — an existing policy document is never rewritten. The HUB pin,
+// then the space's own runtime dir, mirrors stack.governanceDocPath.
+func preserveLegacyUserMCP(dir, user string) error {
+	if !spaceDeclaresMCP(dir) {
+		return nil
+	}
+	path := strings.TrimSpace(os.Getenv("HUB_TOOL_GOVERNANCE"))
+	if path == "" {
+		path = filepath.Join(dir, "runtime", "toolhub", "governance.json")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil // existing policy document is authoritative; never widen it
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return toolhub.SaveGovernance(path, toolhub.MigrationSeed(user, []string{toolhub.SectionUserMCP}, time.Now().UTC()))
+}
+
+// spaceDeclaresMCP reports whether the space's workspace.yaml or legacy
+// settings.yaml declares a non-empty mcp/mcp_servers map.
+func spaceDeclaresMCP(dir string) bool {
+	for _, name := range []string{"workspace.yaml", "settings.yaml"} {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var probe struct {
+			MCP        map[string]any `yaml:"mcp"`
+			MCPServers map[string]any `yaml:"mcp_servers"`
+		}
+		if yaml.Unmarshal(body, &probe) == nil && (len(probe.MCP) > 0 || len(probe.MCPServers) > 0) {
+			return true
+		}
+	}
+	return false
 }

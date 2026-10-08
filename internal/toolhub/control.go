@@ -79,6 +79,10 @@ type ControlPlane struct {
 	// after a server refused MCP until those secrets existed. Nil means a
 	// deferred admission cannot be completed.
 	AdmitWithCredentials func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error)
+	// Governance is the host-owned tool policy document (issue 139). The
+	// grant_request control op stamps the in-conversation request onto a
+	// host-created pending grant; nil disables the op entirely.
+	Governance *GovernanceStore
 }
 
 func (c *ControlPlane) now() time.Time {
@@ -144,6 +148,8 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 		return c.remove(auth, args)
 	case "diagnostics":
 		return c.diagnostics(ctx, auth, args)
+	case "grant_request":
+		return c.grantRequest(auth, args)
 	default:
 		return nil, fmt.Errorf("%w: unknown control operation", ErrInvalid)
 	}
@@ -174,6 +180,12 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	source := argString(args, "source")
 	definitionID := argString(args, "definition_id")
 	version := argString(args, "version")
+	if remote := argString(args, "remote_url"); remote != "" {
+		if source != "" || definitionID != "" || version != "" || argString(args, "candidate_id") != "" {
+			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
+		}
+		return c.prepareRemote(ctx, auth, remote, args)
+	}
 	var selected *RecipeCandidate
 	if candidate := argString(args, "candidate_id"); candidate != "" {
 		if source != "" || definitionID != "" || version != "" {
@@ -1490,7 +1502,13 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 			return nil, err
 		}
 		if onboarding.BrokerCredentialID == "" {
-			return nil, ErrNotFound
+			// A remote-mcp onboarding stores its credential in the local
+			// encrypted backend, never the Broker; fall through to the local
+			// rotation path instead of deadlocking on a missing record.
+			if onboarding.Locator == "" {
+				return nil, ErrNotFound
+			}
+			return c.rotateLocal(auth, onboarding)
 		}
 		if onboarding.BrokerRotateCredentialID != "" && onboarding.Phase == PhaseAwaitingCreds {
 			return c.statusBody(onboarding, true), nil
@@ -1516,6 +1534,10 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
+	return c.rotateLocal(auth, onboarding)
+}
+
+func (c *ControlPlane) rotateLocal(auth identity.Envelope, onboarding Onboarding) (map[string]any, error) {
 	if onboarding.ConnectionID == "" || onboarding.Locator == "" {
 		return nil, fmt.Errorf("%w: connection", ErrNotFound)
 	}
