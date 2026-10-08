@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
 )
 
@@ -237,7 +238,7 @@ func (s Settings) readOnlyCapabilities() []string {
 	seen := map[string]bool{}
 	out := []string{}
 	for name, e := range s.Tools {
-		if !e.enabled() || e.Access != ToolAccessRO {
+		if !e.enabled() || (e.Access != ToolAccessRO && !s.govForcedRO(name)) {
 			continue
 		}
 		if id, ok := toolhubCapabilityID[name]; ok && !seen[id] {
@@ -486,8 +487,9 @@ func (s Settings) disabledMCPNames() []string {
 func (s Settings) DisabledMCPNames() []string { return s.disabledMCPNames() }
 
 // mcpRawSelector finds the tools entry that explicitly selects a raw MCP
-// server definition — either by name (`gitea: mcp-raw`) or by `server:`.
-func mcpRawSelector(s Settings, serverName string) (ToolEntry, bool) {
+// server definition — either by name (`gitea: mcp-raw`) or by `server:` —
+// and reports the entry name so governance caps follow the right key.
+func mcpRawSelector(s Settings, serverName string) (string, ToolEntry, bool) {
 	for name, e := range s.Tools {
 		if e.Via != ToolViaMCPRaw {
 			continue
@@ -497,10 +499,10 @@ func mcpRawSelector(s Settings, serverName string) (ToolEntry, bool) {
 			server = name
 		}
 		if server == serverName {
-			return e, true
+			return name, e, true
 		}
 	}
-	return ToolEntry{}, false
+	return "", ToolEntry{}, false
 }
 
 // rawMCPServers renders the mcp: definitions selected for this runtime.
@@ -511,17 +513,26 @@ func mcpRawSelector(s Settings, serverName string) (ToolEntry, bool) {
 func rawMCPServers(s Settings) M {
 	servers := M{}
 	managed := s.CapabilityMode == "managed"
+	// The whole declaration surface is one governance section: user_mcp on a
+	// personal space, org_mcp for the merged organization catalog.
+	section := toolhub.SectionUserMCP
+	if s.OrgScoped() {
+		section = toolhub.SectionOrgMCP
+	}
+	if !s.govAllows(section) {
+		return servers
+	}
 	for name, server := range s.MCP {
 		if s.toolEntry(name).Via == ToolViaOff {
 			continue
 		}
-		e, selected := mcpRawSelector(s, name)
+		entryName, e, selected := mcpRawSelector(s, name)
 		if managed && !selected {
 			continue
 		}
 		cfg := server.Config()
 		exclude := slices.Clone(e.Except)
-		if e.Access == ToolAccessRO {
+		if e.Access == ToolAccessRO || s.govForcedRO(entryName) {
 			exclude = append(exclude, mcpRawMutationTools[name]...)
 		}
 		if server.Tools != nil {

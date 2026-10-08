@@ -1,0 +1,17 @@
+schema: 1
+id: CHG-0075-remote-mcp
+title: Owner-scoped remote MCP registration, admission and projection
+status: in_progress
+phase: verification
+started_at: 2026-10-07
+updated_at: 2026-10-07
+issues: [83, 84, 85, 96]
+completed: [83, 84, 85, 96]
+verification:
+  just_check: pass
+  coverage_own_go: "85.05%"
+  toolhub_package: "ok (96s, -race -shuffle=on)"
+  notes: >
+    prepare_source remote_url path, SSRF-guarded MCP probe, header credential
+    delivery, direct callRemoteMCP dispatch, projection isolation tests all green.
+    Remaining milestone issue #139 (tool governance) tracked separately.

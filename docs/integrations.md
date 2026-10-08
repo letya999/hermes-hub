@@ -783,7 +783,11 @@ cannot satisfy a needed source.
 | Memory Bank | [letya999/memory_bank_setup](https://github.com/letya999/memory_bank_setup), `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | Documentation separation and change-folder conventions |
 
 The GitHub row is the opt-in remote MCP only (`https://api.githubcopilot.com/mcp/`
-with a `GITHUB_TOKEN` bearer); it is independent of `prepare_source`
+with a `GITHUB_TOKEN` bearer), registered per owner through `prepare_source`
+`remote_url` (SPEC-0045): the endpoint must be a public HTTPS MCP destination —
+private names, IP literals, redirects and non-MCP responses are refused — the
+token is collected by the protected loopback form and injected as
+`Authorization: Bearer` on the admitted call only. It is independent of `prepare_source`
 self-install, which only inspects the pinned repository as metadata and builds
 from the generated `.hub` recipe, never the upstream Dockerfile. The two paths
 also keep separate credentials: the remote connector takes `GITHUB_TOKEN`,

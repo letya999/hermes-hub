@@ -212,6 +212,10 @@ func TestCapabilityCLITools(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(managed), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// terminal is a deny-by-default section: the host admits it for alice
+	// before the tools edit, the same rule an operator writes with
+	// hubctl governance --kind rule.
+	seedTestGovernance(t, dir, toolhub.PolicyRule{RuleID: "allow-terminal-alice", Scope: toolhub.ScopeUser, Subject: "alice", Section: "native:terminal", Effect: toolhub.RuleAllow, Reason: "test", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
 	// Without --set the compiled plan prints and nothing changes.
 	plan := captureOutput(t, func() error {
 		return runCapability([]string{"--kind", "tools", "--settings", settingsPath})
@@ -291,6 +295,20 @@ func TestCapabilityCLITools(t *testing.T) {
 	}
 }
 
+// seedTestGovernance writes a valid host policy document and pins it via
+// HUB_TOOL_GOVERNANCE: the staged-write validation re-reads the settings pair
+// from a scratch dir, so only the pin reaches every read path.
+func seedTestGovernance(t *testing.T, spaceDir string, rules ...toolhub.PolicyRule) {
+	t.Helper()
+	doc := toolhub.NewGovernance()
+	doc.Rules = append(doc.Rules, rules...)
+	path := filepath.Join(spaceDir, "runtime", "toolhub", "governance.json")
+	if err := toolhub.SaveGovernance(path, doc); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_TOOL_GOVERNANCE", path)
+}
+
 // The same CLI edits a split space: --settings resolves a directory to its
 // workspace.yaml, the write is staged against agent.yaml, validated as a
 // pair and swapped atomically; access/mcp-raw suffixes land in the entry.
@@ -306,6 +324,9 @@ func TestCapabilityCLIToolsSplitSpace(t *testing.T) {
 	if err := stack.WriteSpace(dir, s); err != nil {
 		t.Fatal(err)
 	}
+	// mcp-raw onto a user-declared server is the user_mcp section — denied by
+	// default; the host admits it for this principal before the edit.
+	seedTestGovernance(t, dir, toolhub.PolicyRule{RuleID: "allow-usermcp-alice", Scope: toolhub.ScopeUser, Subject: "alice", Section: toolhub.SectionUserMCP, Effect: toolhub.RuleAllow, Reason: "test", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
 	agentBefore, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
 	if err != nil {
 		t.Fatal(err)

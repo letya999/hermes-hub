@@ -85,8 +85,12 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["source"] = map[string]any{"type": "string"}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
+		properties["remote_url"] = map[string]any{"type": "string", "description": "Public HTTPS remote MCP endpoint for a user-owned connector (for example https://api.githubcopilot.com/mcp/). Only the endpoint's official URL on the user's explicit request; private, IP-literal, redirecting or non-MCP targets are refused."}
+		properties["name"] = map[string]any{"type": "string", "description": "Optional remote-* connector id derived from the endpoint host when omitted."}
+		properties["tools"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional allowlist of advertised remote tool names to expose; omit to expose every advertised tool."}
+		properties["credentials"] = map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Credential names to collect through the protected form (for example GITHUB_TOKEN). Each becomes an Authorization: Bearer header unless it names its own header."}
 		properties["telegram_send"] = map[string]any{"type": "boolean", "description": "Only on the user's explicit request to enable sending: true with the enabled Telegram onboarding_id upgrades that owner's existing session to reads plus send_message. No new login. Then confirm the returned nonce and enable."}
-		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id."
+		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
 	case "diagnostics":
@@ -99,6 +103,12 @@ func controlToolContract(name string) (string, map[string]any) {
 			"workload": map[string]any{"type": "string", "description": "Narrow to a workload_id, binding_id, definition_id, or \"runtime\" for the Hermes runtime container."},
 		}
 		description = "User-scoped runtime diagnostics. Returns health for the authenticated caller's own connector workloads plus bounded, redacted log lines from their runtime and workload containers. Host logs, other users' data, secrets and raw Docker APIs are never exposed."
+	case "grant_request":
+		properties = map[string]any{
+			"section":  map[string]any{"type": "string", "description": "Governance section to unlock; default user_mcp."},
+			"grant_id": map[string]any{"type": "string", "description": "Exact grant_id when the host named one."},
+		}
+		description = "Request activation of a host-created tool governance grant. Call only when the user's current message explicitly asks to enable a denied tool section. Returns a protected acknowledge URL — the user opens it to activate the grant; the URL alone does not grant anything."
 	case "status", "required_credentials":
 		description += " Pass onboarding_id, or pass definition_id to resume the latest onboarding for that connector."
 		if name == "status" {

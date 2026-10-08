@@ -23,9 +23,12 @@ type Envelope struct {
 	ConversationID     string `json:"conversation_id"`
 	DeliveryTargetID   string `json:"delivery_target_id"`
 	PolicyVersion      string `json:"policy_version"`
-	CapabilityProfile  string `json:"capability_profile,omitempty"`
-	Environment        string `json:"environment,omitempty"`
-	Generation         uint64 `json:"generation,omitempty"`
+	// Organization carries the principal's org scope for host-side policy
+	// evaluation (tool governance org rules). Optional; empty is personal.
+	Organization      string `json:"organization,omitempty"`
+	CapabilityProfile string `json:"capability_profile,omitempty"`
+	Environment       string `json:"environment,omitempty"`
+	Generation        uint64 `json:"generation,omitempty"`
 }
 
 func ValidID(id string) bool { return idPattern.MatchString(id) }
@@ -61,6 +64,9 @@ func (e Envelope) Validate(principal, context, runtime, policy string) error {
 		if !ValidID(id) {
 			return errors.New("invalid identity")
 		}
+	}
+	if e.Organization != "" && !ValidID(e.Organization) {
+		return errors.New("invalid identity")
 	}
 	if e.PrincipalID != principal || e.ContextID != context || e.RuntimeID != runtime || e.PolicyVersion != policy {
 		return errors.New("identity binding mismatch")

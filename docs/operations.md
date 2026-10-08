@@ -58,7 +58,10 @@ ToolHub control operations are denied by default, including `discover`, `status`
 `revoke`, `remove`, `diagnostics` and generic `invoke`. The host operator grants
 each selected operation separately; a catalog or self-install grant does not
 grant control operations. Self-install additionally requires its own explicit
-active grant. A matching disabled/revoked grant wins over a matching active grant.
+active grant. `prepare_source` also admits `remote_url`: an owner-scoped hosted
+MCP endpoint (public HTTPS only — SSRF and redirect targets deny), probed for a
+real MCP handshake, with header credentials collected through the protected form
+(SPEC-0045). A matching disabled/revoked grant wins over a matching active grant.
 For example, using the protected registry path for the selected deployment:
 
 ```text
@@ -252,6 +255,56 @@ at parse time and are rejected when mixed with the new keys.
 
 `tools:` declares visibility, not authority — ToolHub profiles and grants
 in the protected store still govern what an admitted call may do.
+
+### Tool governance (issue 139)
+
+A second host-owned document, `governance.json` beside `store.json` in the
+ToolHub dir, decides which sections a space may emit at all. Sections cover
+every surface: `native:<toolset>`, `hub:<family>`, the dynamic `toolhub`
+projections, `hub:tools` (the executor server), `hub:browser`, and the two
+MCP catalogs `user_mcp`/`org_mcp`. Each entry carries deterministic axes —
+owner, official, dynamic, prepared, effect — and the trust tier is derived
+from them, never stored. Rules are scoped `global`/`org`/`user`/`default`
+with `allow`, `deny` or `cap:read`; grants are the only per-principal
+widening path: host-created, expiring, nonce-acknowledged, revocable.
+
+Evaluation is fixed: a deny at any real scope wins; then an unexpired grant;
+then rules in user→org→global→default precedence (exact sections before
+attribute matches); then the inventoried section default; unknown sections
+deny. The shipped posture denies `native:terminal`, `native:code_execution`,
+`user_mcp` and external/unprepared dynamic installs; everything else ships
+allowed. A missing file seeds that posture, preserving a pre-governance
+space's already-selected deny-default sections as recorded user-scope
+migration allows — `user_mcp` is never preserved by the reader (only the
+migration tool records it, once, and never over an existing document).
+
+Enforcement is at every plane: `stack.Read` refuses denied explicit wishes
+and filters implicit emissions; ToolHub drops denied tools from `tools/list`
+and re-evaluates after admission, before credential injection, on every
+call; and the hub executors enforce a rendered `tool-policy.<env>.json`
+snapshot (capability ids only — no rules, reasons or other principals' data)
+mounted read-only at `/config/tool-policy.json`.
+
+Operator surface — host only, the agent has no write path:
+
+```sh
+hubctl governance                              # status for the pinned/derived document
+hubctl governance --kind rule --scope user --user alice \
+    --section native:terminal --effect allow --reason "reviewed" --confirm
+hubctl governance --kind grant --user alice --section user_mcp \
+    --expires 72h --reason "host approved" --confirm
+hubctl governance --kind revoke --grant <grant-id> --reason "cleanup"
+```
+
+Mutations require `--confirm` (the same digest gate as `hubctl grant`).
+`--governance` pins the file; otherwise it derives from `--toolhub-store`,
+`--dir`, or `HUB_TOOL_GOVERNANCE`/`HUB_TOOLHUB_STORE`. Unlocking `user_mcp`
+for a principal is the grant ceremony: the host creates a pending grant, the
+agent calls `grant_request`, the user opens the loopback-only
+`/grants/<id>?nonce=` URL and confirms — GET renders the grant details, POST
+activates. The nonce rotates on each request and expires in 15 minutes, so
+a stale link can never activate, and returning the URL activates nothing on
+its own.
 
 * `native` re-enables a reviewed upstream toolset for that runtime. The
   reviewed set is the same carve-out list as before — platform adapters,

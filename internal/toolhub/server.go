@@ -188,6 +188,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// Rendered as the supervisor bearer so communication-hub can list a
 		// principal's connectors without holding that principal's token.
 		ControlToken: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
+		// Tool governance sits beside the registry; the env pin exists for
+		// deployments that keep the policy document elsewhere.
+		Governance: NewGovernanceStore(envOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
 	}
 	var secrets credstore.Backend
 	var injector CredentialInjector
@@ -230,11 +233,15 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	control.AdmitWithCredentials = func(ctx context.Context, definition ToolDefinition, secrets map[string]string) (ToolDefinition, error) {
+		if definition.Transport == RemoteMCP {
+			return admitRemoteDefinition(ctx, definition, secrets)
+		}
 		return admitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
 	control.Injector = gateway.Injector
 	control.PrepareDone = gateway.notifyPrepareDone
+	control.Governance = gateway.Governance
 	gateway.Control = control
 	if path := os.Getenv("HUB_AUDIT_LEDGER"); path != "" {
 		ledger, err := audit.Open(path)
