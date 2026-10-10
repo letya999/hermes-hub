@@ -27,7 +27,14 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		method, path = http.MethodGet, "/v1/routines"
 	case "routine_create":
 		method, path = http.MethodPost, "/v1/routines"
-		payload = map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": "agent"}
+		kind := r.Kind
+		if kind == "" {
+			kind = "agent"
+		}
+		if kind == "script" {
+			return nil, errors.New("kind=script needs the sandbox runner, which is not available on this runtime; use kind=reminder for LLM-free delivery")
+		}
+		payload = map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": kind}
 	case "routine_update":
 		method, path = http.MethodPost, "/v1/routines/"+r.ID
 		payload = map[string]any{"expression": r.Expression, "input": r.Text}

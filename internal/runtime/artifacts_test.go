@@ -112,6 +112,46 @@ func TestArtifactEndpointValidationAndServing(t *testing.T) {
 	}
 }
 
+func TestArtifactZipDeliveredAndConsumed(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	writeArtifact(t, artifactRoot(), "pack.zip", "zip-bytes")
+	writeArtifact(t, artifactRoot(), "documents/report.pdf", "pdf-bytes")
+	got := scanArtifacts(time.Now().Add(-time.Minute))
+	var names []string
+	for _, ref := range got {
+		names = append(names, ref.Path+":"+ref.Mime)
+	}
+	if len(names) != 2 || names[0] != "documents/report.pdf:application/pdf" && names[0] != "pack.zip:application/zip" {
+		t.Fatalf("scan=%v", names)
+	}
+	t.Setenv("HUB_RUNTIME_AUTH", "secret")
+	handler := runtimeHandler()
+	call := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/artifact", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := call(`{"name":"pack.zip"}`)
+	if rec.Code != http.StatusOK || rec.Body.String() != "zip-bytes" || rec.Header().Get("Content-Type") != "application/zip" {
+		t.Fatalf("zip serve: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	if _, err := os.Lstat(filepath.Join(artifactRoot(), "pack.zip")); err != nil {
+		t.Fatal("non-consume fetch removed the artifact")
+	}
+	rec = call(`{"name":"documents/report.pdf","consume":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("consume fetch: %d", rec.Code)
+	}
+	if _, err := os.Lstat(filepath.Join(artifactRoot(), "documents", "report.pdf")); !os.IsNotExist(err) {
+		t.Fatal("consumed artifact still in workspace")
+	}
+}
+
 func TestExtractMediaArtifactsStagesWorkspaceFiles(t *testing.T) {
 	dir := t.TempDir()
 	old := workspace

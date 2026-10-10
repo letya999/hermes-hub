@@ -16,6 +16,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/routines/", g.handleRoutineItem)
+	mux.HandleFunc("/v1/inbound/", g.handleInbound)
 	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
@@ -169,6 +170,40 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, item)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleInbound serves one staged inbound file to its owning tools plane
+// (GET) and removes it once the workspace write is durable (POST .../consume).
+func (g *Gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
+	caller, ok := g.authorizeControl(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id, action, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/inbound/"), "/")
+	rec, data, err := g.spool.ReadInbound(id)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if rec.UserID != caller.PrincipalID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	switch {
+	case r.Method == http.MethodGet && action == "":
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Hub-Name", rec.Name)
+		_, _ = w.Write(data)
+	case r.Method == http.MethodPost && action == "consume":
+		if err := g.spool.ConsumeInbound(id); err != nil {
+			http.Error(w, "consume failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

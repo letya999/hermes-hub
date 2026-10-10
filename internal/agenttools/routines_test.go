@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,72 @@ func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 	if seen["GET /v1/routines"] != 1 || seen["POST /v1/routines"] != 1 || seen["DELETE /v1/routines/morning"] != 1 {
 		t.Fatalf("hub calls: %v", seen)
 	}
+}
+
+// A reminder routine tells the hub not to wake an agent at fire time: the
+// created schedule must carry job_kind=reminder.
+func TestRoutineCreateReminderPassesJobKind(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/routines" {
+			http.Error(w, "missing", http.StatusNotFound)
+			return
+		}
+		if json.NewDecoder(r.Body).Decode(&request) != nil {
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"schedule_id":"call-bank"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "call-bank", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "Позвонить в банк", Kind: "reminder"}); err != nil {
+		t.Fatal(err)
+	}
+	if request["job_kind"] != "reminder" {
+		t.Fatalf("reminder kind lost: %v", request)
+	}
+}
+
+// kind=script is rejected at create time: the bounded script runner is not
+// deployed in this build, and a script schedule must never silently degrade
+// into an agent run at fire time.
+func TestRoutineCreateScriptRejectedWithoutRunner(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("script routine reached the hub")
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "nightly", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "backup", Kind: "script"}); err == nil {
+		t.Fatal("script routine accepted without a runner")
+	}
+}
+
+// The catalog declares kind as optional so callers can pick reminder without
+// breaking existing routine_create invocations.
+func TestRoutineCreateKindIsOptionalInCatalog(t *testing.T) {
+	for _, spec := range HubToolsDefinition().Tools {
+		if spec.Name != "routine_create" {
+			continue
+		}
+		for _, a := range spec.Arguments {
+			if a.Name == "kind" {
+				if a.Required {
+					t.Fatal("kind must be optional")
+				}
+				if !strings.Contains(spec.Description, "reminder") {
+					t.Fatal("routine_create description does not mention reminder")
+				}
+				return
+			}
+		}
+		t.Fatal("kind argument missing from routine_create")
+	}
+	t.Fatal("routine_create missing from catalog")
 }
 
 func TestCredentialFormCallCommunicationHub(t *testing.T) {

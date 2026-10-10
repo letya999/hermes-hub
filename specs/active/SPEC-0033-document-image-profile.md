@@ -9,7 +9,8 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
 
 1. The profile is the hub MCP server started by `hubctl tools`: `document_extract`,
    `document_create`, `document_edit`, `document_convert`, `image_inspect`,
-   `image_convert`, and `artifact_remove`. `image_generate` and `image_edit` are
+   `image_convert`, `archive_create`, `archive_unpack`, and `artifact_remove`.
+   `image_generate` and `image_edit` are
    registered only when the mounted Hermes config grants them at process start.
 2. Extract and create are separate effects. Extract reads one existing workspace
    file and does not modify it. Create writes one new file at
@@ -63,7 +64,9 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
    Redirects are refused. A download host other than the configured endpoint
    must be public HTTPS.
 6. Inspect accepts png, jpeg, and webp. Rejected: gif, bmp, svg, tif, tiff, heic,
-   avif. Width and height come from the image header. An edge is checked before
+   avif. `paths` inspects a set of up to 8 images in one call; each image reports
+   its own result or error and one bad entry does not invalidate the rest.
+   Width and height come from the image header. An edge is checked before
    the pixel product. webp decode and encode stay in process. A generated webp
    may be stored as webp. `image_edit` re-encodes a webp source to png before
    the provider upload.
@@ -78,7 +81,13 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
    rejects `..`, an absolute name, and an encrypted entry. Images: 5 MiB, edge
    4096, 4000000 pixels. Inspect: concurrency 2, 30 seconds. Generate:
    concurrency 1, 60 seconds. Prompt: 1 to 2000 runes. A known credential value
-   is not written into a new artifact.
+   is not written into a new artifact. Archives: `archive_create` writes a new
+   zip under `artifacts/` from distinct existing regular files and refuses an
+   existing destination; `archive_unpack` extracts only into a fresh
+   `artifacts/unpacked/<name>` directory, allows at most 8192 entries and
+   1 GiB measured decompressed bytes, and rejects entry names that escape the
+   destination, symlinks, non-regular entries, and encrypted entries. Both clean
+   up their partial output on failure.
 9. `image_gen` is host-managed. It is not a self-service connector and not a
    default feature. Enabled, the Hermes config receives the normalized provider,
    model, and delivery. On a rendered stack the generation call runs in the

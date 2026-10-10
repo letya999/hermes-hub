@@ -41,6 +41,27 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 	return t.call(ctx, name, r, ws, ar, org)
 }
 
+// inspectSet describes a set of workspace images. Each entry reports its own
+// outcome so one unreadable file does not fail the set.
+func inspectSet(ctx context.Context, s *media.Session, paths []string) (map[string]any, error) {
+	if len(paths) > 8 {
+		return nil, errors.New("at most 8 images per call")
+	}
+	results := make([]map[string]any, 0, len(paths))
+	for _, p := range paths {
+		entry := map[string]any{"path": p}
+		if out, err := s.Inspect(ctx, p); err != nil {
+			entry["error"] = err.Error()
+		} else {
+			for k, v := range out {
+				entry[k] = v
+			}
+		}
+		results = append(results, entry)
+	}
+	return map[string]any{"results": results}, nil
+}
+
 // call dispatches to one handler. ws, ar and org are the call-scoped roots;
 // handlers for non-filesystem capabilities ignore them.
 func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.Root) (any, error) {
@@ -85,7 +106,16 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return session().EditDocument(ctx, r.Path, r.Text)
 	case "document_convert":
 		return session().ConvertDocument(ctx, r.Path, r.Name, r.Format)
+	case "archive_create":
+		return t.archiveCreate(ws, r)
+	case "archive_unpack":
+		return t.archiveUnpack(ws, r)
+	case "inbox_fetch":
+		return t.inboxFetch(ctx, ws, r)
 	case "image_inspect":
+		if len(r.Paths) > 0 {
+			return inspectSet(ctx, session(), r.Paths)
+		}
 		return session().Inspect(ctx, r.Path)
 	case "image_convert":
 		return session().ConvertImage(ctx, r.Name, r.Path, r.Format)

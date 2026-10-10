@@ -23,7 +23,10 @@ type RoutineOccurrence struct {
 	Revision   uint64    `json:"revision"`
 	DueAt      time.Time `json:"due_at"`
 	Job        Job       `json:"job"`
-	State      string    `json:"state"`
+	// JobKind mirrors the schedule kind. "reminder" occurrences deliver their
+	// text through the outbox directly — no ordinary job, no runtime, no model.
+	JobKind string `json:"job_kind,omitempty"`
+	State   string `json:"state"`
 }
 
 func OccurrenceID(o RoutineOccurrence) string { return occurrenceID(o) }
@@ -120,6 +123,19 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 			o.State = "missed"
 		} else if authorize(o.Job) != nil {
 			o.State = "blocked"
+		} else if o.JobKind == "script" {
+			// The bounded script runner is not part of this build; a script
+			// occurrence must not silently degrade into an agent (LLM) run.
+			o.State = "blocked"
+		} else if o.JobKind == "reminder" {
+			d, err := normalizeDelivery(Delivery{ID: "reminder-" + o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text, CreatedAt: now.UTC()})
+			if err != nil {
+				return err
+			}
+			if err = s.enqueueDeliveryLocked(d); err != nil {
+				return err
+			}
+			o.State = "dispatched"
 		} else {
 			key := o.Job.PrincipalID + "\x00" + o.Job.ContextID + "\x00" + o.ScheduleID
 			if running := active[key]; running != "" && running != o.Job.ID {

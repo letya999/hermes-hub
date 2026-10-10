@@ -80,7 +80,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	if instructions != "" {
 		instructions += "\n"
 	}
-	instructions += "Files written under the workspace `artifacts/` directory (documents, images, videos) are delivered to the chat automatically when the run finishes — no marker needed. To attach a file produced in an earlier run or stored elsewhere in the workspace, put `MEDIA: <workspace path>` on its own line in the reply; marker lines are routing metadata and never shown. Never tell the user that the chat cannot receive file attachments."
+	instructions += "Files written under the workspace `artifacts/` directory (documents, images, videos) are delivered to the chat automatically when the run finishes — no marker needed; a delivered artifact is removed from the workspace once handed to the channel. To attach a file produced in an earlier run or stored elsewhere in the workspace, put `MEDIA: <workspace path>` on its own line in the reply; marker lines are routing metadata and never shown. When a message carries `[file ... inbox=<id>]`, call `inbox_fetch` with that id first to materialize the file under `inbox/`. Never tell the user that the chat cannot receive file attachments."
 	if r.Voice {
 		// The VOICE: marker convention lives on the host-side tools server in
 		// unmanaged deployments; managed runtimes see only ToolHub, so the
@@ -173,6 +173,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		if last.Status != "completed" {
 			return outcome, errors.New("hermes run ended without completion")
 		}
+		r.meterUsage(jobCtx, job, outcome.RunID)
 		return outcome, nil
 	}
 	if response.StatusCode/100 != 2 {
@@ -230,7 +231,29 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	if terminalStatus(result.Status) && result.Status != "completed" {
 		return outcomeFromEvent(result), errors.New("hermes run ended without completion")
 	}
-	return RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent, Voice: result.Voice}, nil
+	outcome := RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent, Voice: result.Voice}
+	if terminalStatus(result.Status) {
+		r.meterUsage(jobCtx, job, outcome.RunID)
+	}
+	return outcome, nil
+}
+
+// meterUsage journals the measured session usage after a terminal run. It is
+// best-effort: a missing meter must never fail an already-finished job; the
+// journal simply lacks that attempt (visible as a totals gap, never a fake).
+func (r HTTPRunner) meterUsage(ctx context.Context, job Job, runID string) {
+	if r.Spool == nil || runID == "" {
+		return
+	}
+	report, err := r.SessionUsage(ctx, hubruntime.ExecuteRequest{
+		Envelope: job.Envelope, JobID: job.ID, OrganizationID: job.OrganizationID,
+		UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID,
+		Channel: job.Channel, Trigger: job.Trigger, IdempotencyKey: job.IdempotencyKey,
+	})
+	if err != nil || !report.SessionFound {
+		return
+	}
+	_ = r.Spool.RecordUsage(job, runID, report)
 }
 
 // attachArtifacts stages each terminal-event artifact in the spool under the
@@ -268,7 +291,7 @@ func (r HTTPRunner) fetchArtifact(ctx context.Context, job Job, name string) ([]
 		Envelope: job.Envelope, JobID: job.ID, OrganizationID: job.OrganizationID,
 		UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID,
 		Channel: job.Channel, Trigger: job.Trigger, IdempotencyKey: job.IdempotencyKey,
-	}, Name: name})
+	}, Name: name, Consume: job.Channel == "telegram_bot"})
 	if err != nil {
 		return nil, err
 	}

@@ -9,7 +9,9 @@ Frozen: 2026-10-06. Issue 172.
    root modified inside the run window (mtime >= run start - 2 s), bounded
    to 8 files of <= 8 MiB each — <= 48 MiB under `videos`, below the 50 MB
    Telegram bot upload bound — and attaches `{name, path, mime, size}` refs
-   to the terminal `ExecuteResponse`. Admission stamps a zero-byte
+   to the terminal `ExecuteResponse`. A top-level `artifacts/*.zip` is a valid
+   deliverable (`application/zip`); SPEC-0047 covers the chat file transfer
+   contract end to end, including consume-on-handoff. Admission stamps a zero-byte
    `/state/runstarts/<runID>` marker whose mtime is the run's start bound;
    an observed/recovered run restores its window from that marker (markers
    sweep after ~24 h). A recovered run with no marker — admitted before the
@@ -34,9 +36,11 @@ Frozen: 2026-10-06. Issue 172.
    outside the deliverable root.
 
 2. `POST /v1/artifact` on the runtime serves exactly one file by relative
-   path: two segments, root ∈ {documents, images, videos}, clean basename, Lstat
+   path: two segments, root ∈ {documents, images, videos} or a top-level zip,
+   clean basename, Lstat
    rejects symlinks and non-regular files, `EvalSymlinks` containment is
-   re-verified, size within bounds. The supervisor owns the same path and
+   re-verified, size within bounds. With `consume: true` the workspace file is
+   deleted after the response body copied — never before. The supervisor owns the same path and
    forwards it to the runtime bound to the request envelope (lookup only, no
    lease — the gateway asks while the runtime is answering). No user home or
    workspace is mounted into the communication gateway.

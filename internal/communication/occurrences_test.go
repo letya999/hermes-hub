@@ -24,6 +24,90 @@ func occurrenceFixture(t *testing.T) (*Spool, RoutineOccurrence, *Gateway) {
 	g := &Gateway{spool: s, config: Config{OrganizationID: "personal"}, users: map[int64]User{11: {ID: "alice", Enabled: true}}, now: func() time.Time { return time.Unix(90, 0) }}
 	return s, o, g
 }
+
+// A reminder occurrence delivers its text straight to the outbox at fire
+// time: no ordinary job, no runtime, no model call.
+func TestReminderOccurrenceDeliversWithoutAgent(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	o.JobKind = "reminder"
+	o.Job.Text = "Позвонить в банк"
+	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("reminder woke the agent: %+v %v", job, err)
+	}
+	delivery, err := s.ClaimDelivery()
+	if err != nil || delivery == nil || delivery.Text != "Позвонить в банк" || delivery.ChatID != 11 {
+		t.Fatalf("reminder delivery: %+v %v", delivery, err)
+	}
+	if err := s.CompleteDelivery(delivery.ID); err != nil {
+		t.Fatal(err)
+	}
+	if extra, err := s.ClaimDelivery(); err != nil || extra != nil {
+		t.Fatal("reminder delivered twice")
+	}
+}
+
+// A reminder schedule materializes reminder occurrences end to end: the kind
+// travels from the durable schedule through the occurrence into the outbox.
+func TestReminderScheduleFiresThroughOutbox(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	_ = o
+	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	due := time.Now().UTC().Add(time.Minute)
+	created, err := s.CreateSchedule(Schedule{ScheduleID: "remind-one", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due.Format(time.RFC3339), Input: "Забрать посылку", JobKind: "reminder"}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TickSchedules(due.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(due.Add(time.Second), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("reminder woke the agent: %+v %v", job, err)
+	}
+	delivery, err := s.ClaimDelivery()
+	if err != nil || delivery == nil || delivery.Text != "Забрать посылку" {
+		t.Fatalf("delivery: %+v %v", delivery, err)
+	}
+	if created.JobKind != "reminder" {
+		t.Fatalf("kind lost: %+v", created)
+	}
+}
+
+// A script-kind occurrence must not silently become an agent run: the bounded
+// script runner is not part of this build, so dispatch marks it blocked
+// instead of spending an LLM call on an unsandboxed path.
+func TestScriptOccurrenceBlocksWithoutRunner(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	o.JobKind = "script"
+	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("script occurrence woke the agent: %+v %v", job, err)
+	}
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved RoutineOccurrence
+	if err := json.Unmarshal(b, &saved); err != nil || saved.State != "blocked" {
+		t.Fatalf("script occurrence not blocked: %+v %v", saved, err)
+	}
+}
+
 func TestDueOccurrenceSurvivesRestartAndEnqueuesExactlyOneOrdinaryJob(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {

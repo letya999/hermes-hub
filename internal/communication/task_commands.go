@@ -167,6 +167,9 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%). " + contextLine
 	}
 	lines = append(lines, contextLine)
+	if totals, err := g.spool.UsageTotals("user:" + user.ID); err == nil && totals.Jobs > 0 {
+		lines = append(lines, "Всего по журналу: "+strconv.Itoa(totals.Jobs)+" запусков, вход "+strconv.FormatInt(totals.InputTokens, 10)+", выход "+strconv.FormatInt(totals.OutputTokens, 10)+".")
+	}
 	lines = append(lines, g.quotaLines(ctx)...)
 	return strings.Join(lines, "\n")
 }

@@ -957,6 +957,46 @@ func TestReaperNeverStopsLeasedRuntime(t *testing.T) {
 	}
 }
 
+func TestReaperKeepsIdleRuntimeWithLiveJob(t *testing.T) {
+	stops := 0
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		if len(args) > 0 && args[0] == "rm" {
+			stops++
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Release("alice", "gateway"); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.jobs["live-job"] = jobRecord{Status: "running", Request: hubruntime.ExecuteRequest{JobID: "live-job", PrincipalID: "alice", ContextID: "alice"}}
+	m.mu.Unlock()
+	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 0 {
+		t.Fatal("runtime with a live job was reaped")
+	}
+	m.mu.Lock()
+	record := m.jobs["live-job"]
+	record.Status = "completed"
+	m.jobs["live-job"] = record
+	m.mu.Unlock()
+	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 1 {
+		t.Fatalf("stops=%d", stops)
+	}
+}
+
 func TestNormalizeRejectsEscapesAndSymlinks(t *testing.T) {
 	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
 	if _, err := m.Ensure(context.Background(), Binding{PrincipalID: "alice", ContextID: "..", RuntimeID: "alice", ContextRoot: root}); err == nil {

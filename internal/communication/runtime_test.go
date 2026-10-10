@@ -107,6 +107,14 @@ func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
 	if !strings.Contains(gotInstructions, "artifacts/") || !strings.Contains(gotInstructions, "MEDIA:") {
 		t.Fatalf("artifact convention missing from instructions: %q", gotInstructions)
 	}
+	// The model must know inbound files arrive staged (inbox=<id> → inbox_fetch)
+	// and that delivered artifacts are removed from the workspace — otherwise it
+	// promises to keep files that are gone or ignores files the user sent.
+	for _, want := range []string{"inbox_fetch", "inbox=", "removed"} {
+		if !strings.Contains(gotInstructions, want) {
+			t.Fatalf("file-transfer convention missing %q from instructions: %q", want, gotInstructions)
+		}
+	}
 }
 
 func TestSupervisedRunnerUsesJobsEndpoint(t *testing.T) {

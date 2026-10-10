@@ -222,7 +222,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			continue
 		}
 		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
-		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, Job: job}
+		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job}
 		if err := validateOccurrence(occ, item.Envelope); err != nil {
 			continue
 		}
@@ -297,7 +297,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if len(in.ScheduleID) > 80 || !spoolIDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
-	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" {
+	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" {
 		return errors.New("invalid job kind")
 	}
 	if strings.TrimSpace(in.Input) == "" || len(in.Input) > 64*1024 || envstore.LooksLikeEnv(in.Input) {

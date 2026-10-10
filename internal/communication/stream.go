@@ -144,6 +144,14 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			if event.Status != "completed" {
 				receipt.Delivery.JobID = ""
 			} // Only final handoff may trigger a requested runtime restart.
+			if event.LastEvent == "approval.request" {
+				buttons, err := s.approvalButtonsLocked(job.ID, event.ApprovalID, event.ApprovalChoices)
+				if err != nil {
+					s.mu.Unlock()
+					return err
+				}
+				receipt.Delivery.Buttons = buttons
+			}
 		}
 		err = atomicJSON(path, receipt) // Write-ahead receipt repairs a crash before mapping/outbox handoff.
 	} else {

@@ -554,9 +554,64 @@ type Delivery struct {
 	SentArtifacts int                      `json:"sent_artifacts,omitempty"`
 	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
 	// synthesized audio is sent straight to the channel and never persisted.
-	Voice     string    `json:"voice,omitempty"`
-	Attempts  int       `json:"attempts"`
-	CreatedAt time.Time `json:"created_at"`
+	Voice string `json:"voice,omitempty"`
+	// Buttons carries Telegram inline-keyboard rows (one button per row) for
+	// channels that support them; Data is the opaque callback payload.
+	Buttons   []DeliveryButton `json:"buttons,omitempty"`
+	Attempts  int              `json:"attempts"`
+	CreatedAt time.Time        `json:"created_at"`
+}
+
+type DeliveryButton struct {
+	Text string `json:"text"`
+	Data string `json:"data"`
+}
+
+// approvalButtonsLocked persists one durable callback record per choice and
+// returns the inline-keyboard row. Callback data stays under Telegram's
+// 64-byte limit ("a:" + 24 hex chars); the record survives restarts so a tap
+// resolves long after the message was sent. s.mu must be held.
+func (s *Spool) approvalButtonsLocked(jobID, requestID string, choices []string) ([]DeliveryButton, error) {
+	buttons := make([]DeliveryButton, 0, len(choices))
+	for _, choice := range choices {
+		digest := sha256.Sum256([]byte(jobID + "\x00" + requestID + "\x00" + choice))
+		id := hex.EncodeToString(digest[0:12])
+		record := approvalCallback{JobID: jobID, RequestID: requestID, Choice: choice}
+		if err := atomicJSON(filepath.Join(s.root, "callbacks", id+".json"), record); err != nil {
+			return nil, err
+		}
+		buttons = append(buttons, DeliveryButton{Text: choice, Data: "a:" + id})
+	}
+	return buttons, nil
+}
+
+type approvalCallback struct {
+	JobID     string `json:"job_id"`
+	RequestID string `json:"request_id"`
+	Choice    string `json:"choice"`
+}
+
+// ApprovalCallback resolves inline-keyboard callback data to the persisted
+// (job, request, choice) tuple. Unknown or malformed data is rejected.
+func (s *Spool) ApprovalCallback(data string) (jobID, requestID, choice string, err error) {
+	id := strings.TrimPrefix(data, "a:")
+	if id == data || len(id) != 24 {
+		return "", "", "", errors.New("unknown callback")
+	}
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", "", "", errors.New("unknown callback")
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(s.root, "callbacks", id+".json"))
+	if err != nil {
+		return "", "", "", errors.New("unknown callback")
+	}
+	var record approvalCallback
+	if err := json.Unmarshal(b, &record); err != nil || record.JobID == "" || record.RequestID == "" || record.Choice == "" {
+		return "", "", "", errors.New("unknown callback")
+	}
+	return record.JobID, record.RequestID, record.Choice, nil
 }
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
@@ -572,7 +627,7 @@ type Spool struct {
 
 func NewSpool(root string) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "tmp"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -877,8 +932,18 @@ func (s *Spool) FailJob(id string) error {
 }
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
+	var err error
+	if d, err = normalizeDelivery(d); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enqueueDeliveryLocked(d)
+}
+
+func normalizeDelivery(d Delivery) (Delivery, error) {
 	if d.Format != "" && d.Format != formatMarkdown {
-		return errors.New("invalid delivery identity")
+		return d, errors.New("invalid delivery identity")
 	}
 	if d.Channel == "" {
 		d.Channel = "telegram_bot"
@@ -894,17 +959,21 @@ func (s *Spool) EnqueueDelivery(d Delivery) error {
 		}
 		// Group forum chats carry negative ids; zero stays invalid.
 		if d.ChatID == 0 || !identity.ValidID(d.ConversationID) || d.DeliveryTargetID != transportID {
-			return errors.New("invalid delivery identity")
+			return d, errors.New("invalid delivery identity")
 		}
 	case "slack_app":
 		if !identity.ValidID(d.ConversationID) || !identity.ValidID(d.DeliveryTargetID) || d.DeliveryTargetID != d.ConversationID || !validSlackIMChannel(d.SlackChannel) || !validSlackThread(d.SlackThread) {
-			return errors.New("invalid delivery identity")
+			return d, errors.New("invalid delivery identity")
 		}
 	default:
-		return errors.New("invalid delivery identity")
+		return d, errors.New("invalid delivery identity")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return d, nil
+}
+
+// enqueueDeliveryLocked is idempotent across the whole outbox lifecycle; s.mu
+// must be held.
+func (s *Spool) enqueueDeliveryLocked(d Delivery) error {
 	for _, dir := range []string{"pending", "sending", "done", "failed"} {
 		if _, err := os.Stat(filepath.Join(s.root, "outbox", dir, spoolFileID(d.ID)+".json")); err == nil {
 			return nil
@@ -1080,9 +1149,19 @@ func atomicJSON(path string, value any) error {
 
 // Telegram API subset used by the adapter.
 type Update struct {
-	UpdateID      int      `json:"update_id"`
-	Message       *Message `json:"message,omitempty"`
-	EditedMessage *Message `json:"edited_message,omitempty"`
+	UpdateID      int            `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	EditedMessage *Message       `json:"edited_message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+}
+
+// CallbackQuery is a Telegram inline-keyboard tap. Data resolves through the
+// durable callback store; Message carries the originating chat.
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *TGUser  `json:"from,omitempty"`
+	Message *Message `json:"message,omitempty"`
+	Data    string   `json:"data,omitempty"`
 }
 type Message struct {
 	MessageID int     `json:"message_id"`
@@ -1167,6 +1246,8 @@ type TelegramAPI interface {
 	GetFile(context.Context, string) (TelegramFile, error)
 	DownloadFile(context.Context, string, io.Writer) error
 	SendVoice(context.Context, int64, int64, []byte, string) error
+	SendKeyboard(context.Context, int64, int64, string, []DeliveryButton) error
+	AnswerCallbackQuery(context.Context, string, string) error
 	SetMyCommands(context.Context) error
 }
 
@@ -1228,7 +1309,7 @@ func (t *telegramAPI) callRequest(req *http.Request, result any) error {
 
 func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int) ([]Update, error) {
 	var result []Update
-	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message"}}, &result)
+	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message", "callback_query"}}, &result)
 	return result, err
 }
 func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, text, parseMode string) error {
@@ -1243,6 +1324,22 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, te
 		payload[topicField(chatID)] = topicID
 	}
 	return t.call(ctx, "sendMessage", payload, nil)
+}
+func (t *telegramAPI) SendKeyboard(ctx context.Context, chatID, topicID int64, text string, buttons []DeliveryButton) error {
+	if len(buttons) == 0 {
+		return errors.New("invalid Telegram button")
+	}
+	rows := make([][]map[string]string, 0, len(buttons))
+	for _, button := range buttons {
+		if len(button.Data) > 64 {
+			return errors.New("invalid Telegram button")
+		}
+		rows = append(rows, []map[string]string{{"text": button.Text, "callback_data": button.Data}})
+	}
+	return t.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text, "reply_markup": map[string]any{"inline_keyboard": rows}}, nil)
+}
+func (t *telegramAPI) AnswerCallbackQuery(ctx context.Context, id, text string) error {
+	return t.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
 }
 func (t *telegramAPI) SendDocument(ctx context.Context, chatID, topicID int64, name, caption string, data []byte) error {
 	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
@@ -1748,7 +1845,33 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}
 }
 
+// handleCallback applies an inline-keyboard tap: the opaque data resolves to a
+// durable (job, request, choice) record, then the same ownership-checked
+// approval path as /approve runs. Every tap is answered so Telegram stops
+// showing the loading spinner; rejected taps change nothing.
+func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) error {
+	answer := "Запрос отклонен: подтверждение недоступно."
+	if query.From != nil {
+		if user, ok := g.users[query.From.ID]; ok {
+			if jobID, requestID, choice, err := g.spool.ApprovalCallback(query.Data); err == nil {
+				caller := user.envelope(query.From.ID)
+				if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
+					caller.ConversationID = mapping.ConversationID
+					caller.DeliveryTargetID = mapping.DeliveryTargetID
+				}
+				if err := g.spool.RequestApproval(jobID, caller, requestID, choice); err == nil {
+					answer = "Ответ на подтверждение сохранен."
+				}
+			}
+		}
+	}
+	return g.api.AnswerCallbackQuery(ctx, query.ID, answer)
+}
+
 func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
+	if query := update.CallbackQuery; query != nil {
+		return g.handleCallback(ctx, query)
+	}
 	edited := update.EditedMessage != nil
 	message := update.Message
 	if message == nil {
@@ -2154,6 +2277,8 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		if !voiceSent {
 			if delivery.Format == formatMarkdown {
 				sendErr = g.sendTelegramMarkdown(ctx, delivery)
+			} else if len(delivery.Buttons) > 0 {
+				sendErr = g.api.SendKeyboard(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), delivery.Buttons)
 			} else {
 				sendErr = g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
 			}

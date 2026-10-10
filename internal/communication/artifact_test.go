@@ -22,6 +22,7 @@ func artifactJob() Job {
 // A completed run streams artifact refs; the runner fetches bytes into the
 // spool while the runtime is still answering and records failures explicitly.
 func TestAttachArtifactsStagesBlobsAndMarksFailures(t *testing.T) {
+	consumed := map[string]bool{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/artifact" || r.Header.Get("Authorization") != "Bearer secret" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -36,6 +37,7 @@ func TestAttachArtifactsStagesBlobsAndMarksFailures(t *testing.T) {
 			http.Error(w, "foreign binding", http.StatusForbidden)
 			return
 		}
+		consumed[request.Name] = request.Consume
 		if request.Name == "images/missing.png" {
 			http.Error(w, "gone", http.StatusNotFound)
 			return
@@ -62,6 +64,9 @@ func TestAttachArtifactsStagesBlobsAndMarksFailures(t *testing.T) {
 	}
 	if event.Artifacts[1].Error == "" || event.Artifacts[1].Blob != "" {
 		t.Fatalf("failed fetch must be explicit, not silent: %+v", event.Artifacts[1])
+	}
+	if !consumed["documents/report.pdf"] {
+		t.Fatal("telegram artifact fetch did not consume the workspace original")
 	}
 	if _, err := spool.ReadDeliveryBlob("job-artifact-job-response", ".."); err == nil {
 		t.Fatal("blob traversal accepted")
