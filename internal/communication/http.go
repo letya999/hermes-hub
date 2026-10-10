@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -17,6 +18,8 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/routines/", g.handleRoutineItem)
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
+	mux.HandleFunc("/v1/knowledge", g.handleKnowledge)
+	mux.HandleFunc("/v1/knowledge/", g.handleKnowledge)
 	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
@@ -117,6 +120,24 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			user := g.user(caller.PrincipalID)
 			if len(user.TelegramIDs) > 0 {
 				in.ChatID = user.TelegramIDs[0]
+			}
+		}
+		if in.JobKind == "check" {
+			// The follow-up predicate is anchored at creation: probe once,
+			// seed the baseline, then create — a dead source must not
+			// become a silently-skipping schedule.
+			body, err := g.fetchWatch(r.Context(), in.Probe.URL)
+			if err != nil {
+				http.Error(w, "check source unreachable", http.StatusBadGateway)
+				return
+			}
+			var re *regexp.Regexp
+			if in.Probe.Regex != "" {
+				re, _ = regexp.Compile(in.Probe.Regex)
+			}
+			if err := g.spool.SeedWatchBaseline(in.ScheduleID, watchValue(body, re), g.now().UTC()); err != nil {
+				http.Error(w, "baseline failed", http.StatusInternalServerError)
+				return
 			}
 		}
 		created, err := g.spool.CreateSchedule(in, caller, g.config.NativeCron)

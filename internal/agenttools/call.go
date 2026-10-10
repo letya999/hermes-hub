@@ -112,6 +112,10 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.archiveUnpack(ws, r)
 	case "inbox_fetch":
 		return t.inboxFetch(ctx, ws, r)
+	case "knowledge_list":
+		return t.knowledgeList(ctx)
+	case "knowledge_read":
+		return t.knowledgeRead(ctx, r)
 	case "image_inspect":
 		if len(r.Paths) > 0 {
 			return inspectSet(ctx, session(), r.Paths)

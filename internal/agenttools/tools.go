@@ -58,6 +58,9 @@ type Input struct {
 	Value      string   `json:"value,omitempty"`
 	Paths      []string `json:"paths,omitempty"`
 	Kind       string   `json:"kind,omitempty"`
+	URL        string   `json:"url,omitempty"`
+	Regex      string   `json:"regex,omitempty"`
+	Expect     string   `json:"expect,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root

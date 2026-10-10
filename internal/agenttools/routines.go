@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"go.starlark.net/starlark"
+	"go.starlark.net/syntax"
 )
 
 func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any, error) {
@@ -32,9 +35,22 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			kind = "agent"
 		}
 		if kind == "script" {
-			return nil, errors.New("kind=script needs the sandbox runner, which is not available on this runtime; use kind=reminder for LLM-free delivery")
+			// The hub executes script routines in the bounded Starlark
+			// runner; reject dead-on-arrival source before it is scheduled.
+			opts := syntax.LegacyFileOptions()
+			opts.TopLevelControl = true
+			if _, _, err := starlark.SourceProgramOptions(opts, "routine.star", r.Text, func(string) bool { return true }); err != nil {
+				return nil, fmt.Errorf("script does not compile: %w", err)
+			}
 		}
-		payload = map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": kind}
+		create := map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": kind}
+		if kind == "watcher" || kind == "check" {
+			create["probe"] = map[string]any{"url": r.URL, "regex": r.Regex}
+		}
+		if kind == "check" {
+			create["expect"] = r.Expect
+		}
+		payload = create
 	case "routine_update":
 		method, path = http.MethodPost, "/v1/routines/"+r.ID
 		payload = map[string]any{"expression": r.Expression, "input": r.Text}

@@ -3,8 +3,10 @@ package communication
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +16,13 @@ import (
 )
 
 const defaultCatchUp = time.Hour
+
+// WatchProbe is a bounded deterministic probe: one http(s) GET; the compared
+// value is the first capture group of Regex, or the whole bounded body.
+type WatchProbe struct {
+	URL   string `json:"url"`
+	Regex string `json:"regex,omitempty"`
+}
 
 type Schedule struct {
 	ScheduleID     string            `json:"schedule_id"`
@@ -27,13 +36,18 @@ type Schedule struct {
 	ChatID         int64             `json:"chat_id,omitempty"`
 	// TaskID/TopicID snapshot the task the routine was created in: occurrence
 	// jobs rebind their conversation and deliver back to the same topic.
-	TaskID        string        `json:"task_id,omitempty"`
-	TopicID       int64         `json:"topic_id,omitempty"`
-	SlackChannel  string        `json:"slack_channel,omitempty"`
-	SlackThread   string        `json:"slack_thread,omitempty"`
-	Timezone      string        `json:"timezone"`
-	Expression    string        `json:"expression"`
-	JobKind       string        `json:"job_kind"`
+	TaskID       string `json:"task_id,omitempty"`
+	TopicID      int64  `json:"topic_id,omitempty"`
+	SlackChannel string `json:"slack_channel,omitempty"`
+	SlackThread  string `json:"slack_thread,omitempty"`
+	Timezone     string `json:"timezone"`
+	Expression   string `json:"expression"`
+	JobKind      string `json:"job_kind"`
+	// Probe is the deterministic source spec for watcher/check schedules:
+	// an http(s) GET plus an optional regex whose first capture group is the
+	// compared value. It never carries credentials.
+	Probe         *WatchProbe   `json:"probe,omitempty"`
+	Expect        string        `json:"expect,omitempty"`
 	Input         string        `json:"input"`
 	Enabled       bool          `json:"enabled"`
 	Paused        bool          `json:"paused"`
@@ -297,8 +311,42 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if len(in.ScheduleID) > 80 || !spoolIDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
-	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" {
+	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" {
 		return errors.New("invalid job kind")
+	}
+	if in.JobKind == "check" && in.Expect != "changed" && in.Expect != "unchanged" {
+		return errors.New("invalid check expect")
+	}
+	if in.JobKind == "check" {
+		if in.Probe == nil {
+			return errors.New("check needs a probe")
+		}
+		u, err := url.Parse(in.Probe.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return errors.New("check probe must be http(s)")
+		}
+		if in.Probe.Regex != "" {
+			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+				return errors.New("check probe regex does not compile")
+			}
+		}
+	}
+	if in.JobKind == "watcher" {
+		if in.Probe == nil {
+			return errors.New("watcher needs a probe")
+		}
+		u, err := url.Parse(in.Probe.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			return errors.New("watch probe must be a plain http(s) url")
+		}
+		if in.Probe.Regex != "" {
+			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+				return errors.New("watch probe regex does not compile")
+			}
+		}
+	}
+	if in.JobKind == "script" && ScriptSyntaxError(in.Input) != nil {
+		return errors.New("script does not compile")
 	}
 	if strings.TrimSpace(in.Input) == "" || len(in.Input) > 64*1024 || envstore.LooksLikeEnv(in.Input) {
 		return errors.New("invalid routine input")

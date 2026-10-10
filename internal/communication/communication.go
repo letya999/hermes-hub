@@ -627,7 +627,7 @@ type Spool struct {
 
 func NewSpool(root string) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "tmp"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -1786,8 +1786,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		defer ticker.Stop()
 		for {
 			now := g.now().UTC()
-			_ = g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence)
-			_ = g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence)
+			g.tickProactive(now)
 			g.controlOne(workerCtx)
 			select {
 			case <-workerCtx.Done():
