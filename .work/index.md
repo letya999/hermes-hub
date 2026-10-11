@@ -12,6 +12,9 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0079](done/CHG-0079-cli-policy-completion/plan.md) | Done: six CLI policy/catalog gaps, full checks and local dev deployment verified |
+| [CHG-0078](done/CHG-0078-cli-cells/plan.md) | Done: per-principal sandbox cells (sibling containers, net none, warm ladder, toolbox mounts, shared-catalog grants) — issues #239–#242, live model verified |
+| [CHG-0077](done/CHG-0077-toolhub-cli/plan.md) | Done: milestone 9 ToolHub CLI connectors — SPEC-0047, admission verifier, catalog defs, prepare_source cli, digest-pinned artifacts |
 | [CHG-0075](in-progress/CHG-0075-remote-mcp/plan.md) | Milestone 8 issues 83/84/85/96: owner-scoped remote MCP register/admit/project through prepare_source remote_url |
 | [CHG-0074](in-progress/CHG-0074-telegram-auth-plugin/plan.md) | Opt-in in-process Telegram QR login deployed locally; live account acceptance pending owner scan |
 | [CHG-0073](in-progress/CHG-0073-prepared-bundle-telegram/plan.md) | Issues 39/115: 12-ID prepared bundle discovery, selected personal Telegram source and protected onboarding; verification in progress |

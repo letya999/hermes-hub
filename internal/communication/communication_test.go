@@ -261,6 +261,43 @@ func TestJobMappingIsDurableAndIdempotent(t *testing.T) {
 	}
 }
 
+// Terminal outcomes fire JobDone so task-tier cli cells die with their job;
+// non-terminal transitions stay silent.
+func TestJobDoneFiresOnlyAtTerminalOutcome(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan [2]string, 4)
+	spool.JobDone = func(jobID, principalID string) { done <- [2]string{jobID, principalID} }
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "job-cells", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-cells", Text: "hello"}
+	if _, err := spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spool.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case fired := <-done:
+		t.Fatalf("JobDone fired on running: %v", fired)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "completed", LastEvent: "run.completed", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case fired := <-done:
+		if fired != [2]string{"job-cells", "alice"} {
+			t.Fatalf("JobDone=%v", fired)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("JobDone never fired at terminal outcome")
+	}
+}
+
 func TestJobOutcomeRejectsReplacementIdentityBeforeWriting(t *testing.T) {
 	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
 	if err != nil {

@@ -192,7 +192,10 @@ the supplied identity; nothing is reachable until a confirmed profile selects
 individual tools. Dispatch resolves to the `agent-tools` transport and reaches
 the executor over `docker exec` (`HUB_AGENT_EXEC_MODE=supervisor` derives the
 supervisor container name; `HUB_AGENT_EXEC_CONTAINER=<name>` pins a fixed
-container). Calls travel over `hubctl tools-daemon` — one persistent framed
+container). Render emits the supervisor mode for every `execution.mode:
+supervisor` space — managed and unmanaged alike — because the runtime's
+`hubctl tools-exec`/`tools-daemon`/`exec-scratch` entrypoints enforce the same
+governance snapshot mounted read-only at `/config/tool-policy.json`. Calls travel over `hubctl tools-daemon` — one persistent framed
 channel per owning runtime container, multiplexed by frame id, so an
 admitted call costs a frame rather than a process spawn. The daemon is
 per-user by construction (sessions key on the resolved container); a
@@ -327,6 +330,24 @@ its own.
 * `mcp-raw[:server]` renders a `mcp:` definition (or an organization-
   provided one) directly into the runtime's `mcp_servers`. Managed mode
   only permits organization-scoped definitions.
+* `terminal: toolhub` routes the terminal through a bounded-cli cell
+  instead of the runtime's upstream toolset: the model gets a `bash -c`
+  surface inside a sibling container — read-only root, dedicated cell
+  network, no `/state`, no Docker socket, egress cut to the cell's
+  declared allowlist. A space that selects it may not also keep
+  `code_execution: native` (that combination is rejected at render).
+  Register the warm-cell definition once per space through the standard
+  `prepare_source` flow with a `cli` spec
+  (`command: bash`, `args: ["-c"]`, `lifecycle: binding`,
+  `workspace_scope: principal`, `workspace_access: rw`); `bash` must sit
+  in the operator allowlist (`HUB_CLI_ALLOWLIST` / controller
+  `user_commands`). The cell keeps a private `/cellhome` tmpfs across
+  calls while it is warm (age/reuse limits apply), so `install_packages`
+  tools keep what they install; the workspace under `/work` is the
+  principal's real workspace. Because the definition is an owner
+  publication, its projection needs a user-scope governance allow rule
+  (`hubctl governance --kind rule --scope user --user <p> --match
+  definition_id=<def> --effect allow`).
 * `settings` exposes the reviewed self-settings surface. Values live in a
   JSON overlay (`HUB_SELF_SETTINGS_PATH`, rendered at `self-settings.json`
   under the managed runtime state dir) that both the supervisor

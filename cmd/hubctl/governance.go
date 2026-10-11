@@ -30,6 +30,7 @@ func runGovernance(_ context.Context, args []string) error {
 	reason := f.String("reason", "", "audit reason, required for every mutation")
 	issuer := f.String("issuer", "operator", "operator identity recorded as issuer and confirmer")
 	revision := f.Uint64("revision", 1, "monotonic revision; increment when changing an existing record")
+	status := f.String("status", string(toolhub.ActiveStatus), "rule status: active, disabled or revoked")
 	grantID := f.String("grant", "", "grant id for revoke (default: derived)")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation and commit")
 	storePath := f.String("toolhub-store", os.Getenv("HUB_TOOLHUB_STORE"), "ToolHub registry path")
@@ -82,7 +83,7 @@ func runGovernance(_ context.Context, args []string) error {
 		if *reason == "" || *section == "" && *match == "" || *section != "" && *match != "" {
 			return fmt.Errorf("rule requires --reason and exactly one of --section/--match")
 		}
-		rule := toolhub.PolicyRule{Scope: *scope, Section: *section, Effect: *effect, Reason: *reason, GrantedBy: *issuer, Revision: *revision, Status: toolhub.ActiveStatus}
+		rule := toolhub.PolicyRule{Scope: *scope, Section: *section, Effect: *effect, Reason: *reason, GrantedBy: *issuer, Revision: *revision, Status: toolhub.Status(*status)}
 		rule.Subject = *subject
 		if rule.Subject == "" && (*scope == toolhub.ScopeUser || *scope == toolhub.ScopeOrg) {
 			rule.Subject = *user

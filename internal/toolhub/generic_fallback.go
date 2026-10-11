@@ -169,6 +169,10 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	if _, err := c.docker(ctx, "start", proxyName); err != nil {
 		return genericWorkload{}, err
 	}
+	step = "proxy-listen"
+	if err := c.waitProxyListen(ctx, proxyName); err != nil {
+		return genericWorkload{}, err
+	}
 	proxyIP, err := c.proxyIP(ctx, proxyName, network)
 	if err != nil {
 		return genericWorkload{}, err

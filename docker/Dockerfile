@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Pinned upstream code. Hermes MCP lives here; Telegram/Google/Atlassian Python
 # MCP trees are dedicated images, not copies inside every hub service.
-FROM golang:1.27.1-bookworm AS go_build
+FROM golang:1.27.2-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY services/credential-broker ./services/credential-broker
@@ -15,11 +15,12 @@ RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id
 
 RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-media ./cmd/hub-media
 RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
+RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cellinit ./cmd/cellinit
 
 FROM go_build AS go_telegram_auth
 RUN --mount=type=cache,id=hermes-go-mod,target=/go/pkg/mod --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -tags telegramauth -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub-telegram-auth ./cmd/communication
 
-FROM golang:1.27.1-bookworm AS cliproxy_build
+FROM golang:1.27.2-bookworm AS cliproxy_build
 RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin ba7e55836dee959e93ec6d41395865d9ec535086; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
 FROM debian:13.6 AS sqlite_build
@@ -73,11 +74,37 @@ ENTRYPOINT ["hub-runtime"]
 CMD ["idle"]
 
 # Only ToolHub and the workload controller need Docker and ToolHive.
+# cellinit ships here so the controller can seed it into the state root and
+# bind-mount it into sandbox cells as their PID 1 / canary agent.
 FROM runtime AS control
 USER 0:0
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=toolhive /ko-app/thv /usr/local/bin/thv
+COPY --from=go_build /cellinit /usr/local/bin/cellinit
 USER 10001:10001
+
+# Bounded-CLI cells run on this dedicated image: catalog commands (git, rg)
+# plus the static cellinit helper, and nothing else — no /state, no socket,
+# no interpreters that could execute mutable workspace code.
+FROM debian:13.6-slim AS cli-tools
+# libatomic1 lets mounted member images run their embedded node runtime
+# (eslint/tsc/prettier artifacts) inside a toolbox or tool-bearing shell cell.
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates libatomic1 && rm -rf /var/lib/apt/lists/*
+COPY --from=go_build /cellinit /cellinit
+# uv is the package-install surface for install_packages cells: it writes
+# into the private /cellhome paths ahead of the image PATH and reaches only
+# the cell's declared egress hosts.
+COPY --from=uv /uv /uvx /usr/local/bin/
+USER 10001:10001
+ENTRYPOINT ["/cellinit"]
+
+# Egress companion for cells that declare reviewed outbound hosts: a plain
+# Squid forward proxy the controller scopes to the cell's internal network.
+FROM debian:13.6-slim AS cell-proxy
+RUN apt-get update && apt-get install -y --no-install-recommends squid ca-certificates && rm -rf /var/lib/apt/lists/*
+EXPOSE 3128
+USER 10001:10001
+CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]
 
 # Immutable deployment target; no source tree or Go compiler.
 FROM runtime AS prod

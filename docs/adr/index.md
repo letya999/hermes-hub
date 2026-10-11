@@ -6,6 +6,8 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0034](ADR-0034-cli-package-policy.md) | Accepted: private package home, exact shipped CLI trust and atomic host catalog binding |
+| [ADR-0033](ADR-0033-bounded-cli-transport.md) | Accepted: bounded CLI as a ToolHub transport with executor-container isolation receipts |
 | [ADR-0032](ADR-0032-capability-execution-isolation.md) | Accepted: isolate control state, Hermes, scoped file executors and scratch-only code workloads |
 | [ADR-0031](ADR-0031-default-deny-capability-policy.md) | Accepted: zero-capability baseline, explicit profiles, canonical identities and one ToolHub policy boundary |
 | [ADR-0030](ADR-0030-cliproxy-image-routes.md) | CLIProxy image ids use two calls: images endpoint, or Gemini chat completions |

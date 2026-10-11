@@ -35,7 +35,7 @@ const (
 	PhaseFailed           string    = "failed"
 )
 
-var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics", "grant_request"}
+var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics", "grant_request", "install_shared"}
 
 type Grant struct {
 	Schema            int           `json:"schema"`

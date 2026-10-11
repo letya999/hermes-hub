@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -37,6 +38,80 @@ type GenericControllerConfig struct {
 	Budget              *WorkloadBudget `json:"-"`
 	MaxActive           int             `json:"max_active"`
 	IdleTTLSeconds      int             `json:"idle_ttl_seconds"`
+	// CLI configures bounded-cli admission: the executor container the
+	// process lands in is inspected per call and only approved plans are
+	// admitted. Nil disables the CLI path entirely.
+	CLI *CLIControllerConfig `json:"cli,omitempty"`
+}
+
+// CLIControllerConfig is the operator-approved envelope for bounded-cli cell
+// execution. Every admitted call runs in a sibling container the controller
+// creates, inspects and destroys; nothing here is model-supplied.
+type CLIControllerConfig struct {
+	AllowPackageInstall bool `json:"allow_package_install,omitempty"`
+	// ToolsImage is the digest-pinned image catalog commands run on.
+	ToolsImage string `json:"tools_image"`
+	// CellInit is the host path of the statically-linked cellinit helper;
+	// it is copied into the state root and bind-mounted read-only as the
+	// cell's PID 1 and canary agent.
+	CellInit string `json:"cell_init"`
+	// ProxyImage is the digest-pinned egress proxy image; required when any
+	// admitted plan declares non-loopback egress or brokered credentials.
+	ProxyImage string `json:"proxy_image,omitempty"`
+	// Runtime selects the OCI runtime tier: empty or "runc" (default),
+	// "runsc" or "kata"; the daemon must list the runtime before a cell
+	// may start on it.
+	Runtime string `json:"runtime,omitempty"`
+	// PerPrincipalUID maps each principal to a stable cell uid (20000+) so
+	// files a read-write cell leaves in a workspace carry a per-principal
+	// owner instead of the shared cli uid.
+	PerPrincipalUID bool `json:"per_principal_uid,omitempty"`
+	// SpacesRoot is the host root for principal workspaces; required when a
+	// definition requests a principal-scoped workspace bind.
+	SpacesRoot string `json:"spaces_root,omitempty"`
+	// Environment names the managed deployment tier (dev/prod). When set and
+	// <spaces_root>/<principal>/managed/<environment>/workspace exists, the
+	// principal scope binds that managed workspace; otherwise it falls back
+	// to <spaces_root>/<principal>/workspace for unmanaged principals.
+	Environment string `json:"environment,omitempty"`
+	// AllowedEgress is the union of egress hosts any CLI plan may declare.
+	// Cells with non-loopback egress get a per-cell internal network plus a
+	// CONNECT-allowlisted Squid proxy; all other cells are network none.
+	AllowedEgress []string `json:"allowed_egress"`
+	// Ceiling bounds every admitted execution policy; the plan may be
+	// stricter but never looser.
+	Ceiling ExecutionPolicy `json:"ceiling"`
+	// Approved are the immutable CLI plans the controller will attest:
+	// definition id+version, command, optional image+digest and the exact
+	// execution policy.
+	Approved []CLIApproval `json:"approved"`
+	// UserCommands admits owner-registered catalog command plans: the bare
+	// command name must be listed and the policy must fit Ceiling. Entries
+	// are reviewed for exec-capability (hooks, preprocessors, subcommands
+	// that spawn binaries); a binary that can run other code never belongs
+	// here. Image-carrying artifact plans are never admitted this way.
+	UserCommands []string `json:"user_commands,omitempty"`
+	// Toolboxes are operator-pinned toolsets for toolbox-lifecycle cells:
+	// name -> digest-pinned member images mounted read-only at /tools/<i>.
+	Toolboxes map[string][]string `json:"toolboxes,omitempty"`
+	// PoolSize caps live cells (idle + claimed) per stateless pool key;
+	// callers past the cap wait up to PoolClaimWaitSeconds then fail closed.
+	PoolSize             int `json:"pool_size,omitempty"`
+	PoolClaimWaitSeconds int `json:"pool_claim_wait_seconds,omitempty"`
+	// WarmMaxAgeSeconds and WarmMaxReuse bound warm-cell reuse; a cell past
+	// either limit is rotated before another exec claims it.
+	WarmMaxAgeSeconds int `json:"warm_max_age_seconds,omitempty"`
+	WarmMaxReuse      int `json:"warm_max_reuse,omitempty"`
+}
+
+// CLIApproval pins one admitted bounded-cli plan shape.
+type CLIApproval struct {
+	DefinitionID      string          `json:"definition_id"`
+	DefinitionVersion string          `json:"definition_version"`
+	Command           string          `json:"command"`
+	Image             string          `json:"image,omitempty"`
+	Digest            string          `json:"digest,omitempty"`
+	Execution         ExecutionPolicy `json:"execution"`
 }
 
 type genericWorkload struct {
@@ -59,9 +134,21 @@ type genericController struct {
 	config     GenericControllerConfig
 	command    func(context.Context, string, ...string) ([]byte, error)
 	commandEnv func(context.Context, map[string]string, string, ...string) ([]byte, error)
-	scope      *dockerScope
-	mu         sync.Mutex // ponytail: one controller lock; split only after measured contention.
-	workloads  map[string]genericWorkload
+	// commandExit runs a binary with streaming output and returns its exit
+	// code; `docker exec` needs the tool's own exit status, which the
+	// output-only command seam cannot carry.
+	commandExit func(context.Context, io.Writer, string, ...string) (int, error)
+	scope       *dockerScope
+	mu          sync.Mutex // ponytail: one controller lock; split only after measured contention.
+	workloads   map[string]genericWorkload
+	registry    *cellRegistry
+	cellInitOK  bool            // cellinit seeded into the state root for sibling binds
+	runtimes    map[string]bool // daemon runtime list, cached after first read
+	runtimesOK  bool
+	// toolboxes caches resolveToolbox results: every exec asks for the pin
+	// list, and each member costs a docker inspect round trip. Entries are
+	// evicted when a cell create fails so a pruned image re-resolves.
+	toolboxes map[string][]string
 }
 
 // docker runs one docker argv through the project-scope guard: inspect, exec,
@@ -106,9 +193,10 @@ type genericContainer struct {
 		ExitCode int
 	}
 	Config struct {
-		User  string
-		Image string
-		Env   []string
+		User   string
+		Image  string
+		Env    []string
+		Labels map[string]string
 	}
 	HostConfig struct {
 		NanoCpus       int64
@@ -118,10 +206,14 @@ type genericContainer struct {
 		ReadonlyRootfs bool
 		NetworkMode    string
 		PidMode        string
+		Runtime        string
 		CapAdd         []string
 		CapDrop        []string
 		SecurityOpt    []string
 		Binds          []string
+		// Tmpfs carries --tmpfs declarations on containerd-store daemons:
+		// the classic store also lists them in .Mounts, Desktop does not.
+		Tmpfs map[string]string
 	}
 	Mounts          []genericMount
 	NetworkSettings struct {
@@ -170,10 +262,13 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 			return nil, err
 		}
 	}
+	if err := validateCLIConfig(config.CLI); err != nil {
+		return nil, err
+	}
 	if noSymlinkPath(config.StateRoot) != nil || noSymlinkPath(config.SeccompProfile) != nil {
 		return nil, ErrIsolation
 	}
-	controller := &genericController{config: config, command: localCommand, commandEnv: isolatedCommandEnv, workloads: map[string]genericWorkload{}}
+	controller := &genericController{config: config, command: localCommand, commandEnv: isolatedCommandEnv, commandExit: localCommandExit, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
 	controller.scope = newDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
 	return controller, nil
 }
@@ -212,6 +307,26 @@ func isolatedCommandEnv(ctx context.Context, env map[string]string, binary strin
 		return nil, fmt.Errorf("isolated ToolHive command failed: %w: %s", err, strings.TrimSpace(output.String()))
 	}
 	return output.Bytes(), nil
+}
+
+// localCommandExit runs one controller-spawned binary, streaming combined
+// output into the sink, and returns the process exit code so `docker exec`
+// surfaces the tool's own status rather than a flattened error.
+func localCommandExit(ctx context.Context, sink io.Writer, binary string, args ...string) (int, error) {
+	cmd := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- binary and args are fixed by the reviewed controller plan.
+	cmd.Env = isolatedToolHiveEnviron(nil)
+	if sink != nil {
+		cmd.Stdout, cmd.Stderr = sink, sink
+	}
+	err := cmd.Run()
+	if err == nil {
+		return 0, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), nil
+	}
+	return -1, err
 }
 
 func localCommandEnv(ctx context.Context, env map[string]string, binary string, args ...string) ([]byte, error) {
@@ -370,6 +485,44 @@ func (c *genericController) handler(token string) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if r.URL.Path == "/cli-metrics" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(c.cellMetricsSnapshot())
+			return
+		}
+		if r.URL.Path == "/cli-release" {
+			var release cliReleaseRequest
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&release) != nil {
+				http.Error(w, "invalid cli release", http.StatusForbidden)
+				return
+			}
+			c.releaseCells(r.Context(), release)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.URL.Path == "/cli-exec" {
+			var request cliExecRequest
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
+				http.Error(w, "invalid cli request", http.StatusForbidden)
+				return
+			}
+			response, err := c.execCLI(r.Context(), request)
+			if err != nil {
+				status := http.StatusForbidden
+				if !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrUnauthorized) {
+					status = http.StatusServiceUnavailable
+				}
+				http.Error(w, "cli exec denied: "+publicPrepareError(err), status)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(response)
+			return
+		}
 		if r.URL.Path != "/admit" {
 			http.NotFound(w, r)
 			return
@@ -379,6 +532,12 @@ func (c *genericController) handler(token string) http.Handler {
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(&plan) != nil || decoder.Decode(new(any)) != io.EOF {
 			http.Error(w, "invalid plan", http.StatusForbidden)
+			return
+		}
+		if plan.Command != "" {
+			// Bounded-cli plans moved to /cli-exec: the controller now
+			// creates the sandbox cell rather than attesting this executor.
+			http.Error(w, "unapproved plan: bounded-cli executes through /cli-exec", http.StatusForbidden)
 			return
 		}
 		if err := c.validatePlan(plan); err != nil {
@@ -475,19 +634,12 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	if err != nil {
 		return genericWorkload{}, err
 	}
-	file, err := os.CreateTemp(c.config.StateRoot, ".proxy-*")
+	// docker cp preserves the source mode; the allowlist holds no secrets.
+	fileName, err := writeWorldReadableTemp(c.config.StateRoot, ".proxy-*", proxyConfig)
 	if err != nil {
 		return genericWorkload{}, err
 	}
-	fileName := file.Name()
 	defer os.Remove(fileName)
-	if _, err = file.WriteString(proxyConfig); err != nil {
-		file.Close()
-		return genericWorkload{}, err
-	}
-	if err = file.Close(); err != nil {
-		return genericWorkload{}, err
-	}
 	limits := []string{"--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs)}
 	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.scopeLabelArgs()...)
 	args = append(append(args, limits...), plan.SidecarImages[0])
@@ -501,6 +653,9 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		return genericWorkload{}, err
 	}
 	if _, err := c.docker(ctx, "start", proxyName); err != nil {
+		return genericWorkload{}, err
+	}
+	if err := c.waitProxyListen(ctx, proxyName); err != nil {
 		return genericWorkload{}, err
 	}
 	ip, err := c.proxyIP(ctx, proxyName, network)
@@ -585,6 +740,33 @@ func toolHiveSupportsRuntime(help string) bool {
 		}
 	}
 	return true
+}
+
+// proxyListenTimeout bounds the post-start wait for squid to bind its port;
+// tests shrink it to exercise the failure path.
+var proxyListenTimeout = 10 * time.Second
+
+// waitProxyListen holds callers until squid has bound its port: docker start
+// returns before the daemon finishes its init, and a workload that connects in
+// that window sees connection refused instead of a proxy. The probe runs inside
+// the proxy container because the internal cell network is unreachable from the
+// controller; procfs needs no extra tools in the slim image.
+func (c *genericController) waitProxyListen(ctx context.Context, name string) error {
+	deadline := time.Now().Add(proxyListenTimeout)
+	for {
+		// 3128 = 0x0C38 in the procfs local_address column.
+		if _, err := c.docker(ctx, "exec", name, "grep", "-q", ":0C38", "/proc/net/tcp", "/proc/net/tcp6"); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: egress proxy not listening", ErrIsolation)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func (c *genericController) proxyIP(ctx context.Context, name, network string) (string, error) {
@@ -943,6 +1125,11 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 	if err != nil {
 		return err
 	}
+	if config.CLI != nil {
+		if err := c.cellInitSeed(); err != nil {
+			return err
+		}
+	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
@@ -959,9 +1146,11 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 				_ = server.Shutdown(shutdown)
 				cancel()
 				c.CleanupIdle(context.Background(), time.Now().Add(365*24*time.Hour))
+				c.releaseAllCells(context.Background(), "controller-shutdown")
 				return
 			case now := <-ticker.C:
 				c.CleanupIdle(context.Background(), now)
+				c.cleanupCells(context.Background(), now)
 			}
 		}
 	}()

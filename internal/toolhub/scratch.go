@@ -180,6 +180,9 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		if err != nil {
 			return AgentExecResult{}, err
 		}
+		if scope := currentDockerScope(); scope != nil && !scope.admitSupervisedRuntime(ctx, runtime) {
+			return AgentExecResult{}, fmt.Errorf("%w: sandbox exec on foreign container %q denied", ErrIsolation, runtime)
+		}
 		command, _ := request.Arguments["command"].(string)
 		relPath, _ := request.Arguments["path"].(string)
 		if strings.TrimSpace(command) == "" || len(command) > 8192 || strings.ContainsRune(command, 0) {

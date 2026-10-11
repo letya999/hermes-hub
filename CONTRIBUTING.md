@@ -1,6 +1,6 @@
 # Contributing
 
-Toolchain: Go 1.27.1, just 1.57+ and Docker Compose 2.30+. Node/npm exists only inside
+Toolchain: Go 1.27.2, just 1.57+ and Docker Compose 2.30+. Node/npm exists only inside
 the image build for the pinned upstream Playwright MCP package. Run `just check`; it
 orchestrates Go race and integration tests, >=85% statement coverage for all original
 Go code, formatting, vet/staticcheck, docs and actionlint. Upstream code is excluded.

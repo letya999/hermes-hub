@@ -21,7 +21,8 @@ go-check:
 lint:
     go run ./cmd/devcheck format
     go vet ./...
-    go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+    # v0.8.1 cannot import Go 1.27.2 export data; pin the updated importer.
+    go run honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20261009230814-452d5bb86b45 ./...
 
 docs-check:
     go run ./cmd/devcheck docs
@@ -47,6 +48,8 @@ release version:
 docker-check target="prod":
     go run ./cmd/devcheck docker-build hermes-hub:test {{target}}
     go run ./cmd/devcheck docker-build hermes-hub:test-control {{target}}-control
+    go run ./cmd/devcheck docker-build hermes-hub-cli-tools:test cli-tools
+    go run ./cmd/devcheck docker-build hermes-hub-cell-proxy:test cell-proxy
     docker run --rm --entrypoint docker hermes-hub:test-control --version
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
@@ -54,7 +57,7 @@ docker-check target="prod":
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
-    HUB_SCRATCH_FAULT_IMAGE=hermes-hub:test go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
+    go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
     go run ./cmd/devcheck docker-clean
 
 # Pull the CI-built GHCR image for HEAD (edge-<target> fallback) and retag it
@@ -72,7 +75,7 @@ docker-check-prebuilt target="prod": (docker-pull target)
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
-    HUB_SCRATCH_FAULT_IMAGE=hermes-hub:test go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
+    go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
     go run ./cmd/devcheck docker-clean
 
 # Probe the pinned upstream without rebuilding or accessing user/provider data.

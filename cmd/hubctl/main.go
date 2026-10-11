@@ -343,6 +343,19 @@ func run(ctx context.Context, args []string) error {
 			if err = docker(append([]string{"build"}, f.Args()...)...); err != nil {
 				return err
 			}
+			// CLI sandbox cells run on dedicated images the controller
+			// resolves by tag at start; compose services never build them.
+			rootAbs, err := filepath.Abs(*root)
+			if err != nil {
+				return err
+			}
+			dockerfile := filepath.Join(rootAbs, "docker", "Dockerfile")
+			for _, stage := range []string{"cli-tools", "cell-proxy"} {
+				image := "hermes-hub-" + stage + ":0.3.0-" + *environment
+				if err := dockerCmd("build", "--target", stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
+					return fmt.Errorf("build %s: %w", image, err)
+				}
+			}
 		}
 		if op == "build" {
 			return nil

@@ -2,6 +2,8 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0048](active/SPEC-0048-cli-policy-completion.md) | Frozen: six CLI policy gaps, private package installation and atomic host catalog operation |
+| [SPEC-0047](active/SPEC-0047-toolhub-cli-transport.md) | Frozen: bounded CLI as a first-class ToolHub transport — catalog and user-owned, no shell, real isolation receipts (milestone 9; CHG-0077) |
 | [SPEC-0046](active/SPEC-0046-tool-governance.md) | Frozen: tool-governance inventory, scoped rules, expiring grants and multi-plane enforcement (issue 139; CHG-0076) |
 | [SPEC-0045](active/SPEC-0045-remote-mcp.md) | Frozen: owner-scoped remote MCP registration, admission, header credentials and projection (issues 83–85, 96; CHG-0075) |
 | [SPEC-0044](active/SPEC-0044-communication-telegram-auth.md) | Frozen: opt-in Communication Hub QR login and owner-bound Broker transfer |

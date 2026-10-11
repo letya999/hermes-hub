@@ -1,9 +1,11 @@
 package toolhub
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -85,6 +87,83 @@ func TestConnectorsListsOnlyCallerProjection(t *testing.T) {
 		if w, _ := call(tc[0], tc[1]); w.Code != http.StatusUnauthorized {
 			t.Fatalf("token=%q principal=%q → %d, want 401", tc[0], tc[1], w.Code)
 		}
+	}
+}
+
+// /v1/cli-jobs/release is the job-end hook: auth pins the principal the same
+// way /v1/connectors does, so a caller can only release its own task cells.
+func TestCLIJobReleasePinsPrincipalAndJob(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	bob := identity.TelegramEnvelope("bob", 8, "runtime-bob", "policy-1")
+	var got cliReleaseRequest
+	g := &Gateway{
+		Store:        store,
+		ControlToken: "control-plane-token-which-is-32-chars!",
+		Backend:      RoutingBackend{},
+		Tokens: map[string]identity.Envelope{
+			"alice-principal-token-0000000000000": auth,
+			"bob-principal-token-000000000000000": bob,
+		},
+		projections: map[string]*gatewayProjection{
+			"alice-principal-token-0000000000000": {auth: auth},
+			"bob-principal-token-000000000000000": {auth: bob},
+		},
+		CLIRelease: func(_ context.Context, release cliReleaseRequest) error {
+			got = release
+			return nil
+		},
+	}
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(token, principal, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/cli-jobs/release", strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if principal != "" {
+			req.Header.Set("X-Hub-Principal", principal)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+	if w := call("alice-principal-token-0000000000000", "", `{"job_id":"job-1"}`); w.Code != http.StatusNoContent {
+		t.Fatalf("alice release: %d", w.Code)
+	}
+	if got.PrincipalID != "alice" || got.JobID != "job-1" || got.Reason != "job-end" {
+		t.Fatalf("release=%+v", got)
+	}
+	// The control-plane bearer selects the principal through the header.
+	got = cliReleaseRequest{}
+	if w := call("control-plane-token-which-is-32-chars!", "bob", `{"job_id":"job-2"}`); w.Code != http.StatusNoContent {
+		t.Fatalf("control release: %d", w.Code)
+	}
+	if got.PrincipalID != "bob" || got.JobID != "job-2" {
+		t.Fatalf("control release=%+v", got)
+	}
+	// Bad shapes and foreign headers fail closed.
+	for _, tc := range []struct{ token, principal, body string }{
+		{"alice-principal-token-0000000000000", "", `{"job_id":"!"}`},
+		{"alice-principal-token-0000000000000", "", `{"job_id":"x","extra":1}`},
+		{"alice-principal-token-0000000000000", "", `not-json`},
+		{"mallory-token-00000000000000000000000", "", `{"job_id":"job-1"}`},
+		{"control-plane-token-which-is-32-chars!", "mallory", `{"job_id":"job-1"}`},
+	} {
+		if w := call(tc.token, tc.principal, tc.body); w.Code == http.StatusNoContent {
+			t.Fatalf("%+v → %d, want denial", tc, w.Code)
+		}
+	}
+	// GET is refused; the release is a mutation.
+	if w := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/cli-jobs/release", nil)
+		req.Header.Set("Authorization", "Bearer alice-principal-token-0000000000000")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}(); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET release: %d", w.Code)
 	}
 }
 
