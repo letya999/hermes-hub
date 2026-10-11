@@ -22,9 +22,37 @@ jobs:
         run: |
           test "$HEAD_REF" = dev
           test "$HEAD_REPOSITORY" = "$REPOSITORY"
+  # The race suite runs as a parallel matrix, not a single `just check`:
+  # one ~50-minute monolith `go test` repeatedly lost the hosted runner
+  # mid-step (job concludes failure, no logs uploaded — VM loss, not a
+  # test verdict). Short independent shards stay inside each runner's
+  # resource window, reruns are cheap, and a recurring shard failure
+  # identifies the implicated package set instead of the whole suite.
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go test shard
+        run: go test -race -shuffle=on -count=1 "-coverprofile=coverage-${SHARD}.out" $(go list ./... | sort | awk -v s="$SHARD" 'NR % 3 == s - 1')
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: coverage-${{ matrix.shard }}.out
+          include-hidden-files: false
+  checks-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: checks
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -38,26 +66,15 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: docker/browser/package-lock.json
-      # The race suite runs as two sequential shards, not a single `just
-      # check`: one ~50-minute monolith `go test` kept getting the hosted
-      # runner killed mid-step (job fails with no logs uploaded — VM loss,
-      # not a test verdict). Halving the step's package set and wall time
-      # keeps each shard inside the runner's resource window and, if a
-      # shard still dies, its step identity narrows the failure to a known
-      # package list.
-      - name: go test shard 1
-        run: go test -race -shuffle=on -count=1 "-coverprofile=coverage-1.out" $(go list ./... | sort | awk 'NR % 2 == 1')
-        env:
-          GOMAXPROCS: '2'
-      - name: go test shard 2
-        run: go test -race -shuffle=on -count=1 "-coverprofile=coverage-2.out" $(go list ./... | sort | awk 'NR % 2 == 0')
-        env:
-          GOMAXPROCS: '2'
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: coverage-shard-*
       - name: coverage gate
         run: |
           head -1 coverage-1.out > coverage.out
-          tail -n +2 coverage-1.out >> coverage.out
-          tail -n +2 coverage-2.out >> coverage.out
+          for f in coverage-1.out coverage-2.out coverage-3.out; do
+            tail -n +2 "$f" >> coverage.out
+          done
           go run ./cmd/devcheck coverage coverage.out 85
       - run: just lint
       - run: just docs-check
