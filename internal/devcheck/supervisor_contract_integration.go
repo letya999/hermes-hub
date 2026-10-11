@@ -670,10 +670,34 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 	if err != nil || job == nil {
 		return fmt.Errorf("due routine did not enqueue: %v", err)
 	}
+	// Include the supervisor four-minute readiness bound before native execution.
+	runner.Limit = 5 * time.Minute
 	runner.Spool, runner.Resume = spool, false
-	if outcome, err := runner.RunOutcome(ctx, *job); err != nil || outcome.Status != "completed" {
+	outcome, runErr := runner.RunOutcome(ctx, *job)
+	admittedRun := outcome.RunID
+	observeCtx, stopObservation := context.WithTimeout(ctx, 5*time.Minute)
+	defer stopObservation()
+	if errors.Is(runErr, communication.ErrUncertain) && admittedRun != "" {
+		fmt.Println("Real due routine observation: resume admitted run without input replay")
+	}
+	for errors.Is(runErr, communication.ErrUncertain) && admittedRun != "" && observeCtx.Err() == nil {
+		mapping, found, err := spool.Mapping(job.ID)
+		if err != nil || !found || mapping.RunID != admittedRun || mapping.SessionID == "" {
+			return errors.New("due routine lost admitted run during observation")
+		}
+		m.ReconcileHealth(observeCtx, time.Now())
+		if err := contractSleep(observeCtx, time.Second); err != nil {
+			break
+		}
+		// HTTPRunner resumes the durable mapping and clears the input, as the gateway does.
+		outcome, runErr = runner.RunOutcome(observeCtx, *job)
+		if outcome.RunID != "" && outcome.RunID != admittedRun {
+			return errors.New("due routine observation changed admitted run")
+		}
+	}
+	if runErr != nil || outcome.Status != "completed" {
 		mapping, _, _ := spool.Mapping(job.ID)
-		return fmt.Errorf("real due routine wake failed: status=%s event=%s run=%s mapping=%s/%s error=%v", outcome.Status, outcome.LastEvent, outcome.RunID, mapping.Status, mapping.LastKnownEvent, err)
+		return fmt.Errorf("real due routine wake failed: status=%s event=%s run=%s mapping=%s/%s error=%v", outcome.Status, outcome.LastEvent, outcome.RunID, mapping.Status, mapping.LastKnownEvent, runErr)
 	}
 	if err := spool.CompleteJob(job.ID); err != nil {
 		return err

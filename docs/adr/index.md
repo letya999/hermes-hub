@@ -6,6 +6,7 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0033](ADR-0033-deterministic-work-isolation.md) | Local writer ownership, durable result handoff and isolated script containers |
 | [ADR-0032](ADR-0032-capability-execution-isolation.md) | Accepted: isolate control state, Hermes, scoped file executors and scratch-only code workloads |
 | [ADR-0031](ADR-0031-default-deny-capability-policy.md) | Accepted: zero-capability baseline, explicit profiles, canonical identities and one ToolHub policy boundary |
 | [ADR-0030](ADR-0030-cliproxy-image-routes.md) | CLIProxy image ids use two calls: images endpoint, or Gemini chat completions |

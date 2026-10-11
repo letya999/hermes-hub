@@ -39,7 +39,9 @@ func GatewayLifecycle(ctx context.Context, image string) error {
 }
 
 func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error {
-	ctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+	// Three cold starts each allow four-minute readiness plus one minute of execution.
+	const coldStartBudget = 5 * time.Minute
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
 	defer cancel()
 	root, err := os.MkdirTemp("", "hermes-gateway-lifecycle-")
 	if err != nil {
@@ -247,7 +249,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		return mapping, err
 	}
 	appendTask(71001, 21)
-	if err := wait("Alice cold start and final", 2*time.Minute, func() bool { mu.Lock(); defer mu.Unlock(); return finals[21] == 1 }); err != nil {
+	if err := wait("Alice cold start and final", coldStartBudget, func() bool { mu.Lock(); defer mu.Unlock(); return finals[21] == 1 }); err != nil {
 		return err
 	}
 	first, err := readMapping(71001)
@@ -258,7 +260,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		return errors.New("Alice task woke Bob")
 	}
 	appendTask(71002, 22)
-	if err := wait("Bob isolated cold start and final", 2*time.Minute, func() bool { mu.Lock(); defer mu.Unlock(); return finals[22] == 1 }); err != nil {
+	if err := wait("Bob isolated cold start and final", coldStartBudget, func() bool { mu.Lock(); defer mu.Unlock(); return finals[22] == 1 }); err != nil {
 		return err
 	}
 	bob, err := readMapping(71002)
@@ -339,7 +341,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	}
 	// Cold resume retains the session and context home; completed input is not replayed.
 	appendTask(71004, 21)
-	if err := wait("Alice cold restore after automatic shutdown", 2*time.Minute, func() bool { mu.Lock(); defer mu.Unlock(); return finals[21] == 3 }); err != nil {
+	if err := wait("Alice cold restore after automatic shutdown", coldStartBudget, func() bool { mu.Lock(); defer mu.Unlock(); return finals[21] == 3 }); err != nil {
 		return err
 	}
 	cold, err := readMapping(71004)

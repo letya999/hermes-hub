@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"net/http"
 	"os"
@@ -20,17 +21,22 @@ import (
 // spool/watchers/<scheduleID>.json and is the only thing the deterministic
 // poll needs between ticks — no model sees an unchanged source.
 type WatchState struct {
-	ScheduleID string    `json:"schedule_id"`
-	Baseline   string    `json:"baseline"`
-	Value      string    `json:"value"`
-	PrevValue  string    `json:"prev_value,omitempty"`
-	ChangedAt  time.Time `json:"changed_at"`
+	Generation  uint64    `json:"generation,omitempty"`
+	ScheduleID  string    `json:"schedule_id"`
+	Baseline    string    `json:"baseline"`
+	Value       string    `json:"value"`
+	PrevValue   string    `json:"prev_value,omitempty"`
+	ChangedAt   time.Time `json:"changed_at"`
+	LastSuccess time.Time `json:"last_success"`
+	LastError   string    `json:"last_error,omitempty"`
 }
 
 // DigestState marks when the owner's watches were last aggregated.
 type DigestState struct {
-	ScheduleID   string    `json:"schedule_id"`
-	LastDigestAt time.Time `json:"last_digest_at"`
+	Errors       map[string]string `json:"errors,omitempty"`
+	Generations  map[string]uint64 `json:"generations,omitempty"`
+	ScheduleID   string            `json:"schedule_id"`
+	LastDigestAt time.Time         `json:"last_digest_at"`
 }
 
 func (s *Spool) digestPath(id string) string {
@@ -45,6 +51,10 @@ func (s *Spool) loadWatchStateLocked(id string) (WatchState, error) {
 	var st WatchState
 	b, err := os.ReadFile(s.watchPath(id))
 	if os.IsNotExist(err) {
+		if schedule, err := s.loadScheduleLocked(id); err == nil && schedule.InitialProbeValue != nil {
+			value := *schedule.InitialProbeValue
+			return WatchState{ScheduleID: id, Baseline: watchHash(value), Value: value, LastSuccess: schedule.CreatedAt}, nil
+		}
 		return WatchState{ScheduleID: id}, nil
 	}
 	if err != nil {
@@ -88,33 +98,11 @@ func watchHash(value string) string {
 // re-validates the occurrence is still probing (crash-safe: a stale probing
 // occurrence is probed again — delivery ids dedupe).
 func (s *Spool) ProbeDueOccurrences(now time.Time, fetch func(context.Context, string) ([]byte, error)) error {
-	s.mu.Lock()
-	pending := []RoutineOccurrence{}
-	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
-	if err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(s.root, "occurrences", entry.Name()))
-		if err != nil {
-			s.mu.Unlock()
-			return err
-		}
-		var o RoutineOccurrence
-		if json.Unmarshal(b, &o) != nil || o.State != "probing" {
-			continue
-		}
-		pending = append(pending, o)
-	}
-	s.mu.Unlock()
-	for _, o := range pending {
-		s.probeOne(o, now, fetch)
-	}
-	return nil
+	return s.ProbeDueOccurrencesContext(context.Background(), now, nil, fetch)
+}
+
+func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error)) error {
+	return s.processProactive(ctx, "probing", func(o RoutineOccurrence) { s.probeOne(ctx, o, now, authorize, fetch) })
 }
 
 // fetchWatch is the live probe: one GET, caches bypassed, body capped at
@@ -125,7 +113,12 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Cache-Control", "no-cache")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	client := g.watchHTTP
+	if client == nil {
+		client = toolhub.PublicHTTPClient(10 * time.Second)
+		defer client.CloseIdleConnections()
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -133,46 +126,100 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("probe status %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
+	if len(body) > 256*1024 {
+		return nil, errors.New("probe body exceeds size limit")
+	}
+	return body, err
 }
 
-func (s *Spool) probeOne(o RoutineOccurrence, now time.Time, fetch func(context.Context, string) ([]byte, error)) {
+func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error)) {
 	s.mu.Lock()
 	schedule, err := s.loadScheduleLocked(o.ScheduleID)
+	current := s.occurrenceCurrentLocked(o) && (authorize == nil || authorize(o.Job) == nil)
 	s.mu.Unlock()
-	if err != nil {
+	if !current {
+		o.State = "cancelled"
+		_ = atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o)
 		return
 	}
-	var re *regexp.Regexp
-	if schedule.Probe.Regex != "" {
-		re, _ = regexp.Compile(schedule.Probe.Regex)
+	if err != nil || schedule.Probe == nil {
+		return
 	}
-	body, fetchErr := fetch(context.Background(), schedule.Probe.URL)
+	receipt := filepath.Join(s.root, "occurrences", occurrenceID(o)+".probe-result")
+	if body, err := os.ReadFile(receipt); err == nil {
+		var result probeResult
+		if json.Unmarshal(body, &result) != nil {
+			return
+		}
+		s.mu.Lock()
+		_ = s.applyProbeResultLocked(result)
+		s.mu.Unlock()
+		return
+	} else if !os.IsNotExist(err) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	body, fetchErr := fetch(ctx, schedule.Probe.URL)
 	if fetchErr != nil {
-		s.settleProbe(o, schedule, "", "", now, fetchErr)
+		s.settleProbe(o, schedule, "", "", now, fetchErr, authorize)
 		return
 	}
-	value := watchValue(body, re)
-	s.settleProbe(o, schedule, value, watchHash(value), now, nil)
+	value, valueErr := probeValue(schedule.Probe, body)
+	if valueErr != nil {
+		s.settleProbe(o, schedule, "", "", now, valueErr, authorize)
+		return
+	}
+	s.settleProbe(o, schedule, value, watchHash(value), now, nil, authorize)
 }
 
 // settleProbe persists the tick outcome: silent baseline seed, no_change,
 // changed + one delivery, or failed — and lands the occurrence in a terminal
 // state. The watch state write and the occurrence write share the lock.
-func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash string, now time.Time, probeErr error) {
+type probeResult struct {
+	Watch      WatchState        `json:"watch"`
+	Occurrence RoutineOccurrence `json:"occurrence"`
+	Delivery   *Delivery         `json:"delivery,omitempty"`
+}
+
+func (s *Spool) applyProbeResultLocked(result probeResult) error {
+	o := result.Occurrence
+	if !s.occurrenceCurrentLocked(o) {
+		o.State = "cancelled"
+		return atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o)
+	}
+	if result.Delivery != nil {
+		if err := s.enqueueDeliveryLocked(*result.Delivery); err != nil {
+			return err
+		}
+	}
+	live, err := s.loadWatchStateLocked(o.ScheduleID)
+	if err != nil {
+		return err
+	}
+	if live.Generation <= result.Watch.Generation {
+		if err := atomicJSON(s.watchPath(o.ScheduleID), result.Watch); err != nil {
+			return err
+		}
+	}
+	return atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o)
+}
+
+func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash string, now time.Time, probeErr error, authorize func(Job) error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
-	b, err := os.ReadFile(path)
+	body, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
 	var live RoutineOccurrence
-	if json.Unmarshal(b, &live) != nil || live.State != "probing" {
+	if json.Unmarshal(body, &live) != nil || live.State != "probing" {
 		return
 	}
-	if probeErr != nil {
-		live.State = "failed"
+	if !s.occurrenceCurrentLocked(live) || (authorize != nil && authorize(live.Job) != nil) {
+		live.State = "cancelled"
 		_ = atomicJSON(path, live)
 		return
 	}
@@ -180,44 +227,83 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 	if err != nil {
 		return
 	}
-	if live.JobKind == "check" {
-		met := st.Baseline != "" && ((hash != st.Baseline && schedule.Expect == "changed") || (hash == st.Baseline && schedule.Expect == "unchanged"))
-		if !met {
+	result := probeResult{Watch: st, Occurrence: live}
+	if probeErr != nil {
+		st.LastError = "probe failed; baseline unchanged"
+		live.State = "failed"
+	} else {
+		st.LastSuccess, st.LastError = now.UTC(), ""
+		notify, text := false, live.Job.Text
+		if live.JobKind == "check" {
+			notify = (st.Baseline != "" && ((hash != st.Baseline && schedule.Expect == "changed") || (hash == st.Baseline && schedule.Expect == "unchanged"))) || (strings.HasPrefix(schedule.Expect, "equals:") && value == strings.TrimPrefix(schedule.Expect, "equals:"))
 			live.State = "skipped"
-			_ = atomicJSON(path, live)
-			return
+			if notify {
+				live.State = "dispatched"
+			}
+		} else if st.Baseline == "" {
+			st.Baseline, st.Value = hash, value
+			live.State = "dispatched"
+		} else if hash == st.Baseline {
+			live.State = "no_change"
+		} else {
+			st.PrevValue, st.Value, st.Baseline = st.Value, value, hash
+			st.ChangedAt = now.UTC()
+			st.Generation++
+			text = fmt.Sprintf("%s\n%s\nwas: %s\nnow: %s", live.Job.Text, schedule.Probe.URL, boundedWatchText(st.PrevValue), boundedWatchText(st.Value))
+			notify = schedule.NotifyMode != "digest"
+			live.State = "dispatched"
 		}
-		d, err := normalizeDelivery(Delivery{ID: "check-" + live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: live.Job.Text, CreatedAt: now.UTC()})
-		if err != nil {
-			return
+		if notify {
+			prefix := "watch-"
+			if live.JobKind == "check" {
+				prefix = "check-"
+			}
+			d, err := normalizeDelivery(Delivery{ID: prefix + live.Job.ID, OccurrenceID: live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: text, CreatedAt: now.UTC()})
+			if err != nil {
+				return
+			}
+			result.Delivery = &d
 		}
-		if err = s.enqueueDeliveryLocked(d); err != nil {
-			return
-		}
-		live.State = "dispatched"
-		_ = atomicJSON(path, live)
+	}
+	result.Watch, result.Occurrence = st, live
+	receipt := filepath.Join(s.root, "occurrences", occurrenceID(o)+".probe-result")
+	if atomicJSON(receipt, result) != nil {
 		return
 	}
-	if st.Baseline == "" {
-		st.Baseline = hash
-		st.Value = value
-		live.State = "dispatched"
-	} else if hash == st.Baseline {
-		live.State = "no_change"
-	} else {
-		st.PrevValue = st.Value
-		st.Value = value
-		st.Baseline = hash
-		st.ChangedAt = now.UTC()
-		d, err := normalizeDelivery(Delivery{ID: "watch-" + live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: fmt.Sprintf("%s\nwas: %s\nnow: %s", live.Job.Text, st.PrevValue, st.Value), CreatedAt: now.UTC()})
-		if err != nil {
-			return
-		}
-		if err = s.enqueueDeliveryLocked(d); err != nil {
-			return
-		}
-		live.State = "dispatched"
+	_ = s.applyProbeResultLocked(result)
+}
+
+func boundedWatchText(value string) string {
+	runes := []rune(value)
+	if len(runes) > 1024 {
+		return string(runes[:1024]) + "…"
 	}
-	_ = atomicJSON(s.watchPath(live.ScheduleID), st)
-	_ = atomicJSON(path, live)
+	return value
+}
+
+func probeValue(probe *WatchProbe, body []byte) (string, error) {
+	if probe == nil {
+		return "", errors.New("probe required")
+	}
+	if probe.Kind == "github_issue" {
+		var issue struct {
+			State string `json:"state"`
+		}
+		if json.Unmarshal(body, &issue) != nil || (issue.State != "open" && issue.State != "closed") {
+			return "", errors.New("invalid GitHub issue response")
+		}
+		return issue.State, nil
+	}
+	var re *regexp.Regexp
+	if probe.Regex != "" {
+		var err error
+		re, err = regexp.Compile(probe.Regex)
+		if err != nil {
+			return "", err
+		}
+		if re.NumSubexp() == 0 || re.FindSubmatch(body) == nil {
+			return "", errors.New("probe did not match")
+		}
+	}
+	return watchValue(body, re), nil
 }

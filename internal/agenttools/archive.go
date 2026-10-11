@@ -22,12 +22,20 @@ func (t *Tools) archiveCreate(ws *os.Root, r Input) (map[string]any, error) {
 	if len(r.Paths) == 0 {
 		return nil, errors.New("paths must list workspace files")
 	}
+	sources := ws
+	if r.archiveSources != nil {
+		sources = r.archiveSources
+	}
+	output, outputPath := ws, r.Path
+	if r.archiveOutput != nil {
+		output, outputPath = r.archiveOutput, r.archiveOutputPath
+	}
 	seen := map[string]bool{}
 	for _, p := range r.Paths {
 		if !safe(p) || seen[p] {
 			return nil, errors.New("archive sources must be distinct relative paths")
 		}
-		info, err := ws.Lstat(p)
+		info, err := sources.Lstat(p)
 		if err != nil {
 			return nil, err
 		}
@@ -36,22 +44,33 @@ func (t *Tools) archiveCreate(ws *os.Root, r Input) (map[string]any, error) {
 		}
 		seen[p] = true
 	}
-	if err := ws.MkdirAll(path.Dir(r.Path), 0700); err != nil {
+	if err := output.MkdirAll(path.Dir(outputPath), 0700); err != nil {
 		return nil, err
 	}
-	f, err := ws.OpenFile(r.Path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := output.OpenFile(outputPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, err
 	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = f.Close()
+			_ = output.Remove(outputPath)
+		}
+	}()
 	zw := zip.NewWriter(f)
-	for _, rel := range r.Paths {
-		body, err := ws.Open(rel)
+	for i, rel := range r.Paths {
+		body, err := sources.Open(rel)
 		if err != nil {
 			_ = zw.Close()
 			_ = f.Close()
 			return nil, err
 		}
-		w, err := zw.Create(rel)
+		entryName := rel
+		if r.archiveSourceNames != nil {
+			entryName = r.archiveSourceNames[i]
+		}
+		w, err := zw.Create(entryName)
 		if err == nil {
 			_, err = io.Copy(w, body)
 		}
@@ -66,9 +85,13 @@ func (t *Tools) archiveCreate(ws *os.Root, r Input) (map[string]any, error) {
 		_ = f.Close()
 		return nil, err
 	}
+	if err := f.Sync(); err != nil {
+		return nil, err
+	}
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
+	complete = true
 	return map[string]any{"path": r.Path, "files": len(r.Paths)}, nil
 }
 
@@ -110,17 +133,28 @@ func (t *Tools) archiveUnpack(ws *os.Root, r Input) (map[string]any, error) {
 // capped by the reader), unsafe names, encrypted, non-file and symlink entries
 // are refused, and the partial target is removed on any failure.
 func unpackZip(ws *os.Root, zr *zip.Reader, target string) (int, error) {
+	if maxUnpackBytes < 0 {
+		return 0, errors.New("archive byte limit must not be negative")
+	}
 	if len(zr.File) > maxUnpackEntries {
 		return 0, errors.New("archive has too many entries")
 	}
-	var declared int64
+	var declared uint64
 	for _, entry := range zr.File {
-		declared += int64(entry.UncompressedSize64)
+		if entry.UncompressedSize64 > uint64(maxUnpackBytes)-declared {
+			return 0, errors.New("archive exceeds the unpacked size limit")
+		}
+		declared += entry.UncompressedSize64
 	}
-	if declared > maxUnpackBytes {
-		return 0, errors.New("archive exceeds the unpacked size limit")
+	if err := ws.MkdirAll(path.Dir(target), 0700); err != nil {
+		return 0, err
+	}
+	// Exclusive creation establishes which directory this attempt may remove.
+	if err := ws.Mkdir(target, 0700); err != nil {
+		return 0, err
 	}
 	files := 0
+	var actual int64
 	fail := func(err error) (int, error) {
 		_ = ws.RemoveAll(target)
 		return 0, err
@@ -154,7 +188,15 @@ func unpackZip(ws *os.Root, zr *zip.Reader, target string) (int, error) {
 		}
 		out, err := ws.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err == nil {
-			_, err = io.Copy(out, rc)
+			var n int64
+			n, err = io.Copy(out, io.LimitReader(rc, maxUnpackBytes-actual+1))
+			actual += n
+			if err == nil && actual > maxUnpackBytes {
+				err = errors.New("archive exceeds the unpacked size limit")
+			}
+			if err == nil {
+				err = out.Sync()
+			}
 			if cerr := out.Close(); err == nil {
 				err = cerr
 			}

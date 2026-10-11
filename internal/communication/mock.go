@@ -1,8 +1,10 @@
 package communication
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,22 +37,15 @@ func (g *Gateway) handleMockMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid mock message", http.StatusBadRequest)
 		return
 	}
-	owner, err := g.mockLinkOwner(in.ChatID)
-	if err != nil {
-		http.Error(w, "link failed", http.StatusInternalServerError)
+	if in.ChatID <= 0 || len(in.ClientID) > 128 || strings.TrimSpace(in.Text) == "" {
+		http.Error(w, "invalid mock message", http.StatusBadRequest)
 		return
 	}
-	if owner != "" && owner != caller.PrincipalID {
+	if err := g.mockLinkClaim(in.ChatID, caller.PrincipalID); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	user := g.user(caller.PrincipalID)
-	if owner == "" {
-		if err := g.mockLinkClaim(in.ChatID, caller.PrincipalID); err != nil {
-			http.Error(w, "link failed", http.StatusInternalServerError)
-			return
-		}
-	}
 	task, err := g.spool.ResolveTask(user, in.ChatID, 0, true)
 	if err != nil {
 		http.Error(w, "task failed", http.StatusInternalServerError)
@@ -60,7 +55,7 @@ func (g *Gateway) handleMockMessage(w http.ResponseWriter, r *http.Request) {
 	if in.ClientID == "" {
 		key += time.Now().UTC().Format("150405.000000000")
 	}
-	id := "mock-" + in.ClientID
+	id := fmt.Sprintf("mock-%x", sha256.Sum256([]byte(key)))
 	if in.ClientID == "" {
 		id = "mock-" + newID()
 	}
@@ -74,13 +69,21 @@ func (g *Gateway) handleMockMessage(w http.ResponseWriter, r *http.Request) {
 // handleMockOutbox lists the deliveries this principal's mock channel
 // captured — the durable record of what the agent "sent".
 func (g *Gateway) handleMockOutbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	caller, ok := g.authorizeControl(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	entries, err := os.ReadDir(filepath.Join(g.spool.root, "mock-sent"))
-	out := []Delivery{}
+	type snapshot struct {
+		Delivery
+		ArtifactData map[string][]byte `json:"artifact_data,omitempty"`
+	}
+	out := []snapshot{}
 	if err == nil {
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
@@ -91,14 +94,15 @@ func (g *Gateway) handleMockOutbox(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			var rec struct {
-				Principal string    `json:"principal"`
-				Delivery  *Delivery `json:"delivery"`
+				Principal    string            `json:"principal"`
+				Delivery     *Delivery         `json:"delivery"`
+				ArtifactData map[string][]byte `json:"artifact_data"`
 			}
 			if err := json.Unmarshal(b, &rec); err != nil {
 				continue
 			}
 			if rec.Principal == caller.PrincipalID && rec.Delivery != nil {
-				out = append(out, *rec.Delivery)
+				out = append(out, snapshot{Delivery: *rec.Delivery, ArtifactData: rec.ArtifactData})
 			}
 		}
 	}
@@ -125,6 +129,18 @@ func (g *Gateway) mockLinkOwner(chatID int64) (string, error) {
 }
 
 func (g *Gateway) mockLinkClaim(chatID int64, principal string) error {
+	g.spool.mu.Lock()
+	defer g.spool.mu.Unlock()
+	owner, err := g.mockLinkOwner(chatID)
+	if err != nil {
+		return err
+	}
+	if owner != "" {
+		if owner != principal {
+			return errors.New("mock chat not owned")
+		}
+		return nil
+	}
 	return atomicJSON(filepath.Join(g.spool.root, "mock-links", strconv.FormatInt(chatID, 10)+".json"), map[string]string{"principal": principal})
 }
 
@@ -136,7 +152,18 @@ func (g *Gateway) captureMock(d *Delivery) error {
 	if err != nil {
 		return err
 	}
-	return atomicJSON(filepath.Join(g.spool.root, "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d})
+	if owner == "" {
+		return errors.New("mock chat not owned")
+	}
+	artifacts := map[string][]byte{}
+	for _, artifact := range d.Artifacts {
+		data, err := g.spool.ReadDeliveryBlob(d.ID, artifact.Blob)
+		if err != nil {
+			return err
+		}
+		artifacts[artifact.Name] = data
+	}
+	return atomicJSON(filepath.Join(g.spool.root, "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts})
 }
 
 func (user User) mockEnvelope(chatID int64) identity.Envelope {

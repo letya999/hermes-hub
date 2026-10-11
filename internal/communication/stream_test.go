@@ -396,6 +396,10 @@ func TestAdmittedRestartResumesWithoutSecondSubmission(t *testing.T) {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/usage" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.URL.Path != "/v1/resume" {
 			t.Errorf("second submission: %s", r.URL.Path)
 		}

@@ -423,7 +423,7 @@ func TestUsageUpdateRunsBesideUpdatePoll(t *testing.T) {
 	}
 
 	start := time.Now()
-	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/usage", 11, 0)); err != nil {
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/usage session", 11, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {

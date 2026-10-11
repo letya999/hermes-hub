@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,63 +14,103 @@ import (
 	"strings"
 )
 
-// inboxFetch materializes one staged inbound file: bytes come from the
-// communication hub's spool, the workspace write happens inside this root,
-// and only then is the staged copy consumed. A zip is unpacked directly from
-// memory — the archive itself never lands on the workspace.
-func (t *Tools) inboxFetch(ctx context.Context, ws *os.Root, r Input) (map[string]any, error) {
-	if t.CommunicationURL == "" || r.ID == "" || strings.Contains(r.ID, "/") {
-		return nil, errors.New("inbox fetch requires a staged file id")
+// inboxFetch stores a complete receipt before acknowledging the staged copy.
+func (t *Tools) inboxFetch(ctx context.Context, ws *os.Root, r Input) (result map[string]any, err error) {
+	if t.CommunicationURL == "" || !safe(r.ID) || strings.Contains(r.ID, "/") || r.ID == "." {
+		return nil, errors.New("inbox fetch requires a safe staged file id")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.lock != nil {
+		if err := t.lock.Lock(); err != nil {
+			return nil, err
+		}
+		defer t.lock.Unlock()
+	}
+	target := "inbox/" + r.ID
+	receipt := target + "/receipt.json"
+	if body, err := ws.ReadFile(receipt); err == nil {
+		if err := json.Unmarshal(body, &result); err != nil || result == nil {
+			return nil, errors.New("invalid inbound receipt")
+		}
+		result["acknowledged"] = t.inboundConsume(ctx, r.ID) == nil
+		return result, nil
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 	name, data, err := t.inboundGet(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
-	var result map[string]any
-	if strings.HasSuffix(strings.ToLower(name), ".zip") {
+	base := path.Base(name)
+	if !safe(base) || base == "." {
+		return nil, errors.New("unsafe file name")
+	}
+	if err := ws.MkdirAll("inbox", 0700); err != nil {
+		return nil, err
+	}
+	if err := ws.Mkdir(target, 0700); err != nil {
+		return nil, errors.New("inbound target exists without a completed receipt; inspect it before retrying")
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = ws.RemoveAll(target)
+		}
+	}()
+	if strings.HasSuffix(strings.ToLower(base), ".zip") {
 		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
 			return nil, errors.New("inbound file is not a readable zip")
 		}
-		base := strings.TrimSuffix(path.Base(name), path.Ext(name))
-		if !safe(base) || strings.Contains(base, "/") {
-			return nil, errors.New("unsafe archive name")
-		}
-		target := "inbox/" + base
-		files, err := unpackZip(ws, zr, target)
+		files, err := unpackZip(ws, zr, target+"/files")
 		if err != nil {
 			return nil, err
 		}
-		result = map[string]any{"path": target, "files": files}
+		result = map[string]any{"path": target + "/files", "files": files}
 	} else {
-		dest := "inbox/" + path.Base(name)
-		if !safe(dest) {
-			return nil, errors.New("unsafe file name")
-		}
-		if _, err := ws.Lstat(dest); err == nil {
-			dest = "inbox/" + r.ID + "-" + path.Base(name)
-		}
-		if err := ws.MkdirAll(path.Dir(dest), 0700); err != nil {
+		if err := ws.Mkdir(target+"/files", 0700); err != nil {
 			return nil, err
 		}
+		dest := target + "/files/" + base
 		f, err := ws.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := f.Write(data); err != nil {
-			_ = f.Close()
-			_ = ws.Remove(dest)
+		_, err = f.Write(data)
+		if err == nil {
+			err = f.Sync()
+		}
+		closeErr := f.Close()
+		if err != nil {
 			return nil, err
 		}
-		if err := f.Close(); err != nil {
-			_ = ws.Remove(dest)
-			return nil, err
+		if closeErr != nil {
+			return nil, closeErr
 		}
 		result = map[string]any{"path": dest, "size": len(data)}
 	}
-	if err := t.inboundConsume(ctx, r.ID); err != nil {
-		return nil, fmt.Errorf("fetched but staged copy not consumed: %w", err)
+	body, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
 	}
+	f, err := ws.OpenFile(receipt, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	_, err = f.Write(body)
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	complete = true
+	result["acknowledged"] = t.inboundConsume(ctx, r.ID) == nil
 	return result, nil
 }
 
@@ -103,9 +144,12 @@ func (t *Tools) inboundGet(ctx context.Context, id string) (string, []byte, erro
 		return "", nil, fmt.Errorf("inbound fetch rejected: %d", resp.StatusCode)
 	}
 	name := resp.Header.Get("X-Hub-Name")
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 9<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (9<<20)+1))
 	if err != nil {
 		return "", nil, err
+	}
+	if len(data) > 9<<20 {
+		return "", nil, errors.New("inbound file exceeds size limit")
 	}
 	return name, data, nil
 }

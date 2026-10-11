@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	if instructions != "" {
 		instructions += "\n"
 	}
-	instructions += "Files written under the workspace `artifacts/` directory (documents, images, videos) are delivered to the chat automatically when the run finishes — no marker needed; a delivered artifact is removed from the workspace once handed to the channel. To attach a file produced in an earlier run or stored elsewhere in the workspace, put `MEDIA: <workspace path>` on its own line in the reply; marker lines are routing metadata and never shown. When a message carries `[file ... inbox=<id>]`, call `inbox_fetch` with that id first to materialize the file under `inbox/`. Never tell the user that the chat cannot receive file attachments."
+	instructions += "Files written under the workspace `artifacts/` directory (documents, images, videos) are delivered to the chat automatically when the run finishes — no marker needed; the workspace original is preserved after delivery. To attach a file produced in an earlier run or stored elsewhere in the workspace, put `MEDIA: <workspace path>` on its own line in the reply; marker lines are routing metadata and never shown. When a message carries `[file ... inbox=<id>]`, call `inbox_fetch` with that id first to materialize the file under `inbox/`. Never tell the user that the chat cannot receive file attachments."
 	if r.Voice {
 		// The VOICE: marker convention lives on the host-side tools server in
 		// unmanaged deployments; managed runtimes see only ToolHub, so the
@@ -158,6 +159,9 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 			if event.Status == "completed" && len(event.Artifacts) > 0 {
 				r.attachArtifacts(jobCtx, job, &event)
 			}
+			if terminalStatus(event.Status) {
+				r.meterUsage(jobCtx, job, event.RunID)
+			}
 			if err := r.Spool.RecordStreamEvent(job, event); err != nil {
 				return err
 			}
@@ -173,7 +177,6 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		if last.Status != "completed" {
 			return outcome, errors.New("hermes run ended without completion")
 		}
-		r.meterUsage(jobCtx, job, outcome.RunID)
 		return outcome, nil
 	}
 	if response.StatusCode/100 != 2 {
@@ -187,6 +190,9 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		}
 		_ = json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&failure)
 		outcome := RunOutcome{JobID: failure.JobID, SessionID: failure.SessionID, RunID: failure.RunID, RuntimeGeneration: failure.RuntimeGeneration, Status: failure.Status, LastEvent: failure.LastEvent}
+		if terminalStatus(failure.Status) && failure.JobID == job.ID {
+			r.meterUsage(jobCtx, job, failure.RunID)
+		}
 		if failure.Status == "uncertain" {
 			return outcome, fmt.Errorf("%w: runtime returned HTTP %d", ErrUncertain, response.StatusCode)
 		}
@@ -195,6 +201,9 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	var result hubruntime.ExecuteResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024+64*1024)).Decode(&result); err != nil || (strings.TrimSpace(result.Text) == "" && (result.Status == "completed" || !terminalStatus(result.Status))) {
 		return RunOutcome{}, errors.New("runtime returned an invalid response")
+	}
+	if terminalStatus(result.Status) && result.JobID == job.ID {
+		r.meterUsage(jobCtx, job, result.RunID)
 	}
 	if r.Spool != nil {
 		if result.JobID != job.ID {
@@ -232,9 +241,6 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		return outcomeFromEvent(result), errors.New("hermes run ended without completion")
 	}
 	outcome := RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent, Voice: result.Voice}
-	if terminalStatus(result.Status) {
-		r.meterUsage(jobCtx, job, outcome.RunID)
-	}
 	return outcome, nil
 }
 
@@ -250,10 +256,12 @@ func (r HTTPRunner) meterUsage(ctx context.Context, job Job, runID string) {
 		UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID,
 		Channel: job.Channel, Trigger: job.Trigger, IdempotencyKey: job.IdempotencyKey,
 	})
-	if err != nil || !report.SessionFound {
-		return
+	if err != nil {
+		report = hubruntime.SessionUsage{FetchedAt: time.Now().UTC()}
 	}
-	_ = r.Spool.RecordUsage(job, runID, report)
+	if err := r.Spool.RecordUsage(job, runID, report); err != nil {
+		log.Printf("usage journal write failed job_id=%q", job.ID)
+	}
 }
 
 // attachArtifacts stages each terminal-event artifact in the spool under the
@@ -291,7 +299,7 @@ func (r HTTPRunner) fetchArtifact(ctx context.Context, job Job, name string) ([]
 		Envelope: job.Envelope, JobID: job.ID, OrganizationID: job.OrganizationID,
 		UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID,
 		Channel: job.Channel, Trigger: job.Trigger, IdempotencyKey: job.IdempotencyKey,
-	}, Name: name, Consume: job.Channel == "telegram_bot"})
+	}, Name: name})
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +332,7 @@ func (r HTTPRunner) fetchArtifact(ctx context.Context, job Job, name string) ([]
 // envelope rides with the task's ConversationID so the task's own session is
 // measured; routing and ownership come from the same envelope.
 func (r HTTPRunner) SessionUsage(ctx context.Context, request hubruntime.ExecuteRequest) (hubruntime.SessionUsage, error) {
-	body, err := json.Marshal(hubruntime.UsageRequest{ExecuteRequest: request})
+	body, err := json.Marshal(hubruntime.UsageRequest{ExecuteRequest: request, LookupOnly: request.Trigger != "usage"})
 	if err != nil {
 		return hubruntime.SessionUsage{}, err
 	}

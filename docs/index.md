@@ -8,6 +8,8 @@ last_verified: 2026-10-07
 
 | Document | Purpose | Verified |
 |---|---|---|
+| [m10-stabilization.md](m10-stabilization.md) | Current file, routine, usage, knowledge and mock behavior | 2026-10-11 |
+| [ai-stp-compatibility.md](ai-stp-compatibility.md) | Pinned issue 181 compatibility research and corrections | 2026-10-11 |
 | [capability-boundary-audit.md](capability-boundary-audit.md) | Issue 122 current gaps, pinned-Hermes probes and Context7/GitHub evidence for proposed enforcement | 2026-10-02 |
 | [architecture.md](architecture.md) | Current components and capability enforcement progress | 2026-10-02 |
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-10-07 |

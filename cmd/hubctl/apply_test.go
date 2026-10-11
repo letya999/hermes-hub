@@ -23,16 +23,24 @@ func TestApplyFile(t *testing.T) {
 	cfg := filepath.Join(root, "setup.yaml")
 	yaml := `
 routines:
-  - id: price-watch
-    kind: watcher
-    channel: telegram_bot
+  - organization_id: personal
+    runtime_id: alice
+    policy_version: policy-1
     chat_id: 11
+    channel: telegram_bot
+    id: price-watch
+    kind: watcher
     timezone: UTC
     expression: "*/15 * * * *"
     input: watch the price
     url: https://example.com/price
     regex: "price: (\\d+)"
-  - id: standup
+  - organization_id: personal
+    runtime_id: alice
+    policy_version: policy-1
+    chat_id: 11
+    channel: telegram_bot
+    id: standup
     kind: reminder
     timezone: UTC
     expression: "0 9 * * *"
@@ -84,7 +92,12 @@ knowledge:
 	// A changed spec is an explicit conflict, never a silent mutation.
 	yaml2 := `
 routines:
-  - id: standup
+  - organization_id: personal
+    runtime_id: alice
+    policy_version: policy-1
+    chat_id: 11
+    channel: telegram_bot
+    id: standup
     kind: reminder
     timezone: UTC
     expression: "0 10 * * *"
@@ -99,7 +112,12 @@ routines:
 	// A new schedule id in the same file still applies.
 	yaml3 := `
 routines:
-  - id: deploy-check
+  - organization_id: personal
+    runtime_id: alice
+    policy_version: policy-1
+    chat_id: 11
+    channel: telegram_bot
+    id: deploy-check
     kind: reminder
     timezone: UTC
     expression: "once:2099-01-01T00:00:00Z"
@@ -114,7 +132,7 @@ routines:
 	}
 	// Invalid entries fail clearly, not halfway.
 	bad := filepath.Join(root, "bad.yaml")
-	if err := os.WriteFile(bad, []byte("routines:\n  - id: x\n    expression: not-cron\n    input: hi\n"), 0o600); err != nil {
+	if err := os.WriteFile(bad, []byte("routines:\n  - organization_id: personal\n    runtime_id: alice\n    policy_version: policy-1\n    chat_id: 11\n    channel: telegram_bot\n    id: x\n    expression: not-cron\n    input: hi\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := applyFile(spoolDir, "alice", bad); err == nil {
@@ -123,7 +141,7 @@ routines:
 	// kind=check needs a live baseline probe the offline path cannot run;
 	// apply must refuse rather than file a silently-skipping schedule.
 	chk := filepath.Join(root, "chk.yaml")
-	if err := os.WriteFile(chk, []byte("routines:\n  - id: chk1\n    kind: check\n    expression: \"0 * * * *\"\n    input: c\n    url: https://example.com/x\n    expect: changed\n"), 0o600); err != nil {
+	if err := os.WriteFile(chk, []byte("routines:\n  - organization_id: personal\n    runtime_id: alice\n    policy_version: policy-1\n    chat_id: 11\n    channel: telegram_bot\n    id: chk1\n    kind: check\n    expression: \"0 * * * *\"\n    input: c\n    url: https://example.com/x\n    expect: changed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := applyFile(spoolDir, "alice", chk); err == nil {
@@ -131,7 +149,7 @@ routines:
 	}
 	// The hubctl surface: `hubctl apply -f cfg --spool dir --user alice`.
 	cfg4 := filepath.Join(root, "cli.yaml")
-	if err := os.WriteFile(cfg4, []byte("routines:\n  - id: cli-rem\n    kind: reminder\n    expression: \"once:2099-01-01T00:00:00Z\"\n    input: ping\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg4, []byte("routines:\n  - organization_id: personal\n    runtime_id: alice\n    policy_version: policy-1\n    chat_id: 11\n    channel: telegram_bot\n    id: cli-rem\n    kind: reminder\n    expression: \"once:2099-01-01T00:00:00Z\"\n    input: ping\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(t.Context(), []string{"apply", "-f", cfg4, "--spool", spoolDir, "--user", "alice"}); err != nil {

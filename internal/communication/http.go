@@ -5,9 +5,9 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -39,7 +39,7 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 		return identity.Envelope{}, false
 	}
 	user := g.user(principal)
-	if user.ID == "" {
+	if user.ID == "" || !user.Enabled {
 		return identity.Envelope{}, false
 	}
 	if len(user.TelegramIDs) > 0 {
@@ -86,6 +86,10 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 	if env.Validate(env.PrincipalID, env.ContextID, env.RuntimeID, env.PolicyVersion) != nil {
 		return false
 	}
+	user := g.user(env.PrincipalID)
+	if (user.PolicyVersion != "" && user.PolicyVersion != env.PolicyVersion) || (user.RuntimeID != "" && user.RuntimeID != env.RuntimeID) {
+		return false
+	}
 	*principal = env.PrincipalID
 	return true
 }
@@ -125,11 +129,28 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if in.Channel == "mock" {
+			owner, err := g.mockLinkOwner(in.ChatID)
+			if err != nil || owner != caller.PrincipalID {
+				http.Error(w, "mock chat not owned", http.StatusForbidden)
+				return
+			}
 			// Mock-channel routines carry the mock envelope so occurrence
 			// authorization and delivery targeting stay coherent end to end.
 			in.Envelope = g.user(caller.PrincipalID).mockEnvelope(in.ChatID)
 			caller = in.Envelope
 		}
+		if err := ValidateSchedule(in, caller, g.now().UTC()); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		g.spool.mu.Lock()
+		_, existingErr := g.spool.loadScheduleLocked(in.ScheduleID)
+		g.spool.mu.Unlock()
+		if !os.IsNotExist(existingErr) {
+			http.Error(w, "schedule already exists or is unreadable", http.StatusBadRequest)
+			return
+		}
+		var initialValue *string
 		if in.JobKind == "check" {
 			// The follow-up predicate is anchored at creation: probe once,
 			// seed the baseline, then create — a dead source must not
@@ -139,16 +160,14 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "check source unreachable", http.StatusBadGateway)
 				return
 			}
-			var re *regexp.Regexp
-			if in.Probe.Regex != "" {
-				re, _ = regexp.Compile(in.Probe.Regex)
-			}
-			if err := g.spool.SeedWatchBaseline(in.ScheduleID, watchValue(body, re), g.now().UTC()); err != nil {
-				http.Error(w, "baseline failed", http.StatusInternalServerError)
+			value, err := probeValue(in.Probe, body)
+			if err != nil {
+				http.Error(w, "invalid check probe result", http.StatusBadGateway)
 				return
 			}
+			initialValue = &value
 		}
-		created, err := g.spool.CreateSchedule(in, caller, g.config.NativeCron)
+		created, err := g.spool.createSchedule(in, caller, g.config.NativeCron, initialValue)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -172,6 +191,39 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.Method == http.MethodGet && action == "":
+		items, err := g.spool.ListSchedules(caller)
+		if err != nil {
+			http.Error(w, "list failed", http.StatusInternalServerError)
+			return
+		}
+		for _, item := range items {
+			if item.ScheduleID == id {
+				g.spool.mu.Lock()
+				state, err := g.spool.loadWatchStateLocked(id)
+				g.spool.mu.Unlock()
+				if err != nil {
+					http.Error(w, "state unavailable", http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, map[string]any{"schedule": item, "watch_state": state})
+				return
+			}
+		}
+		http.NotFound(w, r)
+	case r.Method == http.MethodPost && action == "snooze":
+		var patch struct {
+			Until time.Time `json:"until"`
+		}
+		if decodeJSON(r, &patch) != nil || !patch.Until.After(g.now().UTC()) {
+			http.Error(w, "future until required", http.StatusBadRequest)
+			return
+		}
+		if err := g.spool.SnoozeSchedule(id, caller, patch.Until); err != nil {
+			http.Error(w, "schedule not owned", http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodDelete && action == "":
 		if err := g.spool.DeleteSchedule(id, caller); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)

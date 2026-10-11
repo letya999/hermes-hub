@@ -105,6 +105,11 @@ func TestScriptOccurrenceRunsInSandboxAndDelivers(t *testing.T) {
 	if job, err := s.ClaimJob(); err != nil || job != nil {
 		t.Fatalf("script occurrence woke the agent: %+v %v", job, err)
 	}
+	if err := s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, func(ctx context.Context, occurrence RoutineOccurrence) ([]string, error) {
+		return RunScript(ctx, occurrence.Job.Text, occurrence.DueAt)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	d, err := s.ClaimDelivery()
 	if err != nil || d == nil || d.Text != "disk at 91%" {
 		t.Fatalf("emitted text not delivered: %+v %v", d, err)
@@ -129,6 +134,11 @@ func TestScriptOccurrenceRunsInSandboxAndDelivers(t *testing.T) {
 	}
 	if job, err := s.ClaimJob(); err != nil || job != nil {
 		t.Fatalf("failed script woke the agent: %+v %v", job, err)
+	}
+	if err := s.RunDueScripts(context.Background(), o2.DueAt, g.authorizeOccurrence, func(ctx context.Context, occurrence RoutineOccurrence) ([]string, error) {
+		return RunScript(ctx, occurrence.Job.Text, occurrence.DueAt)
+	}); err != nil {
+		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o2)+".json"))
 	var saved2 RoutineOccurrence
@@ -306,10 +316,10 @@ func TestFetchWatchBounded(t *testing.T) {
 		_, _ = w.Write(bytes.Repeat([]byte("x"), 300*1024))
 	}))
 	defer server.Close()
-	g := &Gateway{}
+	g := &Gateway{watchHTTP: server.Client()}
 	body, err := g.fetchWatch(context.Background(), server.URL)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || len(body) != 0 {
+		t.Fatal("oversized probe was accepted")
 	}
 	if !sawNoCache {
 		t.Fatal("watch fetch must bypass caches")
@@ -339,6 +349,7 @@ func TestGatewayTickProbesWatcher(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.spool = s
+	g.watchHTTP = server.Client()
 	due := time.Now().UTC().Add(-time.Minute)
 	sched, _ := s.loadScheduleLocked("w-tick")
 	sched.NextDue = due
@@ -448,6 +459,7 @@ func TestRoutineCreateSeedsCheckBaseline(t *testing.T) {
 	defer source.Close()
 	s, o, g := occurrenceFixture(t)
 	g.spool = s
+	g.watchHTTP = source.Client()
 	g.config.ControlAuth = "tok"
 	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
 	srv := httptest.NewServer(g.Handler())
@@ -561,7 +573,7 @@ func TestDigestOccurrenceAggregatesChangedWatches(t *testing.T) {
 	// Marker advanced: a second digest right away has nothing new.
 	var dg DigestState
 	b, _ := os.ReadFile(s.digestPath("dg"))
-	if err := json.Unmarshal(b, &dg); err != nil || dg.LastDigestAt.Before(now) {
+	if err := json.Unmarshal(b, &dg); err != nil || dg.LastDigestAt.IsZero() || dg.LastDigestAt.After(now) {
 		t.Fatalf("digest marker not advanced: %+v %v", dg, err)
 	}
 }

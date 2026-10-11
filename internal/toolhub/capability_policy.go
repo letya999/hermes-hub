@@ -609,27 +609,47 @@ func capabilityDecision(profile CapabilityProfile, policy CapabilityPolicy, sele
 	for _, use := range tool.Uses {
 		tuple := CapabilityRule{CapabilityID: selection.CapabilityID, ImplementationDigest: selection.ImplementationDigest,
 			Action: use.Action, Resource: use.Resource, ConnectionID: selection.ConnectionID}
-		var actual *string
-		if !projection || use.PathArgument == "" {
-			value := ""
-			if use.PathArgument != "" {
-				var ok bool
-				value, ok = arguments[use.PathArgument].(string)
-				if !ok || !validCapabilityPath(value) {
-					return CapabilityLimits{}, nil, false
+		values := []string{""}
+		if !projection && use.PathArgument != "" {
+			switch value := arguments[use.PathArgument].(type) {
+			case string:
+				values = []string{value}
+			case []any:
+				values = nil
+				for _, item := range value {
+					v, ok := item.(string)
+					if !ok {
+						return CapabilityLimits{}, nil, false
+					}
+					values = append(values, v)
 				}
+			case []string:
+				values = value
+			default:
+				return CapabilityLimits{}, nil, false
 			}
-			actual = &value
+			if len(values) == 0 || len(values) > 8192 {
+				return CapabilityLimits{}, nil, false
+			}
 		}
-		bound, prefix, allowed := capabilityRuleDecision(profile, policy, tuple, actual, time.Now())
-		if !allowed {
-			return CapabilityLimits{}, nil, false
+		for _, value := range values {
+			var actual *string
+			if !projection || use.PathArgument == "" {
+				actual = &value
+			}
+			if actual != nil && !validCapabilityPath(value) {
+				return CapabilityLimits{}, nil, false
+			}
+			bound, prefix, allowed := capabilityRuleDecision(profile, policy, tuple, actual, time.Now())
+			if !allowed {
+				return CapabilityLimits{}, nil, false
+			}
+			if use.PathArgument != "" {
+				scopes = append(scopes, CapabilityScope{Resource: use.Resource, PathArgument: use.PathArgument, PathPrefix: prefix})
+			}
+			limits.OutputBytes = min(limits.OutputBytes, bound.OutputBytes)
+			limits.TimeoutSeconds = min(limits.TimeoutSeconds, bound.TimeoutSeconds)
 		}
-		if use.PathArgument != "" {
-			scopes = append(scopes, CapabilityScope{Resource: use.Resource, PathArgument: use.PathArgument, PathPrefix: prefix})
-		}
-		limits.OutputBytes = min(limits.OutputBytes, bound.OutputBytes)
-		limits.TimeoutSeconds = min(limits.TimeoutSeconds, bound.TimeoutSeconds)
 	}
 	return limits, scopes, len(tool.Uses) > 0
 }

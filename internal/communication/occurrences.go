@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,71 +122,39 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		if o.State != "pending" || now.Before(o.DueAt) {
 			continue
 		}
-		if now.Sub(o.DueAt) > time.Hour {
+		if !s.occurrenceCurrentLocked(o) {
+			o.State = "cancelled"
+		} else if now.Sub(o.DueAt) > time.Hour {
 			o.State = "missed"
 		} else if authorize(o.Job) != nil {
 			o.State = "blocked"
 		} else if o.JobKind == "script" {
-			// The bounded Starlark runner executes the script; emit() output
-			// becomes outbox deliveries. No agent job, no runtime, no model.
-			emitted, runErr := RunScript(context.Background(), o.Job.Text, o.DueAt)
-			if runErr == nil {
-				for i, text := range emitted {
-					d, err := normalizeDelivery(Delivery{ID: "script-" + o.Job.ID + "-" + strconv.Itoa(i), Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, CreatedAt: now.UTC()})
-					if err != nil {
-						return err
-					}
-					if err = s.enqueueDeliveryLocked(d); err != nil {
-						return err
-					}
-				}
-				o.State = "dispatched"
-			} else {
-				o.State = "failed"
-			}
+			o.State = "scripting"
 		} else if o.JobKind == "watcher" || o.JobKind == "check" {
 			// Probing runs outside the lock in ProbeDueOccurrences.
 			o.State = "probing"
 		} else if o.JobKind == "digest" {
-			// One deterministic message aggregating the owner's watchers
-			// changed since the last digest marker. No job, no model.
-			var lines []string
-			ws, _ := os.ReadDir(filepath.Join(s.root, "watchers"))
-			var dg DigestState
-			if b, err := os.ReadFile(s.digestPath(o.ScheduleID)); err == nil {
-				_ = json.Unmarshal(b, &dg)
-			}
-			for _, e := range ws {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-					continue
+			pendingProbe := false
+			for _, source := range occurrences {
+				if (source.State == "pending" || source.State == "probing") && (source.JobKind == "watcher" || source.JobKind == "check") && source.Job.PrincipalID == o.Job.PrincipalID && source.Job.ContextID == o.Job.ContextID && !source.DueAt.After(now) {
+					b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(source)+".json"))
+					var live RoutineOccurrence
+					if err == nil && json.Unmarshal(b, &live) == nil && (live.State == "pending" || live.State == "probing") {
+						pendingProbe = true
+						break
+					}
 				}
-				b, err := os.ReadFile(filepath.Join(s.root, "watchers", e.Name()))
-				if err != nil {
-					return err
-				}
-				var st WatchState
-				if json.Unmarshal(b, &st) != nil || st.ChangedAt.IsZero() || !st.ChangedAt.After(dg.LastDigestAt) {
-					continue
-				}
-				owner, err := s.loadScheduleLocked(st.ScheduleID)
-				if err != nil || owner.Envelope.PrincipalID != o.Job.PrincipalID || owner.Envelope.ContextID != o.Job.ContextID {
-					continue
-				}
-				lines = append(lines, "• "+owner.Input+": "+st.Value)
 			}
-			d, err := normalizeDelivery(Delivery{ID: "digest-" + o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + strings.Join(lines, "\n"), CreatedAt: now.UTC()})
-			if err != nil {
-				return err
+			if pendingProbe {
+				continue
 			}
-			if err = s.enqueueDeliveryLocked(d); err != nil {
-				return err
-			}
-			if err := atomicJSON(s.digestPath(o.ScheduleID), DigestState{ScheduleID: o.ScheduleID, LastDigestAt: now.UTC()}); err != nil {
+
+			if err := s.dispatchDigestLocked(o, now, authorize); err != nil {
 				return err
 			}
 			o.State = "dispatched"
 		} else if o.JobKind == "reminder" {
-			d, err := normalizeDelivery(Delivery{ID: "reminder-" + o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text, CreatedAt: now.UTC()})
+			d, err := normalizeDelivery(Delivery{ID: "reminder-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text, CreatedAt: now.UTC()})
 			if err != nil {
 				return err
 			}
@@ -216,14 +186,29 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 
 // tickProactive is the proactive pass of the control loop: schedule -> due
 // occurrence -> dispatch -> deterministic probing for watcher/check kinds.
-func (g *Gateway) tickProactive(now time.Time) {
-	_ = g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence)
-	_ = g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence)
-	_ = g.spool.ProbeDueOccurrences(now, g.fetchWatch)
+func (g *Gateway) tickProactive(now time.Time) { g.tickProactiveContext(context.Background(), now) }
+
+func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
+	steps := []func() error{
+		func() error { return g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence) },
+		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
+		func() error { return g.spool.RunDueScripts(ctx, now, g.authorizeOccurrence, g.runIsolatedScript) },
+		func() error { return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch) },
+		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
+	}
+	for i, step := range steps {
+		if err := step(); err != nil {
+			if ctx.Err() == nil {
+				log.Printf("routine tick failed stage=%d; work remains pending", i)
+			}
+			return
+		}
+	}
 }
 
 func (g *Gateway) authorizeOccurrence(job Job) error {
 	user := g.user(job.UserID)
+	configured := user.ID != ""
 	if user.ID == "" {
 		if mapped, ok := g.users[job.ChatID]; ok {
 			user = mapped
@@ -235,7 +220,7 @@ func (g *Gateway) authorizeOccurrence(job Job) error {
 	switch job.Channel {
 	case "telegram_bot":
 		mapped, ok := g.users[job.ChatID]
-		if !ok || mapped.ID != user.ID || job.Envelope != user.envelope(job.ChatID) {
+		if !ok || mapped.ID != user.ID || (configured && !slices.Contains(user.TelegramIDs, job.ChatID)) || job.Envelope != user.envelope(job.ChatID) {
 			return errors.New("routine policy changed")
 		}
 	case "slack_app":
@@ -243,7 +228,8 @@ func (g *Gateway) authorizeOccurrence(job Job) error {
 			return errors.New("routine policy changed")
 		}
 	case "mock":
-		if job.Envelope != user.mockEnvelope(job.ChatID) {
+		owner, err := g.mockLinkOwner(job.ChatID)
+		if err != nil || owner != user.ID || job.Envelope != user.mockEnvelope(job.ChatID) {
 			return errors.New("routine policy changed")
 		}
 	default:

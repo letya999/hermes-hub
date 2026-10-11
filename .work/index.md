@@ -12,6 +12,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0083](done/CHG-0083-m10-stabilization/plan.md) | M10 A–C stabilization implemented; local unit/security/Linux/Docker acceptance passed; live channel acceptance separate |
 | [CHG-0075](in-progress/CHG-0075-remote-mcp/plan.md) | Milestone 8 issues 83/84/85/96: owner-scoped remote MCP register/admit/project through prepare_source remote_url |
 | [CHG-0074](in-progress/CHG-0074-telegram-auth-plugin/plan.md) | Opt-in in-process Telegram QR login deployed locally; live account acceptance pending owner scan |
 | [CHG-0073](in-progress/CHG-0073-prepared-bundle-telegram/plan.md) | Issues 39/115: 12-ID prepared bundle discovery, selected personal Telegram source and protected onboarding; verification in progress |

@@ -395,9 +395,6 @@ func (s *runtimeHTTP) artifact(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.WriteHeader(http.StatusOK)
-	_, copyErr := io.Copy(w, io.LimitReader(file, artifactLimit(request.Name)+1))
+	_, _ = io.Copy(w, io.LimitReader(file, artifactLimit(request.Name)+1))
 	_ = file.Close()
-	if copyErr == nil && request.Consume {
-		_ = os.Remove(resolved)
-	}
 }

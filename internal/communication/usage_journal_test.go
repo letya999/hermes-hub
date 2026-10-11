@@ -47,7 +47,7 @@ func TestUsageJournalDedupesAndTotals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if totals.Jobs != 2 || totals.InputTokens != 14 || totals.OutputTokens != 10 {
+	if totals.Jobs != 2 || totals.InputTokens != 10 || totals.OutputTokens != 5 {
 		t.Fatalf("alice totals=%+v", totals)
 	}
 	totals, err = s.UsageTotals("user:bob")
@@ -141,7 +141,7 @@ func TestUsageCommandShowsJournalTotals(t *testing.T) {
 	runner := &usageStubRunner{report: hubruntime.SessionUsage{SessionFound: true, InputTokens: int64ptr(3)}}
 	g.runner = runner
 	user := g.user("alice")
-	if err := g.spool.RecordUsage(testJob("j-1", "user:alice"), "run-1", hubruntime.SessionUsage{SessionFound: true, InputTokens: int64ptr(10), OutputTokens: int64ptr(4)}); err != nil {
+	if err := g.spool.RecordUsage(testJob("j-1", "user:alice"), "run-1", hubruntime.SessionUsage{SessionFound: true, SessionID: "sess-1", InputTokens: int64ptr(10), OutputTokens: int64ptr(4)}); err != nil {
 		t.Fatal(err)
 	}
 	task, err := g.spool.ResolveTask(user, 11, 0, false)

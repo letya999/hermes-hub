@@ -35,6 +35,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			kind = "agent"
 		}
 		if kind == "script" {
+			if len(r.Text) > 16*1024 {
+				return nil, errors.New("script source exceeds 16 KiB")
+			}
 			// The hub executes script routines in the bounded Starlark
 			// runner; reject dead-on-arrival source before it is scheduled.
 			opts := syntax.LegacyFileOptions()
@@ -45,15 +48,24 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		create := map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": kind}
 		if kind == "watcher" || kind == "check" {
-			create["probe"] = map[string]any{"url": r.URL, "regex": r.Regex}
+			create["probe"] = map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex}
 		}
 		if kind == "check" {
 			create["expect"] = r.Expect
+		}
+		if r.NotifyMode != "" {
+			create["notify_mode"] = r.NotifyMode
+		}
+		if len(r.SourceIDs) > 0 {
+			create["source_ids"] = r.SourceIDs
 		}
 		payload = create
 	case "routine_update":
 		method, path = http.MethodPost, "/v1/routines/"+r.ID
 		payload = map[string]any{"expression": r.Expression, "input": r.Text}
+	case "routine_snooze":
+		method, path = http.MethodPost, "/v1/routines/"+r.ID+"/snooze"
+		payload = map[string]any{"until": r.Expression}
 	case "routine_pause":
 		method, path = http.MethodPost, "/v1/routines/"+r.ID+"/pause"
 	case "routine_delete":

@@ -1,0 +1,84 @@
+id: CHG-0083
+status: complete
+branch: feat/m10-phase-a
+base: c119c12
+owner_authorization: implementation and reversible verification; no publication
+implemented:
+  - files-and-image-arrays
+  - spool-writer-lock-and-strict-apply
+  - authorization-revisions-and-mock-attachments
+  - bounded-workers-and-isolated-scripts
+  - watcher-check-digest-receipts-and-cursors
+  - contextual-knowledge-search-and-provenance
+  - usage-deltas-unknowns-and-tail-recovery
+  - deterministic-telegram-controls-and-topic-routing
+  - pinned-ai-stp-note
+  - go-1.27.2-and-amendment-docs
+verification:
+  original_audit_regressions: 14 retained and passing
+  new_boundary_tests: passing; reviewed as self-review before execution
+  security: passed; zero reachable vulnerabilities, zero npm vulnerabilities
+  check_attempt_1: failed; Go race linker selected LLVM-MinGW; resolved using installed GNU gcc
+  check_attempt_2: tests passed; coverage 84.07 percent, below required gate
+  check_attempt_3: failed new digest replay fixture; fixed missing idempotency key; targeted test passed
+  offline_check_attempt_1: all tests passed; coverage 84.98 percent; additional failure-path tests added
+  changed_file_secrets: gitleaks stdin with redaction passed
+  opengrep: configured rules completed; no findings in changed application paths; four matches in scanner rule templates
+  installed_gosec: incompatible with Go 1.27 export data version 5
+  compatible_gosec: upstream v2.29.1-0.20261009120814-7b1b5cebe007; eight changed application packages scanned; zero package errors
+  sast_review: six changed-line G304 paths reviewed; negative archive limit and knowledge nosniff hardened
+  staticcheck: pinned compatible upstream commit 452d5bb86b45416c35891262f6a11dbd6a970117; checks retained
+  pre_final_check: passed all gates; exact own statement coverage 85.00434697254396 percent
+  script_docker_previous: passed on intermediate image; not final acceptance
+  docker_contract_previous: failed due routine wake timeout; cause not established
+  docker_contract_repeat: stopped at owner request before completion
+  final_just_check: passed again after due-run observation fixture changes; race and shuffle tests, coverage, gofmt, go vet, compatible staticcheck, docs and actionlint
+  final_own_statement_coverage: 85.00841279 percent
+  final_security: passed; zero reachable Go vulnerabilities and zero npm vulnerabilities
+  final_gosec_changed_packages: zero package errors; negative-limit G115 gone; knowledge binary-response G705 manually reviewed
+  final_diff_check: passed with CR-at-EOL allowance for existing Windows line endings
+  offline_work: complete before owner explicitly reauthorized local Docker
+  final_image: hermes-hub:m10a-verify; sha256:cbc0dd906d661b37de464706e3c84a28003a2bf38d994e925b8adaaf602159a1
+  final_image_build: passed through devcheck DockerBuild with forced BuildKit; final working tree, uncommitted
+  final_script_memory_gate: passed; 10.00 seconds; OOM isolated, next script successful, temporary containers removed
+  final_runtime_smoke: passed; no live provider calls
+  final_control_build: passed; dedicated m10a-verify-control tag; Docker CLI 29.8.1
+  final_capability: passed; 27 platforms, 62 disabled toolsets
+  final_managed_network: passed; isolated networks, extension mounts, reviewed config preflight
+  final_contract_attempt_1: native supervisor and due-wake passed; gateway cold restore completed at 119980 ms but reply missed fixture two-minute deadline
+  fixture_time_budgets: gateway cold starts now include four-minute readiness plus one-minute execution; outer budget includes three starts and real idle window
+  due_wake_fixture_budget: five minutes; previous one-minute HTTP budget was shorter than existing supervisor readiness allowance
+  final_contract_attempt_2: due-wake returned uncertain with durable admitted run; direct fixture did not observe production resume
+  due_wake_fixture_observation: bounded follow-up of original mapped run through HTTPRunner resume; prompt cleared, run identity checked, no new admission
+  managed_supervisor_attempt_1: interrupted after detecting fixture aliases on shared runtime bridge; fixture containers removed by verified names and mount ownership
+  managed_supervisor_fixture_isolation: unique runtime and control bridges; production topology and Docker operations retained
+  final_managed_supervisor: passed after fixture isolation; real lifecycle, attestation, secondary parity and teardown
+  final_scratch: passed; filesystem, credential, socket, network and disk boundaries
+  final_scratch_quarantine: passed; paused exec quarantine; 42.99 seconds
+  final_native_contract: passed on final production image; pinned Hermes 0.21.0, sessions, SSE, stop, approvals, cron coexistence, restart, due wake and original-run recovery
+  final_gateway_lifecycle: passed; two owners, exact homes, duplicate updates once, warm reuse, real five-minute idle shutdown and original-session cold restore
+  linux_filesystem_attempt_1: compiler fixture tmpfs was noexec; test binary could not launch; production code unchanged
+  final_linux_filesystem: passed with race detector; agenttools, hubctl, toolhub; symlink, ZIP, scope, apply and artifact ownership; no skipped cases
+  final_integration_vet: passed with integration build tag
+  verified_at: 2026-10-11 Europe/Moscow
+  cleanup: exact owned verification images removed after identity checks; fixture cleanup verified; shared networks and tags retained
+  cache_hygiene: buildx prune max-used-space 8gb completed; no system or volume prune
+  production_stack: never stopped or restarted; temporary shared-network fixture aliases removed; subsequent tests use separate networks
+pending: []
+external_acceptance:
+  - owner authorized real Telegram and provider-account verification on 2026-10-11
+  - real Bot API getMe passed; no incoming command or M10 gateway deployment verified yet
+  - real model-provider synthetic completion passed with exact expected marker and usage metadata
+  - end-to-end M10 acceptance pending selected test audience and authenticated Telegram sender
+constraints:
+  - real Telegram and provider testing authorized; publication and push remain separate actions
+  - prior Docker restriction revoked by owner; local tests authorized on 2026-10-11
+  - shared local daemon authorized; dedicated m10a-verify tags and owned temporary fixtures; do not alter working stack
+  - full docker-clean not used on shared daemon because it can remove other test networks and tags; use verified owned-resource cleanup
+  - broad safety wrapper not clean; TruffleHog worktree handling and Ruff baseline require separate review
+  - additive apply; no inferred deletion and no offline check baseline
+  - no guessed live knowledge connectors or Hermes ai-stp adapter
+  - automatic receipt retention deletion deferred until owner selects a policy
+
+verification_plan: verification-plan.md
+security_review: security-review.md

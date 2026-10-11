@@ -110,7 +110,7 @@ func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
 	// The model must know inbound files arrive staged (inbox=<id> → inbox_fetch)
 	// and that delivered artifacts are removed from the workspace — otherwise it
 	// promises to keep files that are gone or ignores files the user sent.
-	for _, want := range []string{"inbox_fetch", "inbox=", "removed"} {
+	for _, want := range []string{"inbox_fetch", "inbox=", "preserved"} {
 		if !strings.Contains(gotInstructions, want) {
 			t.Fatalf("file-transfer convention missing %q from instructions: %q", want, gotInstructions)
 		}

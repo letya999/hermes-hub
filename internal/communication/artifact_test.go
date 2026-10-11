@@ -65,8 +65,8 @@ func TestAttachArtifactsStagesBlobsAndMarksFailures(t *testing.T) {
 	if event.Artifacts[1].Error == "" || event.Artifacts[1].Blob != "" {
 		t.Fatalf("failed fetch must be explicit, not silent: %+v", event.Artifacts[1])
 	}
-	if !consumed["documents/report.pdf"] {
-		t.Fatal("telegram artifact fetch did not consume the workspace original")
+	if consumed["documents/report.pdf"] {
+		t.Fatal("artifact fetch requested premature deletion")
 	}
 	if _, err := spool.ReadDeliveryBlob("job-artifact-job-response", ".."); err == nil {
 		t.Fatal("blob traversal accepted")

@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/communication"
@@ -19,15 +21,22 @@ type ApplyReport struct {
 }
 
 type applyRoutineSpec struct {
-	ID         string `yaml:"id"`
-	Kind       string `yaml:"kind"`
-	ChatID     int64  `yaml:"chat_id"`
-	Timezone   string `yaml:"timezone"`
-	Expression string `yaml:"expression"`
-	Input      string `yaml:"input"`
-	URL        string `yaml:"url"`
-	Regex      string `yaml:"regex"`
-	Expect     string `yaml:"expect"`
+	ID             string   `yaml:"id"`
+	OrganizationID string   `yaml:"organization_id"`
+	RuntimeID      string   `yaml:"runtime_id"`
+	PolicyVersion  string   `yaml:"policy_version"`
+	Channel        string   `yaml:"channel"`
+	Kind           string   `yaml:"kind"`
+	ChatID         int64    `yaml:"chat_id"`
+	Timezone       string   `yaml:"timezone"`
+	Expression     string   `yaml:"expression"`
+	Input          string   `yaml:"input"`
+	URL            string   `yaml:"url"`
+	Regex          string   `yaml:"regex"`
+	ProbeKind      string   `yaml:"probe_kind"`
+	NotifyMode     string   `yaml:"notify_mode"`
+	SourceIDs      []string `yaml:"source_ids"`
+	Expect         string   `yaml:"expect"`
 }
 
 type applySpec struct {
@@ -40,17 +49,65 @@ type applySpec struct {
 
 func applyFile(spoolDir, profile, path string) (ApplyReport, error) {
 	rep := ApplyReport{Routines: map[string]string{}, Knowledge: map[string]string{}}
-	body, err := os.ReadFile(path)
+	body, err := readApplySource(path)
 	if err != nil {
 		return rep, err
 	}
 	var cfg applySpec
-	if err := yaml.Unmarshal(body, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return rep, fmt.Errorf("invalid apply file: %w", err)
 	}
-	spool, err := communication.NewSpool(spoolDir)
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return rep, fmt.Errorf("apply requires exactly one YAML document")
+	}
+	if !identity.ValidID(profile) {
+		return rep, fmt.Errorf("invalid user")
+	}
+	unlock, err := communication.LockSpool(spoolDir)
 	if err != nil {
 		return rep, err
+	}
+	defer unlock()
+	spool, err := communication.OpenSpool(spoolDir)
+	if err != nil {
+		return rep, err
+	}
+	if len(cfg.Routines) > 128 || len(cfg.Knowledge) > 128 {
+		return rep, fmt.Errorf("apply exceeds resource limit (128 per kind)")
+	}
+	seen := map[string]bool{}
+	for _, r := range cfg.Routines {
+		if seen["routine:"+r.ID] {
+			return rep, fmt.Errorf("duplicate routine %q", r.ID)
+		}
+		seen["routine:"+r.ID] = true
+		if _, err := routineAction(spool, profile, r, false); err != nil {
+			return rep, fmt.Errorf("routine %q: %w", r.ID, err)
+		}
+	}
+	knowledge := map[string][]byte{}
+	totalBytes := 0
+	for _, k := range cfg.Knowledge {
+		if seen["knowledge:"+k.Name] || !knowledgeName(k.Name) {
+			return rep, fmt.Errorf("invalid or duplicate knowledge name %q", k.Name)
+		}
+		seen["knowledge:"+k.Name] = true
+		source := k.Source
+		if !filepath.IsAbs(source) {
+			source = filepath.Join(filepath.Dir(path), source)
+		}
+		body, err := readKnowledgeSource(source)
+		if err != nil {
+			return rep, fmt.Errorf("knowledge %q: %w", k.Name, err)
+		}
+		totalBytes += len(body)
+		if totalBytes > 32<<20 {
+			return rep, fmt.Errorf("apply knowledge exceeds 32 MiB aggregate limit")
+		}
+		knowledge[k.Name] = body
 	}
 	for _, r := range cfg.Routines {
 		action, err := applyRoutine(spool, profile, r)
@@ -60,7 +117,7 @@ func applyFile(spoolDir, profile, path string) (ApplyReport, error) {
 		rep.Routines[r.ID] = action
 	}
 	for _, k := range cfg.Knowledge {
-		action, err := applyKnowledge(spoolDir, profile, k.Name, k.Source)
+		action, err := writeKnowledge(spoolDir, profile, k.Name, knowledge[k.Name])
 		if err != nil {
 			return rep, fmt.Errorf("knowledge %q: %w", k.Name, err)
 		}
@@ -70,46 +127,58 @@ func applyFile(spoolDir, profile, path string) (ApplyReport, error) {
 }
 
 func applyRoutine(spool *communication.Spool, profile string, r applyRoutineSpec) (string, error) {
+	return routineAction(spool, profile, r, true)
+}
+
+func routineAction(spool *communication.Spool, profile string, r applyRoutineSpec, write bool) (string, error) {
 	if r.Kind == "check" {
 		// A check needs a live creation-time probe to anchor its baseline;
 		// the offline apply path has none — use POST /v1/routines instead.
 		return "", fmt.Errorf("kind=check requires the hub API (baseline probe)")
 	}
 	chatID := r.ChatID
-	if chatID == 0 {
-		chatID = 1
+	if chatID <= 0 || r.Channel != "telegram_bot" || !identity.ValidID(r.OrganizationID) || !identity.ValidID(r.RuntimeID) || !identity.ValidID(r.PolicyVersion) {
+		return "", fmt.Errorf("explicit telegram channel, chat_id, organization_id, runtime_id and policy_version required")
 	}
-	caller := identity.TelegramEnvelope(profile, chatID, profile, "policy-1")
+	caller := identity.TelegramEnvelope(profile, chatID, r.RuntimeID, r.PolicyVersion)
 	tz := r.Timezone
 	if tz == "" {
 		tz = "UTC"
 	}
 	var probe *communication.WatchProbe
 	if r.URL != "" || r.Regex != "" {
-		probe = &communication.WatchProbe{URL: r.URL, Regex: r.Regex}
+		probe = &communication.WatchProbe{Kind: r.ProbeKind, URL: r.URL, Regex: r.Regex}
 	}
 	in := communication.Schedule{
-		ScheduleID: r.ID, Envelope: caller, OrganizationID: "personal",
+		ScheduleID: r.ID, Envelope: caller, OrganizationID: r.OrganizationID,
 		UserID: profile, ActorID: profile, ScopeID: "user:" + profile,
 		Channel: "telegram_bot", ChatID: chatID, Timezone: tz,
-		Expression: r.Expression, JobKind: r.Kind, Probe: probe, Expect: r.Expect,
-		Input: r.Input,
+		Expression: strings.TrimSpace(r.Expression), JobKind: r.Kind, Probe: probe, Expect: r.Expect,
+		Input: r.Input, NotifyMode: r.NotifyMode, SourceIDs: r.SourceIDs,
 	}
-	if _, err := spool.CreateSchedule(in, caller, ""); err == nil {
-		return "created", nil
-	} else if err.Error() != "schedule already exists" {
-		return "", err
+	if in.JobKind == "" {
+		in.JobKind = "agent"
 	}
 	items, err := spool.ListSchedules(caller)
 	if err != nil {
 		return "", err
 	}
 	for _, item := range items {
-		if item.ScheduleID == in.ScheduleID && sameRoutine(item, in) {
-			return "unchanged", nil
+		if item.ScheduleID == in.ScheduleID {
+			if sameRoutine(item, in) {
+				return "unchanged", nil
+			}
+			return "", fmt.Errorf("schedule %q has a different spec", in.ScheduleID)
 		}
 	}
-	return "", fmt.Errorf("schedule %q exists with a different spec; delete it first", in.ScheduleID)
+	if err := communication.ValidateSchedule(in, caller, time.Now().UTC()); err != nil {
+		return "", err
+	}
+	if !write {
+		return "created", nil
+	}
+	_, err = spool.CreateSchedule(in, caller, "")
+	return "created", err
 }
 
 // sameRoutine compares the operator-visible spec — durable bookkeeping
@@ -119,7 +188,7 @@ func sameRoutine(a, b communication.Schedule) bool {
 		if s.Probe == nil {
 			return ""
 		}
-		return s.Probe.URL + "\x00" + s.Probe.Regex
+		return s.Probe.Kind + "\x00" + s.Probe.URL + "\x00" + s.Probe.Regex
 	}
 	if probeOf(a) != probeOf(b) {
 		return false
@@ -133,20 +202,106 @@ func sameRoutine(a, b communication.Schedule) bool {
 	return fmt.Sprintf("%+v", norm(a)) == fmt.Sprintf("%+v", norm(b))
 }
 
+func knowledgeName(name string) bool {
+	return name != "" && name != "." && name != ".." && len(name) <= 128 && !strings.ContainsAny(name, `/\:`+"\x00") && !strings.HasPrefix(name, ".")
+}
+
+func readKnowledgeSource(source string) ([]byte, error) {
+	f, err := os.Open(source)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 9<<20 {
+		return nil, fmt.Errorf("knowledge source must be a regular file of at most 9 MiB")
+	}
+	body, err := io.ReadAll(io.LimitReader(f, (9<<20)+1))
+	if len(body) > 9<<20 {
+		return nil, fmt.Errorf("knowledge source exceeds limit")
+	}
+	return body, err
+}
+
 func applyKnowledge(spoolDir, profile, name, source string) (string, error) {
-	body, err := os.ReadFile(source)
+	if !knowledgeName(name) || !identity.ValidID(profile) {
+		return "", fmt.Errorf("invalid knowledge destination")
+	}
+	body, err := readKnowledgeSource(source)
 	if err != nil {
 		return "", err
 	}
-	dst := filepath.Join(spoolDir, "knowledge", profile, name)
-	if prev, err := os.ReadFile(dst); err == nil && bytes.Equal(prev, body) {
-		return "unchanged", nil
+	return writeKnowledge(spoolDir, profile, name, body)
+}
+
+func writeKnowledge(spoolDir, profile, name string, body []byte) (string, error) {
+	if !knowledgeName(name) || !identity.ValidID(profile) {
+		return "", fmt.Errorf("invalid knowledge destination")
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+	if err := os.MkdirAll(spoolDir, 0700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(dst, body, 0o600); err != nil {
+	spool, err := os.OpenRoot(spoolDir)
+	if err != nil {
+		return "", err
+	}
+	defer spool.Close()
+	if err := spool.MkdirAll("knowledge/"+profile, 0700); err != nil {
+		return "", err
+	}
+	if info, err := spool.Lstat("knowledge/" + profile); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("knowledge owner directory must not be a symlink")
+	}
+	root, err := spool.OpenRoot("knowledge/" + profile)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	if prev, err := root.ReadFile(name); err == nil && bytes.Equal(prev, body) {
+		return "unchanged", nil
+	}
+	temp := fmt.Sprintf(".apply-%d", time.Now().UnixNano())
+	f, err := root.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return "", err
+	}
+	defer root.Remove(temp)
+	_, err = f.Write(body)
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := root.Rename(temp, name); err != nil {
 		return "", err
 	}
 	return "created", nil
+}
+
+func readApplySource(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return nil, fmt.Errorf("apply file must be regular and at most 1 MiB")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if len(body) > 1<<20 {
+		return nil, fmt.Errorf("apply file exceeds limit")
+	}
+	return body, err
 }

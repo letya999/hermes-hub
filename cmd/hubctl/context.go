@@ -165,6 +165,10 @@ func runRoutine(_ context.Context, args []string) error {
 	id := f.String("id", "", "schedule id")
 	tz := f.String("tz", "UTC", "timezone")
 	expr := f.String("expr", "", "once:RFC3339 or 5-field cron")
+	chatID := f.Int64("chat-id", 0, "explicit Telegram chat id")
+	organization := f.String("organization", "", "explicit organization id")
+	runtimeID := f.String("runtime", "", "explicit runtime id")
+	policy := f.String("policy", "", "explicit policy version")
 	input := f.String("input", "", "bounded task text")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
@@ -172,11 +176,22 @@ func runRoutine(_ context.Context, args []string) error {
 	if *spoolDir == "" {
 		return fmt.Errorf("routine requires --spool")
 	}
-	spool, err := communication.NewSpool(*spoolDir)
+	unlock, err := communication.LockSpool(*spoolDir)
 	if err != nil {
 		return err
 	}
-	caller := identity.TelegramEnvelope(*profile, 1, *profile, "policy-1")
+	defer unlock()
+	spool, err := communication.OpenSpool(*spoolDir)
+	if err != nil {
+		return err
+	}
+	if sub != "list" && (*chatID <= 0 || !identity.ValidID(*organization) || !identity.ValidID(*runtimeID) || !identity.ValidID(*policy)) {
+		return fmt.Errorf("routine mutation requires --chat-id --organization --runtime --policy")
+	}
+	caller := identity.TelegramEnvelope(*profile, *chatID, *runtimeID, *policy)
+	if sub == "list" {
+		caller.PrincipalID = *profile
+	}
 	switch sub {
 	case "list":
 		items, err := spool.ListSchedules(caller)
@@ -188,7 +203,7 @@ func runRoutine(_ context.Context, args []string) error {
 		if *id == "" || *expr == "" || strings.TrimSpace(*input) == "" {
 			return fmt.Errorf("routine create requires --id --expr --input")
 		}
-		item, err := spool.CreateSchedule(communication.Schedule{ScheduleID: *id, Envelope: caller, OrganizationID: "personal", UserID: *profile, ActorID: *profile, ScopeID: "user:" + *profile, Channel: "telegram_bot", ChatID: 1, Timezone: *tz, Expression: *expr, Input: *input}, caller, "")
+		item, err := spool.CreateSchedule(communication.Schedule{ScheduleID: *id, Envelope: caller, OrganizationID: *organization, UserID: *profile, ActorID: *profile, ScopeID: "user:" + *profile, Channel: "telegram_bot", ChatID: *chatID, Timezone: *tz, Expression: *expr, Input: *input}, caller, "")
 		if err != nil {
 			return err
 		}

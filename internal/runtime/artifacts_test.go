@@ -112,7 +112,7 @@ func TestArtifactEndpointValidationAndServing(t *testing.T) {
 	}
 }
 
-func TestArtifactZipDeliveredAndConsumed(t *testing.T) {
+func TestArtifactZipDeliveredAndPreserved(t *testing.T) {
 	dir := t.TempDir()
 	old := workspace
 	workspace = dir
@@ -147,8 +147,8 @@ func TestArtifactZipDeliveredAndConsumed(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("consume fetch: %d", rec.Code)
 	}
-	if _, err := os.Lstat(filepath.Join(artifactRoot(), "documents", "report.pdf")); !os.IsNotExist(err) {
-		t.Fatal("consumed artifact still in workspace")
+	if _, err := os.Lstat(filepath.Join(artifactRoot(), "documents", "report.pdf")); err != nil {
+		t.Fatal("artifact original was removed before delivery acknowledgement")
 	}
 }
 

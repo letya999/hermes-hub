@@ -24,6 +24,9 @@ const (
 // ScriptSyntaxError reports why src would fail to compile under the runner's
 // file options — used to reject dead-on-arrival schedules at create time.
 func ScriptSyntaxError(src string) error {
+	if len(src) == 0 || len(src) > scriptMaxSource {
+		return errors.New("script source out of bounds")
+	}
 	_, _, err := starlark.SourceProgramOptions(scriptFileOptions(), "script.star", src, func(string) bool { return true })
 	return err
 }
@@ -42,6 +45,7 @@ func RunScript(ctx context.Context, src string, now time.Time) ([]string, error)
 	}
 	emitted := []string{}
 	thread := &starlark.Thread{Name: "scheduled-script"}
+	thread.Print = func(*starlark.Thread, string) {} // Untrusted print output never reaches host logs.
 	thread.SetMaxExecutionSteps(scriptMaxSteps)
 	done := make(chan struct{})
 	defer close(done)

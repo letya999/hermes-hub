@@ -33,33 +33,15 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("executor arguments: %w", err)
 	}
-	ws, ar, org, done, err := t.scopedRoots(&r, scopes)
+	if name == "image_inspect" && len(r.Paths) > 0 {
+		return nil, errors.New("use images_inspect for capability-admitted image sets")
+	}
+	ws, ar, org, done, err := t.scopedRoots(name, &r, scopes)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
 	return t.call(ctx, name, r, ws, ar, org)
-}
-
-// inspectSet describes a set of workspace images. Each entry reports its own
-// outcome so one unreadable file does not fail the set.
-func inspectSet(ctx context.Context, s *media.Session, paths []string) (map[string]any, error) {
-	if len(paths) > 8 {
-		return nil, errors.New("at most 8 images per call")
-	}
-	results := make([]map[string]any, 0, len(paths))
-	for _, p := range paths {
-		entry := map[string]any{"path": p}
-		if out, err := s.Inspect(ctx, p); err != nil {
-			entry["error"] = err.Error()
-		} else {
-			for k, v := range out {
-				entry[k] = v
-			}
-		}
-		results = append(results, entry)
-	}
-	return map[string]any{"results": results}, nil
 }
 
 // call dispatches to one handler. ws, ar and org are the call-scoped roots;
@@ -96,7 +78,7 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.SettingsGet(r)
 	case "settings_set":
 		return t.SettingsSet(r)
-	case "routine_create", "routine_list", "routine_update", "routine_pause", "routine_delete":
+	case "routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete":
 		return t.Routine(ctx, name, r)
 	case "document_extract":
 		return session().Extract(ctx, r.Path)
@@ -114,11 +96,13 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.inboxFetch(ctx, ws, r)
 	case "knowledge_list":
 		return t.knowledgeList(ctx)
+	case "knowledge_search":
+		return t.knowledgeSearch(ctx, r.Query)
 	case "knowledge_read":
 		return t.knowledgeRead(ctx, r)
-	case "image_inspect":
+	case "image_inspect", "images_inspect":
 		if len(r.Paths) > 0 {
-			return inspectSet(ctx, session(), r.Paths)
+			return session().InspectMany(ctx, r.Paths)
 		}
 		return session().Inspect(ctx, r.Path)
 	case "image_convert":
@@ -244,7 +228,7 @@ func (t *Tools) sshDispatch(ctx context.Context, name string, r Input) (any, err
 // their sub-root relative form. The ToolHub backend passes the admitted
 // scopes verbatim; this routine only enforces them mechanically and can
 // never widen a grant.
-func (t *Tools) scopedRoots(r *Input, scopes []toolhub.CapabilityScope) (ws, ar, org *os.Root, done func(), err error) {
+func (t *Tools) scopedRoots(name string, r *Input, scopes []toolhub.CapabilityScope) (ws, ar, org *os.Root, done func(), err error) {
 	ws, ar, org = t.Workspace, t.Archive, t.Organization
 	opened := []*os.Root{}
 	done = func() {
@@ -253,11 +237,12 @@ func (t *Tools) scopedRoots(r *Input, scopes []toolhub.CapabilityScope) (ws, ar,
 		}
 	}
 	seenScopes := map[string]bool{}
+	argumentPrefixes := map[string]string{}
 	for _, scope := range scopes {
 		if scope.PathPrefix == "" {
 			continue // Whole-domain grant: no narrower boundary to enforce.
 		}
-		if scope.PathArgument != "path" {
+		if scope.PathArgument != "path" && scope.PathArgument != "paths" {
 			done()
 			return nil, nil, nil, done, fmt.Errorf("capability scope on unmapped argument %q", scope.PathArgument)
 		}
@@ -268,17 +253,55 @@ func (t *Tools) scopedRoots(r *Input, scopes []toolhub.CapabilityScope) (ws, ar,
 			continue
 		}
 		seenScopes[key] = true
+		if previous, exists := argumentPrefixes[scope.PathArgument]; exists && previous != scope.PathPrefix {
+			done()
+			return nil, nil, nil, done, errors.New("multi-file calls require one common admitted directory; use separate calls for different grants")
+		}
+		argumentPrefixes[scope.PathArgument] = scope.PathPrefix
 		base, err := t.scopeBase(scope.Resource, r)
 		if err != nil {
 			done()
 			return nil, nil, nil, done, err
 		}
-		sub, rel, err := ScopedSub(base, scope.PathPrefix, r.Path)
+		actual := r.Path
+		if scope.PathArgument == "paths" {
+			if len(r.Paths) == 0 {
+				done()
+				return nil, nil, nil, done, errors.New("paths required")
+			}
+			actual = r.Paths[0]
+		}
+		sub, rel, err := ScopedSub(base, scope.PathPrefix, actual)
 		if err != nil {
 			done()
 			return nil, nil, nil, done, fmt.Errorf("capability scope %q: %w", scope.PathPrefix, err)
 		}
 		opened = append(opened, sub)
+		if scope.PathArgument == "paths" {
+			dir := scope.PathPrefix
+			if actual == dir && rel != "" {
+				dir = path.Dir(dir)
+			}
+			original := append([]string(nil), r.Paths...)
+			for i, item := range r.Paths {
+				if item != scope.PathPrefix && !strings.HasPrefix(item, scope.PathPrefix+"/") {
+					done()
+					return nil, nil, nil, done, errors.New("path outside admitted scope")
+				}
+				r.Paths[i] = strings.TrimPrefix(strings.TrimPrefix(item, dir), "/")
+			}
+			if name == "archive_create" {
+				r.archiveSources = sub
+				r.archiveSourceNames = original
+				continue
+			}
+		}
+		if name == "archive_create" && scope.PathArgument == "path" {
+			r.archiveOutput = sub
+			r.archiveOutputPath = rel
+			continue
+		}
+
 		switch scope.Resource {
 		case "files":
 			switch strings.ToLower(r.Root) {
@@ -292,7 +315,9 @@ func (t *Tools) scopedRoots(r *Input, scopes []toolhub.CapabilityScope) (ws, ar,
 		default:
 			ws = sub
 		}
-		r.Path = rel
+		if scope.PathArgument == "path" {
+			r.Path = rel
+		}
 	}
 	return ws, ar, org, done, nil
 }
@@ -303,13 +328,45 @@ func (t *Tools) scopedRoots(r *Input, scopes []toolhub.CapabilityScope) (ws, ar,
 // boundary scopes inside it. Callers must handle the whole-domain case
 // (empty prefix) themselves.
 func ScopedSub(base *os.Root, prefix, actual string) (*os.Root, string, error) {
+	if !safe(prefix) || (actual != "" && (!safe(actual) || (actual != prefix && !strings.HasPrefix(actual, prefix+"/")))) {
+		return nil, "", errors.New("path outside capability scope")
+	}
 	dir := prefix
 	if actual == prefix {
-		dir = path.Dir(prefix)
+		target, err := base.Lstat(prefix)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, "", err
+		}
+		if err == nil && target.Mode()&os.ModeSymlink != 0 {
+			return nil, "", errors.New("capability target must not be a symlink")
+		}
+		if err != nil || !target.IsDir() {
+			dir = path.Dir(prefix)
+		}
+	}
+	info, err := base.Lstat(dir)
+	if err != nil {
+		return nil, "", err
+	}
+	current := ""
+	for _, part := range strings.Split(dir, "/") {
+		current = path.Join(current, part)
+		component, err := base.Lstat(current)
+		if err != nil {
+			return nil, "", err
+		}
+		if !component.IsDir() || component.Mode()&os.ModeSymlink != 0 {
+			return nil, "", errors.New("capability scope must not traverse a symlink")
+		}
 	}
 	sub, err := base.OpenRoot(dir)
 	if err != nil {
 		return nil, "", err
+	}
+	opened, err := sub.Lstat(".")
+	if err != nil || !os.SameFile(info, opened) {
+		_ = sub.Close()
+		return nil, "", errors.New("capability scope changed while opening")
 	}
 	rel := strings.TrimPrefix(actual, dir)
 	return sub, strings.TrimPrefix(rel, "/"), nil

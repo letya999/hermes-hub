@@ -573,7 +573,7 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 24 {
+	if err != nil || len(list.Tools) != 26 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, name := range []string{"document_extract", "document_create", "image_inspect", "artifact_remove", "settings_get", "settings_set", "archive_create", "archive_unpack", "inbox_fetch"} {
@@ -670,7 +670,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	client, cleanup := connectHub(t, v)
 	defer cleanup()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 24 {
+	if err != nil || len(list.Tools) != 26 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, tool := range list.Tools {
@@ -718,21 +718,21 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	if seen.IsError || body["text"] != "a red pixel" || jsonNumber(body["width"]) != 2 || jsonNumber(body["height"]) != 3 || !sawInspect.Load() {
 		t.Fatal(seen, body)
 	}
-	set, body := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"dot.png", "dot.png", "missing.png"}})
+	set, body := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"dot.png", "dot.png"}})
 	if set.IsError {
 		t.Fatal(set, body)
 	}
 	results, _ := body["results"].([]any)
-	if len(results) != 3 {
+	if len(results) != 2 {
 		t.Fatal(body)
 	}
 	first, _ := results[0].(map[string]any)
-	if first["text"] != "a red pixel" {
+	if body["text"] != "a red pixel" || first["path"] != "dot.png" {
 		t.Fatal(results[0])
 	}
-	last, _ := results[2].(map[string]any)
-	if last["error"] == nil {
-		t.Fatal(results[2])
+	badSet, _ := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"dot.png", "missing.png"}})
+	if !badSet.IsError {
+		t.Fatal("accepted an unreadable image set")
 	}
 	tooMany, _ := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}})
 	if !tooMany.IsError {
@@ -761,7 +761,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 28 {
+	if err != nil || len(listed.Tools) != 30 {
 		t.Fatal(len(listed.Tools), err)
 	}
 	made, body := callHub(t, granted, "image_generate", map[string]any{"name": "pic", "prompt": "a red square"})

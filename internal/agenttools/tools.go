@@ -34,33 +34,40 @@ import (
 const Limit = 2 * 1024 * 1024
 
 type Input struct {
-	Path       string   `json:"path,omitempty"`
-	Root       string   `json:"root,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	Revision   string   `json:"revision,omitempty"`
-	Query      string   `json:"query,omitempty"`
-	Format     string   `json:"format,omitempty"`
-	Name       string   `json:"name,omitempty"`
-	Prompt     string   `json:"prompt,omitempty"`
-	ID         string   `json:"id,omitempty"`
-	ResumeID   string   `json:"resume_id,omitempty"`
-	Message    string   `json:"message,omitempty"`
-	Authorized bool     `json:"authorized,omitempty"`
-	Service    string   `json:"service,omitempty"`
-	Page       int      `json:"page,omitempty"`
-	Timezone   string   `json:"timezone,omitempty"`
-	Expression string   `json:"expression,omitempty"`
-	Host       string   `json:"host,omitempty"`
-	Command    string   `json:"command,omitempty"`
-	Data       string   `json:"data,omitempty"`
-	Offset     uint64   `json:"offset,omitempty"`
-	Key        string   `json:"key,omitempty"`
-	Value      string   `json:"value,omitempty"`
-	Paths      []string `json:"paths,omitempty"`
-	Kind       string   `json:"kind,omitempty"`
-	URL        string   `json:"url,omitempty"`
-	Regex      string   `json:"regex,omitempty"`
-	Expect     string   `json:"expect,omitempty"`
+	Path               string   `json:"path,omitempty"`
+	Root               string   `json:"root,omitempty"`
+	Text               string   `json:"text,omitempty"`
+	Revision           string   `json:"revision,omitempty"`
+	Query              string   `json:"query,omitempty"`
+	Format             string   `json:"format,omitempty"`
+	Name               string   `json:"name,omitempty"`
+	Prompt             string   `json:"prompt,omitempty"`
+	ID                 string   `json:"id,omitempty"`
+	ResumeID           string   `json:"resume_id,omitempty"`
+	Message            string   `json:"message,omitempty"`
+	Authorized         bool     `json:"authorized,omitempty"`
+	Service            string   `json:"service,omitempty"`
+	Page               int      `json:"page,omitempty"`
+	Timezone           string   `json:"timezone,omitempty"`
+	Expression         string   `json:"expression,omitempty"`
+	Host               string   `json:"host,omitempty"`
+	Command            string   `json:"command,omitempty"`
+	Data               string   `json:"data,omitempty"`
+	Offset             uint64   `json:"offset,omitempty"`
+	Key                string   `json:"key,omitempty"`
+	Value              string   `json:"value,omitempty"`
+	Paths              []string `json:"paths,omitempty"`
+	archiveSources     *os.Root
+	archiveSourceNames []string
+	archiveOutput      *os.Root
+	archiveOutputPath  string
+	Kind               string   `json:"kind,omitempty"`
+	URL                string   `json:"url,omitempty"`
+	Regex              string   `json:"regex,omitempty"`
+	ProbeKind          string   `json:"probe_kind,omitempty"`
+	NotifyMode         string   `json:"notify_mode,omitempty"`
+	SourceIDs          []string `json:"source_ids,omitempty"`
+	Expect             string   `json:"expect,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -907,19 +914,20 @@ func (t *Tools) Server() *mcp.Server {
 	add("service_catalog", "List available connectors, required env key names, current status and whether the service is host-managed. Never returns secrets.")
 	add("service_enable", "After a direct owner request, enable one self-service catalog feature. A public GitHub repository is not a feature name: do not install it here, in the terminal, or in config.yaml. If credentials are missing, always returns input=protected-form with form_url; never ask the owner for KEY=value in chat.")
 	add("service_disable", "After a direct owner request, disable one ToolHub binding without deleting its historical owner or credential metadata.")
-	for _, op := range []string{"routine_create", "routine_list", "routine_update", "routine_pause", "routine_delete"} {
+	for _, op := range []string{"routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete"} {
 		add(op, "Hub-owned routine "+strings.TrimPrefix(op, "routine_")+"; ownership is enforced by the communication hub")
 	}
 	add("document_extract", "Extract text from one workspace document. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. Unsupported: doc, docx, xls, ppt, odt, rtf, epub, pages. This does not update the file.")
 	add("document_create", "Create a new document under artifacts/documents. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. html escapes the supplied plain text into a page and rejects markup input; use file_write for raw html. pdf, xlsx, and pptx store the supplied text. Does not update an existing file and is separate from file_write.")
 	add("document_edit", "Replace the text of one existing file under artifacts/documents. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. html escapes the supplied plain text and rejects markup input. pdf, xlsx, and pptx are rewritten from the new text. Does not create a file.")
 	add("document_convert", "Write a new document under artifacts/documents in another supported format: txt, md, csv, html, pdf, xlsx, pptx. csv is a target only for xlsx. doc and docx stay unsupported.")
-	add("image_inspect", "Describe one or more png, jpeg, or webp files in this workspace. Set paths for a set of up to 8 images; each result reports its own error. Uses the model credential, not the image-generation credential. Unsupported: gif, bmp, svg, tif, heic, avif.")
+	add("image_inspect", "Describe one or more png, jpeg, or webp files in this workspace. Set paths for a set of up to 8 images; the images are compared together in one request, and an unreadable image fails the set. Uses the model credential, not the image-generation credential. Unsupported: gif, bmp, svg, tif, heic, avif.")
+	add("images_inspect", "Compare up to eight workspace images together in one model request. Every path must be authorized.")
 	add("image_convert", "Convert one workspace png, jpeg, or webp into another of those formats and write a new file under artifacts/images. This does not call an image provider.")
 	add("artifact_remove", "Delete one generated file under artifacts/documents, artifacts/images, or artifacts/videos. Does not delete source files or other workspace paths.")
 	add("archive_create", "Pack listed workspace files into a new zip under artifacts/. Paths must be distinct existing regular files; the destination must not exist.")
 	add("archive_unpack", "Unpack a workspace zip into a new directory under artifacts/unpacked/<name>. Encrypted, symlink, and non-file entries are rejected; the target must not exist.")
-	add("inbox_fetch", "Materialize a file the user sent to the chat. Set id to the staged file id from the [file ... inbox=<id>] metadata line. The file lands under inbox/; a zip is unpacked into inbox/<name>/ without keeping the archive. Call this before reading or inspecting an inbound file.")
+	add("inbox_fetch", "Materialize a file the user sent to the chat. Set id to the staged file id from the [file ... inbox=<id>] metadata line. The file lands under inbox/; a zip is unpacked into inbox/<id>/files/ without keeping the archive. Call this before reading or inspecting an inbound file.")
 	add("settings_get", "Show runtime self-settings: the manageable key allowlist, current overrides and effective values. Settings never include credential values.")
 	add("settings_set", "Set one manageable runtime setting (compression, display, image_gen model/delivery) or reset it with an empty value. The change applies after the scheduled runtime restart.")
 	if t.session().ImageGranted() {
