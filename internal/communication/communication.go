@@ -627,7 +627,7 @@ type Spool struct {
 
 func NewSpool(root string) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "tmp"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -963,6 +963,10 @@ func normalizeDelivery(d Delivery) (Delivery, error) {
 		}
 	case "slack_app":
 		if !identity.ValidID(d.ConversationID) || !identity.ValidID(d.DeliveryTargetID) || d.DeliveryTargetID != d.ConversationID || !validSlackIMChannel(d.SlackChannel) || !validSlackThread(d.SlackThread) {
+			return d, errors.New("invalid delivery identity")
+		}
+	case "mock":
+		if d.ChatID == 0 {
 			return d, errors.New("invalid delivery identity")
 		}
 	default:
@@ -2025,6 +2029,9 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 
 func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64) error {
 	envelope := user.envelope(sender)
+	if channel == "mock" {
+		envelope = user.mockEnvelope(chatID)
+	}
 	envelope.ConversationID = task.ConversationID
 	if channel == "telegram_bot" && chatID < 0 {
 		// Group forum jobs deliver to the group chat, not the sender's DM.
@@ -2250,6 +2257,10 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	delivery.Attempts++
 	var sendErr error
 	switch delivery.Channel {
+	case "mock":
+		// The local test bench captures instead of sending: the durable
+		// record under spool/mock-sent is what /v1/mock/outbox reports.
+		sendErr = g.captureMock(delivery)
 	case "slack_app":
 		if g.slack == nil {
 			sendErr = errors.New("slack delivery is not configured")

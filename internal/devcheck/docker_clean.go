@@ -17,6 +17,12 @@ type dockerRunner func(ctx context.Context, args ...string) ([]byte, error)
 // dockerExec runs one docker CLI call with output streamed to the console.
 type dockerExec func(ctx context.Context, args ...string) error
 
+// BuildKitEnv is the single source every hub image build must carry: hubctl
+// build/up, devcheck builds and CI publish all append it so the classic
+// builder — which materializes every stage as cache images and duplicates
+// the tagged image — can never be selected by accident.
+var BuildKitEnv = []string{"DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true"}
+
 // DockerBuild builds the hub image through BuildKit even when the operator
 // shell exports DOCKER_BUILDKIT=0/COMPOSE_DOCKER_CLI_BUILD=0. The classic
 // builder materializes every stage as cache images and leaves the superseded
@@ -43,7 +49,7 @@ func cacheArgs() []string {
 
 func streamDocker(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- fixed subcommands with validated refs.
-	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
+	cmd.Env = append(os.Environ(), BuildKitEnv...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
 }

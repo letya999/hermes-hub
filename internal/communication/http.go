@@ -20,6 +20,8 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
 	mux.HandleFunc("/v1/knowledge", g.handleKnowledge)
 	mux.HandleFunc("/v1/knowledge/", g.handleKnowledge)
+	mux.HandleFunc("/v1/mock/message", g.handleMockMessage)
+	mux.HandleFunc("/v1/mock/outbox", g.handleMockOutbox)
 	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
@@ -121,6 +123,12 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			if len(user.TelegramIDs) > 0 {
 				in.ChatID = user.TelegramIDs[0]
 			}
+		}
+		if in.Channel == "mock" {
+			// Mock-channel routines carry the mock envelope so occurrence
+			// authorization and delivery targeting stay coherent end to end.
+			in.Envelope = g.user(caller.PrincipalID).mockEnvelope(in.ChatID)
+			caller = in.Envelope
 		}
 		if in.JobKind == "check" {
 			// The follow-up predicate is anchored at creation: probe once,

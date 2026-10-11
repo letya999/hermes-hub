@@ -351,7 +351,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if strings.TrimSpace(in.Input) == "" || len(in.Input) > 64*1024 || envstore.LooksLikeEnv(in.Input) {
 		return errors.New("invalid routine input")
 	}
-	if in.Channel != "telegram_bot" && in.Channel != "slack_app" {
+	if in.Channel != "telegram_bot" && in.Channel != "slack_app" && in.Channel != "mock" {
 		return errors.New("invalid schedule channel")
 	}
 	if in.Channel == "slack_app" && in.SlackChannel != "" && (!validSlackIMChannel(in.SlackChannel) || !validSlackThread(in.SlackThread)) {

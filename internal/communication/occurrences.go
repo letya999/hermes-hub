@@ -242,6 +242,10 @@ func (g *Gateway) authorizeOccurrence(job Job) error {
 		if job.Envelope.PrincipalID != user.ID || !strings.HasPrefix(job.Envelope.ExternalIdentityID, "slack-") {
 			return errors.New("routine policy changed")
 		}
+	case "mock":
+		if job.Envelope != user.mockEnvelope(job.ChatID) {
+			return errors.New("routine policy changed")
+		}
 	default:
 		return errors.New("routine owner unavailable")
 	}
@@ -259,6 +263,10 @@ func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {
 		}
 	case "slack_app":
 		if !strings.HasPrefix(caller.ExternalIdentityID, "slack-") {
+			return errors.New("invalid occurrence ownership")
+		}
+	case "mock":
+		if o.Job.ChatID <= 0 || caller != identity.MockEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion) {
 			return errors.New("invalid occurrence ownership")
 		}
 	default:

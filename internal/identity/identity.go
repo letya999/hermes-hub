@@ -56,6 +56,13 @@ func SlackEnvelope(principal, teamID, userID, runtime, policy string) Envelope {
 	return Envelope{Schema: Schema, PrincipalID: principal, ExternalIdentityID: transportID, ContextID: principal, RuntimeID: runtime, ConversationID: transportID, DeliveryTargetID: transportID, PolicyVersion: policy}
 }
 
+// MockEnvelope is the local test-bench channel identity: same binding
+// discipline as the real channels, transport ids under the mock- prefix.
+func MockEnvelope(principal string, chatID int64, runtime, policy string) Envelope {
+	transportID := "mock-" + strconv.FormatInt(chatID, 10)
+	return Envelope{Schema: Schema, PrincipalID: principal, ExternalIdentityID: transportID, ContextID: principal, RuntimeID: runtime, ConversationID: transportID, DeliveryTargetID: transportID, PolicyVersion: policy}
+}
+
 func (e Envelope) Validate(principal, context, runtime, policy string) error {
 	if e.Schema != Schema {
 		return errors.New("unsupported identity schema")
