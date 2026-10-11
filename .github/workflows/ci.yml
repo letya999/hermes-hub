@@ -64,7 +64,7 @@ jobs:
         if: always()
         with:
           name: testlog-${{ matrix.shard }}
-          path: test-${SHARD}.log
+          path: test-${{ matrix.shard }}.log
           include-hidden-files: false
       - name: propagate test verdict
         if: steps.gotest.outcome == 'failure'
@@ -73,7 +73,7 @@ jobs:
         if: steps.gotest.outcome == 'success'
         with:
           name: coverage-shard-${{ matrix.shard }}
-          path: coverage-${SHARD}.out
+          path: coverage-${{ matrix.shard }}.out
           include-hidden-files: false
   checks-verify:
     runs-on: ubuntu-latest
