@@ -34,26 +34,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - shard: s1
-            pkgs: ""
-            awk: "NR % 4 == 0"
-          - shard: s3
-            pkgs: ""
-            awk: "NR % 4 == 2"
-          - shard: s4
-            pkgs: ""
-            awk: "NR % 4 == 3"
-          # The old NR%4==1 set wedged >25min; bisect its nine packages:
-          - shard: s2a
-            pkgs: "./cmd/cellinit ./cmd/hub-stt ./cmd/runtime ./internal/audit"
-            awk: ""
-          - shard: s2b
-            pkgs: "./internal/credentialbroker ./internal/envstore ./internal/migration ./internal/selfsettings"
-            awk: ""
-          - shard: s2c
-            pkgs: "./internal/supervisor"
-            awk: ""
+        shard: [0, 1, 2, 3]
+    env:
+      SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -69,11 +52,8 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          pkgs="${{ matrix.pkgs }}"
-          if [ -z "$pkgs" ]; then
-            pkgs=$(go list ./... | sort | awk '${{ matrix.awk }}')
-          fi
-          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${{ matrix.shard }}.out" $pkgs > "test-${{ matrix.shard }}.log" 2>&1
+          pkgs=$(go list ./... | sort | awk -v s="$SHARD" 'NR % 4 == s')
+          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $pkgs > "test-${SHARD}.log" 2>&1
           rc=$?
           # Test binaries run as /tmp/go-build*/b*/<pkg>.test and outlive a
           # killed `go test`; the runner waits on the whole process tree, so
@@ -84,7 +64,7 @@ jobs:
         if: always()
         with:
           name: testlog-${{ matrix.shard }}
-          path: test-${{ matrix.shard }}.log
+          path: test-${SHARD}.log
           include-hidden-files: false
       - name: propagate test verdict
         if: steps.gotest.outcome == 'failure'
@@ -93,7 +73,7 @@ jobs:
         if: steps.gotest.outcome == 'success'
         with:
           name: coverage-shard-${{ matrix.shard }}
-          path: coverage-${{ matrix.shard }}.out
+          path: coverage-${SHARD}.out
           include-hidden-files: false
   checks-verify:
     runs-on: ubuntu-latest

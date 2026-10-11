@@ -146,7 +146,13 @@ func TestStrayPIDsProcsSweep(t *testing.T) {
 		}
 	}
 	_ = procs()
-	_ = sweep()
+	// sweep SIGKILLs every pid outside pid1+self: only safe inside the cell's
+	// own pid namespace (cellinit as pid1). On a shared host or CI runner the
+	// same call would kill the machine — the production path reaches it
+	// through `docker exec` inside the cell instead.
+	if os.Getpid() == 1 {
+		_ = sweep()
+	}
 }
 
 func TestReadProxyRules(t *testing.T) {
