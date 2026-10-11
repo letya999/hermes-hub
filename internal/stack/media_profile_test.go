@@ -12,6 +12,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestMediaProfileBuildsSharedImageOnce(t *testing.T) {
+	for _, environment := range []string{"dev", "prod"} {
+		t.Run(environment, func(t *testing.T) {
+			s := profileSettings("workspace", "image_gen")
+			s.Environment = environment
+			services := Compose(s, t.TempDir(), t.TempDir())["services"].(M)
+			core := services["cliproxy"].(M)
+			mediaSvc := services["hub-media"].(M)
+			if mediaSvc["image"] != core["image"] || core["build"] == nil {
+				t.Fatal("media must consume the explicitly built shared core image")
+			}
+			for name, raw := range services {
+				svc := raw.(M)
+				if name != "cliproxy" && svc["image"] == core["image"] && svc["build"] != nil {
+					t.Fatalf("%s builds the shared core tag a second time", name)
+				}
+			}
+		})
+	}
+}
+
 func TestDocumentImageProfile(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace"), Ingress: testIngress("workspace")}
 	cfg := Config(s)

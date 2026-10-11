@@ -787,7 +787,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if infra && s.Has("image_gen") {
 		mediaSvc := cloneMap(common)
 		mediaSvc["entrypoint"] = []string{"hub-media"}
-		mediaSvc["build"] = coreBuild
 		mediaEnv := M{
 			"HUB_MEDIA_LISTEN":         "0.0.0.0:8090",
 			"HUB_MEDIA_ENGINE":         "${HUB_MEDIA_ENGINE:-remote}",
