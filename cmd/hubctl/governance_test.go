@@ -42,6 +42,19 @@ func TestGovernanceCLIRuleGrantRevoke(t *testing.T) {
 	if d := doc.Evaluate("bob", "", "user_mcp", nil, time.Now()); d.Allowed() {
 		t.Fatalf("user-scope rule leaked: %+v", d)
 	}
+	// Retire the same rule without deleting its audit history or silently
+	// accepting a stale update. Disabled grants no authority.
+	retire := append(append([]string{}, base...), "--kind", "rule", "--scope", "user", "--user", "alice", "--section", "user_mcp", "--effect", "allow", "--reason", "retire workaround", "--status", "disabled", "--revision", "2", "--confirm")
+	if err := runGovernance(context.Background(), retire); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ = toolhub.LoadGovernance(govPath)
+	if doc.Evaluate("alice", "", "user_mcp", nil, time.Now()).Allowed() {
+		t.Fatal("disabled rule still grants access")
+	}
+	if err := runGovernance(context.Background(), retire); err == nil {
+		t.Fatal("stale retirement accepted")
+	}
 
 	// Grant: pending, requires confirmRecord, activates only via request+ack.
 	if err := runGovernance(context.Background(), append(base, "--kind", "grant", "--user", "alice", "--section", "org_mcp", "--expires", "24h", "--reason", "host approved", "--confirm")); err != nil {

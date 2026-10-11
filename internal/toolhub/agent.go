@@ -286,7 +286,7 @@ func (p *agentExecPool) call(ctx context.Context, effective EffectiveBinding, re
 	if err != nil {
 		return AgentExecResult{}, err
 	}
-	if scope := currentDockerScope(); scope != nil && !scope.owns(ctx, "container", container) {
+	if scope := currentDockerScope(); scope != nil && !scope.admitSupervisedRuntime(ctx, container) {
 		return AgentExecResult{}, fmt.Errorf("%w: docker exec on foreign container %q denied", ErrIsolation, container)
 	}
 	s, err := p.session(container)
@@ -375,7 +375,7 @@ func DockerAgentExec(dockerArgv []string, container func(EffectiveBinding) (stri
 		if err != nil {
 			return AgentExecResult{}, err
 		}
-		if scope := currentDockerScope(); scope != nil && !scope.owns(ctx, "container", name) {
+		if scope := currentDockerScope(); scope != nil && !scope.admitSupervisedRuntime(ctx, name) {
 			return AgentExecResult{}, fmt.Errorf("%w: docker exec on foreign container %q denied", ErrIsolation, name)
 		}
 		body, err := json.Marshal(request)

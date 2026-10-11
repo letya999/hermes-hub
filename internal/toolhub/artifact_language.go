@@ -17,63 +17,115 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-// GenerateArtifactRecipe supplies our Dockerfile, not an upstream Dockerfile.
-// An optional literal entrypoint resolves ambiguous servers; no host build runs.
-// The base image is a trusted pinned toolchain selection, never source advice.
-func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, entrypoint []string, pythonExtras ...string) (ArtifactRecipe, []byte, error) {
-	if len(contextBytes) > 72<<20 {
-		return ArtifactRecipe{}, nil, fmt.Errorf("%w: oversized context", ErrInvalid)
+// readArtifactContext unpacks a verified tar context into regular files.
+// Unsafe paths, duplicates, non-regular entries and oversized members are
+// rejected before any recipe decision runs on them.
+func readArtifactContext(contextBytes []byte) (map[string][]byte, error) {
+	if len(contextBytes) > artifactMaxContextBytes {
+		return nil, fmt.Errorf("%w: oversized context", ErrInvalid)
 	}
 	files := map[string][]byte{}
 	input := bytes.NewReader(contextBytes)
 	reader := tar.NewReader(input)
-	remaining := int64(64 << 20)
+	remaining := int64(artifactMaxContextFileBytes)
 	for {
 		h, err := reader.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil || !artifactContextPath(h.Name) || h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > remaining || len(files) >= 4096 {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: unsafe language context", ErrInvalid)
+			return nil, fmt.Errorf("%w: unsafe language context", ErrInvalid)
 		}
 		if _, duplicate := files[h.Name]; duplicate {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: duplicate context", ErrInvalid)
+			return nil, fmt.Errorf("%w: duplicate context", ErrInvalid)
 		}
 		remaining -= h.Size
 		data, err := io.ReadAll(reader)
 		if err != nil {
-			return ArtifactRecipe{}, nil, err
+			return nil, err
 		}
 		files[h.Name] = data
 	}
 	if input.Len() != 0 {
-		return ArtifactRecipe{}, nil, fmt.Errorf("%w: trailing context data", ErrInvalid)
+		return nil, fmt.Errorf("%w: trailing context data", ErrInvalid)
 	}
-	manifests := map[string]string{"python": "pyproject.toml", "node": "package.json", "go": "go.mod", "rust": "Cargo.toml"}
-	if language == "" {
-		for name, manifest := range manifests {
-			if _, exists := files[manifest]; exists {
-				if language != "" {
-					return ArtifactRecipe{}, nil, fmt.Errorf("%w: multiple languages; select one", ErrInvalid)
-				}
-				language = name
+	return files, nil
+}
+
+var languageManifests = map[string]string{"python": "pyproject.toml", "node": "package.json", "go": "go.mod", "rust": "Cargo.toml"}
+
+var languageBaseImages = map[string]string{
+	"python": "python@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217",
+	"node":   "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+	"go":     "golang@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b",
+	"rust":   "rust@sha256:ebd900bae66fd508b466cef82d64a83a5fb34682e4c8b2797a42908bddc95a57",
+}
+
+// detectRecipeLanguage picks the manifest-declared language or infers one from
+// context files. Multiple manifests stay ambiguous and fail closed.
+func detectRecipeLanguage(files map[string][]byte, language string) (string, error) {
+	if language != "" {
+		return language, nil
+	}
+	for name, manifest := range languageManifests {
+		if _, exists := files[manifest]; exists {
+			if language != "" {
+				return "", fmt.Errorf("%w: multiple languages; select one", ErrInvalid)
 			}
-		}
-		if language == "" && files["requirements.txt"] != nil {
-			language = "python"
+			language = name
 		}
 	}
-	manifest, supported := manifests[language]
+	if language == "" && files["requirements.txt"] != nil {
+		language = "python"
+	}
+	return language, nil
+}
+
+// writeRecipeContext packs the (possibly extended) file set back into a tar
+// context and records per-file digests on the recipe.
+func writeRecipeContext(recipe *ArtifactRecipe, files map[string][]byte) ([]byte, error) {
+	var output bytes.Buffer
+	writer := tar.NewWriter(&output)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		data := files[name]
+		digest := sha256.Sum256(data)
+		recipe.Files = append(recipe.Files, ArtifactFile{Path: name, Digest: "sha256:" + hex.EncodeToString(digest[:])})
+		if err := writer.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(data))}); err != nil {
+			return nil, err
+		}
+		if _, err := writer.Write(data); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
+}
+
+// GenerateArtifactRecipe supplies our Dockerfile, not an upstream Dockerfile.
+// An optional literal entrypoint resolves ambiguous servers; no host build runs.
+// The base image is a trusted pinned toolchain selection, never source advice.
+func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, entrypoint []string, pythonExtras ...string) (ArtifactRecipe, []byte, error) {
+	files, err := readArtifactContext(contextBytes)
+	if err != nil {
+		return ArtifactRecipe{}, nil, err
+	}
+	language, err = detectRecipeLanguage(files, language)
+	if err != nil {
+		return ArtifactRecipe{}, nil, err
+	}
+	manifest, supported := languageManifests[language]
 	if !supported {
 		return ArtifactRecipe{}, nil, fmt.Errorf("%w: supported language required", ErrInvalid)
 	}
 	if baseImage == "" {
-		baseImage = map[string]string{
-			"python": "python@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217",
-			"node":   "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
-			"go":     "golang@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b",
-			"rust":   "rust@sha256:ebd900bae66fd508b466cef82d64a83a5fb34682e4c8b2797a42908bddc95a57",
-		}[language]
+		baseImage = languageBaseImages[language]
 	}
 	if files[manifest] == nil && !(language == "python" && files["requirements.txt"] != nil) {
 		return ArtifactRecipe{}, nil, fmt.Errorf("%w: language manifest missing", ErrInvalid)
@@ -207,19 +259,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		}
 	case "go":
 		lines = append(lines, "ENV CGO_ENABLED=0")
-		var mains []string
-		for name, data := range files {
-			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			f, err := parser.ParseFile(token.NewFileSet(), name, data, parser.PackageClauseOnly)
-			if err == nil && f.Name.Name == "main" {
-				target := "./" + path.Dir(name)
-				if !slices.Contains(mains, target) {
-					mains = append(mains, target)
-				}
-			}
-		}
+		mains := goMainDirs(files)
 		if len(mains) != 1 {
 			mains = disambiguateGoMain(mains, files)
 		}
@@ -268,28 +308,11 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 	}
 	files[dockerfile] = []byte(strings.Join(lines, "\n") + "\n")
 	recipe := ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: dockerfile, DependencyLocks: locks, BaseImages: []string{baseImage}, Entrypoint: entrypoint}
-	var output bytes.Buffer
-	writer := tar.NewWriter(&output)
-	names := make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		data := files[name]
-		digest := sha256.Sum256(data)
-		recipe.Files = append(recipe.Files, ArtifactFile{Path: name, Digest: "sha256:" + hex.EncodeToString(digest[:])})
-		if err := writer.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(data))}); err != nil {
-			return ArtifactRecipe{}, nil, err
-		}
-		if _, err := writer.Write(data); err != nil {
-			return ArtifactRecipe{}, nil, err
-		}
-	}
-	if err := writer.Close(); err != nil {
+	output, err := writeRecipeContext(&recipe, files)
+	if err != nil {
 		return ArtifactRecipe{}, nil, err
 	}
-	return recipe, output.Bytes(), recipe.VerifyContext(output.Bytes())
+	return recipe, output, recipe.VerifyContext(output)
 }
 
 // buildCacheRunPrefix returns the BuildKit cache-mount prefix for package
@@ -334,6 +357,24 @@ func artifactTOMLSection(data []byte, wanted string) map[string]string {
 		}
 	}
 	return result
+}
+
+// goMainDirs lists the directories holding package main sources.
+func goMainDirs(files map[string][]byte) []string {
+	var mains []string
+	for name, data := range files {
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), name, data, parser.PackageClauseOnly)
+		if err == nil && f.Name.Name == "main" {
+			target := "./" + path.Dir(name)
+			if !slices.Contains(mains, target) {
+				mains = append(mains, target)
+			}
+		}
+	}
+	return mains
 }
 
 // disambiguateGoMain selects one main package only when independent upstream

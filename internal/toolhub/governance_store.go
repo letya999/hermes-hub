@@ -89,7 +89,7 @@ func projectedToolAttrs(effective EffectiveBinding, tool ToolSpec) map[string]st
 	reviewed := definition.Source.ReviewDigest != ""
 	prepared := reviewed || definition.Source.RecipeDigest != "" || definition.Source.ToolContractDigest != ""
 	switch {
-	case definition.Transport == AgentTools:
+	case definition.Transport == AgentTools || shippedCLI(definition):
 		owner, reviewed, prepared = OwnerHub, true, true
 	case effective.Connection != nil && effective.Connection.Owner.Type == PrincipalOwner:
 		owner = OwnerUser
@@ -107,6 +107,16 @@ func projectedToolAttrs(effective EffectiveBinding, tool ToolSpec) map[string]st
 		"owner":         owner,
 		"effect":        string(tool.Effect),
 	}
+}
+
+// Trust the reviewed release bytes, not a user-controlled id or transport.
+func shippedCLI(definition ToolDefinition) bool {
+	for _, shipped := range CLICatalogDefinitions() {
+		if DefinitionDigest(definition) == DefinitionDigest(shipped) {
+			return true
+		}
+	}
+	return false
 }
 
 // governanceDecision evaluates the toolhub section for one projection. A

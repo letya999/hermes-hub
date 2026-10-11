@@ -1,0 +1,26 @@
+schema: 1
+id: CHG-0077-toolhub-cli
+title: M8 — ToolHub CLI connectors
+status: done
+phase: delivered
+started_at: 2026-10-08
+updated_at: 2026-10-08
+branch: feat/m8-toolhub-cli
+completed:
+  - milestone 9 scope confirmed via GitHub API (#87-#91, #100); dependencies closed
+  - branch feat/m8-toolhub-cli created off dev
+  - architecture reconnaissance complete; design locked (see plan.md)
+  - '#87: SPEC-0047 + ADR-0033 (+amendment) CLI transport contract'
+  - '#88: CLI admission verifier, executor-container inspect, strict receipts, cgroup bounds'
+  - '#89: cli-git-ls-remote + cli-rg-search catalog defs; hubctl connector catalog-cli'
+  - '#90: prepare_source cli spec — grant gate, allowlist, long-option argv, owner publication'
+  - '#100: immutable artifact onboarding — pinned source → restricted build → digest-pinned extract'
+  - '#91: cli_test.go — admission drift, spec denial, digest verify, cross-user, receipt strictness'
+  - '#91 (cont): cli_more_test.go — allowlist resolve, spec env/lists, artifact failure paths'
+pending: []
+gates:
+  - "just check: PASS (race+shuffle, coverage 85.03%, format/vet/staticcheck/docs/actionlint)"
+  - "just security: N/A (no go.mod/go.sum changes)"
+  - "docker-check: build PASS (hermes-hub:test + test-control); docker-smoke PASS; hermes-contract PASS on rerun (first 2 runs flaked on 'real due routine wake' — documented environmental flake, code path untouched by this change); hermes-capability-contract PASS; managed-network/managed-supervisor/scratch-workload canaries PASS; TestDockerScratchExecPausedQuarantine PASS"
+next:
+  - commit + push on explicit user instruction only

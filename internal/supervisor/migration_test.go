@@ -116,6 +116,29 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 	}
 }
 
+func TestSupervisedRuntimeMountsToolPolicySnapshot(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	m.cfg.Environment = "prod"
+	b, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	// The executor contract must ride into the supervised runtime exactly as
+	// the rendered compose mounts it: generated snapshot, read-only, pinned
+	// to /config/tool-policy.json (HUB_TOOL_POLICY).
+	if !strings.Contains(joined, "tool-policy.prod.json,dst=/config/tool-policy.json,readonly") {
+		t.Fatalf("tool policy snapshot missing from spawn args: %s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(root, "generated", "tool-policy.prod.json")); err != nil {
+		t.Fatalf("tool policy snapshot not materialized at spawn: %v", err)
+	}
+}
+
 func TestLegacySelectionPreventsSupervisorFromStartingContext(t *testing.T) {
 	starts := 0
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {

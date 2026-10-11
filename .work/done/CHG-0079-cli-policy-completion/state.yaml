@@ -1,0 +1,41 @@
+schema: 1
+id: CHG-0079-cli-policy-completion
+title: Finish CLI installation policy and catalog management
+status: done
+phase: delivered
+started_at: 2026-10-10
+updated_at: 2026-10-10
+branch: feat/m8-toolhub-cli
+completed:
+  - ToolHub terminal suppresses native terminal and code_execution on CLI and Telegram, including unmanaged settings
+  - CLI cells exclude runtime home; operator-approved installs get disposable private executable tmpfs
+  - Exact compiled CLI definitions receive shipped trust; spoofed ids remain external
+  - Structured CLI release schema and actionable wrong-field error
+  - Operator-owned PyPI/npm/Cargo/Go registry ceilings, opt-in per definition
+  - Atomic host catalog-enable with managed profile selections and explicit ceiling extension; existing denies preserved
+  - Host governance rule retirement; blanket local bounded-cli allow disabled
+  - Legacy settings edits migrate wishes atomically without dropping ingress or comments
+  - .tmpbind ignored; affected docs, new ADR and frozen spec added
+  - Go host/build pins upgraded to 1.27.2 for GO-2026-6617
+  - Staticcheck pinned to 452d5bb86b45 with compatible x/tools importer; released v0.8.1 rejects Go 1.27.2 export data
+  - Tested dev runtime image, refreshed control services and host supervisor applied locally
+  - Host catalog command verified against existing local bindings
+  - Existing uv version definition repaired as new immutable version; previous binding disabled
+pending: []
+gates:
+  - just check passed on Go 1.27.2, race/shuffle tests and own statement coverage 85.02 percent
+  - just security passed, zero called Go vulnerabilities and npm audit zero
+  - Full just docker-check dev passed, including pinned Hermes contract, actual five-minute idle lifecycle, managed network/supervisor, scratch and quarantine canaries
+  - Linux Go 1.27.2 credential-broker race tests and vet passed; native Windows broker gate unavailable
+  - Real Docker CLI private executable home, warm reuse and cross-principal isolation passed
+  - Real uv tool install ruff 0.11.13 through PyPI proxy and execution passed using image with an existing Python interpreter
+  - Fresh dev-control Docker smoke passed without provider calls
+  - Live ToolHub MCP listing, rg fixture search and uv version call passed without blanket transport allow
+  - Live scratch terminal call passed with exit zero and confirmed process tree stop
+  - New local runtime config contains no native terminal/code_execution toolsets on CLI or Telegram
+  - supplementary repo-safety scan not clean (Opengrep environment error, pre-existing Python/style/gosec findings); secret scanners passed
+limits:
+  - Package installs require a compatible interpreter in the selected image; package home disappears when the CLI cell stops
+  - No real provider or external-message acceptance test, publication or commit performed
+  - Existing stale Telegram job leases left intact; broader sandbox tiers and reboot automation remain separate work
+next: none for the six authorized CLI policy and catalog fixes

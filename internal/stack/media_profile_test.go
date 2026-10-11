@@ -154,7 +154,10 @@ func TestDocumentImageProfile(t *testing.T) {
 		}
 	}
 	rendered, err := os.ReadFile(filepath.Join(space, "generated", "hermes.prod.yaml"))
-	if err != nil || strings.Contains(string(rendered), "image_gen") || strings.Contains(string(rendered), "FAL_KEY") || strings.Contains(string(rendered), "fal-sample-value") {
+	var renderedDoc map[string]any
+	_ = yaml.Unmarshal(rendered, &renderedDoc)
+	_, hasImageSection := renderedDoc["image_gen"]
+	if err != nil || hasImageSection || strings.Contains(string(rendered), "FAL_KEY") || strings.Contains(string(rendered), "fal-sample-value") {
 		t.Fatalf("rendered without grant: %v %s", err, rendered)
 	}
 	runtimeEnv, err = os.ReadFile(filepath.Join(space, "runtime.prod.env"))

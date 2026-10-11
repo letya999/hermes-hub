@@ -483,3 +483,64 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		t.Fatalf("workloads=%d", len(workloads))
 	}
 }
+
+func TestEnableOnActiveBindingSupersedesSiblingVersions(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{
+		"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "active-supersede",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingID, _ := enabled["binding_id"].(string)
+	// Recreate the legacy dirty state: a sibling version stays active next to
+	// the caller's binding, as stores written before supersession still carry.
+	v2 := catalogReadDefinition()
+	v2.Version = "1.0.1"
+	if err := store.RegisterDefinition(v2); err != nil {
+		t.Fatal(err)
+	}
+	newer := auth
+	newer.PolicyVersion = "policy-newer"
+	sibling, err := store.Enable(newer, v2.DefinitionID, v2.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := store.bindings[bindingID]
+	stale.Status = ActiveStatus
+	store.bindings[bindingID] = stale
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	if store.bindings[bindingID].Status != ActiveStatus {
+		t.Fatalf("kept binding status=%s", store.bindings[bindingID].Status)
+	}
+	if store.bindings[sibling.ToolBindingID].Status != DisabledStatus {
+		t.Fatalf("sibling binding status=%s", store.bindings[sibling.ToolBindingID].Status)
+	}
+	tools, err := store.ListProjectedTools(auth)
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("projected=%+v err=%v", tools, err)
+	}
+}

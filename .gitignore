@@ -18,3 +18,10 @@ docker/observability/.secrets/
 *.log
 .DS_Store
 /.tmpgen/
+/.tmpbind/
+/.probity/
+/.work/patchfiles/
+/.work/iva-*
+/.work/df-test
+/.work/hub-stt-out
+/.work/s-out.json

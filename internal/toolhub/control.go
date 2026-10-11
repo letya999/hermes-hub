@@ -67,6 +67,10 @@ type ControlPlane struct {
 	// and remove use it so a cut connector does not keep a materialized
 	// credential alive in a running container until the idle TTL fires.
 	Release func(context.Context, string) error
+	// CLIRelease drops bounded-cli sandbox cells by principal/binding/job
+	// selector: disable and revoke kill warm cells, the /v1 job-end route
+	// kills task cells. Nil leaves cells to the controller's own ladder.
+	CLIRelease func(context.Context, cliReleaseRequest) error
 	// PrepareSyncWindow bounds how long prepare_source waits for review+build
 	// before returning the durable "preparing" record; the work then continues
 	// on a detached context and its result is read via status. Zero uses the
@@ -79,6 +83,10 @@ type ControlPlane struct {
 	// after a server refused MCP until those secrets existed. Nil means a
 	// deferred admission cannot be completed.
 	AdmitWithCredentials func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error)
+	// CLIArtifacts is the owner bounded-cli artifact pipeline (immutable
+	// source → restricted build → digest-pinned extracted binary). Nil fails
+	// the cli artifact source path closed.
+	CLIArtifacts *CLIArtifactPipeline
 	// Governance is the host-owned tool policy document (issue 139). The
 	// grant_request control op stamps the in-conversation request onto a
 	// host-created pending grant; nil disables the op entirely.
@@ -178,8 +186,17 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 		}
 	}
 	source := argString(args, "source")
+	if strings.HasPrefix(source, "github-release:") {
+		return nil, fmt.Errorf("%w: CLI release source belongs in cli.source; supply cli.name, cli.binary and cli.asset, not top-level source", ErrInvalid)
+	}
 	definitionID := argString(args, "definition_id")
 	version := argString(args, "version")
+	if spec, requested := args["cli"]; requested {
+		if source != "" || definitionID != "" || version != "" || argString(args, "remote_url") != "" || argString(args, "candidate_id") != "" {
+			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
+		}
+		return c.prepareCLI(ctx, auth, spec, requestKey)
+	}
 	if remote := argString(args, "remote_url"); remote != "" {
 		if source != "" || definitionID != "" || version != "" || argString(args, "candidate_id") != "" {
 			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
@@ -345,7 +362,7 @@ func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identi
 func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source ArtifactSource, config ArtifactImportConfig, requestKey string) (Onboarding, bool, error) {
 	idSeed := requestKey
 	if idSeed == "" {
-		idSeed = string(OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA
+		idSeed = string(OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA + ":" + source.Tag + ":" + source.Asset + ":" + source.PackageRegistry + ":" + source.PackageName + ":" + source.PackageVersion
 	}
 	preparing := Onboarding{
 		Schema: SchemaVersion, OnboardingID: deterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
@@ -965,6 +982,12 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	if c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 {
 		return nil
 	}
+	// Bounded-cli credentials are owner-declared environment values, not
+	// provider sessions: without a reviewed broker contract the protected
+	// loopback form carries them. A bound contract keeps the broker path.
+	if definition.Transport == BoundedCLI && definition.CredentialContractID == "" {
+		return nil
+	}
 	if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 || len(definition.CredentialContractEnv) == 0 {
 		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", ErrUnauthorized, definition.DefinitionID)
 	}
@@ -1416,6 +1439,10 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		onboarding.BindingID = binding.ToolBindingID
 		onboarding.ConnectionID = binding.ConnectionID
 		onboarding.CredentialRefID = binding.CredentialRefID
+	} else if err := c.Store.SupersedeSiblings(auth, existing.DefinitionID, existing.ToolBindingID); err != nil {
+		// An enable on an already-active binding short-circuits Store.Enable,
+		// so it is the only place sibling versions can still be retired.
+		return nil, err
 	}
 	onboarding.Error = ""
 	onboarding.Phase = PhaseEnabled
@@ -1600,6 +1627,11 @@ func (c *ControlPlane) cutAuthorization(onboarding Onboarding) error {
 // covers admissions whose record is gone (e.g. a store snapshot predating the
 // record or a controller that kept the containers after losing its own map).
 func (c *ControlPlane) releaseBindingWorkloads(onboarding Onboarding) {
+	if c.CLIRelease != nil && onboarding.BindingID != "" && identity.ValidID(onboarding.PrincipalID) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = c.CLIRelease(ctx, cliReleaseRequest{PrincipalID: onboarding.PrincipalID, BindingID: onboarding.BindingID, Reason: "binding-release"})
+	}
 	if c.Release == nil || onboarding.BindingID == "" {
 		return
 	}

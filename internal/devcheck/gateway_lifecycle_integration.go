@@ -24,6 +24,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // gatewayLifecycleSmoke uses the production Telegram adapter, worker, spool,
@@ -82,6 +83,16 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		// The synthetic network has no toolhub service; opt the fixture out of
 		// the default endpoint so cold start does not depend on it.
 		if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS="+strconv.Itoa(21+i)+"\nHUB_TOOLHUB_ENDPOINT=\n"), 0600); err != nil {
+			return err
+		}
+		// The contract provider probes the real terminal tool, so this fixture
+		// stands in for a migrated space whose operator re-admitted exec:
+		// governance seeds native:terminal deny-by-default and a user-scope
+		// allow is exactly the record the host writes to grant it back.
+		if err := os.MkdirAll(filepath.Join(dir, "runtime", "toolhub"), 0700); err != nil {
+			return err
+		}
+		if err := toolhub.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), toolhub.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
 			return err
 		}
 		if err := stack.RenderEnvironment(dir, ".", "prod"); err != nil {

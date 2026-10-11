@@ -154,6 +154,56 @@ func TestEnableBuildsBindingFromExactOwnerConnection(t *testing.T) {
 	}
 }
 
+func TestEnableSupersedesSiblingVersionsAndPolicies(t *testing.T) {
+	store := NewStore()
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	first, err := store.Enable(auth, definition.DefinitionID, definition.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := catalogReadDefinition()
+	v2.Version = "1.0.1"
+	if err := store.RegisterDefinition(v2); err != nil {
+		t.Fatal(err)
+	}
+	newer := auth
+	newer.PolicyVersion = "policy-newer"
+	second, err := store.Enable(newer, v2.DefinitionID, v2.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.bindings[first.ToolBindingID].Status != DisabledStatus {
+		t.Fatalf("superseded binding status=%s", store.bindings[first.ToolBindingID].Status)
+	}
+	tools, err := store.ListProjectedTools(newer)
+	if err != nil || len(tools) != 1 || tools[0].BindingID != second.ToolBindingID {
+		t.Fatalf("projected=%+v err=%v", tools, err)
+	}
+	// Re-enabling the older version is an explicit downgrade: it reactivates
+	// the same binding and supersedes the newer one in turn.
+	reactivated, err := store.Enable(auth, definition.DefinitionID, definition.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reactivated.ToolBindingID != first.ToolBindingID || store.bindings[first.ToolBindingID].Status != ActiveStatus {
+		t.Fatalf("reactivated=%+v status=%s", reactivated, store.bindings[first.ToolBindingID].Status)
+	}
+	if store.bindings[second.ToolBindingID].Status != DisabledStatus {
+		t.Fatalf("downgrade kept newer binding status=%s", store.bindings[second.ToolBindingID].Status)
+	}
+	tools, err = store.ListProjectedTools(auth)
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("downgrade projected=%+v err=%v", tools, err)
+	}
+}
+
 func TestEnableReadyAdmitsBeforePublishingProjection(t *testing.T) {
 	store := NewStore()
 	definition := catalogReadDefinition()
