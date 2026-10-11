@@ -29,36 +29,38 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fail("cellinit: subcommand required")
+	os.Exit(run(os.Args))
+}
+
+func run(args []string) int {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "cellinit: subcommand required")
+		return 1
 	}
 	var err error
-	switch os.Args[1] {
+	switch args[1] {
 	case "pause":
 		err = pause()
 	case "write":
-		err = writeFile(os.Args[2:])
+		err = writeFile(args[2:])
 	case "check":
-		err = check(os.Args[2:])
+		err = check(args[2:])
 	case "clean":
-		err = clean(os.Args[2:])
+		err = clean(args[2:])
 	case "procs":
 		err = procs()
 	case "sweep":
 		err = sweep()
 	case "cred-proxy":
-		err = credProxy(os.Args[2:])
+		err = credProxy(args[2:])
 	default:
-		err = fmt.Errorf("cellinit: unknown subcommand %q", os.Args[1])
+		err = fmt.Errorf("cellinit: unknown subcommand %q", args[1])
 	}
 	if err != nil {
-		fail(err.Error())
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
-}
-
-func fail(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	os.Exit(1)
+	return 0
 }
 
 func pause() error {

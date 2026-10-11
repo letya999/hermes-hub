@@ -298,6 +298,56 @@ func TestJobDoneFiresOnlyAtTerminalOutcome(t *testing.T) {
 	}
 }
 
+func TestToolHubJobDoneUsesPrincipalCredential(t *testing.T) {
+	type request struct {
+		path, method, contentType, authorization, principal, jobID string
+	}
+	requests := make(chan request, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode release request: %v", err)
+		}
+		requests <- request{r.URL.Path, r.Method, r.Header.Get("Content-Type"), r.Header.Get("Authorization"), r.Header.Get("X-Hub-Principal"), body.JobID}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	g := &Gateway{config: Config{ToolHubURL: server.URL}}
+	g.toolHubJobDone("job-1", "alice")
+	if len(requests) != 0 {
+		t.Fatal("release sent without a principal credential")
+	}
+
+	g.config.Supervised = true
+	g.config.RuntimeAuth = "runtime-token"
+	g.toolHubJobDone("job-1", "alice")
+	if got := <-requests; got != (request{"/v1/cli-jobs/release", http.MethodPost, "application/json", "Bearer runtime-token", "alice", "job-1"}) {
+		t.Fatalf("supervised release request: %+v", got)
+	}
+
+	g.config.Supervised = false
+	token := strings.Repeat("a", 32)
+	entries, err := json.Marshal(map[string]identity.Envelope{token: {PrincipalID: "alice"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.config.ControlTokensFile = filepath.Join(t.TempDir(), "control-tokens.json")
+	if err := os.WriteFile(g.config.ControlTokensFile, entries, 0600); err != nil {
+		t.Fatal(err)
+	}
+	g.toolHubJobDone("job-2", "bob")
+	if len(requests) != 0 {
+		t.Fatal("another principal's token authorized release")
+	}
+	g.toolHubJobDone("job-2", "alice")
+	if got := <-requests; got != (request{"/v1/cli-jobs/release", http.MethodPost, "application/json", "Bearer " + token, "", "job-2"}) {
+		t.Fatalf("enrolled release request: %+v", got)
+	}
+}
+
 func TestJobOutcomeRejectsReplacementIdentityBeforeWriting(t *testing.T) {
 	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
 	if err != nil {

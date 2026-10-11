@@ -149,7 +149,17 @@ func TestStrayPIDsProcsSweep(t *testing.T) {
 	// sweep SIGKILLs every pid outside pid1+self: only safe inside the cell's
 	// own pid namespace (cellinit as pid1). On a shared host or CI runner the
 	// same call would kill the machine — the production path reaches it
-	// through `docker exec` inside the cell instead.
+	// through `docker exec` inside the cell instead. killProc on a pid we own
+	// is the safe subset: exercise it on a helper child only.
+	helper := exec.Command(os.Args[0], "-test.run=TestPauseStopsOnSignal")
+	helper.Env = append(os.Environ(), "CELLINIT_HELPER=pause")
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killProc(helper.Process.Pid)
+	if err := helper.Wait(); err == nil {
+		t.Fatal("killed helper exited cleanly")
+	}
 	if os.Getpid() == 1 {
 		_ = sweep()
 	}
@@ -227,8 +237,43 @@ func TestCredProxyArgs(t *testing.T) {
 	}
 }
 
-// TestMainDispatch runs the helper as a subprocess so main()/fail() including
-// os.Exit are exercised.
+// TestRunDispatch exercises run() in-process: the dispatch table and the
+// failure exit paths are counted only when the test binary itself runs them.
+// pause and sweep stay subprocess-only — one blocks for signals, the other
+// SIGKILLs the whole pid namespace.
+func TestRunDispatch(t *testing.T) {
+	dir := t.TempDir()
+	canary := filepath.Join(dir, "c")
+	if err := os.WriteFile(canary, []byte("tok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"no-subcommand", []string{"cellinit"}, 1},
+		{"unknown", []string{"cellinit", "bogus"}, 1},
+		{"check-ok", []string{"cellinit", "check", canary, "tok"}, 0},
+		{"check-mismatch", []string{"cellinit", "check", canary, "nope"}, 1},
+		{"clean-bad-args", []string{"cellinit", "clean"}, 1},
+		{"write-bad-args", []string{"cellinit", "write"}, 1},
+		{"cred-proxy-no-rules", []string{"cellinit", "cred-proxy"}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if rc := run(tc.args); rc != tc.want {
+				t.Fatalf("run(%v)=%d want %d", tc.args, rc, tc.want)
+			}
+		})
+	}
+	// procs is read-only: safe in any pid namespace, exit code depends on how
+	// many stray processes the runner happens to host.
+	_ = run([]string{"cellinit", "procs"})
+}
+
+// TestMainDispatch runs the helper as a subprocess so main()/os.Exit wiring is
+// exercised end to end.
 func TestMainDispatch(t *testing.T) {
 	if os.Getenv("CELLINIT_HELPER") == "1" {
 		os.Args = []string{"cellinit"}
@@ -267,6 +312,32 @@ func TestMainDispatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPauseInProcess covers pause() and reapOrphans() directly: the signal
+// channel swallows our own SIGTERM so the process survives. reapOrphans exits
+// on ECHILD since the test process reaps its own children.
+func TestPauseInProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGTERM delivery is not supported on Windows test runners")
+	}
+	self, _ := os.FindProcess(os.Getpid())
+	done := make(chan error, 1)
+	go func() { done <- pause() }()
+	var err error
+	for i := 0; i < 3; i++ {
+		time.Sleep(150 * time.Millisecond)
+		err = self.Signal(syscall.SIGTERM)
+		select {
+		case perr := <-done:
+			if perr != nil {
+				t.Fatalf("pause returned %v", perr)
+			}
+			return
+		default:
+		}
+	}
+	t.Fatalf("pause did not return after SIGTERM (kill err=%v)", err)
 }
 
 func TestPauseStopsOnSignal(t *testing.T) {
