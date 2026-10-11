@@ -54,7 +54,10 @@ jobs:
           set +e
           timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $(go list ./... | sort | awk -v s="$SHARD" 'NR % 3 == s - 1') > "test-${SHARD}.log" 2>&1
           rc=$?
-          pkill -f '/hermes-hub/.*\.test' 2>/dev/null
+          # Test binaries run as /tmp/go-build*/b*/<pkg>.test and outlive a
+          # killed `go test`; the runner waits on the whole process tree, so
+          # orphans must be reaped or the step never completes.
+          pkill -f '/go-build.*/.*\.test' 2>/dev/null
           exit $rc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
