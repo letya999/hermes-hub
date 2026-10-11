@@ -42,9 +42,27 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # `timeout` bounds the step so a wedge ends as a controlled step
+      # failure instead of losing the runner; `-v` + tee streams per-test
+      # progress into a file the always() upload then preserves — a stall
+      # leaves the last RUN line and the package that never printed `ok`.
       - name: go test shard
-        run: go test -race -shuffle=on -count=1 "-coverprofile=coverage-${SHARD}.out" $(go list ./... | sort | awk -v s="$SHARD" 'NR % 3 == s - 1')
+        id: gotest
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $(go list ./... | sort | awk -v s="$SHARD" 'NR % 3 == s - 1') 2>&1 | tee "test-${SHARD}.log"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: testlog-${{ matrix.shard }}
+          path: test-${{ matrix.shard }}.log
+          include-hidden-files: false
+      - name: propagate test verdict
+        if: steps.gotest.outcome == 'failure'
+        run: exit 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.gotest.outcome == 'success'
         with:
           name: coverage-shard-${{ matrix.shard }}
           path: coverage-${{ matrix.shard }}.out
