@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     env:
       SHARD: ${{ matrix.shard }}
     steps:
@@ -52,7 +52,7 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $(go list ./... | sort | awk -v s="$SHARD" 'NR % 3 == s - 1') > "test-${SHARD}.log" 2>&1
+          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $(go list ./... | sort | awk -v s="$SHARD" 'NR % 4 == s - 1') > "test-${SHARD}.log" 2>&1
           rc=$?
           # Test binaries run as /tmp/go-build*/b*/<pkg>.test and outlive a
           # killed `go test`; the runner waits on the whole process tree, so
@@ -97,7 +97,7 @@ jobs:
       - name: coverage gate
         run: |
           head -1 coverage-1.out > coverage.out
-          for f in coverage-1.out coverage-2.out coverage-3.out; do
+          for f in coverage-1.out coverage-2.out coverage-3.out coverage-4.out; do
             tail -n +2 "$f" >> coverage.out
           done
           go run ./cmd/devcheck coverage coverage.out 85
