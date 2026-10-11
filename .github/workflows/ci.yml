@@ -39,6 +39,12 @@ jobs:
           cache: 'npm'
           cache-dependency-path: docker/browser/package-lock.json
       - run: just check
+        env:
+          # go test runs up to GOMAXPROCS instrumented binaries at once under
+          # -race; on the shared 4-vCPU runner that peak RSS gets the VM
+          # OOM-killed mid-suite (job dies with no logs). Capping at 2 halves
+          # the peak; the wall-time cost is already budgeted by the timeout.
+          GOMAXPROCS: '2'
       - run: just credential-broker-check
       - run: just security
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
