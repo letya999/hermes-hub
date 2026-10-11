@@ -47,6 +47,19 @@ func fixtureSecretBody(match []byte, detector int) bool {
 	return count >= 8
 }
 
+// looksBinary reports whether a file payload appears compiled rather than
+// textual: a NUL byte within the first 8 KiB, the same heuristic git uses.
+// Release binaries legitimately contain token-shaped strings (embedded help,
+// fixtures); the secret gate targets text files where a real credential could
+// be stored or leaked.
+func looksBinary(data []byte) bool {
+	head := data
+	if len(head) > 8*1024 {
+		head = head[:8*1024]
+	}
+	return bytes.IndexByte(head, 0) >= 0
+}
+
 // VerifyArtifactContextNoSecrets is a deliberately high-confidence content
 // gate. It complements filename exclusion and the empty Docker client/env; it
 // does not claim to recognize every provider's credential format.
@@ -57,12 +70,15 @@ func VerifyArtifactContextNoSecrets(contextBytes []byte) error {
 		if err == io.EOF {
 			return nil
 		}
-		if err != nil || h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > 64<<20 {
+		if err != nil || h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > artifactMaxContextFileBytes {
 			return fmt.Errorf("%w: malformed artifact context", ErrInvalid)
 		}
 		data, err := io.ReadAll(r)
 		if err != nil {
 			return fmt.Errorf("%w: unreadable artifact context", ErrInvalid)
+		}
+		if looksBinary(data) {
+			continue
 		}
 		for i, pattern := range artifactSecretPatterns {
 			for _, match := range pattern.FindAllIndex(data, -1) {

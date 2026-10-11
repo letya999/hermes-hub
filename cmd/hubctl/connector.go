@@ -27,6 +27,9 @@ import (
 // The CLI is a trusted host entry: --user is selected by the authenticated
 // operator, not exposed as a model tool argument.
 func runConnector(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "catalog-enable" {
+		return runCatalog(args[1:])
+	}
 	if len(args) > 0 && args[0] == "local-controller" {
 		f := flag.NewFlagSet("local-controller", flag.ContinueOnError)
 		configPath := f.String("config", "", "absolute private local controller configuration")
@@ -87,8 +90,49 @@ func runConnector(ctx context.Context, args []string) error {
 		}
 		return toolhub.RunGenericController(ctx, config, *listen, token)
 	}
+	if len(args) > 0 && args[0] == "catalog-cli" {
+		f := flag.NewFlagSet("catalog-cli", flag.ContinueOnError)
+		storePath := f.String("toolhub-store", os.Getenv("HUB_TOOLHUB_STORE"), "absolute ToolHub store path")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || !filepath.IsAbs(*storePath) {
+			return fmt.Errorf("catalog-cli requires an absolute --toolhub-store")
+		}
+		registry, err := toolhub.Load(*storePath)
+		fresh := false
+		if os.IsNotExist(err) {
+			registry, err, fresh = toolhub.NewStore(), nil, true
+		}
+		if err != nil {
+			return err
+		}
+		// The definitions are compiled into this binary and reviewed with the
+		// release; registering them into the protected store is an explicit
+		// operator act, identical for a fresh space and an upgrade.
+		for _, definition := range toolhub.CLICatalogDefinitions() {
+			if err := registry.RegisterDefinition(definition); err != nil {
+				return err
+			}
+			if err := registry.PromoteToCatalog(definition.DefinitionID, definition.Version, "operator"); err != nil {
+				return err
+			}
+		}
+		// A fresh store carries no file binding, so the mutations above stayed
+		// memory-only; one explicit Save lands them.
+		if fresh {
+			if err := registry.Save(*storePath); err != nil {
+				return err
+			}
+		}
+		ids := make([]string, 0, 2)
+		for _, definition := range toolhub.CLICatalogDefinitions() {
+			ids = append(ids, definition.DefinitionID+"@"+definition.Version)
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"catalog_cli": ids})
+	}
 	if len(args) == 0 {
-		return fmt.Errorf("connector requires prepare, connect, status, call, refresh, revoke, local-controller or generic-controller")
+		return fmt.Errorf("connector requires prepare, connect, status, call, refresh, revoke, local-controller, generic-controller or catalog-cli")
 	}
 	f := flag.NewFlagSet("connector", flag.ContinueOnError)
 	user := f.String("user", "me", "authenticated owner")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,6 +75,16 @@ func env(names ...string) M {
 func stdio(command string, args []string, e M) M {
 	return M{"command": command, "args": args, "env": e, "timeout": 120}
 }
+
+// platformDenylistComposite marks upstream toolsets that must NOT be emitted
+// into agent.disabled_toolsets: their resolve overlaps the shared core tools
+// (debugging includes web+file, safe includes web+vision+image_gen, yuanbao
+// re-lists the whole core, search is a subset of web, coding is a posture),
+// so subtracting them would strip surfaces the space legitimately enabled.
+var platformDenylistComposite = map[string]bool{
+	"coding": true, "debugging": true, "safe": true, "yuanbao": true, "search": true,
+}
+
 func Config(s Settings) M {
 	if s.CapabilityMode == "managed" {
 		return managedHermesConfig(s)
@@ -157,9 +168,12 @@ func Config(s Settings) M {
 			if !slices.Contains(toolsets, mapped) {
 				toolsets = append(toolsets, mapped)
 			}
-		case ToolViaOff:
+		case ToolViaOff, ToolViaToolHub:
 			toolsets = slices.DeleteFunc(toolsets, func(t string) bool { return t == mapped })
 		}
+	}
+	if s.toolEntry("terminal").Via == ToolViaToolHub {
+		toolsets = slices.DeleteFunc(toolsets, func(t string) bool { return t == "code_execution" })
 	}
 	if !s.Has("web") {
 		// No web toolset at all: web_search/web_extract do not exist for this
@@ -206,19 +220,42 @@ func Config(s Settings) M {
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
 	// turns and lets the existing heartbeat notify the user while a build runs.
 	display := M{"busy_input_mode": "queue", "long_running_notifications": true}
-	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": M{"cli": toolsets, "telegram": toolsets}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
+	// platform_toolsets must name every platform upstream can serve: a platform
+	// missing here falls back to its full-access composite (hermes-api-server,
+	// hermes-cron) and re-emits terminal/exec tools the space denied — the
+	// api_server surface is what the gateway actually serves to callers, so it
+	// gets the same reviewed list as cli/telegram while unserved platforms stay
+	// empty (fail-closed). The pinned managed inventory supplies the platform
+	// universe.
+	inventory, err := ManagedCapabilityInventory()
+	if err != nil {
+		panic(err) // Corrupt compiled inventory must never render a permissive config.
+	}
+	platforms := M{}
+	for _, platform := range inventory.Platforms {
+		platforms[platform] = []string{}
+	}
+	for _, platform := range []string{"cli", "local", "telegram", "api_server", "cron"} {
+		platforms[platform] = toolsets
+	}
+	// agent.disabled_toolsets is applied last at tool granularity on EVERY
+	// platform — the net that still catches platforms a future upstream adds
+	// and composite fallbacks. Only leaf toolsets may be subtracted:
+	// composites (debugging, safe, yuanbao, search) resolve to shared core
+	// tools and would strip surfaces the space legitimately enabled.
+	deniedToolsets := make([]string, 0, len(inventory.DisabledToolsets))
+	for _, name := range inventory.DisabledToolsets {
+		if platformDenylistComposite[name] || slices.Contains(toolsets, name) {
+			continue
+		}
+		deniedToolsets = append(deniedToolsets, name)
+	}
+	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": platforms, "agent": M{"disabled_toolsets": deniedToolsets}, "plugins": M{"enabled": []string{}}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 	cfg["auxiliary"] = M{"vision": M{"provider": "main", "timeout": 30, "download_timeout": 15, "max_concurrency": media.InspectConcurrency}}
 	if s.Has("web") {
 		if web := s.Web.config(); len(web) > 0 {
 			cfg["web"] = web
 		}
-	} else {
-		// api_server and other platforms not named in platform_toolsets fall
-		// back to upstream composites that include the core web tools, so the
-		// explicit-list gate alone leaks web_search/web_extract there. Upstream
-		// applies agent.disabled_toolsets at tool granularity last, which
-		// subtracts them from every platform including composite fallbacks.
-		cfg["agent"] = M{"disabled_toolsets": []string{"web"}}
 	}
 	if s.Has("image_gen") {
 		if gen, err := s.ImageGen.Normalize(); err == nil {
@@ -323,7 +360,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "${HUB_TOOLHUB_STORE}", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json"}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
@@ -504,10 +541,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
 			toolhubEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
 			toolhubEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
+		}
+		if s.ExecutionMode == "supervisor" {
 			// The agent-tools executor runs inside the owning runtime
 			// container; the supervisor owns its naming contract and docker
 			// exec is the only control-plane path that never crosses the
-			// agent network.
+			// agent network. Applies to every supervised runtime, managed or
+			// not — otherwise unmanaged spaces lose agent-tools entirely.
 			toolhubEnv["HUB_AGENT_EXEC_MODE"] = "supervisor"
 		}
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
@@ -526,6 +566,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		dockerScope := "hermes-hub-" + s.User + "-" + s.Environment
 		toolhubEnv["HUB_DOCKER_SCOPE"] = dockerScope
+		// Bounded-cli owner registration: bare command names the owner may
+		// declare; mirrors the controller's cli.UserCommands admission set.
+		// bash admits an owner-registered `bash -c` shell cell; the cell is
+		// the boundary — owner argv still lands in a mountless sandbox.
+		toolhubEnv["HUB_CLI_ALLOWLIST"] = "rg,bash"
 		toolhubEnv["HUB_DOCKER_AGENT_NET"] = managedAgentNetwork(s)
 		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount}
 		if s.usesDockerSocket() {
@@ -558,13 +603,24 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if s.CapabilityMode == "managed" {
 			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control"}}}
 		}
+		// Bounded-cli children share this cgroup: the admission receipt can
+		// claim cpu/memory/pid bounds only when the measured container cap is
+		// at or under the plan, so the cap matches the CLI plan floor.
+		toolhub["cpus"] = "2.0"
+		toolhub["mem_limit"] = "2g"
+		toolhub["pids_limit"] = 128
 		services["toolhub"] = toolhub
 
 		controller := cloneMap(common)
 		controller["image"] = toolhub["image"]
 		controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
-		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
-		controllerVolumes := []any{stateBind, brokerMaterializedMount}
+		// The controller resolves principal-scoped cell binds inside /spaces —
+		// a read-only view of the whole spaces root — and translates them to
+		// host paths for the sibling container through the /spaces mapping.
+		spacesHostDir := filepath.ToSlash(filepath.Dir(dir))
+		spacesBind := M{"type": "bind", "source": spacesHostDir, "target": "/spaces", "read_only": true}
+		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot + ",/spaces=" + spacesHostDir, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
+		controllerVolumes := []any{stateBind, brokerMaterializedMount, spacesBind}
 		if s.usesDockerSocket() {
 			controllerVolumes = append(controllerVolumes, dockerSock)
 		}
@@ -1017,7 +1073,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	if err = writeToolHubFiles(dir); err != nil {
+	if err = writeToolHubFiles(dir, s); err != nil {
 		return err
 	}
 	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": Compose(s, root, dir)}
@@ -1390,7 +1446,7 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 // writeToolHubFiles provisions the controller config, its protected admission
 // token and the toolhub env file consumed by the generated compose stack.
 // The key is generated once and never overwritten.
-func writeToolHubFiles(dir string) error {
+func writeToolHubFiles(dir string, s Settings) error {
 	runtimeDir := filepath.Join(dir, "runtime")
 	keyPath := filepath.Join(runtimeDir, "generic-controller.key")
 	if err := ensureTokenFile(keyPath); err != nil {
@@ -1401,7 +1457,7 @@ func writeToolHubFiles(dir string) error {
 		return err
 	}
 	token := strings.TrimSpace(string(key))
-	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/usr/local/bin/hubctl", "credential_mount_root": "/run/broker-materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800}
+	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/usr/local/bin/hubctl", "credential_mount_root": "/run/broker-materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800, "cli": cliControllerSection(s, dir)}
 	body, err := json.MarshalIndent(controller, "", "  ")
 	if err != nil {
 		return err
@@ -1410,6 +1466,65 @@ func writeToolHubFiles(dir string) error {
 		return err
 	}
 	return writeEnvFile(filepath.Join(dir, "toolhub.auth"), map[string]string{"HUB_TOOLHIVE_ADMISSION_TOKEN": token})
+}
+
+// cliControllerSection renders the bounded-cli cell envelope the workload
+// controller enforces per call. Every execution runs in a sibling sandbox
+// cell on the dedicated cli-tools image — read-only root, no ToolHub mounts,
+// network none unless the plan declares reviewed egress. Approvals are
+// compiled from the shipped catalog so the plan tuple can never drift from
+// the definition the store registers.
+func cliControllerSection(s Settings, dir string) toolhub.CLIControllerConfig {
+	// *.githubusercontent.com serves github release assets and archive
+	// redirects — the same trust class as github.com already allowed here,
+	// and required for package managers that fetch toolchains from releases
+	// (uv managed-python, gh release download).
+	egress := []string{"127.0.0.1", "github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
+	for _, registry := range s.CLIRegistries {
+		egress = append(egress, cliRegistryHosts[registry]...)
+	}
+	definitions := toolhub.CLICatalogDefinitions()
+	approved := make([]toolhub.CLIApproval, 0, len(definitions))
+	for _, definition := range definitions {
+		approved = append(approved, toolhub.CLIApproval{DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Command: definition.Source.Command, Execution: definition.Execution})
+	}
+	return toolhub.CLIControllerConfig{
+		AllowPackageInstall: len(s.CLIRegistries) > 0,
+		// The rendered tag resolves to the immutable image ID at controller
+		// start; cells are created from that content reference, never the
+		// moving tag.
+		ToolsImage:    "hermes-hub-cli-tools:0.3.0-" + s.Environment,
+		CellInit:      "/usr/local/bin/cellinit",
+		ProxyImage:    "hermes-hub-cell-proxy:0.3.0-" + s.Environment,
+		AllowedEgress: egress,
+		Ceiling:       toolhub.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
+		Approved:      approved,
+		// /spaces is the read-only view of the spaces root the controller
+		// container carries; Environment selects the managed/<env> workspace
+		// layout used by managed principals.
+		SpacesRoot:      "/spaces",
+		Environment:     s.Environment,
+		Runtime:         s.CLIRuntime,
+		PerPrincipalUID: s.CLIPerPrincipalUID,
+		Toolboxes:       maps.Clone(s.CLIToolboxes),
+		// git stays out of owner-registered specs: .git/hooks inside a
+		// writable workspace would execute arbitrary code in the cell.
+		// rg cannot spawn programs once --pre/--pre-glob are denied at
+		// registration. bash is admitted deliberately: a `bash -c` cell is
+		// the shell surface for spaces where the terminal is policy-routed
+		// through ToolHub — the cell's mounts/network are still the boundary.
+		UserCommands:      []string{"rg", "bash"},
+		WarmMaxAgeSeconds: 24 * 3600,
+		WarmMaxReuse:      256,
+		PoolSize:          2,
+	}
+}
+
+var cliRegistryHosts = map[string][]string{
+	"pypi":  {"pypi.org", "files.pythonhosted.org"},
+	"npm":   {"registry.npmjs.org"},
+	"cargo": {"index.crates.io", "static.crates.io", "crates.io"},
+	"go":    {"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"},
 }
 
 // ensureTokenFile creates a random 256-bit hex token file unless it exists.

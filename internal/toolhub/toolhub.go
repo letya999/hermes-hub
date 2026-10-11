@@ -160,22 +160,34 @@ type ToolDefinition struct {
 }
 
 type DefinitionSource struct {
-	URL                string   `json:"url,omitempty"`
-	TLSMode            string   `json:"tls_mode,omitempty"`
-	Image              string   `json:"image,omitempty"`
-	Digest             string   `json:"digest,omitempty"`
-	Command            string   `json:"command,omitempty"`
-	Args               []string `json:"args,omitempty"`
-	Repository         string   `json:"repository,omitempty"`
-	Subfolder          string   `json:"subfolder,omitempty"`
-	CommitSHA          string   `json:"commit_sha,omitempty"`
-	ArchiveDigest      string   `json:"archive_digest,omitempty"`
-	ProvenanceDigest   string   `json:"provenance_digest,omitempty"`
-	SBOMDigest         string   `json:"sbom_digest,omitempty"`
-	RecipeDigest       string   `json:"recipe_digest,omitempty"`
-	ReviewDigest       string   `json:"review_digest,omitempty"`
-	ToolContractDigest string   `json:"tool_contract_digest,omitempty"`
-	ToolContractSource string   `json:"tool_contract_source,omitempty"`
+	URL        string   `json:"url,omitempty"`
+	TLSMode    string   `json:"tls_mode,omitempty"`
+	Image      string   `json:"image,omitempty"`
+	Digest     string   `json:"digest,omitempty"`
+	Command    string   `json:"command,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	Repository string   `json:"repository,omitempty"`
+	Subfolder  string   `json:"subfolder,omitempty"`
+	CommitSHA  string   `json:"commit_sha,omitempty"`
+	// ReleaseTag/ReleaseAsset/AssetDigest record a github-release source pin:
+	// the tag is mutable, so the resolved asset name and its verified sha256
+	// are the immutable evidence (CommitSHA stays empty on release installs).
+	ReleaseTag   string `json:"release_tag,omitempty"`
+	ReleaseAsset string `json:"release_asset,omitempty"`
+	AssetDigest  string `json:"asset_digest,omitempty"`
+	// PackageRegistry/PackageName/PackageVersion record a registry package
+	// pin (pypi:/npm:): the resolved exact version is the immutable evidence
+	// alongside the built image digest.
+	PackageRegistry    string `json:"package_registry,omitempty"`
+	PackageName        string `json:"package_name,omitempty"`
+	PackageVersion     string `json:"package_version,omitempty"`
+	ArchiveDigest      string `json:"archive_digest,omitempty"`
+	ProvenanceDigest   string `json:"provenance_digest,omitempty"`
+	SBOMDigest         string `json:"sbom_digest,omitempty"`
+	RecipeDigest       string `json:"recipe_digest,omitempty"`
+	ReviewDigest       string `json:"review_digest,omitempty"`
+	ToolContractDigest string `json:"tool_contract_digest,omitempty"`
+	ToolContractSource string `json:"tool_contract_source,omitempty"`
 	// NetworkTransport is set by preflight when the artifact's entrypoint
 	// declares an HTTP/SSE transport and the server proved it cannot speak
 	// stdio. Runtime then launches the original entrypoint and the companion
@@ -205,10 +217,16 @@ type ToolSpec struct {
 // tool. It is converted to one argv value; it is never interpolated into a
 // command string.
 type CLIArgument struct {
-	Name     string `json:"name"`
+	Name string `json:"name"`
+	// Flag is the rendered "--flag" name; empty renders the value as a
+	// positional operand appended after the fixed argv — positional operands
+	// require a Pattern so the value can never smuggle a flag.
 	Flag     string `json:"flag"`
 	Type     string `json:"type"`
 	Required bool   `json:"required"`
+	// Pattern is a mandatory regexp for positional operands and an optional
+	// extra constraint for flag values; it applies to string arguments only.
+	Pattern string `json:"pattern,omitempty"`
 }
 
 type CredentialInput struct {
@@ -265,7 +283,32 @@ type WorkloadPolicy struct {
 	Rationale       string        `json:"rationale"`
 	ToolHiveVersion string        `json:"toolhive_version,omitempty"`
 	SidecarImages   []string      `json:"sidecar_images,omitempty"`
+	// Lifecycle selects the bounded-cli cell tier: ephemeral (default),
+	// task, binding, toolbox or shared-pool. Empty means ephemeral.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	// Stateless marks a CLI tool safe for pool cells shared across callers:
+	// the definition declares it keeps no workspace and no per-caller state.
+	Stateless bool `json:"stateless,omitempty"`
+	// InstallPackages grants a cell-private executable home, never a runtime home.
+	InstallPackages bool `json:"install_packages,omitempty"`
+	// Toolbox groups CLI definitions that share one warm toolbox cell; each
+	// member's pinned image is mounted read-only under /tools/<i>.
+	Toolbox string `json:"toolbox,omitempty"`
+	// WorkspaceScope picks the cell's only filesystem bind: "" (binding for
+	// per-user/per-job, none for shared), none, binding or principal.
+	WorkspaceScope string `json:"workspace_scope,omitempty"`
+	// WorkspaceAccess is "" or "ro" (default) or "rw"; rw must be declared.
+	WorkspaceAccess string `json:"workspace_access,omitempty"`
 }
+
+// Bounded-cli cell lifecycle tiers (WorkloadPolicy.Lifecycle).
+const (
+	CLILifecycleEphemeral  = "ephemeral"
+	CLILifecycleTask       = "task"
+	CLILifecycleBinding    = "binding"
+	CLILifecycleToolbox    = "toolbox"
+	CLILifecycleSharedPool = "shared-pool"
+)
 
 type ExecutionPolicy struct {
 	TimeoutSeconds int          `json:"timeout_seconds"`
@@ -338,9 +381,25 @@ func (d ToolDefinition) Validate() error {
 			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validCLIType(argument.Type) {
 				return fmt.Errorf("%w: invalid tool argument %q", ErrInvalid, argument.Name)
 			}
+			if argument.Pattern != "" {
+				// Pattern only makes sense on string arguments, and a
+				// positional operand (Flag == "") is meaningless without one:
+				// it is the only thing keeping a caller-controlled argv value
+				// from smuggling a flag.
+				if argument.Type != "string" || len(argument.Pattern) > 512 {
+					return fmt.Errorf("%w: invalid CLI argument pattern %q", ErrInvalid, argument.Name)
+				}
+				if _, err := regexp.Compile(argument.Pattern); err != nil {
+					return fmt.Errorf("%w: invalid CLI argument pattern %q", ErrInvalid, argument.Name)
+				}
+			}
 			switch d.Transport {
 			case BoundedCLI:
-				if !validCLIFlag(argument.Flag) {
+				if argument.Flag == "" {
+					if argument.Pattern == "" {
+						return fmt.Errorf("%w: positional CLI argument %q requires a pattern", ErrInvalid, argument.Name)
+					}
+				} else if !validCLIFlag(argument.Flag) {
 					return fmt.Errorf("%w: invalid CLI argument %q", ErrInvalid, argument.Name)
 				}
 			case ProviderAPI, AgentTools:
@@ -389,6 +448,19 @@ func (d ToolDefinition) Validate() error {
 			}
 			if err := validateHeaderDelivery(input); err != nil {
 				return err
+			}
+		case "brokered":
+			// Bounded-cli only: the cell sees a cred-proxy URL, and the
+			// cell-side proxy injects the real credential on the reviewed
+			// target host. The secret never enters container config or env.
+			if d.Transport != BoundedCLI {
+				return fmt.Errorf("%w: brokered credential delivery requires bounded-cli", ErrInvalid)
+			}
+			if !hostPattern.MatchString(strings.ToLower(input.Target)) || strings.Contains(input.Target, "/") {
+				return fmt.Errorf("%w: brokered credential target must be a host", ErrInvalid)
+			}
+			if len(input.Prefix) > 128 || strings.ContainsAny(input.Prefix, "\x00\r\n") {
+				return fmt.Errorf("%w: invalid brokered credential prefix", ErrInvalid)
 			}
 		default:
 			return fmt.Errorf("%w: unknown credential delivery %q", ErrInvalid, input.Delivery)
@@ -482,6 +554,82 @@ func (d ToolDefinition) Validate() error {
 	if err := d.Health.Validate(d.Transport); err != nil {
 		return err
 	}
+	return d.validateCLICellPolicy()
+}
+
+// validateCLICellPolicy bounds the cell-only workload fields: they exist so
+// the controller can place a bounded-cli call on the right lifecycle tier and
+// workspace bind; every other transport must leave them unset.
+func (d ToolDefinition) validateCLICellPolicy() error {
+	w := d.Workload
+	if w.Lifecycle == "" && !w.Stateless && !w.InstallPackages && w.Toolbox == "" && w.WorkspaceScope == "" && w.WorkspaceAccess == "" {
+		return nil
+	}
+	if d.Transport != BoundedCLI {
+		return fmt.Errorf("%w: cell lifecycle fields are bounded-cli only", ErrInvalid)
+	}
+	if w.InstallPackages && (w.Stateless || w.Lifecycle == CLILifecycleSharedPool || w.Lifecycle == CLILifecycleToolbox) {
+		return fmt.Errorf("%w: package installation needs a private non-stateless cell", ErrInvalid)
+	}
+	switch w.Lifecycle {
+	case "", CLILifecycleEphemeral:
+	case CLILifecycleTask:
+		if w.Class != PerJob {
+			return fmt.Errorf("%w: task lifecycle keys on the job and needs per-job class", ErrInvalid)
+		}
+	case CLILifecycleBinding:
+		if w.Class != PerUser {
+			return fmt.Errorf("%w: binding lifecycle needs per-user class", ErrInvalid)
+		}
+	case CLILifecycleToolbox:
+		if w.Class != PerUser || w.Toolbox == "" {
+			return fmt.Errorf("%w: toolbox lifecycle needs per-user class and a toolbox id", ErrInvalid)
+		}
+	case CLILifecycleSharedPool:
+		if !w.Stateless || w.Class != Shared {
+			return fmt.Errorf("%w: pool cells require a stateless shared definition", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: unknown cli lifecycle %q", ErrInvalid, w.Lifecycle)
+	}
+	if w.Toolbox != "" {
+		// Toolbox cells execute their own member; a binding cell with a
+		// toolbox id only mounts the members read-only so the caller (for
+		// example a cell shell) sees the same tool artifact set on PATH.
+		if w.Lifecycle != CLILifecycleToolbox && w.Lifecycle != CLILifecycleBinding {
+			return fmt.Errorf("%w: toolbox id requires toolbox or binding lifecycle", ErrInvalid)
+		}
+		if !identity.ValidID(w.Toolbox) {
+			return fmt.Errorf("%w: toolbox id", ErrInvalid)
+		}
+	}
+	switch w.WorkspaceScope {
+	case "", "none", "binding", "principal":
+	default:
+		return fmt.Errorf("%w: unknown workspace scope %q", ErrInvalid, w.WorkspaceScope)
+	}
+	switch w.WorkspaceAccess {
+	case "", "ro", "rw":
+	default:
+		return fmt.Errorf("%w: unknown workspace access %q", ErrInvalid, w.WorkspaceAccess)
+	}
+	scope := w.WorkspaceScope
+	if scope == "" {
+		if w.Class == Shared {
+			scope = "none"
+		} else {
+			scope = "binding"
+		}
+	}
+	if scope == "none" && w.WorkspaceAccess == "rw" {
+		return fmt.Errorf("%w: workspace write without a workspace", ErrInvalid)
+	}
+	if scope == "binding" && w.Class == Shared {
+		return fmt.Errorf("%w: shared workload cannot hold a binding workspace", ErrInvalid)
+	}
+	if w.Lifecycle == CLILifecycleSharedPool && scope != "none" {
+		return fmt.Errorf("%w: pool cells carry no workspace bind", ErrInvalid)
+	}
 	return nil
 }
 
@@ -546,8 +694,53 @@ func (s DefinitionSource) validate(transport Transport) error {
 			return fmt.Errorf("%w: unknown container network transport", ErrInvalid)
 		}
 	case BoundedCLI:
-		if s.Command == "" || values != 1 || s.Image != "" || s.URL != "" || s.Digest != "" || s.TLSMode != "" || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" || !validCommand(s.Command) {
-			return fmt.Errorf("%w: bounded CLI needs a command and no mutable source", ErrInvalid)
+		// Shell names stay denied for artifact guest paths; a bare shell
+		// command is legal only on the controller-allowlisted plan path —
+		// the cell is the boundary either way.
+		if s.Command == "" || s.URL != "" || s.TLSMode != "" || !(validCommand(s.Command) || s.Image == "" && validShellCommand(s.Command)) {
+			return fmt.Errorf("%w: bounded CLI needs a command and no remote source", ErrInvalid)
+		}
+		if s.Image != "" {
+			// Cell-image artifact: the verified OCI image is the artifact, the
+			// digest pins its manifest, and the command is the guest path of
+			// the tool inside that image. Provenance rides the image chain.
+			if !digestPattern.MatchString(s.Digest) || strings.Contains(s.Image, "@") || strings.ContainsAny(s.Image, " \t\r\n") || strings.Contains(s.Image, "..") {
+				return fmt.Errorf("%w: CLI artifact requires a digest-pinned image", ErrInvalid)
+			}
+			if i := strings.LastIndex(s.Image, ":"); i > strings.LastIndex(s.Image, "/") {
+				return fmt.Errorf("%w: mutable CLI image tag", ErrInvalid)
+			}
+			if !strings.HasPrefix(s.Command, "/") {
+				return fmt.Errorf("%w: CLI artifact command must be a guest path", ErrInvalid)
+			}
+			if (s.Repository == "" && s.PackageName == "") || !digestPattern.MatchString(s.ArchiveDigest) || !digestPattern.MatchString(s.RecipeDigest) || !digestPattern.MatchString(s.ReviewDigest) {
+				return fmt.Errorf("%w: CLI artifact requires a complete pinned provenance chain", ErrInvalid)
+			}
+			switch {
+			case s.ReleaseTag != "":
+				// github-release: the resolved asset name + verified sha256
+				// stand in for the commit pin; the tag is recorded, not trusted.
+				if !releaseTagPattern.MatchString(s.ReleaseTag) || s.ReleaseAsset == "" || !digestPattern.MatchString(s.AssetDigest) || s.CommitSHA != "" || s.Subfolder != "" {
+					return fmt.Errorf("%w: CLI release artifact requires tag, resolved asset and asset digest", ErrInvalid)
+				}
+			case s.PackageName != "":
+				// Registry package: registry + name + resolved exact version
+				// are the pin; they never mix with repository or release
+				// provenance.
+				if (s.PackageRegistry != "pypi" && s.PackageRegistry != "npm") || !validPackageName(s.PackageRegistry, s.PackageName) || !packageVersPattern.MatchString(s.PackageVersion) || s.Repository != "" || s.CommitSHA != "" || s.Subfolder != "" || s.ReleaseAsset != "" || s.AssetDigest != "" {
+					return fmt.Errorf("%w: CLI package artifact requires registry, name and resolved version", ErrInvalid)
+				}
+			case s.ReleaseAsset != "" || s.AssetDigest != "" || s.PackageRegistry != "" || s.PackageVersion != "":
+				return fmt.Errorf("%w: partial source evidence without a release tag or package name", ErrInvalid)
+			case !gitSHAPattern.MatchString(s.CommitSHA):
+				return fmt.Errorf("%w: CLI artifact requires a complete pinned provenance chain", ErrInvalid)
+			}
+		} else {
+			// Catalog command on the shared tools image: a bare command name
+			// carries no provenance of its own — the image digest is the pin.
+			if values != 1 || s.Digest != "" || s.Repository != "" || s.CommitSHA != "" || s.ReleaseTag != "" || s.ReleaseAsset != "" || s.AssetDigest != "" || s.PackageRegistry != "" || s.PackageName != "" || s.PackageVersion != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" || len(s.ContextSources) != 0 {
+				return fmt.Errorf("%w: catalog CLI command cannot carry artifact provenance", ErrInvalid)
+			}
 		}
 	default:
 		return fmt.Errorf("%w: unknown transport", ErrInvalid)
@@ -653,10 +846,25 @@ func validCommand(command string) bool {
 	if base == "sh" || base == "bash" || base == "zsh" || base == "cmd" || base == "powershell" || base == "pwsh" {
 		return false
 	}
-	if filepath.IsAbs(command) {
+	if filepath.IsAbs(command) || strings.HasPrefix(command, "/") {
 		return true
 	}
 	return commandPattern.MatchString(command)
+}
+
+// validShellCommand admits a bare shell name for a bounded-cli command plan.
+// Registration is still gated by the operator allowlist
+// (HUB_CLI_ALLOWLIST/user_commands) — this only lifts the structural deny so
+// an operator can expose a deliberate `sh -c` cell surface.
+func validShellCommand(command string) bool {
+	if strings.Contains(command, "/") {
+		return false
+	}
+	switch strings.TrimSuffix(strings.ToLower(command), ".exe") {
+	case "sh", "bash", "zsh", "cmd", "powershell", "pwsh":
+		return commandPattern.MatchString(command)
+	}
+	return false
 }
 
 func validCLIFlag(flag string) bool {
@@ -819,7 +1027,10 @@ func DeterministicBindingID(principalID, contextID, runtimeID, definitionID, def
 }
 
 func ProjectedToolName(definitionID, version, toolName string) string {
-	return "hub-" + slug(definitionID) + "-" + slug(toolName) + "-" + shortHash(definitionID, version, toolName)
+	// The suffix disambiguates slug collisions between different definitions;
+	// the version is deliberately outside it so a re-enable or upgrade keeps
+	// the tool's public name instead of renaming it in every caller's surface.
+	return "hub-" + slug(definitionID) + "-" + slug(toolName) + "-" + shortHash(definitionID, toolName)
 }
 
 type WorkloadInstance struct {
@@ -917,6 +1128,7 @@ type Store struct {
 	path                string
 	savedPath           string
 	diskDigest          [32]byte
+	diskStamp           storeStamp
 	Reconnect           *ReconnectController
 	Stopper             WorkloadStopper
 	definitions         map[string]ToolDefinition
@@ -932,6 +1144,24 @@ type Store struct {
 	capabilityPolicies  map[string]CapabilityPolicy
 	capabilityProfiles  map[string]CapabilityProfile
 	capabilityChanges   []capabilityChange
+}
+
+// storeStamp is the observed identity of the on-disk snapshot: the file's
+// modification time and size at the last successful load or save. Every store
+// write goes through CreateTemp+Rename, so an unchanged stamp means the bytes
+// are identical and a full Load (decode + revalidate of the whole registry)
+// would only reproduce the current in-memory state.
+type storeStamp struct {
+	mtime int64
+	size  int64
+}
+
+func statStoreStamp(path string) (storeStamp, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return storeStamp{}, false
+	}
+	return storeStamp{mtime: info.ModTime().UnixNano(), size: info.Size()}, true
 }
 
 func NewStore() *Store {
@@ -1537,6 +1767,7 @@ func (s *Store) saveLocked(path string) error {
 		return err
 	}
 	s.savedPath, s.diskDigest = path, sha256.Sum256(body)
+	s.diskStamp, _ = statStoreStamp(path)
 	return nil
 }
 
@@ -1544,6 +1775,10 @@ func Load(path string) (*Store, error) {
 	if err := safeStorePath(path); err != nil {
 		return nil, err
 	}
+	// Stamp before the read: a rename landing between stat and read leaves a
+	// conservative stamp (older than the bytes), so the next Reload simply
+	// loads once more instead of skipping a change it never saw.
+	stamp, _ := statStoreStamp(path)
 	b, err := os.ReadFile(path) // #nosec G304 -- the trusted registry path is checked for symlink components above
 	if err != nil {
 		return nil, err
@@ -1669,6 +1904,7 @@ func Load(path string) (*Store, error) {
 	}
 	store.path = path
 	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
+	store.diskStamp = stamp
 	return store, nil
 }
 
@@ -1736,7 +1972,22 @@ func (s *Store) Reload() error {
 	if s == nil || s.path == "" {
 		return nil
 	}
+	// Fast path under the read lock: the stat stamp comparison only reads
+	// s.savedPath/s.diskStamp, and callers invoke Reload per request (plus
+	// once per projected tool from filterProjectedTools and per tick from the
+	// projection refresher). Taking the write lock here would queue a writer
+	// behind every in-flight admitted call, which starves nested rechecks.
+	s.mu.RLock()
+	if stamp, ok := statStoreStamp(s.path); ok && s.savedPath == s.path && stamp == s.diskStamp {
+		s.mu.RUnlock()
+		return nil
+	}
+	s.mu.RUnlock()
 	s.mu.Lock()
+	if stamp, ok := statStoreStamp(s.path); ok && s.savedPath == s.path && stamp == s.diskStamp {
+		s.mu.Unlock()
+		return nil
+	}
 	fresh, err := Load(s.path)
 	if err != nil {
 		s.mu.Unlock()
@@ -1772,6 +2023,7 @@ func (s *Store) Reload() error {
 	s.capabilityProfiles = fresh.capabilityProfiles
 	s.capabilityChanges = fresh.capabilityChanges
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
+	s.diskStamp = fresh.diskStamp
 	s.mu.Unlock()
 	s.stopWorkloads(stopped)
 	return nil

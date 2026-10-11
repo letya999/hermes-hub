@@ -568,6 +568,9 @@ type Spool struct {
 	// held until the job's mapping reaches a terminal status. In-memory only,
 	// rebuilt from durable mappings on startup (ADR-0025).
 	inFlight map[string]string
+	// JobDone, when set, runs asynchronously at each terminal outcome so the
+	// ToolHub cell controller can reap task-tier cells keyed by the job.
+	JobDone func(jobID, principalID string)
 }
 
 func NewSpool(root string) (*Spool, error) {
@@ -1582,6 +1585,7 @@ func New(config Config) (*Gateway, error) {
 		return nil, err
 	}
 	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: map[string]credentialForm{}}
+	spool.JobDone = g.toolHubJobDone
 	if config.TelegramAuthEnabled {
 		g.telegramAuth, err = newTelegramAuthState(config)
 		if err != nil {
@@ -2586,6 +2590,41 @@ func (g *Gateway) toolHubCredential(userID string) (token, principalHeader strin
 		}
 	}
 	return "", ""
+}
+
+// toolHubJobDone notifies ToolHub that a job reached a terminal status so
+// task-tier bounded-cli cells keyed by that job are released. Best-effort:
+// the caller already treats the job as done and the controller's own ladder
+// still reaps cells on idle TTL.
+func (g *Gateway) toolHubJobDone(jobID, principalID string) {
+	base := strings.TrimRight(strings.TrimSpace(g.config.ToolHubURL), "/")
+	if base == "" {
+		return
+	}
+	token, header := g.toolHubCredential(principalID)
+	if token == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]string{"job_id": jobID})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/cli-jobs/release", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if header != "" {
+		req.Header.Set("X-Hub-Principal", header)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
 }
 
 func connectionList(user User) string {

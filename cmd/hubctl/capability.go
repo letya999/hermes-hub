@@ -345,6 +345,36 @@ func writeToolEntries(path string, legacy bool, updates map[string]stack.ToolEnt
 		return errors.New("tools file is not a YAML mapping")
 	}
 	root := doc.Content[0]
+	if legacy {
+		current, err := stack.Read(path)
+		if err != nil {
+			return err
+		}
+		migrated := false
+		for i := 0; i+1 < len(root.Content); {
+			key := root.Content[i].Value
+			if key == "features" || key == "native_toolsets" || key == "disabled_mcp" {
+				root.Content = append(root.Content[:i], root.Content[i+2:]...)
+				migrated = true
+			} else {
+				i += 2
+			}
+		}
+		if migrated {
+			var toolsNode yaml.Node
+			if err := toolsNode.Encode(current.Tools); err != nil {
+				return err
+			}
+			root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "tools"}, &toolsNode)
+			if len(current.Ingress) > 0 {
+				var ingressNode yaml.Node
+				if err := ingressNode.Encode(current.Ingress); err != nil {
+					return err
+				}
+				root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "ingress"}, &ingressNode)
+			}
+		}
+	}
 	var tools *yaml.Node
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if root.Content[i].Value == "tools" {

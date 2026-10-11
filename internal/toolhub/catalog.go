@@ -264,6 +264,7 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 					return ToolBinding{}, err
 				}
 			}
+			s.supersedeOtherBindingsLocked(auth, definitionID, existing.ToolBindingID)
 			result := *existing
 			s.mu.Unlock()
 			if err := s.persistAndNotify(); err != nil {
@@ -299,6 +300,7 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 		}
 	}
 	s.bindings[binding.ToolBindingID] = binding
+	s.supersedeOtherBindingsLocked(auth, definitionID, binding.ToolBindingID)
 	key := projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)
 	if binding.ProjectionRevision > s.projectionRevisions[key] {
 		s.projectionRevisions[key] = binding.ProjectionRevision
@@ -308,6 +310,48 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 		return ToolBinding{}, err
 	}
 	return binding, nil
+}
+
+// supersedeOtherBindingsLocked disables every other active binding of the
+// same definition owned by this principal, including versions bound under an
+// older policy revision. One definition projects at most one enabled binding:
+// sibling versions would otherwise multiply the same hub-* tool name in the
+// caller's surface or collide on it outright. s.mu must be held. Returns the
+// number of bindings it disabled.
+func (s *Store) supersedeOtherBindingsLocked(auth identity.Envelope, definitionID, keepBindingID string) int {
+	disabled := 0
+	for id, other := range s.bindings {
+		if id == keepBindingID || other.DefinitionID != definitionID || other.Status != ActiveStatus {
+			continue
+		}
+		if other.PrincipalID != auth.PrincipalID || other.ContextID != auth.ContextID || other.RuntimeID != auth.RuntimeID {
+			continue
+		}
+		other.Status = DisabledStatus
+		other.Revision++
+		s.touchProjectionLocked(&other)
+		s.bindings[id] = other
+		disabled++
+	}
+	return disabled
+}
+
+// SupersedeSiblings disables sibling bindings of the same definition while
+// keeping keepBindingID active. It is the dedupe path for callers that hold an
+// already-active binding and therefore never reach enableWithReady — a
+// re-enable on such a binding must still retire stale sibling versions or
+// their projected tools keep multiplying in the caller's surface.
+func (s *Store) SupersedeSiblings(auth identity.Envelope, definitionID, keepBindingID string) error {
+	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	s.mu.Lock()
+	changed := s.supersedeOtherBindingsLocked(auth, definitionID, keepBindingID)
+	s.mu.Unlock()
+	if changed == 0 {
+		return nil
+	}
+	return s.persistAndNotify()
 }
 
 type ownerConnectionMatch struct {

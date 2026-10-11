@@ -33,6 +33,8 @@ type EndpointConfig struct {
 	BrokerControl  *credentialbroker.Config
 	BrokerRuntime  *credentialbroker.Config
 	Release        func(context.Context, string) error
+	// CLIRelease drops bounded-cli cells by principal/binding/job selector.
+	CLIRelease func(context.Context, cliReleaseRequest) error
 }
 
 func EndpointConfigFromEnv() (EndpointConfig, error) {
@@ -109,9 +111,17 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("ToolHive release: %w", err)
 	}
+	cliRelease, err := CLIReleaseFromEnv()
+	if err != nil {
+		return EndpointConfig{}, fmt.Errorf("cli release: %w", err)
+	}
 	catalogs, err := RecipeCatalogsFromEnv()
 	if err != nil {
 		return EndpointConfig{}, err
+	}
+	cli, err := CLIRunnerFromEnv()
+	if err != nil {
+		return EndpointConfig{}, fmt.Errorf("bounded CLI: %w", err)
 	}
 	return EndpointConfig{
 		Listen:     envOr("HUB_TOOLHUB_LISTEN", "127.0.0.1:8090"),
@@ -121,7 +131,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		Backend: RoutingBackend{
 			Provider: PersonalProviderBackend{},
 			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: envOr("HUB_STATE", "/state")},
-			CLI:      CLIRunner{Root: envOr("HUB_STATE", "/state")},
+			CLI:      cli,
 			Agent:    agentBackendFromEnv(),
 		},
 		RecipeCatalogs: catalogs,
@@ -131,7 +141,8 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 			}
 			return nil
 		}(),
-		Release: release,
+		Release:    release,
+		CLIRelease: cliRelease,
 		BrokerRuntime: func() *credentialbroker.Config {
 			if runtimeBroker.Enabled() {
 				return &runtimeBroker
@@ -191,6 +202,8 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// Tool governance sits beside the registry; the env pin exists for
 		// deployments that keep the policy document elsewhere.
 		Governance: NewGovernanceStore(envOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
+		// Job-end cell release shares the controller release channel.
+		CLIRelease: config.CLIRelease,
 	}
 	var secrets credstore.Backend
 	var injector CredentialInjector
@@ -200,7 +213,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		return nil, err
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
-	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), DiagnosticsDir: envOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release}
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), DiagnosticsDir: envOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
 	if ready := readinessBackend(config.Backend); ready != nil {
 		control.Ready = func(ctx context.Context, effective EffectiveBinding) (readyErr error) {
 			if gateway.Injector == nil {
@@ -232,6 +245,11 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	control.FormOrigin = formOriginForListen(config.Listen)
 	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
+	cliArtifacts, err := CLIArtifactPipelineFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("cli artifact pipeline: %w", err)
+	}
+	control.CLIArtifacts = cliArtifacts
 	control.AdmitWithCredentials = func(ctx context.Context, definition ToolDefinition, secrets map[string]string) (ToolDefinition, error) {
 		if definition.Transport == RemoteMCP {
 			return admitRemoteDefinition(ctx, definition, secrets)

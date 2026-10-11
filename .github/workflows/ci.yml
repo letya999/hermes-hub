@@ -22,9 +22,63 @@ jobs:
         run: |
           test "$HEAD_REF" = dev
           test "$HEAD_REPOSITORY" = "$REPOSITORY"
+  # The race suite runs as a parallel matrix, not a single `just check`:
+  # one ~50-minute monolith `go test` repeatedly lost the hosted runner
+  # mid-step (job concludes failure, no logs uploaded — VM loss, not a
+  # test verdict). Short independent shards stay inside each runner's
+  # resource window, reruns are cheap, and a recurring shard failure
+  # identifies the implicated package set instead of the whole suite.
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # `timeout` bounds the step so a wedge ends as a controlled step
+      # failure instead of losing the runner. Output goes straight to a
+      # file — never through tee: a killed `go test` leaves orphaned test
+      # binaries holding the stdout pipe open, which kept tee (and the
+      # whole step) alive until the job timeout destroyed every log.
+      - name: go test shard
+        id: gotest
+        continue-on-error: true
+        run: |
+          set +e
+          pkgs=$(go list ./... | sort | awk -v s="$SHARD" 'NR % 4 == s')
+          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $pkgs > "test-${SHARD}.log" 2>&1
+          rc=$?
+          # Test binaries run as /tmp/go-build*/b*/<pkg>.test and outlive a
+          # killed `go test`; the runner waits on the whole process tree, so
+          # orphans must be reaped or the step never completes.
+          pkill -f '/go-build.*/.*\.test' 2>/dev/null
+          exit $rc
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: testlog-${{ matrix.shard }}
+          path: test-${{ matrix.shard }}.log
+          include-hidden-files: false
+      - name: propagate test verdict
+        if: steps.gotest.outcome == 'failure'
+        run: exit 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.gotest.outcome == 'success'
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: coverage-${{ matrix.shard }}.out
+          include-hidden-files: false
+  checks-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: checks
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -38,7 +92,24 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: docker/browser/package-lock.json
-      - run: just check
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true
+      - name: coverage gate
+        run: |
+          first=1
+          for f in coverage-*.out; do
+            if [ "$first" = 1 ]; then
+              cat "$f" > coverage.out
+              first=0
+            else
+              tail -n +2 "$f" >> coverage.out
+            fi
+          done
+          go run ./cmd/devcheck coverage coverage.out 85
+      - run: just lint
+      - run: just docs-check
       - run: just credential-broker-check
       - run: just security
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

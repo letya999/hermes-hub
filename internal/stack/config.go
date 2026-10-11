@@ -26,6 +26,22 @@ type Settings struct {
 	CapabilityMode       string `yaml:"capability_mode,omitempty"`
 	CapabilityProfileID  string `yaml:"capability_profile_id,omitempty"`
 	CapabilityGeneration uint64 `yaml:"capability_generation,omitempty"`
+	// CLIRegistries widens only the controller's CLI ceiling. Each reviewed
+	// definition still requests its own hosts; runtimes receive no new egress.
+	CLIRegistries []string `yaml:"cli_registries,omitempty"`
+	// CLIRuntime selects the OCI runtime tier for bounded-cli cells:
+	// "runc" (default), "runsc" or "kata". The daemon must list the runtime;
+	// an unavailable one fails closed at admission.
+	CLIRuntime string `yaml:"cli_runtime,omitempty"`
+	// CLIPerPrincipalUID maps each principal to a stable cell uid (20000+)
+	// so files a read-write cell leaves in a workspace carry a per-principal
+	// owner instead of the shared cli uid.
+	CLIPerPrincipalUID bool `yaml:"cli_per_principal_uid,omitempty"`
+	// CLIToolboxes names operator-pinned toolsets: toolbox id -> member
+	// images pinned as image@sha256 manifest digests. Toolbox-lifecycle
+	// definitions share one warm cell per principal with every member
+	// mounted read-only under /tools/<i>.
+	CLIToolboxes map[string][]string `yaml:"cli_toolboxes,omitempty"`
 	// Tools is the single capability surface: each entry names a toolset,
 	// capability family or MCP capability and picks its backend — `native`
 	// (carved out of the managed denylist, no per-call admission), `toolhub`
@@ -114,6 +130,16 @@ var Features = []Feature{
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
+var digestRefPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+func toolNameID(name string) bool { return idPattern.MatchString(name) }
+
+// toolboxMemberRef accepts only image@sha256 manifest digest pins; bare tags
+// would let the admitted member surface drift silently.
+func toolboxMemberRef(ref string) bool {
+	at := strings.LastIndex(ref, "@")
+	return at > 0 && digestRefPattern.MatchString(ref[at+1:]) && !strings.ContainsAny(ref[:at], " \t\r\n") && !strings.Contains(ref, "..")
+}
 
 // userSoulStub is the placeholder Init writes; Render upgrades it to the global
 // template while preserving any other user-edited content.
@@ -237,6 +263,31 @@ func (s Settings) usesDockerSocket() bool {
 	return false
 }
 func (s Settings) Validate() error {
+	seenRegistries := map[string]bool{}
+	for _, name := range s.CLIRegistries {
+		if len(cliRegistryHosts[name]) == 0 || seenRegistries[name] {
+			return fmt.Errorf("cli_registries: unknown or duplicate registry %q", name)
+		}
+		seenRegistries[name] = true
+	}
+	switch s.CLIRuntime {
+	case "", "runc", "runsc", "kata":
+	default:
+		return fmt.Errorf("cli_runtime must be runc, runsc or kata")
+	}
+	if len(s.CLIToolboxes) > 16 {
+		return fmt.Errorf("cli_toolboxes: too many toolboxes")
+	}
+	for name, members := range s.CLIToolboxes {
+		if !toolNameID(name) || len(members) == 0 || len(members) > 32 {
+			return fmt.Errorf("cli_toolboxes: invalid toolbox %q", name)
+		}
+		for _, ref := range members {
+			if !toolboxMemberRef(ref) {
+				return fmt.Errorf("cli_toolboxes: member of %q must pin image@sha256", name)
+			}
+		}
+	}
 	if s.CapabilityMode != "" && s.CapabilityMode != "managed" {
 		return fmt.Errorf("capability_mode must be managed or absent for an unmigrated deployment")
 	}

@@ -47,3 +47,24 @@ func TestArtifactContextSecretGate(t *testing.T) {
 		t.Fatal("malformed context accepted")
 	}
 }
+
+func TestArtifactContextSecretGateSkipsBinaryPayloads(t *testing.T) {
+	makeContext := func(name string, value []byte) []byte {
+		var output bytes.Buffer
+		w := tar.NewWriter(&output)
+		_ = w.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(value))})
+		_, _ = w.Write(value)
+		_ = w.Close()
+		return output.Bytes()
+	}
+	// A compiled binary legitimately embeds token-shaped strings (help text,
+	// fixtures); the gate must not reject the release payload for that.
+	binary := append([]byte("\x7fELF\x00\x00compiled tool help: token ghp_"), []byte("a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8")...)
+	if err := VerifyArtifactContextNoSecrets(makeContext("tool", binary)); err != nil {
+		t.Fatalf("binary payload rejected: %v", err)
+	}
+	// A text file in the same context still gets scanned.
+	if err := VerifyArtifactContextNoSecrets(makeContext("config.txt", []byte("token ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"))); err == nil {
+		t.Fatal("text-file secret accepted")
+	}
+}

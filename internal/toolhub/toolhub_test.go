@@ -92,8 +92,11 @@ func TestDefinitionValidationExamplesAndStrictDecode(t *testing.T) {
 		}
 	}
 	projected := ProjectedToolName("google-work", "1.0.0", "search")
-	if projected != ProjectedToolName("google-work", "1.0.0", "search") || projected == ProjectedToolName("google-work", "2.0.0", "search") {
-		t.Fatal("projection naming is not deterministic and versioned")
+	if projected != ProjectedToolName("google-work", "1.0.0", "search") || projected != ProjectedToolName("google-work", "2.0.0", "search") {
+		t.Fatal("projection naming is not deterministic and version-stable")
+	}
+	if projected == ProjectedToolName("google-work", "1.0.0", "read") || projected == ProjectedToolName("google-calendar", "1.0.0", "search") {
+		t.Fatal("projection naming does not disambiguate definitions or tools")
 	}
 	if _, err := DecodeDefinition([]byte(`{"schema":1,"definition_id":"x","version":"1.0.0","transport":"remote-mcp","source":{"url":"https://x.example/mcp","tls_mode":"required"},"tools":[{"name":"read","effect":"read"}],"workload":{"class":"shared","rationale":"stateless"},"execution":{"timeout_seconds":1,"output_bytes":1,"cpu_millis":1,"memory_mib":16,"max_pids":1,"egress":["x.example"]},"health":{"kind":"http","value":"/health","timeout_seconds":1},"unknown":true}`)); err == nil {
 		t.Fatal("unknown definition field accepted")
@@ -780,5 +783,204 @@ func TestRecordAndWorkloadDenyPaths(t *testing.T) {
 	invalidWorkload.ExpiresAt = time.Time{}
 	if err := invalidWorkload.Validate(); err == nil {
 		t.Fatal("unbounded per-job workload accepted")
+	}
+}
+
+// Reload is on the read hot path — the gateway calls it per projected tool —
+// so an unchanged on-disk snapshot must short-circuit before the full decode
+// and revalidate. The stamp test keeps the file's size and mtime identical
+// while replacing its bytes: a skipped Load is the only way garbage parses.
+func TestStoreReloadSkipsUnchangedSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	writer := NewStore()
+	if err := writer.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.diskStamp.mtime == 0 || store.diskStamp.size == 0 {
+		t.Fatal("load did not stamp the snapshot")
+	}
+	if err := store.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, info.Size()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, time.Unix(0, store.diskStamp.mtime), time.Unix(0, store.diskStamp.mtime)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reload(); err != nil {
+		t.Fatalf("unchanged stamp re-parsed the snapshot: %v", err)
+	}
+	next := time.Unix(0, store.diskStamp.mtime).Add(time.Second)
+	if err := os.Chtimes(path, next, next); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reload(); err == nil {
+		t.Fatal("changed mtime did not reload the snapshot")
+	}
+}
+
+// A save through this store updates the stamp in place, so the next Reload
+// sees its own write as already applied instead of re-loading it.
+func TestStoreSaveStampsSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	store := NewStore()
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if store.diskStamp.mtime == 0 {
+		t.Fatal("save did not stamp the snapshot")
+	}
+	fresh, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Reload(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBrokeredCredentialDeliveryValidation(t *testing.T) {
+	brokered := func(target, prefix string) CredentialInput {
+		return CredentialInput{Name: "API_TOKEN", Delivery: "brokered", Target: target, Prefix: prefix}
+	}
+	// Brokered delivery is bounded-cli only.
+	d := remoteDefinition()
+	d.Credentials = []CredentialInput{brokered("api.example.com", "Bearer ")}
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("brokered on remote-mcp: %v", err)
+	}
+	// Target must be a bare host — no path or scheme.
+	d = boundedCLIDefinition()
+	for _, target := range []string{"api.example.com/path", "https://api.example.com", "UPPER host", "api.example.com:8080/extra/seg"} {
+		d.Credentials = []CredentialInput{brokered(target, "Bearer ")}
+		if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("brokered target %q accepted", target)
+		}
+	}
+	// Prefix length is bounded and cannot carry control bytes.
+	d.Credentials = []CredentialInput{brokered("api.example.com", strings.Repeat("x", 129))}
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatal("oversized brokered prefix accepted")
+	}
+	d.Credentials = []CredentialInput{brokered("api.example.com", "Bearer \n")}
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatal("control byte in brokered prefix accepted")
+	}
+	// A well-formed brokered credential validates.
+	d.Credentials = []CredentialInput{brokered("api.example.com", "Bearer ")}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("valid brokered credential denied: %v", err)
+	}
+}
+
+func TestCLICellPolicyValidation(t *testing.T) {
+	base := func() ToolDefinition {
+		d := boundedCLIDefinition()
+		d.Workload.Class = PerUser
+		return d
+	}
+	// Cell lifecycle fields are bounded-cli only.
+	d := remoteDefinition()
+	d.Workload.Lifecycle = CLILifecycleBinding
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("lifecycle on remote-mcp: %v", err)
+	}
+	// Package install cannot share stateless cells.
+	d = base()
+	d.Workload.InstallPackages = true
+	d.Workload.Stateless = true
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("installPackages on stateless cell: %v", err)
+	}
+	// Lifecycle tiers validate their workload class.
+	for _, tc := range []struct {
+		lifecycle string
+		class     WorkloadClass
+		extra     func(*ToolDefinition)
+	}{
+		{CLILifecycleTask, PerUser, nil},
+		{CLILifecycleBinding, PerJob, nil},
+		{CLILifecycleToolbox, PerJob, nil},
+		{CLILifecycleToolbox, PerUser, func(d *ToolDefinition) { d.Workload.Toolbox = "" }},
+		{CLILifecycleSharedPool, PerUser, func(d *ToolDefinition) { d.Workload.Stateless = true }},
+		{CLILifecycleSharedPool, Shared, nil},
+		{"bogus", PerUser, nil},
+	} {
+		d := base()
+		d.Workload.Lifecycle = tc.lifecycle
+		d.Workload.Class = tc.class
+		if tc.lifecycle == CLILifecycleToolbox {
+			d.Workload.Toolbox = "user-box"
+		}
+		if tc.extra != nil {
+			tc.extra(&d)
+		}
+		if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("lifecycle=%s class=%s admitted: %v", tc.lifecycle, tc.class, err)
+		}
+	}
+	// Toolbox id without the toolbox lifecycle denies.
+	d = base()
+	d.Workload.Toolbox = "user-box"
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("toolbox id without lifecycle: %v", err)
+	}
+	// Workspace scope/access validate.
+	d = base()
+	d.Workload.Lifecycle = CLILifecycleBinding
+	d.Workload.WorkspaceScope = "bogus"
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("bad workspace scope: %v", err)
+	}
+	d = base()
+	d.Workload.Lifecycle = CLILifecycleBinding
+	d.Workload.WorkspaceAccess = "bogus"
+	if err := d.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("bad workspace access: %v", err)
+	}
+	// A well-formed toolbox definition validates.
+	d = base()
+	d.Workload.Lifecycle = CLILifecycleToolbox
+	d.Workload.Toolbox = "user-box"
+	if err := d.Validate(); err != nil {
+		t.Fatalf("valid toolbox definition denied: %v", err)
+	}
+	// A well-formed shared-pool definition validates.
+	d = base()
+	d.Workload.Class = Shared
+	d.Workload.Lifecycle = CLILifecycleSharedPool
+	d.Workload.Stateless = true
+	d.Workload.WorkspaceScope = "none"
+	d.Credentials = nil
+	if err := d.Validate(); err != nil {
+		t.Fatalf("valid pool definition denied: %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidSnapshotRecords(t *testing.T) {
+	for _, doc := range []string{
+		`{"schema":1,"workloads":[{"workload_id":"x"}]}`,
+		`{"schema":1,"shared_credential_policies":[{"policy_id":"x"}]}`,
+		`{"schema":1,"credential_references":[{"credential_ref_id":"x"}]}`,
+		`{"schema":1,"definitions":[{"definition_id":"x"}]}`,
+		`{"schema":1,"capability_changes":[{}]}`,
+		`{"schema":1,"capability_changes":[{"grant":{},"policy":{}}]}`,
+	} {
+		path := filepath.Join(t.TempDir(), "registry.json")
+		if err := os.WriteFile(path, []byte(doc), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("invalid snapshot admitted: %s", doc)
+		}
 	}
 }

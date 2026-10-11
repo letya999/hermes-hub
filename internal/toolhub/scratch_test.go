@@ -154,6 +154,37 @@ func TestReverifyEffective(t *testing.T) {
 	}
 }
 
+func TestReverifyEffectiveUnmanaged(t *testing.T) {
+	s := NewStore()
+	definition := agentDefinition()
+	if err := s.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: "policy-1", WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	if err := s.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	// Unmanaged admissions carry no capability profile/policy: binding
+	// freshness is the whole authority the export fence may recheck.
+	effective := EffectiveBinding{Binding: binding, Definition: definition}
+	if err := s.ReverifyEffective(effective); err != nil {
+		t.Fatalf("unmanaged effective must verify on binding freshness alone: %v", err)
+	}
+	effective.CapabilityPolicyID = "half-set"
+	if err := s.ReverifyEffective(effective); err == nil {
+		t.Fatal("half-populated capability identity passed the export fence")
+	}
+	effective.CapabilityPolicyID = ""
+	binding.Status = RevokedStatus
+	s.mu.Lock()
+	s.bindings[binding.ToolBindingID] = binding
+	s.mu.Unlock()
+	if err := s.ReverifyEffective(effective); err == nil {
+		t.Fatal("revoked unmanaged binding passed the export fence")
+	}
+}
+
 // TestScratchDockerHelper impersonates the docker CLI for the contract tests
 // below. State lives in $FAKE_DOCKER_STATE: "removed" records rm -f targets,
 // "neverdie"+"stuck" emulate an executor that survives rm -f, and "log"
@@ -655,4 +686,35 @@ func TestTinyHelpers(t *testing.T) {
 func TestProjectionEndpointRefresh(t *testing.T) {
 	ep := &projectionEndpoint{gateway: &Gateway{Store: NewStore(), AuditWrite: func(string, map[string]string) error { return nil }}}
 	_ = ep.RefreshProjection()
+}
+
+// A writer queued behind the dispatch's held read lock must not deadlock the
+// export fence: the nested recheck fails closed instead of parking forever
+// (AuthorizaProjectedCall keeps s.mu.RLock across the whole backend call).
+func TestReverifyEffectiveQueuedWriter(t *testing.T) {
+	s := NewStore()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	writerDone := make(chan struct{})
+	go func() {
+		s.mu.Lock()
+		writerEntered := true
+		s.mu.Unlock()
+		_ = writerEntered
+		close(writerDone)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.ReverifyEffective(EffectiveBinding{}) }()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("contended recheck must fail closed, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recheck deadlocked behind a queued writer")
+	}
+	s.mu.RUnlock()
+	<-writerDone
+	s.mu.RLock()
 }

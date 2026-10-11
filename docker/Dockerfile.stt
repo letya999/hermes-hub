@@ -4,7 +4,7 @@
 # `command` (stt-worker → faster-whisper); `remote` proxies to any
 # OpenAI-compatible upstream (Groq, Speaches, whisperx, NVIDIA NIM via
 # gateway); `sherpa` needs the -tags sherpa build with the native library.
-FROM golang:1.27.1-bookworm AS go_build
+FROM golang:1.27.2-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY services/credential-broker ./services/credential-broker

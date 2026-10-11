@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,110 +19,176 @@ var (
 	ErrIsolation   = errors.New("bounded CLI isolation is unavailable")
 )
 
-// IsolationCheck is supplied by the container/controller boundary. Host
-// exec alone cannot enforce network or filesystem isolation, so a missing
-// check fails closed instead of creating a false sandbox.
-type IsolationCheck func(ExecutionPolicy, string, string) error
-
+// CLIRunner submits bounded-cli calls to the controller's /cli-exec: the
+// workload runs inside a sibling sandbox cell, never inside this process.
+// The runner only resolves the workspace, argv and credential delivery; all
+// enforcement decisions are the controller's.
 type CLIRunner struct {
 	Root               string
-	AllowedExecutables map[string]bool
 	AllowedEnvironment map[string]bool
-	Isolation          IsolationCheck
+	// Exec posts the exec request to the controller. Nil fails closed: no
+	// controller, no execution.
+	Exec CLIExecFunc
+}
+
+// CLIRunnerFromEnv builds the shipped runner: Root from HUB_STATE and the
+// execution channel from the shared controller endpoint. No channel means
+// every call denies.
+func CLIRunnerFromEnv() (CLIRunner, error) {
+	execFn, err := CLIExecFromEnv()
+	if err != nil {
+		return CLIRunner{}, err
+	}
+	return CLIRunner{Root: envOr("HUB_STATE", "/state"), Exec: execFn}, nil
+}
+
+// CLIAllowlistFromEnv parses HUB_CLI_ALLOWLIST: a comma-separated list of
+// bare command names an owner spec may register. The list gates
+// registration; the controller's own approval lists are the execution
+// boundary, so the rendered value mirrors cli.UserCommands.
+func CLIAllowlistFromEnv() map[string]bool {
+	raw := strings.TrimSpace(os.Getenv("HUB_CLI_ALLOWLIST"))
+	if raw == "" {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || !commandPattern.MatchString(entry) || strings.Contains(entry, "/") {
+			continue
+		}
+		allowed[entry] = true
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return allowed
 }
 
 func (r CLIRunner) Call(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any) (BackendResult, error) {
-	return r.Run(ctx, effective.Definition, tool, arguments, nil, "")
+	return r.CallEnv(ctx, effective, tool, arguments, nil)
 }
 
 func (r CLIRunner) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
-	return r.Run(ctx, effective.Definition, tool, arguments, environment, "")
-}
-
-func (r CLIRunner) Run(ctx context.Context, definition ToolDefinition, tool ToolSpec, arguments map[string]any, environment map[string]string, cwd string) (BackendResult, error) {
+	definition := effective.Definition
 	if definition.Transport != BoundedCLI {
 		return BackendResult{}, fmt.Errorf("%w: CLI transport required", ErrInvalid)
 	}
 	if err := definition.Validate(); err != nil {
 		return BackendResult{}, err
 	}
-	if !r.AllowedExecutables[definition.Source.Command] {
-		return BackendResult{}, fmt.Errorf("%w: executable is not allowlisted", ErrUnauthorized)
-	}
-	if r.Isolation == nil {
+	if r.Exec == nil {
 		return BackendResult{}, ErrIsolation
 	}
-	root, err := filepath.Abs(r.Root)
-	if err != nil || root == "" {
-		return BackendResult{}, fmt.Errorf("%w: CLI root", ErrInvalid)
-	}
-	if cwd == "" {
-		cwd = root
-	}
-	working, err := filepath.Abs(cwd)
-	if err != nil || !containedPath(root, working) {
-		return BackendResult{}, fmt.Errorf("%w: CLI cwd outside root", ErrUnauthorized)
-	}
-	if err := noSymlinkPath(root); err != nil {
-		return BackendResult{}, err
-	}
-	if err := noSymlinkPath(working); err != nil {
-		return BackendResult{}, err
-	}
-	info, err := os.Stat(working)
-	if err != nil || !info.IsDir() {
-		return BackendResult{}, fmt.Errorf("%w: CLI cwd", ErrInvalid)
-	}
-	for key := range environment {
-		value := environment[key]
-		if !credentialPattern.MatchString(key) || !cliEnvAllowed(r.AllowedEnvironment, key) || len(value) > 16384 || strings.ContainsAny(value, "\x00\r\n") {
-			return BackendResult{}, fmt.Errorf("%w: environment key %q", ErrUnauthorized, key)
+	jobID := injectJobID(ctx, effective)
+	w := definition.Workload
+	scope := w.WorkspaceScope
+	if scope == "" {
+		if w.Class == Shared {
+			scope = "none"
+		} else {
+			scope = "binding"
 		}
 	}
-	if err := r.Isolation(definition.Execution, root, working); err != nil {
-		return BackendResult{}, fmt.Errorf("%w: %v", ErrIsolation, err)
+	cellWorkspace := cliWorkspace{Scope: scope, Access: w.WorkspaceAccess}
+	if scope == "binding" {
+		// The binding workspace is opened here so the controller gets the
+		// canonical path; the cell binds it — this process never execs in it.
+		workspace, err := OpenWorkloadWorkspace(r.Root, effective, jobID)
+		if err != nil {
+			return BackendResult{}, err
+		}
+		if workspace.Cleanup != nil {
+			defer workspace.Cleanup()
+		}
+		if workspace.Path == "" {
+			return BackendResult{}, fmt.Errorf("%w: binding workspace unavailable", ErrIsolation)
+		}
+		cellWorkspace.Path = workspace.Path
 	}
 	argv, err := cliArguments(definition.Source.Args, tool, arguments)
 	if err != nil {
 		return BackendResult{}, err
 	}
-	cmd := exec.Command(definition.Source.Command, argv...) // #nosec G204 -- command and argv are manifest/typed allowlisted values; no shell is used.
-	cmd.Dir = working
-	cmd.Env = sortedEnvironment(environment)
-	configureProcess(cmd)
-	output := &boundedOutput{limit: definition.Execution.OutputBytes, exceeded: make(chan struct{})}
-	cmd.Stdout = output
-	cmd.Stderr = output
-	if err := cmd.Start(); err != nil {
-		return BackendResult{}, err
+	env := make(map[string]string, len(environment)+len(definition.RuntimeEnvironment))
+	for key, value := range definition.RuntimeEnvironment {
+		env[key] = value
 	}
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
-	stopWatch := make(chan struct{})
-	go func() {
-		select {
-		case <-output.exceeded:
-			terminateProcess(cmd)
-		case <-stopWatch:
+	for key, value := range environment {
+		env[key] = value
+	}
+	brokeredInputs := map[string]CredentialInput{}
+	for _, input := range definition.Credentials {
+		if input.Delivery == "brokered" {
+			brokeredInputs[input.Name] = input
 		}
-	}()
-	var waitErr error
-	select {
-	case waitErr = <-waitCh:
-	case <-ctx.Done():
-		terminateProcess(cmd)
-		<-waitCh
-		close(stopWatch)
-		return BackendResult{}, ctx.Err()
 	}
-	close(stopWatch)
-	if output.overflowed() {
+	var envPairs []string
+	var brokered []cliBrokeredCred
+	for key, value := range env {
+		if !credentialPattern.MatchString(key) || !cliEnvAllowed(r.AllowedEnvironment, key) || len(value) > 16384 || strings.ContainsAny(value, "\x00\r\n") {
+			return BackendResult{}, fmt.Errorf("%w: environment key %q", ErrUnauthorized, key)
+		}
+		if input, ok := brokeredInputs[key]; ok {
+			// Brokered delivery: the cell sees a cred-proxy URL; the secret
+			// travels only inside the request body to the controller.
+			brokered = append(brokered, cliBrokeredCred{EnvName: key, Host: input.Target, Prefix: input.Prefix, Value: value})
+			continue
+		}
+		envPairs = append(envPairs, key+"="+value)
+	}
+	sort.Strings(envPairs)
+	request := cliExecRequest{
+		Plan: controllerPlan{
+			WorkloadID:        effective.WorkloadID,
+			DefinitionID:      definition.DefinitionID,
+			DefinitionVersion: definition.Version,
+			Image:             definition.Source.Image,
+			Digest:            definition.Source.Digest,
+			Execution:         definition.Execution,
+			Command:           definition.Source.Command,
+		},
+		Command:         definition.Source.Command,
+		Args:            argv,
+		Env:             envPairs,
+		Principal:       effective.Binding.PrincipalID,
+		ContextID:       effective.Binding.ContextID,
+		BindingID:       effective.Binding.ToolBindingID,
+		JobID:           jobID,
+		Lifecycle:       w.Lifecycle,
+		ToolboxID:       w.Toolbox,
+		Stateless:       w.Stateless,
+		InstallPackages: w.InstallPackages,
+		Workspace:       cellWorkspace,
+		Brokered:        brokered,
+	}
+	response, err := r.Exec(ctx, request)
+	if err != nil {
+		if errors.Is(err, ErrOutputLimit) {
+			return BackendResult{}, err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return BackendResult{}, ctxErr
+		}
+		return BackendResult{}, fmt.Errorf("%w: %v", ErrIsolation, err)
+	}
+	if err := response.Receipt.validate(effective); err != nil {
+		return BackendResult{}, fmt.Errorf("%w: %v", ErrIsolation, err)
+	}
+	if response.Error == "output-limit" {
 		return BackendResult{}, ErrOutputLimit
 	}
-	if waitErr != nil {
-		return BackendResult{Text: redactOutput(output.String(), environment), IsError: true}, nil
+	if response.Error != "" {
+		return BackendResult{}, fmt.Errorf("%w: cell reported %s", ErrIsolation, response.Error)
 	}
-	return BackendResult{Text: redactOutput(output.String(), environment)}, nil
+	result := BackendResult{Text: redactOutput(response.Output, env)}
+	if response.ExitCode != 0 {
+		result.IsError = true
+	}
+	if response.Receipt.WorkloadID != "" {
+		result.Receipt = response.Receipt.WorkloadID + "@" + strings.Join(response.Receipt.Isolation, ",") + "@cell=" + response.Receipt.CellID + ",rt=" + response.Receipt.Runtime
+	}
+	return result, nil
 }
 
 func cliArguments(fixed []string, tool ToolSpec, values map[string]any) ([]string, error) {
@@ -148,7 +214,20 @@ func cliArguments(fixed []string, tool ToolSpec, values map[string]any) ([]strin
 		if err != nil {
 			return nil, err
 		}
-		if argument.Type == "boolean" {
+		if argument.Pattern != "" {
+			matched, err := regexp.MatchString(argument.Pattern, encoded)
+			if err != nil || !matched {
+				return nil, fmt.Errorf("%w: CLI argument %q rejected by pattern", ErrUnauthorized, argument.Name)
+			}
+		}
+		if argument.Flag == "" {
+			// Positional operands are appended as-is; the mandatory pattern
+			// is the injection guard, and a leading dash is refused outright.
+			if strings.HasPrefix(encoded, "-") {
+				return nil, fmt.Errorf("%w: CLI argument %q cannot look like a flag", ErrUnauthorized, argument.Name)
+			}
+			args = append(args, encoded)
+		} else if argument.Type == "boolean" {
 			if encoded == "true" {
 				args = append(args, argument.Flag)
 			} else {
@@ -211,15 +290,6 @@ func cliEnvAllowed(allowlist map[string]bool, key string) bool {
 		return true
 	}
 	return allowlist[key]
-}
-
-func sortedEnvironment(values map[string]string) []string {
-	result := make([]string, 0, len(values))
-	for key, value := range values {
-		result = append(result, key+"="+value)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func redactOutput(output string, environment map[string]string) string {
