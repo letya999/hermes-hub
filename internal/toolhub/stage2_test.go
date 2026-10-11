@@ -568,21 +568,23 @@ func TestWorkloadWorkspacePersistenceAndJobCleanup(t *testing.T) {
 	}
 }
 
-func TestCLIRunnerRequiresIsolationAndUsesDirectArgs(t *testing.T) {
-	definition := testCLIDefinition("go", []string{"version"})
+func TestCLIRunnerSubmitsExecRequest(t *testing.T) {
+	definition := testCLIDefinition("rg", []string{"--no-heading"})
+	definition.Workload.Class = PerUser
 	root := t.TempDir()
-	runner := CLIRunner{Root: root, AllowedExecutables: map[string]bool{"go": true}}
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, nil, root); !errors.Is(err, ErrIsolation) {
-		t.Fatalf("missing isolation was not denied: %v", err)
+	runner := CLIRunner{Root: root}
+	effective := cliCallEffective(definition)
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("missing exec channel was not denied: %v", err)
 	}
 	var checked atomic.Bool
-	runner.Isolation = func(policy ExecutionPolicy, gotRoot, gotCwd string) error {
-		checked.Store(policy.Egress[0] == "test.invalid" && gotRoot == root && gotCwd == root)
-		return nil
-	}
-	result, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, nil, root)
-	if err != nil || result.IsError || !checked.Load() || !strings.Contains(result.Text, "go version") {
-		t.Fatalf("direct CLI result=%+v err=%v isolation=%v", result, err, checked.Load())
+	execFn, captured := runnerExecStub(t, func(req *cliExecRequest) {
+		checked.Store(req.Command == "rg" && req.Args[0] == "--no-heading" && req.Principal == "alice" && req.BindingID == "bind-alice" && req.Workspace.Scope == "binding" && strings.HasPrefix(req.Workspace.Path, root))
+	})
+	runner.Exec = execFn
+	result, err := runner.Call(context.Background(), effective, definition.Tools[0], nil)
+	if err != nil || result.IsError || !checked.Load() || result.Text != "ok" {
+		t.Fatalf("cli result=%+v err=%v request=%+v", result, err, captured)
 	}
 	if _, err := cliArguments(nil, definition.Tools[0], map[string]any{"foreign": "value"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("undeclared CLI argument=%v", err)
@@ -633,34 +635,33 @@ func TestCLIArgumentSchemaAndRunnerDenyPaths(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	definition := testCLIDefinition("go", []string{"version"})
-	runner := CLIRunner{Root: root, AllowedExecutables: map[string]bool{"go": true}, Isolation: func(ExecutionPolicy, string, string) error { return nil }}
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, nil, filepath.Join(root, "..")); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("outside cwd accepted: %v", err)
-	}
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"not-allowed": "x"}, root); !errors.Is(err, ErrUnauthorized) {
+	definition := testCLIDefinition("rg", []string{"--no-heading"})
+	definition.Workload.Class = PerUser
+	effective := cliCallEffective(definition)
+	execFn, _ := runnerExecStub(t, nil)
+	runner := CLIRunner{Root: root, Exec: execFn}
+	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"not-allowed": "x"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("invalid environment key accepted: %v", err)
 	}
 	listed := runner
 	listed.AllowedEnvironment = map[string]bool{"GITLAB_TOKEN": true}
-	if _, err := listed.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"NOT_ALLOWED": "x"}, root); !errors.Is(err, ErrUnauthorized) {
+	if _, err := listed.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"NOT_ALLOWED": "x"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unallowlisted environment accepted: %v", err)
 	}
-	definition.Execution.OutputBytes = 1
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, nil, root); !errors.Is(err, ErrOutputLimit) {
+	// The controller reports output-limit as a completed response flag; the
+	// runner maps it to the typed error.
+	runner.Exec = func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+		response, _ := execFn(ctx, req)
+		response.Error = "output-limit"
+		return response, nil
+	}
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrOutputLimit) {
 		t.Fatalf("CLI output limit was not enforced: %v", err)
 	}
 	definition.Transport = RemoteMCP
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, nil, root); !errors.Is(err, ErrInvalid) {
+	if _, err := runner.Call(context.Background(), cliCallEffective(definition), definition.Tools[0], nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("wrong CLI transport accepted: %v", err)
 	}
-}
-
-func TestCLIRunnerChild(t *testing.T) {
-	if os.Getenv("HUB_TEST_CLI_CHILD") != "1" {
-		return
-	}
-	time.Sleep(10 * time.Second)
 }
 
 func testCLIDefinition(command string, args []string) ToolDefinition {
@@ -674,22 +675,31 @@ func testCLIDefinition(command string, args []string) ToolDefinition {
 	}
 }
 
-func TestCLIRunnerCancellationKillsProcessTree(t *testing.T) {
-	definition := testCLIDefinition(os.Args[0], []string{"-test.run=^TestCLIRunnerChild$"})
-	root := t.TempDir()
-	runner := CLIRunner{Root: root, AllowedExecutables: map[string]bool{os.Args[0]: true}, AllowedEnvironment: map[string]bool{"HUB_TEST_CLI_CHILD": true}, Isolation: func(ExecutionPolicy, string, string) error { return nil }}
+func TestCLIRunnerCancellationReachesController(t *testing.T) {
+	// The runner never spawns a process; the call context is the only
+	// cancellation signal and it must reach the controller request.
+	definition := testCLIDefinition("rg", nil)
+	definition.Workload.Class = PerUser
+	entered := make(chan struct{})
+	runner := CLIRunner{Root: t.TempDir(), Exec: func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+		close(entered)
+		<-ctx.Done()
+		return cliExecResponse{}, ctx.Err()
+	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_, err := runner.Run(ctx, definition, definition.Tools[0], nil, map[string]string{"HUB_TEST_CLI_CHILD": "1"}, filepath.Clean(root))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("cancellation error=%v", err)
+	_, err := runner.Call(ctx, cliCallEffective(definition), definition.Tools[0], nil)
+	if err == nil {
+		t.Fatal("cancelled call returned a result")
 	}
 	if elapsed := time.Since(started); elapsed > 8*time.Second {
-		t.Fatalf("process tree was not terminated promptly: %s", elapsed)
+		t.Fatalf("cancelled call did not return promptly: %s", elapsed)
 	}
-	if strings.Contains(err.Error(), "secret") {
-		t.Fatal("secret leaked in cancellation error")
+	select {
+	case <-entered:
+	default:
+		t.Fatal("exec request never reached the controller seam")
 	}
 }
 
@@ -788,9 +798,9 @@ func TestRoutingBackendDispatchesCLIAndMCP(t *testing.T) {
 	if _, err := (RoutingBackend{}).Call(context.Background(), cliEffective, cliEffective.Definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
 		t.Fatalf("missing CLI backend error=%v", err)
 	}
-	runner := CLIRunner{Root: t.TempDir(), AllowedExecutables: map[string]bool{"glab": true}}
+	runner := CLIRunner{Root: t.TempDir()}
 	if _, err := runner.Call(context.Background(), cliEffective, cliEffective.Definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
-		t.Fatalf("host CLI without isolation error=%v", err)
+		t.Fatalf("CLI without a controller channel error=%v", err)
 	}
 	if _, err := (RoutingBackend{CLI: backend.CLI}).Call(context.Background(), effective, effective.Definition.Tools[0], nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing MCP backend error=%v", err)
@@ -827,13 +837,19 @@ func TestRoutingBackendPassesEnvToMCP(t *testing.T) {
 
 func TestCLIRunnerNilAllowlistAcceptsCredentialKeys(t *testing.T) {
 	root := t.TempDir()
-	runner := CLIRunner{Root: root, AllowedExecutables: map[string]bool{os.Args[0]: true}, Isolation: func(ExecutionPolicy, string, string) error { return nil }}
-	definition := testCLIDefinition(os.Args[0], []string{"-test.run=^$"})
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"not-valid": "x"}, root); !errors.Is(err, ErrUnauthorized) {
+	definition := testCLIDefinition("rg", nil)
+	definition.Workload.Class = PerUser
+	effective := cliCallEffective(definition)
+	execFn, captured := runnerExecStub(t, nil)
+	runner := CLIRunner{Root: root, Exec: execFn}
+	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"not-valid": "x"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("invalid env key accepted: %v", err)
 	}
-	if _, err := runner.Run(context.Background(), definition, definition.Tools[0], nil, map[string]string{"GOOGLE_TOKEN": "from-admit"}, root); errors.Is(err, ErrUnauthorized) {
+	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"GOOGLE_TOKEN": "from-admit"}); err != nil {
 		t.Fatalf("nil allowlist denied credential key: %v", err)
+	}
+	if !contains(captured.Env, "GOOGLE_TOKEN=from-admit") {
+		t.Fatalf("credential env not forwarded to controller: %v", captured.Env)
 	}
 }
 

@@ -130,7 +130,8 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if !ok || !slices.Contains(agent["disabled_toolsets"].([]string), "web") {
 		t.Fatal("agent.disabled_toolsets missing web without web feature")
 	}
-	// Feature on: toolset present, gated skill enabled, no toolset stripping.
+	// Feature on: toolset present, gated skill enabled, and the global denylist
+	// keeps the web family out while retaining the exec-surface entries.
 	s = validSettings()
 	s.Tools = testTools("web", "deep_research")
 	cfg = Config(s)
@@ -141,8 +142,18 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if disabled, ok := cfg["skills"].(M)["disabled"]; ok && slices.Contains(disabled.([]string), "deep-research-embedded") {
 		t.Fatal("deep-research-embedded disabled despite deep_research feature")
 	}
-	if _, ok := cfg["agent"]; ok {
-		t.Fatal("agent.disabled_toolsets rendered despite web feature")
+	agent, ok = cfg["agent"].(M)
+	if !ok {
+		t.Fatal("agent.disabled_toolsets missing: unnamed platforms would fall back to upstream composites")
+	}
+	denied := agent["disabled_toolsets"].([]string)
+	if slices.Contains(denied, "web") {
+		t.Fatal("enabled web toolset landed on the global denylist")
+	}
+	for _, name := range []string{"code_execution", "delegation", "homeassistant", "computer_use"} {
+		if !slices.Contains(denied, name) {
+			t.Fatalf("exec toolset %s not denied for unnamed platforms", name)
+		}
 	}
 }
 

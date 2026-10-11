@@ -82,7 +82,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties = map[string]any{"query": map[string]any{"type": "string", "maxLength": 256}}
 		description += " Read-only search: returns a prepared repository and up to four matching registry alternatives. Select its candidate_id with prepare_source; discovery does not install."
 	case "prepare_source":
-		properties["source"] = map[string]any{"type": "string"}
+		properties["source"] = map[string]any{"type": "string", "description": "GitHub repository URL of a hosted MCP server connector. To install a command-line tool (ripgrep, bat, jq, fd, …) put a cli spec object in cli instead — never a bare repo URL here."}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
 		properties["remote_url"] = map[string]any{"type": "string", "description": "Public HTTPS remote MCP endpoint for a user-owned connector (for example https://api.githubcopilot.com/mcp/). Only the endpoint's official URL on the user's explicit request; private, IP-literal, redirecting or non-MCP targets are refused."}
@@ -90,7 +90,15 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["tools"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional allowlist of advertised remote tool names to expose; omit to expose every advertised tool."}
 		properties["credentials"] = map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Credential names to collect through the protected form (for example GITHUB_TOKEN). Each becomes an Authorization: Bearer header unless it names its own header."}
 		properties["telegram_send"] = map[string]any{"type": "boolean", "description": "Only on the user's explicit request to enable sending: true with the enabled Telegram onboarding_id upgrades that owner's existing session to reads plus send_message. No new login. Then confirm the returned nonce and enable."}
-		description += " For every explicit install/add request containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
+		properties["cli"] = map[string]any{"type": "object", "description": "Only on the user's explicit request for an owner-scoped bounded CLI: a declarative spec with name, command (an executable from the operator allowlist — shell names are admitted only when the operator put them there), optional args (long-option tokens only), tools (name/effect plus typed arguments; a --flag name renders a flag, omitting flag renders a positional operand that then requires a pattern regexp), optional credentials and egress. With source plus binary instead of command, onboards an immutable artifact: default to github-release:owner/repo@latest — popular tools (bat, fd, jq, eza, sd, yq, fzf, age) all ship prebuilt linux-amd64 assets (asset is a glob on the release assets, e.g. *x86_64-unknown-linux-musl.tar.gz or jq-linux-amd64 for a bare binary — on a miss the error lists available asset names; member names the binary inside an archive and defaults to the tool name; digest optional). Use a commit-pinned GitHub URL only after the release path fails, since source builds cover just a single-package Go or Rust layout. Never a command string, path or script."}
+		description += " For every explicit install/add request for a hosted MCP server containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. For an explicit request to add a personal command-line tool, pass the declarative spec in cli — not the source field. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
+		cli := properties["cli"].(map[string]any)
+		cli["properties"], cli["required"], cli["additionalProperties"] = cliInstallProperties(), []string{"name", "tools"}, false
+		cli["oneOf"] = []any{
+			map[string]any{"required": []string{"source", "binary"}, "not": map[string]any{"required": []string{"command"}}},
+			map[string]any{"required": []string{"command"}, "not": map[string]any{"anyOf": []any{map[string]any{"required": []string{"source"}}, map[string]any{"required": []string{"binary"}}}}},
+		}
+		cli["examples"] = []any{map[string]any{"name": "jq", "source": "github-release:jqlang/jq@latest", "asset": "jq-linux-amd64", "binary": "/usr/local/bin/jq", "args": []string{"--version"}, "tools": []any{map[string]any{"name": "version", "effect": "read"}}}}
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
 	case "diagnostics":
@@ -116,6 +124,31 @@ func controlToolContract(name string) (string, map[string]any) {
 		}
 	}
 	return description, map[string]any{"type": "object", "properties": properties, "additionalProperties": true}
+}
+
+func cliInstallProperties() map[string]any {
+	properties := map[string]any{}
+	for key := range cliSpecKeys {
+		properties[key] = map[string]any{"type": "string"}
+	}
+	for _, key := range []string{"args", "credentials", "egress"} {
+		properties[key] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 64}
+	}
+	argument := map[string]any{"type": "object", "required": []string{"name"}, "additionalProperties": false, "properties": map[string]any{
+		"name": map[string]any{"type": "string"}, "flag": map[string]any{"type": "string"}, "type": map[string]any{"type": "string", "enum": []string{"string", "integer", "number", "boolean"}},
+		"required": map[string]any{"type": "boolean"}, "pattern": map[string]any{"type": "string"},
+	}}
+	properties["tools"] = map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "items": map[string]any{"type": "object", "required": []string{"name", "effect"}, "additionalProperties": false, "properties": map[string]any{
+		"name": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"}, "effect": map[string]any{"type": "string", "enum": []string{"read", "write"}},
+		"arguments": map[string]any{"type": "array", "maxItems": 32, "items": argument},
+	}}}
+	properties["runtime_env"] = map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}
+	properties["stateless"] = map[string]any{"type": "boolean"}
+	properties["install_packages"] = map[string]any{"type": "boolean", "description": "Private executable home; requires operator cli_registries approval. Never shares Hermes home. Use binding lifecycle to retain installs between calls."}
+	properties["source"] = map[string]any{"type": "string", "description": "Prefer github-release:owner/repo@tag (or @latest), with asset glob and absolute guest binary path. Commit-pinned GitHub source builds are a separate fallback."}
+	properties["binary"] = map[string]any{"type": "string", "pattern": "^/", "description": "Executable path inside the verified image, e.g. /usr/local/bin/jq; not a host path."}
+	properties["scope"] = map[string]any{"type": "string", "enum": []string{"owner", "shared"}}
+	return properties
 }
 
 func notifyControlProgress(ctx context.Context, request *mcp.CallToolRequest, op string, done bool, body map[string]any) {

@@ -130,3 +130,83 @@ func TestDockerScopeRunScopedChecksToolHiveRm(t *testing.T) {
 		t.Fatalf("unexpected passthrough error: %v", err)
 	}
 }
+
+// Sibling-space runtimes share one toolhub but sit on their own agent net;
+// the label proof (hermes-hub.context prefix == name suffix) is what admits
+// them — not the network.
+func TestAdmitSupervisedRuntime(t *testing.T) {
+	ctx := context.Background()
+	// names carry the first 16 hex of the context hash
+	const full = "e3158aa0d8dec80bdd869c268fe01bf4b5abe146e587f0f316dc5a956224738f"
+	objects := map[string]func(args []string) (string, error){
+		// own-space runtime: agent net membership already owns it
+		"hermes-context-aaaaaaaaaaaaaaaa": func(args []string) (string, error) {
+			for i, a := range args {
+				if a == "--format" && i+1 < len(args) && strings.Contains(args[i+1], "index") {
+					return full[:0] + full[:16] + full[16:][:48] + "|deadbeef", nil
+				}
+			}
+			return `{"hermes-hub.owner":"deadbeef"}|{"other-net":{"IPAddress":"10.9.0.2"}}`, nil
+		},
+		// sibling runtime on its own net, correct context proof
+		"hermes-context-e3158aa0d8dec80b": func(args []string) (string, error) {
+			for i, a := range args {
+				if a == "--format" && i+1 < len(args) && strings.Contains(args[i+1], "index") {
+					return full + "|dfedaaa1f321c04b8a72c7e605356cd35475353b3660429d30901c16f164a0f3", nil
+				}
+			}
+			return `{"hermes-hub.context":"` + full + `","hermes-hub.owner":"dfedaaa1"}|{"hermes-hub-agent-sibling-dev":{"IPAddress":"172.30.0.3"}}`, nil
+		},
+		// name squatter: no labels at all
+		"hermes-context-bbbbbbbbbbbbbbbb": func(args []string) (string, error) {
+			for i, a := range args {
+				if a == "--format" && i+1 < len(args) && strings.Contains(args[i+1], "index") {
+					return "<no value>|<no value>", nil
+				}
+			}
+			return `null|{"some-net":{"IPAddress":"10.1.0.2"}}`, nil
+		},
+		// wrong binding: context hash does not carry the name suffix
+		"hermes-context-cccccccccccccccc": func(args []string) (string, error) {
+			for i, a := range args {
+				if a == "--format" && i+1 < len(args) && strings.Contains(args[i+1], "index") {
+					return full + "|owner", nil
+				}
+			}
+			return `{"hermes-hub.context":"` + full + `","hermes-hub.owner":"owner"}|{"other-net":{"IPAddress":"10.2.0.2"}}`, nil
+		},
+		// an unrelated foreign container that exists but is not supervised
+		"not-a-runtime": func(args []string) (string, error) {
+			for i, a := range args {
+				if a == "--format" && i+1 < len(args) && strings.Contains(args[i+1], "index") {
+					return "<no value>|<no value>", nil
+				}
+			}
+			return `{"com.docker.compose.project":"other-stack"}|{"other-net":{"IPAddress":"10.0.0.2"}}`, nil
+		},
+	}
+	run := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		responder, ok := objects[args[len(args)-1]]
+		if !ok {
+			return nil, errors.New("No such object: " + args[len(args)-1])
+		}
+		body, err := responder(args)
+		return []byte(body), err
+	}
+	scope := newDockerScope("hermes-hub-alice-prod", "hermes-hub-agent-alice-prod", run)
+	if scope == nil {
+		t.Fatal("scope must exist")
+	}
+	if !scope.admitSupervisedRuntime(ctx, "hermes-context-e3158aa0d8dec80b") {
+		t.Fatal("sibling supervised runtime denied")
+	}
+	if scope.admitSupervisedRuntime(ctx, "hermes-context-bbbbbbbbbbbbbbbb") {
+		t.Fatal("label-less squatter admitted")
+	}
+	if scope.admitSupervisedRuntime(ctx, "hermes-context-cccccccccccccccc") {
+		t.Fatal("mismatched context hash admitted")
+	}
+	if scope.admitSupervisedRuntime(ctx, "not-a-runtime") {
+		t.Fatal("non-runtime name admitted")
+	}
+}

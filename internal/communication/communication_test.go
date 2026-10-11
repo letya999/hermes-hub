@@ -261,6 +261,93 @@ func TestJobMappingIsDurableAndIdempotent(t *testing.T) {
 	}
 }
 
+// Terminal outcomes fire JobDone so task-tier cli cells die with their job;
+// non-terminal transitions stay silent.
+func TestJobDoneFiresOnlyAtTerminalOutcome(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan [2]string, 4)
+	spool.JobDone = func(jobID, principalID string) { done <- [2]string{jobID, principalID} }
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "job-cells", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-cells", Text: "hello"}
+	if _, err := spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spool.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case fired := <-done:
+		t.Fatalf("JobDone fired on running: %v", fired)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "completed", LastEvent: "run.completed", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case fired := <-done:
+		if fired != [2]string{"job-cells", "alice"} {
+			t.Fatalf("JobDone=%v", fired)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("JobDone never fired at terminal outcome")
+	}
+}
+
+func TestToolHubJobDoneUsesPrincipalCredential(t *testing.T) {
+	type request struct {
+		path, method, contentType, authorization, principal, jobID string
+	}
+	requests := make(chan request, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode release request: %v", err)
+		}
+		requests <- request{r.URL.Path, r.Method, r.Header.Get("Content-Type"), r.Header.Get("Authorization"), r.Header.Get("X-Hub-Principal"), body.JobID}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	g := &Gateway{config: Config{ToolHubURL: server.URL}}
+	g.toolHubJobDone("job-1", "alice")
+	if len(requests) != 0 {
+		t.Fatal("release sent without a principal credential")
+	}
+
+	g.config.Supervised = true
+	g.config.RuntimeAuth = "runtime-token"
+	g.toolHubJobDone("job-1", "alice")
+	if got := <-requests; got != (request{"/v1/cli-jobs/release", http.MethodPost, "application/json", "Bearer runtime-token", "alice", "job-1"}) {
+		t.Fatalf("supervised release request: %+v", got)
+	}
+
+	g.config.Supervised = false
+	token := strings.Repeat("a", 32)
+	entries, err := json.Marshal(map[string]identity.Envelope{token: {PrincipalID: "alice"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.config.ControlTokensFile = filepath.Join(t.TempDir(), "control-tokens.json")
+	if err := os.WriteFile(g.config.ControlTokensFile, entries, 0600); err != nil {
+		t.Fatal(err)
+	}
+	g.toolHubJobDone("job-2", "bob")
+	if len(requests) != 0 {
+		t.Fatal("another principal's token authorized release")
+	}
+	g.toolHubJobDone("job-2", "alice")
+	if got := <-requests; got != (request{"/v1/cli-jobs/release", http.MethodPost, "application/json", "Bearer " + token, "", "job-2"}) {
+		t.Fatalf("enrolled release request: %+v", got)
+	}
+}
+
 func TestJobOutcomeRejectsReplacementIdentityBeforeWriting(t *testing.T) {
 	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
 	if err != nil {

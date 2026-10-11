@@ -1,5 +1,5 @@
 # Production should supply a reviewed digest, not a floating toolchain.
-ARG GO_IMAGE=golang:1.27.1-bookworm
+ARG GO_IMAGE=golang:1.27.2-bookworm
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
 COPY go.mod ./

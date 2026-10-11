@@ -216,3 +216,32 @@ func TestConnectorCLIConnectCallRefreshRevoke(t *testing.T) {
 		}
 	}
 }
+
+func TestConnectorCatalogCLIRegistersShippedDefinitions(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "registry.json")
+	// A missing store is created; a second run is idempotent on the same file.
+	for run := 0; run < 2; run++ {
+		if err := runConnector(context.Background(), []string{"catalog-cli", "--toolhub-store", storePath}); err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+	}
+	registry, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range toolhub.CLICatalogDefinitions() {
+		got, err := registry.Definition(definition.DefinitionID, definition.Version)
+		if err != nil {
+			t.Fatalf("%s: %v", definition.DefinitionID, err)
+		}
+		if got.Transport != toolhub.BoundedCLI || got.Source.Command != definition.Source.Command {
+			t.Fatalf("%s persisted as %+v", definition.DefinitionID, got)
+		}
+	}
+	if err := runConnector(context.Background(), []string{"catalog-cli", "--toolhub-store", "relative/path"}); err == nil {
+		t.Fatal("relative store path accepted")
+	}
+	if err := runConnector(context.Background(), []string{"catalog-cli", "--toolhub-store", storePath, "extra"}); err == nil {
+		t.Fatal("positional argument accepted")
+	}
+}

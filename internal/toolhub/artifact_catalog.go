@@ -554,7 +554,9 @@ func reviewDigest(source ArtifactSource, recipe ArtifactRecipe, artifact StoredO
 }
 
 func reviewDigestForImported(imported ImportedArtifact) (string, error) {
-	source := ArtifactSource{Repository: imported.Definition.Source.Repository, Subfolder: imported.Definition.Source.Subfolder, CommitSHA: imported.Definition.Source.CommitSHA}
+	source := ArtifactSource{Repository: imported.Definition.Source.Repository, Subfolder: imported.Definition.Source.Subfolder, CommitSHA: imported.Definition.Source.CommitSHA,
+		Tag: imported.Definition.Source.ReleaseTag, Asset: imported.Definition.Source.ReleaseAsset, AssetDigest: imported.Definition.Source.AssetDigest,
+		PackageRegistry: imported.Definition.Source.PackageRegistry, PackageName: imported.Definition.Source.PackageName, PackageVersion: imported.Definition.Source.PackageVersion}
 	config := ArtifactImportConfig{
 		DefinitionID: imported.Definition.DefinitionID, Version: imported.Definition.Version,
 		Image: imported.Definition.Source.Image, Tools: imported.Definition.Tools,

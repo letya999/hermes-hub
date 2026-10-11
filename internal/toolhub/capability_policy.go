@@ -613,9 +613,21 @@ func capabilityDecision(profile CapabilityProfile, policy CapabilityPolicy, sele
 		if !projection || use.PathArgument == "" {
 			value := ""
 			if use.PathArgument != "" {
-				var ok bool
-				value, ok = arguments[use.PathArgument].(string)
-				if !ok || !validCapabilityPath(value) {
+				// An absent path argument means the tool operates on its
+				// default root and "." is the conventional spelling of that
+				// root; both normalize to "" so the prefix check still bounds
+				// the call (a scoped grant denies an unscoped request).
+				if raw, present := arguments[use.PathArgument]; present {
+					typed, ok := raw.(string)
+					if !ok {
+						return CapabilityLimits{}, nil, false
+					}
+					value = typed
+				}
+				if value == "." {
+					value = ""
+				}
+				if !validCapabilityPath(value) {
 					return CapabilityLimits{}, nil, false
 				}
 			}
@@ -933,13 +945,29 @@ func (s *Store) managedSelectionLocked(auth identity.Envelope, profile Capabilit
 // ReverifyEffective rechecks the authority a call was admitted under. Export
 // and apply paths run this so a mid-flight revocation, binding update or
 // policy/profile revision change stops the write instead of landing on
-// stale authority.
+// stale authority. The fence can fire from inside AuthorizeProjectedCall,
+// which holds s.mu.RLock for the whole dispatch: queuing a nested read lock
+// behind a pending writer would deadlock the call forever, so contention
+// fails closed — under the held outer lock the records cannot have changed,
+// and without it a live writer means authority is genuinely in flux.
 func (s *Store) ReverifyEffective(effective EffectiveBinding) error {
-	s.mu.RLock()
+	if !s.mu.TryRLock() {
+		return fmt.Errorf("%w: authority recheck contended", ErrUnauthorized)
+	}
 	defer s.mu.RUnlock()
 	binding, ok := s.bindings[effective.Binding.ToolBindingID]
 	if !ok || binding.Status != ActiveStatus || binding.Revision != effective.Binding.Revision || binding.ProjectionRevision != effective.Binding.ProjectionRevision {
 		return fmt.Errorf("%w: binding revoked or changed", ErrUnauthorized)
+	}
+	// Capability profile/policy ids exist only on managed admissions. An
+	// unmanaged effective carries neither, and the binding freshness above is
+	// its whole authority — demanding a profile here would deny every
+	// unmanaged export as "changed".
+	if effective.CapabilityProfileID == "" {
+		if effective.CapabilityProfileRevision != 0 || effective.CapabilityPolicyID != "" || effective.CapabilityPolicyRevision != 0 {
+			return fmt.Errorf("%w: capability identity incomplete", ErrUnauthorized)
+		}
+		return nil
 	}
 	profile, ok := s.capabilityProfiles[effective.CapabilityProfileID]
 	if !ok || profile.Status != ActiveStatus || profile.Revision != effective.CapabilityProfileRevision {

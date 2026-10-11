@@ -164,7 +164,10 @@ type Gateway struct {
 	// read a principal's connector inventory via X-Hub-Principal. Principal
 	// bearers always pin their own envelope and never use the header.
 	ControlToken string
-	projections  map[string]*gatewayProjection
+	// CLIRelease drops bounded-cli cells for the caller's principal; the
+	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
+	CLIRelease  func(context.Context, cliReleaseRequest) error
+	projections map[string]*gatewayProjection
 }
 
 type gatewayProjection struct {
@@ -202,6 +205,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(DefaultEndpointPath, g.protect())
 	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
+	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/grants/", http.HandlerFunc(g.serveGrantAck))
 	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
@@ -263,6 +267,44 @@ func (g *Gateway) serveConnectors(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": views})
+}
+
+// serveCLIJobRelease is the job-end hook: the communication hub calls it when
+// a job reaches a terminal status so task-tier cells keyed by that job die
+// with the job rather than waiting out the idle TTL. Auth pins the principal
+// exactly like /v1/connectors — a caller can only release its own jobs.
+func (g *Gateway) serveCLIJobRelease(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "browser origins forbidden", http.StatusForbidden)
+		return
+	}
+	auth, ok := g.connectorAuth(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		JobID string `json:"job_id"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil || !identity.ValidID(body.JobID) {
+		http.Error(w, "invalid job release", http.StatusForbidden)
+		return
+	}
+	if g.CLIRelease == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := g.CLIRelease(r.Context(), cliReleaseRequest{PrincipalID: auth.PrincipalID, JobID: body.JobID, Reason: "job-end"}); err != nil {
+		http.Error(w, "cell release failed", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // connectorAuth resolves the caller's identity for the read-only connector

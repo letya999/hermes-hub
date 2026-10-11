@@ -44,8 +44,29 @@ func ParseArtifactRecipe(data []byte) (ArtifactRecipe, error) {
 }
 
 func (r ArtifactRecipe) Validate() error {
-	if r.Format != "dockerfile-v1" || !artifactContextPath(r.Dockerfile) || len(r.Files) == 0 || len(r.Files) > 4096 || len(r.DependencyLocks) == 0 || len(r.DependencyLocks) > 32 || len(r.BaseImages) == 0 || len(r.BaseImages) > 32 || len(r.Entrypoint) == 0 || len(r.Entrypoint) > 32 || !validCommand(r.Entrypoint[0]) {
+	if !artifactContextPath(r.Dockerfile) || len(r.Files) == 0 || len(r.Files) > 4096 || len(r.DependencyLocks) > 32 || len(r.BaseImages) > 32 || len(r.Entrypoint) == 0 || len(r.Entrypoint) > 32 || !validCommand(r.Entrypoint[0]) {
 		return fmt.Errorf("%w: supported Dockerfile recipe, entrypoint, locks and pinned bases required", ErrInvalid)
+	}
+	switch r.Format {
+	case "dockerfile-v1":
+		if len(r.DependencyLocks) == 0 || len(r.BaseImages) == 0 {
+			return fmt.Errorf("%w: supported Dockerfile recipe, entrypoint, locks and pinned bases required", ErrInvalid)
+		}
+	case "cli-release-v1":
+		// Release binary wrapped in scratch, or on one pinned toolchain base
+		// when it needs a dynamic loader; the single lock entry is the
+		// checksum record that pinned the asset.
+		if len(r.BaseImages) > 1 || len(r.DependencyLocks) != 1 {
+			return fmt.Errorf("%w: release recipe carries one checksum lock and at most one base image", ErrInvalid)
+		}
+	case "cli-package-v1":
+		// Toolchain image installs one registry package: exactly one pinned
+		// base and one package-lock record naming registry:name==version.
+		if len(r.BaseImages) != 1 || len(r.DependencyLocks) != 1 {
+			return fmt.Errorf("%w: package recipe carries one base image and one package lock", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: supported Dockerfile recipe required", ErrInvalid)
 	}
 	files := map[string]bool{}
 	for _, file := range r.Files {
@@ -80,6 +101,14 @@ func (r ArtifactRecipe) Validate() error {
 	return nil
 }
 
+// Context bounds accept a CLI release member up to the asset cap (128 MiB)
+// plus recipe metadata; source-fetched contexts stay limited by their own
+// fetch bound, so this only widens generated recipe payloads.
+const (
+	artifactMaxContextBytes     = 160 << 20
+	artifactMaxContextFileBytes = 136 << 20
+)
+
 // VerifyContext rejects any unlisted file or drift from the reviewed file bytes.
 // A pinned lock file is not proof that its dependencies are pinned; a scanner
 // must inspect its semantics before trust can be granted.
@@ -87,7 +116,7 @@ func (r ArtifactRecipe) VerifyContext(contextBytes []byte) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
-	if len(contextBytes) > 72<<20 {
+	if len(contextBytes) > artifactMaxContextBytes {
 		return fmt.Errorf("%w: oversized context", ErrInvalid)
 	}
 	expected := map[string]string{}
@@ -96,7 +125,7 @@ func (r ArtifactRecipe) VerifyContext(contextBytes []byte) error {
 	}
 	input := bytes.NewReader(contextBytes)
 	reader := tar.NewReader(input)
-	remaining := int64(64 << 20)
+	remaining := int64(artifactMaxContextFileBytes)
 	var dockerfile []byte
 	for {
 		h, err := reader.Next()
@@ -206,7 +235,13 @@ func (r ArtifactRecipe) verifyDockerfile(data []byte) error {
 			}
 			if instruction == "COPY" {
 				for _, field := range fields[1:] {
-					if strings.HasPrefix(field, "--") && (!strings.HasPrefix(field, "--from=") || !stages[strings.TrimPrefix(field, "--from=")]) {
+					if !strings.HasPrefix(field, "--") {
+						continue
+					}
+					switch {
+					case strings.HasPrefix(field, "--from=") && stages[strings.TrimPrefix(field, "--from=")]:
+					case copyChmodPattern.MatchString(field):
+					default:
 						return fmt.Errorf("%w: unsupported COPY option or external source", ErrInvalid)
 					}
 				}
@@ -225,6 +260,10 @@ var (
 	cacheMountIDPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 	cacheMountModePattern  = regexp.MustCompile(`^0?[0-7]{3,4}$`)
 	cacheMountOwnerPattern = regexp.MustCompile(`^[0-9]{1,7}$`)
+	// copyChmodPattern admits BuildKit's COPY --chmod=<octal>: needed so a
+	// scratch-wrapped release binary lands executable. Three digits cap the
+	// mode at 0777 — setuid/sticky bits are never expressible.
+	copyChmodPattern = regexp.MustCompile(`^--chmod=0?[0-7]{3}$`)
 )
 
 // validateCacheMountFlag admits only BuildKit cache mounts. Cache mounts persist

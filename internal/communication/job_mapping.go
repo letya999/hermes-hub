@@ -218,6 +218,11 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 			delete(s.inFlight, key)
 		}
 	}
+	if terminal && s.JobDone != nil && mapping.PrincipalID != "" {
+		// Task-tier cli cells keyed by this job die with it. Fire-and-forget:
+		// ToolHub unreachable only delays teardown to the controller ladder.
+		go s.JobDone(mapping.JobID, mapping.PrincipalID)
+	}
 	return nil
 }
 

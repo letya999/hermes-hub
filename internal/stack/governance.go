@@ -293,6 +293,17 @@ func (s Settings) toolPolicySnapshot() toolhub.ToolPolicySnapshot {
 	return snapshot
 }
 
+// MaterializeToolPolicySnapshot writes the executor policy beside the other
+// generated files and returns its host path. The supervisor calls this at
+// spawn so supervised runtimes mount the same read-only contract the compose
+// path binds at /config/tool-policy.json.
+func MaterializeToolPolicySnapshot(dir string, s Settings) (string, error) {
+	if err := writeToolPolicySnapshot(dir, s); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json"), nil
+}
+
 // writeToolPolicySnapshot materializes the executor policy next to the other
 // generated files; compose mounts it read-only at /config/tool-policy.json.
 func writeToolPolicySnapshot(dir string, s Settings) error {

@@ -371,6 +371,9 @@ func (s Settings) nativeCarveouts() []string {
 	names := []string{}
 	for name, entry := range s.Tools {
 		if entry.Via == ToolViaNative && nativeCarveoutToolsets[name] {
+			if s.toolEntry("terminal").Via == ToolViaToolHub && name == "code_execution" {
+				continue
+			}
 			names = append(names, name)
 		}
 	}
@@ -624,6 +627,9 @@ func (s Settings) Has(name string) bool {
 // validateTools checks the whole `tools:` map: names, backend membership,
 // per-backend field discipline and the managed/native boundary.
 func (s Settings) validateTools() error {
+	if s.toolEntry("terminal").Via == ToolViaToolHub && s.toolEntry("code_execution").Via == ToolViaNative {
+		return fmt.Errorf("terminal: toolhub conflicts with native code_execution; use the networkless code_exec tool")
+	}
 	managed := s.CapabilityMode == "managed"
 	for name, e := range s.Tools {
 		if !toolNamePattern.MatchString(name) {

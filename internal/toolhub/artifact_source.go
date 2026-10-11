@@ -25,10 +25,21 @@ var repositoryPartPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}
 
 // ArtifactSource accepts public GitHub sources, never a ref or authenticated URL.
 // Administrator-prepared sources use the same pinned archive/recipe contract.
+// Tag/Asset/AssetDigest/AssetMember are set only for github-release: sources:
+// a release tag is mutable, so the pin is the verified asset digest.
 type ArtifactSource struct {
-	Repository string `json:"repository"`
-	Subfolder  string `json:"subfolder,omitempty"`
-	CommitSHA  string `json:"commit_sha"`
+	Repository  string `json:"repository"`
+	Subfolder   string `json:"subfolder,omitempty"`
+	CommitSHA   string `json:"commit_sha"`
+	Tag         string `json:"tag,omitempty"`
+	Asset       string `json:"asset,omitempty"`
+	AssetDigest string `json:"asset_digest,omitempty"`
+	AssetMember string `json:"asset_member,omitempty"`
+	// PackageRegistry/PackageName/PackageVersion carry a pypi:/npm: package
+	// pin; PackageVersion "latest" resolves at import, then records exact.
+	PackageRegistry string `json:"package_registry,omitempty"`
+	PackageName     string `json:"package_name,omitempty"`
+	PackageVersion  string `json:"package_version,omitempty"`
 }
 
 func (s ArtifactSource) ArchiveURL() (string, error) {

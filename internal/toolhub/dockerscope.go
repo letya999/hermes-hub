@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -115,6 +116,38 @@ func (s *dockerScope) owns(ctx context.Context, kind, name string) bool {
 	}
 	log.Printf("docker-scope: denied kind=%s name=%s project=%q agent-net=%q", kind, name, s.project, s.agentNet)
 	return false
+}
+
+// admitSupervisedRuntime opens the executor channel to a supervisor-spawned
+// runtime container that lives outside this stack's labels — sibling spaces
+// share one toolhub, and their runtimes sit on their own agent networks. The
+// caller derives the name deterministically (hermes-context-<hash16> of the
+// admitted binding); the supervisor stamps the full hash in hermes-hub.context,
+// so the label prefix-match proves the container IS that binding's runtime and
+// cannot be satisfied by a foreign one. Proven names join the owned set so
+// guardDocker's per-operand checks pass for the same call path.
+func (s *dockerScope) admitSupervisedRuntime(ctx context.Context, name string) bool {
+	if s.owns(ctx, "container", name) {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(name, "hermes-context-")
+	if !ok || len(suffix) != 16 {
+		return false
+	}
+	if _, err := hex.DecodeString(suffix); err != nil {
+		return false
+	}
+	body, err := s.run(ctx, "docker", "inspect", "--format", `{{index .Config.Labels "hermes-hub.context"}}|{{index .Config.Labels "hermes-hub.owner"}}`, name)
+	if err != nil {
+		return false
+	}
+	contextLabel, owner, _ := strings.Cut(strings.TrimSpace(string(body)), "|")
+	if len(contextLabel) != 64 || !strings.HasPrefix(contextLabel, suffix) || owner == "" || owner == "<no value>" {
+		log.Printf("docker-scope: denied supervised-runtime proof name=%s project=%q", name, s.project)
+		return false
+	}
+	s.register(name)
+	return true
 }
 
 type kindName struct{ kind, name string }

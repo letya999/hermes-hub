@@ -473,8 +473,25 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	coreStage, controlStage, found := strings.Cut(string(dockerfile), "FROM runtime AS control")
-	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.1-bookworm AS cliproxy_build") {
+	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.2-bookworm AS cliproxy_build") {
 		t.Fatal("Docker CLI or Slack MCP included in default runtime")
+	}
+}
+
+func TestSupervisedUnmanagedSpaceWiresAgentExec(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), ExecutionMode: "supervisor"}
+	env := Compose(s, "/source", "/space")["services"].(M)["toolhub"].(M)["environment"].(M)
+	if env["HUB_AGENT_EXEC_MODE"] != "supervisor" {
+		t.Fatal("supervised unmanaged space lost the agent-tools executor channel")
+	}
+	if env["HUB_CAPABILITY_MODE"] != nil {
+		t.Fatal("capability env leaked onto an unmanaged space")
+	}
+	s2 := s
+	s2.ExecutionMode = ""
+	env2 := Compose(s2, "/source", "/space")["services"].(M)["toolhub"].(M)["environment"].(M)
+	if env2["HUB_AGENT_EXEC_MODE"] != nil {
+		t.Fatal("non-supervised space gained the supervisor executor channel")
 	}
 }
 

@@ -8,6 +8,7 @@ last_verified: 2026-10-07
 
 | Document | Purpose | Verified |
 |---|---|---|
+| [cli-policy.md](cli-policy.md) | Isolated terminal, private package installs and atomic operator catalog binding | 2026-10-10 |
 | [capability-boundary-audit.md](capability-boundary-audit.md) | Issue 122 current gaps, pinned-Hermes probes and Context7/GitHub evidence for proposed enforcement | 2026-10-02 |
 | [architecture.md](architecture.md) | Current components and capability enforcement progress | 2026-10-02 |
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-10-07 |

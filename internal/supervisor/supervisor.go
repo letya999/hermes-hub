@@ -1982,6 +1982,17 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 		return nil, err
 	}
 	args = append(args, "--mount", "type=bind,src="+effectiveConfig+",dst=/state/hermes/config.yaml,readonly")
+	// The executor's compiled governance extract: same contract the rendered
+	// compose mounts read-only at /config/tool-policy.json (HUB_TOOL_POLICY).
+	// Written at spawn so it tracks the space's current settings.
+	if settings.Environment == "" {
+		settings.Environment = env
+	}
+	policyPath, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings)
+	if err != nil {
+		return nil, fmt.Errorf("materialize tool policy: %w", err)
+	}
+	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
 	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
 	if binding.OrganizationRoot != "" {
 		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
@@ -2050,6 +2061,14 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if soul := filepath.Join(binding.ContextRoot, "SOUL.md"); fileExists(soul) {
 		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
 	}
+	if settings.Environment == "" {
+		settings.Environment = env
+	}
+	policyPath, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings)
+	if err != nil {
+		return nil, fmt.Errorf("materialize tool policy: %w", err)
+	}
+	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
 	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
 	for _, name := range managedExtensionRootTmpfs {
 		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")

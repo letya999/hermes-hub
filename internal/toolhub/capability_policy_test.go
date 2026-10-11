@@ -1285,3 +1285,48 @@ func TestManagedSelfInstallAndControlOperations(t *testing.T) {
 		t.Fatal("unreviewed control operation published")
 	}
 }
+
+func TestCapabilityPathArgumentNormalization(t *testing.T) {
+	// Dispatch-time path arguments: the tool's default is the workspace
+	// root, "." is its conventional spelling and both normalize to "" —
+	// still bounded by the granted prefix, so a scoped grant keeps denying
+	// root-level calls while a root grant admits them.
+	digest := "sha256:" + strings.Repeat("7", 64)
+	rule := CapabilityRule{CapabilityID: "files.list", ImplementationDigest: digest, Action: "list", Resource: "files", Limits: CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
+	policy := CapabilityPolicy{Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
+	profile := CapabilityProfile{}
+	selection := CapabilitySelection{CapabilityID: "files.list", ImplementationDigest: digest, ToolName: "file_list"}
+	tool := ToolSpec{Name: "file_list", CapabilityID: "files.list", Uses: []CapabilityUse{{Action: "list", Resource: "files", PathArgument: "path"}}}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want bool
+	}{
+		{"absent", map[string]any{}, true},
+		{"empty", map[string]any{"path": ""}, true},
+		{"dot", map[string]any{"path": "."}, true},
+		{"subdir", map[string]any{"path": "docs/a"}, true},
+		{"traversal", map[string]any{"path": "../x"}, false},
+		{"absolute", map[string]any{"path": "/etc"}, false},
+		{"backslash", map[string]any{"path": "a\\b"}, false},
+		{"non-string", map[string]any{"path": float64(5)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, got := capabilityDecision(profile, policy, selection, tool, tc.args, false); got != tc.want {
+				t.Fatalf("allowed=%v want=%v", got, tc.want)
+			}
+		})
+	}
+	// A prefix-scoped grant still denies the normalized root.
+	scoped := rule
+	scoped.PathPrefix = "docs"
+	scopedPolicy := CapabilityPolicy{Ceiling: []CapabilityRule{scoped}, Defaults: []CapabilityRule{scoped}}
+	for _, args := range []map[string]any{{}, {"path": "."}, {"path": ""}} {
+		if _, _, got := capabilityDecision(profile, scopedPolicy, selection, tool, args, false); got {
+			t.Fatalf("scoped grant admitted a root call: %v", args)
+		}
+	}
+	if _, _, got := capabilityDecision(profile, scopedPolicy, selection, tool, map[string]any{"path": "docs/a"}, false); !got {
+		t.Fatal("scoped grant denied an in-prefix call")
+	}
+}
