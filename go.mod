@@ -15,6 +15,7 @@ require (
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 	rsc.io/qr v0.2.0
+	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9
 )
 
 replace github.com/letya999/credential-broker => ./services/credential-broker

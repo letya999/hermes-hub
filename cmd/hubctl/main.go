@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/companion"
+	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -32,7 +33,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -131,6 +132,23 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "routine" {
 		return runRoutine(ctx, args[1:])
+	}
+	if op == "apply" {
+		f := flag.NewFlagSet("apply", flag.ContinueOnError)
+		file := f.String("f", "", "desired-state file (yaml)")
+		profile := f.String("user", "me", "person identifier")
+		spoolDir := f.String("spool", "", "communication spool")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *file == "" || *spoolDir == "" {
+			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
+		}
+		rep, err := applyFile(*spoolDir, *profile, *file)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
 	}
 	f := flag.NewFlagSet(op, flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
@@ -415,7 +433,7 @@ func supervisorAuthFromEnv() string {
 }
 
 func dockerCLIEnv() []string {
-	return append(os.Environ(), "DOCKER_BUILDKIT=1", "COMPOSE_DOCKER_CLI_BUILD=1", "COMPOSE_BAKE=true")
+	return append(os.Environ(), devcheck.BuildKitEnv...)
 }
 
 // supervisorComposeEnv feeds supervisor.auth and media.grant into compose

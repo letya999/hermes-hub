@@ -39,9 +39,8 @@ func ManagedSupervisorCanary(ctx context.Context, image string) (result error) {
 	userID := "mg" + suffix
 	env := "prod"
 	agentNet := "hermes-hub-agent-" + userID + "-" + env
-	sharedNet, controlNet := "hermes-hub-runtime", "hermes-hub-control"
+	sharedNet, controlNet := "hermes-mgsup-runtime-"+suffix, "hermes-mgsup-control-"+suffix
 	containers, ownedNetworks := []string{}, []string{}
-	sharedPreexisted, controlPreexisted := false, false
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
@@ -63,20 +62,15 @@ func ManagedSupervisorCanary(ctx context.Context, image string) (result error) {
 		}
 		return strings.TrimSpace(string(out)), nil
 	}
-	networkExists := func(name string) bool {
-		return exec.CommandContext(ctx, "docker", "network", "inspect", "--format", "{{.Id}}", name).Run() == nil
-	}
-	sharedPreexisted = networkExists(sharedNet)
-	controlPreexisted = networkExists(controlNet)
 	if _, err := docker("network", "create", "--internal", agentNet); err != nil {
 		return err
 	}
 	ownedNetworks = append(ownedNetworks, agentNet)
-	if !sharedPreexisted {
-		if _, err := docker("network", "create", sharedNet); err != nil {
+	for _, network := range []string{sharedNet, controlNet} {
+		if _, err := docker("network", "create", network); err != nil {
 			return err
 		}
-		ownedNetworks = append(ownedNetworks, sharedNet)
+		ownedNetworks = append(ownedNetworks, network)
 	}
 	const toolhubFixture = `import json
 from http.server import BaseHTTPRequestHandler,HTTPServer
@@ -167,6 +161,14 @@ sys.exit(1)`
 	}
 	cfg := supervisor.Config{SpacesRoot: root, Image: image, RuntimeAuth: "supervisor-control-0123456789abcdef", Network: sharedNet, WarmTTL: time.Second, PortBase: 28600}
 	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
+		// Namespace the fixed control bridge inside this fixture, preserving real Docker operations.
+		if len(args) != 0 && args[0] == "network" {
+			for i, arg := range args {
+				if arg == "hermes-hub-control" {
+					args[i] = controlNet
+				}
+			}
+		}
 		output, err := exec.CommandContext(callCtx, "docker", args...).CombinedOutput()
 		if len(args) != 0 && args[0] == "rm" {
 			name := args[len(args)-1]
@@ -477,9 +479,6 @@ sys.exit(1)`
 		if _, err := inspect(name); err == nil {
 			return fmt.Errorf("managed container %s survived teardown", name)
 		}
-	}
-	if !controlPreexisted {
-		ownedNetworks = append(ownedNetworks, controlNet)
 	}
 	fmt.Println("managed supervisor canary passed: real spawn on internal agent network, relay-only control route, live isolation attestation, restart/rollover/secondary parity and combined teardown")
 	return nil

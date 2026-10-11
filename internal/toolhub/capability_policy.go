@@ -609,39 +609,54 @@ func capabilityDecision(profile CapabilityProfile, policy CapabilityPolicy, sele
 	for _, use := range tool.Uses {
 		tuple := CapabilityRule{CapabilityID: selection.CapabilityID, ImplementationDigest: selection.ImplementationDigest,
 			Action: use.Action, Resource: use.Resource, ConnectionID: selection.ConnectionID}
-		var actual *string
-		if !projection || use.PathArgument == "" {
-			value := ""
-			if use.PathArgument != "" {
-				// An absent path argument means the tool operates on its
-				// default root and "." is the conventional spelling of that
-				// root; both normalize to "" so the prefix check still bounds
-				// the call (a scoped grant denies an unscoped request).
-				if raw, present := arguments[use.PathArgument]; present {
-					typed, ok := raw.(string)
+		values := []string{""}
+		if !projection && use.PathArgument != "" {
+			switch value := arguments[use.PathArgument].(type) {
+			case nil:
+				if _, present := arguments[use.PathArgument]; present {
+					return CapabilityLimits{}, nil, false
+				}
+			case string:
+				values = []string{value}
+			case []any:
+				values = nil
+				for _, item := range value {
+					v, ok := item.(string)
 					if !ok {
 						return CapabilityLimits{}, nil, false
 					}
-					value = typed
+					values = append(values, v)
 				}
-				if value == "." {
-					value = ""
-				}
-				if !validCapabilityPath(value) {
-					return CapabilityLimits{}, nil, false
-				}
+			case []string:
+				values = value
+			default:
+				return CapabilityLimits{}, nil, false
 			}
-			actual = &value
+			if len(values) == 0 || len(values) > 8192 {
+				return CapabilityLimits{}, nil, false
+			}
 		}
-		bound, prefix, allowed := capabilityRuleDecision(profile, policy, tuple, actual, time.Now())
-		if !allowed {
-			return CapabilityLimits{}, nil, false
+		for _, value := range values {
+			if value == "." {
+				value = ""
+			}
+			var actual *string
+			if !projection || use.PathArgument == "" {
+				actual = &value
+			}
+			if actual != nil && !validCapabilityPath(value) {
+				return CapabilityLimits{}, nil, false
+			}
+			bound, prefix, allowed := capabilityRuleDecision(profile, policy, tuple, actual, time.Now())
+			if !allowed {
+				return CapabilityLimits{}, nil, false
+			}
+			if use.PathArgument != "" {
+				scopes = append(scopes, CapabilityScope{Resource: use.Resource, PathArgument: use.PathArgument, PathPrefix: prefix})
+			}
+			limits.OutputBytes = min(limits.OutputBytes, bound.OutputBytes)
+			limits.TimeoutSeconds = min(limits.TimeoutSeconds, bound.TimeoutSeconds)
 		}
-		if use.PathArgument != "" {
-			scopes = append(scopes, CapabilityScope{Resource: use.Resource, PathArgument: use.PathArgument, PathPrefix: prefix})
-		}
-		limits.OutputBytes = min(limits.OutputBytes, bound.OutputBytes)
-		limits.TimeoutSeconds = min(limits.TimeoutSeconds, bound.TimeoutSeconds)
 	}
 	return limits, scopes, len(tool.Uses) > 0
 }

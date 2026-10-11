@@ -1002,6 +1002,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
 		m.usageHTTP(w, r)
+	case "/v1/script":
+		m.scriptHTTP(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 			m.jobStatus(w, r, strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
@@ -1252,12 +1254,25 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Usage is a user command: a stopped runtime is spawned exactly like a
 	// message would spawn it, and the lifecycle lease pins it for the query.
-	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	var lease Lease
+	var runtime Runtime
+	if request.LookupOnly {
+		m.mu.Lock()
+		entry := m.items[runtimeKey(binding)]
+		if entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) {
+			runtime = entry.Runtime
+		}
+		m.mu.Unlock()
+	} else {
+		lease, runtime, err = m.Acquire(r.Context(), binding, LeaseLifecycle)
+	}
 	if err != nil || runtime.Address == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}
-	defer m.ReleaseLease(lease.ID)
+	if lease.ID != "" {
+		defer m.ReleaseLease(lease.ID)
+	}
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/usage", bytes.NewReader(body))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})

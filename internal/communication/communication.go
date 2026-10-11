@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
@@ -527,6 +528,7 @@ type Job struct {
 
 type Delivery struct {
 	ID               string `json:"id"`
+	OccurrenceID     string `json:"occurrence_id,omitempty"`
 	JobID            string `json:"job_id"`
 	IdempotencyKey   string `json:"idempotency_key,omitempty"`
 	ConversationID   string `json:"conversation_id"`
@@ -554,9 +556,64 @@ type Delivery struct {
 	SentArtifacts int                      `json:"sent_artifacts,omitempty"`
 	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
 	// synthesized audio is sent straight to the channel and never persisted.
-	Voice     string    `json:"voice,omitempty"`
-	Attempts  int       `json:"attempts"`
-	CreatedAt time.Time `json:"created_at"`
+	Voice string `json:"voice,omitempty"`
+	// Buttons carries Telegram inline-keyboard rows (one button per row) for
+	// channels that support them; Data is the opaque callback payload.
+	Buttons   []DeliveryButton `json:"buttons,omitempty"`
+	Attempts  int              `json:"attempts"`
+	CreatedAt time.Time        `json:"created_at"`
+}
+
+type DeliveryButton struct {
+	Text string `json:"text"`
+	Data string `json:"data"`
+}
+
+// approvalButtonsLocked persists one durable callback record per choice and
+// returns the inline-keyboard row. Callback data stays under Telegram's
+// 64-byte limit ("a:" + 24 hex chars); the record survives restarts so a tap
+// resolves long after the message was sent. s.mu must be held.
+func (s *Spool) approvalButtonsLocked(jobID, requestID string, choices []string) ([]DeliveryButton, error) {
+	buttons := make([]DeliveryButton, 0, len(choices))
+	for _, choice := range choices {
+		digest := sha256.Sum256([]byte(jobID + "\x00" + requestID + "\x00" + choice))
+		id := hex.EncodeToString(digest[0:12])
+		record := approvalCallback{JobID: jobID, RequestID: requestID, Choice: choice}
+		if err := atomicJSON(filepath.Join(s.root, "callbacks", id+".json"), record); err != nil {
+			return nil, err
+		}
+		buttons = append(buttons, DeliveryButton{Text: choice, Data: "a:" + id})
+	}
+	return buttons, nil
+}
+
+type approvalCallback struct {
+	JobID     string `json:"job_id"`
+	RequestID string `json:"request_id"`
+	Choice    string `json:"choice"`
+}
+
+// ApprovalCallback resolves inline-keyboard callback data to the persisted
+// (job, request, choice) tuple. Unknown or malformed data is rejected.
+func (s *Spool) ApprovalCallback(data string) (jobID, requestID, choice string, err error) {
+	id := strings.TrimPrefix(data, "a:")
+	if id == data || len(id) != 24 {
+		return "", "", "", errors.New("unknown callback")
+	}
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", "", "", errors.New("unknown callback")
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(s.root, "callbacks", id+".json"))
+	if err != nil {
+		return "", "", "", errors.New("unknown callback")
+	}
+	var record approvalCallback
+	if err := json.Unmarshal(b, &record); err != nil || record.JobID == "" || record.RequestID == "" || record.Choice == "" {
+		return "", "", "", errors.New("unknown callback")
+	}
+	return record.JobID, record.RequestID, record.Choice, nil
 }
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
@@ -567,34 +624,74 @@ type Spool struct {
 	// inFlight maps (principal, context) to the job currently allowed to run;
 	// held until the job's mapping reaches a terminal status. In-memory only,
 	// rebuilt from durable mappings on startup (ADR-0025).
-	inFlight map[string]string
+	inFlight        map[string]string
+	proactiveFlight map[string]bool
 	// JobDone, when set, runs asynchronously at each terminal outcome so the
 	// ToolHub cell controller can reap task-tier cells keyed by the job.
 	JobDone func(jobID, principalID string)
 }
 
 func NewSpool(root string) (*Spool, error) {
+	unlock, err := LockSpool(root)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	s, err := OpenSpool(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.recover(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// LockSpool fences the gateway lifetime and offline writers on one host.
+func LockSpool(root string) (func(), error) {
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	lock := flock.New(filepath.Join(root, ".writer.lock"))
+	locked, err := lock.TryLock()
+	if err != nil {
+		return nil, err
+	}
+	if !locked {
+		_ = lock.Close()
+		return nil, errors.New("spool has an active writer; stop the gateway before offline apply")
+	}
+	return func() { _ = lock.Close() }, nil
+}
+
+// OpenSpool opens queue directories without classifying in-progress work.
+// Offline mutations must hold LockSpool until every write completes.
+func OpenSpool(root string) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "tmp"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
 	}
+	return s, nil
+}
+
+func (s *Spool) recover() error {
 	// A process can die after claiming work. Mapped jobs stay failed/uncertain so
 	// a restart never silently replays an external run; legacy jobs remain retryable.
 	if err := s.recoverJobs(); err != nil {
-		return nil, err
+		return err
 	}
-	if err := recoverFiles(filepath.Join(root, "outbox", "sending"), filepath.Join(root, "outbox", "failed")); err != nil {
-		return nil, err
+	if err := recoverFiles(filepath.Join(s.root, "outbox", "sending"), filepath.Join(s.root, "outbox", "failed")); err != nil {
+		return err
 	}
 	if err := s.rebuildMappings(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := s.recoverStreamEvents(); err != nil {
-		return nil, err
+		return err
 	}
-	return s, nil
+	return nil
 }
 
 func (s *Spool) recoverJobs() error {
@@ -799,6 +896,19 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		if err := json.Unmarshal(b, &job); err != nil {
 			return nil, err
 		}
+		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") {
+			body, err := os.ReadFile(filepath.Join(s.root, "occurrences", spoolFileID(job.ID)+".json"))
+			var o RoutineOccurrence
+			if err != nil || json.Unmarshal(body, &o) != nil || !s.occurrenceCurrentLocked(o) {
+				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "routine.cancelled"}, "cancelled", true); err != nil {
+					return nil, err
+				}
+				if err := os.Rename(pending, filepath.Join(s.root, "failed", name)); err != nil {
+					return nil, err
+				}
+				continue
+			}
+		}
 		key := jobContextKey(job.PrincipalID, job.ContextID)
 		if holder, busy := s.inFlight[key]; busy && holder != job.ID {
 			continue // Context serialization is per key; other contexts stay claimable.
@@ -880,8 +990,18 @@ func (s *Spool) FailJob(id string) error {
 }
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
+	var err error
+	if d, err = normalizeDelivery(d); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enqueueDeliveryLocked(d)
+}
+
+func normalizeDelivery(d Delivery) (Delivery, error) {
 	if d.Format != "" && d.Format != formatMarkdown {
-		return errors.New("invalid delivery identity")
+		return d, errors.New("invalid delivery identity")
 	}
 	if d.Channel == "" {
 		d.Channel = "telegram_bot"
@@ -897,17 +1017,28 @@ func (s *Spool) EnqueueDelivery(d Delivery) error {
 		}
 		// Group forum chats carry negative ids; zero stays invalid.
 		if d.ChatID == 0 || !identity.ValidID(d.ConversationID) || d.DeliveryTargetID != transportID {
-			return errors.New("invalid delivery identity")
+			return d, errors.New("invalid delivery identity")
 		}
 	case "slack_app":
 		if !identity.ValidID(d.ConversationID) || !identity.ValidID(d.DeliveryTargetID) || d.DeliveryTargetID != d.ConversationID || !validSlackIMChannel(d.SlackChannel) || !validSlackThread(d.SlackThread) {
-			return errors.New("invalid delivery identity")
+			return d, errors.New("invalid delivery identity")
+		}
+	case "mock":
+		if d.ChatID == 0 {
+			return d, errors.New("invalid delivery identity")
 		}
 	default:
-		return errors.New("invalid delivery identity")
+		return d, errors.New("invalid delivery identity")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return d, nil
+}
+
+// enqueueDeliveryLocked is idempotent across the whole outbox lifecycle; s.mu
+// must be held.
+func (s *Spool) enqueueDeliveryLocked(d Delivery) error {
+	if d.OccurrenceID == "" && strings.HasPrefix(d.JobID, "routine-") {
+		d.OccurrenceID = d.JobID
+	}
 	for _, dir := range []string{"pending", "sending", "done", "failed"} {
 		if _, err := os.Stat(filepath.Join(s.root, "outbox", dir, spoolFileID(d.ID)+".json")); err == nil {
 			return nil
@@ -1078,14 +1209,27 @@ func atomicJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncSpoolDirectory(filepath.Dir(path))
 }
 
 // Telegram API subset used by the adapter.
 type Update struct {
-	UpdateID      int      `json:"update_id"`
-	Message       *Message `json:"message,omitempty"`
-	EditedMessage *Message `json:"edited_message,omitempty"`
+	UpdateID      int            `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	EditedMessage *Message       `json:"edited_message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+}
+
+// CallbackQuery is a Telegram inline-keyboard tap. Data resolves through the
+// durable callback store; Message carries the originating chat.
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *TGUser  `json:"from,omitempty"`
+	Message *Message `json:"message,omitempty"`
+	Data    string   `json:"data,omitempty"`
 }
 type Message struct {
 	MessageID int     `json:"message_id"`
@@ -1170,6 +1314,8 @@ type TelegramAPI interface {
 	GetFile(context.Context, string) (TelegramFile, error)
 	DownloadFile(context.Context, string, io.Writer) error
 	SendVoice(context.Context, int64, int64, []byte, string) error
+	SendKeyboard(context.Context, int64, int64, string, []DeliveryButton) error
+	AnswerCallbackQuery(context.Context, string, string) error
 	SetMyCommands(context.Context) error
 }
 
@@ -1231,7 +1377,7 @@ func (t *telegramAPI) callRequest(req *http.Request, result any) error {
 
 func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int) ([]Update, error) {
 	var result []Update
-	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message"}}, &result)
+	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message", "callback_query"}}, &result)
 	return result, err
 }
 func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, text, parseMode string) error {
@@ -1246,6 +1392,26 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, te
 		payload[topicField(chatID)] = topicID
 	}
 	return t.call(ctx, "sendMessage", payload, nil)
+}
+func (t *telegramAPI) SendKeyboard(ctx context.Context, chatID, topicID int64, text string, buttons []DeliveryButton) error {
+	if len(buttons) == 0 {
+		return errors.New("invalid Telegram button")
+	}
+	rows := make([][]map[string]string, 0, len(buttons))
+	for _, button := range buttons {
+		if len(button.Data) > 64 {
+			return errors.New("invalid Telegram button")
+		}
+		rows = append(rows, []map[string]string{{"text": button.Text, "callback_data": button.Data}})
+	}
+	payload := map[string]any{"chat_id": chatID, "text": text, "reply_markup": map[string]any{"inline_keyboard": rows}}
+	if topicID > 0 {
+		payload[topicField(chatID)] = topicID
+	}
+	return t.call(ctx, "sendMessage", payload, nil)
+}
+func (t *telegramAPI) AnswerCallbackQuery(ctx context.Context, id, text string) error {
+	return t.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
 }
 func (t *telegramAPI) SendDocument(ctx context.Context, chatID, topicID int64, name, caption string, data []byte) error {
 	if len(data) == 0 || len(data) > videoSizeLimit || name == "" {
@@ -1505,6 +1671,7 @@ func processEnv(userEnv map[string]string) []string {
 }
 
 type Gateway struct {
+	watchHTTP    *http.Client
 	config       Config
 	users        map[int64]User
 	slackUsers   map[string]User
@@ -1514,6 +1681,9 @@ type Gateway struct {
 	runner       Runner
 	restart      func(context.Context, hubruntime.ExecuteRequest) error
 	busy         atomic.Int32
+	usageQueries atomic.Int32
+	usageWG      sync.WaitGroup
+	commandCtx   context.Context
 	now          func() time.Time
 	secrets      *secrets.Service
 	audit        *audit.Ledger
@@ -1676,7 +1846,16 @@ func openCredentialSurface(config Config) (*secrets.Service, *audit.Ledger, erro
 }
 
 func (g *Gateway) Run(ctx context.Context) error {
+	unlock, err := LockSpool(g.spool.root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := g.spool.recover(); err != nil {
+		return err
+	}
 	workerCtx, cancel := context.WithCancel(ctx)
+	g.commandCtx = workerCtx
 	var workerWG sync.WaitGroup
 	for i := 0; i < max(1, g.config.Workers); i++ {
 		workerWG.Add(1)
@@ -1687,14 +1866,25 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
+	proactiveDone := make(chan struct{})
+	go func() {
+		defer close(proactiveDone)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			g.tickProactiveContext(workerCtx, g.now().UTC())
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 	go func() {
 		defer close(controlDone)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
-			now := g.now().UTC()
-			_ = g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence)
-			_ = g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence)
 			g.controlOne(workerCtx)
 			select {
 			case <-workerCtx.Done():
@@ -1721,6 +1911,8 @@ func (g *Gateway) Run(ctx context.Context) error {
 		workerWG.Wait()
 		<-deliveryDone
 		<-controlDone
+		<-proactiveDone
+		g.usageWG.Wait()
 	}()
 	offset, err := g.spool.LoadOffset()
 	if err != nil {
@@ -1752,7 +1944,33 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}
 }
 
+// handleCallback applies an inline-keyboard tap: the opaque data resolves to a
+// durable (job, request, choice) record, then the same ownership-checked
+// approval path as /approve runs. Every tap is answered so Telegram stops
+// showing the loading spinner; rejected taps change nothing.
+func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) error {
+	answer := "Запрос отклонен: подтверждение недоступно."
+	if query.From != nil {
+		if user, ok := g.users[query.From.ID]; ok {
+			if jobID, requestID, choice, err := g.spool.ApprovalCallback(query.Data); err == nil {
+				caller := user.envelope(query.From.ID)
+				if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
+					caller.ConversationID = mapping.ConversationID
+					caller.DeliveryTargetID = mapping.DeliveryTargetID
+				}
+				if err := g.spool.RequestApproval(jobID, caller, requestID, choice); err == nil {
+					answer = "Ответ на подтверждение сохранен."
+				}
+			}
+		}
+	}
+	return g.api.AnswerCallbackQuery(ctx, query.ID, answer)
+}
+
 func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
+	if query := update.CallbackQuery; query != nil {
+		return g.handleCallback(ctx, query)
+	}
 	edited := update.EditedMessage != nil
 	message := update.Message
 	if message == nil {
@@ -1863,20 +2081,50 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply(g.useCommand(user, message.Chat.ID, text))
 		case "delete":
 			return reply(g.deleteCommand(user, message.Chat.ID, task, text))
-		case "session":
+		case "session", "status":
 			return reply(g.taskStatus(user, task))
+		case "routines":
+			items, err := g.spool.ListSchedules(user.envelope(message.From.ID))
+			if err != nil {
+				return reply("Список напоминаний недоступен.")
+			}
+			lines := []string{"Напоминания и проверки:"}
+			for _, item := range items {
+				state := "активно"
+				if item.Paused || !item.Enabled {
+					state = "пауза"
+				}
+				lines = append(lines, item.ScheduleID+" — "+item.JobKind+", "+state+", "+item.NextDue.UTC().Format(time.RFC3339))
+			}
+			if len(items) == 0 {
+				lines = append(lines, "Пока нет.")
+			}
+			return reply(strings.Join(lines, "\n"))
 		case "usage":
+			if fields := strings.Fields(text); len(fields) < 2 || fields[1] != "session" {
+				return reply(g.journalUsage(user, text))
+			}
 			// Measuring usage means up to minutes of sequential HTTP work
 			// (supervisor ensure, session row, lineage, quota calls); run it
 			// beside the poll or one /usage would stall every later update.
+			if g.usageQueries.Add(1) > 2 {
+				g.usageQueries.Add(-1)
+				return reply("Измерение уже выполняется. Повторите позже.")
+			}
+			queryCtx := ctx
+			if g.commandCtx != nil {
+				queryCtx = g.commandCtx
+			}
+			g.usageWG.Add(1)
 			go func() {
-				usageCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer func() { g.usageQueries.Add(-1); g.usageWG.Done() }()
+				usageCtx, cancel := context.WithTimeout(queryCtx, 2*time.Minute)
 				defer cancel()
 				answer := g.usageCommand(usageCtx, user, message.From.ID, task)
 				_ = g.queueDelivery(context.Background(), "telegram-"+strconv.Itoa(update.UpdateID)+"-usage", message.Chat.ID, topic, answer)
 			}()
 			return reply("Измеряю расход…")
-		case "connections", "connection":
+		case "connections", "connection", "connectors":
 			return reply(g.connectionsCommand(user, message.From.ID))
 		case "help":
 			return reply(commandHelp())
@@ -1907,6 +2155,9 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 
 func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64) error {
 	envelope := user.envelope(sender)
+	if channel == "mock" {
+		envelope = user.mockEnvelope(chatID)
+	}
 	envelope.ConversationID = task.ConversationID
 	if channel == "telegram_bot" && chatID < 0 {
 		// Group forum jobs deliver to the group chat, not the sender's DM.
@@ -1935,7 +2186,10 @@ var botCommandInventory = []struct {
 	{"use", "Переключиться на сессию: /use <id|имя|default>"},
 	{"delete", "Удалить сессию: /delete [id|имя]"},
 	{"session", "Текущая сессия: имя, дата, session id"},
-	{"usage", "Расход токенов сессии и лимиты подписки"},
+	{"status", "Текущая задача без вызова модели"},
+	{"routines", "Напоминания и фоновые проверки"},
+	{"usage", "Журнал расхода: /usage [day|week|month|session]"},
+	{"connectors", "Подключения и коннекторы ToolHub"},
 	{"connections", "Подключения и коннекторы ToolHub"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
 	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
@@ -2060,6 +2314,10 @@ func (g *Gateway) worker(ctx context.Context) {
 			_ = g.spool.RequeueObservations(g.now().UTC())
 		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
+			if job.Trigger == "cron" && job.Text != "" && g.authorizeOccurrence(*job) != nil {
+				_ = g.spool.FailJob(job.ID)
+				continue
+			}
 			g.busy.Add(1)
 			var response string
 			var outcome RunOutcome
@@ -2129,9 +2387,46 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	if err != nil || delivery == nil {
 		return
 	}
+	if delivery.JobID != "" {
+		mapping, found, err := g.spool.Mapping(delivery.JobID)
+		if err != nil {
+			_ = g.spool.UncertainDelivery(delivery.ID)
+			return
+		}
+		if found {
+			user := g.user(mapping.PrincipalID)
+			current := user.envelope(1)
+			if !user.Enabled || user.ID != mapping.PrincipalID || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion || (delivery.DeliveryTargetID != "" && delivery.DeliveryTargetID != mapping.DeliveryTargetID) {
+				_ = g.spool.UncertainDelivery(delivery.ID)
+				return
+			}
+			if mapping.Channel == "mock" {
+				owner, err := g.mockLinkOwner(delivery.ChatID)
+				if err != nil || owner != user.ID {
+					_ = g.spool.UncertainDelivery(delivery.ID)
+					return
+				}
+			}
+		}
+	}
+	if delivery.OccurrenceID != "" {
+		g.spool.mu.Lock()
+		b, readErr := os.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(delivery.OccurrenceID)+".json"))
+		var o RoutineOccurrence
+		valid := readErr == nil && json.Unmarshal(b, &o) == nil && g.spool.occurrenceCurrentLocked(o) && g.authorizeOccurrence(o.Job) == nil
+		g.spool.mu.Unlock()
+		if !valid {
+			_ = g.spool.UncertainDelivery(delivery.ID)
+			return
+		}
+	}
 	delivery.Attempts++
 	var sendErr error
 	switch delivery.Channel {
+	case "mock":
+		// The local test bench captures instead of sending: the durable
+		// record under spool/mock-sent is what /v1/mock/outbox reports.
+		sendErr = g.captureMock(delivery)
 	case "slack_app":
 		if g.slack == nil {
 			sendErr = errors.New("slack delivery is not configured")
@@ -2158,6 +2453,8 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		if !voiceSent {
 			if delivery.Format == formatMarkdown {
 				sendErr = g.sendTelegramMarkdown(ctx, delivery)
+			} else if len(delivery.Buttons) > 0 {
+				sendErr = g.api.SendKeyboard(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), delivery.Buttons)
 			} else {
 				sendErr = g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
 			}
@@ -2166,7 +2463,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			}
 		}
 	}
-	if sendErr == nil && delivery.SentArtifacts < len(delivery.Artifacts) {
+	if sendErr == nil && delivery.Channel != "mock" && delivery.SentArtifacts < len(delivery.Artifacts) {
 		sendErr = g.sendDeliveryArtifacts(ctx, delivery)
 	}
 	if sendErr != nil {

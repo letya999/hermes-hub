@@ -12,6 +12,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0083](done/CHG-0083-m10-stabilization/plan.md) | M10 A–C stabilization implemented; local unit/security/Linux/Docker acceptance passed; live channel acceptance separate |
 | [CHG-0079](done/CHG-0079-cli-policy-completion/plan.md) | Done: six CLI policy/catalog gaps, full checks and local dev deployment verified |
 | [CHG-0078](done/CHG-0078-cli-cells/plan.md) | Done: per-principal sandbox cells (sibling containers, net none, warm ladder, toolbox mounts, shared-catalog grants) — issues #239–#242, live model verified |
 | [CHG-0077](done/CHG-0077-toolhub-cli/plan.md) | Done: milestone 9 ToolHub CLI connectors — SPEC-0047, admission verifier, catalog defs, prepare_source cli, digest-pinned artifacts |

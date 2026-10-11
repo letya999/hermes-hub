@@ -854,7 +854,11 @@ queries the pinned CLIProxyAPI management surface (`auth-files`, then an
 authenticated `api-call` to the provider quota endpoint) and prints measured
 subscription limits with reset times; OAuth tokens stay inside the proxy. The
 result is cached for five minutes and failures render `недоступно` rather than
-a guess.
+a guess. Separately, every terminal job appends one measured input/output token
+entry to a durable per-scope usage journal; duplicate job/run pairs are ignored.
+`/usage` appends the journal total (`Всего по журналу`) for the owning scope —
+accounting only, no quotas or blocks — and an unreachable usage endpoint never
+fails the job itself.
 
 Reconciliation reserves capacity for every restored non-stopped runtime. A
 missing idle container releases that capacity only after TTL and a durable

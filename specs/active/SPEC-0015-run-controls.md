@@ -6,9 +6,15 @@ title: Durable cancellation and approval controls
 # Ownership and commands
 
 1. A verified private conversation may request `/cancel <job_id>` or
-   `/approve <job_id> <request_id> <choice>`. Supported choices come from the
-   exact native Hermes request: once, session, always or deny. A command is
-   an explicit owner instruction, never a model-generated permission grant.
+   `/approve <job_id> <request_id> <choice>`, or tap an inline-keyboard button
+   attached to the approval request itself. Supported choices come from the
+   exact native Hermes request: once, session, always or deny. A command or a
+   button tap is an explicit owner instruction, never a model-generated
+   permission grant.
+2. Approval buttons carry opaque callback data resolving to a durable
+   `(job, request, choice)` record bound at request time; a tap enters the
+   same ownership-checked approval path as `/approve` and repeats are
+   idempotent.
 2. The Hub resolves the original principal, context, conversation, policy,
    runtime, generation, session and run from its durable mapping. Caller-supplied
    authority fields cannot replace these bindings.

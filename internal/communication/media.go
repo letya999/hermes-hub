@@ -197,8 +197,23 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	if name == "" {
 		name = media.FileID
 	}
+	inbox := ""
+	if path, err := g.downloadTelegramMedia(ctx, media.FileID); err == nil && path != "" {
+		defer os.Remove(path)
+		if staged, err := os.Open(path); err == nil {
+			rec := InboundRecord{ID: "in-" + strconv.Itoa(update.UpdateID), UserID: user.ID, ConversationID: envelope.ConversationID, Name: name, Mime: envelope.MIME, CreatedAt: time.Now().UTC()}
+			if err := g.spool.StageInbound(rec, staged); err == nil {
+				inbox = rec.ID
+			}
+			_ = staged.Close()
+		}
+	}
 	text := strings.TrimSpace(message.Caption)
-	meta := "[file name=" + name + " mime=" + envelope.MIME + " size=" + strconv.FormatInt(media.FileSize, 10) + "]"
+	meta := "[file name=" + name + " mime=" + envelope.MIME + " size=" + strconv.FormatInt(media.FileSize, 10)
+	if inbox != "" {
+		meta += " inbox=" + inbox
+	}
+	meta += "]"
 	if text == "" {
 		text = meta
 	} else {
