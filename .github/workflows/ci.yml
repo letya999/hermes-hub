@@ -76,6 +76,7 @@ jobs:
           path: coverage-${{ matrix.shard }}.out
           include-hidden-files: false
   checks-verify:
+    name: checks # main branch protection requires this status context
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: checks
