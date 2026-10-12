@@ -42,9 +42,16 @@ completed:
   - Private historical evidence index: 37 mock-server PASS, 36 Telegram-server PASS and one PARTIAL_PASS; this is not a fresh full-scope run.
   - Plain /usage now combines the journal with configured Antigravity quota without blocking the Telegram poll; missing configuration is explicit and unrelated provider credentials are excluded. Local gateway-only management credentials persist through render, with private backups; real CLIProxyAPI returned two quota groups and four buckets from inside the rebuilt gateway.
   - Latest full Go/source gate passed at 85.17%; final rebuilt gateway mock and Telegram text/usage-ledger smoke passed, followed by bounded docker-clean.
+  - Real Telegram update from user 480637186 confirmed /usage session delivery, voice admission/STT path and an inbound 126877-byte file staged without loss; the agent could not fetch the file while ToolHub projected a stale agent-tools binding.
+  - Re-registering agent-tools now uses the store's Enable lifecycle, supersedes old versions and advances the projection revision; focused regression passed. Local binding was repaired with private backup.
+  - Unmanaged governance projection reuses one validated binding per tool group; live ToolHub discovery fell from about 14 seconds to 1.12 seconds after rebuilding and restarting only ToolHub.
+  - Inbound staging records the measured byte count; regression covers a stale declared size.
+  - Full `just check` passed after these fixes with 85.19% Go statement coverage.
+  - Communication gateway rebuilt through hubctl and restarted healthy with measured inbound sizes.
 pending:
   - Complete functional automation for 29 missing core offline fixtures and remaining server-mode oracles; definitions and boundary checks do not prove all-tool agent E2E.
   - Routine snooze is not admitted by selected profile; no grant expansion performed.
   - New CI workflow has not run in Actions; full 5-10x speedup is not measured and conflicts with preserved five-minute waits.
-  - User-sent /usage passed through real Telegram polling; delivered reply contained the journal and two live quota groups with four percent values and reset times. User-sent /usage session, /status, voice and file remain unverified; server injection cannot prove their incoming route.
+  - User-sent /usage passed through real Telegram polling; delivered reply contained the journal and two live quota groups with four percent values and reset times. /usage session also returned session metrics. Incoming voice and file were admitted through real polling, but spoken content and agent-side file fetch remain unverified; /status was not observed in the available gateway log.
+  - Local supervised context currently fails Chromium CDP startup with the retained browser profile; three empty Windows reparse-point Singleton files remain. Automated removal was rejected by policy, including after explicit user authorization. Await manual removal before restarting the context and repeating the file E2E.
   - Local dev images were rebuilt from dev at 54222de; only communication-hub and toolhub were recreated, leaving supervisor contexts and unrelated stacks untouched. Both restarted services are running with the quota environment present; post-restart E2E-064 and E2E-079 passed in mock-server and Telegram-server modes, followed by project-scoped docker-clean.

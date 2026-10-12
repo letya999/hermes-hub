@@ -34,6 +34,7 @@ func (s *Spool) StageInbound(rec InboundRecord, src io.Reader) error {
 	if err != nil {
 		return err
 	}
+	rec.Size = int64(len(data))
 	dir := filepath.Join(s.root, "inbound")
 	if err := os.WriteFile(filepath.Join(dir, rec.ID+".bin"), data, 0600); err != nil {
 		return err

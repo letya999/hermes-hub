@@ -17,7 +17,7 @@ func TestInboundStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := InboundRecord{ID: "in-42", UserID: "alice", ConversationID: "telegram-11", Name: "report.zip", Mime: "application/zip", Size: 5, CreatedAt: time.Now().UTC()}
+	rec := InboundRecord{ID: "in-42", UserID: "alice", ConversationID: "telegram-11", Name: "report.zip", Mime: "application/zip", Size: 99, CreatedAt: time.Now().UTC()}
 	if err := spool.StageInbound(rec, strings.NewReader("bytes")); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestInboundStaging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if got.Name != "report.zip" || got.UserID != "alice" || string(data) != "bytes" {
+	if got.Name != "report.zip" || got.UserID != "alice" || got.Size != int64(len(data)) || string(data) != "bytes" {
 		t.Fatalf("staged record lost: %+v %q", got, data)
 	}
 	if _, err := os.Stat(filepath.Join(spool.root, "inbound")); err != nil {
