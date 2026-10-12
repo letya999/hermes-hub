@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadAgentComparesIndependentOwnerResult(t *testing.T) {
@@ -34,6 +35,9 @@ func TestReadAgentComparesIndependentOwnerResult(t *testing.T) {
 				}
 				for _, operation := range names {
 					server.AddTool(&mcp.Tool{Name: operation, InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+						if name == "discover" && !lie && r.Params.Name == "discover" {
+							time.Sleep(1200 * time.Millisecond) // Catalog lookup can exceed the gateway's short HTTP deadline.
+						}
 						if r.Params.Name == "discover" && string(r.Params.Arguments) != `{"query":"filesystem"}` {
 							t.Fatal("unexpected discovery query")
 						}
@@ -97,6 +101,9 @@ func TestReadAgentComparesIndependentOwnerResult(t *testing.T) {
 					}
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"job_id":%q,"task_id":"task"}`, id)))}, nil
 				})}
+				if name == "discover" && !lie {
+					client.Timeout = time.Second
+				}
 				cfg := communication.Config{SpoolDir: root, ToolHubURL: hs.URL, ControlTokensFile: token, ControlAuth: "synthetic-admin"}
 				status, reason := readAgentCase(context.Background(), client, cfg, communication.User{ID: "alice"}, "mock-server", name)
 				want := "PASS"

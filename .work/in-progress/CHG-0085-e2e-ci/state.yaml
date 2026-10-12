@@ -58,6 +58,8 @@ completed:
   - Fresh Telegram-server text, outgoing voice, usage, reminder and Starlark cases passed for the configured local user after the policy fix. A separate credential-free test principal passed file operations E2E-001–004, bounded shell E2E-047, discovery E2E-050 and diagnostics E2E-060 through the real agent and Bot API.
   - Full `just check` passed after the scheduled-policy parity fix with 85.20% Go statement coverage.
   - The first local `just docker-check dev` run built fresh images but exposed an outdated supervisor-contract fixture that omitted the renderer's default global-skills directory. After correcting the fixture, the pinned Hermes contract, actual five-minute gateway lifecycle, capability boundary, managed network and supervisor canaries, scratch sandbox and quarantine test all passed individually on the built image; project-scoped Docker cleanup completed.
+  - Updated dev images built through hubctl and all eight local dev infrastructure services recreated healthy; post-restart Telegram text and usage passed.
+  - Cold discovery exceeded the E2E runner's 15-second independent HTTP deadline. A failing regression was recorded, the discovery read deadline was extended to 45 seconds, and the updated runner passed discovery in both server modes after catalog warm-up. Full just check passed with 85.20% coverage.
 pending:
   - Complete functional automation for 29 missing core offline fixtures and remaining server-mode oracles; definitions and boundary checks do not prove all-tool agent E2E.
   - Routine snooze is not admitted by selected profile; no grant expansion performed.
@@ -66,3 +68,5 @@ pending:
   - The initial claim that Windows Singleton lock files caused restart failure was not established. DevTools startup exceeded the old deadline; the new deadline passed the subsequent live startup with those files present. The host runner reported exit 137 without Docker OOM after an idle stop.
   - The configured local user lacks an owner-bound ToolHub token in the E2E runner's token file; tool admission cases remain BLOCKED for that user. Passing tests on the separate principal cannot be promoted to local-user evidence.
   - The first independent ToolHub discovery read for the test principal failed once and passed on an isolated repeat; root cause is not established.
+  - Cold catalog discovery still had one agent-answer mismatch against the independent result; warmed discovery passed. The catalog lookup latency and agent response remain unstable under cold conditions.
+  - A new CLI E2E run had no exact temporary operator allow-rule, so its enabled synthetic tool was absent from tools/list; the runner revoked the fixture. The earlier approved CLI lifecycle passes remain valid, but this attempt does not add evidence.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 func readAgentCase(ctx context.Context, client *http.Client, config communication.Config, user communication.User, mode, name string) (string, string) {
@@ -19,7 +20,11 @@ func readAgentCase(ctx context.Context, client *http.Client, config communicatio
 	if status, reason := mockServerCase(ctx, client, config, user, "text"); status != "PASS" {
 		return status, reason
 	}
-	session, err := ownerHubSession(ctx, client, config, user)
+	readClient := *client
+	if name == "discover" {
+		readClient.Timeout = 45 * time.Second // Public catalog lookups can exceed the gateway's 15-second request limit.
+	}
+	session, err := ownerHubSession(ctx, &readClient, config, user)
 	if err != nil {
 		return "BLOCKED", "owner ToolHub session unavailable"
 	}
