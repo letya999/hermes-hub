@@ -35,7 +35,7 @@ func (g *Gateway) quotaLines(ctx context.Context) []string {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_CLIPROXY_MGMT_URL")), "/")
 	key := strings.TrimSpace(os.Getenv("HUB_CLIPROXY_MGMT_KEY"))
 	if base == "" || key == "" {
-		return nil
+		return []string{"Лимиты подписки: источник не настроен на сервере."}
 	}
 	g.quotaMu.Lock()
 	cached, at := g.quotaCache, g.quotaAt
@@ -63,7 +63,7 @@ func fetchQuotaLines(ctx context.Context, base, key, wantIndex string) ([]string
 	}
 	file, found := pickAuthFile(files.Files, wantIndex)
 	if !found {
-		return nil, errors.New("нет активного OAuth-аккаунта")
+		return nil, errors.New("нет активного OAuth-аккаунта Antigravity")
 	}
 	payload := map[string]any{
 		"auth_index": file.AuthIndex,
@@ -113,13 +113,10 @@ func fetchQuotaLines(ctx context.Context, base, key, wantIndex string) ([]string
 	return lines, nil
 }
 
-// pickAuthFile chooses the requested auth_index, else the first live
-// antigravity credential, else the first live credential at all.
+// pickAuthFile uses only Antigravity credentials for the Antigravity quota API.
 func pickAuthFile(files []cliproxyAuthFile, wantIndex string) (cliproxyAuthFile, bool) {
-	fallback := cliproxyAuthFile{}
-	found := false
 	for _, file := range files {
-		if file.Disabled || file.AuthIndex == "" {
+		if file.Disabled || file.AuthIndex == "" || file.Provider != "antigravity" {
 			continue
 		}
 		if wantIndex != "" {
@@ -128,14 +125,9 @@ func pickAuthFile(files []cliproxyAuthFile, wantIndex string) (cliproxyAuthFile,
 			}
 			continue
 		}
-		if file.Provider == "antigravity" {
-			return file, true
-		}
-		if !found {
-			fallback, found = file, true
-		}
+		return file, true
 	}
-	return fallback, found
+	return cliproxyAuthFile{}, false
 }
 
 func quotaResetSuffix(at string) string {

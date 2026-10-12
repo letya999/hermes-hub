@@ -97,7 +97,8 @@ potentially including earlier usage; a reset or missing counter is unknown.
 Legacy version-1 totals are excluded from measured token sums and separately
 counted. No prices, durations or missing API counters are invented. An interrupted
 final append is quarantined before truncation; corrupt completed lines stop writes.
-`/usage [day|week|month] [model=<id>]` reads the journal without waking Hermes.
+`/usage [day|week|month] [model=<id>]` reads the journal and configured
+provider subscription quota without waking Hermes.
 `/usage session` explicitly queries the session and may wake its runtime.
 Background metering only queries an existing runtime, before terminal handoff
 releases the context. `/status`, `/routines` and `/connectors` are deterministic.

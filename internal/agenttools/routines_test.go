@@ -36,6 +36,12 @@ func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 		case "POST /v1/routines/morning":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"schedule_id":"morning"}`))
+		case "POST /v1/routines/morning/snooze":
+			var request map[string]string
+			if json.Unmarshal(body, &request) != nil || request["until"] != "2099-01-02T00:00:00Z" {
+				t.Errorf("wrong snooze payload: %s", body)
+			}
+			w.WriteHeader(http.StatusOK)
 		case "POST /v1/routines/morning/pause", "DELETE /v1/routines/morning":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -59,6 +65,9 @@ func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 	if _, err := v.Routine(ctx, "routine_pause", Input{ID: "morning"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := v.Routine(ctx, "routine_snooze", Input{ID: "morning", Expression: "2099-01-02T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := v.Routine(ctx, "routine_delete", Input{ID: "morning"}); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +77,7 @@ func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 	if _, err := v.Routine(ctx, "unknown", Input{}); err == nil {
 		t.Fatal("unknown op accepted")
 	}
-	if seen["GET /v1/routines"] != 1 || seen["POST /v1/routines"] != 1 || seen["DELETE /v1/routines/morning"] != 1 {
+	if seen["GET /v1/routines"] != 1 || seen["POST /v1/routines"] != 1 || seen["DELETE /v1/routines/morning"] != 1 || seen["POST /v1/routines/morning/snooze"] != 1 {
 		t.Fatalf("hub calls: %v", seen)
 	}
 }

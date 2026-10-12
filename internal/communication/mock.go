@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,27 +24,48 @@ import (
 // handleMockMessage injects one user message for the calling principal.
 // client_id is the caller's idempotency handle — repeats never enqueue twice.
 func (g *Gateway) handleMockMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	caller, ok := g.authorizeControl(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	var in struct {
-		ChatID   int64  `json:"chat_id"`
-		Text     string `json:"text"`
-		ClientID string `json:"client_id"`
+		ChatID   int64      `json:"chat_id"`
+		Text     string     `json:"text"`
+		ClientID string     `json:"client_id"`
+		Voice    *mockVoice `json:"voice,omitempty"`
 	}
-	if err := decodeJSON(r, &in); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, 12<<20)
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&in); err != nil {
 		http.Error(w, "invalid mock message", http.StatusBadRequest)
 		return
 	}
-	if in.ChatID <= 0 || len(in.ClientID) > 128 || strings.TrimSpace(in.Text) == "" {
+	if decoder.Decode(new(any)) != io.EOF {
+		http.Error(w, "invalid mock message", http.StatusBadRequest)
+		return
+	}
+	if in.ChatID <= 0 || len(in.ClientID) > 128 || len(in.Text) > 64<<10 || (strings.TrimSpace(in.Text) == "" && in.Voice == nil) {
 		http.Error(w, "invalid mock message", http.StatusBadRequest)
 		return
 	}
 	if err := g.mockLinkClaim(in.ChatID, caller.PrincipalID); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
+	}
+	if in.Voice != nil {
+		text, err := g.mockVoiceText(r.Context(), in.Voice, in.Text)
+		if err != nil {
+			http.Error(w, "voice preprocessing failed", http.StatusUnprocessableEntity)
+			return
+		}
+		in.Text = text
 	}
 	user := g.user(caller.PrincipalID)
 	task, err := g.spool.ResolveTask(user, in.ChatID, 0, true)

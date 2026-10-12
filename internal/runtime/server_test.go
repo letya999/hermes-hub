@@ -455,7 +455,12 @@ func TestRuntimeHTTPValidationAndHealth(t *testing.T) {
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("health method status %d", recorder.Code)
 	}
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health/detailed" {
+			t.Error("wrong readiness path")
+		}
+		_, _ = w.Write([]byte(`{"readiness":{"status":"ok","checks":{"gateway":{"status":"ok","state":"running"}}},"platforms":{"api_server":{"state":"connected"}}}`))
+	}))
 	defer api.Close()
 	port := api.Listener.Addr().(*net.TCPAddr).Port
 	t.Setenv("HUB_HERMES_API_HOST", "127.0.0.1")

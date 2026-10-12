@@ -27,6 +27,16 @@ import (
 	"github.com/letya999/hermes-hub/internal/supervisor"
 )
 
+// SupervisorContract uses its own provider so it can run beside the native and gateway gates.
+func SupervisorContract(ctx context.Context, image string) error {
+	provider, url, err := nativeContractProvider()
+	if err != nil {
+		return err
+	}
+	defer func() { provider.CloseClientConnections(); provider.Close() }()
+	return supervisorSmoke(ctx, image, url)
+}
+
 // SupervisorSmoke exercises the real host supervisor against the pinned image:
 // one context is started, kept ready, reaped, and cold-started from the same home.
 func supervisorSmoke(ctx context.Context, image, providerURL string) error {

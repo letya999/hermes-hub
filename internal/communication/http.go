@@ -17,6 +17,8 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/routines/", g.handleRoutineItem)
+	mux.HandleFunc("/v1/tasks", g.handleTasks)
+	mux.HandleFunc("/v1/tasks/", g.handleTasks)
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
 	mux.HandleFunc("/v1/knowledge", g.handleKnowledge)
 	mux.HandleFunc("/v1/knowledge/", g.handleKnowledge)

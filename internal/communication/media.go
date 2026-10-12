@@ -170,11 +170,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, "Не удалось распознать голосовое сообщение. Отправьте текст.")
 	}
 	envelope.TranscriptStatus = "ok"
-	caption := strings.TrimSpace(message.Caption)
-	text := "[voice mime=" + envelope.MIME + " duration=" + strconv.Itoa(envelope.Duration) + " transcript=ok]\n" + transcript
-	if caption != "" {
-		text = caption + "\n" + text
-	}
+	text := voiceInputText(transcript, message.Caption, envelope.MIME, envelope.Duration)
 	return g.enqueueMediaJob(ctx, update, user, message, text)
 }
 

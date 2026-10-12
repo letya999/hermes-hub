@@ -108,7 +108,11 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		if err != nil {
 			return err
 		}
-		if mapping.Fingerprint != jobFingerprint(o.Job) {
+		admitted := o.Job
+		if admitted.TaskID != "" && admitted.TaskID != defaultTaskID {
+			admitted.ConversationID = taskConversation(admitted.ChatID, admitted.TaskID)
+		}
+		if mapping.TaskID != o.Job.TaskID || mapping.TopicID != o.Job.TopicID || !mapping.MatchesJob(admitted) {
 			return errors.New("occurrence job binding changed")
 		}
 		key := o.Job.PrincipalID + "\x00" + o.Job.ContextID + "\x00" + o.ScheduleID
@@ -220,7 +224,7 @@ func (g *Gateway) authorizeOccurrence(job Job) error {
 	switch job.Channel {
 	case "telegram_bot":
 		mapped, ok := g.users[job.ChatID]
-		if !ok || mapped.ID != user.ID || (configured && !slices.Contains(user.TelegramIDs, job.ChatID)) || job.Envelope != user.envelope(job.ChatID) {
+		if !ok || mapped.ID != user.ID || (configured && !slices.Contains(user.TelegramIDs, job.ChatID)) || !g.ownsRoutineEnvelope(job, user.envelope(job.ChatID)) {
 			return errors.New("routine policy changed")
 		}
 	case "slack_app":
@@ -229,13 +233,30 @@ func (g *Gateway) authorizeOccurrence(job Job) error {
 		}
 	case "mock":
 		owner, err := g.mockLinkOwner(job.ChatID)
-		if err != nil || owner != user.ID || job.Envelope != user.mockEnvelope(job.ChatID) {
+		if err != nil || owner != user.ID || !g.ownsRoutineEnvelope(job, user.mockEnvelope(job.ChatID)) {
 			return errors.New("routine policy changed")
 		}
 	default:
 		return errors.New("routine owner unavailable")
 	}
 	return nil
+}
+
+func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool {
+	if job.TaskID != "" && job.TaskID != defaultTaskID {
+		// The record is atomically replaced; this read also runs under the spool
+		// lock during dispatch, so taking that lock here would deadlock.
+		task, err := g.spool.loadTaskLocked(job.PrincipalID, job.TaskID)
+		if err != nil || task.Archived || task.ContextID != job.ContextID || task.ChatID != job.ChatID || task.TopicID != job.TopicID {
+			return false
+		}
+		// Before admission the envelope is canonical; enqueue pins its
+		// conversation to the owned task. Both phases keep every other field.
+		if job.ConversationID == task.ConversationID {
+			canonical.ConversationID = task.ConversationID
+		}
+	}
+	return job.Envelope == canonical
 }
 
 func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {

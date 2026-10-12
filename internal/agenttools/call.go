@@ -2,6 +2,7 @@ package agenttools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,17 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 	var r Input
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("executor arguments: %w", err)
+	}
+	// Private scratch exports must survive JSON without UTF-8 replacement.
+	if encoded, present := arguments["export_base64"]; present {
+		value, ok := encoded.(string)
+		if name != "file_write" || !ok || len(value) > base64.StdEncoding.EncodedLen(Limit) || r.Text != "" || r.Revision != "" {
+			return nil, errors.New("invalid private file export")
+		}
+		r.exportBytes, err = base64.StdEncoding.DecodeString(value)
+		if err != nil || len(r.exportBytes) > Limit {
+			return nil, errors.New("invalid private file export")
+		}
 	}
 	if name == "image_inspect" && len(r.Paths) > 0 {
 		return nil, errors.New("use images_inspect for capability-admitted image sets")

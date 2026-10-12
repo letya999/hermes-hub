@@ -12,6 +12,75 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spaces")
+	owner := filepath.Join(root, "infra")
+	secondary := filepath.Join(root, "alice")
+	for _, name := range []string{owner, secondary, filepath.Join(root, "other")} {
+		if err := os.MkdirAll(name, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := Settings{Schema: 1, User: "infra", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace", "image_gen"), Ingress: testIngress("workspace", "image_gen"), BrowserPort: 6080, OAuthPort: 8000}
+	if err := WriteSpace(owner, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=shared-synthetic\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	no := false
+	s.User, s.Infra, s.Environment = "alice", &no, "dev"
+	if err := WriteSpace(secondary, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondary, "media.auth"), []byte("HUB_MEDIA_AUTH=unused-local\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := runtimeMediaAuth(secondary, s)
+	if err != nil || auth["HUB_MEDIA_AUTH"] != "shared-synthetic" {
+		t.Fatal("secondary did not use shared media auth", err)
+	}
+	for _, mode := range []string{"", "managed"} {
+		s.CapabilityMode = mode
+		for _, file := range RuntimeService(s, root, secondary)["env_file"].([]any) {
+			if file.(M)["path"] == filepath.ToSlash(filepath.Join(secondary, "media.auth")) {
+				t.Fatal("secondary compose overrides shared auth with unused local token")
+			}
+		}
+	}
+	s.CapabilityMode = ""
+	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=rotated-synthetic\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auth, err = runtimeMediaAuth(secondary, s)
+	if err != nil || auth["HUB_MEDIA_AUTH"] != "rotated-synthetic" {
+		t.Fatal("rotation ignored", err)
+	}
+	other := s
+	other.User, other.Infra = "other", nil
+	if err := WriteSpace(filepath.Join(root, "other"), other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+		t.Fatal("ambiguous shared owner accepted")
+	}
+	if err := os.RemoveAll(filepath.Join(root, "other")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(owner, "media.auth")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+		t.Fatal("missing shared auth fell back to local")
+	}
+	if err := os.Mkdir(filepath.Join(owner, "media.auth"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+		t.Fatal("non-file shared auth accepted")
+	}
+}
+
 func TestMediaProfileBuildsSharedImageOnce(t *testing.T) {
 	for _, environment := range []string{"dev", "prod"} {
 		t.Run(environment, func(t *testing.T) {

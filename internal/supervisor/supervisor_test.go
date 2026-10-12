@@ -157,16 +157,25 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 	restarted := false
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		restarted = r.URL.Path == "/v1/restart" && r.Header.Get("Authorization") == "Bearer secret"
-		w.WriteHeader(http.StatusOK)
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
 	}))
 	defer runtimeAPI.Close()
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
 	normalized, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := m.Ensure(context.Background(), normalized); err != nil {
+		t.Fatal(err)
+	}
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	entry := m.items[runtimeKey(normalized)]
+	entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, Ready, 0, "secret"
 	m.mu.Unlock()
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "restart", JobID: "restart-job", IdempotencyKey: "restart-job"}
 	body, err := json.Marshal(request)
@@ -250,16 +259,25 @@ func TestRestartRequestMarksOwnedRuntimeByState(t *testing.T) {
 				case "/v1/restart":
 					applied = true
 				}
-				w.WriteHeader(http.StatusOK)
+				writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
 			}))
 			defer runtimeAPI.Close()
-			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "inspect" {
+					return nil, os.ErrNotExist
+				}
+				return []byte("running"), nil
+			}, func(context.Context, string, string) error { return nil })
 			normalized, err := m.normalize(binding(root))
 			if err != nil {
 				t.Fatal(err)
 			}
+			if _, err := m.Ensure(context.Background(), normalized); err != nil {
+				t.Fatal(err)
+			}
 			m.mu.Lock()
-			m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: tc.state}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+			entry := m.items[runtimeKey(normalized)]
+			entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, tc.state, 0, "secret"
 			m.mu.Unlock()
 			body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice", "runtime_id": "alice"})
 			if err != nil {

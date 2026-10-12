@@ -1,0 +1,49 @@
+schema: 1
+change: CHG-0085
+status: in-progress
+branch: fix/e2e-registry-ci
+updated: 2026-10-12
+completed:
+  - Existing eight dev infrastructure services recreated on updated images.
+  - Host supervisor binary rebuilt and existing private launcher restored.
+  - Registry of 139 scenarios; default core scope has 108 scenarios, 79 offline boundary passes and 29 missing fixtures.
+  - Server-driven Telegram and mock-channel adapters implemented.
+  - Named-task scheduled agent rejection reproduced and fixed with ownership regression.
+  - Managed supervisor Docker canary passed on rebuilt dev image.
+  - Actions baseline measured on run 38153315312, total 21m13s.
+  - Bottleneck identified: image 317s, containers 950s; Go shards 23-101s.
+  - Real provider mock text and incoming voice passed; real Bot API text, outgoing voice and deterministic reminder passed.
+  - Routine create/list/update/pause/delete passed through actual agent in both mock and Telegram server modes; independent state and cleanup verified.
+  - Local catalog binding and existing 24 selections renewed for catalog 1.2.0 without new selections or changed operation scopes; private backups retained.
+  - Supervised unmanaged ToolHub control DNS alias fixed with rendering regression.
+  - TTS now loads baked Silero repository locally; actual offline synthesis canary passed without fallback.
+  - Fresh Docker capability, ToolHub session refresh, five-minute gateway lifecycle and scratch arithmetic/quarantine checks passed.
+  - Six retained future fixtures from terminal failed runs cleaned through owner-authenticated API.
+  - Files/documents/artifact cleanup, bounded shell and independent usage passed through actual agent in both server modes.
+  - Deterministic reminder and Starlark script passed in both modes; firing did not enter agent queue.
+  - Keyless DeepWiki MCP installation/projection/public-call/revocation passed in both server modes.
+  - Pinned Ruff keyless CLI installation/projection/independent invocation/revocation passed in both server modes; separate real Docker registry/private-home isolation gate passed.
+  - Managed remote onboarding projection and long-principal governance rule ID bugs reproduced and fixed with regressions.
+  - Supervisor projection restart serialization and early acknowledgement fixed; regressions and subsequent real Telegram MCP installation passed.
+  - Sequential live suite stops admission after a failure; actual image inspection passed in both modes after binary export repair.
+  - Read-only service catalog and settings passed through actual agent in both server modes.
+  - Binary scratch export corruption reproduced and fixed with byte-preservation, scope and create-only regressions; actual PNG-to-JPEG conversion and delivery passed in both modes on the rebuilt image.
+  - Managed display overlay restart rematerialization reproduced and fixed with regression; E2E-009 changed/effective/restored verification passed in both server modes through synchronous restart readiness.
+  - Native readiness now waits for initialized gateway/API platform; HTTP regressions and rebuilt-image managed Docker canary passed; old unadmitted warm-up reached interrupted status and zero leases through its normal uncertain deadline.
+  - Private ToolHub one-shot and daemon executors now force deferred runtime restart; interrupted setting write reproduced, channel regressions passed; rebuilt-image settings verification passed in both modes.
+  - Real generation exposed secondary/shared media bearer mismatch; renderer resolves the unique same-environment infrastructure owner; rotation/missing/ambiguous owner and Compose override regressions passed; secondary deployment role corrected with private backup.
+  - Image generation/editing E2E-030/031 passed with real provider in both server modes; decoded delivery and original source SHA256 verified; two known terminal failed-generation fixtures cleaned through owner API.
+  - ToolHub status, empty credential requirements and bounded diagnostics E2E-052/053/060 passed through the real agent in both server modes.
+  - Watch/check/digest E2E-083/084/086 passed in both server modes; quiet first baseline, real HTTP change, cursor, no firing agent mapping and removed fixture schedules independently checked.
+  - Managed legacy activation false success fixed with no-write/no-restart regression; final runtime images rebuilt through hubctl.
+  - Installed CLI agent invocation passed both modes; owning Hermes database confirms exact installed tool calls without exporting messages. Full MCP and CLI lifecycle passed both server modes; twelve Telegram schedule fixtures independently confirmed deleted.
+  - Latest full Go/source gate passed at 85.15 including discovery and fail-on-cleanup helpers; updated registry metadata passed focused checks and docs validation.
+  - Reviewed discovery E2E-050 and final text/cleanup repeat passed both server modes; scoped Docker cleanup completed.
+  - Private historical evidence index: 37 mock-server PASS, 36 Telegram-server PASS and one PARTIAL_PASS; this is not a fresh full-scope run.
+  - Plain /usage now combines the journal with configured Antigravity quota without blocking the Telegram poll; missing configuration is explicit and unrelated provider credentials are excluded. Local gateway-only management credentials persist through render, with private backups; real CLIProxyAPI returned two quota groups and four buckets from inside the rebuilt gateway.
+  - Latest full Go/source gate passed at 85.17%; final rebuilt gateway mock and Telegram text/usage-ledger smoke passed, followed by bounded docker-clean.
+pending:
+  - Complete functional automation for 29 missing core offline fixtures and remaining server-mode oracles; definitions and boundary checks do not prove all-tool agent E2E.
+  - Routine snooze is not admitted by selected profile; no grant expansion performed.
+  - New CI workflow has not run in Actions; full 5-10x speedup is not measured and conflicts with preserved five-minute waits.
+  - User-sent /usage, /usage session, /status, voice and file are requested to verify the incoming real Telegram route; server injection cannot prove polling or command rendering.

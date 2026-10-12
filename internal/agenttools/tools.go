@@ -34,6 +34,7 @@ import (
 const Limit = 2 * 1024 * 1024
 
 type Input struct {
+	exportBytes        []byte   // Private create-only scratch transport; absent from MCP input.
 	Path               string   `json:"path,omitempty"`
 	Root               string   `json:"root,omitempty"`
 	Text               string   `json:"text,omitempty"`
@@ -372,7 +373,11 @@ func (t *Tools) ServiceCatalog() (map[string]any, error) {
 		if os.Getenv("HUB_ORG_SCOPED") == "true" && !base[info.Name] {
 			status = "policy-disabled"
 		}
-		services = append(services, map[string]any{"name": info.Name, "description": info.Description, "requires": info.Requires, "depends_on": info.Depends, "self_service": info.SelfService, "status": status, "missing_env": missing})
+		selfService := info.SelfService
+		if t.ToolPolicy != nil {
+			selfService, status = false, "host-managed"
+		}
+		services = append(services, map[string]any{"name": info.Name, "description": info.Description, "requires": info.Requires, "depends_on": info.Depends, "self_service": selfService, "status": status, "missing_env": missing})
 	}
 	return map[string]any{"services": services, "secret_values_included": false}, nil
 }
@@ -380,6 +385,9 @@ func (t *Tools) ServiceCatalog() (map[string]any, error) {
 func (t *Tools) ServiceEnable(r Input) (map[string]any, error) {
 	if t.ToolHub != nil {
 		return t.toolHubServiceEnable(r)
+	}
+	if t.ToolPolicy != nil {
+		return nil, errors.New("legacy service_enable is unavailable in managed mode; use ToolHub discover/prepare_source/confirm/enable")
 	}
 	name := strings.TrimSpace(r.Service)
 	info, ok := stack.ServiceInfoByName(name)
@@ -729,8 +737,12 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	if r.Root == "archive" || r.Root == "organization" {
 		return nil, fmt.Errorf("%s is read-only", r.Root)
 	}
-	if len(r.Text) > Limit || !utf8.ValidString(r.Text) {
+	if r.exportBytes == nil && (len(r.Text) > Limit || !utf8.ValidString(r.Text)) {
 		return nil, fmt.Errorf("text must be UTF-8 and <=2 MiB")
+	}
+	content := r.exportBytes
+	if content == nil {
+		content = []byte(r.Text)
 	}
 	if err == nil {
 		if r.Revision == "" || r.Revision != hash(b) {
@@ -750,7 +762,7 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 		return nil, err
 	}
 	defer func() { _ = root.Remove(tmp) }()
-	if _, err = f.WriteString(r.Text); err != nil {
+	if _, err = f.Write(content); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -764,7 +776,7 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	if err = root.Rename(tmp, r.Path); err != nil {
 		return nil, err
 	}
-	return map[string]any{"path": r.Path, "revision": hash([]byte(r.Text))}, nil
+	return map[string]any{"path": r.Path, "revision": hash(content)}, nil
 }
 func read(root *os.Root, p string) ([]byte, error) {
 	info, err := root.Lstat(p)

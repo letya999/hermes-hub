@@ -46,6 +46,12 @@ func run(args []string) error {
 		err = devcheck.DockerClean(context.Background(), ".", true)
 	case len(args) == 2 && args[0] == "hermes-contract":
 		err = devcheck.HermesContract(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "hermes-native-contract":
+		err = devcheck.HermesNativeContract(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "supervisor-contract":
+		err = devcheck.SupervisorContract(context.Background(), args[1])
+	case len(args) == 2 && args[0] == "tts-cache-contract":
+		err = devcheck.TTSCachedModelCanary(context.Background(), args[1])
 	case len(args) == 2 && args[0] == "hermes-capability-contract":
 		err = devcheck.HermesCapabilityContract(context.Background(), args[1])
 	case len(args) == 2 && args[0] == "managed-network-canary":
@@ -70,7 +76,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
+		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
 	}
 	return err
 }

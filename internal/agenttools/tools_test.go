@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -190,6 +191,32 @@ func TestServiceEnableRejectsOrganizationScope(t *testing.T) {
 	v := fixture(t)
 	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil {
 		t.Fatal("organization service change accepted")
+	}
+}
+
+func TestManagedLegacyServicesDoNotClaimEnablement(t *testing.T) {
+	v := fixture(t)
+	v.ToolPolicy = &toolhub.ToolPolicySnapshot{Schema: 1, Principal: "alice"}
+	v.StateDir = t.TempDir()
+	restarted := false
+	v.Restart = func() error { restarted = true; return nil }
+	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil || !strings.Contains(err.Error(), "managed mode") {
+		t.Fatal("managed legacy enable must fail before asking for credentials", err)
+	}
+	if restarted {
+		t.Fatal("rejected service restarted the runtime")
+	}
+	if _, err := os.Stat(filepath.Join(v.StateDir, "self-services.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("rejected service changed state", err)
+	}
+	out, err := v.ServiceCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range out["services"].([]map[string]any) {
+		if item["self_service"] != false || item["status"] != "host-managed" {
+			t.Fatal("managed legacy service advertised as mutable", item)
+		}
 	}
 }
 

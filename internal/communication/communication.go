@@ -557,6 +557,8 @@ type Delivery struct {
 	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
 	// synthesized audio is sent straight to the channel and never persisted.
 	Voice string `json:"voice,omitempty"`
+	// VoiceSent distinguishes accepted sendVoice from the intentional text fallback.
+	VoiceSent bool `json:"voice_sent,omitempty"`
 	// Buttons carries Telegram inline-keyboard rows (one button per row) for
 	// channels that support them; Data is the opaque callback payload.
 	Buttons   []DeliveryButton `json:"buttons,omitempty"`
@@ -2101,8 +2103,16 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			}
 			return reply(strings.Join(lines, "\n"))
 		case "usage":
-			if fields := strings.Fields(text); len(fields) < 2 || fields[1] != "session" {
-				return reply(g.journalUsage(user, text))
+			overview := true
+			if fields := strings.Fields(text); len(fields) >= 2 && fields[1] == "session" {
+				overview = false
+			}
+			journal := ""
+			if overview {
+				journal = g.journalUsage(user, text)
+				if strings.HasPrefix(journal, "Используйте /usage") {
+					return reply(journal)
+				}
 			}
 			// Measuring usage means up to minutes of sequential HTTP work
 			// (supervisor ensure, session row, lineage, quota calls); run it
@@ -2120,10 +2130,15 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 				defer func() { g.usageQueries.Add(-1); g.usageWG.Done() }()
 				usageCtx, cancel := context.WithTimeout(queryCtx, 2*time.Minute)
 				defer cancel()
-				answer := g.usageCommand(usageCtx, user, message.From.ID, task)
+				answer := journal
+				if overview {
+					answer += "\n" + strings.Join(g.quotaLines(usageCtx), "\n")
+				} else {
+					answer = g.usageCommand(usageCtx, user, message.From.ID, task)
+				}
 				_ = g.queueDelivery(context.Background(), "telegram-"+strconv.Itoa(update.UpdateID)+"-usage", message.Chat.ID, topic, answer)
 			}()
-			return reply("Измеряю расход…")
+			return reply("Измеряю расход и квоту…")
 		case "connections", "connection", "connectors":
 			return reply(g.connectionsCommand(user, message.From.ID))
 		case "help":
@@ -2448,9 +2463,14 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		}
 		voiceSent := false
 		if voiceOnly && speak != "" {
-			voiceSent = g.sendVoiceReply(ctx, *delivery, speak) == nil
+			voiceErr := g.sendVoiceReply(ctx, *delivery, speak)
+			voiceSent = voiceErr == nil
+			delivery.VoiceSent = voiceSent
+			if errors.Is(voiceErr, ErrUncertain) {
+				sendErr = voiceErr
+			}
 		}
-		if !voiceSent {
+		if !voiceSent && sendErr == nil {
 			if delivery.Format == formatMarkdown {
 				sendErr = g.sendTelegramMarkdown(ctx, delivery)
 			} else if len(delivery.Buttons) > 0 {
@@ -2459,7 +2479,16 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 				sendErr = g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
 			}
 			if sendErr == nil && speak != "" && !voiceOnly {
-				_ = g.sendVoiceReply(ctx, *delivery, speak)
+				voiceErr := g.sendVoiceReply(ctx, *delivery, speak)
+				delivery.VoiceSent = voiceErr == nil
+				if errors.Is(voiceErr, ErrUncertain) {
+					sendErr = voiceErr
+				}
+			}
+		}
+		if speak != "" {
+			if err := g.spool.UpdateSending(*delivery); err != nil {
+				sendErr = err
 			}
 		}
 	}
@@ -2613,8 +2642,8 @@ func (g *Gateway) sendVoiceReply(ctx context.Context, delivery Delivery, text st
 		return errors.New("tts failed")
 	}
 	if err := g.api.SendVoice(ctx, delivery.ChatID, delivery.TopicID, audio, ""); err != nil {
-		log.Printf("gateway voice send failed delivery_id=%q err=%v", delivery.ID, err)
-		return err
+		log.Printf("gateway voice send uncertain delivery_id=%q", delivery.ID)
+		return fmt.Errorf("%w: voice send failed", ErrUncertain)
 	}
 	return nil
 }

@@ -701,7 +701,7 @@ func (s *Store) managedSelfInstallsLocked(auth identity.Envelope, profile Capabi
 	}
 	admitted := map[string]bool{}
 	for _, onboarding := range s.onboardings {
-		if onboarding.Mode != OnboardingSelfInstall || onboarding.BindingID == "" ||
+		if (onboarding.Mode != OnboardingSelfInstall && onboarding.Mode != OnboardingRemote) || onboarding.BindingID == "" ||
 			onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID ||
 			onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
 			continue

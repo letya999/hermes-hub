@@ -489,7 +489,7 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 			return e
 		}
 	}
-	settings.Environment = envOr("HUB_ENV", "prod")
+	settings.Environment = m.environment()
 	if settings.Environment == "dev" {
 		settings.BrowserPort++
 		settings.OAuthPort++

@@ -17,6 +17,8 @@ last_verified: 2026-10-07
 | [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, bundle states, generic lifecycle and handoffs | 2026-10-07 |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup | 2026-09-15 |
 | [operations.md](operations.md) | Deployment, runtime lifecycle, explicit control grants, backup and recovery | 2026-10-02 |
+| [ci-latency.md](ci-latency.md) | Measured CI baseline, preserved gates and speed limits | 2026-10-11 |
+| [e2e-acceptance.md](e2e-acceptance.md) | Sequential capability registry and evidence boundaries | 2026-10-12 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-28 |
 | [toolhive-vmcp-audit.md](toolhive-vmcp-audit.md) | Issue 11 ToolHive vMCP compatibility, performance and go/no-go evidence | 2026-09-11 |
 | [threat-model.md](threat-model.md) | Scale-to-zero and future-organization trust boundaries | 2026-09-17 |

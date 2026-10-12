@@ -12,6 +12,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0085](in-progress/CHG-0085-e2e-ci/plan.md) | Sequential E2E registry and CI latency reduction, in progress |
 | [CHG-0084](done/CHG-0084-m10-dev-merge/plan.md) | Done: M10 merged into dev, shared media image build fixed, final checks and local Docker rebuild/smoke passed |
 | [CHG-0083](done/CHG-0083-m10-stabilization/plan.md) | M10 A–C stabilization implemented; local unit/security/Linux/Docker acceptance passed; live channel acceptance separate |
 | [CHG-0079](done/CHG-0079-cli-policy-completion/plan.md) | Done: six CLI policy/catalog gaps, full checks and local dev deployment verified |
