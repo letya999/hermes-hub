@@ -500,6 +500,9 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 			settings.SlackEventsPort++
 		}
 	}
+	if settings.CapabilityMode != "managed" && strings.TrimSpace(settings.GlobalSkillsDir) == "" {
+		settings.GlobalSkillsDir = filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills")
+	}
 	if err := settings.Validate(); err != nil {
 		return err
 	}

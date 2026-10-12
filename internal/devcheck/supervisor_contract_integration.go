@@ -85,6 +85,10 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if err != nil {
 		return err
 	}
+	settings.GlobalSkillsDir = filepath.Join(root, "config", "skills")
+	if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil {
+		return err
+	}
 	policy := stack.PolicyVersion(settings)
 	if err := os.WriteFile(filepath.Join(contextRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH="+auth+"\nOPENAI_API_KEY=probe-openai-key-0123456789\nOPENAI_BASE_URL="+providerURL+"\n"), 0600); err != nil {
 		return err

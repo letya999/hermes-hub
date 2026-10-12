@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0085
 status: in-progress
-branch: fix/e2e-registry-ci
+branch: dev
 updated: 2026-10-12
 completed:
   - Existing eight dev infrastructure services recreated on updated images.
@@ -51,11 +51,18 @@ completed:
   - User manually removed three empty Chromium Singleton locks; the supervised local runtime started and the live ToolHub `inbox_fetch` call reached its executor. It failed because the dynamic runtime env omitted the communication control URL. The root cause is fixed in the generated runtime env file, with a regression; local render confirms the URL.
   - Chromium CDP readiness now waits for HTTP 200 through a longer slow-start window; real logs proved the old 20-second deadline expired just after DevTools opened. Slow-start regression passed.
   - Full `just docker-check dev` passed on the rebuilt runtime image, including native Hermes contracts, actual five-minute idle/cold-restore, managed isolation and scratch sandbox. The verified image was tagged as local `hermes-hub:0.3.0-dev`.
-  - Real Telegram inbound file passed `inbox_fetch` through ToolHub into the supervised runtime: workspace SHA256 matched the 126877-byte staged source, the gateway copy was consumed and the lifecycle lease was released. The runtime started without another manual lock-file deletion.
+  - Real Telegram inbound file passed direct authenticated `inbox_fetch` on the supervised runtime MCP endpoint: workspace SHA256 matched the 126877-byte staged source and the gateway copy was consumed. This does not prove owner-bound ToolHub admission or an agent-generated answer about the file. The runtime started without another manual lock-file deletion.
   - Final `just check` passed with 85.19% Go statement coverage, including race tests, vet, staticcheck, docs and Actions lint.
+  - Fresh full core offline run recorded 79 PASS and 29 BLOCKED; no boundary checks failed. Fresh mock-server text, synthetic incoming voice, outgoing voice intent and usage passed through the real agent.
+  - Repeated scheduled Telegram failures before runtime admission traced to policy-version mismatch: render included the default global-skills directory while supervisor current-policy verification omitted it. The check now reconstructs that default, with a regression; private local user policy was synchronized and the host supervisor and gateway restarted.
+  - Fresh Telegram-server text, outgoing voice, usage, reminder and Starlark cases passed for the configured local user after the policy fix. A separate credential-free test principal passed file operations E2E-001–004, bounded shell E2E-047, discovery E2E-050 and diagnostics E2E-060 through the real agent and Bot API.
+  - Full `just check` passed after the scheduled-policy parity fix with 85.20% Go statement coverage.
+  - The first local `just docker-check dev` run built fresh images but exposed an outdated supervisor-contract fixture that omitted the renderer's default global-skills directory. After correcting the fixture, the pinned Hermes contract, actual five-minute gateway lifecycle, capability boundary, managed network and supervisor canaries, scratch sandbox and quarantine test all passed individually on the built image; project-scoped Docker cleanup completed.
 pending:
   - Complete functional automation for 29 missing core offline fixtures and remaining server-mode oracles; definitions and boundary checks do not prove all-tool agent E2E.
   - Routine snooze is not admitted by selected profile; no grant expansion performed.
   - New CI workflow has not run in Actions; full 5-10x speedup is not measured and conflicts with preserved five-minute waits.
   - User-sent /usage passed through real Telegram polling; delivered reply contained the journal and two live quota groups with four percent values and reset times. /usage session also returned session metrics. Incoming voice passed the STT path, but spoken content remains unverified; /status was not observed in the available gateway log.
   - The initial claim that Windows Singleton lock files caused restart failure was not established. DevTools startup exceeded the old deadline; the new deadline passed the subsequent live startup with those files present. The host runner reported exit 137 without Docker OOM after an idle stop.
+  - The configured local user lacks an owner-bound ToolHub token in the E2E runner's token file; tool admission cases remain BLOCKED for that user. Passing tests on the separate principal cannot be promoted to local-user evidence.
+  - The first independent ToolHub discovery read for the test principal failed once and passed on an isolated repeat; root cause is not established.

@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -19,6 +20,7 @@ func TestCurrentPolicyUsesSelectedManagerEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settings.GlobalSkillsDir = filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills")
 	r := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", stack.PolicyVersion(settings)), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Trigger: "cron"}
 	if err := m.authorizeCurrentPolicy(r); err != nil {
 		t.Fatal("dev policy rejected by prod process default", err)
