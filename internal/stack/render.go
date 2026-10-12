@@ -672,7 +672,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_APPROVE_", "communication", "hermes-communication") {
 			gatewayEnvironment[key] = value
 		}
-		runtimeEnv["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
 		gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
 		communicationHostPort := 8081
 		if s.Has("slack_app") {
@@ -1479,6 +1478,7 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 	if _, ok := runtime["HUB_TOOLHUB_ENDPOINT"]; !ok {
 		runtime["HUB_TOOLHUB_ENDPOINT"] = "http://toolhub:8090/mcp"
 	}
+	runtime["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
 	gateway := map[string]string{}
 	for _, key := range GatewaySecretKeys() {
 		if value := user[key]; value != "" {

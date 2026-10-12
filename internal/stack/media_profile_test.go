@@ -199,7 +199,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeEnv, err := os.ReadFile(filepath.Join(envDir, "runtime.prod.env"))
-	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") || !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=openai-sample") || !strings.Contains(string(runtimeEnv), "HUB_MEDIA_URL=http://hub-media:8090") {
+	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") || !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=openai-sample") || !strings.Contains(string(runtimeEnv), "HUB_MEDIA_URL=http://hub-media:8090") || !strings.Contains(string(runtimeEnv), "HUB_COMMUNICATION_CONTROL_URL=http://communication-hub:8081") {
 		t.Fatalf("omitted runtime env: %v %s", err, runtimeEnv)
 	}
 	if err := writeRuntimeEnvFiles(envDir, "dev", secrets, nil, nil, nil); err != nil {
