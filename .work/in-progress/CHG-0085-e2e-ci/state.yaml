@@ -46,4 +46,5 @@ pending:
   - Complete functional automation for 29 missing core offline fixtures and remaining server-mode oracles; definitions and boundary checks do not prove all-tool agent E2E.
   - Routine snooze is not admitted by selected profile; no grant expansion performed.
   - New CI workflow has not run in Actions; full 5-10x speedup is not measured and conflicts with preserved five-minute waits.
-  - User-sent /usage, /usage session, /status, voice and file are requested to verify the incoming real Telegram route; server injection cannot prove polling or command rendering.
+  - User-sent /usage passed through real Telegram polling; delivered reply contained the journal and two live quota groups with four percent values and reset times. User-sent /usage session, /status, voice and file remain unverified; server injection cannot prove their incoming route.
+  - Local dev images were rebuilt from dev at 54222de; only communication-hub and toolhub were recreated, leaving supervisor contexts and unrelated stacks untouched. Both restarted services are running with the quota environment present; post-restart E2E-064 and E2E-079 passed in mock-server and Telegram-server modes, followed by project-scoped docker-clean.
