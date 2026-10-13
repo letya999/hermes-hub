@@ -227,10 +227,16 @@ jobs:
         if: always()
         run: go run ./cmd/devcheck docker-clean
   containers:
-    # Preserve the required status and reject failures, cancellations and skipped gates.
+    # Preserve the required status and reject failures, cancellations and skipped
+    # gates. The per-target matrix keeps the "containers (dev)"/"containers (prod)"
+    # contexts that main branch protection requires.
     if: always()
     needs: container-gates
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [dev, prod]
     steps:
       - env:
           RESULT: ${{ needs.container-gates.result }}
