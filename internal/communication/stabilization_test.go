@@ -801,8 +801,11 @@ func TestM10StatusRoutinesConnectorsStayDeterministic(t *testing.T) {
 	if job, err := g.spool.ClaimJob(); err != nil || job != nil {
 		t.Fatalf("local command entered LLM queue: %+v %v", job, err)
 	}
+	// /usage resolves asynchronously; settle before counting so the reply
+	// write cannot race the TempDir cleanup either.
+	g.usageWG.Wait()
 	entries, err := os.ReadDir(filepath.Join(g.spool.root, "outbox", "pending"))
-	if err != nil || len(entries) != 4 {
+	if err != nil || len(entries) != 5 {
 		t.Fatalf("local replies=%d %v", len(entries), err)
 	}
 }
