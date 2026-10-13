@@ -82,7 +82,10 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			current.RuntimeHealth, current.HermesReadiness, current.HealthCheckedAt, current.Desired = health, readiness, now, desired
 			current.Ownership = ownership
 			current.ConnectorHealth = connectorHealth
-			wedged := desired && ownership == "verified" && health == "running" && (readiness == "degraded" || readiness == "unavailable")
+			// A degraded runtime still serves (e.g. host disk over the
+			// readiness threshold): restart cannot remediate a host-side
+			// cause and kills in-flight runs. Remediate only unavailable.
+			wedged := desired && ownership == "verified" && health == "running" && readiness == "unavailable"
 			if wedged {
 				if current.readinessBadSince.IsZero() {
 					current.readinessBadSince = now

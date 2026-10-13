@@ -438,7 +438,7 @@ func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testi
 }
 
 func TestWedgedRuntimeRestartRemediatesConsecutiveUncertainJobs(t *testing.T) {
-	readiness := "degraded"
+	readiness := "unavailable"
 	restarts := 0
 	started := false
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
@@ -506,6 +506,73 @@ func TestWedgedRuntimeRestartRemediatesConsecutiveUncertainJobs(t *testing.T) {
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow+time.Second))
 	if restarts != 1 {
 		t.Fatalf("cooldown bypassed: %d", restarts)
+	}
+}
+
+// A degraded runtime is still serving (e.g. host disk above the readiness
+// threshold); restarting it kills in-flight runs and cannot remediate a
+// host-side cause. Only an unavailable runtime may be restarted.
+func TestDegradedRuntimeDoesNotRemediateUncertainJobs(t *testing.T) {
+	readiness := "degraded"
+	restarts := 0
+	started := false
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
+		if args[0] == "run" {
+			started = true
+			return []byte("container"), nil
+		}
+		if args[0] == "inspect" {
+			return []byte("running"), nil
+		}
+		if args[0] == "restart" {
+			restarts++
+		}
+		return nil, nil
+	}, func(context.Context, string, string) error { return nil })
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: readiness, ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	for _, entry := range m.items {
+		entry.Address = api.URL
+	}
+	m.mu.Unlock()
+	m.cfg.Probe = nil
+	outcome := func(id string) {
+		request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: id, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: id, Text: "work"}
+		if _, _, err := m.beginJob(request); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
+			t.Fatal(err)
+		}
+		response := hubruntime.ExecuteResponse{JobID: id, RuntimeGeneration: runtime.Generation, Status: "uncertain"}
+		if err := m.finishJobGeneration(request, response, "uncertain", runtime.Generation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Unix(200, 0)
+	for _, id := range []string{"degraded-1", "degraded-2", "degraded-3", "degraded-4"} {
+		outcome(id)
+	}
+	m.ReconcileHealth(context.Background(), now)
+	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
+	m.ReconcileHealth(context.Background(), now.Add(2*wedgedReadinessWindow))
+	if restarts != 0 {
+		t.Fatalf("degraded runtime restarted %d times; degraded readiness is not restart-remediable", restarts)
 	}
 }
 

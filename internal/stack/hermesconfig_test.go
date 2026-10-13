@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeSelfServicesState(t *testing.T, dir, body string) string {
@@ -40,6 +42,102 @@ func TestMaterializeHermesConfigAddsToolHubServer(t *testing.T) {
 	for _, want := range []string{"http://toolhub:8090/mcp", "${HUB_RUNTIME_AUTH}", "timeout: 1800", "mcp_reload_confirm: false"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("materialized config missing %s: %s", want, text)
+		}
+	}
+}
+
+func TestLegacyHubReceivesRoutineControlEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	source, dest := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "effective.yaml")
+	if err := os.WriteFile(source, []byte("mcp_servers:\n  hub:\n    command: hubctl\n    env:\n      CUSTOM: keep\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	e := cfg["mcp_servers"].(map[string]any)["hub"].(map[string]any)["env"].(map[string]any)
+	for key, want := range map[string]string{"HUB_COMMUNICATION_CONTROL_URL": "${HUB_COMMUNICATION_CONTROL_URL}", "HUB_COMMUNICATION_AUTH": "${HUB_RUNTIME_AUTH}", "HUB_PRINCIPAL_ID": "${HUB_PRINCIPAL_ID}", "HUB_USER_ID": "${HUB_USER_ID}", "HUB_ORG_ACTIONS": "${HUB_ORG_ACTIONS}", "CUSTOM": "keep"} {
+		if e[key] != want {
+			t.Errorf("hub child env %s: got %v, want %s", key, e[key], want)
+		}
+	}
+}
+
+func TestRenderedHubReceivesRoutineControlEnvironment(t *testing.T) {
+	cfg := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}})
+	servers := cfg["mcp_servers"].(M)
+	hub, ok := servers["hub"].(M)
+	if !ok {
+		t.Fatal("workspace hub server missing")
+	}
+	e := hub["env"].(M)
+	for key, want := range map[string]string{"HUB_COMMUNICATION_CONTROL_URL": "${HUB_COMMUNICATION_CONTROL_URL}", "HUB_COMMUNICATION_AUTH": "${HUB_RUNTIME_AUTH}", "HUB_PRINCIPAL_ID": "${HUB_PRINCIPAL_ID}", "HUB_USER_ID": "${HUB_USER_ID}"} {
+		if e[key] != want {
+			t.Errorf("rendered child env %s: got %v, want %s", key, e[key], want)
+		}
+	}
+}
+
+func TestHubImageEnvironmentUsesEffectiveConfigWithoutParentLeak(t *testing.T) {
+	t.Setenv("UNRELATED_PROVIDER_KEY", "synthetic-unrelated")
+	cfg := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}})
+	e := cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)
+	if e["OPENAI_API_KEY"] != "${OPENAI_API_KEY}" || e["HUB_HERMES_CONFIG"] != "/state/hermes/config.yaml" {
+		t.Fatalf("image child missing explicit model/config refs: %v", e)
+	}
+	if _, leaked := e["UNRELATED_PROVIDER_KEY"]; leaked {
+		t.Fatal("unrelated key forwarded")
+	}
+	dir := t.TempDir()
+	source, effective := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "effective.yaml")
+	if err := os.WriteFile(source, []byte("mcp_servers:\n  hub:\n    command: hubctl\n    env: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeHermesConfig(source, effective, MaterializeOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded map[string]any
+	if err := yaml.Unmarshal(body, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	child := loaded["mcp_servers"].(map[string]any)["hub"].(map[string]any)["env"].(map[string]any)
+	// The hub child runs inside the runtime container, so the env must carry
+	// the container mount path — never the host-side materialization path.
+	if child["OPENAI_API_KEY"] != "${OPENAI_API_KEY}" || child["HUB_HERMES_CONFIG"] != "/state/hermes/config.yaml" {
+		t.Fatalf("hub child env must use the container config path, got: %v", child)
+	}
+}
+
+func TestHubChildCarriesPolicyAndFullRuntimeIdentity(t *testing.T) {
+	cfg := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}})
+	e := cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)
+	for _, key := range []string{"HUB_CONTEXT_ID", "HUB_RUNTIME_ID", "HUB_POLICY_VERSION", "HUB_TOOL_POLICY", "HUB_TOOLS_RO", "HUB_ORG_SCOPED", "HUB_ORG_ACTIONS", "HUB_FEATURES", "HUB_DEFER_RUNTIME_RESTART"} {
+		if e[key] != "${"+key+"}" {
+			t.Errorf("hub child lost trusted policy/identity %s: %v", key, e[key])
+		}
+	}
+}
+
+func TestSupervisedComposeRequiresControlAuth(t *testing.T) {
+	s := Settings{User: "alice", Environment: "dev", ExecutionMode: "supervisor", SupervisorURL: "http://host.docker.internal:8876", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}, Ingress: []string{"telegram"}}
+	services := Compose(s, t.TempDir(), t.TempDir())["services"].(M)
+	for service, key := range map[string]string{"communication-hub": "HUB_SUPERVISOR_AUTH", "toolhub": "HUB_COMMUNICATION_AUTH"} {
+		e := services[service].(M)["environment"].(M)
+		value, _ := e[key].(string)
+		if !strings.HasPrefix(value, "${HUB_SUPERVISOR_AUTH:?") {
+			t.Errorf("%s can silently start without control auth: %q", service, value)
 		}
 	}
 }

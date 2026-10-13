@@ -120,8 +120,51 @@ func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
 		if err := applySelfServicesFrom(configPath, opts.SelfServicesPath); err != nil {
 			return err
 		}
+		if err := applyHubCommunicationConfig(configPath); err != nil {
+			return err
+		}
 	}
 	return applyToolHubConfigWith(configPath, opts)
+}
+
+func hubCommunicationEnv() M {
+	e := M{"HUB_COMMUNICATION_CONTROL_URL": "${HUB_COMMUNICATION_CONTROL_URL}", "HUB_COMMUNICATION_AUTH": "${HUB_RUNTIME_AUTH}", "OPENAI_API_KEY": "${OPENAI_API_KEY}", "HUB_HERMES_CONFIG": "/state/hermes/config.yaml"}
+	for _, key := range []string{"HUB_PRINCIPAL_ID", "HUB_USER_ID", "HUB_CONTEXT_ID", "HUB_RUNTIME_ID", "HUB_POLICY_VERSION", "HUB_TOOL_POLICY", "HUB_TOOLS_RO", "HUB_ORG_SCOPED", "HUB_ORG_ACTIONS", "HUB_FEATURES", "HUB_DEFER_RUNTIME_RESTART"} {
+		e[key] = "${" + key + "}"
+	}
+	return e
+}
+
+func applyHubCommunicationConfig(configPath string) error {
+	body, err := os.ReadFile(configPath) // #nosec G304 -- operator-owned materialized configuration.
+	if err != nil {
+		return err
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal(body, &config); err != nil {
+		return err
+	}
+	servers, _ := config["mcp_servers"].(map[string]any)
+	hub, ok := servers["hub"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	e, ok := hub["env"].(map[string]any)
+	if !ok {
+		e = map[string]any{}
+		hub["env"] = e
+	}
+	for key, value := range hubCommunicationEnv() {
+		e[key] = value
+	}
+	// HUB_HERMES_CONFIG stays the container mount path from
+	// hubCommunicationEnv: the hub child runs inside the runtime container
+	// and cannot resolve this host-side materialization path.
+	updated, err := yaml.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, updated, 0660)
 }
 
 // The selected model and timezone may vary, but capability-bearing fields
