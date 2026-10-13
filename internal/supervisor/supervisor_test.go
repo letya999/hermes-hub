@@ -566,7 +566,7 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 			return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": first.Generation})
 		}
 		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
-			return json.Marshal([]map[string]string{{"Type": "bind", "Source": ctxRoot, "Destination": "/scope"}})
+			return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(ctxRoot, "workspace"), "Destination": "/scope"}})
 		}
 		return commands(ctx, args...)
 	}
@@ -629,7 +629,7 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 			return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": actual.Generation})
 		}
 		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
-			return json.Marshal([]map[string]string{{"Type": "bind", "Source": ctxRoot, "Destination": "/scope"}})
+			return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(ctxRoot, "workspace"), "Destination": "/scope"}})
 		}
 		return commands(ctx, args...)
 	}
@@ -1195,7 +1195,7 @@ func TestNewDefaultsAndServeStopsOnContext(t *testing.T) {
 		}
 		return nil, nil
 	}, func(context.Context, string, string) error { return nil })
-	if m.cfg.WarmTTL != time.Minute || m.cfg.MaxConcurrent != 8 || m.cfg.RuntimePort != 8080 || m.cfg.PIDs != 256 {
+	if m.cfg.WarmTTL != time.Minute || m.cfg.MaxConcurrent != 8 || m.cfg.RuntimePort != 8080 || m.cfg.PIDs != 1024 {
 		t.Fatalf("defaults not applied: %+v", m.cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1424,7 +1424,7 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 256", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
+	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 1024", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("run args missing %q: %s", want, joined)
 		}

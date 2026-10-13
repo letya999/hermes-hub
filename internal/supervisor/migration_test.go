@@ -22,6 +22,9 @@ func TestSupervisedRuntimeUsesDevEnvFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "src="+root+",dst=/scope") {
+		t.Fatal("whole context root mounted into runtime")
+	}
 	if !strings.Contains(joined, "--env-file "+filepath.Join(root, "runtime.dev.env")) {
 		t.Fatal("dev runtime env file missing from docker run")
 	}

@@ -60,8 +60,8 @@ func (m *Manager) VerifyOwnership(ctx context.Context, runtime Runtime) error {
 	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] != runtime.Generation || runtime.Generation == "" {
 		return errors.New("runtime ownership mismatch")
 	}
-	// Managed runtimes never mount the context scope: the space directory
-	// carries secrets that must not be readable inside the isolated runtime.
+	// The context root carries secrets; even legacy runtimes may only mirror
+	// the workspace into /scope.
 	if !runtime.Managed {
 		if err := m.verifyScopeMount(ctx, runtime); err != nil {
 			return err
@@ -76,7 +76,7 @@ func (m *Manager) verifyScopeMount(ctx context.Context, item Runtime) error {
 	if err != nil || len(out) > 64*1024 || json.Unmarshal(out, &mounts) != nil || len(mounts) > 64 {
 		return errors.New("runtime mounts unavailable")
 	}
-	expected := filepath.Join(m.cfg.SpacesRoot, item.ContextID)
+	expected := filepath.Join(m.cfg.SpacesRoot, item.ContextID, "workspace")
 	for _, mount := range mounts {
 		if mount.Destination != "/scope" {
 			continue

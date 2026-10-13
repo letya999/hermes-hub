@@ -81,7 +81,7 @@ func TestNativeWireAndAllowlist(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, file) }()
 	ready := false
-	for range 100 {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		resp, err := http.Get("http://" + addr + "/mcp")
 		if err == nil {
 			_ = resp.Body.Close()

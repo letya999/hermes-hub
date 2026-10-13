@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+var (
+	wedgedReadinessWindow     = 3 * time.Minute
+	wedgedRemediationCooldown = 5 * time.Minute
+)
+
 // ReconcileHealth inspects actual runtime state independently from the desired
 // work ledger. Unknown inspection failures never authorize idle shutdown.
 func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
@@ -70,12 +75,24 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			}
 			cancel()
 		}
+		remediate := false
 		m.mu.Lock()
 		if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
 			previous := current.Runtime
 			current.RuntimeHealth, current.HermesReadiness, current.HealthCheckedAt, current.Desired = health, readiness, now, desired
 			current.Ownership = ownership
 			current.ConnectorHealth = connectorHealth
+			wedged := desired && ownership == "verified" && health == "running" && (readiness == "degraded" || readiness == "unavailable")
+			if wedged {
+				if current.readinessBadSince.IsZero() {
+					current.readinessBadSince = now
+				}
+			} else {
+				current.readinessBadSince = time.Time{}
+			}
+			remediate = wedged && current.consecutiveUncertain >= 2 &&
+				now.Sub(current.readinessBadSince) >= wedgedReadinessWindow &&
+				now.Sub(current.lastRemediatedAt) >= wedgedRemediationCooldown
 			if desired && recoverableRuntime(current.Runtime) && current.FailureGeneration != current.Generation {
 				m.recordRuntimeFailureLocked(&current.Runtime)
 			}
@@ -90,6 +107,16 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			}
 		}
 		m.mu.Unlock()
+		if remediate && snapshot.Container != "" {
+			if _, err := m.command(ctx, "restart", snapshot.Container); err == nil {
+				m.mu.Lock()
+				if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
+					current.restored, current.consecutiveUncertain, current.lastRemediatedAt = true, 0, now
+					_ = m.persistLocked()
+				}
+				m.mu.Unlock()
+			}
+		}
 		lock.Unlock()
 	}
 }

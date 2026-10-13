@@ -129,10 +129,13 @@ type Runtime struct {
 
 type runtimeEntry struct {
 	Runtime
-	binding  Binding
-	auth     string
-	leases   map[string]Lease
-	restored bool
+	binding              Binding
+	auth                 string
+	leases               map[string]Lease
+	restored             bool
+	consecutiveUncertain int
+	readinessBadSince    time.Time
+	lastRemediatedAt     time.Time
 }
 
 type Manager struct {
@@ -264,7 +267,7 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Memory = "1g"
 	}
 	if cfg.PIDs <= 0 {
-		cfg.PIDs = 256
+		cfg.PIDs = 1024
 	}
 	if cfg.RuntimePort <= 0 {
 		cfg.RuntimePort = 8080
@@ -1623,6 +1626,11 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 					entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
 				}
 			}
+			if status == "uncertain" {
+				entry.consecutiveUncertain++
+			} else if terminalRunStatus(status) {
+				entry.consecutiveUncertain = 0
+			}
 			break
 		}
 		if response.ApprovalID != "" && response.ApprovalID != record.Response.ApprovalID {
@@ -2009,7 +2017,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	}
 	args = append(args, "--env-file", binding.EnvFile)
 	args = append(args, "--mount", "type=volume,src="+project+"_broker-secrets-runtime,dst=/run/broker-secrets,readonly")
-	args = append(args, "--mount", "type=bind,src="+binding.ContextRoot+",dst=/scope,readonly")
+	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/scope,readonly")
 	if settings, err := stack.ReadEnvironment(binding.ContextRoot, env); err == nil {
 		service := stack.RuntimeService(settings, "", binding.ContextRoot)
 		keys := make([]string, 0)

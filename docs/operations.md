@@ -692,7 +692,7 @@ Measured (single samples, one dev space):
 | warm lease on running runtime | 0.58 s |
 | idle deadline → container removed | <45 s (reaper ≤5 s + stop grace ~40 s) |
 | warm TTL | 5 min (default `--warm-ttl`) |
-| managed runtime RSS (warm) | ~395–403 MiB (cap 1 GiB, 2 CPU, 256 pids) |
+| managed runtime RSS (warm) | ~395–403 MiB (cap 1 GiB, 2 CPU, 1024 pids) |
 | runtime ctl sidecar RSS | ~8 MiB |
 | runtime CPU during cold start | ~100 % of 2-core cap for ~20–40 s |
 

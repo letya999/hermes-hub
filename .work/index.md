@@ -12,6 +12,8 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0087](in-progress/CHG-0087-live-phase1/plan.md) | Live phase 1 capability checks and observed terminal/runtime isolation repairs |
+| [CHG-0086](in-progress/CHG-0086-inbound-documents/plan.md) | Telegram inbound document save and extraction repair; source, Docker, and live Telegram checks passed |
 | [CHG-0085](in-progress/CHG-0085-e2e-ci/plan.md) | Sequential E2E registry and CI latency reduction, in progress |
 | [CHG-0084](done/CHG-0084-m10-dev-merge/plan.md) | Done: M10 merged into dev, shared media image build fixed, final checks and local Docker rebuild/smoke passed |
 | [CHG-0083](done/CHG-0083-m10-stabilization/plan.md) | M10 A–C stabilization implemented; local unit/security/Linux/Docker acceptance passed; live channel acceptance separate |
