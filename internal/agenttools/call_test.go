@@ -1,7 +1,9 @@
 package agenttools
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,5 +238,44 @@ func TestReadOnlyToolNamesEmpty(t *testing.T) {
 	}
 	if names["service_catalog"] {
 		t.Fatal("read-effect tool gated")
+	}
+}
+
+func TestPrivateScratchExportPreservesBinaryAndScope(t *testing.T) {
+	v := fixture(t)
+	if err := v.Workspace.MkdirAll("docs", 0700); err != nil {
+		t.Fatal(err)
+	}
+	scope := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	data := []byte{0x89, 'P', 'N', 'G', 0, 0xff, 0xfe}
+	args := map[string]any{"path": "docs/proof.png", "export_base64": base64.StdEncoding.EncodeToString(data)}
+	out, err := v.ExecCall(context.Background(), "file_write", args, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := v.Workspace.ReadFile("docs/proof.png")
+	if err != nil || !bytes.Equal(actual, data) || out.(map[string]any)["revision"] != hash(data) {
+		t.Fatal("binary export changed", actual, out, err)
+	}
+	if _, err := v.ExecCall(context.Background(), "file_write", args, scope); err == nil {
+		t.Fatal("export overwrote existing file")
+	}
+	for _, invalid := range []map[string]any{
+		{"path": "outside.png", "export_base64": args["export_base64"]},
+		{"path": "docs/new.png", "export_base64": "%%%"},
+		{"path": "docs/new.png", "export_base64": args["export_base64"], "text": "mixed"},
+		{"path": "docs/new.png", "export_base64": args["export_base64"], "revision": "overwrite"},
+		{"path": "docs/new.png", "export_base64": true},
+		{"path": "docs/new.png", "export_base64": base64.StdEncoding.EncodeToString(make([]byte, Limit+1))},
+	} {
+		if _, err := v.ExecCall(context.Background(), "file_write", invalid, scope); err == nil {
+			t.Fatal("invalid export accepted")
+		}
+	}
+	if _, err := v.ExecCall(context.Background(), "file_read", args, scope); err == nil {
+		t.Fatal("export payload accepted for another operation")
+	}
+	if _, err := v.ExecCall(context.Background(), "file_write", map[string]any{"path": "docs/empty.bin", "export_base64": ""}, scope); err != nil {
+		t.Fatal(err)
 	}
 }

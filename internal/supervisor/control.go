@@ -489,7 +489,7 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 			return e
 		}
 	}
-	settings.Environment = envOr("HUB_ENV", "prod")
+	settings.Environment = m.environment()
 	if settings.Environment == "dev" {
 		settings.BrowserPort++
 		settings.OAuthPort++
@@ -499,6 +499,9 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 			}
 			settings.SlackEventsPort++
 		}
+	}
+	if settings.CapabilityMode != "managed" && strings.TrimSpace(settings.GlobalSkillsDir) == "" {
+		settings.GlobalSkillsDir = filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills")
 	}
 	if err := settings.Validate(); err != nil {
 		return err

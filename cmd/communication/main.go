@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +18,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--script" {
+		if err := runScriptHelper(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "script failed")
+			os.Exit(1)
+		}
+		return
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	config, err := communication.ConfigFromEnv()
@@ -38,4 +48,27 @@ func main() {
 		fmt.Fprintln(os.Stderr, "communication:", err)
 		os.Exit(1)
 	}
+}
+
+func runScriptHelper(args []string, out io.Writer) error {
+	if len(args) != 2 {
+		return fmt.Errorf("invalid script arguments")
+	}
+	source, err := base64.StdEncoding.DecodeString(args[0])
+	if err != nil {
+		return err
+	}
+	due, err := time.Parse(time.RFC3339Nano, args[1])
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	watchdog := time.AfterFunc(5*time.Second, func() { os.Exit(1) })
+	defer watchdog.Stop()
+	emitted, err := communication.RunScript(ctx, string(source), due)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(emitted)
 }

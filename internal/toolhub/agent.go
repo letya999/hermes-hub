@@ -247,7 +247,7 @@ func (p *agentExecPool) session(container string) (*agentExecSession, error) {
 			return s, nil
 		}
 	}
-	cmd := exec.Command(p.docker[0], append(p.docker[1:], "exec", "-i", container, "hubctl", "tools-daemon")...)
+	cmd := exec.Command(p.docker[0], append(p.docker[1:], "exec", "-i", "-e", "HUB_DEFER_RUNTIME_RESTART=true", container, "hubctl", "tools-daemon")...)
 	s := &agentExecSession{pending: map[uint64]chan daemonOutcome{}, dead: make(chan struct{}), stderr: &bytes.Buffer{}}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -382,7 +382,7 @@ func DockerAgentExec(dockerArgv []string, container func(EffectiveBinding) (stri
 		if err != nil {
 			return AgentExecResult{}, err
 		}
-		cmd := exec.CommandContext(ctx, dockerArgv[0], append(dockerArgv[1:], "exec", "-i", name, "hubctl", "tools-exec")...)
+		cmd := exec.CommandContext(ctx, dockerArgv[0], append(dockerArgv[1:], "exec", "-i", "-e", "HUB_DEFER_RUNTIME_RESTART=true", name, "hubctl", "tools-exec")...)
 		cmd.Stdin = bytes.NewReader(body)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout

@@ -2,6 +2,10 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0050](active/SPEC-0050-m10-stabilization.md) | Frozen: M10 remediation amendment |
+| [SPEC-0049](active/SPEC-0049-operability.md) | Frozen: mock, additive apply and BuildKit discipline |
+| [SPEC-0048](active/SPEC-0048-proactive-routines.md) | Frozen: watchers, checks, deterministic digests and knowledge |
+| [SPEC-0047](active/SPEC-0047-chat-file-transfer.md) | Frozen: images and file transfer |
 | [SPEC-0048](active/SPEC-0048-cli-policy-completion.md) | Frozen: six CLI policy gaps, private package installation and atomic host catalog operation |
 | [SPEC-0047](active/SPEC-0047-toolhub-cli-transport.md) | Frozen: bounded CLI as a first-class ToolHub transport — catalog and user-owned, no shell, real isolation receipts (milestone 9; CHG-0077) |
 | [SPEC-0046](active/SPEC-0046-tool-governance.md) | Frozen: tool-governance inventory, scoped rules, expiring grants and multi-plane enforcement (issue 139; CHG-0076) |

@@ -423,7 +423,7 @@ func TestUsageUpdateRunsBesideUpdatePoll(t *testing.T) {
 	}
 
 	start := time.Now()
-	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/usage", 11, 0)); err != nil {
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/usage session", 11, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
@@ -444,6 +444,45 @@ func TestUsageUpdateRunsBesideUpdatePoll(t *testing.T) {
 	if len(fake.sent) != 2 || !strings.Contains(fake.sent[1], "Расход сессии: вход 3") {
 		t.Fatalf("async usage report not delivered: %v", fake.sent)
 	}
+}
+
+func TestUsageOverviewIncludesQuotaWithoutBlockingPoll(t *testing.T) {
+	management := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{"provider": "antigravity", "auth_index": "own", "project_id": "own-project"}}})
+		case "/v0/management/api-call":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 200, "body": `{"groups":[{"displayName":"Gemini","buckets":[{"window":"weekly","remainingFraction":0.75}]}]}`})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer management.Close()
+	t.Setenv("HUB_CLIPROXY_MGMT_URL", management.URL)
+	t.Setenv("HUB_CLIPROXY_MGMT_KEY", "test-key")
+	t.Setenv("HUB_CLIPROXY_AUTH_INDEX", "")
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	start := time.Now()
+	if err := g.handleUpdate(context.Background(), taskUpdate(1, 1, "/usage", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("quota request blocked update poll")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(fake.sent) < 2 && time.Now().Before(deadline) {
+		g.deliverOne(context.Background())
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(fake.sent) != 2 || !strings.Contains(fake.sent[1], "Журнал:") || !strings.Contains(fake.sent[1], "Лимиты подписки") || !strings.Contains(fake.sent[1], "weekly 75.0%") {
+		t.Fatalf("overview missing journal or quota: %v", fake.sent)
+	}
+	g.usageWG.Wait()
 }
 
 func TestTaskUseByNameSwitchesCurrent(t *testing.T) {

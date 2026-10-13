@@ -13,12 +13,20 @@ title: Durable routines and runtime wake-up
    enabled state, next occurrence and revision. It contains no credential value.
 3. `routine_create`, `routine_list`, `routine_update`, `routine_pause` and
    `routine_delete` validate ownership and current policy outside the model.
-4. Each due occurrence becomes an ordinary durable job with `trigger=cron` and an
-   idempotency key derived from `(schedule_id, occurrence time, schedule revision)`.
-   The job acquires or wakes the same context runtime used by interactive work.
+4. Each due agent occurrence becomes an ordinary durable job with
+   `trigger=cron` and an idempotency key derived from `(schedule_id, occurrence
+   time, schedule revision)`. The job acquires or wakes the same context runtime
+   used by interactive work.
 5. Agent routines execute through Hermes. Script-only routines execute through the
    bounded CLI runner when their manifest explicitly permits it; they do not receive
-   a general shell.
+   a general shell. Until such a runner is deployed, `routine_create` rejects
+   `kind=script` and a `script` occurrence that reaches dispatch is marked
+   `blocked` — it never silently degrades into an agent job, wakes a runtime or
+   calls a model.
+6. A `reminder` occurrence does not create a job and does not wake a runtime: its
+   text is written once to the durable outbox for the schedule's verified audience
+   after the same ownership re-authorization. Reminder dispatch is idempotent
+   across repeated ticks and restarts and invokes no model at fire time.
 
 # Timing and recovery
 

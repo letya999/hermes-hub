@@ -11,6 +11,29 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
+func TestGovernanceAttributeRulesDoNotCollideForLongPrincipal(t *testing.T) {
+	govPath := filepath.Join(t.TempDir(), "governance.json")
+	user := "u" + strings.Repeat("a", 39)
+	for _, definition := range []string{"remote-e2e-first", "remote-e2e-second"} {
+		args := []string{"--governance", govPath, "--kind", "rule", "--user", user, "--match", "definition_id=" + definition, "--effect", "cap:read", "--reason", "E2E read-only fixture", "--confirm"}
+		if err := runGovernance(context.Background(), args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc, err := toolhub.LoadGovernance(govPath)
+	if err != nil || len(doc.Rules) != 3 {
+		t.Fatalf("distinct fixture rules lost: %v %v", doc, err)
+	}
+	if len(governanceID("toolgrant", user, "org_mcp", "timestamp")) > 40 {
+		t.Fatal("long principal produces invalid grant identity")
+	}
+	legacy := doc.Rules[len(doc.Rules)-1]
+	args := []string{"--governance", govPath, "--kind", "rule", "--rule", legacy.RuleID, "--user", user, "--match", "definition_id=" + legacy.Match["definition_id"], "--effect", "cap:read", "--reason", "retire fixture", "--status", "disabled", "--revision", "2", "--confirm"}
+	if err := runGovernance(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGovernanceCLIRuleGrantRevoke(t *testing.T) {
 	dir := t.TempDir()
 	govPath := filepath.Join(dir, "governance.json")

@@ -337,6 +337,23 @@ func TestBrowserWaitFailure(t *testing.T) {
 	}
 }
 
+func TestBrowserWaitsForSlowReady(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts <= 250 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+	oldURL, oldSleep := browserURL, sleep
+	browserURL, sleep = server.URL, func(time.Duration) {}
+	t.Cleanup(func() { browserURL, sleep = oldURL, oldSleep })
+	if err := waitForBrowser(); err != nil || attempts != 251 {
+		t.Fatalf("slow Chromium startup: attempts=%d err=%v", attempts, err)
+	}
+}
+
 func TestDisplayWaitFailure(t *testing.T) {
 	oldSleep, oldProbe := sleep, displayProbe
 	sleep = func(time.Duration) {}

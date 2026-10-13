@@ -12,6 +12,18 @@ func HermesContract(context.Context, string) error {
 	return errors.New("hermes contract probe requires: go run -tags integration ./cmd/devcheck hermes-contract IMAGE")
 }
 
+func HermesNativeContract(context.Context, string) error {
+	return errors.New("native contract probe requires integration build tag")
+}
+
+func SupervisorContract(context.Context, string) error {
+	return errors.New("supervisor contract probe requires integration build tag")
+}
+
+func TTSCachedModelCanary(context.Context, string) error {
+	return errors.New("TTS cache probe requires integration build tag")
+}
+
 func HermesCapabilityContract(context.Context, string) error {
 	return errors.New("hermes capability probe requires: go run -tags integration ./cmd/devcheck hermes-capability-contract IMAGE")
 }

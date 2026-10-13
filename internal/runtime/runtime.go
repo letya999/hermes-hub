@@ -562,13 +562,15 @@ func sweepBrowserOutput(dir string) {
 
 func waitForBrowser() error {
 	client := http.Client{Timeout: time.Second}
-	for range 200 {
+	for range 600 {
 		response, err := client.Get(browserURL)
 		if err == nil {
 			if err := response.Body.Close(); err != nil {
 				return err
 			}
-			return nil
+			if response.StatusCode == http.StatusOK {
+				return nil
+			}
 		}
 		sleep(100 * time.Millisecond)
 	}

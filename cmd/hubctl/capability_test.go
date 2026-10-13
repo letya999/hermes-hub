@@ -10,10 +10,67 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
+
+func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
+	freshPath := filepath.Join(t.TempDir(), "fresh.json")
+	if err := runCapability([]string{"--kind", "agent-tools", "--toolhub-store", freshPath, "--principal", "bob", "--context", "bob", "--runtime", "bob", "--policy-version", "policy-new"}); err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	if _, err := toolhub.Load(freshPath); err != nil {
+		t.Fatalf("new registry was not saved: %v", err)
+	}
+	storePath := filepath.Join(t.TempDir(), "store.json")
+	store := toolhub.NewStore()
+	previous := agenttools.HubToolsDefinition()
+	previous.Version = "1.1.0"
+	if err := store.RegisterDefinition(previous); err != nil {
+		t.Fatal(err)
+	}
+	stale := toolhub.ToolBinding{Schema: toolhub.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice",
+		DefinitionID: previous.DefinitionID, DefinitionVersion: previous.Version, PolicyVersion: "policy-old",
+		WorkloadClass: previous.Workload.Class, Status: toolhub.ActiveStatus, Revision: 1, ProjectionRevision: 5}
+	if err := store.PutBinding(stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--kind", "agent-tools", "--toolhub-store", storePath, "--principal", "alice", "--context", "alice", "--runtime", "alice", "--policy-version", "policy-new"}
+	if err := runCapability(args); err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "alice", ConversationID: "test", DeliveryTargetID: "test", PolicyVersion: "policy-new"}
+	revision, err := store.ProjectionRevision(auth)
+	if err != nil || revision <= stale.ProjectionRevision {
+		t.Fatalf("projection did not advance: revision=%d err=%v", revision, err)
+	}
+	tools, err := store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(tools, func(v toolhub.ProjectedTool) bool { return v.Tool.Name == "inbox_fetch" }) {
+		t.Fatal("current inbox tool missing from projection")
+	}
+	if err := runCapability(args); err != nil {
+		t.Fatalf("repeat registration: %v", err)
+	}
+	store, err = toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := store.ProjectionRevision(auth); err != nil || again != revision {
+		t.Fatalf("idempotent registration changed projection: %d -> %d: %v", revision, again, err)
+	}
+}
 
 func TestCapabilityCLIProtectedPublicationAndRevoke(t *testing.T) {
 	dir := t.TempDir()

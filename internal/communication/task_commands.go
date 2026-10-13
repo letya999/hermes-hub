@@ -2,6 +2,7 @@ package communication
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -167,8 +168,36 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%). " + contextLine
 	}
 	lines = append(lines, contextLine)
+	if totals, err := g.spool.UsageTotals("user:" + user.ID); err == nil && totals.Jobs > 0 {
+		lines = append(lines, "Всего по журналу: "+strconv.Itoa(totals.Jobs)+" запусков, вход "+strconv.FormatInt(totals.InputTokens, 10)+", выход "+strconv.FormatInt(totals.OutputTokens, 10)+".")
+	}
 	lines = append(lines, g.quotaLines(ctx)...)
 	return strings.Join(lines, "\n")
+}
+
+func (g *Gateway) journalUsage(user User, command string) string {
+	fields := strings.Fields(command)
+	var since time.Time
+	model := ""
+	for _, field := range fields[1:] {
+		days := map[string]int{"day": 1, "week": 7, "month": 30}[field]
+		if days > 0 && since.IsZero() {
+			since = g.now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
+			continue
+		}
+		if model == "" && (strings.HasPrefix(field, "model=") || !since.IsZero()) && days == 0 {
+			model = strings.TrimPrefix(field, "model=")
+			if model != "" && len(model) <= 128 {
+				continue
+			}
+		}
+		return "Используйте /usage [day|week|month] [model=<id>] или /usage session."
+	}
+	totals, err := g.spool.UsageTotalsSince("user:"+user.ID, since, model)
+	if err != nil {
+		return "Журнал расхода недоступен."
+	}
+	return fmt.Sprintf("Журнал: %d попыток; измерено вход %d, выход %d. Неполных измерений: %d; старых записей без точного учёта: %d. Первичных снимков сессии: %d (могут включать более ранний расход).", totals.Jobs, totals.InputTokens, totals.OutputTokens, totals.UnknownJobs, totals.LegacyJobs, totals.InitialSnapshots)
 }
 
 // usageTransient reports lookup-path failures worth one retry: the runtime is

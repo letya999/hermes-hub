@@ -1,0 +1,34 @@
+schema: 1
+id: CHG-0084-m10-dev-merge
+title: Merge M10 into dev and complete shared image build discipline
+status: complete
+started_at: 2026-10-11
+completed_at: 2026-10-11
+completed:
+  - M10 remediation committed as 1e5b1fa and merged into dev as e4e155b
+  - newer CLI and CI changes retained; path defaults and array authorization combined
+  - merged just check passed at 85.24%; just security passed
+  - red regression reproduced duplicate shared core builds in both dev and prod
+  - single-build media correction committed and fast-forwarded into dev as 012e499
+  - final just check passed with race and shuffle; statement coverage 85.23%
+  - final hubctl BuildKit build passed from code revision 012e499
+  - isolated Docker runtime smoke passed; pinned Hermes 0.21.0 and browser health
+  - control image Docker CLI 29.8.1 executed successfully
+  - main worktree merge preserved the existing CLI and CI history; no publication
+pending: []
+verification:
+  source_revision: 012e499
+  core_image: sha256:fc2729103ae7296317b3497cf9438ed921dbc73275107a8bba0b543e983298db
+  control_image: sha256:484b7d9dc48e5f6e5a91d3cb1320d8a14ac72e5f8ccdca92b8fb6fd4d67dcf84
+  stt_image: sha256:e1d1782c563aada97069909920ac0f6d8f0c0a6fa6a1f126992d86932bbaeca1
+  tts_image: sha256:d64cc3219e796d16268de62f32f8e36315fbc3104f032a835c7945722711f73c
+  cli_tools_image: sha256:4bacd2188a93a75e152cf66b2be8b9206f604f36286226de2a8f13cb93debbe3
+  cli_proxy_image: sha256:b0861b57f179e61a528e6789860e9f7944c577a00eaaad718524a0d9cfa69c81
+  secret_scan: staged changes passed Gitleaks with redaction
+  security: zero reachable or imported Go vulnerabilities; one uncalled module advisory; npm zero vulnerabilities
+  cleanup: hubctl build lifecycle completed; no broad system or volume prune
+  deployment: existing running services retained their previous images; no automatic restart
+  full_native_contract: previously passed for M10 remediation; not repeated after this one-line Compose build change
+  live_channel: real M10 Telegram acceptance remains separate and unverified
+constraints:
+  - preserve running services and persistent data; no push or publication

@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-10-02
+last_verified: 2026-10-12
 ---
 # Architecture
 
@@ -228,6 +228,9 @@ organization/user deployment boundary, not a public hostile-tenant service. A us
 OAuth and Hermes state stay in that user's named volumes. Organization documents are
 read-only. Organization actions are explicit strings in host policy and are passed to
 hub-owned tools, not exposed as free `tenant`, `org` or `user` tool arguments.
+The legacy supervisor mirrors only `spaces/<user>/workspace` at `/scope`; it does
+not mount the whole space directory. Runtime ownership checks reject a whole-space
+`/scope` mount, because that directory also contains host secret files.
 The hub `env_update` tool is legacy-only and is disabled for connector credentials when
 Communication Hub control is configured. `service_enable` returns a one-time protected
 form; the authenticated runtime control endpoint writes only the user runtime's

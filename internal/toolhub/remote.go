@@ -163,6 +163,15 @@ func remoteDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	return nil, lastErr
 }
 
+// PublicHTTPClient shares the dial-time public-address fence with remote MCP.
+// Untrusted fetches cannot use ambient proxies or redirect to internal services.
+func PublicHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = remoteDial
+	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
 type remoteHeaderRoundTripper struct {
 	base    http.RoundTripper
 	origin  string // "https://host[:port]" the credential headers belong to

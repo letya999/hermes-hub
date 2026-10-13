@@ -72,16 +72,16 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	}
 	routineSpool := filepath.Join(t.TempDir(), "routine-spool")
 	due := "once:2099-01-01T00:00:00Z"
-	if err := run(ctx, []string{"routine", "create", "--spool", routineSpool, "--user", "owner", "--id", "morning", "--tz", "UTC", "--expr", due, "--input", "brief"}); err != nil {
+	if err := run(ctx, []string{"routine", "create", "--spool", routineSpool, "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning", "--tz", "UTC", "--expr", due, "--input", "brief"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"routine", "list", "--spool", routineSpool, "--user", "owner"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"routine", "pause", "--spool", routineSpool, "--user", "owner", "--id", "morning"}); err != nil {
+	if err := run(ctx, []string{"routine", "pause", "--spool", routineSpool, "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"routine", "delete", "--spool", routineSpool, "--user", "owner", "--id", "morning"}); err != nil {
+	if err := run(ctx, []string{"routine", "delete", "--spool", routineSpool, "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"context"}); err == nil {

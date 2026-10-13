@@ -157,16 +157,25 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 	restarted := false
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		restarted = r.URL.Path == "/v1/restart" && r.Header.Get("Authorization") == "Bearer secret"
-		w.WriteHeader(http.StatusOK)
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
 	}))
 	defer runtimeAPI.Close()
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
 	normalized, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := m.Ensure(context.Background(), normalized); err != nil {
+		t.Fatal(err)
+	}
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	entry := m.items[runtimeKey(normalized)]
+	entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, Ready, 0, "secret"
 	m.mu.Unlock()
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "restart", JobID: "restart-job", IdempotencyKey: "restart-job"}
 	body, err := json.Marshal(request)
@@ -250,16 +259,25 @@ func TestRestartRequestMarksOwnedRuntimeByState(t *testing.T) {
 				case "/v1/restart":
 					applied = true
 				}
-				w.WriteHeader(http.StatusOK)
+				writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
 			}))
 			defer runtimeAPI.Close()
-			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "inspect" {
+					return nil, os.ErrNotExist
+				}
+				return []byte("running"), nil
+			}, func(context.Context, string, string) error { return nil })
 			normalized, err := m.normalize(binding(root))
 			if err != nil {
 				t.Fatal(err)
 			}
+			if _, err := m.Ensure(context.Background(), normalized); err != nil {
+				t.Fatal(err)
+			}
 			m.mu.Lock()
-			m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: tc.state}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+			entry := m.items[runtimeKey(normalized)]
+			entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, tc.state, 0, "secret"
 			m.mu.Unlock()
 			body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice", "runtime_id": "alice"})
 			if err != nil {
@@ -548,7 +566,7 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 			return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": first.Generation})
 		}
 		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
-			return json.Marshal([]map[string]string{{"Type": "bind", "Source": ctxRoot, "Destination": "/scope"}})
+			return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(ctxRoot, "workspace"), "Destination": "/scope"}})
 		}
 		return commands(ctx, args...)
 	}
@@ -611,7 +629,7 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 			return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": actual.Generation})
 		}
 		if len(args) > 3 && args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
-			return json.Marshal([]map[string]string{{"Type": "bind", "Source": ctxRoot, "Destination": "/scope"}})
+			return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(ctxRoot, "workspace"), "Destination": "/scope"}})
 		}
 		return commands(ctx, args...)
 	}
@@ -957,6 +975,46 @@ func TestReaperNeverStopsLeasedRuntime(t *testing.T) {
 	}
 }
 
+func TestReaperKeepsIdleRuntimeWithLiveJob(t *testing.T) {
+	stops := 0
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		if len(args) > 0 && args[0] == "rm" {
+			stops++
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Release("alice", "gateway"); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.jobs["live-job"] = jobRecord{Status: "running", Request: hubruntime.ExecuteRequest{JobID: "live-job", PrincipalID: "alice", ContextID: "alice"}}
+	m.mu.Unlock()
+	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 0 {
+		t.Fatal("runtime with a live job was reaped")
+	}
+	m.mu.Lock()
+	record := m.jobs["live-job"]
+	record.Status = "completed"
+	m.jobs["live-job"] = record
+	m.mu.Unlock()
+	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if stops != 1 {
+		t.Fatalf("stops=%d", stops)
+	}
+}
+
 func TestNormalizeRejectsEscapesAndSymlinks(t *testing.T) {
 	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
 	if _, err := m.Ensure(context.Background(), Binding{PrincipalID: "alice", ContextID: "..", RuntimeID: "alice", ContextRoot: root}); err == nil {
@@ -1137,7 +1195,7 @@ func TestNewDefaultsAndServeStopsOnContext(t *testing.T) {
 		}
 		return nil, nil
 	}, func(context.Context, string, string) error { return nil })
-	if m.cfg.WarmTTL != time.Minute || m.cfg.MaxConcurrent != 8 || m.cfg.RuntimePort != 8080 || m.cfg.PIDs != 256 {
+	if m.cfg.WarmTTL != time.Minute || m.cfg.MaxConcurrent != 8 || m.cfg.RuntimePort != 8080 || m.cfg.PIDs != 1024 {
 		t.Fatalf("defaults not applied: %+v", m.cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1366,7 +1424,7 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 256", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
+	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 1024", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("run args missing %q: %s", want, joined)
 		}

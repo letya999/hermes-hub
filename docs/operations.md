@@ -692,7 +692,7 @@ Measured (single samples, one dev space):
 | warm lease on running runtime | 0.58 s |
 | idle deadline → container removed | <45 s (reaper ≤5 s + stop grace ~40 s) |
 | warm TTL | 5 min (default `--warm-ttl`) |
-| managed runtime RSS (warm) | ~395–403 MiB (cap 1 GiB, 2 CPU, 256 pids) |
+| managed runtime RSS (warm) | ~395–403 MiB (cap 1 GiB, 2 CPU, 1024 pids) |
 | runtime ctl sidecar RSS | ~8 MiB |
 | runtime CPU during cold start | ~100 % of 2-core cap for ~20–40 s |
 
@@ -842,19 +842,31 @@ Task records may carry per-task presentation guidance (`style`, up to 1024
 characters, no control characters) that rides each admitted run as Hermes
 `instructions`; the admitted run's snapshot is pinned on its durable mapping,
 so a later style change affects subsequent runs only and never touches
-authorization or tool policy. `/usage` reports the task session's measured
+authorization or tool policy. `/usage session` reports the task session's measured
 model, title and
 start time, cumulative tokens, calls, cost and session-rotation count read
 back from the pinned Hermes session API; fields the upstream does not
 authoritatively expose — current-prompt context and the context window —
-render `unknown` instead of an estimate. When the operator configures
+render `unknown` instead of an estimate. Plain `/usage` reads the journal and
+provider quota without waking Hermes. When the operator configures
 `HUB_CLIPROXY_MGMT_URL`, `HUB_CLIPROXY_MGMT_KEY` and optionally
 `HUB_CLIPROXY_AUTH_INDEX` in the channel env file, `/usage` additionally
 queries the pinned CLIProxyAPI management surface (`auth-files`, then an
 authenticated `api-call` to the provider quota endpoint) and prints measured
 subscription limits with reset times; OAuth tokens stay inside the proxy. The
 result is cached for five minutes and failures render `недоступно` rather than
-a guess.
+a guess. Set these values in `secrets.<env>.env`: render regenerates
+`communication.<env>.env` and keeps the key out of the Hermes runtime. The
+CLIProxyAPI management key also enables privileged management endpoints, so
+use a strong private key and expose the proxy only to the local stack. In the
+proxy's private `config.yaml`, set `remote-management.secret-key` to that key
+and `remote-management.allow-remote: true` so the separate gateway container
+can reach it; the proxy stores the key as a hash after startup.
+Separately, every terminal job appends one measured input/output token
+entry to a durable per-scope usage journal; duplicate job/run pairs are ignored.
+`/usage session` appends the journal total (`Всего по журналу`) for the owning scope —
+accounting only, no quotas or blocks — and an unreachable usage endpoint never
+fails the job itself.
 
 Reconciliation reserves capacity for every restored non-stopped runtime. A
 missing idle container releases that capacity only after TTL and a durable

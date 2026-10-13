@@ -479,16 +479,23 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 }
 
 func TestSupervisedUnmanagedSpaceWiresAgentExec(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), ExecutionMode: "supervisor"}
-	env := Compose(s, "/source", "/space")["services"].(M)["toolhub"].(M)["environment"].(M)
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), ExecutionMode: "supervisor", SupervisorURL: "http://host.docker.internal:8876"}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	hub := services["toolhub"].(M)
+	env := hub["environment"].(M)
 	if env["HUB_AGENT_EXEC_MODE"] != "supervisor" {
 		t.Fatal("supervised unmanaged space lost the agent-tools executor channel")
 	}
 	if env["HUB_CAPABILITY_MODE"] != nil {
 		t.Fatal("capability env leaked onto an unmanaged space")
 	}
+	aliases := hub["networks"].(M)[sharedNetworkName].(M)["aliases"].([]string)
+	if len(aliases) != 1 || aliases[0] != "toolhub-control" || services["communication-hub"].(M)["environment"].(M)["HUB_TOOLHUB_URL"] != "http://toolhub-control:8090" {
+		t.Fatal("gateway supervisor control URL lacks its matching Docker DNS alias")
+	}
 	s2 := s
 	s2.ExecutionMode = ""
+	s2.SupervisorURL = ""
 	env2 := Compose(s2, "/source", "/space")["services"].(M)["toolhub"].(M)["environment"].(M)
 	if env2["HUB_AGENT_EXEC_MODE"] != nil {
 		t.Fatal("non-supervised space gained the supervisor executor channel")

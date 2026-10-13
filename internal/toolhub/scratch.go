@@ -325,7 +325,7 @@ func applyExports(ctx context.Context, apply AgentExecFunc, fence ScratchFenceFu
 		target := path.Join(relPath, "exports", name)
 		out, callErr := apply(ctx, effective, AgentExecRequest{
 			Tool:           "file_write",
-			Arguments:      map[string]any{"path": target, "text": string(content)},
+			Arguments:      map[string]any{"path": target, "export_base64": base64.StdEncoding.EncodeToString(content)},
 			Scopes:         request.Scopes,
 			TimeoutSeconds: request.TimeoutSeconds,
 		})

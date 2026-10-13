@@ -40,6 +40,7 @@ type ExecuteRequest struct {
 	Trigger        string `json:"trigger"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Text           string `json:"text"`
+	InboundID      string `json:"inbound_id,omitempty"`
 	// Instructions is the hub-pinned presentation guidance for this admitted
 	// run (ephemeral system prompt upstream). It is never a synthetic user
 	// message and never carries authorization.
@@ -126,7 +127,7 @@ func (s *runtimeHTTP) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://"+env("HUB_HERMES_API_HOST", "127.0.0.1")+":"+env("HUB_HERMES_API_PORT", "8642")+"/v1/capabilities", nil)
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://"+env("HUB_HERMES_API_HOST", "127.0.0.1")+":"+env("HUB_HERMES_API_PORT", "8642")+"/health/detailed", nil)
 	if err != nil {
 		writeRuntimeError(w, http.StatusServiceUnavailable, "Hermes API unavailable")
 		return
@@ -140,6 +141,30 @@ func (s *runtimeHTTP) ready(w http.ResponseWriter, r *http.Request) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		writeRuntimeError(w, http.StatusServiceUnavailable, "Hermes API is not ready")
+		return
+	}
+	var health struct {
+		Readiness struct {
+			Status string `json:"status"`
+			Checks struct {
+				Gateway struct {
+					Status string `json:"status"`
+					State  string `json:"state"`
+				} `json:"gateway"`
+			} `json:"checks"`
+		} `json:"readiness"`
+		Platforms struct {
+			API struct {
+				State string `json:"state"`
+			} `json:"api_server"`
+		} `json:"platforms"`
+	}
+	// Discovery responds during startup; admission must wait for the gateway
+	// and API platform to finish initializing. Non-critical degradation serves.
+	if json.NewDecoder(http.MaxBytesReader(w, response.Body, 128*1024)).Decode(&health) != nil ||
+		(health.Readiness.Status != "ok" && health.Readiness.Status != "degraded") ||
+		health.Readiness.Checks.Gateway.Status != "ok" || health.Readiness.Checks.Gateway.State != "running" || health.Platforms.API.State != "connected" {
+		writeRuntimeError(w, http.StatusServiceUnavailable, "Hermes task admission is not ready")
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -249,7 +274,15 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 		RunID string `json:"run_id"`
 	}
 	runStart := time.Now()
-	runBody := map[string]any{"input": request.Text, "session_id": sessionID}
+	input := request.Text
+	if request.InboundID != "" {
+		rel, err := fetchInbound(ctx, request.InboundID)
+		if err != nil {
+			return ExecuteResponse{}, err
+		}
+		input += "\nSaved incoming file: " + rel + ". Read or extract this file before answering."
+	}
+	runBody := map[string]any{"input": input, "session_id": sessionID}
 	if request.Instructions != "" {
 		runBody["instructions"] = request.Instructions
 	}
@@ -604,6 +637,9 @@ func validateExecuteRequest(request ExecuteRequest) error {
 	}
 	if len(request.Instructions) > 4096 || strings.ContainsRune(request.Instructions, '\x00') {
 		return errors.New("invalid instructions")
+	}
+	if request.InboundID != "" && request.Channel != "telegram_bot" {
+		return errors.New("inbound file requires Telegram channel")
 	}
 	return nil
 }

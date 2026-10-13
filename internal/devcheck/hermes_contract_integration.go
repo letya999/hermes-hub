@@ -130,6 +130,17 @@ func nativeContractProvider() (*httptest.Server, string, error) {
 
 // HermesContract runs against the pinned upstream API server, not a mock or the Go runtime.
 func HermesContract(ctx context.Context, image string) error {
+	if err := HermesNativeContract(ctx, image); err != nil {
+		return err
+	}
+	if err := SupervisorContract(ctx, image); err != nil {
+		return err
+	}
+	return GatewayLifecycle(ctx, image)
+}
+
+// HermesNativeContract keeps the upstream contract independently runnable in CI.
+func HermesNativeContract(ctx context.Context, image string) error {
 	provider, providerURL, err := nativeContractProvider()
 	if err != nil {
 		return err
@@ -264,14 +275,8 @@ func HermesContract(ctx context.Context, image string) error {
 	if err := expectHermesHTTP(ctx, out, name, key, http.MethodGet, "/api/sessions/"+sessionID, http.StatusOK); err != nil {
 		return fmt.Errorf("session resume after restart failed: %w", err)
 	}
-	if err := supervisorSmoke(ctx, image, providerURL); err != nil {
-		return err
-	}
 	if err := fasterWhisperFixtureSmoke(ctx, image); err != nil {
 		fmt.Printf("faster-whisper fixture on shipped image unavailable: %v\n", err)
-	}
-	if err := gatewayLifecycleSmoke(ctx, image, providerURL); err != nil {
-		return err
 	}
 	fmt.Printf("Pinned Hermes %s API contract passed: sessions, idempotency, SSE, stop, approvals, cron coexistence, restart\n", hermesContractVersion)
 	return nil

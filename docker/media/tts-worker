@@ -73,10 +73,12 @@ def resolve(voice: str):
 def silero_wav(text: str, speaker: str, wav: str) -> bool:
     try:
         import torch
+        # Use the baked repository; GitHub source still resolves the branch online.
+        repo = os.path.join(torch.hub.get_dir(), "snakers4_silero-models_master")
         model, _ = torch.hub.load(
-            repo_or_dir="snakers4/silero-models", model="silero_tts",
+            repo_or_dir=repo, source="local", model="silero_tts",
             language="ru", speaker=env("HUB_TTS_SILERO_MODEL", "v5_5_ru"),
-            trust_repo=True, verbose=False)
+            verbose=False)
         model.to(torch.device(env("HUB_TTS_DEVICE", "cpu")))
         audio = model.apply_tts(text=text, speaker=speaker or "xenia", sample_rate=48000)
     except Exception as e:

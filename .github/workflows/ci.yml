@@ -24,7 +24,7 @@ jobs:
           test "$HEAD_REPOSITORY" = "$REPOSITORY"
   # The race suite runs as a parallel matrix, not a single `just check`:
   # one ~50-minute monolith `go test` repeatedly lost the hosted runner
-  # mid-step (job concludes failure, no logs uploaded — VM loss, not a
+  # mid-step (job concludes failure, no logs uploaded - VM loss, not a
   # test verdict). Short independent shards stay inside each runner's
   # resource window, reruns are cheap, and a recurring shard failure
   # identifies the implicated package set instead of the whole suite.
@@ -42,9 +42,12 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/credential-broker/go.mod
       # `timeout` bounds the step so a wedge ends as a controlled step
       # failure instead of losing the runner. Output goes straight to a
-      # file — never through tee: a killed `go test` leaves orphaned test
+      # file - never through tee: a killed `go test` leaves orphaned test
       # binaries holding the stdout pipe open, which kept tee (and the
       # whole step) alive until the job timeout destroyed every log.
       - name: go test shard
@@ -85,6 +88,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/credential-broker/go.mod
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: '1.57.0'
@@ -133,6 +139,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/credential-broker/go.mod
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: '1.57.0'
@@ -150,8 +159,13 @@ jobs:
         run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}-control"
         env:
           HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
-          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }},mode=max
-  containers:
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-control,mode=max
+      - name: Verify baked TTS model without network
+        if: matrix.target == 'tts'
+        run: |
+          go run ./cmd/devcheck docker-pull hermes-hub:test-tts tts
+          go run -tags integration ./cmd/devcheck tts-cache-contract hermes-hub:test-tts
+  container-gates:
     needs: image
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -162,11 +176,15 @@ jobs:
       fail-fast: false
       matrix:
         target: [dev, prod]
+        gate: [smoke, native, supervisor, gateway, capabilities, network, managed, scratch]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/credential-broker/go.mod
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: '1.57.0'
@@ -175,6 +193,45 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: just docker-check-prebuilt "${{ matrix.target }}"
-      - if: matrix.target == 'prod'
-        run: just credential-broker-docker-check
+      - name: Pull immutable revision under test
+        run: go run ./cmd/devcheck docker-pull hermes-hub:test "${{ matrix.target }}"
+      - name: Verify exact source revision
+        run: test "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' hermes-hub:test)" = "$(git rev-parse HEAD)"
+      - name: Container contract
+        shell: bash
+        env:
+          GATE: ${{ matrix.gate }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "$GATE" in
+            smoke)
+              go run ./cmd/devcheck docker-pull hermes-hub:test-control "$TARGET-control"
+              test "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' hermes-hub:test-control)" = "$(git rev-parse HEAD)"
+              docker run --rm --entrypoint docker hermes-hub:test-control --version
+              go run ./cmd/devcheck docker-smoke hermes-hub:test
+              if [ "$TARGET" = prod ]; then just credential-broker-docker-check; fi
+              ;;
+            native) go run -tags integration ./cmd/devcheck hermes-native-contract hermes-hub:test ;;
+            supervisor) go run -tags integration ./cmd/devcheck supervisor-contract hermes-hub:test ;;
+            gateway) go run -tags integration ./cmd/devcheck gateway-lifecycle hermes-hub:test ;;
+            capabilities) go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test ;;
+            network) go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test ;;
+            managed) go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test ;;
+            scratch)
+              go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
+              go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
+              ;;
+            *) exit 1 ;;
+          esac
+      - name: Reclaim this runner's build resources
+        if: always()
+        run: go run ./cmd/devcheck docker-clean
+  containers:
+    # Preserve the required status and reject failures, cancellations and skipped gates.
+    if: always()
+    needs: container-gates
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULT: ${{ needs.container-gates.result }}
+        run: test "$RESULT" = success

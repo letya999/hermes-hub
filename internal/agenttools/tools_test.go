@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -190,6 +191,32 @@ func TestServiceEnableRejectsOrganizationScope(t *testing.T) {
 	v := fixture(t)
 	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil {
 		t.Fatal("organization service change accepted")
+	}
+}
+
+func TestManagedLegacyServicesDoNotClaimEnablement(t *testing.T) {
+	v := fixture(t)
+	v.ToolPolicy = &toolhub.ToolPolicySnapshot{Schema: 1, Principal: "alice"}
+	v.StateDir = t.TempDir()
+	restarted := false
+	v.Restart = func() error { restarted = true; return nil }
+	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil || !strings.Contains(err.Error(), "managed mode") {
+		t.Fatal("managed legacy enable must fail before asking for credentials", err)
+	}
+	if restarted {
+		t.Fatal("rejected service restarted the runtime")
+	}
+	if _, err := os.Stat(filepath.Join(v.StateDir, "self-services.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("rejected service changed state", err)
+	}
+	out, err := v.ServiceCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range out["services"].([]map[string]any) {
+		if item["self_service"] != false || item["status"] != "host-managed" {
+			t.Fatal("managed legacy service advertised as mutable", item)
+		}
 	}
 }
 
@@ -573,10 +600,10 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 21 {
+	if err != nil || len(list.Tools) != 26 {
 		t.Fatal(len(list.Tools), err)
 	}
-	for _, name := range []string{"document_extract", "document_create", "image_inspect", "artifact_remove", "settings_get", "settings_set"} {
+	for _, name := range []string{"document_extract", "document_create", "image_inspect", "artifact_remove", "settings_get", "settings_set", "archive_create", "archive_unpack", "inbox_fetch"} {
 		found := false
 		for _, tool := range list.Tools {
 			if tool.Name == name {
@@ -670,7 +697,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	client, cleanup := connectHub(t, v)
 	defer cleanup()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 21 {
+	if err != nil || len(list.Tools) != 26 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, tool := range list.Tools {
@@ -718,6 +745,26 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	if seen.IsError || body["text"] != "a red pixel" || jsonNumber(body["width"]) != 2 || jsonNumber(body["height"]) != 3 || !sawInspect.Load() {
 		t.Fatal(seen, body)
 	}
+	set, body := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"dot.png", "dot.png"}})
+	if set.IsError {
+		t.Fatal(set, body)
+	}
+	results, _ := body["results"].([]any)
+	if len(results) != 2 {
+		t.Fatal(body)
+	}
+	first, _ := results[0].(map[string]any)
+	if body["text"] != "a red pixel" || first["path"] != "dot.png" {
+		t.Fatal(results[0])
+	}
+	badSet, _ := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"dot.png", "missing.png"}})
+	if !badSet.IsError {
+		t.Fatal("accepted an unreadable image set")
+	}
+	tooMany, _ := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}})
+	if !tooMany.IsError {
+		t.Fatal("accepted an unbounded image set")
+	}
 	for _, path := range []string{"../notes.md", filepath.Join(root, "notes.md"), `a\b.md`} {
 		denied, _ := callHub(t, client, "document_extract", map[string]any{"path": path})
 		if !denied.IsError {
@@ -741,7 +788,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 25 {
+	if err != nil || len(listed.Tools) != 30 {
 		t.Fatal(len(listed.Tools), err)
 	}
 	made, body := callHub(t, granted, "image_generate", map[string]any{"name": "pic", "prompt": "a red square"})
