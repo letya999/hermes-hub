@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0093
+title: Tool surface integrity and context hygiene (M19 stage 1)
+status: in_progress
+branch: feat/m19-execution-chain-reliability
+updated: 2026-10-13
+phase: design-complete
+adr: ADR-0036
+spec: SPEC-0053
+requirements: [R1.1, R1.2, R1.3, R1.4, R1.5, R1.6, R1.7, R1.8]
+depends_on: [CHG-0092]
+github_milestone: https://github.com/letya999/hermes-hub/milestone/20
+github_issue: https://github.com/letya999/hermes-hub/issues/262
+design_status: accepted
+implementation_status: not_started
+slices:
+  S1.1-rights-only-policy-hash: not_started
+  S1.2-binding-migration: not_started
+  S1.3-no-silent-projection-drops: not_started
+  S1.4-manifest-capability-readiness: not_started
+  S1.5-tool-errors-and-hermes-pin: not_started
+  S1.6-context-hygiene: not_started
+completed:
+  - Design and acceptance defined in ADR-0036/SPEC-0053.
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - Implement S1.1-S1.6.
+limitations:
+  - Hermes pin raise (S1.5) depends on upstream release content; record the exact commit and gate result.

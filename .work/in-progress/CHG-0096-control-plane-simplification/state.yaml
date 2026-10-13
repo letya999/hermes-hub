@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-0096
+title: Control-plane simplification proposals (M19 stage 4)
+status: in_progress
+branch: feat/m19-execution-chain-reliability
+updated: 2026-10-13
+phase: design-complete
+adr: ADR-0036
+spec: SPEC-0053
+requirements: [R4]
+depends_on: [CHG-0095]
+github_milestone: https://github.com/letya999/hermes-hub/milestone/20
+github_issue: https://github.com/letya999/hermes-hub/issues/265
+design_status: accepted
+implementation_status: decision_only
+proposals:
+  P4a-supervisor-in-linux-container: not_started
+  P4b-embedded-store: not_started
+  P4c-hermes-pin: not_started
+validation:
+  documents: pending
+evidence: []
+remaining:
+  - Collect stage 0-3 metrics; draft one ADR per proposal; owner decision.
+limitations:
+  - No implementation before each proposal ADR is accepted.

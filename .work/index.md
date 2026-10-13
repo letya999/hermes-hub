@@ -2,6 +2,7 @@
 
 Use todo / in-progress / done directories for active change folders. A folder contains
 plan.md and state.yaml. Task progress belongs here, never in current architecture docs.
+New milestones follow the [milestone playbook](milestone-playbook.md) and its [templates](templates/change-plan.md).
 
 The table tracks current change records. Issue 122's broader default-deny design
 is CHG-0065; its implementation is in progress. Issues 167-169 (task sessions,
@@ -12,6 +13,11 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0092](in-progress/CHG-0092-chain-stop-the-bleeding/plan.md) | M19 stage 0, design complete: idle deadlines, pre-admission retry, lease-safe lifecycle, supervisor service, routine isolation |
+| [CHG-0093](in-progress/CHG-0093-tool-surface-integrity/plan.md) | M19 stage 1, design complete: rights-only policy hash, binding migration, tool manifest readiness, context hygiene |
+| [CHG-0094](in-progress/CHG-0094-chain-latency/plan.md) | M19 stage 2, design complete: early liveness, single progress message, event-driven spool, lazy browser |
+| [CHG-0095](in-progress/CHG-0095-recovery-observability/plan.md) | M19 stage 3, design complete: job state machine, unconfirmed reconciler, canary, structured logs, trace |
+| [CHG-0096](in-progress/CHG-0096-control-plane-simplification/plan.md) | M19 stage 4, decision only: containerized supervisor, embedded store, Hermes pin proposals |
 | [CHG-0087](in-progress/CHG-0087-live-phase1/plan.md) | Live phase 1 capability checks and observed terminal/runtime isolation repairs |
 | [CHG-0086](in-progress/CHG-0086-inbound-documents/plan.md) | Telegram inbound document save and extraction repair; source, Docker, and live Telegram checks passed |
 | [CHG-0085](in-progress/CHG-0085-e2e-ci/plan.md) | Sequential E2E registry and CI latency reduction, in progress |

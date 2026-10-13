@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0053](active/SPEC-0053-execution-chain-reliability.md) | Frozen: M19 execution chain SLOs, stop-loss, tool surface, latency, recovery and visibility requirements |
 | [SPEC-0050](active/SPEC-0050-m10-stabilization.md) | Frozen: M10 remediation amendment |
 | [SPEC-0049](active/SPEC-0049-operability.md) | Frozen: mock, additive apply and BuildKit discipline |
 | [SPEC-0048](active/SPEC-0048-proactive-routines.md) | Frozen: watchers, checks, deterministic digests and knowledge |

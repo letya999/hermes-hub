@@ -1,0 +1,39 @@
+schema: 1
+change: CHG-0092
+title: Stop losses in the execution chain (M19 stage 0)
+status: in_progress
+branch: feat/m19-execution-chain-reliability
+base: dev 3460cd8
+updated: 2026-10-13
+phase: design-complete
+adr: ADR-0036
+spec: SPEC-0053
+requirements: [R0.1, R0.2, R0.3, R0.4, R0.5, R0.6, R0.7, R0.8, R0.9]
+github_milestone: https://github.com/letya999/hermes-hub/milestone/20
+github_issue: https://github.com/letya999/hermes-hub/issues/261
+design_status: accepted
+implementation_status: not_started
+slices:
+  S0.1-idle-deadlines-heartbeat: not_started
+  S0.2-preadmission-retry: not_started
+  S0.3-lease-safe-lifecycle: not_started
+  S0.4-warm-ttl: not_started
+  S0.5-supervisor-service: not_started
+  S0.6-routine-isolation: not_started
+  S0.7-second-poller-guard: not_started
+  S0.8-correlation-utc: not_started
+completed:
+  - Audited live dev stack logs, supervisor/ToolHub/Hermes state and 20 agent sessions (see research.md).
+  - Researched OpenClaw, NanoClaw, GoClaw, Iva, Open Dots, noclaw, Hermes upstream, MCP, Telegram, Anthropic and durable-execution sources.
+  - Wrote ADR-0036, SPEC-0053 and stage plans CHG-0092..CHG-0096.
+validation:
+  documents: pending
+  just_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - Implement slices S0.1-S0.8 in order with red tests first.
+  - Live acceptance A0.1-A0.6 on the dev stack.
+limitations:
+  - Uncommitted CHG-0090/CHG-0091 work is present in the working tree and is not part of this change.

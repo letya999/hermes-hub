@@ -1,0 +1,34 @@
+schema: 1
+change: CHG-0095
+title: Recovery and visibility (M19 stage 3)
+status: in_progress
+branch: feat/m19-execution-chain-reliability
+updated: 2026-10-13
+phase: design-complete
+adr: ADR-0036
+spec: SPEC-0053
+requirements: [R3.1, R3.2, R3.3, R3.4, R3.5, R3.6]
+depends_on: [CHG-0092, CHG-0094]
+github_milestone: https://github.com/letya999/hermes-hub/milestone/20
+github_issue: https://github.com/letya999/hermes-hub/issues/264
+related_issues: ["#193", "#206", "#74"]
+design_status: accepted
+implementation_status: not_started
+slices:
+  S3.1-job-state-machine: not_started
+  S3.2-unconfirmed-reconciler: not_started
+  S3.3-poison-update-quarantine: not_started
+  S3.4-synthetic-canary: not_started
+  S3.5-structured-logs-trace: not_started
+  S3.6-status-health: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  chaos_matrix: not_started
+  red_team: not_started
+evidence: []
+remaining:
+  - Implement S3.1-S3.6; run chaos matrix.
+limitations:
+  - External provider side effects that already happened stay explicitly unknown; no exactly-once claim beyond local receipts.

@@ -1,0 +1,34 @@
+schema: 1
+change: CHG-0094
+title: Chain latency (M19 stage 2)
+status: in_progress
+branch: feat/m19-execution-chain-reliability
+updated: 2026-10-13
+phase: design-complete
+adr: ADR-0036
+spec: SPEC-0053
+requirements: [R2.1, R2.2, R2.3, R2.4, R2.5, R2.6]
+depends_on: [CHG-0092]
+github_milestone: https://github.com/letya999/hermes-hub/milestone/20
+github_issue: https://github.com/letya999/hermes-hub/issues/263
+related_issues: ["#219", "#214"]
+design_status: accepted
+implementation_status: not_started
+slices:
+  S2.1-early-liveness-wake: not_started
+  S2.2-single-progress-message: not_started
+  S2.3-event-driven-spool: not_started
+  S2.4-supervisor-persistence: not_started
+  S2.5-lazy-browser-memory: not_started
+  S2.6-stream-first-observation: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  slo_measurements: not_started
+evidence: []
+remaining:
+  - Implement S2.1-S2.6; measure SLO S1-S4, S9.
+limitations:
+  - Telegram drafts are optional and flag-gated; editable status message is the default.
