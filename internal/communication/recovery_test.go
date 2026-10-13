@@ -49,6 +49,10 @@ func TestLiveRecoveryObservesOriginalRunWithoutInput(t *testing.T) {
 			}
 			calls := 0
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/usage" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				calls++
 				var request hubruntime.ExecuteRequest
 				if json.NewDecoder(r.Body).Decode(&request) != nil || request.Text != "" || r.URL.Path != "/v1/resume" || request.Envelope != job.Envelope {
@@ -93,7 +97,7 @@ func TestWorkerUsesDurableCompletionAndDoesNotSuggestUncertainReplay(t *testing.
 			}))
 			defer api.Close()
 			transport := &fakeAPI{}
-			g := &Gateway{spool: s, api: transport, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s}, config: Config{RuntimeURL: api.URL}, now: time.Now}
+			g := &Gateway{spool: s, api: transport, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s}, config: Config{RuntimeURL: api.URL, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
 			go func() { defer close(done); g.worker(ctx) }()

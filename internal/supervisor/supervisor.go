@@ -129,10 +129,13 @@ type Runtime struct {
 
 type runtimeEntry struct {
 	Runtime
-	binding  Binding
-	auth     string
-	leases   map[string]Lease
-	restored bool
+	binding              Binding
+	auth                 string
+	leases               map[string]Lease
+	restored             bool
+	consecutiveUncertain int
+	readinessBadSince    time.Time
+	lastRemediatedAt     time.Time
 }
 
 type Manager struct {
@@ -264,7 +267,7 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Memory = "1g"
 	}
 	if cfg.PIDs <= 0 {
-		cfg.PIDs = 256
+		cfg.PIDs = 1024
 	}
 	if cfg.RuntimePort <= 0 {
 		cfg.RuntimePort = 8080
@@ -1002,6 +1005,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
 		m.usageHTTP(w, r)
+	case "/v1/script":
+		m.scriptHTTP(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 			m.jobStatus(w, r, strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
@@ -1092,20 +1097,85 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer m.ReleaseLease(lease.ID)
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/restart", nil)
+	applied, err := m.applyRuntimeRestart(r.Context(), runtime, binding.runtimeAuth, 1)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime restart unavailable"})
 		return
 	}
-	upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
-	response, err := m.cfg.HTTP.Do(upstream)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
-		return
+	writeJSON(w, http.StatusOK, map[string]bool{"applied": applied})
+}
+
+// Hold the acquisition lock through the actual daemon restart and readiness.
+// A successful marker response precedes SIGINT by 250ms; it is not readiness.
+func (m *Manager) applyRuntimeRestart(ctx context.Context, runtime Runtime, auth string, ownLeases int) (bool, error) {
+	key := runtimeKey(Binding{PrincipalID: runtime.PrincipalID, ContextID: runtime.ContextID, RuntimeMode: runtime.RuntimeMode})
+	lock := m.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.applyRuntimeRestartLocked(ctx, runtime, auth, ownLeases)
+}
+
+func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime, auth string, ownLeases int) (bool, error) {
+	key := runtimeKey(Binding{PrincipalID: runtime.PrincipalID, ContextID: runtime.ContextID, RuntimeMode: runtime.RuntimeMode})
+	m.mu.Lock()
+	entry := m.items[key]
+	valid := entry != nil && entry.Container == runtime.Container && entry.Generation == runtime.Generation
+	busy := valid && entry.Leases > ownLeases
+	m.mu.Unlock()
+	if !valid {
+		return false, errors.New("runtime changed before restart")
 	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
-	w.WriteHeader(response.StatusCode)
+	if busy {
+		return false, nil
+	}
+	container, err := m.ownedContainerID(ctx, runtime)
+	if err != nil {
+		return false, err
+	}
+	if runtime.Managed {
+		// The agent's config is read-only: refresh its host source before
+		// Docker remounts it, otherwise a saved overlay fails preflight.
+		if _, err := m.materializeHermesConfig(entry.binding, m.environment()); err != nil {
+			return false, err
+		}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, runtime.Address+"/v1/restart", nil)
+	if err != nil {
+		return false, err
+	}
+	request.Header.Set("Authorization", "Bearer "+auth)
+	response, err := m.cfg.HTTP.Do(request)
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		Scheduled bool `json:"scheduled"`
+	}
+	err = json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&result)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || err != nil {
+		return false, errors.New("runtime restart response invalid")
+	}
+	if !result.Scheduled {
+		return false, nil
+	}
+	m.mu.Lock()
+	entry.restored = true // A failed restart must force fresh ownership/readiness checks.
+	m.mu.Unlock()
+	// Complete an accepted restart even when the notifying client's short
+	// deadline expires. New jobs remain behind this same acquisition lock.
+	restart, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	if _, err := m.command(restart, "restart", container); err != nil {
+		return false, err
+	}
+	if err := m.ready(restart, runtime.Address, auth); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	entry.restored = false
+	m.mu.Unlock()
+	return true, nil
 }
 
 // restartRequestHTTP marks a managed runtime for a deferred restart. ToolHub
@@ -1146,6 +1216,7 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	address, auth, idle := entry.Address, entry.auth, entry.State == Idle || entry.State == Ready
+	snapshot := entry.Runtime
 	m.mu.Unlock()
 	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", nil)
 	if err != nil {
@@ -1166,17 +1237,25 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	applied := false
 	if idle {
-		// No run is in flight: apply the deferred restart now instead of
-		// waiting for the next delivered job.
-		apply, aerr := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart", nil)
-		if aerr == nil {
-			apply.Header.Set("Authorization", "Bearer "+auth)
-			if resp, derr := m.cfg.HTTP.Do(apply); derr == nil {
-				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
-				resp.Body.Close()
-				applied = resp.StatusCode == http.StatusOK
-			}
+		lock := m.lockFor(runtimeKey(Binding{PrincipalID: snapshot.PrincipalID, ContextID: snapshot.ContextID, RuntimeMode: snapshot.RuntimeMode}))
+		lock.Lock()
+		defer lock.Unlock()
+		// Acknowledge the durable marker before the notifier's short deadline;
+		// keep new acquisitions blocked until the accepted restart is ready.
+		body, _ := json.Marshal(map[string]bool{"scheduled": true, "applied": false})
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		_, err = m.applyRuntimeRestartLocked(ctx, snapshot, auth, 0)
+		if err != nil {
+			log.Printf("supervisor accepted projection restart failed: %v", err)
+		}
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "applied": applied})
 }
@@ -1252,12 +1331,25 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Usage is a user command: a stopped runtime is spawned exactly like a
 	// message would spawn it, and the lifecycle lease pins it for the query.
-	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	var lease Lease
+	var runtime Runtime
+	if request.LookupOnly {
+		m.mu.Lock()
+		entry := m.items[runtimeKey(binding)]
+		if entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) {
+			runtime = entry.Runtime
+		}
+		m.mu.Unlock()
+	} else {
+		lease, runtime, err = m.Acquire(r.Context(), binding, LeaseLifecycle)
+	}
 	if err != nil || runtime.Address == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}
-	defer m.ReleaseLease(lease.ID)
+	if lease.ID != "" {
+		defer m.ReleaseLease(lease.ID)
+	}
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/usage", bytes.NewReader(body))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
@@ -1533,6 +1625,11 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 				if entry.Leases == 0 {
 					entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
 				}
+			}
+			if status == "uncertain" {
+				entry.consecutiveUncertain++
+			} else if terminalRunStatus(status) {
+				entry.consecutiveUncertain = 0
 			}
 			break
 		}
@@ -1920,7 +2017,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	}
 	args = append(args, "--env-file", binding.EnvFile)
 	args = append(args, "--mount", "type=volume,src="+project+"_broker-secrets-runtime,dst=/run/broker-secrets,readonly")
-	args = append(args, "--mount", "type=bind,src="+binding.ContextRoot+",dst=/scope,readonly")
+	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/scope,readonly")
 	if settings, err := stack.ReadEnvironment(binding.ContextRoot, env); err == nil {
 		service := stack.RuntimeService(settings, "", binding.ContextRoot)
 		keys := make([]string, 0)

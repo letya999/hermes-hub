@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -16,6 +17,13 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/routines/", g.handleRoutineItem)
+	mux.HandleFunc("/v1/tasks", g.handleTasks)
+	mux.HandleFunc("/v1/tasks/", g.handleTasks)
+	mux.HandleFunc("/v1/inbound/", g.handleInbound)
+	mux.HandleFunc("/v1/knowledge", g.handleKnowledge)
+	mux.HandleFunc("/v1/knowledge/", g.handleKnowledge)
+	mux.HandleFunc("/v1/mock/message", g.handleMockMessage)
+	mux.HandleFunc("/v1/mock/outbox", g.handleMockOutbox)
 	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
@@ -33,7 +41,7 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 		return identity.Envelope{}, false
 	}
 	user := g.user(principal)
-	if user.ID == "" {
+	if user.ID == "" || !user.Enabled {
 		return identity.Envelope{}, false
 	}
 	if len(user.TelegramIDs) > 0 {
@@ -80,6 +88,10 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 	if env.Validate(env.PrincipalID, env.ContextID, env.RuntimeID, env.PolicyVersion) != nil {
 		return false
 	}
+	user := g.user(env.PrincipalID)
+	if (user.PolicyVersion != "" && user.PolicyVersion != env.PolicyVersion) || (user.RuntimeID != "" && user.RuntimeID != env.RuntimeID) {
+		return false
+	}
 	*principal = env.PrincipalID
 	return true
 }
@@ -118,7 +130,46 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 				in.ChatID = user.TelegramIDs[0]
 			}
 		}
-		created, err := g.spool.CreateSchedule(in, caller, g.config.NativeCron)
+		if in.Channel == "mock" {
+			owner, err := g.mockLinkOwner(in.ChatID)
+			if err != nil || owner != caller.PrincipalID {
+				http.Error(w, "mock chat not owned", http.StatusForbidden)
+				return
+			}
+			// Mock-channel routines carry the mock envelope so occurrence
+			// authorization and delivery targeting stay coherent end to end.
+			in.Envelope = g.user(caller.PrincipalID).mockEnvelope(in.ChatID)
+			caller = in.Envelope
+		}
+		if err := ValidateSchedule(in, caller, g.now().UTC()); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		g.spool.mu.Lock()
+		_, existingErr := g.spool.loadScheduleLocked(in.ScheduleID)
+		g.spool.mu.Unlock()
+		if !os.IsNotExist(existingErr) {
+			http.Error(w, "schedule already exists or is unreadable", http.StatusBadRequest)
+			return
+		}
+		var initialValue *string
+		if in.JobKind == "check" {
+			// The follow-up predicate is anchored at creation: probe once,
+			// seed the baseline, then create — a dead source must not
+			// become a silently-skipping schedule.
+			body, err := g.fetchWatch(r.Context(), in.Probe.URL)
+			if err != nil {
+				http.Error(w, "check source unreachable", http.StatusBadGateway)
+				return
+			}
+			value, err := probeValue(in.Probe, body)
+			if err != nil {
+				http.Error(w, "invalid check probe result", http.StatusBadGateway)
+				return
+			}
+			initialValue = &value
+		}
+		created, err := g.spool.createSchedule(in, caller, g.config.NativeCron, initialValue)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -142,6 +193,39 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.Method == http.MethodGet && action == "":
+		items, err := g.spool.ListSchedules(caller)
+		if err != nil {
+			http.Error(w, "list failed", http.StatusInternalServerError)
+			return
+		}
+		for _, item := range items {
+			if item.ScheduleID == id {
+				g.spool.mu.Lock()
+				state, err := g.spool.loadWatchStateLocked(id)
+				g.spool.mu.Unlock()
+				if err != nil {
+					http.Error(w, "state unavailable", http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, map[string]any{"schedule": item, "watch_state": state})
+				return
+			}
+		}
+		http.NotFound(w, r)
+	case r.Method == http.MethodPost && action == "snooze":
+		var patch struct {
+			Until time.Time `json:"until"`
+		}
+		if decodeJSON(r, &patch) != nil || !patch.Until.After(g.now().UTC()) {
+			http.Error(w, "future until required", http.StatusBadRequest)
+			return
+		}
+		if err := g.spool.SnoozeSchedule(id, caller, patch.Until); err != nil {
+			http.Error(w, "schedule not owned", http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodDelete && action == "":
 		if err := g.spool.DeleteSchedule(id, caller); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
@@ -169,6 +253,40 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, item)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleInbound serves one staged inbound file to its owning tools plane
+// (GET) and removes it once the workspace write is durable (POST .../consume).
+func (g *Gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
+	caller, ok := g.authorizeControl(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id, action, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/inbound/"), "/")
+	rec, data, err := g.spool.ReadInbound(id)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if rec.UserID != caller.PrincipalID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	switch {
+	case r.Method == http.MethodGet && action == "":
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Hub-Name", rec.Name)
+		_, _ = w.Write(data)
+	case r.Method == http.MethodPost && action == "consume":
+		if err := g.spool.ConsumeInbound(id); err != nil {
+			http.Error(w, "consume failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

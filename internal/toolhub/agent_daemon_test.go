@@ -26,7 +26,10 @@ func TestDaemonDockerHelper(t *testing.T) {
 	}
 	state := os.Getenv("FAKE_DAEMON_STATE")
 	idx := slices.Index(os.Args, "exec")
-	container := os.Args[idx+2]
+	if os.Args[idx+2] != "-e" || os.Args[idx+3] != "HUB_DEFER_RUNTIME_RESTART=true" {
+		os.Exit(8)
+	}
+	container := os.Args[idx+4]
 	log, _ := os.OpenFile(filepath.Join(state, "spawned"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	fmt.Fprintln(log, container)
 	_ = log.Close()

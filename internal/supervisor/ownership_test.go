@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -153,7 +154,7 @@ func TestReapVerifiesOwnershipAndRechecksNewWork(t *testing.T) {
 					return []byte(strings.Repeat("a", 64)), nil
 				}
 				if args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
-					return json.Marshal([]map[string]string{{"Type": "bind", "Source": root, "Destination": "/scope"}})
+					return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
 				}
 				if args[0] == "rm" {
 					removed++
@@ -261,7 +262,7 @@ func TestReapDeletesVerifiedImmutableID(t *testing.T) {
 					t.Errorf("labels checked through mutable name: %v", args)
 				}
 				if args[2] == "{{json .Mounts}}" {
-					return json.Marshal([]map[string]string{{"Type": "bind", "Source": root, "Destination": "/scope"}})
+					return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
 				}
 				return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": runtime.Generation})
 			}
@@ -313,7 +314,7 @@ func TestReapAcceptsOnlyConfirmedExitedContainerAfterStopRace(t *testing.T) {
 					}
 					return []byte(running), nil
 				case args[2] == "{{json .Mounts}}":
-					return json.Marshal([]map[string]string{{"Type": "bind", "Source": root, "Destination": "/scope"}})
+					return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
 				default:
 					return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": runtime.Generation})
 				}
@@ -434,7 +435,7 @@ func TestLostDockerStartAcknowledgementRetainsUnknownCapacity(t *testing.T) {
 						return []byte(strings.Repeat("a", 64)), nil
 					}
 					if args[2] == "{{json .Mounts}}" {
-						return json.Marshal([]map[string]string{{"Type": "bind", "Source": root, "Destination": "/scope"}})
+						return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
 					}
 					m.mu.Lock()
 					runtime := m.items[runtimeKey(binding(root))].Runtime
@@ -562,7 +563,7 @@ func TestOrphanReaperRequiresTerminalLedgerAndImmutableOwnership(t *testing.T) {
 					return []byte(id), nil
 				}
 				if args[2] == "{{json .Mounts}}" {
-					return json.Marshal([]map[string]string{{"Type": "bind", "Source": root, "Destination": "/scope"}})
+					return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
 				}
 				owner := m.ownerID()
 				if scenario == "foreign" {
@@ -583,7 +584,7 @@ func TestOrphanReaperRequiresTerminalLedgerAndImmutableOwnership(t *testing.T) {
 }
 
 func TestOwnerLabelsCannotAuthorizeAnotherContextMount(t *testing.T) {
-	for _, scenario := range []string{"valid", "other-context", "volume", "missing", "malformed", "oversized"} {
+	for _, scenario := range []string{"valid", "whole-context", "other-context", "volume", "missing", "malformed", "oversized"} {
 		t.Run(scenario, func(t *testing.T) {
 			removed := 0
 			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
@@ -607,8 +608,10 @@ func TestOwnerLabelsCannotAuthorizeAnotherContextMount(t *testing.T) {
 				if args[0] != "inspect" || args[2] != "{{json .Mounts}}" {
 					return command(ctx, args...)
 				}
-				kind, source, destination := "bind", root, "/scope"
+				kind, source, destination := "bind", filepath.Join(root, "workspace"), "/scope"
 				switch scenario {
+				case "whole-context":
+					source = root
 				case "other-context":
 					source = root + "-another-user"
 				case "volume":

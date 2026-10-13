@@ -40,22 +40,24 @@ func TestOpenCredentialSurfaceSkipsLocalStoreWhenBrokerApprovalIsConfigured(t *t
 }
 
 type fakeAPI struct {
-	mu        sync.Mutex
-	updates   []Update
-	sent      []string
-	modes     []string
-	topics    []int64
-	docs      []string
-	photos    []string
-	videos    []string
-	voices    []string
-	deleted   []int
-	fileSize  int64
-	err       error
-	failOn    int // fail the failOn-th SendMessage call (1-based; 0 = never)
-	failDocOn int // fail the failOn-th SendDocument call (1-based; 0 = never)
-	photoErr  error
-	videoErr  error
+	mu              sync.Mutex
+	updates         []Update
+	sent            []string
+	modes           []string
+	topics          []int64
+	docs            []string
+	photos          []string
+	videos          []string
+	voices          []string
+	keyboards       [][]DeliveryButton
+	callbackAnswers []string
+	deleted         []int
+	fileSize        int64
+	err             error
+	failOn          int // fail the failOn-th SendMessage call (1-based; 0 = never)
+	failDocOn       int // fail the failOn-th SendDocument call (1-based; 0 = never)
+	photoErr        error
+	videoErr        error
 }
 
 func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
@@ -76,6 +78,22 @@ func (f *fakeAPI) SendMessage(_ context.Context, _ int64, topicID int64, text, p
 	f.modes = append(f.modes, parseMode)
 	f.topics = append(f.topics, topicID)
 	return nil
+}
+func (f *fakeAPI) SendKeyboard(_ context.Context, _ int64, _ int64, text string, buttons []DeliveryButton) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.sent = append(f.sent, text)
+	f.keyboards = append(f.keyboards, buttons)
+	return nil
+}
+func (f *fakeAPI) AnswerCallbackQuery(_ context.Context, _ string, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.callbackAnswers = append(f.callbackAnswers, text)
+	return f.err
 }
 func (f *fakeAPI) SendDocument(_ context.Context, _ int64, _ int64, name, caption string, data []byte) error {
 	f.mu.Lock()
@@ -735,6 +753,82 @@ func TestSignalRestartAfterDeliveryRequiresPendingRequestAndSafeMarker(t *testin
 	}
 	if err := signalRestartAfterDelivery(state); err == nil {
 		t.Fatal("unsafe runtime marker accepted")
+	}
+}
+
+func TestSendKeyboardPostsInlineMarkup(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/sendMessage" || json.NewDecoder(r.Body).Decode(&payload) != nil {
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	api := newTelegramAPI(server.URL, "token", time.Second)
+	buttons := []DeliveryButton{{Text: "once", Data: "a:1"}, {Text: "deny", Data: "a:2"}}
+	if err := api.SendKeyboard(context.Background(), 11, 0, "Подтвердите.", buttons); err != nil {
+		t.Fatal(err)
+	}
+	markup, ok := payload["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("no reply_markup: %v", payload)
+	}
+	rows, ok := markup["inline_keyboard"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("inline_keyboard: %v", markup)
+	}
+	first := rows[0].([]any)[0].(map[string]any)
+	if first["text"] != "once" || first["callback_data"] != "a:1" {
+		t.Fatalf("button row: %v", first)
+	}
+	if err := api.SendKeyboard(context.Background(), 11, 0, "Подтвердите.", nil); err == nil {
+		t.Fatal("empty keyboard accepted")
+	}
+	if err := api.SendKeyboard(context.Background(), 11, 0, "Подтвердите.", []DeliveryButton{{Text: "x", Data: strings.Repeat("d", 65)}}); err == nil {
+		t.Fatal("oversized callback accepted")
+	}
+}
+
+// Callback taps arrive only if the poller asks for them, and every tap gets
+// an answerCallbackQuery acknowledgement.
+func TestUpdatesAllowCallbackQueriesAndAnswersPost(t *testing.T) {
+	var getPayload, answerPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/bottoken/getUpdates":
+			_ = json.Unmarshal(body, &getPayload)
+			_, _ = w.Write([]byte(`{"ok":true,"result":[{"update_id":9,"callback_query":{"id":"cb9","from":{"id":11},"data":"a:x"}}]}`))
+		case "/bottoken/answerCallbackQuery":
+			_ = json.Unmarshal(body, &answerPayload)
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		default:
+			http.Error(w, "bad", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	api := newTelegramAPI(server.URL, "token", time.Second)
+	updates, err := api.GetUpdates(context.Background(), 1, 1)
+	if err != nil || len(updates) != 1 || updates[0].CallbackQuery == nil || updates[0].CallbackQuery.ID != "cb9" {
+		t.Fatalf("callback update lost: %+v %v", updates, err)
+	}
+	allowed, _ := getPayload["allowed_updates"].([]any)
+	found := false
+	for _, value := range allowed {
+		if value == "callback_query" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("callback_query not in allowed_updates: %v", allowed)
+	}
+	if err := api.AnswerCallbackQuery(context.Background(), "cb9", "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if answerPayload["callback_query_id"] != "cb9" || answerPayload["text"] != "ok" {
+		t.Fatalf("answer payload: %v", answerPayload)
 	}
 }
 
@@ -1566,7 +1660,11 @@ func (r *runAPI) GetFile(context.Context, string) (TelegramFile, error) {
 }
 func (r *runAPI) DownloadFile(context.Context, string, io.Writer) error         { return nil }
 func (r *runAPI) SendVoice(context.Context, int64, int64, []byte, string) error { return nil }
-func (r *runAPI) SetMyCommands(context.Context) error                           { return nil }
+func (r *runAPI) SendKeyboard(context.Context, int64, int64, string, []DeliveryButton) error {
+	return nil
+}
+func (r *runAPI) AnswerCallbackQuery(context.Context, string, string) error { return nil }
+func (r *runAPI) SetMyCommands(context.Context) error                       { return nil }
 
 func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	c := testConfig(t)

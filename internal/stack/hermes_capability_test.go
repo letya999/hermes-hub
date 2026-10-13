@@ -370,6 +370,7 @@ func TestNativeToolsetValidation(t *testing.T) {
 		t.Fatal("empty carve-out rejected")
 	}
 	for _, names := range [][]string{
+		{"messaging"},            // messaging is not a reviewed managed carve-out
 		{"delegation"},           // sub-agent literal toolsets bypass the denylist
 		{"bot_room"},             // forged room-policy bypass
 		{"hermes-gateway"},       // platform adapter listener inside the agent

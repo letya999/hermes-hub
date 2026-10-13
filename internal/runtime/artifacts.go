@@ -26,9 +26,12 @@ type ArtifactRef struct {
 
 // ArtifactRequest fetches one artifact from the runtime owning the envelope.
 // Resident runtimes ignore the envelope; the supervisor uses it to route.
+// Consume asks the runtime to remove the workspace file once its bytes have
+// been served: artifacts are hand-off storage, not permanent workspace copies.
 type ArtifactRequest struct {
 	ExecuteRequest
-	Name string `json:"name"`
+	Name    string `json:"name"`
+	Consume bool   `json:"consume,omitempty"`
 }
 
 const (
@@ -56,6 +59,7 @@ var artifactMimes = map[string]string{
 	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 	".png":  "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
 	".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+	".zip": "application/zip",
 }
 
 func artifactRoot() string { return filepath.Join(workspace, "artifacts") }
@@ -335,6 +339,10 @@ func fileExists(path string) bool {
 
 func validArtifactRel(rel string) bool {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) == 1 {
+		// A top-level zip is a deliverable archive (archive_create output).
+		return strings.HasSuffix(strings.ToLower(parts[0]), ".zip") && parts[0] == filepath.Base(parts[0])
+	}
 	return len(parts) == 2 && (parts[0] == "documents" || parts[0] == "images" || parts[0] == "videos") && parts[1] != "" && parts[1] == filepath.Base(parts[1]) && parts[1] != "." && parts[1] != ".."
 }
 
@@ -381,7 +389,6 @@ func (s *runtimeHTTP) artifact(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusNotFound, "artifact not found")
 		return
 	}
-	defer file.Close()
 	if mime := artifactMimes[strings.ToLower(filepath.Ext(path))]; mime != "" {
 		w.Header().Set("Content-Type", mime)
 	} else {
@@ -389,4 +396,5 @@ func (s *runtimeHTTP) artifact(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, io.LimitReader(file, artifactLimit(request.Name)+1))
+	_ = file.Close()
 }

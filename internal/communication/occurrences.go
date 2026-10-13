@@ -1,12 +1,15 @@
 package communication
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,7 +26,10 @@ type RoutineOccurrence struct {
 	Revision   uint64    `json:"revision"`
 	DueAt      time.Time `json:"due_at"`
 	Job        Job       `json:"job"`
-	State      string    `json:"state"`
+	// JobKind mirrors the schedule kind. "reminder" occurrences deliver their
+	// text through the outbox directly — no ordinary job, no runtime, no model.
+	JobKind string `json:"job_kind,omitempty"`
+	State   string `json:"state"`
 }
 
 func OccurrenceID(o RoutineOccurrence) string { return occurrenceID(o) }
@@ -102,7 +108,11 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		if err != nil {
 			return err
 		}
-		if mapping.Fingerprint != jobFingerprint(o.Job) {
+		admitted := o.Job
+		if admitted.TaskID != "" && admitted.TaskID != defaultTaskID {
+			admitted.ConversationID = taskConversation(admitted.ChatID, admitted.TaskID)
+		}
+		if mapping.TaskID != o.Job.TaskID || mapping.TopicID != o.Job.TopicID || !mapping.MatchesJob(admitted) {
 			return errors.New("occurrence job binding changed")
 		}
 		key := o.Job.PrincipalID + "\x00" + o.Job.ContextID + "\x00" + o.ScheduleID
@@ -116,10 +126,46 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		if o.State != "pending" || now.Before(o.DueAt) {
 			continue
 		}
-		if now.Sub(o.DueAt) > time.Hour {
+		if !s.occurrenceCurrentLocked(o) {
+			o.State = "cancelled"
+		} else if now.Sub(o.DueAt) > time.Hour {
 			o.State = "missed"
 		} else if authorize(o.Job) != nil {
 			o.State = "blocked"
+		} else if o.JobKind == "script" {
+			o.State = "scripting"
+		} else if o.JobKind == "watcher" || o.JobKind == "check" {
+			// Probing runs outside the lock in ProbeDueOccurrences.
+			o.State = "probing"
+		} else if o.JobKind == "digest" {
+			pendingProbe := false
+			for _, source := range occurrences {
+				if (source.State == "pending" || source.State == "probing") && (source.JobKind == "watcher" || source.JobKind == "check") && source.Job.PrincipalID == o.Job.PrincipalID && source.Job.ContextID == o.Job.ContextID && !source.DueAt.After(now) {
+					b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(source)+".json"))
+					var live RoutineOccurrence
+					if err == nil && json.Unmarshal(b, &live) == nil && (live.State == "pending" || live.State == "probing") {
+						pendingProbe = true
+						break
+					}
+				}
+			}
+			if pendingProbe {
+				continue
+			}
+
+			if err := s.dispatchDigestLocked(o, now, authorize); err != nil {
+				return err
+			}
+			o.State = "dispatched"
+		} else if o.JobKind == "reminder" {
+			d, err := normalizeDelivery(Delivery{ID: "reminder-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text, CreatedAt: now.UTC()})
+			if err != nil {
+				return err
+			}
+			if err = s.enqueueDeliveryLocked(d); err != nil {
+				return err
+			}
+			o.State = "dispatched"
 		} else {
 			key := o.Job.PrincipalID + "\x00" + o.Job.ContextID + "\x00" + o.ScheduleID
 			if running := active[key]; running != "" && running != o.Job.ID {
@@ -141,8 +187,32 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 	}
 	return nil
 }
+
+// tickProactive is the proactive pass of the control loop: schedule -> due
+// occurrence -> dispatch -> deterministic probing for watcher/check kinds.
+func (g *Gateway) tickProactive(now time.Time) { g.tickProactiveContext(context.Background(), now) }
+
+func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
+	steps := []func() error{
+		func() error { return g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence) },
+		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
+		func() error { return g.spool.RunDueScripts(ctx, now, g.authorizeOccurrence, g.runIsolatedScript) },
+		func() error { return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch) },
+		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
+	}
+	for i, step := range steps {
+		if err := step(); err != nil {
+			if ctx.Err() == nil {
+				log.Printf("routine tick failed stage=%d; work remains pending", i)
+			}
+			return
+		}
+	}
+}
+
 func (g *Gateway) authorizeOccurrence(job Job) error {
 	user := g.user(job.UserID)
+	configured := user.ID != ""
 	if user.ID == "" {
 		if mapped, ok := g.users[job.ChatID]; ok {
 			user = mapped
@@ -154,17 +224,39 @@ func (g *Gateway) authorizeOccurrence(job Job) error {
 	switch job.Channel {
 	case "telegram_bot":
 		mapped, ok := g.users[job.ChatID]
-		if !ok || mapped.ID != user.ID || job.Envelope != user.envelope(job.ChatID) {
+		if !ok || mapped.ID != user.ID || (configured && !slices.Contains(user.TelegramIDs, job.ChatID)) || !g.ownsRoutineEnvelope(job, user.envelope(job.ChatID)) {
 			return errors.New("routine policy changed")
 		}
 	case "slack_app":
 		if job.Envelope.PrincipalID != user.ID || !strings.HasPrefix(job.Envelope.ExternalIdentityID, "slack-") {
 			return errors.New("routine policy changed")
 		}
+	case "mock":
+		owner, err := g.mockLinkOwner(job.ChatID)
+		if err != nil || owner != user.ID || !g.ownsRoutineEnvelope(job, user.mockEnvelope(job.ChatID)) {
+			return errors.New("routine policy changed")
+		}
 	default:
 		return errors.New("routine owner unavailable")
 	}
 	return nil
+}
+
+func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool {
+	if job.TaskID != "" && job.TaskID != defaultTaskID {
+		// The record is atomically replaced; this read also runs under the spool
+		// lock during dispatch, so taking that lock here would deadlock.
+		task, err := g.spool.loadTaskLocked(job.PrincipalID, job.TaskID)
+		if err != nil || task.Archived || task.ContextID != job.ContextID || task.ChatID != job.ChatID || task.TopicID != job.TopicID {
+			return false
+		}
+		// Before admission the envelope is canonical; enqueue pins its
+		// conversation to the owned task. Both phases keep every other field.
+		if job.ConversationID == task.ConversationID {
+			canonical.ConversationID = task.ConversationID
+		}
+	}
+	return job.Envelope == canonical
 }
 
 func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {
@@ -178,6 +270,10 @@ func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {
 		}
 	case "slack_app":
 		if !strings.HasPrefix(caller.ExternalIdentityID, "slack-") {
+			return errors.New("invalid occurrence ownership")
+		}
+	case "mock":
+		if o.Job.ChatID <= 0 || caller != identity.MockEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion) {
 			return errors.New("invalid occurrence ownership")
 		}
 	default:

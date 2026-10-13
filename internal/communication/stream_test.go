@@ -72,10 +72,14 @@ func TestCachedTerminalResponseRepairsDeliveryWithoutWorker(t *testing.T) {
 	final := streamEvent(job)
 	final.Status, final.Text, final.RuntimeGeneration = "completed", "cached answer", "gen-2"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/resume" {
+		switch r.URL.Path {
+		case "/v1/resume":
+			_ = json.NewEncoder(w).Encode(final)
+		case "/v1/usage":
+			http.NotFound(w, r)
+		default:
 			t.Errorf("replayed original request: %s", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(final)
 	}))
 	defer server.Close()
 	runner := HTTPRunner{URL: server.URL, Auth: "secret", Spool: s, HTTP: server.Client()}
@@ -350,6 +354,10 @@ func TestStreamRejectsChangedBindingAndBoundsBeforeReceipt(t *testing.T) {
 func TestHTTPRunnerConsumesDurableStream(t *testing.T) {
 	s, job := streamJob(t)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/usage" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Header.Get("Accept") != hubruntime.RunStreamContentType {
 			t.Error("stream not requested")
 		}
@@ -388,6 +396,10 @@ func TestAdmittedRestartResumesWithoutSecondSubmission(t *testing.T) {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/usage" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.URL.Path != "/v1/resume" {
 			t.Errorf("second submission: %s", r.URL.Path)
 		}
@@ -559,6 +571,129 @@ func TestRecoveryRepairsReceiptBeforeTerminalMappingAndClaim(t *testing.T) {
 	m, _, err = s.Mapping(job.ID)
 	if err != nil || m.Status != "completed" || m.Result != "answer" {
 		t.Fatalf("mapping=%+v err=%v", m, err)
+	}
+}
+
+// Approval requests reach Telegram as inline buttons: one durable callback
+// record per sanitized choice so a tap resolves to (job, request, choice)
+// even across restarts, and callback data fits Telegram's 64-byte limit.
+func TestApprovalRequestDeliversInlineButtons(t *testing.T) {
+	s, job := streamJob(t)
+	event := streamEvent(job)
+	event.Status, event.LastEvent, event.EventID, event.ApprovalID = "waiting_for_approval", "approval.request", "approval:b", "b"
+	event.ApprovalChoices = []string{"once", "deny"}
+	if err := s.RecordStreamEvent(job, event); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := s.ClaimDelivery()
+	if err != nil || delivery == nil {
+		t.Fatalf("no approval delivery: %+v %v", delivery, err)
+	}
+	if len(delivery.Buttons) != 2 {
+		t.Fatalf("buttons: %+v", delivery.Buttons)
+	}
+	seen := map[string]bool{}
+	for _, button := range delivery.Buttons {
+		if button.Text == "" || len(button.Data) > 64 || !strings.HasPrefix(button.Data, "a:") {
+			t.Fatalf("invalid button: %+v", button)
+		}
+		jobID, requestID, choice, err := s.ApprovalCallback(button.Data)
+		if err != nil || jobID != job.ID || requestID != "b" || seen[choice] {
+			t.Fatalf("callback does not resolve: %q %q %q %v", jobID, requestID, choice, err)
+		}
+		seen[choice] = true
+	}
+	if !seen["once"] || !seen["deny"] {
+		t.Fatalf("choices lost: %v", seen)
+	}
+	// Callback records outlive the in-memory spool.
+	reopened, err := NewSpool(s.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, requestID, choice, err := reopened.ApprovalCallback(delivery.Buttons[0].Data); err != nil || requestID != "b" || choice != "once" {
+		t.Fatalf("callback lost across restart: %q %q %v", requestID, choice, err)
+	}
+	if _, _, _, err := reopened.ApprovalCallback("a:ffffffffffffffffffffffff"); err == nil {
+		t.Fatal("forged callback resolved")
+	}
+}
+
+// A delivery carrying buttons goes out as an inline keyboard, not plain text.
+func TestDeliverOneSendsApprovalKeyboard(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "approve-me", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "Подтвердите.", Buttons: []DeliveryButton{{Text: "once", Data: "a:1"}, {Text: "deny", Data: "a:2"}}}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.keyboards) != 1 || len(fake.keyboards[0]) != 2 || fake.keyboards[0][0].Data != "a:1" {
+		t.Fatalf("keyboard lost: %+v (plain sent: %v)", fake.keyboards, fake.sent)
+	}
+}
+
+// Tapping an inline button resolves the durable callback record and applies
+// the approval exactly like /approve — verified sender, job-bound, idempotent.
+func TestApprovalCallbackQueryAppliesChoice(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "approve-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "key", ChatID: 11, Text: "hello"}
+	if _, err := g.spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	event := streamEvent(job)
+	event.Status, event.LastEvent, event.EventID, event.ApprovalID = "waiting_for_approval", "approval.request", "approval:c", "c"
+	event.ApprovalChoices = []string{"once", "deny"}
+	if err := g.spool.RecordStreamEvent(job, event); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := g.spool.ClaimDelivery()
+	if err != nil || delivery == nil || len(delivery.Buttons) != 2 {
+		t.Fatalf("no approval keyboard: %+v %v", delivery, err)
+	}
+	tap := func(updateID int, sender int64, data string) error {
+		return g.handleUpdate(context.Background(), Update{UpdateID: updateID, CallbackQuery: &CallbackQuery{ID: "cb", From: &TGUser{ID: sender}, Message: &Message{Chat: TGChat{ID: 11, Type: "private"}}, Data: data}})
+	}
+	if err := tap(1, 99, delivery.Buttons[0].Data); err != nil {
+		t.Fatal(err)
+	}
+	mapping, _, err := g.spool.Mapping(job.ID)
+	if err != nil || mapping.Control != nil {
+		t.Fatalf("stranger applied approval: %+v %v", mapping.Control, err)
+	}
+	if err := tap(2, 11, delivery.Buttons[0].Data); err != nil {
+		t.Fatal(err)
+	}
+	mapping, _, err = g.spool.Mapping(job.ID)
+	if err != nil || mapping.Control == nil || mapping.Control.Choice != "once" {
+		t.Fatalf("approval not applied: %+v %v", mapping.Control, err)
+	}
+	if err := tap(3, 11, delivery.Buttons[0].Data); err != nil {
+		t.Fatal(err)
+	}
+	mapping, _, _ = g.spool.Mapping(job.ID)
+	if mapping.Control.Choice != "once" {
+		t.Fatal("second tap changed the answer")
+	}
+	if err := tap(4, 11, "a:000000000000000000000000"); err != nil {
+		t.Fatal(err)
+	}
+	mapping, _, _ = g.spool.Mapping(job.ID)
+	if mapping.Control.Choice != "once" {
+		t.Fatal("forged callback changed the answer")
+	}
+	if len(fake.callbackAnswers) < 4 {
+		t.Fatalf("unanswered callbacks: %v", fake.callbackAnswers)
 	}
 }
 

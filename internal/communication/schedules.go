@@ -3,8 +3,10 @@ package communication
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +16,14 @@ import (
 )
 
 const defaultCatchUp = time.Hour
+
+// WatchProbe is a bounded deterministic probe: one http(s) GET; the compared
+// value is the first capture group of Regex, or the whole bounded body.
+type WatchProbe struct {
+	Kind  string `json:"kind,omitempty"`
+	URL   string `json:"url"`
+	Regex string `json:"regex,omitempty"`
+}
 
 type Schedule struct {
 	ScheduleID     string            `json:"schedule_id"`
@@ -27,24 +37,51 @@ type Schedule struct {
 	ChatID         int64             `json:"chat_id,omitempty"`
 	// TaskID/TopicID snapshot the task the routine was created in: occurrence
 	// jobs rebind their conversation and deliver back to the same topic.
-	TaskID        string        `json:"task_id,omitempty"`
-	TopicID       int64         `json:"topic_id,omitempty"`
-	SlackChannel  string        `json:"slack_channel,omitempty"`
-	SlackThread   string        `json:"slack_thread,omitempty"`
-	Timezone      string        `json:"timezone"`
-	Expression    string        `json:"expression"`
-	JobKind       string        `json:"job_kind"`
-	Input         string        `json:"input"`
-	Enabled       bool          `json:"enabled"`
-	Paused        bool          `json:"paused"`
-	NextDue       time.Time     `json:"next_due"`
-	CatchUpWindow time.Duration `json:"catch_up_window_ns"`
-	NativeCronRef string        `json:"native_cron_ref,omitempty"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
+	TaskID       string `json:"task_id,omitempty"`
+	TopicID      int64  `json:"topic_id,omitempty"`
+	SlackChannel string `json:"slack_channel,omitempty"`
+	SlackThread  string `json:"slack_thread,omitempty"`
+	Timezone     string `json:"timezone"`
+	Expression   string `json:"expression"`
+	JobKind      string `json:"job_kind"`
+	// Probe is the deterministic source spec for watcher/check schedules:
+	// an http(s) GET plus an optional regex whose first capture group is the
+	// compared value. It never carries credentials.
+	Probe             *WatchProbe   `json:"probe,omitempty"`
+	Expect            string        `json:"expect,omitempty"`
+	InitialProbeValue *string       `json:"initial_probe_value,omitempty"`
+	NotifyMode        string        `json:"notify_mode,omitempty"`
+	SourceIDs         []string      `json:"source_ids,omitempty"`
+	SnoozedUntil      time.Time     `json:"snoozed_until,omitempty"`
+	Input             string        `json:"input"`
+	Enabled           bool          `json:"enabled"`
+	Paused            bool          `json:"paused"`
+	NextDue           time.Time     `json:"next_due"`
+	CatchUpWindow     time.Duration `json:"catch_up_window_ns"`
+	NativeCronRef     string        `json:"native_cron_ref,omitempty"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
 }
 
 func (s *Spool) CreateSchedule(in Schedule, caller identity.Envelope, nativeCron string) (Schedule, error) {
+	return s.createSchedule(in, caller, nativeCron, nil)
+}
+
+// ValidateSchedule checks a complete draft without mutating the spool.
+func ValidateSchedule(in Schedule, caller identity.Envelope, now time.Time) error {
+	if err := validateScheduleDraft(in, caller); err != nil {
+		return err
+	}
+	loc, err := time.LoadLocation(in.Timezone)
+	if err != nil {
+		return errors.New("invalid timezone")
+	}
+	_, err = nextExpression(in.Expression, loc, now)
+	return err
+}
+
+func (s *Spool) createSchedule(in Schedule, caller identity.Envelope, nativeCron string, initialValue *string) (Schedule, error) {
+	in.InitialProbeValue = initialValue
 	if nativeCron == "unmigrated" {
 		return Schedule{}, errors.New("native Hermes cron is still the clock for this context")
 	}
@@ -75,6 +112,9 @@ func (s *Spool) CreateSchedule(in Schedule, caller identity.Envelope, nativeCron
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := s.schedulePath(in.ScheduleID)
+	if _, err := os.Stat(s.cancelPath(in.ScheduleID)); !os.IsNotExist(err) {
+		return Schedule{}, errors.New("schedule id was retired; use a new id")
+	}
 	if _, err := os.Stat(path); err == nil {
 		return Schedule{}, errors.New("schedule already exists")
 	}
@@ -182,7 +222,44 @@ func (s *Spool) DeleteSchedule(id string, caller identity.Envelope) error {
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
 		return errors.New("schedule not owned")
 	}
+	if err := atomicJSON(s.cancelPath(id), map[string]any{"revision": item.Revision, "deleted_at": time.Now().UTC()}); err != nil {
+		return err
+	}
 	return os.Remove(s.schedulePath(id))
+}
+
+func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, err := s.loadScheduleLocked(id)
+	if err != nil {
+		return err
+	}
+	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
+		return errors.New("schedule not owned")
+	}
+	if !until.After(time.Now().UTC()) {
+		return errors.New("snooze must be in the future")
+	}
+	item.SnoozedUntil = until.UTC()
+	item.Revision++
+	item.UpdatedAt = time.Now().UTC()
+	return atomicJSON(s.schedulePath(id), item)
+}
+
+func (s *Spool) cancelPath(id string) string {
+	return filepath.Join(s.root, "schedules", spoolFileID(id)+".deleted")
+}
+
+func (s *Spool) occurrenceCurrentLocked(o RoutineOccurrence) bool {
+	if _, err := os.Stat(s.cancelPath(o.ScheduleID)); !os.IsNotExist(err) {
+		return false
+	}
+	schedule, err := s.loadScheduleLocked(o.ScheduleID)
+	if os.IsNotExist(err) {
+		return true // PutOccurrence also accepts externally owned recurrence clocks.
+	}
+	return err == nil && schedule.Revision == o.Revision && schedule.Envelope == o.Job.Envelope
 }
 
 func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(Job) error) error {
@@ -203,7 +280,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		if err != nil {
 			return err
 		}
-		if !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) {
+		if now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) {
 			continue
 		}
 		loc, err := time.LoadLocation(item.Timezone)
@@ -222,7 +299,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			continue
 		}
 		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
-		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, Job: job}
+		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job}
 		if err := validateOccurrence(occ, item.Envelope); err != nil {
 			continue
 		}
@@ -260,14 +337,14 @@ func (s *Spool) settleScheduleLocked(item *Schedule, loc *time.Location, due, no
 		item.UpdatedAt = now
 		return atomicJSON(s.schedulePath(item.ScheduleID), item)
 	}
-	next, err := nextExpression(item.Expression, loc, due.Add(time.Minute))
+	next, err := nextExpression(item.Expression, loc, due)
 	if err != nil {
 		return err
 	}
 	item.NextDue = next
 	// Catch-up is at most one missed occurrence: skip any extra due times in-window.
 	for !item.NextDue.After(now) {
-		skipped, skipErr := nextExpression(item.Expression, loc, item.NextDue.Add(time.Minute))
+		skipped, skipErr := nextExpression(item.Expression, loc, item.NextDue)
 		if skipErr != nil || !skipped.After(item.NextDue) {
 			break
 		}
@@ -297,13 +374,80 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if len(in.ScheduleID) > 80 || !spoolIDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
-	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" {
+	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" {
 		return errors.New("invalid job kind")
+	}
+	if in.JobKind == "check" && in.Expect != "changed" && in.Expect != "unchanged" && (!strings.HasPrefix(in.Expect, "equals:") || len(in.Expect) <= len("equals:") || len(in.Expect) > 1024) {
+		return errors.New("invalid check expect")
+	}
+	if in.JobKind == "check" {
+		if in.Probe == nil {
+			return errors.New("check needs a probe")
+		}
+		u, err := url.Parse(in.Probe.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			return errors.New("check probe must be http(s)")
+		}
+		if in.Probe.Regex != "" {
+			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+				return errors.New("check probe regex does not compile")
+			}
+		}
+	}
+	if in.JobKind == "watcher" {
+		if in.Probe == nil {
+			return errors.New("watcher needs a probe")
+		}
+		u, err := url.Parse(in.Probe.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			return errors.New("watch probe must be a plain http(s) url")
+		}
+		if in.Probe.Regex != "" {
+			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+				return errors.New("watch probe regex does not compile")
+			}
+		}
+	}
+	if len(in.SourceIDs) > 128 || (len(in.SourceIDs) > 0 && in.JobKind != "digest") {
+		return errors.New("source_ids require a digest and at most 128 sources")
+	}
+	seenSources := map[string]bool{}
+	for _, id := range in.SourceIDs {
+		if !spoolIDPattern.MatchString(id) || len(id) > 80 || seenSources[id] || id == in.ScheduleID {
+			return errors.New("invalid digest source_ids")
+		}
+		seenSources[id] = true
+	}
+	if in.NotifyMode != "" && in.NotifyMode != "immediate" && in.NotifyMode != "digest" {
+		return errors.New("invalid notify mode")
+	}
+	if in.Probe != nil {
+		if len(in.Probe.URL) > 2048 {
+			return errors.New("probe URL exceeds limit")
+		}
+		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" {
+			return errors.New("invalid probe kind")
+		}
+		if in.Probe.Regex != "" {
+			re, err := regexp.Compile(in.Probe.Regex)
+			if err != nil || re.NumSubexp() == 0 {
+				return errors.New("probe regex needs a capture group")
+			}
+		}
+		if in.Probe.Kind == "github_issue" {
+			u, err := url.Parse(in.Probe.URL)
+			if err != nil || u.Scheme != "https" || u.Host != "api.github.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || in.Probe.Regex != "" || !regexp.MustCompile(`^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$`).MatchString(u.Path) {
+				return errors.New("GitHub issue probe needs its public REST issue URL")
+			}
+		}
+	}
+	if in.JobKind == "script" && ScriptSyntaxError(in.Input) != nil {
+		return errors.New("script does not compile")
 	}
 	if strings.TrimSpace(in.Input) == "" || len(in.Input) > 64*1024 || envstore.LooksLikeEnv(in.Input) {
 		return errors.New("invalid routine input")
 	}
-	if in.Channel != "telegram_bot" && in.Channel != "slack_app" {
+	if in.Channel != "telegram_bot" && in.Channel != "slack_app" && in.Channel != "mock" {
 		return errors.New("invalid schedule channel")
 	}
 	if in.Channel == "slack_app" && in.SlackChannel != "" && (!validSlackIMChannel(in.SlackChannel) || !validSlackThread(in.SlackThread)) {
@@ -343,7 +487,7 @@ func nextCron(expr string, loc *time.Location, from time.Time) (time.Time, error
 	t := from.In(loc).Truncate(time.Minute).Add(time.Minute)
 	limit := t.Add(400 * 24 * time.Hour)
 	for !t.After(limit) {
-		if minute[t.Minute()] && hour[t.Hour()] && month[int(t.Month())] && (dom[t.Day()] || fields[2] == "*") && (dow[int(t.Weekday())] || fields[4] == "*") {
+		if minute[t.Minute()] && hour[t.Hour()] && month[int(t.Month())] {
 			if fields[2] != "*" && fields[4] != "*" {
 				if dom[t.Day()] || dow[int(t.Weekday())] {
 					return t.UTC(), nil

@@ -437,6 +437,136 @@ func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testi
 	}
 }
 
+func TestWedgedRuntimeRestartRemediatesConsecutiveUncertainJobs(t *testing.T) {
+	readiness := "degraded"
+	restarts := 0
+	started := false
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
+		if args[0] == "run" {
+			started = true
+			return []byte("container"), nil
+		}
+		if args[0] == "inspect" {
+			return []byte("running"), nil
+		}
+		if args[0] == "restart" {
+			restarts++
+		}
+		return nil, nil
+	}, func(context.Context, string, string) error { return nil })
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: readiness, ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	for _, entry := range m.items {
+		entry.Address = api.URL
+	}
+	m.mu.Unlock()
+	m.cfg.Probe = nil
+	outcome := func(id string) {
+		request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: id, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: id, Text: "work"}
+		if _, _, err := m.beginJob(request); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
+			t.Fatal(err)
+		}
+		response := hubruntime.ExecuteResponse{JobID: id, RuntimeGeneration: runtime.Generation, Status: "uncertain"}
+		if err := m.finishJobGeneration(request, response, "uncertain", runtime.Generation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Unix(200, 0)
+	outcome("wedged-1")
+	m.ReconcileHealth(context.Background(), now)
+	outcome("wedged-2")
+	m.ReconcileHealth(context.Background(), now)
+	if restarts != 0 {
+		t.Fatal("remediated before the readiness evidence window")
+	}
+	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
+	if restarts != 1 {
+		t.Fatalf("wedged runtime not remediated: %d", restarts)
+	}
+	outcome("wedged-3")
+	outcome("wedged-4")
+	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow+time.Second))
+	if restarts != 1 {
+		t.Fatalf("cooldown bypassed: %d", restarts)
+	}
+}
+
+func TestSingleUncertainJobDoesNotRemediate(t *testing.T) {
+	restarts := 0
+	started := false
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
+		if args[0] == "run" {
+			started = true
+			return []byte("container"), nil
+		}
+		if args[0] == "inspect" {
+			return []byte("running"), nil
+		}
+		if args[0] == "restart" {
+			restarts++
+		}
+		return nil, nil
+	}, func(context.Context, string, string) error { return nil })
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: "degraded", ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	for _, entry := range m.items {
+		entry.Address = api.URL
+	}
+	m.mu.Unlock()
+	m.cfg.Probe = nil
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: "single", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "single", Text: "work"}
+	if _, _, err := m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	response := hubruntime.ExecuteResponse{JobID: "single", RuntimeGeneration: runtime.Generation, Status: "uncertain"}
+	if err := m.finishJobGeneration(request, response, "uncertain", runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(200, 0)
+	m.ReconcileHealth(context.Background(), now)
+	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
+	m.ReconcileHealth(context.Background(), now.Add(2*wedgedReadinessWindow))
+	if restarts != 0 {
+		t.Fatalf("single uncertain job remediated a runtime: %d", restarts)
+	}
+}
+
 func TestDockerCommandDeadlineBoundsBackgroundSweeps(t *testing.T) {
 	m, _ := testManager(t, func(ctx context.Context, _ ...string) ([]byte, error) {
 		deadline, ok := ctx.Deadline()

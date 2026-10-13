@@ -382,7 +382,7 @@ func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 	item.Header.Set("X-Hub-Principal", "alice")
 	itemRec := httptest.NewRecorder()
 	g.Handler().ServeHTTP(itemRec, item)
-	if itemRec.Code != http.StatusMethodNotAllowed {
+	if itemRec.Code != http.StatusNotFound {
 		t.Fatalf("get item: %d", itemRec.Code)
 	}
 	upd := httptest.NewRequest(http.MethodPost, "/v1/routines/missing", strings.NewReader(`{"input":"later"}`))

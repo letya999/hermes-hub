@@ -400,7 +400,15 @@ func documentText(format string, body []byte) (string, error) {
 		}
 		return htmlText(string(body)), nil
 	case "pdf":
-		return pdfText(body)
+		text, err := pdfText(body)
+		if err == nil || strings.Contains(err.Error(), "encrypted") || strings.Contains(err.Error(), "exceeds") {
+			return text, err
+		}
+		text, fallbackErr := popplerText(body)
+		if fallbackErr != nil {
+			return "", err
+		}
+		return text, nil
 	case "xlsx":
 		return xlsxText(body)
 	case "pptx":

@@ -624,6 +624,7 @@ func controlTestPolicy(t *testing.T, root string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settings.GlobalSkillsDir = filepath.Join(filepath.Dir(filepath.Dir(root)), "config", "skills")
 	return stack.PolicyVersion(settings)
 }
 
@@ -689,6 +690,7 @@ func TestApprovalRechecksOrganizationMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settings.GlobalSkillsDir = filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills")
 	control := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", stack.PolicyVersion(settings)), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "acme"}}, Action: "approve"}
 	if err := m.authorizeApproval(control); err != nil {
 		t.Fatal(err)

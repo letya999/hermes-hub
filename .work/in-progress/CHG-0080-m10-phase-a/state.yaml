@@ -1,0 +1,29 @@
+schema: 1
+id: CHG-0080-m10-phase-a
+title: M10 Phase A — cheap wins (worktree hermes-hub-m10a, feat/m10-phase-a)
+status: in_progress
+phase: verification_done
+started_at: 2026-10-10
+updated_at: 2026-10-10
+issues: [150, 151, 181, 194, 195, 214, 247]
+completed:
+  - "#181 ai-stp research note (.work/in-progress/CHG-0080-m10-phase-a/ai-stp-research.md)"
+  - "#151 archive_create/archive_unpack: os.Root scoped, zip-slip/encrypted/symlink rejection, entry+byte caps, partial-extraction cleanup, MCP + ToolHub catalog"
+  - "#150 image_inspect accepts paths[] (max 8, per-item errors); ToolHub array args allowed for AgentTools transport only"
+  - "#214 idle-by-activity verified: reaper skips runtimes with active leases/non-terminal jobs; regression test added"
+  - "#195 append-only usage journal (usage.jsonl, dedup by job+run, f.Sync) + best-effort metering on terminal JSON and streamed runs + /usage totals"
+  - "#247 job_kind=reminder end-to-end: schedule kind -> occurrence -> direct outbox Delivery (no agent/LLM), idempotent; routine_create kind arg"
+  - "#194 inline approval buttons: approval.request delivery carries inline keyboard; durable callback records; callback_query -> RequestApproval (ownership-checked, idempotent) -> answerCallbackQuery (Telegram-only)"
+  - "#150/151 follow-up inbound: TG document/photo -> durable spool/inbound quarantine (record+payload, survives restart) -> [file ... inbox=<id>] job metadata -> GET/consume /v1/inbound/<id> (control auth + owner check, X-Hub-Name) -> inbox_fetch materializes into workspace/inbox/, zip unpacked from bytes (never written) under inbox/<name>/, >8 files stay one directory group, staged record consumed only on success"
+  - "#150/151 follow-up outbound: top-level artifacts/*.zip deliverable (application/zip); ArtifactRequest.Consume deletes workspace file only after byte handoff; Telegram fetch sets consume=true — delivered generated files are removed from workspace by default"
+  - "#247 script fail-closed: routine_create rejects kind=script (no sandbox runner in build); a script occurrence reaching dispatch is marked blocked and never enqueues an agent job"
+notes:
+  - ToolHub validCLIType allows "array" only when transport == AgentTools
+  - Callback data is "a:"+sha256(job,request,choice)[:24] under Telegram 64-byte limit; records in spool/callbacks survive restarts
+  - Reminder occurrences bypass enqueueLocked: one durable Delivery, state=dispatched only after persist
+  - No Docker delivery/rebuild per scope; uncommitted M8 work from main worktree intentionally excluded
+  - Docs updated: SPEC-0013 (reminder occurrences, script blocked), SPEC-0015 (inline approval buttons), SPEC-0033 (archive tools, multi-image inspect), SPEC-0037 (zip deliverable, consume flag), new SPEC-0047 (chat file transfer), docs/operations.md (usage journal line in /usage)
+verification:
+  - "just check: PASS 2026-10-10 (phase A) — go test -race -shuffle=on ./..., coverage 85.09% (gate 85), gofmt, go vet, staticcheck, devcheck docs, actionlint"
+  - "just check: PASS 2026-10-10 (file transfer + script fail-closed) — coverage 85.07%, all gates green"
+  - "Docker gates intentionally not run (out of scope for this phase)"

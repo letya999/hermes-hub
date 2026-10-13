@@ -1,6 +1,6 @@
 ---
 description: CLI catalog operations, isolated terminal and opt-in package registries.
-last_verified: 2026-10-10
+last_verified: 2026-10-12
 ---
 # CLI policy and operator catalog
 
@@ -25,6 +25,9 @@ expires or is released; ephemeral lifecycle discards them after each call.
 Stateless pools and toolbox sharing cannot request this home. It does not
 install missing interpreters into a release image: the selected image must
 contain the package manager and its required runtime.
+
+CLI commands that exit nonzero fail the tool call with the numerical exit code
+and redacted output. Transport and isolation failures remain distinct errors.
 
 ## Registry permission
 

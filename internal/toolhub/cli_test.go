@@ -283,6 +283,22 @@ func TestCLIRunnerArtifactReceipt(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerNonzeroExitRemainsVisible(t *testing.T) {
+	definition := testCLIDefinition("bash", []string{"-c"})
+	definition.Workload.Class = PerUser
+	execFn, _ := runnerExecStub(t, nil)
+	runner := CLIRunner{Root: t.TempDir(), Exec: func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+		response, err := execFn(ctx, req)
+		response.ExitCode = 7
+		response.Output = "failed"
+		return response, err
+	}}
+	_, err := runner.Call(context.Background(), cliCallEffective(definition), definition.Tools[0], nil)
+	if err == nil || !strings.Contains(err.Error(), "exit code 7") || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("nonzero process exit hidden from agent: %v", err)
+	}
+}
+
 func TestBoundedCLIArtifactSourceValidation(t *testing.T) {
 	definition := boundedCLIDefinition()
 	definition.Source.Command = "not/abs/path"

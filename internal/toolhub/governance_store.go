@@ -142,8 +142,22 @@ func (g *Gateway) filterProjectedTools(auth identity.Envelope, projected []Proje
 		return nil, fmt.Errorf("%w: tool governance: %v", ErrUnauthorized, err)
 	}
 	out := make([]ProjectedTool, 0, len(projected))
+	bindings := map[string]EffectiveBinding{}
 	for _, tool := range projected {
-		_, effective, resolveErr := g.Store.ResolveProjectedTool(auth, tool.Name)
+		var effective EffectiveBinding
+		var resolveErr error
+		if auth.CapabilityProfile == "" {
+			var ok bool
+			effective, ok = bindings[tool.BindingID]
+			if !ok {
+				effective, resolveErr = g.Store.Resolve(auth, tool.BindingID)
+				if resolveErr == nil {
+					bindings[tool.BindingID] = effective
+				}
+			}
+		} else {
+			_, effective, resolveErr = g.Store.ResolveProjectedTool(auth, tool.Name)
+		}
 		if resolveErr != nil {
 			continue // unresolved bindings can't be invoked anyway
 		}

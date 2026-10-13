@@ -467,7 +467,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// the shared network, exactly like toolhub.
 	if s.Has("image_gen") {
 		runtimeEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
-		runtimeService["env_file"] = append(runtimeEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
+		if infra {
+			runtimeService["env_file"] = append(runtimeEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
+		}
 	}
 	services := M{"hermes-runtime": runtimeService}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
@@ -600,7 +602,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub["volumes"] = toolhubVolumes
 		toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
 		toolhub["networks"] = sharedNetworks
-		if s.CapabilityMode == "managed" {
+		if s.CapabilityMode == "managed" || supervisorURL != "" {
 			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control"}}}
 		}
 		// Bounded-cli children share this cgroup: the admission receipt can
@@ -670,7 +672,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_APPROVE_", "communication", "hermes-communication") {
 			gatewayEnvironment[key] = value
 		}
-		runtimeEnv["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
 		gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
 		communicationHostPort := 8081
 		if s.Has("slack_app") {
@@ -787,7 +788,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if infra && s.Has("image_gen") {
 		mediaSvc := cloneMap(common)
 		mediaSvc["entrypoint"] = []string{"hub-media"}
-		mediaSvc["build"] = coreBuild
 		mediaEnv := M{
 			"HUB_MEDIA_LISTEN":         "0.0.0.0:8090",
 			"HUB_MEDIA_ENGINE":         "${HUB_MEDIA_ENGINE:-remote}",
@@ -1025,7 +1025,11 @@ func RenderEnvironment(dir, root, environment string) error {
 	// not replayed for supervisor-spawned containers.
 	runtimeExtra := map[string]string{}
 	if s.Has("image_gen") {
-		if auth, _ := ReadSecrets(filepath.Join(dir, "media.auth")); strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
+		auth, err := runtimeMediaAuth(dir, s)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
 			runtimeExtra["HUB_MEDIA_URL"] = "http://hub-media:8090"
 			runtimeExtra["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
 		}
@@ -1060,7 +1064,11 @@ func RenderEnvironment(dir, root, environment string) error {
 			}
 		}
 		if slices.Contains(managedEgressHosts(s, dir), "hub-media") {
-			if auth, _ := ReadSecrets(filepath.Join(dir, "media.auth")); strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
+			auth, err := runtimeMediaAuth(dir, s)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
 				managedEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
 				managedEnv["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
 			}
@@ -1186,6 +1194,52 @@ func ensureMediaAuth(path string) error {
 	token := hex.EncodeToString(value)
 	content := []byte("HUB_MEDIA_AUTH=" + token + "\nHUB_STT_AUTH=" + token + "\nHUB_TTS_AUTH=" + token + "\n")
 	return os.WriteFile(path, content, 0600)
+}
+
+// Secondary spaces use the shared sidecar's bearer, not an unused local token.
+func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
+	source := filepath.Join(dir, "media.auth")
+	parent := filepath.Dir(filepath.Clean(dir))
+	if !s.RendersInfra() && filepath.Base(parent) == "spaces" {
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			return nil, err
+		}
+		owner := ""
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			candidate := filepath.Join(parent, entry.Name())
+			settings, err := ReadEnvironment(candidate, s.Environment)
+			if err != nil || !settings.RendersInfra() || !settings.Has("image_gen") {
+				continue
+			}
+			if owner != "" {
+				return nil, fmt.Errorf("shared media infrastructure is ambiguous")
+			}
+			owner = candidate
+		}
+		if owner == "" {
+			return nil, fmt.Errorf("shared media infrastructure is unavailable")
+		}
+		source = filepath.Join(owner, "media.auth")
+	}
+	info, err := os.Lstat(source)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("media auth must be a regular file")
+	}
+	auth, err := ReadSecrets(source)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) == "" {
+		return nil, fmt.Errorf("shared media auth is unavailable")
+	}
+	return auth, nil
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the
@@ -1424,6 +1478,7 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 	if _, ok := runtime["HUB_TOOLHUB_ENDPOINT"]; !ok {
 		runtime["HUB_TOOLHUB_ENDPOINT"] = "http://toolhub:8090/mcp"
 	}
+	runtime["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
 	gateway := map[string]string{}
 	for _, key := range GatewaySecretKeys() {
 		if value := user[key]; value != "" {

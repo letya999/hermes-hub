@@ -282,14 +282,30 @@ func TestQuotaLinesDisabledOrFailing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lines := g.quotaLines(context.Background()); lines != nil {
-		t.Fatalf("unconfigured quota spoke: %v", lines)
+	if lines := g.quotaLines(context.Background()); len(lines) != 1 || !strings.Contains(lines[0], "не настроен") {
+		t.Fatalf("unconfigured quota status: %v", lines)
 	}
 	t.Setenv("HUB_CLIPROXY_MGMT_URL", "http://127.0.0.1:1")
 	t.Setenv("HUB_CLIPROXY_MGMT_KEY", "k")
 	lines := g.quotaLines(context.Background())
 	if len(lines) != 1 || !strings.Contains(lines[0], "недоступно") {
 		t.Fatalf("failure not reported honestly: %v", lines)
+	}
+}
+
+func TestQuotaSelectsOnlyActiveAntigravityCredential(t *testing.T) {
+	files := []cliproxyAuthFile{
+		{Provider: "codex", AuthIndex: "other"},
+		{Provider: "antigravity", AuthIndex: "disabled", Disabled: true},
+		{Provider: "antigravity", AuthIndex: "own"},
+	}
+	if selected, ok := pickAuthFile(files, ""); !ok || selected.AuthIndex != "own" {
+		t.Fatalf("unexpected default quota credential: %v %v", selected.Provider, ok)
+	}
+	for _, index := range []string{"other", "disabled", "missing"} {
+		if _, ok := pickAuthFile(files, index); ok {
+			t.Fatalf("accepted unrelated or disabled credential %q", index)
+		}
 	}
 }
 

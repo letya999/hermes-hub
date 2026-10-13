@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -32,6 +33,7 @@ func runGovernance(_ context.Context, args []string) error {
 	revision := f.Uint64("revision", 1, "monotonic revision; increment when changing an existing record")
 	status := f.String("status", string(toolhub.ActiveStatus), "rule status: active, disabled or revoked")
 	grantID := f.String("grant", "", "grant id for revoke (default: derived)")
+	ruleID := f.String("rule", "", "explicit rule id, including updates to legacy attribute rules")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation and commit")
 	storePath := f.String("toolhub-store", os.Getenv("HUB_TOOLHUB_STORE"), "ToolHub registry path")
 	govPath := f.String("governance", os.Getenv("HUB_TOOL_GOVERNANCE"), "governance document path (default: beside the registry)")
@@ -106,6 +108,9 @@ func runGovernance(_ context.Context, args []string) error {
 			rule.ExpiresAt = at
 		}
 		rule.RuleID = deterministicRuleID(rule)
+		if *ruleID != "" {
+			rule.RuleID = *ruleID
+		}
 		if !*confirm {
 			fmt.Fprintf(os.Stderr, "review digest: %s\nre-run with --confirm to commit\n", toolhub.ConfirmationDigest(rule))
 			return fmt.Errorf("rule not confirmed")
@@ -166,6 +171,10 @@ func parseExpiry(raw string, now time.Time) (time.Time, error) {
 }
 
 func deterministicRuleID(r toolhub.PolicyRule) string {
+	if len(r.Match) != 0 {
+		data, _ := json.Marshal([]any{r.Scope, r.Subject, r.Match, r.Effect})
+		return fmt.Sprintf("govrule-%x", sha256.Sum256(data))[:32]
+	}
 	return governanceID("govrule", r.Scope, r.Subject, r.Section, r.Effect)
 }
 
@@ -187,8 +196,8 @@ func governanceID(prefix string, values ...string) string {
 		}
 	}
 	out := strings.Trim(b.String(), "-")
-	if len(out) > 64 {
-		out = strings.Trim(out[:64], "-")
+	if len(out) > 40 {
+		return fmt.Sprintf("%s-%x", prefix, sha256.Sum256([]byte(joined)))[:40]
 	}
 	return out
 }

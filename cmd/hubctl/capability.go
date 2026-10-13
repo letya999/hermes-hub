@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
@@ -115,15 +116,16 @@ func runCapability(args []string) error {
 		if err := store.RegisterDefinition(definition); err != nil {
 			return err
 		}
-		binding := toolhub.ToolBinding{Schema: toolhub.SchemaVersion, PrincipalID: *principal, ContextID: *contextID, RuntimeID: *runtimeID,
-			DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: *policyVersion,
-			WorkloadClass: definition.Workload.Class, Status: toolhub.ActiveStatus, Revision: 1, ProjectionRevision: 1}
-		binding.ToolBindingID = toolhub.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
-		if err := store.PutBinding(binding); err != nil {
+		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *principal, ExternalIdentityID: *principal,
+			ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "operator", DeliveryTargetID: "operator", PolicyVersion: *policyVersion}
+		binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
+		if err != nil {
 			return err
 		}
-		if err := store.Save(absolute); err != nil {
-			return err
+		if create {
+			if err := store.Save(absolute); err != nil {
+				return err
+			}
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": definition.DefinitionID, "revision": definition.Version, "binding": binding.ToolBindingID})
 	}

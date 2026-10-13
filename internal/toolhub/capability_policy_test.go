@@ -1151,6 +1151,12 @@ func TestProfileRollbackRestoresOnlyReviewedSurface(t *testing.T) {
 // (provenance: the onboarding record under the same policy generation) project
 // and dispatch like unmanaged installs; everything else still fails closed.
 func TestManagedSelfInstallAndControlOperations(t *testing.T) {
+	for _, mode := range []string{OnboardingSelfInstall, OnboardingRemote} {
+		t.Run(mode, func(t *testing.T) { testManagedSelfInstallAndControlOperations(t, mode) })
+	}
+}
+
+func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	s, auth, _, profile := managedStore(t)
 	if err := s.RequireControlOperation(auth, "prepare_source"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("control op before profile grant: %v", err)
@@ -1197,7 +1203,7 @@ func TestManagedSelfInstallAndControlOperations(t *testing.T) {
 	}
 	bindingID := DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	onboarding := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-self-1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
-		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: OnboardingSelfInstall, Phase: PhaseEnabled,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: mode, Phase: PhaseEnabled,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, BindingID: bindingID,
 		SourceURL: "https://github.com/example/repo", Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := s.PutOnboarding(onboarding); err != nil {

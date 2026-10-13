@@ -1,0 +1,33 @@
+schema: 1
+id: CHG-0081-m10-phase-b
+title: M10 Phase B — proactive assistant (watchers, check follow-ups, digest, knowledge)
+status: in_progress
+phase: verification
+started_at: 2026-10-10
+updated_at: 2026-10-10
+issues: [248, 249, 250, 251]
+completed: [248, 249, 250, 251]
+notes:
+  - Research basis: OpenClaw cron payload kinds, PraisonAI monitor/no_change,
+    jarela hash-diff watchers, changedetection.io baseline snapshots,
+    Ankita RoutineStore writeup, IMTI/denyx Starlark sandbox pattern
+  - kind=script unblocked: go.starlark.net runner, 16KiB/1M-step/4-emit/4KiB
+    bounds, emit -> durable delivery, no agent job, no LLM
+  - kind=watcher: two-phase probing outside the lock, durable baseline in
+    spool/watchers, first tick seeds silently, change -> one delivery
+  - kind=check: baseline anchored at POST /v1/routines (dead source -> 502,
+    no schedule); expect changed|unchanged -> dispatched|skipped|failed
+  - kind=digest: one aggregated message of owner watches changed since
+    spool/digests marker; marker advances at dispatch
+  - knowledge_list/knowledge_read over spool/knowledge/<user>/, GET-only
+    control endpoint, per-principal scoping, never writes to workspace
+  - routine_create exposes url/regex/expect; catalog documents all kinds
+  - Known bound: Starlark memory amplification (e.g. 'x'*1e8) is not capped —
+    step budget bounds CPU only; scripts are trusted owner-authored routines
+verification:
+  - go test ./internal/communication ./internal/agenttools — green
+  - just check — green: race+shuffle, coverage 85.09% (gate 85), vet,
+    staticcheck, docs, actionlint
+  - just security — fails on 11 pre-existing Go 1.27.1 stdlib CVEs (fixed
+    in go1.27.2, toolchain upgrade); 0 vulns in imported modules incl.
+    go.starlark.net — unrelated to this change, reported honestly

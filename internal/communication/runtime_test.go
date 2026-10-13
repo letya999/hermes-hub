@@ -21,14 +21,14 @@ func TestHTTPRunnerContract(t *testing.T) {
 			t.Error("runtime request was not authenticated")
 		}
 		var request hubruntime.ExecuteRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Text != "hello" || request.PrincipalID != "alice" || request.RuntimeID != "alice" || request.PolicyVersion != "policy-1" {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Text != "hello" || request.PrincipalID != "alice" || request.RuntimeID != "alice" || request.PolicyVersion != "policy-1" || request.InboundID != "in-1" {
 			t.Error("runtime request body was not forwarded")
 		}
 		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply"})
 	}))
 	defer server.Close()
 	runner := HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client(), Limit: time.Second}
-	text, err := runner.Run(context.Background(), Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:1", Text: "hello"}, User{})
+	text, err := runner.Run(context.Background(), Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:1", Text: "hello", InboundID: "in-1"}, User{})
 	if err != nil || text != "reply" {
 		t.Fatal(text, err)
 	}
@@ -106,6 +106,14 @@ func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
 	}
 	if !strings.Contains(gotInstructions, "artifacts/") || !strings.Contains(gotInstructions, "MEDIA:") {
 		t.Fatalf("artifact convention missing from instructions: %q", gotInstructions)
+	}
+	// The model must know inbound files arrive staged (inbox=<id> → inbox_fetch)
+	// and that delivered artifacts are removed from the workspace — otherwise it
+	// promises to keep files that are gone or ignores files the user sent.
+	for _, want := range []string{"inbox_fetch", "inbox=", "preserved"} {
+		if !strings.Contains(gotInstructions, want) {
+			t.Fatalf("file-transfer convention missing %q from instructions: %q", want, gotInstructions)
+		}
 	}
 }
 

@@ -511,7 +511,7 @@ func TestDockerAgentExecChannel(t *testing.T) {
 		t.Fatalf("result did not round-trip: %+v", out)
 	}
 	log := dockerLog(t, state)
-	if len(log) != 1 || !strings.HasPrefix(log[0], "exec -i runtime-1 hubctl tools-exec") {
+	if len(log) != 1 || !strings.HasPrefix(log[0], "exec -i -e HUB_DEFER_RUNTIME_RESTART=true runtime-1 hubctl tools-exec") {
 		t.Fatalf("executor channel wrong: %v", log)
 	}
 	t.Setenv("FAKE_DOCKER_FAIL", "exec")
@@ -717,4 +717,31 @@ func TestReverifyEffectiveQueuedWriter(t *testing.T) {
 	s.mu.RUnlock()
 	<-writerDone
 	s.mu.RLock()
+}
+
+func TestScratchBinaryExportUsesLosslessPrivateTransport(t *testing.T) {
+	data := string([]byte{0x89, 'P', 'N', 'G', 0, 0xff})
+	apply := func(_ context.Context, _ EffectiveBinding, request AgentExecRequest) (AgentExecResult, error) {
+		wire, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded AgentExecRequest
+		if err := json.Unmarshal(wire, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		encoded, ok := decoded.Arguments["export_base64"].(string)
+		if !ok {
+			t.Fatal("binary file exported through text")
+		}
+		body, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil || string(body) != data || decoded.Arguments["text"] != nil {
+			t.Fatal("export bytes changed", err)
+		}
+		return AgentExecResult{}, nil
+	}
+	applied, skipped, err := applyExports(context.Background(), apply, func(context.Context, EffectiveBinding) error { return nil }, EffectiveBinding{}, AgentExecRequest{}, "docs", scratchTar(t, map[string]string{"proof.png": data}))
+	if err != nil || len(applied) != 1 || len(skipped) != 0 {
+		t.Fatal(applied, skipped, err)
+	}
 }

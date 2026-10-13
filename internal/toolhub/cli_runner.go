@@ -183,7 +183,7 @@ func (r CLIRunner) CallEnv(ctx context.Context, effective EffectiveBinding, tool
 	}
 	result := BackendResult{Text: redactOutput(response.Output, env)}
 	if response.ExitCode != 0 {
-		result.IsError = true
+		return BackendResult{}, fmt.Errorf("command exit code %d: %s", response.ExitCode, result.Text)
 	}
 	if response.Receipt.WorkloadID != "" {
 		result.Receipt = response.Receipt.WorkloadID + "@" + strings.Join(response.Receipt.Isolation, ",") + "@cell=" + response.Receipt.CellID + ",rt=" + response.Receipt.Runtime

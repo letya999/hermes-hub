@@ -95,8 +95,8 @@ func controlToolContract(name string) (string, map[string]any) {
 		cli := properties["cli"].(map[string]any)
 		cli["properties"], cli["required"], cli["additionalProperties"] = cliInstallProperties(), []string{"name", "tools"}, false
 		cli["oneOf"] = []any{
-			map[string]any{"required": []string{"source", "binary"}, "not": map[string]any{"required": []string{"command"}}},
-			map[string]any{"required": []string{"command"}, "not": map[string]any{"anyOf": []any{map[string]any{"required": []string{"source"}}, map[string]any{"required": []string{"binary"}}}}},
+			map[string]any{"required": []string{"source", "binary"}, "properties": cliRequiredProperties("source", "binary"), "not": map[string]any{"required": []string{"command"}, "properties": cliRequiredProperties("command")}},
+			map[string]any{"required": []string{"command"}, "properties": cliRequiredProperties("command"), "not": map[string]any{"anyOf": []any{map[string]any{"required": []string{"source"}, "properties": cliRequiredProperties("source")}, map[string]any{"required": []string{"binary"}, "properties": cliRequiredProperties("binary")}}}},
 		}
 		cli["examples"] = []any{map[string]any{"name": "jq", "source": "github-release:jqlang/jq@latest", "asset": "jq-linux-amd64", "binary": "/usr/local/bin/jq", "args": []string{"--version"}, "tools": []any{map[string]any{"name": "version", "effect": "read"}}}}
 	case "rotate", "disable", "revoke", "remove":
@@ -124,6 +124,16 @@ func controlToolContract(name string) (string, map[string]any) {
 		}
 	}
 	return description, map[string]any{"type": "object", "properties": properties, "additionalProperties": true}
+}
+
+// Pinned Hermes prunes required names absent from their local properties map.
+// Declare selector fields in each conditional so its normalization preserves XOR.
+func cliRequiredProperties(names ...string) map[string]any {
+	properties := map[string]any{}
+	for _, name := range names {
+		properties[name] = map[string]any{"type": "string"}
+	}
+	return properties
 }
 
 func cliInstallProperties() map[string]any {

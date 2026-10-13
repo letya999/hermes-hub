@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -144,7 +145,7 @@ func TestEnsureReusesPublishedPortOnRecovery(t *testing.T) {
 		"--label", "hermes-hub.owner="+m.ownerID(),
 		"--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(key)),
 		"--label", "hermes-hub.generation=gen-1",
-		"--mount", "type=bind,src="+root+",dst=/scope"); err != nil {
+		"--mount", "type=bind,src="+filepath.Join(root, "workspace")+",dst=/scope"); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := m.Ensure(context.Background(), b)

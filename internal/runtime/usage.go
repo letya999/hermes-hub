@@ -15,6 +15,7 @@ import (
 // routes on it exactly like /v1/artifact.
 type UsageRequest struct {
 	ExecuteRequest
+	LookupOnly bool `json:"lookup_only,omitempty"`
 }
 
 // SessionUsage is the measured usage view for one durable Hermes session.

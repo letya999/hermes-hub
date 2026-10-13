@@ -12,6 +12,96 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spaces")
+	owner := filepath.Join(root, "infra")
+	secondary := filepath.Join(root, "alice")
+	for _, name := range []string{owner, secondary, filepath.Join(root, "other")} {
+		if err := os.MkdirAll(name, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := Settings{Schema: 1, User: "infra", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace", "image_gen"), Ingress: testIngress("workspace", "image_gen"), BrowserPort: 6080, OAuthPort: 8000}
+	if err := WriteSpace(owner, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=shared-synthetic\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	no := false
+	s.User, s.Infra, s.Environment = "alice", &no, "dev"
+	if err := WriteSpace(secondary, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondary, "media.auth"), []byte("HUB_MEDIA_AUTH=unused-local\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := runtimeMediaAuth(secondary, s)
+	if err != nil || auth["HUB_MEDIA_AUTH"] != "shared-synthetic" {
+		t.Fatal("secondary did not use shared media auth", err)
+	}
+	for _, mode := range []string{"", "managed"} {
+		s.CapabilityMode = mode
+		for _, file := range RuntimeService(s, root, secondary)["env_file"].([]any) {
+			if file.(M)["path"] == filepath.ToSlash(filepath.Join(secondary, "media.auth")) {
+				t.Fatal("secondary compose overrides shared auth with unused local token")
+			}
+		}
+	}
+	s.CapabilityMode = ""
+	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=rotated-synthetic\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auth, err = runtimeMediaAuth(secondary, s)
+	if err != nil || auth["HUB_MEDIA_AUTH"] != "rotated-synthetic" {
+		t.Fatal("rotation ignored", err)
+	}
+	other := s
+	other.User, other.Infra = "other", nil
+	if err := WriteSpace(filepath.Join(root, "other"), other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+		t.Fatal("ambiguous shared owner accepted")
+	}
+	if err := os.RemoveAll(filepath.Join(root, "other")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(owner, "media.auth")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+		t.Fatal("missing shared auth fell back to local")
+	}
+	if err := os.Mkdir(filepath.Join(owner, "media.auth"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+		t.Fatal("non-file shared auth accepted")
+	}
+}
+
+func TestMediaProfileBuildsSharedImageOnce(t *testing.T) {
+	for _, environment := range []string{"dev", "prod"} {
+		t.Run(environment, func(t *testing.T) {
+			s := profileSettings("workspace", "image_gen")
+			s.Environment = environment
+			services := Compose(s, t.TempDir(), t.TempDir())["services"].(M)
+			core := services["cliproxy"].(M)
+			mediaSvc := services["hub-media"].(M)
+			if mediaSvc["image"] != core["image"] || core["build"] == nil {
+				t.Fatal("media must consume the explicitly built shared core image")
+			}
+			for name, raw := range services {
+				svc := raw.(M)
+				if name != "cliproxy" && svc["image"] == core["image"] && svc["build"] != nil {
+					t.Fatalf("%s builds the shared core tag a second time", name)
+				}
+			}
+		})
+	}
+}
+
 func TestDocumentImageProfile(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace"), Ingress: testIngress("workspace")}
 	cfg := Config(s)
@@ -109,7 +199,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeEnv, err := os.ReadFile(filepath.Join(envDir, "runtime.prod.env"))
-	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") || !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=openai-sample") || !strings.Contains(string(runtimeEnv), "HUB_MEDIA_URL=http://hub-media:8090") {
+	if err != nil || strings.Contains(string(runtimeEnv), "FAL_KEY") || strings.Contains(string(runtimeEnv), "fal-sample-value") || !strings.Contains(string(runtimeEnv), "OPENAI_API_KEY=openai-sample") || !strings.Contains(string(runtimeEnv), "HUB_MEDIA_URL=http://hub-media:8090") || !strings.Contains(string(runtimeEnv), "HUB_COMMUNICATION_CONTROL_URL=http://communication-hub:8081") {
 		t.Fatalf("omitted runtime env: %v %s", err, runtimeEnv)
 	}
 	if err := writeRuntimeEnvFiles(envDir, "dev", secrets, nil, nil, nil); err != nil {

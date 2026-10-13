@@ -3,11 +3,14 @@
 package devcheck
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -34,6 +37,7 @@ func ScratchWorkloadCanary(ctx context.Context, image string) error {
 		`wget -q -T 3 -O /dev/null http://169.254.169.254/ 2>/dev/null && echo "NET=open" || echo "NET=blocked"`,
 		`dd if=/dev/zero of=/scratch/fill bs=1M count=200 2>/dev/null; S=$(stat -c%s /scratch/fill 2>/dev/null || echo 0); test "$S" -lt 200000000 && echo "DISK=bounded" || echo "DISK=unbounded"`,
 		`echo canary > "$OUTPUTS/out.txt"`,
+		`echo "$((6*7))" > "$OUTPUTS/result.txt"`,
 		`echo HOSTILE-DONE`,
 	}, "; ")
 	request, err := json.Marshal(toolhub.ScratchExecRequest{Command: script, TimeoutSeconds: 120})
@@ -80,6 +84,24 @@ func ScratchWorkloadCanary(ctx context.Context, image string) error {
 	}
 	if result.ExportTar == "" {
 		failures = append(failures, "reviewed export channel produced no output")
+	}
+	archive, archiveErr := base64.StdEncoding.DecodeString(result.ExportTar)
+	foundArithmetic := false
+	if archiveErr == nil {
+		reader := tar.NewReader(bytes.NewReader(archive))
+		for {
+			h, err := reader.Next()
+			if err != nil {
+				break
+			}
+			if h.Name == "result.txt" && h.Typeflag == tar.TypeReg {
+				data, err := io.ReadAll(io.LimitReader(reader, 32))
+				foundArithmetic = err == nil && string(data) == "42\n"
+			}
+		}
+	}
+	if !foundArithmetic {
+		failures = append(failures, "6*7 result did not survive the actual export archive")
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("scratch workload isolation failed: %s (stdout: %s)", strings.Join(failures, "; "), stdout)
