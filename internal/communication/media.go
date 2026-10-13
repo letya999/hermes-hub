@@ -171,7 +171,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 	}
 	envelope.TranscriptStatus = "ok"
 	text := voiceInputText(transcript, message.Caption, envelope.MIME, envelope.Duration)
-	return g.enqueueMediaJob(ctx, update, user, message, text)
+	return g.enqueueMediaJob(ctx, update, user, message, text, "")
 }
 
 func (g *Gateway) handleFile(ctx context.Context, update Update, user User, message *Message) error {
@@ -204,6 +204,9 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 			_ = staged.Close()
 		}
 	}
+	if inbox == "" {
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Не удалось сохранить файл. Отправьте его ещё раз.")
+	}
 	text := strings.TrimSpace(message.Caption)
 	meta := "[file name=" + name + " mime=" + envelope.MIME + " size=" + strconv.FormatInt(media.FileSize, 10)
 	if inbox != "" {
@@ -215,18 +218,18 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	} else {
 		text = text + "\n" + meta
 	}
-	return g.enqueueMediaJob(ctx, update, user, message, text)
+	return g.enqueueMediaJob(ctx, update, user, message, text, inbox)
 }
 
 // enqueueMediaJob resolves the inbound task binding (adopting a topic on the
 // verified first post) and admits the media job under it.
-func (g *Gateway) enqueueMediaJob(ctx context.Context, update Update, user User, message *Message, text string) error {
+func (g *Gateway) enqueueMediaJob(ctx context.Context, update Update, user User, message *Message, text, inboundID string) error {
 	topic := messageTopicID(message)
 	task, err := g.spool.ResolveTask(user, message.Chat.ID, topic, true)
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, "Не удалось открыть задачу.")
 	}
-	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID)
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, inboundID)
 }
 
 func rejectMedia(e MediaEnvelope, maxDuration int) error {

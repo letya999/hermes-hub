@@ -521,6 +521,7 @@ type Job struct {
 	SlackChannel string    `json:"slack_channel,omitempty"`
 	SlackThread  string    `json:"slack_thread,omitempty"`
 	Text         string    `json:"text,omitempty"`
+	InboundID    string    `json:"inbound_id,omitempty"`
 	Sensitive    bool      `json:"sensitive"`
 	TextSHA256   string    `json:"text_sha256,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -2165,10 +2166,10 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), "Не удалось открыть задачу.")
 	}
-	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID)
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "")
 }
 
-func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64) error {
+func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string) error {
 	envelope := user.envelope(sender)
 	if channel == "mock" {
 		envelope = user.mockEnvelope(chatID)
@@ -2178,7 +2179,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 		// Group forum jobs deliver to the group chat, not the sender's DM.
 		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(chatID, 10)
 	}
-	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, Sensitive: false, CreatedAt: g.now().UTC()}
+	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}

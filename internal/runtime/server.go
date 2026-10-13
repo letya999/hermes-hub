@@ -40,6 +40,7 @@ type ExecuteRequest struct {
 	Trigger        string `json:"trigger"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Text           string `json:"text"`
+	InboundID      string `json:"inbound_id,omitempty"`
 	// Instructions is the hub-pinned presentation guidance for this admitted
 	// run (ephemeral system prompt upstream). It is never a synthetic user
 	// message and never carries authorization.
@@ -273,7 +274,15 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 		RunID string `json:"run_id"`
 	}
 	runStart := time.Now()
-	runBody := map[string]any{"input": request.Text, "session_id": sessionID}
+	input := request.Text
+	if request.InboundID != "" {
+		rel, err := fetchInbound(ctx, request.InboundID)
+		if err != nil {
+			return ExecuteResponse{}, err
+		}
+		input += "\nSaved incoming file: " + rel + ". Read or extract this file before answering."
+	}
+	runBody := map[string]any{"input": input, "session_id": sessionID}
 	if request.Instructions != "" {
 		runBody["instructions"] = request.Instructions
 	}
@@ -628,6 +637,9 @@ func validateExecuteRequest(request ExecuteRequest) error {
 	}
 	if len(request.Instructions) > 4096 || strings.ContainsRune(request.Instructions, '\x00') {
 		return errors.New("invalid instructions")
+	}
+	if request.InboundID != "" && request.Channel != "telegram_bot" {
+		return errors.New("inbound file requires Telegram channel")
 	}
 	return nil
 }

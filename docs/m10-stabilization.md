@@ -1,6 +1,6 @@
 ---
 description: Current M10 file, routine, mock, knowledge and usage contracts after stabilization.
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 ---
 # M10 stabilization
 
@@ -20,6 +20,12 @@ staged copy is acknowledged. Retry reuses the receipt, retries acknowledgment an
 never downloads/extracts again. `acknowledged=false` means local files exist but
 the staged copy still needs acknowledgment. A pre-existing directory without a
 valid receipt requires operator inspection; it is not overwritten or deleted.
+
+Telegram file jobs carry a trusted staged ID separately from user text. Before
+admitting the agent run, the runtime saves the file through the owner's ToolHub
+`inbox_fetch` grant and gives the resulting workspace path to the agent. Failed
+downloads or saves do not start fileless runs. PDF extraction uses Poppler for
+compressed PDFs the built-in reader cannot parse, retaining size and time limits.
 
 ZIP extraction checks entry count, declared sizes and actual copied bytes;
 partial cleanup removes only the directory created by that attempt. ZIP sources

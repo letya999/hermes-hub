@@ -510,20 +510,21 @@ func TestValidateExecuteRequestRejectsEachBoundary(t *testing.T) {
 	t.Setenv("HUB_ORGANIZATION_ID", "acme")
 	base := validExecuteRequest("alice", "acme", "one", "hello")
 	for name, request := range map[string]ExecuteRequest{
-		"schema":       func() ExecuteRequest { r := base; r.Envelope.Schema = 2; return r }(),
-		"principal_id": func() ExecuteRequest { r := base; r.PrincipalID = "bob"; return r }(),
-		"context_id":   func() ExecuteRequest { r := base; r.ContextID = "other"; return r }(),
-		"runtime_id":   func() ExecuteRequest { r := base; r.RuntimeID = "stale"; return r }(),
-		"policy":       func() ExecuteRequest { r := base; r.PolicyVersion = "policy-0"; return r }(),
-		"conversation": func() ExecuteRequest { r := base; r.ConversationID = "bad:id"; return r }(),
-		"user":         func() ExecuteRequest { r := base; r.UserID = "bob"; return r }(),
-		"actor":        func() ExecuteRequest { r := base; r.ActorID = "bob"; return r }(),
-		"organization": func() ExecuteRequest { r := base; r.OrganizationID = "other"; return r }(),
-		"scope":        func() ExecuteRequest { r := base; r.ScopeID = "organization:acme"; return r }(),
-		"identity":     func() ExecuteRequest { r := base; r.Channel = ""; return r }(),
-		"key":          func() ExecuteRequest { r := base; r.IdempotencyKey = strings.Repeat("x", 257); return r }(),
-		"empty":        func() ExecuteRequest { r := base; r.Text = ""; return r }(),
-		"large":        func() ExecuteRequest { r := base; r.Text = strings.Repeat("x", maxPromptBytes+1); return r }(),
+		"inbound-on-mock": func() ExecuteRequest { r := base; r.Channel = "mock"; r.InboundID = "in-1"; return r }(),
+		"schema":          func() ExecuteRequest { r := base; r.Envelope.Schema = 2; return r }(),
+		"principal_id":    func() ExecuteRequest { r := base; r.PrincipalID = "bob"; return r }(),
+		"context_id":      func() ExecuteRequest { r := base; r.ContextID = "other"; return r }(),
+		"runtime_id":      func() ExecuteRequest { r := base; r.RuntimeID = "stale"; return r }(),
+		"policy":          func() ExecuteRequest { r := base; r.PolicyVersion = "policy-0"; return r }(),
+		"conversation":    func() ExecuteRequest { r := base; r.ConversationID = "bad:id"; return r }(),
+		"user":            func() ExecuteRequest { r := base; r.UserID = "bob"; return r }(),
+		"actor":           func() ExecuteRequest { r := base; r.ActorID = "bob"; return r }(),
+		"organization":    func() ExecuteRequest { r := base; r.OrganizationID = "other"; return r }(),
+		"scope":           func() ExecuteRequest { r := base; r.ScopeID = "organization:acme"; return r }(),
+		"identity":        func() ExecuteRequest { r := base; r.Channel = ""; return r }(),
+		"key":             func() ExecuteRequest { r := base; r.IdempotencyKey = strings.Repeat("x", 257); return r }(),
+		"empty":           func() ExecuteRequest { r := base; r.Text = ""; return r }(),
+		"large":           func() ExecuteRequest { r := base; r.Text = strings.Repeat("x", maxPromptBytes+1); return r }(),
 	} {
 		if validateExecuteRequest(request) == nil {
 			t.Fatalf("accepted invalid %s request", name)

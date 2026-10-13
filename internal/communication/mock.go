@@ -81,7 +81,7 @@ func (g *Gateway) handleMockMessage(w http.ResponseWriter, r *http.Request) {
 	if in.ClientID == "" {
 		id = "mock-" + newID()
 	}
-	if err := g.enqueueChannelJob(r.Context(), user, task, "mock", id, key, in.ChatID, 0, in.Text, in.ChatID); err != nil {
+	if err := g.enqueueChannelJob(r.Context(), user, task, "mock", id, key, in.ChatID, 0, in.Text, in.ChatID, ""); err != nil {
 		http.Error(w, "enqueue failed", http.StatusInternalServerError)
 		return
 	}

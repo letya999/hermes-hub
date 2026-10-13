@@ -1,0 +1,14 @@
+schema: 1
+change: CHG-0086
+status: done
+branch: dev
+updated: 2026-10-12
+completed:
+  - Reproduced unsaved Telegram file jobs and compressed PDF rejection.
+  - Added trusted inbound ID and pre-run owner ToolHub fetch with regression tests.
+  - Added Poppler fallback and synthetic compressed and expanded-output fixtures.
+  - just check passed with 85.19% own Go statement coverage; just security found no called Go vulnerabilities or high npm vulnerabilities.
+  - Built and restarted dev images; standalone Docker smoke passed.
+  - Verified owner ToolHub extracted 15,388 characters across six pages from a previously rejected real PDF.
+  - Fresh Telegram update 837845386 saved its 134,277-byte PDF before the agent ran; the agent read it and sent a substantive summary.
+remaining: []

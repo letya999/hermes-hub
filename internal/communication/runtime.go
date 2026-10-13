@@ -100,6 +100,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		Trigger:        job.Trigger,
 		IdempotencyKey: job.IdempotencyKey,
 		Text:           job.Text,
+		InboundID:      job.InboundID,
 		Instructions:   instructions,
 	})
 	if err != nil {
