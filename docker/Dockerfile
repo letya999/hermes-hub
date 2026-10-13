@@ -39,6 +39,7 @@ COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends glab
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep ffmpeg espeak-ng chromium xvfb fluxbox x11vnc novnc websockify && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlite_build /opt/sqlite-fixed/lib/ /usr/local/lib/
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils && apt-get clean
 RUN ldconfig && python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
