@@ -163,8 +163,8 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 	if body, err := c.discover(t.Context(), aliceAuth(), "notion"); err != nil || len(body["warnings"].([]string)) != 1 {
 		t.Fatal("unavailable registry hid bundle", err)
 	}
-	for len(c.discoveryChoices) < 512 {
-		c.discoveryChoices[fmt.Sprint(len(c.discoveryChoices))] = discoverySelection{Expires: time.Now().Add(time.Hour)}
+	for len(c.discovery.choices) < 512 {
+		c.discovery.choices[fmt.Sprint(len(c.discovery.choices))] = discoverySelection{Expires: time.Now().Add(time.Hour)}
 	}
 	if _, err := c.discover(t.Context(), aliceAuth(), "notion"); !errors.Is(err, ErrInvalid) {
 		t.Fatal("unbounded selection cache", err)

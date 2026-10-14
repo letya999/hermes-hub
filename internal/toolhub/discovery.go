@@ -33,6 +33,13 @@ type discoverySelection struct {
 	Expires   time.Time
 }
 
+// discoverySelections holds pending candidate picks behind their own lock;
+// expiry and lookup never share the admission mutex.
+type discoverySelections struct {
+	mu      sync.Mutex
+	choices map[string]discoverySelection
+}
+
 // SourceSearchCatalog may suggest repository URLs without installation
 // authority. prepare_source still pins and reviews the selected repository.
 type SourceSearchCatalog interface {
@@ -216,17 +223,17 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 	if len(warnings) > 4 {
 		warnings = warnings[:4]
 	}
-	c.discoveryMu.Lock()
-	defer c.discoveryMu.Unlock()
-	if c.discoveryChoices == nil {
-		c.discoveryChoices = map[string]discoverySelection{}
+	c.discovery.mu.Lock()
+	defer c.discovery.mu.Unlock()
+	if c.discovery.choices == nil {
+		c.discovery.choices = map[string]discoverySelection{}
 	}
-	for id, choice := range c.discoveryChoices {
+	for id, choice := range c.discovery.choices {
 		if !c.now().Before(choice.Expires) {
-			delete(c.discoveryChoices, id)
+			delete(c.discovery.choices, id)
 		}
 	}
-	if len(c.discoveryChoices)+len(candidates) > 512 {
+	if len(c.discovery.choices)+len(candidates) > 512 {
 		return nil, fmt.Errorf("%w: discovery capacity reached; retry after expiry", ErrInvalid)
 	}
 	for i := range candidates {
@@ -234,15 +241,15 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 			continue
 		}
 		candidates[i].ID = randomNonce()
-		c.discoveryChoices[candidates[i].ID] = discoverySelection{Candidate: candidates[i], Owner: auth, Expires: c.now().Add(c.ttl())}
+		c.discovery.choices[candidates[i].ID] = discoverySelection{Candidate: candidates[i], Owner: auth, Expires: c.now().Add(c.ttl())}
 	}
 	return map[string]any{"candidates": candidates, "warnings": warnings}, nil
 }
 
 func (c *ControlPlane) selectedCandidate(auth identity.Envelope, id string) (DiscoveryCandidate, error) {
-	c.discoveryMu.Lock()
-	defer c.discoveryMu.Unlock()
-	choice, ok := c.discoveryChoices[id]
+	c.discovery.mu.Lock()
+	defer c.discovery.mu.Unlock()
+	choice, ok := c.discovery.choices[id]
 	if !ok || !c.now().Before(choice.Expires) || choice.Owner.PrincipalID != auth.PrincipalID || choice.Owner.ContextID != auth.ContextID || choice.Owner.RuntimeID != auth.RuntimeID || choice.Owner.PolicyVersion != auth.PolicyVersion {
 		return DiscoveryCandidate{}, fmt.Errorf("%w: discovery selection expired or unavailable", ErrUnauthorized)
 	}

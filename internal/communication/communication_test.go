@@ -1397,11 +1397,11 @@ func TestCredentialFormValidationAndOrigins(t *testing.T) {
 	if _, err := g.formOrigin(); err != nil {
 		t.Fatal(err)
 	}
-	g.forms = nil
+	g.forms.m = nil
 	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
 		t.Fatal(err)
 	}
-	g.forms["expired"] = credentialForm{OwnerID: "alice", ExpiresAt: time.Now().Add(-time.Minute)}
+	g.forms.m["expired"] = credentialForm{OwnerID: "alice", ExpiresAt: time.Now().Add(-time.Minute)}
 	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
 		t.Fatal(err)
 	}

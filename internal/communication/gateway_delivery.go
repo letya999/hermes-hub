@@ -12,8 +12,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+// editThrottle bounds status-message edits to one per interval per chat
+// (SPEC-0053 R2.2) behind its own lock.
+type editThrottle struct {
+	mu   sync.Mutex
+	last map[int64]time.Time
+}
 
 func (g *Gateway) queueDelivery(_ context.Context, key string, chatID, topicID int64, text string) error {
 	id := key
@@ -235,20 +243,20 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		if delivery.EditMessageID > 0 {
 			// Status update: edit the delivered status message in place
 			// (SPEC-0053 R2.2), no more than once per editInterval per chat.
-			g.editMu.Lock()
-			if now, last := g.now(), g.lastEdit[delivery.ChatID]; !last.IsZero() && now.Sub(last) < 2*time.Second {
-				g.editMu.Unlock()
+			g.edits.mu.Lock()
+			if now, last := g.now(), g.edits.last[delivery.ChatID]; !last.IsZero() && now.Sub(last) < 2*time.Second {
+				g.edits.mu.Unlock()
 				_ = g.spool.RetryDelivery(delivery.ID)
 				return
 			}
 			sendErr = g.api.EditMessageText(ctx, delivery.ChatID, delivery.EditMessageID, limitTelegramText(delivery.Text))
 			if sendErr == nil {
-				if g.lastEdit == nil {
-					g.lastEdit = map[int64]time.Time{}
+				if g.edits.last == nil {
+					g.edits.last = map[int64]time.Time{}
 				}
-				g.lastEdit[delivery.ChatID] = g.now()
+				g.edits.last[delivery.ChatID] = g.now()
 			}
-			g.editMu.Unlock()
+			g.edits.mu.Unlock()
 			break
 		}
 		speak, voiceOnly := g.voicePlan(*delivery)

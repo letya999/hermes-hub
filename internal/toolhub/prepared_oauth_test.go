@@ -92,9 +92,9 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	if err := c.completePreparedOAuth(t.Context(), "wrong", "code"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatal("unbound callback accepted", err)
 	}
-	c.oauthMu.Lock()
-	clear(c.oauthFlows) // simulate a ToolHub restart while the browser link is outstanding
-	c.oauthMu.Unlock()
+	c.oauthFlows.mu.Lock()
+	clear(c.oauthFlows.flows) // simulate a ToolHub restart while the browser link is outstanding
+	c.oauthFlows.mu.Unlock()
 	resumed, err := c.status(auth, map[string]any{"onboarding_id": on.OnboardingID})
 	if err != nil || resumed["phase"] != PhaseAwaitingOAuth || resumed["authorization_url"] == authURL.String() {
 		t.Fatal("status did not reissue lost OAuth link", err)
@@ -109,9 +109,9 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/calendar.readonly"}`))
 	}))
 	defer provider.Close()
-	c.oauthMu.Lock()
-	c.oauthFlows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
-	c.oauthMu.Unlock()
+	c.oauthFlows.mu.Lock()
+	c.oauthFlows.flows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
+	c.oauthFlows.mu.Unlock()
 	c.OAuth = oauth.NewBroker(secrets, []string{c.origin() + "/oauth/callback"})
 	gateway := &Gateway{Control: c}
 	callback := "/oauth/callback?state=" + url.QueryEscape(state) + "&code=fixture-code"

@@ -1,3 +1,4 @@
+// Package communication routes channel messages into isolated Hermes jobs.
 package communication
 
 import (
@@ -45,19 +46,15 @@ type Gateway struct {
 	audit        *audit.Ledger
 	transcriber  Transcriber
 	synthesizer  Synthesizer
-	formsMu      sync.Mutex
-	forms        map[string]credentialForm
+	forms        formRegistry
 	telegramAuth *telegramAuthState
-	quotaMu      sync.Mutex
-	quotaCache   []string
-	quotaAt      time.Time
+	quota        quotaTracker
 	// contentUntil bounds the explicit content-capture window: inside it
 	// message logs carry redacted text, outside only lengths and IDs.
 	contentUntil time.Time
-	// lastEdit throttles status-message edits to one per editInterval per
+	// edits throttles status-message edits to one per editInterval per
 	// chat (SPEC-0053 R2.2).
-	editMu   sync.Mutex
-	lastEdit map[int64]time.Time
+	edits editThrottle
 	// controlPolls counts control-loop mapping scans; an idle loop scans at
 	// most once per second (SPEC-0053 R2.3).
 	controlPolls atomic.Int64
@@ -124,7 +121,7 @@ func New(config Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: map[string]credentialForm{}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	spool.JobDone = g.toolHubJobDone
 	if config.TelegramAuthEnabled {
 		g.telegramAuth, err = newTelegramAuthState(config)

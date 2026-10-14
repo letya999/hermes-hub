@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -23,6 +24,13 @@ type preparedOAuthFlow struct {
 	broker       *oauth.Broker
 }
 
+// oauthFlowStore serializes pending handoffs behind their own lock; flow
+// state never shares the admission mutex or Store's lock.
+type oauthFlowStore struct {
+	mu    sync.Mutex
+	flows map[string]*preparedOAuthFlow
+}
+
 // ensurePreparedOAuth starts only a reviewed OAuth handoff. Tool output is
 // never interpreted as an authorization URL or a provider configuration.
 func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.Envelope, onboarding Onboarding, definition ToolDefinition) (map[string]any, error) {
@@ -30,12 +38,12 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 	if err != nil || !matched || entry.OAuth == nil || c.Injector == nil || c.Secrets == nil {
 		return nil, ErrUnauthorized
 	}
-	c.oauthMu.Lock()
+	c.oauthFlows.mu.Lock()
 	// ponytail: one lock serializes handoff creation; use per-onboarding locks if starts become a bottleneck.
-	defer c.oauthMu.Unlock()
-	for state, flow := range c.oauthFlows {
+	defer c.oauthFlows.mu.Unlock()
+	for state, flow := range c.oauthFlows.flows {
 		if !c.now().Before(flow.expires) {
-			delete(c.oauthFlows, state)
+			delete(c.oauthFlows.flows, state)
 			continue
 		}
 		if flow.onboardingID == onboarding.OnboardingID {
@@ -124,15 +132,15 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 	if !validPreparedOAuthURL(start.AuthorizeURL) {
 		return nil, ErrInvalid
 	}
-	if c.oauthFlows == nil {
-		c.oauthFlows = make(map[string]*preparedOAuthFlow)
+	if c.oauthFlows.flows == nil {
+		c.oauthFlows.flows = make(map[string]*preparedOAuthFlow)
 	}
-	c.oauthFlows[start.State] = &preparedOAuthFlow{onboardingID: onboarding.OnboardingID, url: start.AuthorizeURL, expires: c.now().Add(c.ttl()), broker: broker}
+	c.oauthFlows.flows[start.State] = &preparedOAuthFlow{onboardingID: onboarding.OnboardingID, url: start.AuthorizeURL, expires: c.now().Add(c.ttl()), broker: broker}
 	onboarding.Phase = PhaseAwaitingOAuth
 	onboarding.ProviderAuthorizationURL = start.AuthorizeURL
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
-		delete(c.oauthFlows, start.State)
+		delete(c.oauthFlows.flows, start.State)
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil
@@ -153,10 +161,10 @@ func (c *ControlPlane) preparedOAuthEffective(auth identity.Envelope, definition
 }
 
 func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code string) error {
-	c.oauthMu.Lock()
-	flow := c.oauthFlows[state]
-	delete(c.oauthFlows, state)
-	c.oauthMu.Unlock()
+	c.oauthFlows.mu.Lock()
+	flow := c.oauthFlows.flows[state]
+	delete(c.oauthFlows.flows, state)
+	c.oauthFlows.mu.Unlock()
 	if flow == nil || !c.now().Before(flow.expires) || code == "" {
 		return ErrUnauthorized
 	}

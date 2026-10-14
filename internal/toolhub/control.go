@@ -37,21 +37,19 @@ type ControlPlane struct {
 	OAuth          *oauth.Broker
 	Injector       CredentialInjector
 	admissionMu    sync.Mutex
-	oauthMu        sync.Mutex
-	oauthFlows     map[string]*preparedOAuthFlow
+	oauthFlows     oauthFlowStore
 	Now            func() time.Time
 	Listen         string
 	FormOrigin     string
 	WorkloadRoot   string
 	// DiagnosticsDir points at the bounded operator diagnostics directory; the
 	// diagnostics control op reads only the collected log file inside it.
-	DiagnosticsDir   string
-	ConfirmationTTL  time.Duration
-	Ready            func(context.Context, EffectiveBinding) error
-	Broker           *credentialbroker.Config
-	BrokerRuntime    *credentialbroker.Config
-	discoveryMu      sync.Mutex
-	discoveryChoices map[string]discoverySelection
+	DiagnosticsDir  string
+	ConfirmationTTL time.Duration
+	Ready           func(context.Context, EffectiveBinding) error
+	Broker          *credentialbroker.Config
+	BrokerRuntime   *credentialbroker.Config
+	discovery       discoverySelections
 	// Release asks the workload controller to stop a running workload. Revoke
 	// and remove use it so a cut connector does not keep a materialized
 	// credential alive in a running container until the idle TTL fires.
