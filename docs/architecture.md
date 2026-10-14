@@ -292,6 +292,26 @@ are the agent surface — create goes through the ordinary routine path with
 `/watches` is the owner-facing listing (id, source, sink, last success/error,
 degraded, overflow).
 
+An event schedule can opt into `delivery=stream` (event kind plus an
+`mcp_tool` probe only). Stream schedules produce no occurrences —
+`TickSchedules` skips them and the expression stays as a dormant cadence.
+Instead the gateway's stream supervisor keeps one `streamPoll` goroutine per
+live stream schedule, reconciled every two seconds: each round re-reads the
+schedule (pause, snooze, delete or a lost grant stops the loop on live
+durable state), issues one bounded wait-call through the same read-only
+`/v1/tool-call` path under a 30s budget, and settles the returned batch
+through the identical durable pipeline — authorization, extractor, seen-set
+dedup, sink fanout and requeue all reuse the poll-mode machinery. A healthy
+round loops straight into the next wait call, so a connector wait tool like
+`wait_for_settled_message` keeps an outstanding call and batches arrive in
+seconds, not a cron minute; a blocked round (probe error, lost
+authorization, malformed body) paces with 1s-to-30s exponential backoff.
+When the subscriber gives no wait bound the hub injects one inside the call
+budget (`max_wait_ms`/`timeout` on wait-style tool names); explicit bounds
+are honored. There is still no persistent connector workload or push
+ingress — the loop is repeated bounded requests, not an open stream — but
+the connector's own pending-event state makes the gap lossless.
+
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
 OAuth and Hermes state stay in that user's named volumes. Organization documents are

@@ -2211,6 +2211,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
 	proactiveDone := make(chan struct{})
+	streamDone := g.startStreamLoops(workerCtx)
 	canaryDone := make(chan struct{})
 	go func() {
 		defer close(canaryDone)
@@ -2243,6 +2244,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-deliveryDone
 		<-controlDone
 		<-proactiveDone
+		<-streamDone
 		<-canaryDone
 		g.usageWG.Wait()
 	}()
@@ -3360,6 +3362,9 @@ func (g *Gateway) watchesCommand(user User, sender int64) string {
 			sink = "notify"
 		}
 		line := item.ScheduleID + " — " + item.Input + ", " + source + ", sink " + sink
+		if item.Delivery == "stream" {
+			line += ", stream"
+		}
 		st, err := g.spool.EventStateOf(item.ScheduleID)
 		if err == nil {
 			if !st.LastSuccess.IsZero() {
@@ -3507,6 +3512,12 @@ func (g *Gateway) toolHubCredential(userID string) (token, principalHeader strin
 // credential. An is_error result is a probe error — unknown, never a
 // compared value; a missing ToolHub config fails the probe, not the hub.
 func (g *Gateway) toolCallProbe(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
+	return g.toolCallProbeWithin(ctx, principalID, probe, 15*time.Second)
+}
+
+// toolCallProbeWithin is the bounded probe call; stream subscriptions pass a
+// larger budget so connector wait-tools can hold the call near a batch.
+func (g *Gateway) toolCallProbeWithin(ctx context.Context, principalID string, probe *WatchProbe, budget time.Duration) ([]byte, error) {
 	base := strings.TrimRight(strings.TrimSpace(g.config.ToolHubURL), "/")
 	if base == "" {
 		return nil, errors.New("tool hub unconfigured")
@@ -3519,7 +3530,7 @@ func (g *Gateway) toolCallProbe(ctx context.Context, principalID string, probe *
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/tool-call", bytes.NewReader(body))
 	if err != nil {

@@ -75,6 +75,7 @@ type Input struct {
 	DailyLimit         int      `json:"daily_limit,omitempty"`
 	MaxRetries         int      `json:"max_retries,omitempty"`
 	Sink               string   `json:"sink,omitempty"`
+	Delivery           string   `json:"delivery,omitempty"`
 	Args               string   `json:"args,omitempty"`
 }
 type Tools struct {

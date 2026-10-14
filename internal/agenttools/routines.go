@@ -22,7 +22,7 @@ var routineDescriptions = map[string]string{
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
 	"routine_pause":   "Pause an owned routine; already queued occurrences recheck its state before execution.",
 	"routine_delete":  "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
-	"watch_subscribe": "Subscribe to connector events via one projected read tool (args is a JSON object string). sink=notify sends one message per new event; sink=agent wakes the agent with the events bundled as untrusted evidence. Dedup is durable; a connector auth failure marks the watch degraded.",
+	"watch_subscribe": "Subscribe to connector events via one projected read tool (args is a JSON object string). sink=notify sends one message per new event; sink=agent wakes the agent with the events bundled as untrusted evidence. delivery=stream keeps a bounded wait-call outstanding for near-instant batches instead of polling on the cron cadence — use it for wait-style tools like a connector's message wait. Dedup is durable; a connector auth failure marks the watch degraded.",
 	"watch_list":      "List owned event subscriptions only — reminders, watchers and other routines are not included.",
 	"watch_pause":     "Pause one owned event subscription by schedule id.",
 	"watch_delete":    "Delete one owned event subscription by schedule id; this does not recall messages already sent.",
@@ -90,6 +90,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		if r.Sink != "" {
 			create["sink"] = r.Sink
+		}
+		if r.Delivery != "" {
+			create["delivery"] = r.Delivery
 		}
 		payload = create
 	case "routine_create":

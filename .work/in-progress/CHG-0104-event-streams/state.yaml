@@ -1,0 +1,18 @@
+change: CHG-0104-event-streams
+milestone: M12 — Proactive Automation (#257 follow-up: reactive delivery)
+status: in-progress
+slices:
+  S6.1-delivery-field-validation: done
+  S6.2-stream-settle-and-extract: done
+  S6.3-supervisor-loop: done
+  S6.4-agent-surface-and-docs: done
+just_check: green (85.35% own coverage; race+shuffle, vet, staticcheck, docs, actionlint)
+live_acceptance: unavailable (needs deployed connector + real account)
+notes: >
+  Stream mode = hub-owned bounded long-poll loop per event schedule through
+  the existing /v1/tool-call path (30s budget); no persistent-workload mode,
+  no push ingress. streamSupervisor reconciles every 2s (spawn/cancel/
+  respawn); streamPoll re-reads the schedule each round, injects a wait
+  bound the caller did not give, settles via settleStreamEvents, paces
+  blocked rounds 1s..30s. Connector wait tools must expose a bounded wait
+  arg and return either an event batch or an {"event": false} sentinel.

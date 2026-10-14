@@ -218,10 +218,12 @@ subscription (`watch_subscribe`) polls one of these projected read tools at
 its own schedule cadence through ToolHub's read-only `/v1/tool-call`; the
 hub deduplicates event ids in its durable seen-set, fans out deliveries or
 one bundled agent job, and marks the subscription degraded on a connector
-auth failure. Persistent connector workload lifecycle does not exist yet:
-there is no always-on push stream into the hub, so until that platform work
-lands an event-capable source is polled at the subscription's cadence and
-`requeue_event` receives only the event id, never owner content.
+auth failure. With `delivery=stream` the hub keeps one bounded wait call
+outstanding per live subscription, so `wait_for_settled_message`-class
+tools deliver settled bursts in seconds without a persistent workload;
+otherwise the source is polled at the subscription's cadence. There is
+still no always-on push ingress, and `requeue_event` receives only the
+event id or chat id, never owner content.
 
 ## Blocked bundle entries
 

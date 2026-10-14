@@ -299,6 +299,26 @@ func TestWatchSubscribeCreatesEventSchedule(t *testing.T) {
 	}
 }
 
+// watch_subscribe forwards delivery=stream so the hub supervises a bounded
+// wait-loop instead of polling on the cron cadence (CHG-0104).
+func TestWatchSubscribeForwardsDelivery(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"dm-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "watch_subscribe", Input{ID: "dm-watch", Timezone: "UTC", Expression: "* * * * *", Text: "Daniil DMs", Tool: "hub-tg-wait_for_settled_message-a", Delivery: "stream", Sink: "agent", Args: `{"chat_id":"@daniil_x"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if request["delivery"] != "stream" {
+		t.Fatalf("delivery mode lost: %v", request)
+	}
+}
+
 // watch_list/pause/delete operate only on event-kind routines: a reminder id
 // must not be pausable through the watch surface.
 func TestWatchOpsFilterEventKind(t *testing.T) {

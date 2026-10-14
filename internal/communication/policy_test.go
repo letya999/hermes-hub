@@ -67,7 +67,7 @@ func TestQuietHoursDeferDelivery(t *testing.T) {
 	if err := json.Unmarshal(b, &d); err != nil {
 		t.Fatal(err)
 	}
-	end := time.Date(now.Year(), now.Month(), now.Day(), now.Add(time.Hour).Hour(), now.Add(time.Hour).Minute(), 0, 0, time.UTC)
+	end := time.Date(now.Add(time.Hour).Year(), now.Add(time.Hour).Month(), now.Add(time.Hour).Day(), now.Add(time.Hour).Hour(), now.Add(time.Hour).Minute(), 0, 0, time.UTC)
 	if !d.NotBefore.Equal(end.UTC()) {
 		t.Fatalf("not_before = %v, want window end %v", d.NotBefore, end.UTC())
 	}

@@ -78,6 +78,18 @@ scoping, no new database/queue/framework.
    event tools join the prepared entry's `read_tools`; the persistent workload
    lifecycle they need is a connector-platform dependency (M13), documented
    not built here.
+7. **D7 Reactive delivery is a supervised bounded long-poll, not a stream.**
+   `delivery=stream` on an event schedule (`mcp_tool` probe only) produces no
+   occurrences; a gateway supervisor keeps one goroutine per live stream
+   schedule issuing repeated bounded wait-calls through the same
+   `/v1/tool-call` path — 30s budget, caller-or-injected wait bounds — and
+   settling every batch through the identical durable pipeline. This reaches
+   seconds-level latency where the connector already buffers events
+   (`wait_for_settled_message`-class tools) without a persistent-workload
+   mode or push ingress, which remain connector-platform work. Poll stays
+   the default; the stream loop re-reads its schedule each round so pause,
+   delete, snooze or a lost grant stops it on durable state, and blocked
+   rounds pace with bounded exponential backoff rather than hot-spinning.
 
 ## Alternatives
 

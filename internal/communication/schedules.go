@@ -85,7 +85,11 @@ type Schedule struct {
 	DailyLimit int `json:"daily_limit,omitempty"`
 	// Sink routes event-subscription output: "notify" fans events out to the
 	// outbox (default), "agent" bundles them into one untrusted-evidence job.
-	Sink          string    `json:"sink,omitempty"`
+	Sink string `json:"sink,omitempty"`
+	// Delivery selects how an event subscription is fed: empty/"poll" fires
+	// one occurrence per cron tick, "stream" runs a hub-owned bounded
+	// long-poll loop against the probe tool instead (no occurrences).
+	Delivery      string    `json:"delivery,omitempty"`
 	NativeCronRef string    `json:"native_cron_ref,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -429,7 +433,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		if err != nil {
 			return err
 		}
-		if now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) {
+		if now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) || item.Delivery == "stream" {
 			continue
 		}
 		loc, err := time.LoadLocation(item.Timezone)
@@ -669,6 +673,12 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	}
 	if in.Sink != "" && in.JobKind != "event" {
 		return errors.New("sink requires an event schedule")
+	}
+	if in.Delivery != "" && in.Delivery != "poll" && in.Delivery != "stream" {
+		return errors.New("invalid event delivery")
+	}
+	if in.Delivery == "stream" && (in.JobKind != "event" || in.Probe == nil || in.Probe.Kind != "mcp_tool") {
+		return errors.New("stream delivery needs an event schedule with an mcp_tool probe")
 	}
 	if in.Probe != nil {
 		if len(in.Probe.URL) > 2048 {
