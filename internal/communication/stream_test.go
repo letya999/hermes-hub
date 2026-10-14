@@ -2,14 +2,21 @@ package communication
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -30,6 +37,24 @@ func streamJob(t *testing.T) (*Spool, Job) {
 
 func streamEvent(job Job) hubruntime.ExecuteResponse {
 	return hubruntime.ExecuteResponse{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
+}
+
+func TestTerminalFailureDeliveryNamesCauseWithoutRawError(t *testing.T) {
+	for _, status := range []string{"failed", "interrupted", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			s, job := streamJob(t)
+			event := streamEvent(job)
+			event.Status, event.LastEvent, event.EventID = status, "run."+status, "terminal"
+			event.Text = "provider secret must not reach chat"
+			if err := s.RecordStreamEvent(job, event); err != nil {
+				t.Fatal(err)
+			}
+			delivery, err := s.ClaimDelivery()
+			if err != nil || delivery == nil || !strings.Contains(delivery.Text, job.ID) || !strings.Contains(delivery.Text, "run."+status) || strings.Contains(delivery.Text, "provider secret") {
+				t.Fatalf("failure must carry a safe named cause and correlation ID: %+v %v", delivery, err)
+			}
+		})
+	}
 }
 
 func TestProgressDeliveryPreservesUsefulTextAndDropsEmptyToolNoise(t *testing.T) {
@@ -61,6 +86,697 @@ func TestProgressDeliveryPreservesUsefulTextAndDropsEmptyToolNoise(t *testing.T)
 	}
 	if delivery, err := s.ClaimDelivery(); err != nil || delivery != nil {
 		t.Fatalf("empty tool progress produced spam: %+v %v", delivery, err)
+	}
+}
+
+// SPEC-0053 R2.2: progress lands in one editable status message per job —
+// later events edit the same Telegram message instead of flooding the chat.
+func TestProgressUsesSingleEditedMessage(t *testing.T) {
+	s, job := streamJob(t)
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{messageSeq: 100}
+	g.api, g.spool = fake, s
+	started := streamEvent(job)
+	started.EventID, started.LastEvent, started.Status, started.Text = "started", "run.started", "running", ""
+	if err := s.RecordStreamEvent(job, started); err != nil {
+		t.Fatal(err)
+	}
+	step := streamEvent(job)
+	step.EventID, step.LastEvent, step.Text = "tool:1", "tool.start", "MCP: шаг 1/4."
+	if err := s.RecordStreamEvent(job, step); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 || len(fake.edits) != 0 {
+		t.Fatalf("first progress must send one message, got sent=%v edits=%v", fake.sent, fake.edits)
+	}
+	step2 := streamEvent(job)
+	step2.EventID, step2.LastEvent, step2.Text = "tool:2", "tool.start", "MCP: шаг 2/4."
+	if err := s.RecordStreamEvent(job, step2); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 {
+		t.Fatalf("second progress sent a new message: %v", fake.sent)
+	}
+	if len(fake.edits) != 1 || fake.edits[0].messageID != 100 || fake.edits[0].text != "MCP: шаг 2/4." {
+		t.Fatalf("second progress must edit message 100: %v", fake.edits)
+	}
+}
+
+// SPEC-0053 R2.2: a gateway restart must reuse the persisted status receipt —
+// replayed events stay idempotent and the next update edits the same message.
+func TestStatusSurvivesGatewayRestart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	s, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "stream-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "stream-key", ChatID: 11, Text: "hello"}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{messageSeq: 100}
+	g.api, g.spool = fake, s
+	step := streamEvent(job)
+	step.EventID, step.LastEvent, step.Text = "tool:1", "tool.start", "MCP: шаг 1/4."
+	if err := s.RecordStreamEvent(job, step); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 {
+		t.Fatalf("status send lost: %v", fake.sent)
+	}
+	reopened, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2.api, g2.spool = fake, reopened
+	step2 := streamEvent(job)
+	step2.EventID, step2.LastEvent, step2.Text = "tool:2", "tool.start", "MCP: шаг 2/4."
+	if err := reopened.RecordStreamEvent(job, step2); err != nil {
+		t.Fatal(err)
+	}
+	g2.deliverOne(context.Background())
+	if len(fake.sent) != 1 {
+		t.Fatalf("restart produced a duplicate message: %v", fake.sent)
+	}
+	if len(fake.edits) != 1 || fake.edits[0].messageID != 100 || fake.edits[0].text != "MCP: шаг 2/4." {
+		t.Fatalf("post-restart progress must edit message 100: %v", fake.edits)
+	}
+}
+
+// SPEC-0053 R2.2: status edits are rate-limited to one per two seconds per
+// chat, and a burst of updates collapses to the newest text instead of a
+// staircase of stale edits.
+func TestProgressEditRateLimited(t *testing.T) {
+	s, job := streamJob(t)
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{messageSeq: 100}
+	g.api, g.spool = fake, s
+	now := time.Unix(1_700_000_000, 0)
+	g.now = func() time.Time { return now }
+	step := streamEvent(job)
+	step.EventID, step.LastEvent, step.Text = "tool:1", "tool.start", "MCP: шаг 1/4."
+	if err := s.RecordStreamEvent(job, step); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	for i, text := range []string{"MCP: шаг 2/4.", "MCP: шаг 3/4."} {
+		ev := streamEvent(job)
+		ev.EventID, ev.LastEvent, ev.Text = fmt.Sprintf("tool:%d", i+2), "tool.start", text
+		if err := s.RecordStreamEvent(job, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.deliverOne(context.Background())
+	if len(fake.edits) != 1 || fake.edits[0].text != "MCP: шаг 3/4." {
+		t.Fatalf("burst must collapse to one newest edit: %v", fake.edits)
+	}
+	ev := streamEvent(job)
+	ev.EventID, ev.LastEvent, ev.Text = "tool:4", "tool.start", "MCP: шаг 4/4."
+	if err := s.RecordStreamEvent(job, ev); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.edits) != 1 {
+		t.Fatalf("edit inside the 2s window must be deferred: %v", fake.edits)
+	}
+	now = now.Add(2 * time.Second)
+	g.deliverOne(context.Background())
+	if len(fake.edits) != 2 || fake.edits[1].text != "MCP: шаг 4/4." {
+		t.Fatalf("deferred edit must land after the window: %v", fake.edits)
+	}
+}
+
+// SPEC-0053 R2.2: the final response retires the status message — the chat
+// ends with one answer and no stale progress line, and late events cannot
+// resurrect it.
+func TestStatusMessageFinalizedOnResponse(t *testing.T) {
+	s, job := streamJob(t)
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{messageSeq: 100}
+	g.api, g.spool = fake, s
+	step := streamEvent(job)
+	step.EventID, step.LastEvent, step.Text = "tool:1", "tool.start", "MCP: шаг 1/4."
+	if err := s.RecordStreamEvent(job, step); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 {
+		t.Fatalf("status send lost: %v", fake.sent)
+	}
+	done := streamEvent(job)
+	done.EventID, done.Status, done.LastEvent, done.Text = "done", "completed", "run.completed", "Готово."
+	if err := s.RecordStreamEvent(job, done); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.deleted) != 1 || fake.deleted[0] != 100 {
+		t.Fatalf("status message must be deleted on final response: %v", fake.deleted)
+	}
+	late := streamEvent(job)
+	late.EventID, late.LastEvent, late.Text = "tool:late", "tool.start", "MCP: поздний шаг."
+	// A late non-terminal event may be rejected by stream validation or,
+	// if it does reach the spool, must die on the closed status receipt.
+	_ = s.RecordStreamEvent(job, late)
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 2 || len(fake.edits) != 0 {
+		t.Fatalf("late progress resurrected the status: sent=%v edits=%v", fake.sent, fake.edits)
+	}
+}
+
+// SPEC-0053 R2.2: a failed status edit must not bounce into a new send — the
+// failed record parks and the next event edits the same message again, so the
+// chat never gains a duplicate.
+func TestEditFailureFallsBackWithoutDuplicates(t *testing.T) {
+	s, job := streamJob(t)
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{messageSeq: 100}
+	g.api, g.spool = fake, s
+	step := streamEvent(job)
+	step.EventID, step.LastEvent, step.Text = "tool:1", "tool.start", "MCP: шаг 1/4."
+	if err := s.RecordStreamEvent(job, step); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	fake.err = errors.New("edit failed")
+	step2 := streamEvent(job)
+	step2.EventID, step2.LastEvent, step2.Text = "tool:2", "tool.start", "MCP: шаг 2/4."
+	if err := s.RecordStreamEvent(job, step2); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	fake.err = nil
+	if len(fake.sent) != 1 {
+		t.Fatalf("failed edit produced a duplicate message: %v", fake.sent)
+	}
+	step3 := streamEvent(job)
+	step3.EventID, step3.LastEvent, step3.Text = "tool:3", "tool.start", "MCP: шаг 3/4."
+	if err := s.RecordStreamEvent(job, step3); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 {
+		t.Fatalf("recovery sent a new message: %v", fake.sent)
+	}
+	if len(fake.edits) != 2 || fake.edits[1].messageID != 100 || fake.edits[1].text != "MCP: шаг 3/4." {
+		t.Fatalf("recovery must edit message 100 again: %v", fake.edits)
+	}
+}
+
+// SPEC-0053 R2.2: when the status send itself was uncertain, the spool must
+// not blind-resend a fresh status message — a possibly-delivered message can
+// never be duplicated, only abandoned.
+func TestUncertainStatusSendIsNotResent(t *testing.T) {
+	s, job := streamJob(t)
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{messageSeq: 100, err: errors.New("send timeout")}
+	g.api, g.spool = fake, s
+	step := streamEvent(job)
+	step.EventID, step.LastEvent, step.Text = "tool:1", "tool.start", "MCP: шаг 1/4."
+	if err := s.RecordStreamEvent(job, step); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	fake.err = nil
+	step2 := streamEvent(job)
+	step2.EventID, step2.LastEvent, step2.Text = "tool:2", "tool.start", "MCP: шаг 2/4."
+	if err := s.RecordStreamEvent(job, step2); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 0 {
+		t.Fatalf("uncertain status send was retried: %v", fake.sent)
+	}
+	if len(fake.edits) != 0 {
+		t.Fatalf("no message ID was persisted, nothing may be edited: %v", fake.edits)
+	}
+}
+
+// SPEC-0053 R2.3: enqueue and completion wake the loops through a notify
+// channel instead of relying on the fallback poll.
+func TestEnqueueWakesWorkerWithoutPoll(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain := func() {
+		for {
+			select {
+			case <-s.Notify():
+			default:
+				return
+			}
+		}
+	}
+	expectWake := func(what string) {
+		t.Helper()
+		select {
+		case <-s.Notify():
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not signal the spool", what)
+		}
+	}
+	drain()
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "wake-job", OrganizationID: "personal", UserID: "alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "wake-key", ChatID: 11, Text: "hello"}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	expectWake("job enqueue")
+	drain()
+	claimed, err := s.ClaimJob()
+	if err != nil || claimed == nil {
+		t.Fatalf("job was not claimable: %v %v", claimed, err)
+	}
+	if err := s.CompleteJob(claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	expectWake("job completion")
+	drain()
+	if err := s.EnqueueDelivery(Delivery{ID: "wake-delivery", Channel: "telegram_bot", ChatID: 11, Text: "x", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	expectWake("delivery enqueue")
+	drain()
+	if err := s.UpsertStatusDelivery(Delivery{ID: "job-wake-job-status", Channel: "telegram_bot", ChatID: 11, Text: "progress", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	expectWake("status upsert")
+}
+
+// SPEC-0053 R2.3: the worker loop selects on the notify channel — a job
+// enqueued while the loop idles is claimed promptly, not on the next
+// one-second fallback tick.
+func TestWorkerDrainsEnqueuedJobOnNotify(t *testing.T) {
+	s, job := streamJob(t)
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api, g.spool, g.runner = &fakeAPI{}, s, &fakeRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); g.worker(ctx) }()
+	defer func() { cancel(); wg.Wait() }()
+	waitDone := func(id string, bound time.Duration) {
+		t.Helper()
+		deadline := time.Now().Add(bound)
+		for {
+			if m, found, err := s.Mapping(id); err == nil && found && m.Status == "completed" {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("job %s not completed within %v", id, bound)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitDone(job.ID, 2*time.Second)
+	time.Sleep(300 * time.Millisecond) // the loop is parked in select now
+	second := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "wake-job-2", OrganizationID: "personal", UserID: "alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "wake-key-2", ChatID: 11, Text: "again"}
+	if _, err := s.Enqueue(second); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(second.ID, 500*time.Millisecond)
+}
+
+// SPEC-0053 R2.3: with nothing to do the worker sleeps — a ~350ms idle window
+// must not show a staircase of pending-job scans.
+func TestWorkerIdlesBetweenSignals(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api, g.spool, g.runner = &fakeAPI{}, s, &fakeRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.worker(ctx)
+	time.Sleep(150 * time.Millisecond) // startup pass settles
+	before := s.ClaimPolls()
+	time.Sleep(350 * time.Millisecond)
+	if polls := s.ClaimPolls() - before; polls > 1 {
+		t.Fatalf("idle worker polled %d times in 350ms; want at most one fallback tick", polls)
+	}
+}
+
+// SPEC-0053 R2.3: the outbox loop is event-driven — an enqueued delivery
+// leaves promptly on the notify signal while an idle loop barely scans.
+func TestDeliveryLoopDrainsOnNotify(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.spool = fake, s
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.deliveryLoop(ctx)
+	time.Sleep(150 * time.Millisecond) // startup pass settles
+	before := s.DeliverPolls()
+	time.Sleep(350 * time.Millisecond)
+	if polls := s.DeliverPolls() - before; polls > 1 {
+		t.Fatalf("idle delivery loop polled %d times in 350ms; want at most one fallback tick", polls)
+	}
+	if err := s.EnqueueDelivery(Delivery{ID: "notify-delivery", Channel: "telegram_bot", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		fake.mu.Lock()
+		sent := len(fake.sent)
+		fake.mu.Unlock()
+		if sent > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("enqueued delivery not sent promptly")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// SPEC-0053 R2.3: a control request wakes the control loop instead of waiting
+// for the fallback tick, and an idle loop stops scanning every mapping.
+func TestControlLoopWakesOnCancelRequest(t *testing.T) {
+	var controlCalls atomic.Int64
+	rt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		controlCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": "stream-job", "status": "cancelled"})
+	}))
+	defer rt.Close()
+	s, job := streamJob(t)
+	config := testConfig(t)
+	config.RuntimeURL, config.RuntimeAuth = rt.URL, "token"
+	g, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api, g.spool = &fakeAPI{}, s
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.controlLoop(ctx)
+	}()
+	defer func() { cancel(); <-done }()
+	time.Sleep(150 * time.Millisecond)
+	before := g.controlPolls.Load()
+	time.Sleep(350 * time.Millisecond)
+	if polls := g.controlPolls.Load() - before; polls > 1 {
+		t.Fatalf("idle control loop scanned %d times in 350ms; want at most one fallback tick", polls)
+	}
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RequestCancel(job.ID, job.Envelope); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for controlCalls.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("cancel request did not wake the control loop")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// SPEC-0053 R2.3: mappings written before the by-key index existed get
+// indexed at startup; lookups then resolve through the index, not a scan.
+func TestIndexBuiltForLegacyMappings(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	s, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "legacy-job", OrganizationID: "personal", UserID: "alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "legacy-key", ChatID: 11, Text: "hi"}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a pre-index spool: drop the index entry and reopen.
+	entries, err := os.ReadDir(filepath.Join(root, "mappings", "by-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if err := os.Remove(filepath.Join(root, "mappings", "by-key", entry.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopened, err := OpenSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.recover(); err != nil {
+		t.Fatal(err)
+	}
+	key := sha256.Sum256([]byte("legacy-key"))
+	indexPath := filepath.Join(root, "mappings", "by-key", hex.EncodeToString(key[:])+".json")
+	if _, err := os.Stat(indexPath); err != nil {
+		t.Fatalf("startup did not rebuild the idempotency index: %v", err)
+	}
+	if _, found, err := reopened.findIdempotencyLocked("legacy-key"); err != nil || !found {
+		t.Fatalf("indexed lookup failed: found=%v err=%v", found, err)
+	}
+}
+
+// SPEC-0053 R2.3: idempotency resolution must stay constant-time as the
+// mapping set grows — the by-key index replaces the linear scan.
+func BenchmarkIdempotencyLookup10k(b *testing.B) {
+	root := filepath.Join(b.TempDir(), "spool")
+	s, err := NewSpool(root)
+	if err != nil {
+		b.Fatal(err)
+	}
+	target := ""
+	for i := 0; i < 10_000; i++ {
+		key := fmt.Sprintf("key-%05d", i)
+		mapping := JobMapping{JobID: fmt.Sprintf("job-%05d", i), IdempotencyKey: key, Status: "completed"}
+		s.mu.Lock()
+		if err := s.writeMappingLocked(mapping); err != nil {
+			s.mu.Unlock()
+			b.Fatal(err)
+		}
+		s.mu.Unlock()
+		target = key
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.mu.Lock()
+		mapping, found, err := s.findIdempotencyLocked(target)
+		s.mu.Unlock()
+		if err != nil || !found || mapping.JobID != "job-09999" {
+			b.Fatalf("lookup failed: found=%v err=%v", found, err)
+		}
+	}
+}
+
+// SPEC-0053 R2.3: the notify channel makes enqueue->claim latency
+// sub-millisecond instead of bounded by the idle poll cadence.
+func BenchmarkEnqueueToClaimLatency(b *testing.B) {
+	root := filepath.Join(b.TempDir(), "spool")
+	s, err := NewSpool(root)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		job := Job{ID: fmt.Sprintf("job-%d", i), ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", ChatID: 11, IdempotencyKey: fmt.Sprintf("key-%d", i), Text: "hello"}
+		if _, err := s.Enqueue(job); err != nil {
+			b.Fatal(err)
+		}
+		select {
+		case <-s.Notify():
+		case <-time.After(time.Second):
+			b.Fatal("enqueue did not signal")
+		}
+		claimed, err := s.ClaimJob()
+		if err != nil || claimed == nil {
+			b.Fatalf("claim failed: %v", err)
+		}
+		_ = s.CompleteJob(claimed.ID)
+	}
+}
+
+// SPEC-0053 R2.3: retention drops aged terminal records but never touches
+// live work — non-terminal mappings, pending jobs, and open approvals stay.
+func TestCompactionKeepsNonTerminal(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	s, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-400 * time.Hour)
+	s.mu.Lock()
+	for _, m := range []JobMapping{
+		{JobID: "old-done", IdempotencyKey: "k-old", Status: "completed"},
+		{JobID: "old-running", IdempotencyKey: "k-run", Status: "running"},
+		{JobID: "old-approval", IdempotencyKey: "k-appr", Status: "failed", ApprovalState: "pending"},
+	} {
+		if err := s.writeMappingLocked(m); err != nil {
+			s.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range []string{"old-done", "old-running", "old-approval"} {
+		_ = os.Chtimes(s.mappingPath(id), old, old)
+	}
+	if err := atomicJSON(filepath.Join(root, "done", "old-job.json"), Job{ID: "old-job"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(filepath.Join(root, "done", "old-job.json"), old, old)
+	if err := atomicJSON(filepath.Join(root, "pending", "new-job.json"), Job{ID: "new-job"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(filepath.Join(root, "pending", "new-job.json"), old, old)
+	if err := s.Compact(time.Now(), 336*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.mappingPath("old-done")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("aged terminal mapping survived compaction")
+	}
+	if _, err := os.Stat(s.idempotencyIndexPath("k-old")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stale idempotency index entry survived compaction")
+	}
+	for _, id := range []string{"old-running", "old-approval"} {
+		if _, err := os.Stat(s.mappingPath(id)); err != nil {
+			t.Fatalf("live mapping %s compacted: %v", id, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "done", "old-job.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("aged done record survived compaction")
+	}
+	if _, err := os.Stat(filepath.Join(root, "pending", "new-job.json")); err != nil {
+		t.Fatal("pending job compacted")
+	}
+}
+
+// SPEC-0053 R2.3: an events receipt whose delivery is still in flight is live
+// state, not history — compaction must keep it.
+func TestCompactionKeepsPendingReceipts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	s, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-400 * time.Hour)
+	receipt := func(name, deliveryID string) string {
+		t.Helper()
+		path := filepath.Join(root, "events", name+".json")
+		if err := atomicJSON(path, streamReceipt{JobID: "job-x", Position: 1, Event: hubruntime.ExecuteResponse{JobID: "job-x", EventID: name, Status: "running", LastEvent: "run.started"}, Delivery: &Delivery{ID: deliveryID}}); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Chtimes(path, old, old)
+		return path
+	}
+	kept := receipt("live", "job-x-event-live")
+	dropped := receipt("stale", "job-x-event-stale")
+	if err := atomicJSON(filepath.Join(root, "outbox", "pending", "job-x-event-live.json"), Delivery{ID: "job-x-event-live", Channel: "telegram_bot", ChatID: 11, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Compact(time.Now(), 336*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatal("receipt backing a pending delivery was compacted")
+	}
+	if _, err := os.Stat(dropped); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("unreferenced aged receipt survived compaction")
+	}
+}
+
+// SPEC-0053 R2.3: retention runs on the control loop's cadence — aged
+// terminal records disappear without an operator stepping in.
+func TestControlLoopCompactsAgedTerminal(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	s, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	if err := s.writeMappingLocked(JobMapping{JobID: "aged-job", IdempotencyKey: "k-aged", Status: "completed"}); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+	old := time.Now().Add(-400 * time.Hour)
+	_ = os.Chtimes(s.mappingPath("aged-job"), old, old)
+	config := testConfig(t)
+	config.SpoolRetention = time.Hour
+	g, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api, g.spool = &fakeAPI{}, s
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.controlLoop(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(s.mappingPath("aged-job")); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("control loop did not compact the aged terminal mapping")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Keepalive frames are transport-only: they must survive validation yet never
+// touch the durable mapping or the outbox.
+func TestHeartbeatNotPersistedOrDelivered(t *testing.T) {
+	s, job := streamJob(t)
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := hubruntime.ExecuteResponse{JobID: job.ID, Status: "running", LastEvent: "run.heartbeat"}
+	if err := s.RecordStreamEvent(job, heartbeat); err != nil {
+		t.Fatalf("keepalive rejected: %v", err)
+	}
+	mapping, found, err := s.Mapping(job.ID)
+	if err != nil || !found {
+		t.Fatal(err)
+	}
+	if mapping.EventPosition != 1 || mapping.LastEventID != "admitted" || mapping.Status != "running" {
+		t.Fatalf("heartbeat mutated durable state: %+v", mapping)
+	}
+	if delivery, err := s.ClaimDelivery(); err != nil || delivery != nil {
+		t.Fatalf("keepalive produced a delivery: %+v %v", delivery, err)
 	}
 }
 
@@ -351,6 +1067,63 @@ func TestStreamRejectsChangedBindingAndBoundsBeforeReceipt(t *testing.T) {
 	}
 }
 
+// A replayed uncertain record is still uncertain — the caller keeps
+// re-observing instead of treating the durable replay as malformed.
+func TestReplayedUncertainStaysUncertain(t *testing.T) {
+	s, job := streamJob(t)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "uncertain", LastEvent: "run.unknown"})
+	}))
+	defer api.Close()
+	outcome, err := (HTTPRunner{URL: api.URL, Auth: "secret", Spool: s}).RunOutcome(context.Background(), job)
+	if !errors.Is(err, ErrUncertain) || outcome.RunID != "run-1" {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+}
+
+// A heartbeat frame carries no run identity. When the stream dies after
+// admission, the uncertain outcome must still hold the bound run so recovery
+// re-observes the original run instead of treating the job as never admitted.
+func TestHeartbeatDoesNotClobberBoundRunIdentity(t *testing.T) {
+	s, job := streamJob(t)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
+		_ = json.NewEncoder(w).Encode(streamEvent(job))
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: job.ID, Status: "running", LastEvent: "run.heartbeat"})
+	}))
+	defer api.Close()
+	outcome, err := (HTTPRunner{URL: api.URL, Auth: "secret", Spool: s}).RunOutcome(context.Background(), job)
+	if !errors.Is(err, ErrUncertain) || outcome.RunID != "run-1" {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+}
+
+// A run stream that stops emitting must not pin the worker for the whole run
+// budget: the idle deadline cuts the hop and the job goes uncertain.
+func TestRunOutcomeStreamIdleDeadlineCancels(t *testing.T) {
+	s, job := streamJob(t)
+	t.Setenv("HUB_STREAM_IDLE", "50ms")
+	release := make(chan struct{})
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
+		_ = json.NewEncoder(w).Encode(streamEvent(job))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+	}))
+	defer api.Close()
+	defer close(release)
+	start := time.Now()
+	outcome, err := (HTTPRunner{URL: api.URL, Auth: "secret", Spool: s, Limit: 30 * time.Second}).RunOutcome(context.Background(), job)
+	if err == nil || outcome.Status != "uncertain" {
+		t.Fatalf("silent stream outcome=%+v err=%v", outcome, err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("idle stream pinned the worker %v", elapsed)
+	}
+}
+
 func TestHTTPRunnerConsumesDurableStream(t *testing.T) {
 	s, job := streamJob(t)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -628,11 +1401,16 @@ func TestDeliverOneSendsApprovalKeyboard(t *testing.T) {
 	}
 	fake := &fakeAPI{}
 	g.api = fake
-	if err := g.spool.EnqueueDelivery(Delivery{ID: "approve-me", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "Подтвердите.", Buttons: []DeliveryButton{{Text: "once", Data: "a:1"}, {Text: "deny", Data: "a:2"}}}); err != nil {
+	s, job := streamJob(t)
+	g.spool = s
+	event := streamEvent(job)
+	event.Status, event.LastEvent, event.EventID, event.ApprovalID = "waiting_for_approval", "approval.request", "approval:b", "b"
+	event.ApprovalChoices = []string{"once", "deny"}
+	if err := s.RecordStreamEvent(job, event); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
-	if len(fake.keyboards) != 1 || len(fake.keyboards[0]) != 2 || fake.keyboards[0][0].Data != "a:1" {
+	if len(fake.keyboards) != 1 || len(fake.keyboards[0]) != 2 || !strings.HasPrefix(fake.keyboards[0][0].Data, "a:") {
 		t.Fatalf("keyboard lost: %+v (plain sent: %v)", fake.keyboards, fake.sent)
 	}
 }

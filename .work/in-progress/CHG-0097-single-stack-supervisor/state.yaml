@@ -1,0 +1,25 @@
+schema: 1
+change: CHG-0097
+title: One Docker stack without a Windows supervisor service
+status: verified-live
+phase: accepted
+updated: 2026-10-14
+spec: SPEC-0053
+requirements: [R4]
+depends_on: [CHG-0095, CHG-0096]
+owner_instruction: Keep one main Docker stack and on-demand user runtimes; remove session debris and unnecessary Windows services.
+validation:
+  docker: restored_engine_29_4_3_socket_directories_preserved
+  source: just_check_passed_85_33_percent_with_canary_tool_metadata_and_idle_scan
+  windows: legacy_mcp_hub_and_supervisor_tasks_removed_backups_saved
+  container_supervisor: authenticated_health_managed_wake_and_restart_adoption_passed
+  managed_idle: runtime_and_control_relay_reaped_after_ttl_without_user_data_loss
+  final_core_control: deployed_healthy
+  missing_idle_recovery: live_stopped_then_new_gen_292_ready_zero_leases_no_host_ports
+  cleanup: just_docker_clean_passed_six_project_images_twelve_running_containers
+remaining: []
+cleanup:
+  stopped_fixture_containers_removed: 5
+  unused_synthetic_fixture_volumes_removed: 40
+  user_data_preserved: true
+  owner_gateway_restored_during_final_build: true

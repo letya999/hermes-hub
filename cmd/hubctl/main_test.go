@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,7 +13,18 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/supervisor"
 )
+
+// hubctl up shares the supervisor's warm-retention default: bare flags must
+// keep 30 minutes, not the old five.
+func TestWarmTTLFlagDefault(t *testing.T) {
+	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	ttl := warmTTLFlag(fs)
+	if *ttl != supervisor.DefaultWarmTTL {
+		t.Fatalf("warm-ttl default=%s, want %s", *ttl, supervisor.DefaultWarmTTL)
+	}
+}
 
 func TestCLIWorkflow(t *testing.T) {
 	ctx := context.Background()
@@ -334,6 +346,21 @@ func TestCLISupervisorLifecycle(t *testing.T) {
 	cancel()
 	if err := run(ctx, []string{"supervisor", "--spaces", root, "--supervisor-auth", "secret", "--supervisor-listen", "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The supervisor subcommand shares the control-plane boundary: a wildcard
+// listen is refused without --supervisor-allow-wildcard-listen and binds with
+// it — the enforcement lives in Serve, the flag only opts in.
+func TestSupervisorWildcardListenRequiresOptInFlag(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := run(ctx, []string{"supervisor", "--spaces", root, "--supervisor-auth", "secret", "--supervisor-listen", "0.0.0.0:0"}); err == nil {
+		t.Fatal("wildcard listen accepted without opt-in")
+	}
+	if err := run(ctx, []string{"supervisor", "--spaces", root, "--supervisor-auth", "secret", "--supervisor-listen", "0.0.0.0:0", "--supervisor-allow-wildcard-listen"}); err != nil {
+		t.Fatalf("wildcard listen with opt-in rejected: %v", err)
 	}
 }
 

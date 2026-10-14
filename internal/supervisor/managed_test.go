@@ -113,6 +113,38 @@ func TestManagedRunArgsUseIsolatedAgentNetwork(t *testing.T) {
 	}
 }
 
+// SPEC-0053 R1.8: managed runtimes mount the rendered effective SOUL at
+// /state/hermes/SOUL.md — the raw persona alone is not what Hermes reads.
+func TestManagedRunArgsMountsEffectiveSoul(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	if err := os.MkdirAll(filepath.Join(root, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	effective := filepath.Join(root, "generated", "soul-effective.prod.md")
+	if err := os.WriteFile(effective, []byte("persona\ncontract"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SOUL.md"), []byte("persona"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(bound, "hub-test-container", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if !slices.Contains(args, "type=bind,src="+effective+",dst=/state/hermes/SOUL.md,readonly") {
+		t.Fatalf("managed run args missing effective SOUL mount: %s", joined)
+	}
+	if strings.Contains(joined, "src="+filepath.Join(root, "SOUL.md")+",dst=/state/hermes/SOUL.md") {
+		t.Fatalf("managed run args mount the raw persona as the agent SOUL: %s", joined)
+	}
+}
+
 func TestManagedNormalizeCreatesSeparateStateAndRejectsMissingEnv(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)

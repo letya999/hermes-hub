@@ -1,6 +1,38 @@
 package agenttools
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func TestRoutineDiscoveryExplainsSameDeterministicContract(t *testing.T) {
+	client, close := connectHub(t, fixture(t))
+	defer close()
+	list, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := map[string]string{}
+	for _, tool := range HubToolsDefinition().Tools {
+		projected[tool.Name] = tool.Description
+	}
+	for _, tool := range list.Tools {
+		if !strings.HasPrefix(tool.Name, "routine_") {
+			continue
+		}
+		if tool.Description != projected[tool.Name] {
+			t.Errorf("%s metadata differs across transports", tool.Name)
+		}
+		if tool.Name == "routine_create" {
+			for _, token := range []string{"after:", "baseline", "old/new", "capture", "never wake"} {
+				if !strings.Contains(tool.Description, token) {
+					t.Errorf("routine_create missing %q", token)
+				}
+			}
+		}
+	}
+}
 
 func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 	d := HubToolsDefinition()

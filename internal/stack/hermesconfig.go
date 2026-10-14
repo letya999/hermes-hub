@@ -64,42 +64,35 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 	if err := os.MkdirAll(filepath.Dir(destPath), 0770); err != nil {
 		return err
 	}
+	// Replace host-owned files rather than chmod them from an unprivileged
+	// controller; failed validation must leave the previous revision intact.
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), ".hermes-effective-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(name, body, 0600); err != nil {
+		return err
+	}
+	if err := ApplyHermesConfig(name, opts); err != nil {
+		return err
+	}
 	if opts.Managed {
-		// Publish a validated revision atomically. A rejected edit must not
-		// leave half-written effective YAML for a later runtime restart.
-		tmp, err := os.CreateTemp(filepath.Dir(destPath), ".hermes-managed-*")
-		if err != nil {
-			return err
-		}
-		name := tmp.Name()
-		defer os.Remove(name)
-		if err := tmp.Close(); err != nil {
-			return err
-		}
-		if err := os.WriteFile(name, body, 0600); err != nil {
-			return err
-		}
-		if err := ApplyHermesConfig(name, opts); err != nil {
-			return err
-		}
 		if err := applySelfSettings(name, opts); err != nil {
 			return err
 		}
-		if err := os.Chmod(name, 0644); err != nil {
-			return err
-		}
-		return os.Rename(name, destPath)
-	}
-	if err := os.WriteFile(destPath, body, 0660); err != nil {
-		return err
-	}
-	if err := ApplyHermesConfig(destPath, opts); err != nil {
-		return err
 	}
 	// The rendered file is bind-mounted into the runtime container: on Linux
 	// hosts the file keeps the host uid, so it must be world-readable for the
 	// container's agent uid (10001). Contents hold endpoint names, no secrets.
-	return os.Chmod(destPath, 0644)
+	if err := os.Chmod(name, 0644); err != nil {
+		return err
+	}
+	return os.Rename(name, destPath)
 }
 
 // ApplyHermesConfig rewrites the effective config in place: self-service MCP
@@ -120,8 +113,51 @@ func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
 		if err := applySelfServicesFrom(configPath, opts.SelfServicesPath); err != nil {
 			return err
 		}
+		if err := applyHubCommunicationConfig(configPath); err != nil {
+			return err
+		}
 	}
 	return applyToolHubConfigWith(configPath, opts)
+}
+
+func hubCommunicationEnv() M {
+	e := M{"HUB_COMMUNICATION_CONTROL_URL": "${HUB_COMMUNICATION_CONTROL_URL}", "HUB_COMMUNICATION_AUTH": "${HUB_RUNTIME_AUTH}", "OPENAI_API_KEY": "${OPENAI_API_KEY}", "HUB_HERMES_CONFIG": "/state/hermes/config.yaml"}
+	for _, key := range []string{"HUB_PRINCIPAL_ID", "HUB_USER_ID", "HUB_CONTEXT_ID", "HUB_RUNTIME_ID", "HUB_POLICY_VERSION", "HUB_TOOL_POLICY", "HUB_TOOLS_RO", "HUB_ORG_SCOPED", "HUB_ORG_ACTIONS", "HUB_FEATURES", "HUB_DEFER_RUNTIME_RESTART"} {
+		e[key] = "${" + key + "}"
+	}
+	return e
+}
+
+func applyHubCommunicationConfig(configPath string) error {
+	body, err := os.ReadFile(configPath) // #nosec G304 -- operator-owned materialized configuration.
+	if err != nil {
+		return err
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal(body, &config); err != nil {
+		return err
+	}
+	servers, _ := config["mcp_servers"].(map[string]any)
+	hub, ok := servers["hub"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	e, ok := hub["env"].(map[string]any)
+	if !ok {
+		e = map[string]any{}
+		hub["env"] = e
+	}
+	for key, value := range hubCommunicationEnv() {
+		e[key] = value
+	}
+	// HUB_HERMES_CONFIG stays the container mount path from
+	// hubCommunicationEnv: the hub child runs inside the runtime container
+	// and cannot resolve this host-side materialization path.
+	updated, err := yaml.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, updated, 0660)
 }
 
 // The selected model and timezone may vary, but capability-bearing fields

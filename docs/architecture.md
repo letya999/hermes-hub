@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 ---
 # Architecture
 
@@ -36,12 +36,14 @@ complete tuples at fixed revisions; a policy update invalidates old profiles.
 Human consent, runtime provisioning, unified local routing and execution isolation are
 still open. See the current limits in [operations](operations.md).
 
-The managed Compose candidate assigns each user/environment an internal agent
-network. Hermes reaches ToolHub and a per-user model relay there; the relay
-forwards only chat completions for the selected model to CLIProxy on the shared control network.
+Managed Compose assigns each user/environment an internal agent network.
+Hermes reaches ToolHub and a per-user model relay there. The ToolHub relay
+exposes MCP plus the caller-scoped connector inventory used by readiness;
+the model relay forwards chat completions only for the selected model and
+returns only that model from CLIProxy's read-only catalog.
 CLIProxy, broker and sibling runtimes are not directly attached to the agent
-network. Managed launch still refuses until supervised network lifecycle,
-immutable extension content and private executors are proven in real containers.
+network. Managed launch requires supervised network lifecycle, immutable
+extension content and private executors.
 
 M5 stage-2 Calendar and Slack data calls use opt-in stateless `provider-api`
 definitions behind the same ToolHub authorization/injection/audit gateway.
@@ -205,10 +207,10 @@ multiple users, organizations and channels explicit without adding external IAM 
 
 [ADR-0014](adr/ADR-0014-scale-to-zero-context-runtimes.md) replaces the proposed
 permanently resident per-user compute with one warm runtime per active execution
-context. A host-side Go supervisor receives the trusted job envelope, deduplicates
+context. A Go supervisor receives the trusted job envelope, deduplicates
 starts by `(principal_id, context_id, runtime mode)`, launches the pinned runtime with
 only that context's mounts and waits for authenticated Hermes readiness. The runtime
-is reused while busy and for five minutes after its final lease by default, then its
+is reused while busy and for thirty minutes after its final lease by default, then its
 compute is stopped while the context home remains intact.
 
 The communication hub and supervisor remain small always-on control-plane services.
@@ -216,6 +218,19 @@ The communication hub has no Docker authority or scope mounts; the supervisor ha
 channel credential or authority to derive identity from message content. Registered
 users do not create resident runtimes. Reconciliation restores only contexts with
 runnable work, due routines, pending approvals or explicit always-on leases.
+
+Execution selection `http://supervisor:8876` renders the supervisor in the existing
+control image within the main Compose stack. Its trusted spaces/Docker access
+remains separate from user runtimes. Container mode uses private runtime/control
+relay DNS and translates only bind sources contained by the configured spaces
+root. Host mode remains available; writers must never overlap during migration.
+See [ADR-0040](adr/ADR-0040-single-stack-supervisor.md).
+
+The communication spool wakes workers after durable changes and retains a
+one-second safety tick. Its control loop indexes nonterminal mappings, updates
+that index after successful durable writes, and rebuilds it on reopen. Each
+indexed mapping is reread under the spool lock before lifecycle decisions;
+terminal history does not need to be decoded on every control tick.
 
 Routine definitions and delivery targets are durable hub records. A due occurrence
 becomes the same authenticated, idempotent job used for interactive work and wakes the

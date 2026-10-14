@@ -607,7 +607,9 @@ func TestDueOccurrenceSurvivesRestartAndEnqueuesExactlyOneOrdinaryJob(t *testing
 	}
 	wg.Wait()
 	job, err := s.ClaimJob()
-	if err != nil || job == nil || job.Trigger != "cron" || job.ID != occurrenceID(o) || job.Envelope != o.Job.Envelope {
+	wantEnv := o.Job.Envelope
+	wantEnv.ConversationID = routineConversation(o.ScheduleID)
+	if err != nil || job == nil || job.Trigger != "cron" || job.ID != occurrenceID(o) || job.Envelope != wantEnv {
 		t.Fatalf("ordinary job: %+v %v", job, err)
 	}
 	if extra, err := s.ClaimJob(); err != nil || extra != nil {

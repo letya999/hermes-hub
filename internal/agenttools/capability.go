@@ -33,7 +33,7 @@ func HubToolsDefinition() toolhub.ToolDefinition {
 	return toolhub.ToolDefinition{
 		Schema:       toolhub.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "1.2.0",
+		Version:      "1.3.0",
 		Transport:    toolhub.AgentTools,
 		Source:       toolhub.DefinitionSource{},
 		Workload: toolhub.WorkloadPolicy{
@@ -65,12 +65,12 @@ func HubToolsDefinition() toolhub.ToolDefinition {
 			// restart-scheduled application. No arbitrary config writes.
 			tool("settings_get", "settings.read", "Show runtime self-setting overrides: the manageable key allowlist, current overrides and their effective values. Secret values are never shown.", toolhub.ReadEffect, use("read", "settings"), opt("key")),
 			tool("settings_set", "settings.write", "Set one manageable runtime setting or reset it to the rendered default. Applies after the scheduled runtime restart.", toolhub.WriteEffect, use("write", "settings"), str("key"), opt("value")),
-			tool("routine_create", "routines.create", "Create a scheduled routine on this runtime. kind=reminder delivers the text directly; kind=script runs the text as a bounded Starlark script (emit() output only); kind=watcher polls url+regex and notifies on change; kind=check delivers only when the probed value matches expect (changed|unchanged) since creation; kind=digest sends one aggregated message of changed watches. Watcher, check, script, reminder and digest never wake an agent.", toolhub.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("notify_mode"), arg("source_ids", "array", false)),
-			tool("routine_list", "routines.list", "List routines configured on this runtime.", toolhub.ReadEffect, use("list", "routines")),
-			tool("routine_update", "routines.update", "Update a routine schedule or text.", toolhub.WriteEffect, use("update", "routines"), str("id"), opt("expression"), opt("text")),
-			tool("routine_snooze", "routines.write", "Snooze one owned routine until expression (RFC3339).", toolhub.WriteEffect, use("write", "routines"), str("id"), str("expression")),
-			tool("routine_pause", "routines.pause", "Pause a routine.", toolhub.WriteEffect, use("update", "routines"), str("id")),
-			tool("routine_delete", "routines.delete", "Delete a routine.", toolhub.WriteEffect, use("delete", "routines"), str("id")),
+			tool("routine_create", "routines.create", routineDescriptions["routine_create"], toolhub.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("notify_mode"), arg("source_ids", "array", false)),
+			tool("routine_list", "routines.list", routineDescriptions["routine_list"], toolhub.ReadEffect, use("list", "routines")),
+			tool("routine_update", "routines.update", routineDescriptions["routine_update"], toolhub.WriteEffect, use("update", "routines"), str("id"), opt("expression"), opt("text")),
+			tool("routine_snooze", "routines.write", routineDescriptions["routine_snooze"], toolhub.WriteEffect, use("write", "routines"), str("id"), str("expression")),
+			tool("routine_pause", "routines.pause", routineDescriptions["routine_pause"], toolhub.WriteEffect, use("update", "routines")),
+			tool("routine_delete", "routines.delete", routineDescriptions["routine_delete"], toolhub.WriteEffect, use("delete", "routines"), str("id")),
 			tool("document_extract", "documents.read", "Extract text from a document inside the admitted scope.", toolhub.ReadEffect, use("read", "documents", "path"), path),
 			tool("document_create", "documents.create", "Create a document artifact from supplied text.", toolhub.WriteEffect, use("create", "documents"), str("name"), str("format"), str("text")),
 			tool("document_edit", "documents.edit", "Replace the text of a document artifact inside the admitted scope.", toolhub.WriteEffect, use("edit", "documents", "path"), path, str("text")),

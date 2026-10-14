@@ -10,6 +10,32 @@ import (
 	"testing"
 )
 
+func TestRoutineRejectsUnresolvedConfiguration(t *testing.T) {
+	for _, field := range []string{"url", "authorization"} {
+		t.Run(field, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			defer server.Close()
+			v := fixture(t)
+			v.CommunicationURL, v.CommunicationAuth = server.URL, "token"
+			want := "authorization is unavailable"
+			if field == "url" {
+				v.CommunicationURL = "${HUB_COMMUNICATION_CONTROL_URL}"
+				want = "require HUB_COMMUNICATION_CONTROL_URL"
+			} else {
+				v.CommunicationAuth = "${HUB_RUNTIME_AUTH}"
+			}
+			_, err := v.Routine(context.Background(), "routine_list", Input{})
+			if err == nil || !strings.Contains(err.Error(), want) || calls != 0 {
+				t.Fatalf("unresolved %s: error=%v requests=%d", field, err, calls)
+			}
+		})
+	}
+}
+
 func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 	v := fixture(t)
 	if _, err := v.Routine(context.Background(), "routine_list", Input{}); err == nil {

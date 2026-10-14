@@ -13,6 +13,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 func TestHTTPRunnerContract(t *testing.T) {
@@ -91,7 +92,14 @@ func TestHTTPRunnerVoiceConventionInstruction(t *testing.T) {
 // The artifact-delivery contract is always advertised — unmanaged runtimes get
 // it from the tools server, managed ones see only ToolHub, so without this the
 // model concludes the channel cannot take files and tells the user so.
+// SPEC-0053 R1.8/D7: it is advertised via the rendered channel contract in the
+// effective SOUL, not per-run instructions.
 func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
+	for _, want := range []string{"artifacts/", "MEDIA: ", "inbox_fetch", "inbox=", "preserved", "artifacts/documents/", "artifacts/images/", "artifacts/videos/", "exact original bytes", "after:", "same schedule ID"} {
+		if !strings.Contains(stack.ChannelContract, want) {
+			t.Fatalf("file-transfer convention missing %q from channel contract", want)
+		}
+	}
 	var gotInstructions string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request hubruntime.ExecuteRequest
@@ -104,16 +112,8 @@ func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
 	if _, err := (HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client()}).Run(context.Background(), job, User{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(gotInstructions, "artifacts/") || !strings.Contains(gotInstructions, "MEDIA:") {
-		t.Fatalf("artifact convention missing from instructions: %q", gotInstructions)
-	}
-	// The model must know inbound files arrive staged (inbox=<id> → inbox_fetch)
-	// and that delivered artifacts are removed from the workspace — otherwise it
-	// promises to keep files that are gone or ignores files the user sent.
-	for _, want := range []string{"inbox_fetch", "inbox=", "preserved"} {
-		if !strings.Contains(gotInstructions, want) {
-			t.Fatalf("file-transfer convention missing %q from instructions: %q", want, gotInstructions)
-		}
+	if strings.Contains(gotInstructions, "artifacts/documents/") {
+		t.Fatalf("static contract still rides per-run instructions: %q", gotInstructions)
 	}
 }
 
@@ -127,6 +127,61 @@ func TestSupervisedRunnerUsesJobsEndpoint(t *testing.T) {
 	defer server.Close()
 	if text, err := (HTTPRunner{JobsAPI: true, URL: server.URL, Auth: "synthetic"}).Run(context.Background(), Job{Text: "task"}, User{}); err != nil || text != "reply" {
 		t.Fatal(err)
+	}
+}
+
+// The job ID rides outbound hops as X-Hub-Job-ID so the receiving access log
+// can tie a request to the job without logging bodies or principals.
+func TestRunnerSendsJobCorrelationHeader(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Hub-Job-ID")
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "reply", Status: "completed"})
+	}))
+	defer server.Close()
+	_, err := (HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client()}).Run(context.Background(), Job{ID: "telegram-42", Text: "hello"}, User{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "telegram-42" {
+		t.Fatalf("X-Hub-Job-ID=%q", got)
+	}
+}
+
+// Every hub-internal hop that carries a known job ID must forward it as
+// X-Hub-Job-ID: artifact fetch, usage query, supervised restart and the
+// ToolHub cli-job release.
+func TestOutboundHopsSendJobCorrelationHeader(t *testing.T) {
+	headers := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers[r.URL.Path] = r.Header.Get("X-Hub-Job-ID")
+		switch r.URL.Path {
+		case "/v1/artifact":
+			w.Write([]byte("data"))
+		case "/v1/usage":
+			_ = json.NewEncoder(w).Encode(hubruntime.SessionUsage{})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+	job := Job{ID: "telegram-7", Text: "hello"}
+	runner := HTTPRunner{URL: server.URL, Auth: "secret", HTTP: server.Client()}
+	if _, err := runner.fetchArtifact(context.Background(), job, "report.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.SessionUsage(context.Background(), hubruntime.ExecuteRequest{JobID: "telegram-7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeRestart(server.URL, "secret", true)(context.Background(), hubruntime.ExecuteRequest{JobID: "telegram-7"}); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{config: Config{ToolHubURL: server.URL, RuntimeAuth: "secret", Supervised: true}}
+	g.toolHubJobDone("telegram-7", "alice")
+	for _, path := range []string{"/v1/artifact", "/v1/usage", "/v1/restart", "/v1/cli-jobs/release"} {
+		if headers[path] != "telegram-7" {
+			t.Fatalf("%s carried X-Hub-Job-ID=%q", path, headers[path])
+		}
 	}
 }
 
@@ -199,9 +254,10 @@ func TestSupervisorURLOverridesStaticRuntime(t *testing.T) {
 }
 
 func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
-	old := unavailableRetryDelay
-	unavailableRetryDelay = time.Millisecond
-	defer func() { unavailableRetryDelay = old }()
+	old, oldBudget := submitRetryBase, coldStartBudget
+	submitRetryBase = time.Millisecond
+	coldStartBudget = func() time.Duration { return 20 * time.Millisecond }
+	defer func() { submitRetryBase, coldStartBudget = old, oldBudget }()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -226,7 +282,7 @@ func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
 	if _, err := (HTTPRunner{URL: dead.URL, Auth: "secret", HTTP: dead.Client(), Limit: time.Minute}).RunOutcome(context.Background(), Job{Text: "hello"}); err == nil || errors.Is(err, ErrUncertain) {
 		t.Fatalf("persistent unavailability must fail deterministically: %v", err)
 	}
-	if calls != 4 {
+	if calls < 2 {
 		t.Fatalf("calls=%d", calls)
 	}
 }

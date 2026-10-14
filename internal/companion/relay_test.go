@@ -76,6 +76,8 @@ func TestOAuthRelayRejectsUnsafeTarget(t *testing.T) {
 }
 
 func TestOAuthExecRelayRequiresStateAndCode(t *testing.T) {
+	// Exercise forwarding failure without depending on a host Docker daemon.
+	t.Setenv("PATH", t.TempDir())
 	if err := RunOAuthExecRelay(context.Background(), "", "container"); err == nil {
 		t.Fatal("OAuth exec relay without listen accepted")
 	}

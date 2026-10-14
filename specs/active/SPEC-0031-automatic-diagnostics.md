@@ -27,3 +27,10 @@ Frozen: 2026-09-26. Supersedes SPEC-0030's explicit-export requirement.
    it text still passes the credential redactor, so tokens and secrets
    never log even during capture. Malformed values fail render instead of
    silently leaving capture on.
+
+Amended under SPEC-0053 R3.5 (execution-chain reliability): gateway and
+supervisor lifecycle lines are now structured JSON records carrying `time`,
+`level`, `component` and job correlation fields, still collected through the
+same bounded per-space diagnostics path above. `hubctl trace <job_id>` reads
+those same owner-scoped sources — never a different principal's — and applies
+the same redaction before rendering.

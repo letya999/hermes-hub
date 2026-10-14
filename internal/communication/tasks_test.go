@@ -687,17 +687,19 @@ func TestScheduleKeepsTaskBinding(t *testing.T) {
 	if err := validateOccurrence(occ, caller); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(occ.Job); err != nil {
+	if err := g.spool.PutOccurrence(occ, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.DispatchDueOccurrences(occ.DueAt, g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := g.spool.ClaimJob()
 	if err != nil || claimed == nil {
 		t.Fatal("cron job missing")
 	}
-	if claimed.ConversationID != task.ConversationID || claimed.TopicID != 5 {
+	// Routines isolate their session per schedule; the task binding survives
+	// for delivery routing only.
+	if claimed.ConversationID != routineConversation(schedule.ScheduleID) || claimed.TaskID != task.TaskID || claimed.TopicID != 5 {
 		t.Fatalf("cron job lost task binding: %+v", claimed)
-	}
-	if claimed.Envelope.ConversationID != task.ConversationID {
-		t.Fatal("envelope not rebound to task conversation")
 	}
 }

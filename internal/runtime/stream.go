@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 const RunStreamContentType = "application/x-ndjson"
@@ -123,14 +125,40 @@ func (s *runtimeHTTP) executeStream(w http.ResponseWriter, r *http.Request, requ
 	})
 }
 
+// streamHeartbeatInterval paces transport-only keepalive frames on an active
+// run stream; the supervisor and gateway idle deadlines rely on it.
+var streamHeartbeatInterval = 15 * time.Second
+
 func (s *runtimeHTTP) writeStream(w http.ResponseWriter, request ExecuteRequest, run func(func(ExecuteResponse) error) (ExecuteResponse, error)) {
 	w.Header().Set("Content-Type", RunStreamContentType)
+	var mu sync.Mutex
 	emit := func(event ExecuteResponse) error {
+		mu.Lock()
+		defer mu.Unlock()
 		event.JobID, event.RuntimeGeneration = request.JobID, os.Getenv("HUB_RUNTIME_GENERATION")
 		if err := json.NewEncoder(w).Encode(event); err != nil {
 			return err
 		}
 		return http.NewResponseController(w).Flush()
+	}
+	done := make(chan struct{})
+	defer close(done)
+	if streamHeartbeatInterval > 0 {
+		ticker := time.NewTicker(streamHeartbeatInterval)
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					// Keepalive only: no durable state, delivery or RunID binding.
+					if err := emit(ExecuteResponse{Status: "running", LastEvent: "run.heartbeat"}); err != nil {
+						return
+					}
+				}
+			}
+		}()
 	}
 	response, err := run(emit)
 	if err != nil && response.Status == "" {

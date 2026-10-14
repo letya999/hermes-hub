@@ -66,6 +66,43 @@ func TestModelRelayOnlyForwardsReviewedChatRoute(t *testing.T) {
 	}
 }
 
+func TestModelRelayCatalogShowsOnlySelectedModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.String() != "/v1/models" || r.Header.Get("Authorization") != "Bearer synthetic" {
+			t.Errorf("unsafe catalog request: %s %s", r.Method, r.URL)
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"synthetic"},{"id":"other"}]}`)
+	}))
+	defer upstream.Close()
+	handler, err := modelRelayHandler(upstream.URL, "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer synthetic")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK || response.Body.String() != `{"data":[{"id":"synthetic"}]}` {
+		t.Fatalf("catalog leaked other models: %d %s", response.Code, response.Body.String())
+	}
+	missingHandler, err := modelRelayHandler(upstream.URL, "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := httptest.NewRecorder()
+	missingHandler.ServeHTTP(missing, req)
+	if missing.Code != http.StatusOK || missing.Body.String() != `{"data":[]}` {
+		t.Fatalf("missing model was exposed: %d %s", missing.Code, missing.Body.String())
+	}
+	for _, path := range []string{"/v1/models?all=1", "/v1/models/other"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("catalog route escaped: %s %d", path, response.Code)
+		}
+	}
+}
+
 func TestModelRelayRejectsUpstreamRedirect(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Location", "http://169.254.169.254/latest/meta-data")

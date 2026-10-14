@@ -33,7 +33,11 @@ func TestLoadStoredOCIArtifactFailsBeforeDockerForUnsafeInputs(t *testing.T) {
 	if _, err := LoadStoredOCIArtifact(context.Background(), t.TempDir(), "bad", "repo/mcp", 1<<20); err == nil {
 		t.Fatal("malformed archive digest accepted")
 	}
-	_, _ = runArtifactDocker(context.Background(), t.TempDir(), nil, "version")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := runArtifactDocker(ctx, t.TempDir(), nil, "version"); err == nil {
+		t.Fatal("cancelled Docker command succeeded")
+	}
 }
 
 func TestLoadStoredOCIArtifactWithEnforcesLocalRuntimeAndTagsDigest(t *testing.T) {

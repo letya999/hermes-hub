@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// toolHubRelayHandler exposes only the authenticated MCP endpoint to the agent network.
+// toolHubRelayHandler exposes MCP and the caller-scoped connector inventory to the agent network.
 func toolHubRelayHandler(target string) (http.Handler, error) {
 	upstream, err := url.Parse(target)
 	if err != nil || upstream.Scheme != "http" || upstream.Host == "" || upstream.Path != "" || upstream.RawQuery != "" || upstream.User != nil {
@@ -19,7 +19,7 @@ func toolHubRelayHandler(target string) (http.Handler, error) {
 	transport.Proxy = nil
 	proxy := &httputil.ReverseProxy{Transport: transport, Rewrite: func(req *httputil.ProxyRequest) {
 		req.SetURL(upstream)
-		req.Out.URL.Path = "/mcp"
+		req.Out.URL.Path = req.In.URL.Path
 		req.Out.URL.RawPath = ""
 		req.Out.URL.RawQuery = ""
 		req.Out.Host = upstream.Host
@@ -35,7 +35,9 @@ func toolHubRelayHandler(target string) (http.Handler, error) {
 		http.Error(w, "ToolHub route unavailable", http.StatusBadGateway)
 	}}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodDelete) || r.URL.Path != "/mcp" || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.Scheme != "" || r.URL.Host != "" || r.Header.Get("Upgrade") != "" {
+		mcp := r.URL.Path == "/mcp" && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodDelete)
+		inventory := r.URL.Path == "/v1/connectors" && r.Method == http.MethodGet
+		if (!mcp && !inventory) || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.Scheme != "" || r.URL.Host != "" || r.Header.Get("Upgrade") != "" {
 			http.NotFound(w, r)
 			return
 		}

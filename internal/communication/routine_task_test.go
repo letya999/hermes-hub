@@ -31,8 +31,11 @@ func TestNamedTaskRoutineSurvivesAdmissionAndRejectsForeignConversation(t *testi
 	if err != nil || claimed == nil {
 		t.Fatal(err)
 	}
-	if claimed.ConversationID != task.ConversationID {
-		t.Fatal("task not bound")
+	if claimed.ConversationID != routineConversation(occ.ScheduleID) {
+		t.Fatalf("routine session not isolated: %q", claimed.ConversationID)
+	}
+	if claimed.TaskID != task.TaskID || claimed.TopicID != task.TopicID {
+		t.Fatal("task delivery binding lost")
 	}
 	if err := g.authorizeOccurrence(*claimed); err != nil {
 		t.Fatal("owned task rejected after admission", err)

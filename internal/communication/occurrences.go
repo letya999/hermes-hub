@@ -38,6 +38,14 @@ func occurrenceID(o RoutineOccurrence) string {
 	sum := sha256.Sum256([]byte(o.ScheduleID + "\x00" + strconv.FormatUint(o.Revision, 10) + "\x00" + o.DueAt.UTC().Format(time.RFC3339Nano)))
 	return "routine-" + hex.EncodeToString(sum[:])
 }
+
+// routineConversation isolates routine sessions: every occurrence of one
+// schedule shares a stable "routine-<id>" conversation instead of the owner's
+// interactive task conversation. TaskID/TopicID remain on the job for
+// delivery routing only.
+func routineConversation(scheduleID string) string {
+	return "routine-" + scheduleID
+}
 func (s *Spool) PutOccurrence(o RoutineOccurrence, caller identity.Envelope) error {
 	if err := validateOccurrence(o, caller); err != nil {
 		return err
@@ -109,8 +117,14 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 			return err
 		}
 		admitted := o.Job
-		if admitted.TaskID != "" && admitted.TaskID != defaultTaskID {
-			admitted.ConversationID = taskConversation(admitted.ChatID, admitted.TaskID)
+		admitted.ConversationID = routineConversation(o.ScheduleID)
+		if !mapping.MatchesJob(admitted) {
+			// In-flight occurrences admitted before routine conversations
+			// existed still carry the task (or canonical) conversation.
+			admitted.ConversationID = o.Job.ConversationID
+			if o.Job.TaskID != "" && o.Job.TaskID != defaultTaskID {
+				admitted.ConversationID = taskConversation(o.Job.ChatID, o.Job.TaskID)
+			}
 		}
 		if mapping.TaskID != o.Job.TaskID || mapping.TopicID != o.Job.TopicID || !mapping.MatchesJob(admitted) {
 			return errors.New("occurrence job binding changed")
@@ -171,7 +185,9 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 			if running := active[key]; running != "" && running != o.Job.ID {
 				continue
 			}
-			if _, err = s.enqueueLocked(o.Job); err != nil {
+			admitted := o.Job
+			admitted.Envelope.ConversationID = routineConversation(o.ScheduleID)
+			if _, err = s.enqueueLocked(admitted); err != nil {
 				return err
 			}
 			o.State = "dispatched"
@@ -250,13 +266,44 @@ func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool
 		if err != nil || task.Archived || task.ContextID != job.ContextID || task.ChatID != job.ChatID || task.TopicID != job.TopicID {
 			return false
 		}
-		// Before admission the envelope is canonical; enqueue pins its
-		// conversation to the owned task. Both phases keep every other field.
-		if job.ConversationID == task.ConversationID {
-			canonical.ConversationID = task.ConversationID
+	}
+	if job.ConversationID != canonical.ConversationID {
+		// Before admission the envelope is canonical; dispatch pins the
+		// schedule-derived conversation. In-flight occurrences admitted before
+		// that change still carry the owned task conversation.
+		if job.ConversationID != g.routineConversationOf(job.ID) &&
+			(job.TaskID == "" || job.TaskID == defaultTaskID || job.ConversationID != taskConversation(job.ChatID, job.TaskID)) {
+			return false
 		}
+		canonical.ConversationID = job.ConversationID
 	}
 	return job.Envelope == canonical
+}
+
+// routineConversationOf resolves the schedule-pinned conversation for an
+// admitted occurrence job from its durable occurrence record.
+func (g *Gateway) routineConversationOf(jobID string) string {
+	if o, ok := g.occurrenceFor(jobID); ok {
+		return routineConversation(o.ScheduleID)
+	}
+	return ""
+}
+
+func (g *Gateway) occurrenceFor(jobID string) (RoutineOccurrence, bool) {
+	body, err := os.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(jobID)+".json"))
+	var o RoutineOccurrence
+	if err != nil || json.Unmarshal(body, &o) != nil {
+		return RoutineOccurrence{}, false
+	}
+	return o, true
+}
+
+// routineFailureDigest normalizes an owner-facing error text so repeated
+// occurrences of the same failure hash identically — the per-occurrence job
+// ID is stripped before hashing.
+func routineFailureDigest(jobID, message string) string {
+	sum := sha256.Sum256([]byte(strings.ReplaceAll(message, jobID, "")))
+	return hex.EncodeToString(sum[:])
 }
 
 func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {

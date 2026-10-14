@@ -191,12 +191,29 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	}
 	name := media.FileName
 	if name == "" {
-		name = media.FileID
+		name = "in-" + strconv.Itoa(update.UpdateID)
 	}
 	inbox := ""
 	if path, err := g.downloadTelegramMedia(ctx, media.FileID); err == nil && path != "" {
 		defer os.Remove(path)
 		if staged, err := os.Open(path); err == nil {
+			if media.FileName == "" {
+				var header [512]byte
+				n, readErr := staged.Read(header[:])
+				_, seekErr := staged.Seek(0, io.SeekStart)
+				if readErr != nil && readErr != io.EOF || seekErr != nil {
+					_ = staged.Close()
+					return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Не удалось сохранить файл. Отправьте его ещё раз.")
+				}
+				switch http.DetectContentType(header[:n]) {
+				case "image/jpeg":
+					name += ".jpg"
+				case "image/png":
+					name += ".png"
+				case "image/webp":
+					name += ".webp"
+				}
+			}
 			rec := InboundRecord{ID: "in-" + strconv.Itoa(update.UpdateID), UserID: user.ID, ConversationID: envelope.ConversationID, Name: name, Mime: envelope.MIME, CreatedAt: time.Now().UTC()}
 			if err := g.spool.StageInbound(rec, staged); err == nil {
 				inbox = rec.ID

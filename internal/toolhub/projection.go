@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -88,6 +89,30 @@ func WriteReconnectMarker(stateDir string, change ProjectionChange) error {
 	return os.Rename(name, path)
 }
 
+// Projection exclusion reasons are the SPEC-0053 R1.3 vocabulary: a binding
+// that drops out of a projection must surface with exactly one of these.
+const (
+	ExcludePolicyMismatch = "policy_mismatch"
+	ExcludeDisabled       = "disabled"
+	ExcludeRevoked        = "revoked"
+	ExcludeStale          = "stale"
+	ExcludeDegraded       = "degraded"
+	ExcludeNotFound       = "not_found"
+)
+
+// ProjectionExclusion names one binding that belongs to a runtime projection
+// but failed admission, with the reason. Logged once per
+// (principal, binding, projection revision, reason) and exposed to the
+// diagnostics surface scoped to the requesting envelope.
+type ProjectionExclusion struct {
+	PrincipalID        string `json:"principal_id"`
+	ContextID          string `json:"context_id"`
+	RuntimeID          string `json:"runtime_id"`
+	BindingID          string `json:"binding_id"`
+	Reason             string `json:"reason"`
+	ProjectionRevision uint64 `json:"projection_revision"`
+}
+
 // ProjectedTool is the server-side mapping exposed to an authenticated Hermes
 // runtime. BindingID is metadata for the gateway; it is never accepted from a
 // model tool argument.
@@ -118,9 +143,13 @@ func (s *Store) ListProjectedTools(auth identity.Envelope) ([]ProjectedTool, err
 	result := make([]ProjectedTool, 0)
 	seen := map[string]bool{}
 	for _, binding := range s.bindings {
+		if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID {
+			continue
+		}
 		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
 		if err != nil {
 			if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStale) || errors.Is(err, ErrRevoked) || errors.Is(err, ErrDegraded) {
+				s.noteExclusion(binding, classifyProjectionExclusion(binding, err))
 				continue
 			}
 			return nil, err
@@ -136,6 +165,104 @@ func (s *Store) ListProjectedTools(auth identity.Envelope) ([]ProjectedTool, err
 	}
 	slices.SortFunc(result, func(a, b ProjectedTool) int { return strings.Compare(a.Name, b.Name) })
 	return result, nil
+}
+
+// classifyProjectionExclusion maps a resolveLocked failure to the SPEC-0053
+// R1.3 reason vocabulary.
+func classifyProjectionExclusion(binding ToolBinding, err error) string {
+	switch binding.Status {
+	case RevokedStatus:
+		return ExcludeRevoked
+	case DisabledStatus:
+		return ExcludeDisabled
+	}
+	switch {
+	case errors.Is(err, ErrRevoked):
+		return ExcludeRevoked
+	case errors.Is(err, ErrDegraded):
+		return ExcludeDegraded
+	case errors.Is(err, ErrStale):
+		return ExcludeStale
+	default:
+		return ExcludePolicyMismatch
+	}
+}
+
+// exclusionLogLimit bounds the in-memory exclusion set; the oldest entries are
+// evicted first. Exclusions are observability, not authority — the persisted
+// registry stays the source of truth.
+const exclusionLogLimit = 256
+
+// noteExclusion records which projection the binding failed into and why,
+// logging once per (principal, binding, projection revision, reason). Called
+// from registry-locked scans; exMu alone guards the set. Values come from
+// ValidID-constrained fields or the fixed reason vocabulary, and slog quotes
+// attribute values — log injection has no sink here.
+func (s *Store) noteExclusion(binding ToolBinding, reason string) {
+	s.exMu.Lock()
+	defer s.exMu.Unlock()
+	scope := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
+	revision := s.projectionRevisions[scope]
+	key := scope + "\x00" + binding.ToolBindingID + "\x00" + reason
+	if existing, ok := s.exclusions[key]; ok && existing.ProjectionRevision == revision {
+		return
+	}
+	if _, ok := s.exclusions[key]; !ok {
+		s.exclusionOrder = append(s.exclusionOrder, key)
+		for len(s.exclusionOrder) > exclusionLogLimit {
+			delete(s.exclusions, s.exclusionOrder[0])
+			s.exclusionOrder = s.exclusionOrder[1:]
+		}
+	}
+	s.exclusions[key] = ProjectionExclusion{
+		PrincipalID:        binding.PrincipalID,
+		ContextID:          binding.ContextID,
+		RuntimeID:          binding.RuntimeID,
+		BindingID:          binding.ToolBindingID,
+		Reason:             reason,
+		ProjectionRevision: revision,
+	}
+	slog.Info("toolhub projection excluded",
+		"principal_id", binding.PrincipalID, "context_id", binding.ContextID,
+		"runtime_id", binding.RuntimeID, "binding_id", binding.ToolBindingID,
+		"definition_id", binding.DefinitionID, "reason", reason,
+		"projection_revision", revision)
+}
+
+// ProjectionExclusions reports the bindings excluded from the requesting
+// envelope's own projection. It never returns another principal's exclusions.
+func (s *Store) ProjectionExclusions(auth identity.Envelope) ([]ProjectionExclusion, error) {
+	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	if err := s.Reload(); err != nil {
+		return nil, err
+	}
+	// Scan on demand so the diagnostics surface reflects the current registry
+	// even when no tools/list call preceded it.
+	s.mu.RLock()
+	for _, binding := range s.bindings {
+		if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID {
+			continue
+		}
+		if _, err := s.resolveLocked(auth, binding.ToolBindingID); err != nil {
+			if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStale) || errors.Is(err, ErrRevoked) || errors.Is(err, ErrDegraded) {
+				s.noteExclusion(binding, classifyProjectionExclusion(binding, err))
+			}
+		}
+	}
+	s.mu.RUnlock()
+	s.exMu.Lock()
+	defer s.exMu.Unlock()
+	out := make([]ProjectionExclusion, 0)
+	for _, exclusion := range s.exclusions {
+		if exclusion.PrincipalID != auth.PrincipalID || exclusion.ContextID != auth.ContextID || exclusion.RuntimeID != auth.RuntimeID {
+			continue
+		}
+		out = append(out, exclusion)
+	}
+	slices.SortFunc(out, func(a, b ProjectionExclusion) int { return strings.Compare(a.BindingID, b.BindingID) })
+	return out, nil
 }
 
 func (s *Store) ResolveProjectedTool(auth identity.Envelope, projectedName string) (ProjectedTool, EffectiveBinding, error) {

@@ -54,6 +54,7 @@ func (s *Spool) RequestCancel(jobID string, caller identity.Envelope) (JobMappin
 	if err = s.writeMappingLocked(mapping); err != nil {
 		return JobMapping{}, err
 	}
+	s.signal() // a pending control request wakes the control loop (SPEC-0053 R2.3)
 	return mapping, nil
 }
 
@@ -86,24 +87,51 @@ func (s *Spool) RequestApproval(jobID string, caller identity.Envelope, requestI
 		return errors.New("approval is stale or invalid")
 	}
 	mapping.Control = &PendingControl{Caller: caller, Action: "approve", RequestID: requestID, Choice: choice, State: "pending"}
-	return s.writeMappingLocked(mapping)
+	if err := s.writeMappingLocked(mapping); err != nil {
+		return err
+	}
+	s.signal()
+	return nil
+}
+
+// controlLoop handles pending control records on the spool's notify signal
+// with a one-second fallback tick (SPEC-0053 R2.3).
+func (g *Gateway) controlLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var lastCompact time.Time
+	for {
+		g.controlOne(ctx)
+		if g.now().Sub(lastCompact) >= time.Hour {
+			retention := g.config.SpoolRetention
+			if retention <= 0 {
+				retention = 336 * time.Hour
+			}
+			_ = g.spool.Compact(g.now(), retention)
+			lastCompact = g.now()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-g.spool.Notify():
+		case <-ticker.C:
+		}
+	}
 }
 
 // controlOne is independent of the execution worker. Intent becomes uncertain
 // before HTTP dispatch so a restart cannot blindly repeat a side effect.
 func (g *Gateway) controlOne(ctx context.Context) {
-	names, err := os.ReadDir(filepath.Join(g.spool.root, "mappings"))
+	g.controlPolls.Add(1)
+	g.closeApprovalMessages(ctx)
+	ids, err := g.spool.activeMappingIDs()
 	if err != nil {
 		return
 	}
-	for _, name := range names {
-		if !strings.HasSuffix(name.Name(), ".json") {
-			continue
-		}
+	for _, id := range ids {
 		g.spool.mu.Lock()
-		b, err := os.ReadFile(filepath.Join(g.spool.root, "mappings", name.Name()))
-		var mapping JobMapping
-		if err != nil || json.Unmarshal(b, &mapping) != nil || mapping.Control == nil || (mapping.Control.State != "pending" && mapping.Control.State != "uncertain") || time.Now().Before(mapping.Control.NextAttemptAt) || terminalStatus(mapping.Status) || (mapping.Control.Action != "cancel" && (mapping.RunID == "" || mapping.SessionID == "" || mapping.RuntimeGeneration == "")) {
+		mapping, err := g.spool.loadMappingLocked(id)
+		if err != nil || mapping.Control == nil || (mapping.Control.State != "pending" && mapping.Control.State != "uncertain") || time.Now().Before(mapping.Control.NextAttemptAt) || terminalStatus(mapping.Status) || (mapping.Control.Action != "cancel" && (mapping.RunID == "" || mapping.SessionID == "" || mapping.RuntimeGeneration == "")) {
 			g.spool.mu.Unlock()
 			continue
 		}

@@ -232,6 +232,10 @@ var toolhubCapabilityID = map[string]string{
 	"settings": "settings",
 }
 
+// ToolHubCapabilityID reports the executor capability family a `via: toolhub`
+// entry name consumes, or "" for names outside the family vocabulary.
+func ToolHubCapabilityID(name string) string { return toolhubCapabilityID[name] }
+
 // readOnlyCapabilities lists the ToolHub capability ids whose `access: ro`
 // entries force write-effect tools off inside the runtime executor.
 func (s Settings) readOnlyCapabilities() []string {

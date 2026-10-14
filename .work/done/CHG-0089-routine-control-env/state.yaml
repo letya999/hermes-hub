@@ -1,0 +1,17 @@
+schema: 1
+change: CHG-0089
+status: complete
+branch: dev
+updated: 2026-10-13
+completed:
+  - Missing routine control variables reproduced in materialization and render tests.
+  - Added child URL, per-runtime auth reference and user/principal identity forwarding.
+  - Current local configuration regenerated and runtime restarted; child environment contains all four references.
+  - Canonical Windows hubctl binary rebuilt so subsequent local renders retain the fix.
+evidence:
+  - Both new tests failed on missing child entries before fixes and passed afterward; managed template and full regression suite passed.
+  - Final just check passed; own Go statement coverage 85.21 percent.
+  - Real Hermes called the routine tool and created a once reminder with exact input REMINDER-7319 and job_kind reminder.
+  - Telegram delivery completed at 2026-10-13T05:49:02Z, exactly once; outbox done receipt contains exactly REMINDER-7319.
+  - Schedule settled to disabled and paused with no next_due; zero agent queue entries and zero additional supervisor jobs around delivery.
+  - No dependencies or upstream Hermes changes; current deployment fixed through rendered configuration, no image-side build required.

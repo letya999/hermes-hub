@@ -1,0 +1,136 @@
+schema: 1
+change: CHG-0093
+title: Tool surface integrity and context hygiene (M19 stage 1)
+status: done
+acceptance_decision: "Owner accepted M19 on 2026-10-14 with A1 live checks and pinned-Hermes breaker regression waived; breaker behavior remains a follow-up risk."
+branch: feat/m19-execution-chain-reliability
+updated: 2026-10-14
+phase: accepted_with_residual_risk
+adr: ADR-0036
+spec: SPEC-0053
+requirements: [R1.1, R1.2, R1.3, R1.4, R1.5, R1.6, R1.7, R1.8]
+depends_on: [CHG-0092]
+github_milestone: https://github.com/letya999/hermes-hub/milestone/20
+github_issue: https://github.com/letya999/hermes-hub/issues/262
+design_status: accepted
+implementation_status: accepted_with_waived_live_gates
+slices:
+  S1.1-rights-only-policy-hash: done
+  S1.2-binding-migration: done
+  S1.3-no-silent-projection-drops: done
+  S1.4-manifest-capability-readiness: done
+  S1.5-tool-errors-and-hermes-pin: done_no_pin_raise
+  S1.6-context-hygiene: done
+completed:
+  - Design and acceptance defined in ADR-0036/SPEC-0053.
+  - "S1.1: internal/stack/rights.go — settingsFieldRights classifies every Settings
+    field (reflection-guarded); rightsView/rightsProjection hash only grant-bearing
+    fields; policyVersion switched to the projection. MCP projection keeps
+    url/command/args/tools, drops env/headers/auth/timeout. Tests:
+    TestPolicyVersionIgnoresNonRightsFields, TestPolicyVersionChangesOnRightsFields,
+    TestEverySettingsFieldClassified, TestPolicyVersionIgnoresMCPTransportFields."
+  - "S1.2 (core): internal/toolhub/migrate.go — MigrateBindings validates scope,
+    migrates only active bindings with PolicyVersion==from, bumps revisions and
+    projection revision, persists durable binding_changes audit in snapshots,
+    reloads and retries on ErrConflict/ErrStale (bounded, 8 attempts), idempotent.
+    Tests: moves-only-active, idempotent, audited (survives Load), concurrent
+    writer retries, rejects bad scope."
+  - "S1.3: internal/toolhub/projection.go — exclusion classifier on the fixed
+    SPEC reason vocabulary (policy_mismatch, disabled, revoked, stale, degraded;
+    not_found reserved), logged once per (principal, binding, revision, reason),
+    bounded set (256, FIFO), dedicated exMu mutex; ProjectionExclusions(auth)
+    performs an on-demand scoped scan; ControlPlane.diagnostics returns excluded
+    on every path. Tests: reason table, log-once + re-log on new revision,
+    bounded set, cross-principal isolation, diagnostics surface; -race clean."
+  - "S1.4 (render part): RenderEnvironment writes
+    generated/tool-manifest.<env>.json {schema, context, policy_version,
+    projected, direct}; toolhub entries and managed builtin MCP connectors are
+    projected, native/unmanaged entries direct, disabled/off omitted. Test:
+    TestManifestRendered."
+  - "S1.5: regression tests lock the contract — toolhub
+    TestAgentExecErrorSurvivesGateway (AgentExecResult.Error -> CallToolResult
+    IsError, nil transport error; channel fault -> Go error) and agenttools
+    TestMCPWireExpectedFailures (bad path, missing dependency, unsupported
+    media, malformed input -> IsError with message over real MCP wire). go-sdk
+    v1.7.0 wraps ordinary handler errors into IsError results; no behavior
+    change needed."
+  - "S1.5 pin evaluation: upstream PRs nousresearch/hermes-agent#67340 and
+    #17016 closed unmerged, #68455 open — no merged fix to raise the pin to.
+    Pin kept at 869228cab4a8276d3b4c78da9d9939670c47bd0f (0.21.0); residual
+    risk recorded in docs/integrations.md."
+  - "S1.2 wiring: RenderEnvironment calls migrateToolhubBindings before
+    writeToolManifest; hubctl up/render/build funnel through RenderEnvironment
+    (cmd/hubctl/execution.go, main.go). Test: binding_migration_test.go —
+    active binding moves to the new policy version, disabled stays."
+  - "S1.4 runtime: internal/runtime/surface.go — surfaceProbe diffs
+    HUB_TOOL_MANIFEST against the ToolHub projection and direct surface,
+    probes the model catalog (<base_url>/models -> ok/model_not_found/
+    unavailable/not_configured), runs a once-per-command hub-child spawn
+    self-test (child_spawn_failed/child_init_failed). /v1/health reports
+    tool_surface, missing_tools, tool_reasons, model_status and downgrades
+    hermes_readiness to degraded (never below unavailable). Tests:
+    surface_test.go, health_surface_test.go."
+  - "S1.4 supervisor: runtimeHealth validates the extended vocabulary/bounds;
+    ReconcileHealth persists ToolSurface/MissingTools/ToolReasons/ModelStatus
+    on the durable Runtime record; degraded surface/model never authorizes
+    remediation. Spawn args mount tool-manifest read-only with
+    HUB_TOOL_MANIFEST in unmanaged and managed paths. Tests:
+    reconcile_test.go, supervisor_test.go (TestRunArgsMountsToolManifest)."
+  - "S1.4 status: communication surfaceLines/residentSurface render
+    missing-tool lines on /status for supervised (/v1/runtimes) and
+    unsupervised (/v1/health) modes, principal-scoped. Tests:
+    status_surface_test.go."
+  - "S1.6: internal/stack/prompt_contract.go — ChannelContract carries the
+    artifacts/MEDIA/inbox/listing/reminder guidance; RenderEnvironment writes
+    generated/soul-effective.<env>.md (healed persona + contract) and mounts
+    it read-only at /state/hermes/SOUL.md in compose (both modes) and both
+    supervisor spawn paths; per-run ExecuteRequest.Instructions keeps only
+    style/voice; sessionRevision hashes the effective SOUL so contract edits
+    rotate sessions once. Compression for API-server sessions stays
+    enabled/in_place at threshold_tokens 200000; /v1/usage measures
+    input_tokens/api_call_count/compactions per session. Tests:
+    TestStablePromptRendered, TestRunArgsMountsEffectiveSoul,
+    TestManagedRunArgsMountsEffectiveSoul, TestSessionRevisionFollowsEffectiveSoul,
+    repointed contract tests in internal/communication."
+  - "Docs: docs/architecture.md (rights-only policy_version, migration, manifest,
+    exclusions), docs/operations.md (diagnostics excluded field), docs/integrations.md
+    (Hermes pin residual risk)."
+blocked:
+  - "Hermes pin still has the upstream tool-error circuit-breaker risk;
+    a pinned-Hermes breaker regression is not yet implemented."
+validation:
+  documents: updated
+  focused_tests: "go test ./internal/stack ./internal/toolhub ./internal/agenttools — pass; go test -race ./internal/toolhub — pass"
+  just_check: "Full recipe passed in this continuation (85.33%); the historical mid-edit vet failure is resolved. Final-source rerun is tracked in CHG-0095."
+  docker_check: passed_with_stt_decode
+  red_team: not_started
+  live_acceptance: managed_s7_zero_missing_ready_model_ok_thirty_turn_s8_pass
+evidence:
+  - internal/stack/rights.go, internal/stack/rights_test.go, internal/stack/render.go
+  - internal/stack/manifest_test.go
+  - internal/toolhub/migrate.go, internal/toolhub/migrate_test.go
+  - internal/toolhub/projection.go, internal/toolhub/exclusion_test.go
+  - internal/toolhub/diagnostics.go, internal/toolhub/toolhub.go
+  - internal/toolhub/agent_test.go (TestAgentExecErrorSurvivesGateway)
+  - internal/agenttools/tools_test.go (TestMCPWireExpectedFailures)
+  - internal/stack/binding_migration_test.go
+  - internal/stack/prompt_contract.go
+  - internal/runtime/surface.go, internal/runtime/surface_test.go
+  - internal/runtime/health.go, internal/runtime/health_surface_test.go
+  - internal/runtime/server.go (sessionRevision), internal/runtime/server_test.go
+  - internal/supervisor/reconcile.go, internal/supervisor/reconcile_test.go
+  - internal/supervisor/supervisor.go (manifest+SOUL mounts),
+    internal/supervisor/supervisor_test.go, internal/supervisor/managed_test.go
+  - internal/communication/task_commands.go (surfaceLines),
+    internal/communication/status_surface_test.go
+remaining:
+  - "A1.1/A1.3/A1.5 live checks and pinned-Hermes tool-error breaker regression
+    remain open; final-image managed S7 and 30-turn S8 passed."
+  - "Effective-SOUL/session-revision documentation is present; rights-only policy profile upgrade procedure is now recorded in operations.md."
+limitations:
+  - "Hermes pin stays at 869228cab4a8276d3b4c78da9d9939670c47bd0f: pinned version
+    may count tool-level isError failures toward the MCP circuit breaker until
+    an upstream fix (nousresearch/hermes-agent#68455 or successor) lands and is
+    adopted. Hub tools already avoid transport errors for expected failures."
+  - "default-deny policy untouched; ToolHub remains the sole authorization
+    boundary; no Hermes files patched."

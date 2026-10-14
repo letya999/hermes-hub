@@ -32,11 +32,13 @@ RUN curl -fsSL --retry 3 https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz 
 FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS node
 FROM docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS dockercli
 FROM ghcr.io/stacklok/toolhive:v0.48.0@sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d AS toolhive
-FROM ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 AS uv
 FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_LINK_MODE=copy
 COPY --from=uv /uv /usr/local/bin/uv
-RUN apt-get update && apt-get install -y --no-install-recommends glab
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends glab
+# Disable pipelining for Docker Desktop paths that stall long download queues.
+RUN printf 'Acquire::http::Pipeline-Depth "0";\nAcquire::https::Pipeline-Depth "0";\n' > /etc/apt/apt.conf.d/99-no-pipeline
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep ffmpeg espeak-ng chromium xvfb fluxbox x11vnc novnc websockify && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlite_build /opt/sqlite-fixed/lib/ /usr/local/lib/
 RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils && apt-get clean
@@ -58,7 +60,8 @@ WORKDIR /opt/hermes
 # communication hub.
 # The pinned upstream fetch is one long HTTP stream; forcing HTTP/1.1 and
 # retrying insulates the build from middleboxes cancelling HTTP/2 streams.
-RUN set -e; git init; git remote add origin https://github.com/nousresearch/hermes-agent.git; for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; git checkout --detach FETCH_HEAD; uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp; uv pip install --python .venv/bin/python aiohttp==3.14.3 faster-whisper==1.2.1; .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
+# faster-whisper 1.2.1 still requires av.open(metadata_errors), removed in PyAV 19.
+RUN set -e; git init; git remote add origin https://github.com/nousresearch/hermes-agent.git; for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; git checkout --detach FETCH_HEAD; uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp; uv pip install --python .venv/bin/python aiohttp==3.14.3 faster-whisper==1.2.1 av==18.1.0; .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY docker/browser/package*.json /opt/browser/
 RUN set -e; cd /opt/browser; for i in 1 2 3 4; do if npm ci --ignore-scripts; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; npm cache clean --force
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /usr/local/bin/
@@ -98,6 +101,8 @@ COPY --from=go_build /cellinit /cellinit
 COPY --from=uv /uv /uvx /usr/local/bin/
 USER 10001:10001
 ENTRYPOINT ["/cellinit"]
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 # Egress companion for cells that declare reviewed outbound hosts: a plain
 # Squid forward proxy the controller scopes to the cell's internal network.
@@ -106,6 +111,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends squid ca-certif
 EXPOSE 3128
 USER 10001:10001
 CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 # Immutable deployment target; no source tree or Go compiler.
 FROM runtime AS prod
