@@ -533,10 +533,10 @@ func TestTaskCommandRejectsBadInput(t *testing.T) {
 	if got := g.useCommand(user, 11, "/use"); !strings.Contains(got, "Используйте /use") {
 		t.Fatalf("/use hint=%q", got)
 	}
-	if got := g.newTaskCommand(user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
+	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
 		t.Fatalf("invalid name accepted: %q", got)
 	}
-	if got := g.deleteCommand(user, 11, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
+	if got, _ := g.deleteCommand(context.Background(), user, 11, 0, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
 		t.Fatalf("default delete=%q", got)
 	}
 	if _, err := g.spool.SetTaskStyle(user, 11, task.TaskID, "\x07"); err == nil {

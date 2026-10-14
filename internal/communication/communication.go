@@ -1506,18 +1506,29 @@ type Message struct {
 	// MessageThreadID/IsTopicMessage carry group forum topics: a message
 	// posted inside a forum topic has is_topic_message=true and the topic id
 	// in message_thread_id.
-	MessageThreadID int64     `json:"message_thread_id,omitempty"`
-	IsTopicMessage  bool      `json:"is_topic_message,omitempty"`
-	Voice           *TGMedia  `json:"voice,omitempty"`
-	Audio           *TGMedia  `json:"audio,omitempty"`
-	Document        *TGMedia  `json:"document,omitempty"`
-	Photo           []TGMedia `json:"photo,omitempty"`
+	MessageThreadID int64 `json:"message_thread_id,omitempty"`
+	IsTopicMessage  bool  `json:"is_topic_message,omitempty"`
+	// ForumTopicCreated is the group service message emitted when a user
+	// creates a forum topic; the bot's own topic actions never pass the
+	// verified-user gate, so they cannot echo back.
+	ForumTopicCreated *TGForumTopicCreated `json:"forum_topic_created,omitempty"`
+	ForumTopicEdited  *TGForumTopicEdited  `json:"forum_topic_edited,omitempty"`
+	Voice             *TGMedia             `json:"voice,omitempty"`
+	Audio             *TGMedia             `json:"audio,omitempty"`
+	Document          *TGMedia             `json:"document,omitempty"`
+	Photo             []TGMedia            `json:"photo,omitempty"`
 }
 type TGUser struct {
 	ID int64 `json:"id"`
 }
 type TGDirectTopic struct {
 	TopicID int64 `json:"topic_id"`
+}
+type TGForumTopicCreated struct {
+	Name string `json:"name"`
+}
+type TGForumTopicEdited struct {
+	Name string `json:"name,omitempty"`
 }
 
 // messageTopicID returns the topic of an inbound message: a private-chat
@@ -1580,6 +1591,9 @@ type TelegramAPI interface {
 	SendKeyboard(context.Context, int64, int64, string, []DeliveryButton) error
 	AnswerCallbackQuery(context.Context, string, string) error
 	SetMyCommands(context.Context) error
+	CreateForumTopic(context.Context, int64, string) (int64, error)
+	EditForumTopic(context.Context, int64, int64, string) error
+	DeleteForumTopic(context.Context, int64, int64) error
 }
 
 type telegramAPI struct {
@@ -1838,6 +1852,22 @@ func (t *telegramAPI) SendChatAction(ctx context.Context, chatID int64, topicID 
 		params[topicField(chatID)] = topicID
 	}
 	return t.call(ctx, "sendChatAction", params, nil)
+}
+
+// createForumTopic needs a bot with manage_topics in a forum-enabled group;
+// it fails otherwise and callers fall back to plain topic routing.
+func (t *telegramAPI) CreateForumTopic(ctx context.Context, chatID int64, name string) (int64, error) {
+	var result struct {
+		MessageThreadID int64 `json:"message_thread_id"`
+	}
+	err := t.call(ctx, "createForumTopic", map[string]any{"chat_id": chatID, "name": name}, &result)
+	return result.MessageThreadID, err
+}
+func (t *telegramAPI) EditForumTopic(ctx context.Context, chatID, topicID int64, name string) error {
+	return t.call(ctx, "editForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID, "name": name}, nil)
+}
+func (t *telegramAPI) DeleteForumTopic(ctx context.Context, chatID, topicID int64) error {
+	return t.call(ctx, "deleteForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID}, nil)
 }
 func (t *telegramAPI) GetFile(ctx context.Context, fileID string) (TelegramFile, error) {
 	var file TelegramFile
@@ -2356,6 +2386,15 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		}
 		log.Printf("gateway telegram-received user=%q update_id=%d chat_id=%d message_id=%d %s", user.ID, update.UpdateID, message.Chat.ID, message.MessageID, g.contentField(visible))
 	}
+	if message.Chat.ID < 0 && message.ForumTopicCreated != nil {
+		return g.forumTopicCreated(user, message.Chat.ID, messageTopicID(message), message.ForumTopicCreated.Name)
+	}
+	if message.Chat.ID < 0 && message.ForumTopicEdited != nil {
+		if err := g.spool.RenameTopicTask(user, message.Chat.ID, messageTopicID(message), message.ForumTopicEdited.Name); err != nil {
+			log.Printf("gateway forum topic rename failed chat=%d topic=%d: %v", message.Chat.ID, messageTopicID(message), err)
+		}
+		return nil
+	}
 	if edited {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), "Изменение сообщения не перезапускает задачу. Используйте новое сообщение или /cancel.")
 	}
@@ -2417,13 +2456,15 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		case "start":
 			return reply("Готово. Вы подключены к своему Hermes-пространству.")
 		case "new":
-			return reply(g.newTaskCommand(user, message.Chat.ID, topic, text))
+			answer, replyTopic := g.newTaskCommand(ctx, user, message.Chat.ID, topic, text)
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, replyTopic, answer)
 		case "sessions":
 			return reply(g.sessionsCommand(user, message.Chat.ID))
 		case "use":
 			return reply(g.useCommand(user, message.Chat.ID, text))
 		case "delete":
-			return reply(g.deleteCommand(user, message.Chat.ID, task, text))
+			answer, replyTopic := g.deleteCommand(ctx, user, message.Chat.ID, topic, task, text)
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, replyTopic, answer)
 		case "session", "status":
 			return reply(g.taskStatus(user, task))
 		case "routines":
@@ -2645,6 +2686,9 @@ func (g *Gateway) maybeAutoTitle(ctx context.Context, job Job) {
 		return
 	}
 	if g.spool.AutoTitleTask(job.PrincipalID, job.TaskID, report.Title) {
+		if job.ChatID < 0 && job.TopicID != 0 {
+			_ = g.api.EditForumTopic(ctx, job.ChatID, job.TopicID, strings.TrimSpace(report.Title))
+		}
 		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "».", CreatedAt: g.now().UTC()})
 	}
 }

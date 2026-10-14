@@ -39,6 +39,13 @@ func TestOpenCredentialSurfaceSkipsLocalStoreWhenBrokerApprovalIsConfigured(t *t
 	}
 }
 
+type forumOp struct {
+	method string
+	chat   int64
+	topic  int64
+	name   string
+}
+
 type fakeAPI struct {
 	mu              sync.Mutex
 	updates         []Update
@@ -62,8 +69,10 @@ type fakeAPI struct {
 		messageID int
 		text      string
 	}
+	forumOps  []forumOp
 	fileSize  int64
 	err       error
+	forumErr  error
 	failOn    int // fail the failOn-th SendMessage call (1-based; 0 = never)
 	failDocOn int // fail the failOn-th SendDocument call (1-based; 0 = never)
 	photoErr  error
@@ -197,6 +206,49 @@ func (f *fakeAPI) SendVoice(_ context.Context, _ int64, _ int64, audio []byte, _
 	return f.err
 }
 func (f *fakeAPI) SetMyCommands(context.Context) error { return f.err }
+
+func (f *fakeAPI) CreateForumTopic(_ context.Context, chatID int64, name string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forumOps = append(f.forumOps, forumOp{method: "create", chat: chatID, name: name})
+	if f.err != nil {
+		return 0, f.err
+	}
+	if f.forumErr != nil {
+		return 0, f.forumErr
+	}
+	creates := 0
+	for _, op := range f.forumOps {
+		if op.method == "create" {
+			creates++
+		}
+	}
+	return int64(900 + creates), nil
+}
+func (f *fakeAPI) CloseForumTopic(_ context.Context, chatID, topicID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forumOps = append(f.forumOps, forumOp{method: "close", chat: chatID, topic: topicID})
+	return f.err
+}
+func (f *fakeAPI) ReopenForumTopic(_ context.Context, chatID, topicID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forumOps = append(f.forumOps, forumOp{method: "reopen", chat: chatID, topic: topicID})
+	return f.err
+}
+func (f *fakeAPI) EditForumTopic(_ context.Context, chatID, topicID int64, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forumOps = append(f.forumOps, forumOp{method: "edit", chat: chatID, topic: topicID, name: name})
+	return f.err
+}
+func (f *fakeAPI) DeleteForumTopic(_ context.Context, chatID, topicID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forumOps = append(f.forumOps, forumOp{method: "delete", chat: chatID, topic: topicID})
+	return f.err
+}
 
 type fakeRunner struct {
 	mu   sync.Mutex
@@ -1864,6 +1916,13 @@ func (r *runAPI) SendKeyboard(context.Context, int64, int64, string, []DeliveryB
 }
 func (r *runAPI) AnswerCallbackQuery(context.Context, string, string) error { return nil }
 func (r *runAPI) SetMyCommands(context.Context) error                       { return nil }
+func (r *runAPI) CreateForumTopic(context.Context, int64, string) (int64, error) {
+	return 0, nil
+}
+func (r *runAPI) CloseForumTopic(context.Context, int64, int64) error        { return nil }
+func (r *runAPI) ReopenForumTopic(context.Context, int64, int64) error       { return nil }
+func (r *runAPI) EditForumTopic(context.Context, int64, int64, string) error { return nil }
+func (r *runAPI) DeleteForumTopic(context.Context, int64, int64) error       { return nil }
 
 func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	c := testConfig(t)

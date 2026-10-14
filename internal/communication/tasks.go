@@ -481,6 +481,92 @@ func (s *Spool) RenameTask(user User, chatID int64, taskID, name string) (Task, 
 	return task, s.materializeTaskLocked(task)
 }
 
+// RebindTaskTopic moves a task's topic binding to another topic — e.g. from
+// the caller's topic to a bot-created forum topic. The target must be free or
+// already bound to the same task.
+func (s *Spool) RebindTaskTopic(user User, chatID int64, taskID string, newTopic int64) error {
+	if newTopic == 0 {
+		return errors.New("missing topic")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, err := s.taskForMutationLocked(user, chatID, taskID)
+	if err != nil {
+		return err
+	}
+	if bound, err := s.topicTaskLocked(user.ID, chatID, newTopic); err != nil {
+		return err
+	} else if bound != "" && bound != taskID {
+		return errors.New("topic is already bound")
+	}
+	if task.TopicID != 0 && task.TopicID != newTopic {
+		if err := os.Remove(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	task.TopicID = newTopic
+	return s.materializeTaskLocked(task)
+}
+
+// RenameTopicTask mirrors a forum-topic rename onto the bound session so the
+// session list shows the same name the topic carries; an adopted auto name
+// is dropped since the user named the topic deliberately. Unbound, stale or
+// archived bindings are a no-op.
+func (s *Spool) RenameTopicTask(user User, chatID, topicID int64, name string) error {
+	name = strings.TrimSpace(name)
+	if topicID == 0 || !validTaskName(name) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taskID, err := s.topicTaskLocked(user.ID, chatID, topicID)
+	if err != nil || taskID == "" {
+		return err
+	}
+	task, err := s.loadTaskLocked(user.ID, taskID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if task.Archived || task.Name == name {
+		return nil
+	}
+	task.Name = name
+	task.NameAuto = false
+	return s.writeTaskLocked(task)
+}
+
+// FixTopicPlaceholder replaces the adoption placeholder "topic-<id>" with
+// the real forum topic name when the service message arrives after the
+// topic was already bound. A task carrying any other name keeps it.
+func (s *Spool) FixTopicPlaceholder(user User, chatID, topicID int64, name string) error {
+	name = strings.TrimSpace(name)
+	if topicID == 0 || !validTaskName(name) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taskID, err := s.topicTaskLocked(user.ID, chatID, topicID)
+	if err != nil || taskID == "" {
+		return err
+	}
+	task, err := s.loadTaskLocked(user.ID, taskID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if task.Archived || task.Name != "topic-"+strconv.FormatInt(topicID, 10) {
+		return nil
+	}
+	task.Name = name
+	task.NameAuto = false
+	return s.writeTaskLocked(task)
+}
+
 // ArchiveTask retires a live task: its topic binding and current pointer are
 // released and the chat falls back to the default conversation. The task file
 // keeps its session binding for audit; the same name can be reused later.

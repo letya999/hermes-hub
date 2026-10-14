@@ -13,6 +13,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0098](in-progress/CHG-0098-forum-topic-sessions/plan.md) | Issue #220: /new mints a bot-owned forum topic per session; delete/auto-title mirror it; unit green, Docker + live pending |
 | [CHG-0097](in-progress/CHG-0097-single-stack-supervisor/plan.md) | Docker restored; container supervisor wake/restart verified, Windows tasks removed; final image rollout in progress |
 | [CHG-0092](in-progress/CHG-0092-chain-stop-the-bleeding/plan.md) | M19 stage 0, implemented; acceptance in progress: idle deadlines, pre-admission retry, lease-safe lifecycle, supervisor service, routine isolation |
 | [CHG-0093](in-progress/CHG-0093-tool-surface-integrity/plan.md) | M19 stage 1, implemented; acceptance in progress: rights-only policy hash, binding migration, tool manifest readiness, context hygiene |
