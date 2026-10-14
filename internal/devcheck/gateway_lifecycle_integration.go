@@ -265,7 +265,13 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	}
 	appendTask(71001, 21)
 	if err := wait("Alice cold start and final", coldStartBudget, func() bool { mu.Lock(); defer mu.Unlock(); return finals[21] == 1 }); err != nil {
-		return err
+		runtime, _, _ := manager.Status(bindings[0])
+		inspect, _ := exec.Command("docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}", runtime.Container).CombinedOutput()
+		logs, _ := exec.Command("docker", "logs", "--tail", "12", runtime.Container).CombinedOutput()
+		if len(logs) > 4096 {
+			logs = logs[len(logs)-4096:]
+		}
+		return fmt.Errorf("%w: runtime=%s inspect=%q logs=%q", err, runtime.State, strings.TrimSpace(string(inspect)), string(logs))
 	}
 	first, err := readMapping(71001)
 	if err != nil || first.Status != "completed" || first.ContextID != users[0].ID || first.RuntimeID != users[0].ID || first.RunID == "" {
