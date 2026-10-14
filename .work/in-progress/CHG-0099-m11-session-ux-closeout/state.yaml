@@ -21,6 +21,12 @@ slices:
   - S4: TestAllCommandsStayDeterministic proves no slash command enters the
     model queue; e2e runner baked into the hub image; docs record the
     one-command mock-server harness and the no-live-claim boundary
+  - S5: progressTick skips jobs that never reached admission (RunID == "");
+    a dead supervisor/wake path can no longer farm typing+status edits
+    forever. Root cause of the live incident: stale bin/hubctl.exe
+    rendered compose without the supervisor service while the env still
+    pointed at http://supervisor:8876 — rebuilt binary + hubctl up
+    restored the service
 validation:
   - go test ./internal/communication/ — green
   - just check — green (coverage 85.30%, race/vet/staticcheck/docs/actionlint)

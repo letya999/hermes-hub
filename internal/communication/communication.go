@@ -2659,6 +2659,11 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		if err != nil || !found || m.Channel != "telegram_bot" || m.CancelRequested {
 			continue
 		}
+		// Only an admitted run earns live progress: a queued or wedged job
+		// would farm typing and edits forever with nothing behind them.
+		if m.RunID == "" {
+			continue
+		}
 		_ = g.api.SendChatAction(ctx, m.ChatID, m.TopicID, "typing")
 		base := strings.TrimSpace(m.StatusText)
 		if base == "" {

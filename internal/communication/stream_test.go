@@ -100,6 +100,30 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 	}
 }
 
+// A queued job that never reached admission — a dead supervisor, a wedged
+// runtime — must not farm typing actions and status edits forever.
+func TestProgressTickSkipsUnadmittedJob(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "stuck-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "stuck-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.spool = fake, s
+	g.progressTick(context.Background())
+	g.deliverOne(context.Background())
+	if len(fake.chatActions) != 0 || len(fake.sent) != 0 {
+		t.Fatalf("unadmitted job got progress: actions=%v sent=%v", fake.chatActions, fake.sent)
+	}
+}
+
 // The gateway's run loop schedules the periodic progress tick: a non-terminal
 // telegram job gets its typing action re-armed while Run is alive.
 func TestProgressLoopRunsDuringGatewayRun(t *testing.T) {
@@ -110,6 +134,9 @@ func TestProgressLoopRunsDuringGatewayRun(t *testing.T) {
 	user := g.user("alice")
 	job := Job{Envelope: user.envelope(11), ID: "loop-live", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "loop-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.RecordStreamEvent(job, streamEvent(job)); err != nil {
 		t.Fatal(err)
 	}
 	fake := &idleAPI{}
