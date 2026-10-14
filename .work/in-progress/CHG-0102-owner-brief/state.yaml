@@ -4,7 +4,7 @@ title: Owner brief
 status: in_progress
 branch: feat/m13-proactive-automation
 updated: 2026-10-14
-phase: design-complete
+phase: implementation
 adr: ADR-0041
 spec: SPEC-0054
 requirements: [R4.1, R4.2, R4.3]
@@ -12,16 +12,27 @@ depends_on: [CHG-0100]
 github_milestone: M12 — Proactive Automation
 github_issue: 250
 design_status: accepted
-implementation_status: not_started
+implementation_status: in_progress
 slices:
-  S4.1-snapshot-dispatch: not_started
-  S4.2-pause-cursor: not_started
+  S4.1-snapshot-dispatch: green
+  S4.2-pause-cursor: green
 validation:
-  documents: pending
+  documents: updated
   just_check: not_run
   docker_check: not_run
-  red_team: not_started
+  red_team: recorded
   live_acceptance: not_started
-evidence: []
-remaining: []
-limitations: []
+evidence:
+  - "job_kind=brief: snapshot = changed watch sources (source_ids filter, authorize recheck, unavailable named) + open tasks (<=16); empty slot -> deterministic delivery, no model"
+  - "non-empty slot admits one child job id 'brief-'+occurrenceID (avoids routine- prefix cancellation), routine conversation, [untrusted snapshot] prefix"
+  - "digestPath cursor (Generations/LastDigestAt/Errors) prevents re-reporting; cursor written after enqueue so crash replay redelivers the same durable effect"
+  - "validation: brief accepts source_ids, rejects probe; notify_mode=agent stays watcher/check-only"
+  - "tests: TestBriefEmptySlotNoModel, TestBriefChangeAdmitsOneJob, TestBriefUnavailableNamed, TestBriefForeignWatchesExcluded, TestBriefListsOpenTasks, TestBriefCursorAdvances, TestBriefSourceIDsScope, TestBriefRevokedStaysQuietAndRestartDedups"
+  - "go test ./internal/communication — ok ~36s; go test ./internal/agenttools — ok"
+remaining:
+  - "issue #250 evidence comment (after PR)"
+  - "live acceptance A6 on dev stack"
+  - "just check at milestone close"
+limitations:
+  - "brief snapshot sections are watch changes + open tasks; provider sections (calendar etc.) deferred per plan"
+  - "brief job admission is not quiet-window deferred (the agent run is the effect); the empty-slot delivery also is not deferred — policy fields apply to notification kinds"

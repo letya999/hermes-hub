@@ -576,11 +576,14 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if len(in.ScheduleID) > 80 || !spoolIDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
-	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" {
+	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" && in.JobKind != "brief" {
 		return errors.New("invalid job kind")
 	}
 	if in.JobKind == "check" && in.Expect != "changed" && in.Expect != "unchanged" && (!strings.HasPrefix(in.Expect, "equals:") || len(in.Expect) <= len("equals:") || len(in.Expect) > 1024) {
 		return errors.New("invalid check expect")
+	}
+	if in.JobKind == "brief" && in.Probe != nil {
+		return errors.New("a brief aggregates sources and carries no probe")
 	}
 	if in.MaxRetries != 0 && (in.JobKind != "check" || in.MaxRetries < 0 || in.MaxRetries > 8) {
 		return errors.New("max_retries is a check bound between 0 and 8")
@@ -629,8 +632,8 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 			}
 		}
 	}
-	if len(in.SourceIDs) > 128 || (len(in.SourceIDs) > 0 && in.JobKind != "digest") {
-		return errors.New("source_ids require a digest and at most 128 sources")
+	if len(in.SourceIDs) > 128 || (len(in.SourceIDs) > 0 && in.JobKind != "digest" && in.JobKind != "brief") {
+		return errors.New("source_ids require a digest or brief and at most 128 sources")
 	}
 	seenSources := map[string]bool{}
 	for _, id := range in.SourceIDs {

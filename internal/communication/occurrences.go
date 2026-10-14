@@ -155,7 +155,7 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		} else if o.JobKind == "watcher" || o.JobKind == "check" {
 			// Probing runs outside the lock in ProbeDueOccurrences.
 			o.State = "probing"
-		} else if o.JobKind == "digest" {
+		} else if o.JobKind == "digest" || o.JobKind == "brief" {
 			pendingProbe := false
 			for _, source := range occurrences {
 				if (source.State == "pending" || source.State == "probing") && (source.JobKind == "watcher" || source.JobKind == "check") && source.Job.PrincipalID == o.Job.PrincipalID && source.Job.ContextID == o.Job.ContextID && !source.DueAt.After(now) {
@@ -171,7 +171,11 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 				continue
 			}
 
-			if err := s.dispatchDigestLocked(o, now, authorize); err != nil {
+			if o.JobKind == "brief" {
+				if err := s.dispatchBriefLocked(o, now, authorize); err != nil {
+					return err
+				}
+			} else if err := s.dispatchDigestLocked(o, now, authorize); err != nil {
 				return err
 			}
 			o.State = "dispatched"

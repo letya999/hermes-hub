@@ -311,6 +311,348 @@ func TestAgentModeRejectedOnReminder(t *testing.T) {
 	}
 }
 
+// S4.1 — an empty brief slot (no changed watches, no open tasks) produces
+// one deterministic delivery and never admits an agent job (SPEC-0054 R4).
+func TestBriefEmptySlotNoModel(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	now := time.Now().UTC()
+	o.ScheduleID = "brief1"
+	o.JobKind = "brief"
+	o.Job.Text = "Утренний бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || !strings.Contains(d.Text, "Новых изменений нет") {
+		t.Fatalf("empty brief should deliver deterministic text: %+v %v", d, err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatal("empty brief admitted an agent job")
+	}
+}
+
+// S4.1 — a changed watch turns the brief into one admitted agent job whose
+// text carries the authorized snapshot flagged untrusted; a replayed dispatch
+// must not admit a second job (SPEC-0054 R4).
+func TestBriefChangeAdmitsOneJob(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wb", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "price watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/p"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wb"), WatchState{ScheduleID: "wb", Baseline: "h1", Value: "250", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "brief2"
+	o.JobKind = "brief"
+	o.Job.Text = "Утренний бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatalf("brief admitted no agent job: %v", err)
+	}
+	if !strings.Contains(job.Text, "untrusted") || !strings.Contains(job.Text, "price watch") || !strings.Contains(job.Text, "250") {
+		t.Fatalf("snapshot missing or not flagged untrusted: %q", job.Text)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.ClaimJob(); err != nil || again != nil {
+		t.Fatal("brief dispatch replay admitted a second job")
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("non-empty brief produced a plain delivery")
+	}
+}
+
+// S4.1 — a failing watch source is named unavailable in the snapshot —
+// never reported as "no changes" (SPEC-0054 R4).
+func TestBriefUnavailableNamed(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wf", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "fragile feed", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/f"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wf"), WatchState{ScheduleID: "wf", LastError: "connection refused", LastSuccess: time.Now().UTC().Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "brief3"
+	o.JobKind = "brief"
+	o.Job.Text = "Утренний бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("unavailable source produced no brief job")
+	}
+	if !strings.Contains(job.Text, "fragile feed") || !strings.Contains(job.Text, "недоступен") || strings.Contains(job.Text, "Новых изменений нет") {
+		t.Fatalf("unavailable source not named: %q", job.Text)
+	}
+}
+
+// S4.1 — another principal's changed watch never enters the owner's brief
+// snapshot (SPEC-0054 R4 red-team).
+func TestBriefForeignWatchesExcluded(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
+	bobEnv := bob.envelope(22)
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-foreign", Envelope: bobEnv, OrganizationID: o.Job.OrganizationID, UserID: "bob", ActorID: "bob", ScopeID: "user:bob", Channel: "telegram_bot", ChatID: 22, Timezone: "UTC", Expression: "0 * * * *", Input: "bob watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/b"}}, bobEnv, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("w-foreign"), WatchState{ScheduleID: "w-foreign", Baseline: "h1", Value: "secret-999", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "brief4"
+	o.JobKind = "brief"
+	o.Job.Text = "Утренний бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("foreign watch leaked into the brief: %+v", job)
+	}
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || strings.Contains(d.Text, "bob watch") || strings.Contains(d.Text, "secret-999") {
+		t.Fatalf("foreign data leaked or missing empty-brief delivery: %+v %v", d, err)
+	}
+}
+
+// S4.1 — the brief snapshot includes the owner's open tasks; archived and
+// foreign tasks stay out (SPEC-0054 R4).
+func TestBriefListsOpenTasks(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	if _, _, err := s.CreateTask(user, 11, 0, "finish report", false); err != nil {
+		t.Fatal(err)
+	}
+	done, _, err := s.CreateTask(user, 11, 0, "old task", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ArchiveTask(user, 11, done.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
+	if _, _, err := s.CreateTask(bob, 22, 0, "bob task", false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "brief5"
+	o.JobKind = "brief"
+	o.Job.Text = "Утренний бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("open task produced no brief job")
+	}
+	if !strings.Contains(job.Text, "finish report") || strings.Contains(job.Text, "old task") || strings.Contains(job.Text, "bob task") {
+		t.Fatalf("task section wrong: %q", job.Text)
+	}
+}
+
+// S4.1 — the brief cursor advances with dispatch: a second brief does not
+// re-report the same change (SPEC-0054 R4).
+func TestBriefCursorAdvances(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wc", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "price watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/c"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wc"), WatchState{ScheduleID: "wc", Baseline: "h1", Value: "250", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "brief6", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "Утренний бриф", JobKind: "brief"}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "brief6"
+	o.JobKind = "brief"
+	o.Job.Text = "Утренний бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil || !strings.Contains(job.Text, "price watch") {
+		t.Fatalf("first brief lost the change: %+v %v", job, err)
+	}
+	if err := s.CompleteJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Next slot, same unchanged watch state: nothing new to report.
+	o2 := o
+	o2.DueAt = now.Add(24 * time.Hour)
+	if err := s.PutOccurrence(o2, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now.Add(25*time.Hour), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("brief re-reported the same change: %+v", job)
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d == nil || !strings.Contains(d.Text, "Новых изменений нет") {
+		t.Fatalf("second brief should be a deterministic empty slot: %+v %v", d, err)
+	}
+}
+
+// S4.1 — source_ids scope the brief snapshot, and a brief carries no probe
+// of its own (SPEC-0054 R4).
+func TestBriefSourceIDsScope(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	mk := func(id, input string) {
+		t.Helper()
+		if _, err := s.CreateSchedule(Schedule{ScheduleID: id, Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: input, JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/" + id}}, caller, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("s-in", "in scope")
+	mk("s-out", "out of scope")
+	for _, id := range []string{"s-in", "s-out"} {
+		if err := atomicJSON(s.watchPath(id), WatchState{ScheduleID: id, Baseline: "h", Value: "v-" + id, ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "brief7", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief", SourceIDs: []string{"s-in"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "brief8", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief", Probe: &WatchProbe{URL: "https://example.com/x"}}, caller, ""); err == nil {
+		t.Fatal("brief with a probe accepted")
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "brief7"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("scoped brief produced no job")
+	}
+	if !strings.Contains(job.Text, "in scope") || strings.Contains(job.Text, "out of scope") {
+		t.Fatalf("source_ids scope not honored: %q", job.Text)
+	}
+}
+
+// S4.2 — a revoked brief cancels its due occurrence through the shared
+// machinery; a replayed pending occurrence after a crash dedups the admitted
+// job by its durable file (SPEC-0054 R4).
+func TestBriefRevokedStaysQuietAndRestartDedups(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wrv", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "feed", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/r"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wrv"), WatchState{ScheduleID: "wrv", Baseline: "h", Value: "v", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "brief9", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief"}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "brief9"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSchedule("brief9", caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatal("revoked brief admitted a job")
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("revoked brief produced a delivery")
+	}
+	var occ RoutineOccurrence
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	if err != nil || json.Unmarshal(b, &occ) != nil || occ.State != "cancelled" {
+		t.Fatalf("revoked brief occurrence not cancelled: %s %v", occ.State, err)
+	}
+	// Crash replay: the occurrence stayed pending while the admitted job is
+	// already durable — re-dispatch must not admit a second one.
+	if err := os.MkdirAll(filepath.Join(s.root, "schedules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "brief10", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief"}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	o2 := o
+	o2.ScheduleID = "brief10"
+	if err := s.PutOccurrence(o2, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	var occ2 RoutineOccurrence
+	b2, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o2)+".json"))
+	if err != nil || json.Unmarshal(b2, &occ2) != nil {
+		t.Fatal(err)
+	}
+	occ2.State = "pending"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o2)+".json"), occ2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("crash-replayed brief lost its job")
+	}
+	if err := s.CompleteJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.ClaimJob(); err != nil || again != nil {
+		t.Fatal("crash replay admitted a second brief job")
+	}
+}
+
 // S3.2 — a watcher may poll an owner's read-only ToolHub tool instead of a
 // URL: the projected tool text is the compared value, and the URL fetch is
 // never touched (SPEC-0054 R3.2).

@@ -265,6 +265,14 @@ tool result is a probe error, not a value — the occurrence retries/settles
 through the same policy path. This keeps connector state verifiable without
 publishing credentials or letting model output stand in for evidence.
 
+A `brief` routine is the one deterministic kind that may wake the agent: it
+assembles an authorized snapshot — the owner's watch sources changed since
+its cursor, sources named unavailable (never "no changes"), and open tasks —
+into bounded lines. An empty slot delivers a fixed "nothing new" message with
+no model call. A non-empty slot admits one routine-conversation job whose
+text carries the snapshot flagged untrusted; the durable cursor prevents
+re-reporting and the job file dedups crash replay.
+
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
 OAuth and Hermes state stay in that user's named volumes. Organization documents are
