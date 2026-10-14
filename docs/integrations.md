@@ -4,6 +4,11 @@ last_verified: 2026-10-07
 ---
 # Integration contracts
 
+Local STT pins faster-whisper 1.2.1 with PyAV 18.1.0 in both the runtime and
+standalone STT image. PyAV 19 removed the decoder argument used by that
+faster-whisper release. The native contract and standalone STT CI gate decode
+a synthetic WAV without network access so dependency skew cannot silently pass.
+
 Manager instructions for the owner's local PC:
 [local-accounts-manager.md](local-accounts-manager.md). Local deployment is
 prepared, not logged in; existing Hermes defaults are unchanged.
@@ -767,7 +772,7 @@ cannot satisfy a needed source.
 
 | Component | Source / pin | Contract |
 |---|---|---|
-| Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
+| Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server. Pin predates upstream separation of tool-level `isError` results from transport failures for the MCP circuit breaker (PRs 67340/17016 closed unmerged, 68455 open); hub-side tools already mark expected failures as `isError`, and the pin is revisited once an upstream fix lands — residual risk tracked under CHG-0093 |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
 | Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai; hub `hub-web` plugin adds `web_providers` + `web_search_multi` fan-out + `web_cache` cleanup | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
 | Telegram account | [letya999/telegram-mcp](https://github.com/letya999/telegram-mcp), `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults to `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate |

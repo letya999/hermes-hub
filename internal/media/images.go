@@ -85,11 +85,7 @@ func (s *Session) inspectMany(ctx context.Context, paths []string) (map[string]a
 	results := []map[string]any{}
 	total := 0
 	for _, rel := range paths {
-		format, err := imageFormat(rel)
-		if err != nil {
-			return nil, err
-		}
-		body, err := s.readRegular(rel, MaxImageBytes)
+		format, body, err := s.imageFile(rel)
 		if err != nil {
 			return nil, err
 		}
@@ -120,7 +116,7 @@ func (s *Session) inspectMany(ctx context.Context, paths []string) (map[string]a
 		return nil, err
 	}
 	key := getenvTrim("OPENAI_API_KEY")
-	if key == "" {
+	if key == "" || strings.Contains(key, "${") {
 		return nil, errors.New("image understanding credential is not available")
 	}
 	payload := map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": content}}}
@@ -323,11 +319,11 @@ func (s *Session) finishImage(ctx context.Context, name, model, provider, delive
 }
 
 func (s *Session) imageFile(rel string) (string, []byte, error) {
-	format, err := imageFormat(rel)
+	body, err := s.readRegular(rel, MaxImageBytes)
 	if err != nil {
 		return "", nil, err
 	}
-	body, err := s.readRegular(rel, MaxImageBytes)
+	format, err := sniffImage(body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -555,26 +551,6 @@ func modelEndpoint(cfg hermesConfig) (string, string, error) {
 		return "", "", errors.New("image understanding endpoint is not configured")
 	}
 	return strings.TrimRight(u.String(), "/") + "/chat/completions", model, nil
-}
-
-func imageFormat(rel string) (string, error) {
-	if err := relPath(rel); err != nil {
-		return "", err
-	}
-	ext := strings.ToLower(strings.TrimPrefix(path.Ext(rel), "."))
-	if slicesContains(UnsupportedImages, ext) || slicesContains(UnsupportedDocuments, ext) {
-		return "", fmt.Errorf("unsupported image format %q", ext)
-	}
-	switch ext {
-	case "png":
-		return "png", nil
-	case "jpg", "jpeg":
-		return "jpeg", nil
-	case "webp":
-		return "webp", nil
-	default:
-		return "", fmt.Errorf("unsupported image format %q", ext)
-	}
 }
 
 func sniffImage(body []byte) (string, error) {

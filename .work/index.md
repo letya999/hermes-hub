@@ -2,6 +2,7 @@
 
 Use todo / in-progress / done directories for active change folders. A folder contains
 plan.md and state.yaml. Task progress belongs here, never in current architecture docs.
+New milestones follow the [milestone playbook](milestone-playbook.md) and its [templates](templates/change-plan.md).
 
 The table tracks current change records. Issue 122's broader default-deny design
 is CHG-0065; its implementation is in progress. Issues 167-169 (task sessions,
@@ -12,6 +13,16 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0097](in-progress/CHG-0097-single-stack-supervisor/plan.md) | Docker restored; container supervisor wake/restart verified, Windows tasks removed; final image rollout in progress |
+| [CHG-0092](in-progress/CHG-0092-chain-stop-the-bleeding/plan.md) | M19 stage 0, implemented; acceptance in progress: idle deadlines, pre-admission retry, lease-safe lifecycle, supervisor service, routine isolation |
+| [CHG-0093](in-progress/CHG-0093-tool-surface-integrity/plan.md) | M19 stage 1, implemented; acceptance in progress: rights-only policy hash, binding migration, tool manifest readiness, context hygiene |
+| [CHG-0094](in-progress/CHG-0094-chain-latency/plan.md) | M19 stage 2, implemented; live SLO pending: early liveness, single progress message, event-driven spool, lazy browser |
+| [CHG-0095](in-progress/CHG-0095-recovery-observability/plan.md) | M19 stage 3, implemented; Docker/chaos acceptance in progress: job state machine, unconfirmed reconciler, canary, structured logs, trace |
+| [CHG-0096](in-progress/CHG-0096-control-plane-simplification/plan.md) | M19 stage 4: container direction implemented in CHG-0097; store and Hermes pin proposals remain deferred |
+| [CHG-0090](in-progress/CHG-0090-deployment-contracts/plan.md) | Deployment contracts and regressions implemented; source and Docker gates passed; busy local runtime restart scheduled |
+| [CHG-0091](in-progress/CHG-0091-telegram-operation-contracts/plan.md) | Design ready for review: researched ADR-0035/SPEC-0052, code map, migration and acceptance cases; implementation not started |
+| [CHG-0089](done/CHG-0089-routine-control-env/plan.md) | Done: routine control environment forwarding; real Telegram reminder delivered once without agent execution |
+| [CHG-0088](done/CHG-0088-telegram-approval-lifecycle/plan.md) | Done: Telegram approval cleanup, current-request listing guidance and terminal-result preservation; deployed to local dev |
 | [CHG-0087](in-progress/CHG-0087-live-phase1/plan.md) | Live phase 1 capability checks and observed terminal/runtime isolation repairs |
 | [CHG-0086](in-progress/CHG-0086-inbound-documents/plan.md) | Telegram inbound document save and extraction repair; source, Docker, and live Telegram checks passed |
 | [CHG-0085](in-progress/CHG-0085-e2e-ci/plan.md) | Sequential E2E registry and CI latency reduction, in progress |

@@ -1,0 +1,71 @@
+schema: 1
+change: CHG-0091
+status: in_progress
+branch: dev
+updated: 2026-10-13
+phase: implementation
+adr: ADR-0035
+spec: SPEC-0052
+design_status: accepted
+implementation_status: in_progress
+completed:
+  - Read project rules, current docs and predecessor specifications without changing accepted history.
+  - Traced local symbols and callers through Serena Go LSP, Semble and ripgrep.
+  - Researched pinned upstream, SDK and Telegram contracts through web and Context7; surveyed DEV, Medium, Substack and X.
+  - Created proposed ADR, draft specification, implementation slices and independent acceptance cases.
+  - Document links and metadata, git diff whitespace checks and full repository just check passed.
+  - P0: explicit hub child env (model key + effective config path) in rendered and materialized configs; real pinned-Hermes loader canary (_load_mcp_config + _build_safe_env + stdio spawn) passes on the pulled image; unrelated parent keys filtered.
+  - P1: image input format determined by bytes for inspect/edit and multi-image sets; Telegram photos get safe synthetic names with detected suffix; corrupt members still block the whole provider call.
+  - P2: shared routine descriptions on direct MCP and ToolHub (catalog 1.3.0); watcher URL trims surrounding whitespace and rejects control/format characters and credential URLs.
+  - P3: after:<duration> resolves once on the server clock into once:<UTC>; immutable creation receipt with intent digest; locked same-ID replay returns receipt/current state; changed intent 409; foreign/legacy/retired collisions fail closed; tombstones preserve the receipt.
+  - P4: approval keyboards rechecked against current request/run/generation/audience/policy/deadline/decision immediately before send; sent-keyboard receipts tracked and deleted only after applied or terminal state; send-ok/receipt-fail stays uncertain, never resent; verified owner tap on a legacy closed keyboard removes only that message.
+  - P5: instructions name the real auto-delivery buckets, MEDIA marker scope, original-byte delivery and current-request-only/read-only guidance.
+validation:
+  documents: passed
+  just_check: passed
+  own_go_statement_coverage_percent: 85.17
+  new_behavior: synthetic_passed
+  docker_acceptance: hub_stdio_canary_passed_on_fresh_dev_image
+  live_acceptance: partial_routine_spam_root_caused_and_repaired
+  live_acceptance_notes: >-
+    Live stack rebuilt and deployed via hubctl build/up (image 3487916a0bdf).
+    Recurring "Не удалось завершить задачу." spam traced and fixed: stale
+    policy pin in spaces/local/communication.users.yaml (a3c1 -> 1191),
+    running hub-supervisor binary predated the Config/policy-hash change
+    (rebuilt from tree), and a supervisor relaunch without HUB_ENV spawned a
+    prod-bound context (empty OPENAI_API_KEY -> cliproxy 401). Relaunched with
+    HUB_ENV=dev; routine jobs now complete and deliver summaries (12:46, 12:48
+    UTC). Two further live defects found and fixed: applyHubCommunicationConfig
+    baked the host-side materialization path into mcp_servers.hub.env
+    .HUB_HERMES_CONFIG (Windows path unreadable inside the Linux runtime ->
+    "media profile config is unavailable" on every image_inspect -> photo jobs
+    burned the 130s execute budget and ended run.unknown); now always emits
+    the container mount path /state/hermes/config.yaml, live generated config
+    patched, runtime restarted. Reconcile remediation restarted runtimes on
+    Hermes "degraded" readiness (host disk >=90%), which is not
+    restart-remediable and killed in-flight runs -> self-feeding restart
+    storm; remediation now fires only on "unavailable". Regression tests:
+    TestDegradedRuntimeDoesNotRemediateUncertainJobs, updated wedged test to
+    unavailable, updated hub-child env assertion to the container config path.
+    End-to-end verified: real /v1/jobs photo job completed with image_inspect
+    via the live hub MCP child (gen-277, run.completed, Russian description
+    returned). Third live defect: the hub-agent-tools ToolHub binding for
+    principal local was pinned to stale policy-a3c1, so no hub-* tools were
+    projected under policy-1191 and fetchInbound's inbox_fetch failed in
+    ~130ms -> every photo job ended run.unknown. Rebound via hubctl
+    capability --kind agent-tools (catalog 1.3.0, bind-b43c27db, current
+    policy) + toolhub restart; exact replay of telegram-837845435 with
+    inbound_id then completed with a real photo description. Supervisor
+    relaunched detached (PID 373524). P1/P2/P5 live retest by owner still
+    pending.
+remaining:
+  - Reconcile ongoing CHG-0090 work before touching shared implementation files.
+  - Publish/select agent-tools catalog 1.3.0 with reviewed digest/profile/binding renewal at deployment; no grant expansion.
+  - Owner live retest of P1 image intake, P2 watcher URLs, P5 artifact delivery on the fresh stack.
+  - P6 album collection: separate slice after core acceptance with its own HTTP/identity/recovery review.
+limitations:
+  - Existing unrelated uncommitted code is shared with another active task and remains untouched.
+  - No usable indexed X source; no authenticated social/account access performed.
+  - GitHub guard cannot read contents/tree and rejects upstream outside its allowlist; configuration unchanged.
+  - New IDs remain new routine operations; universal semantic deduplication is not promised.
+  - Local hermes-hub:test image predates this change set; the stdio canary proves the pinned loader/env boundary, not the newest hubctl build.

@@ -1145,6 +1145,12 @@ type Store struct {
 	capabilityPolicies  map[string]CapabilityPolicy
 	capabilityProfiles  map[string]CapabilityProfile
 	capabilityChanges   []capabilityChange
+	bindingChanges      []bindingChange
+	// exMu guards the exclusion set separately: exclusions are observability
+	// written from read-locked projection scans, so they must not ride s.mu.
+	exMu           sync.Mutex
+	exclusions     map[string]ProjectionExclusion
+	exclusionOrder []string
 }
 
 // storeStamp is the observed identity of the on-disk snapshot: the file's
@@ -1166,7 +1172,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]Grant{}, onboardings: map[string]Onboarding{}, publications: map[string]DefinitionPublication{}, sharedPolicies: map[string]SharedCredentialPolicy{}, capabilityPolicies: map[string]CapabilityPolicy{}, capabilityProfiles: map[string]CapabilityProfile{}}
+	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]Grant{}, onboardings: map[string]Onboarding{}, publications: map[string]DefinitionPublication{}, sharedPolicies: map[string]SharedCredentialPolicy{}, capabilityPolicies: map[string]CapabilityPolicy{}, capabilityProfiles: map[string]CapabilityProfile{}, exclusions: map[string]ProjectionExclusion{}}
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
@@ -1663,6 +1669,7 @@ type snapshot struct {
 	Publications        []DefinitionPublication  `json:"publications,omitempty"`
 	SharedPolicies      []SharedCredentialPolicy `json:"shared_credential_policies,omitempty"`
 	CapabilityChanges   []capabilityChange       `json:"capability_changes,omitempty"`
+	BindingChanges      []bindingChange          `json:"binding_changes,omitempty"`
 }
 
 func (s *Store) Save(path string) error {
@@ -1695,7 +1702,7 @@ func (s *Store) saveLocked(path string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	state := snapshot{Schema: SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges}
+	state := snapshot{Schema: SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
 	}
@@ -1870,6 +1877,12 @@ func Load(path string) (*Store, error) {
 		}
 		store.projectionRevisions[key] = revision
 	}
+	for _, change := range state.BindingChanges {
+		if !identity.ValidID(change.BindingID) || change.FromPolicy == "" || change.ToPolicy == "" || change.Revision == 0 {
+			return nil, fmt.Errorf("%w: persisted binding change", ErrInvalid)
+		}
+		store.bindingChanges = append(store.bindingChanges, change)
+	}
 	for _, grant := range state.Grants {
 		if err := grant.Validate(); err != nil {
 			return nil, err
@@ -2023,6 +2036,7 @@ func (s *Store) Reload() error {
 	s.capabilityPolicies = fresh.capabilityPolicies
 	s.capabilityProfiles = fresh.capabilityProfiles
 	s.capabilityChanges = fresh.capabilityChanges
+	s.bindingChanges = fresh.bindingChanges
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.diskStamp = fresh.diskStamp
 	s.mu.Unlock()

@@ -485,7 +485,7 @@ func TestHTTPLogsRouteWithoutSecretPathOrQuery(t *testing.T) {
 	defer log.SetOutput(previous)
 	handler := HTTP("broker", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/connect/private-token?code=secret", nil))
-	if got := output.String(); !strings.Contains(got, "broker http method=POST route=/connect") || strings.Contains(got, "private-token") || strings.Contains(got, "secret") {
+	if got := output.String(); !strings.Contains(got, `"component":"broker"`) || !strings.Contains(got, `"route":"/connect"`) || !strings.Contains(got, `"method":"POST"`) || strings.Contains(got, "private-token") || strings.Contains(got, "secret") {
 		t.Fatal(got)
 	}
 }

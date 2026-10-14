@@ -52,12 +52,22 @@ type fakeAPI struct {
 	keyboards       [][]DeliveryButton
 	callbackAnswers []string
 	deleted         []int
-	fileSize        int64
-	err             error
-	failOn          int // fail the failOn-th SendMessage call (1-based; 0 = never)
-	failDocOn       int // fail the failOn-th SendDocument call (1-based; 0 = never)
-	photoErr        error
-	videoErr        error
+	chatActions     []struct {
+		chat, topic int64
+		action      string
+	}
+	messageSeq int
+	edits      []struct {
+		chatID    int64
+		messageID int
+		text      string
+	}
+	fileSize  int64
+	err       error
+	failOn    int // fail the failOn-th SendMessage call (1-based; 0 = never)
+	failDocOn int // fail the failOn-th SendDocument call (1-based; 0 = never)
+	photoErr  error
+	videoErr  error
 }
 
 func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
@@ -79,6 +89,26 @@ func (f *fakeAPI) SendMessage(_ context.Context, _ int64, topicID int64, text, p
 	f.topics = append(f.topics, topicID)
 	return nil
 }
+func (f *fakeAPI) SendMessageReceipt(ctx context.Context, chatID, topicID int64, text, parseMode string) (int, error) {
+	if err := f.SendMessage(ctx, chatID, topicID, text, parseMode); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := f.messageSeq
+	f.messageSeq++
+	return id, nil
+}
+func (f *fakeAPI) EditMessageText(_ context.Context, chatID int64, messageID int, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits = append(f.edits, struct {
+		chatID    int64
+		messageID int
+		text      string
+	}{chatID, messageID, text})
+	return f.err
+}
 func (f *fakeAPI) SendKeyboard(_ context.Context, _ int64, _ int64, text string, buttons []DeliveryButton) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -88,6 +118,12 @@ func (f *fakeAPI) SendKeyboard(_ context.Context, _ int64, _ int64, text string,
 	f.sent = append(f.sent, text)
 	f.keyboards = append(f.keyboards, buttons)
 	return nil
+}
+func (f *fakeAPI) SendKeyboardReceipt(ctx context.Context, chatID, topicID int64, text string, buttons []DeliveryButton) (int, error) {
+	if err := f.SendKeyboard(ctx, chatID, topicID, text, buttons); err != nil {
+		return 0, err
+	}
+	return 731, nil
 }
 func (f *fakeAPI) AnswerCallbackQuery(_ context.Context, _ string, text string) error {
 	f.mu.Lock()
@@ -131,7 +167,15 @@ func (f *fakeAPI) DeleteMessage(_ context.Context, _ int64, id int) error {
 	f.deleted = append(f.deleted, id)
 	return f.err
 }
-func (f *fakeAPI) SendChatAction(context.Context, int64, string) error { return f.err }
+func (f *fakeAPI) SendChatAction(_ context.Context, chatID, topicID int64, action string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.chatActions = append(f.chatActions, struct {
+		chat, topic int64
+		action      string
+	}{chatID, topicID, action})
+	return f.err
+}
 func (f *fakeAPI) GetFile(_ context.Context, fileID string) (TelegramFile, error) {
 	size := f.fileSize
 	if size == 0 {
@@ -174,6 +218,61 @@ func testConfig(t *testing.T) Config {
 	_ = os.MkdirAll(filepath.Join(root, "alice", "state"), 0700)
 	_ = os.MkdirAll(filepath.Join(root, "alice", "workspace"), 0700)
 	return Config{OrganizationID: "personal", TelegramToken: "token", SpoolDir: filepath.Join(root, "spool"), PollTimeout: time.Second, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: filepath.Join(root, "alice", "state"), WorkspaceDir: filepath.Join(root, "alice", "workspace"), Features: []string{"workspace", "github"}, ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}}}
+}
+
+// SPEC-0053 R2.3: spool retention and the mock-capture directory are
+// environment knobs so e2e/mock state stays out of the production spool.
+func TestConfigFromEnvSpoolKnobs(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
+	t.Setenv("HUB_SPOOL_RETENTION", "48h")
+	t.Setenv("HUB_MOCK_DIR", "/var/mock")
+	config, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.SpoolRetention != 48*time.Hour {
+		t.Fatalf("retention not parsed: %v", config.SpoolRetention)
+	}
+	if config.MockDir != "/var/mock" {
+		t.Fatalf("mock dir not parsed: %q", config.MockDir)
+	}
+	t.Setenv("HUB_SPOOL_RETENTION", "")
+	config, err = ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.SpoolRetention != 336*time.Hour {
+		t.Fatalf("default retention must be 336h: %v", config.SpoolRetention)
+	}
+}
+
+// SPEC-0053 R2.3: with MockDir set, mock-channel capture and chat links live
+// outside the production spool so e2e state never mixes with real records.
+func TestMockCaptureUsesConfiguredDir(t *testing.T) {
+	mockDir := filepath.Join(t.TempDir(), "mock")
+	config := testConfig(t)
+	config.MockDir = mockDir
+	g, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.mockLinkClaim(11, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	d := &Delivery{ID: "mock-1", Channel: "mock", ChatID: 11, Text: "hi"}
+	if err := g.captureMock(d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(mockDir, "mock-sent", "mock-1.json")); err != nil {
+		t.Fatalf("capture not under MockDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mockDir, "mock-links", "11.json")); err != nil {
+		t.Fatalf("chat link not under MockDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(g.spool.root, "mock-sent", "mock-1.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("mock capture leaked into the production spool")
+	}
 }
 
 func TestFillChannelSecretsTelegramAuthAPI(t *testing.T) {
@@ -637,6 +736,105 @@ func TestSpoolDurabilityAndSecretIsolation(t *testing.T) {
 	}
 }
 
+// SPEC-0053 R2.1: an accepted update shows liveness within ~1 s — the typing
+// action fires at enqueue time, before any run starts, addressed to the
+// job's chat and topic on the wire.
+func TestAcceptedUpdateSendsTypingBeforeRun(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bottoken/sendChatAction" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			actions = append(actions, body)
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	runner := &fakeRunner{}
+	g.api, g.runner = newTelegramAPI(server.URL, "token", time.Second), runner
+	update := Update{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, DirectMessagesTopic: &TGDirectTopic{TopicID: 7}, Text: "hello"}}
+	if err := g.handleUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.seen) != 0 {
+		t.Fatal("job ran inside handleUpdate; typing must precede the run")
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected one sendChatAction call, got %v", actions)
+	}
+	if actions[0]["chat_id"] != float64(11) || actions[0]["action"] != "typing" || actions[0]["direct_messages_topic_id"] != float64(7) {
+		t.Fatalf("typing action mistargeted: %v", actions[0])
+	}
+}
+
+// R2.1 boundary: liveness feedback is scoped to verified users — an unknown
+// sender only gets the access notice, never a chat action.
+func TestUnknownSenderGetsNoChatAction(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	update := Update{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 99}, Chat: TGChat{ID: 99, Type: "private"}, Text: "hello"}}
+	if err := g.handleUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.chatActions) != 0 {
+		t.Fatalf("unverified sender got a chat action: %v", fake.chatActions)
+	}
+}
+
+// SPEC-0053 R2.1: a supervised gateway fires /v1/wake after spooling so the
+// runtime spawn overlaps gateway work. The call is identity-only — the
+// prompt never leaves the spool path.
+func TestAcceptedJobWakesSupervisedRuntime(t *testing.T) {
+	c := testConfig(t)
+	var wakes []map[string]any
+	wake := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/wake" && r.Header.Get("Authorization") == "Bearer secret" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			wake <- body
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	c.Supervised, c.RuntimeURL, c.RuntimeAuth = true, server.URL, "secret"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api, g.runner = &fakeAPI{}, &fakeRunner{}
+	update := Update{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "hello"}}
+	if err := g.handleUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case body := <-wake:
+		wakes = append(wakes, body)
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervised gateway never called /v1/wake")
+	}
+	if len(wakes) != 1 || wakes[0]["principal_id"] != "alice" || wakes[0]["context_id"] != "alice" {
+		t.Fatalf("wake carried wrong identity: %v", wakes)
+	}
+	if text, ok := wakes[0]["text"]; !ok || text != "" {
+		t.Fatalf("wake carried prompt text: %v", wakes[0])
+	}
+}
+
 func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	c := testConfig(t)
 	g, err := New(c)
@@ -763,7 +961,7 @@ func TestSendKeyboardPostsInlineMarkup(t *testing.T) {
 			http.Error(w, "bad", http.StatusBadRequest)
 			return
 		}
-		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":731}}`))
 	}))
 	defer server.Close()
 	api := newTelegramAPI(server.URL, "token", time.Second)
@@ -888,7 +1086,7 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	if err := files.SendVoice(context.Background(), 11, 0, nil, ""); err == nil {
 		t.Fatal("empty voice accepted")
 	}
-	if err := files.SendChatAction(context.Background(), 11, "typing"); err != nil {
+	if err := files.SendChatAction(context.Background(), 11, 0, "typing"); err != nil {
 		t.Fatal(err)
 	}
 	uploads := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1574,11 +1772,11 @@ func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
 		t.Fatalf("diagnostic line lost IDs/lengths:\n%s", got)
 	}
 	g.recordJob(Job{ID: "telegram-1", UserID: "alice"}, RunOutcome{RunID: "run-1", Status: "completed"})
-	if !strings.Contains(output.String(), "gateway job user=\"alice\" job_id=\"telegram-1\" run_id=\"run-1\"") {
+	if !strings.Contains(output.String(), `"job_id":"telegram-1"`) || !strings.Contains(output.String(), `"run_id":"run-1"`) || !strings.Contains(output.String(), `"principal":"alice"`) {
 		t.Fatal(output.String())
 	}
 	g.recordJob(Job{ID: "telegram-2", UserID: "alice"}, RunOutcome{})
-	if !strings.Contains(output.String(), "gateway job user=\"alice\" job_id=\"telegram-2\" run_id=\"\" status=\"completed\"") {
+	if !strings.Contains(output.String(), `"job_id":"telegram-2"`) || !strings.Contains(output.String(), `"status":"completed"`) {
 		t.Fatal(output.String())
 	}
 	var absent *Gateway
@@ -1651,8 +1849,9 @@ func (r *runAPI) SendPhoto(context.Context, int64, int64, string, string, []byte
 func (r *runAPI) SendVideo(context.Context, int64, int64, string, string, []byte) error {
 	return nil
 }
-func (r *runAPI) DeleteMessage(context.Context, int64, int) error { return nil }
-func (r *runAPI) SendChatAction(context.Context, int64, string) error {
+func (r *runAPI) DeleteMessage(context.Context, int64, int) error           { return nil }
+func (r *runAPI) EditMessageText(context.Context, int64, int, string) error { return nil }
+func (r *runAPI) SendChatAction(context.Context, int64, int64, string) error {
 	return nil
 }
 func (r *runAPI) GetFile(context.Context, string) (TelegramFile, error) {

@@ -20,6 +20,8 @@ func TestCoverage(t *testing.T) {
 		ok   bool
 	}{
 		{"mode: atomic\na.go:1.1,2.1 9 1\nb.go:1.1,2.1 1 0\n", 85, true},
+		{"mode: atomic\na.go:1.1,2.1 9 1\nb.go:1.1,2.1 1 0\n\n", 85, true},
+		{"mode: atomic\na.go:1.1,2.1 9 1\n\nb.go:1.1,2.1 1 0\n", 85, false},
 		{"mode: count\na:1 85 1\nb:1 15 0\n", 85, true},
 		{"mode: set\na:1 84 1\nb:1 16 0\n", 85, false},
 		{"garbage\n", 85, false},

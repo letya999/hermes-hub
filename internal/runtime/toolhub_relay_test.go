@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-func TestToolHubRelayOnlyForwardsMCP(t *testing.T) {
+func TestToolHubRelayOnlyForwardsMCPAndConnectorInventory(t *testing.T) {
 	calls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.URL.String() != "/mcp" || r.Header.Get("Authorization") != "Bearer synthetic" || r.Header.Get("X-Original-URL") != "" {
+		if (r.URL.String() != "/mcp" && r.URL.String() != "/v1/connectors") || r.Header.Get("Authorization") != "Bearer synthetic" || r.Header.Get("X-Original-URL") != "" {
 			t.Errorf("unsafe ToolHub request: %s %v", r.URL, r.Header)
 		}
 		_, _ = io.WriteString(w, "mcp-ok")
@@ -22,7 +22,7 @@ func TestToolHubRelayOnlyForwardsMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/credentials/private", "/oauth/callback", "/mcp/other", "/mcp?target=/credentials/private", "/mcp%2f"} {
+	for _, path := range []string{"/credentials/private", "/oauth/callback", "/mcp/other", "/mcp?target=/credentials/private", "/mcp%2f", "/v1/connectors"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -42,6 +42,22 @@ func TestToolHubRelayOnlyForwardsMCP(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("MCP calls=%d", calls)
+	}
+	for _, path := range []string{"/v1/connectors", "/v1/connectors?other=1", "/v1/connectors/other"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer synthetic")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if path == "/v1/connectors" {
+			if rec.Code != http.StatusOK || rec.Body.String() != "mcp-ok" {
+				t.Fatalf("connector inventory failed: %d %s", rec.Code, rec.Body.String())
+			}
+		} else if rec.Code != http.StatusNotFound {
+			t.Fatalf("unreviewed inventory route forwarded: %s status=%d", path, rec.Code)
+		}
+	}
+	if calls != 4 {
+		t.Fatalf("ToolHub calls=%d", calls)
 	}
 }
 

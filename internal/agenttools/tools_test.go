@@ -634,6 +634,38 @@ func TestMCPWire(t *testing.T) {
 	}
 }
 
+// SPEC-0053 R1.7: expected tool failures (bad path, missing dependency,
+// unsupported media, malformed input) must cross the wire as a CallToolResult
+// with IsError set and a user-visible message — never as a transport error,
+// so a client does not tear down the session or trip a circuit breaker.
+func TestMCPWireExpectedFailures(t *testing.T) {
+	t.Setenv("HUB_HH_ENABLED", "false")
+	t.Setenv("HUB_HERMES_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+	client, closeAll := connectHub(t, fixture(t))
+	defer closeAll()
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"file_read", map[string]any{"path": "../outside.txt"}},
+		{"routine_list", map[string]any{}},
+		{"image_inspect", map[string]any{"paths": []string{"clip.gif"}}},
+		{"settings_set", map[string]any{"key": "model"}},
+	} {
+		result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
+		if err != nil {
+			t.Fatalf("%s: expected failure became a transport error: %v", tc.name, err)
+		}
+		if result == nil || !result.IsError {
+			t.Fatalf("%s: expected IsError result, got %+v", tc.name, result)
+		}
+		if toolPlain(result) == "" || !strings.Contains(toolPlain(result), `"text"`) {
+			t.Fatalf("%s: IsError result carries no message: %s", tc.name, toolPlain(result))
+		}
+	}
+}
+
 func TestMediaThroughHubMCP(t *testing.T) {
 	t.Setenv("HUB_HH_ENABLED", "false")
 	v := fixture(t)

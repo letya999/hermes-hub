@@ -1,19 +1,27 @@
 package diagnostics
 
 import (
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // HTTP records service boundary operations without request bodies, query
-// strings, credentials, or unbounded path identifiers.
+// strings, credentials, or unbounded path identifiers — one JSON record per
+// request for `hubctl trace` (SPEC-0053 R3.5).
 func HTTP(service string, next http.Handler) http.Handler {
+	logger := Logger(service)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		jobID := r.Header.Get("X-Hub-Job-ID")
 		defer func() {
-			log.Printf("%s http method=%s route=%s duration_ms=%d", service, r.Method, safeRoute(r.URL.Path), time.Since(start).Milliseconds())
+			fields := []any{"method", r.Method, "route", safeRoute(r.URL.Path), "duration_ms", time.Since(start).Milliseconds()}
+			if identity.ValidID(jobID) {
+				fields = append(fields, "job_id", jobID)
+			}
+			logger.Info("http", fields...)
 		}()
 		next.ServeHTTP(w, r)
 	})

@@ -2,7 +2,11 @@ package communication
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -78,7 +82,113 @@ func (g *Gateway) taskStatus(user User, task Task) string {
 	if err == nil && found && mapping.SessionID != "" {
 		answer += " Сессия: " + mapping.SessionID + "."
 	}
-	return answer
+	return answer + g.surfaceLines(user) + g.healthLines(user)
+}
+
+// runtimeSurface is the additive health observation the runtime reports and
+// the supervisor persists.
+type runtimeSurface struct {
+	PrincipalID  string            `json:"principal_id"`
+	ContextID    string            `json:"context_id"`
+	ToolSurface  string            `json:"tool_surface"`
+	MissingTools []string          `json:"missing_tools"`
+	ToolReasons  map[string]string `json:"tool_reasons"`
+	ModelStatus  string            `json:"model_status"`
+	Restarts     int               `json:"restarts"`
+}
+
+// surfaceLines renders the caller's own tool-surface and model observations in
+// plain language (SPEC-0053 R1.4-R1.6). The supervised gateway reads the
+// persisted supervisor records and keeps strictly to the caller's
+// principal/context — a sibling's missing tools never leak. An unreachable
+// supervisor adds nothing: status stays available when supervision is not.
+func (g *Gateway) surfaceLines(user User) string {
+	if strings.TrimSpace(g.config.RuntimeURL) == "" || strings.TrimSpace(g.config.RuntimeAuth) == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var surface *runtimeSurface
+	if g.config.Supervised {
+		surface = g.supervisedSurface(ctx, user)
+	} else {
+		surface = g.residentSurface(ctx)
+	}
+	if surface == nil {
+		return ""
+	}
+	var lines []string
+	if len(surface.MissingTools) > 0 {
+		lines = append(lines, "", "Недоступно:")
+		for _, name := range surface.MissingTools {
+			lines = append(lines, "- "+name+" — инструмент не раздаётся.")
+		}
+	}
+	keys := make([]string, 0, len(surface.ToolReasons))
+	for key := range surface.ToolReasons {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		lines = append(lines, "- "+key+": "+surface.ToolReasons[key]+".")
+	}
+	if surface.ModelStatus == "model_not_found" {
+		lines = append(lines, "Модель не найдена в каталоге провайдера (model_not_found).")
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(lines, "\n")
+}
+
+func (g *Gateway) supervisedSurface(ctx context.Context, user User) *runtimeSurface {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(g.config.RuntimeURL, "/")+"/v1/runtimes", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil
+	}
+	var runtimes []runtimeSurface
+	if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&runtimes) != nil {
+		return nil
+	}
+	for i := range runtimes {
+		if runtimes[i].PrincipalID == user.ID && runtimes[i].ContextID == user.ID {
+			return &runtimes[i]
+		}
+	}
+	return nil
+}
+
+// residentSurface reads the resident runtime's own health when there is no
+// supervisor — the same additive fields, and the resident runtime is the
+// caller's by construction.
+func (g *Gateway) residentSurface(ctx context.Context) *runtimeSurface {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(g.config.RuntimeURL, "/")+"/v1/health", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil
+	}
+	var surface runtimeSurface
+	if json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&surface) != nil {
+		return nil
+	}
+	return &surface
 }
 
 // sessionsCommand implements /sessions: the owner's live tasks in this chat

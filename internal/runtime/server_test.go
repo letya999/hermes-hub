@@ -57,6 +57,25 @@ func TestSessionIDChangesWithInstructionRevision(t *testing.T) {
 	}
 }
 
+// SPEC-0053 R1.8: the revision hashes what the agent reads — the effective
+// SOUL (persona plus channel contract) — so a contract change creates a new
+// session exactly once.
+func TestSessionRevisionFollowsEffectiveSoul(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HERMES_HOME", home)
+	soul := filepath.Join(home, "SOUL.md")
+	if err := os.WriteFile(soul, []byte("persona\ncontract-v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := sessionRevision()
+	if err := os.WriteFile(soul, []byte("persona\ncontract-v2"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if sessionRevision() == first {
+		t.Fatal("session revision survived an effective SOUL change")
+	}
+}
+
 func TestPersistentHermesExecutionUsesPinnedRunAPI(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
 	t.Setenv("HUB_USER_ID", "alice")
@@ -143,6 +162,38 @@ func TestPersistentHermesForwardsAdmittedInstructions(t *testing.T) {
 	runtimeHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !gotBody || gotInstructions != request.Instructions {
 		t.Fatalf("status=%d instructions=%v body=%s", rec.Code, gotInstructions, rec.Body.String())
+	}
+}
+
+func TestObservePollsSlowlyWhileStreamOpen(t *testing.T) {
+	var polls atomic.Int32
+	sse := make(chan struct{})
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runs/slow-run":
+			polls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "running", "updated_at": 1})
+		case "/v1/runs/slow-run/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			<-sse
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	defer close(sse)
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(api.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	_, _ = (&runtimeHTTP{}).observeHermesRun(ctx, ExecuteResponse{RunID: "slow-run", Status: "running"}, func(ExecuteResponse) error { return nil })
+	if got := polls.Load(); got > 4 {
+		t.Fatalf("status polled %d times in 2.5s while the event stream was open", got)
 	}
 }
 
@@ -257,6 +308,114 @@ func TestRuntimeHTTPIncludesPersistentFailureMetadata(t *testing.T) {
 	runtimeHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "failed-run") || !strings.Contains(rec.Body.String(), "\"status\":\"failed\"") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// SPEC-0053 R3.2: a re-admission posts /v1/runs with the job's original
+// Idempotency-Key — Hermes replays the admitted run instead of creating work
+// again. The supervisor's stored record carries no prompt, so readmit must not
+// require one.
+func TestReadmitReplaysIdempotencyKey(t *testing.T) {
+	oldState, oldWorkspace := state, workspace
+	state, workspace = t.TempDir(), t.TempDir()
+	t.Cleanup(func() { state, workspace = oldState, oldWorkspace })
+	var posts, replays atomic.Int64
+	var original string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusConflict)
+		case r.URL.Path == "/v1/runs" && r.Method == http.MethodPost:
+			posts.Add(1)
+			var body map[string]any
+			if json.NewDecoder(r.Body).Decode(&body) != nil || r.Header.Get("Idempotency-Key") != "idem-1" {
+				http.Error(w, "bad admission", http.StatusBadRequest)
+				return
+			}
+			encoded, _ := json.Marshal(body)
+			if original == "" {
+				original = string(encoded)
+			} else if original != string(encoded) {
+				http.Error(w, "idempotency_key_conflict", http.StatusConflict)
+				return
+			} else {
+				replays.Add(1)
+				w.Header().Set("Idempotency-Replayed", "true")
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "run-1"})
+		case r.URL.Path == "/v1/runs/run-1/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+		case r.URL.Path == "/v1/runs/run-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": "answer"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(api.URL, "http://"))
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_ORGANIZATION_ID", "personal")
+	t.Setenv("HUB_RUNTIME_ID", "alice")
+	t.Setenv("HUB_POLICY_VERSION", "policy-1")
+	t.Setenv("HUB_PERSISTENT_HERMES", "true")
+	request := validExecuteRequest("alice", "personal", "idem-1", "original private prompt")
+	request.JobID, request.Instructions = "job-1", "per-run instruction"
+	first := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, request)))
+	first.Header.Set("Authorization", "Bearer runtime-secret")
+	firstResponse := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(firstResponse, first)
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("initial execution: %d %s", firstResponse.Code, firstResponse.Body.String())
+	}
+	// Model a lost final observation after this run wrote its deliverable.
+	start := time.Now().Add(-10 * time.Second)
+	if err := os.Chtimes(filepath.Join(runStartsDir(), "run-1"), start, start); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []struct {
+		name string
+		age  time.Duration
+	}{{"documents/result.txt", 5 * time.Second}, {"documents/older.txt", 20 * time.Second}} {
+		writeArtifact(t, artifactRoot(), file.name, "fixture")
+		stamp := time.Now().Add(-file.age)
+		if err := os.Chtimes(filepath.Join(artifactRoot(), file.name), stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed := request
+	changed.Text = "different private prompt"
+	conflict := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(mustJSON(t, changed)))
+	conflict.Header.Set("Authorization", "Bearer runtime-secret")
+	conflictResponse := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(conflictResponse, conflict)
+	if conflictResponse.Code == http.StatusOK || posts.Load() != 1 {
+		t.Fatalf("conflicting payload reached Hermes: status=%d posts=%d", conflictResponse.Code, posts.Load())
+	}
+	request.Text = ""
+	t.Setenv("HUB_SESSION_REVISION", "changed-after-admission")
+	req := httptest.NewRequest(http.MethodPost, "/v1/readmit", strings.NewReader(mustJSON(t, request)))
+	req.Header.Set("Authorization", "Bearer runtime-secret")
+	rec := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readmit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response ExecuteResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RunID != "run-1" || response.Status != "completed" {
+		t.Fatalf("response=%+v", response)
+	}
+	if len(response.Artifacts) != 1 || response.Artifacts[0].Path != "documents/result.txt" {
+		t.Fatalf("readmit lost the original artifact window: %+v", response.Artifacts)
+	}
+	if posts.Load() != 2 || replays.Load() != 1 {
+		t.Fatalf("posts=%d replays=%d, want 2/1", posts.Load(), replays.Load())
 	}
 }
 
@@ -778,6 +937,50 @@ func TestPersistentHermesStallsWithoutProgress(t *testing.T) {
 	result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", Text: "hello"})
 	if err == nil || !strings.Contains(err.Error(), "stalled") || stopCalls != 1 || result.Status != "cancelled" {
 		t.Fatalf("result=%+v err=%v stops=%d", result, err, stopCalls)
+	}
+}
+
+func TestPersistentHermesStopsAtRunBudget(t *testing.T) {
+	t.Setenv("HUB_RUN_BUDGET", "150ms")
+	t.Setenv("HUB_RUN_STALL_TIMEOUT", "5m") // budget, not stall, must fire
+	stopCalls, stopped := 0, false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
+			w.WriteHeader(http.StatusConflict)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "budget-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs/budget-1/stop":
+			stopCalls++
+			stopped = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/budget-1":
+			if stopped {
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "running", "updated_at": float64(time.Now().Unix())})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_HERMES_API_HOST", host)
+	t.Setenv("HUB_HERMES_API_PORT", port)
+	start := time.Now()
+	result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", Text: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "timed out") || result.Status != "cancelled" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("run budget not enforced: %v", elapsed)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopCalls=%d", stopCalls)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -103,6 +104,9 @@ func Config(s Settings) M {
 		e["HUB_SELF_ENV_KEYS"] = "${HUB_SELF_ENV_KEYS}"
 		e["HUB_PROTECTED_ENV_KEYS"] = "${HUB_PROTECTED_ENV_KEYS}"
 		e["HUB_STATE"] = "/state"
+		for key, value := range hubCommunicationEnv() {
+			e[key] = value
+		}
 		if s.Has("image_gen") {
 			// The tools subprocess reaches hub-media with the service URL and
 			// bearer only; provider keys stay inside the media service.
@@ -297,7 +301,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "archive")), "target": "/archive", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+s.Environment+".yaml")), "target": "/config/config.yaml", "read_only": true},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/state/hermes/SOUL.md", "read_only": true},
+		// Hermes reads the effective SOUL — persona plus the rendered channel
+		// contract — not the owner's raw file (SPEC-0053 R1.8/D7).
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 		// The effective Hermes config is materialized on the host and mounted
 		// read-only over the agent-writable state dir: mcp_servers must come
 		// from ToolHub onboarding, never from terminal edits inside the runtime.
@@ -306,6 +312,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// mounted read-only, consumed by `hubctl tools`/tools-exec via
 		// HUB_TOOL_POLICY.
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
+		// The render-time expectation for the runtime tool surface; the
+		// runtime's /v1/health probe reads it via HUB_TOOL_MANIFEST and can
+		// never write it (read-only bind, agent-writable /state stays clean).
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
 	}
 	if s.CapabilityMode == "managed" {
 		// The managed workspace is a durable bind, not tmpfs: admitted file,
@@ -319,7 +329,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "workspace")), "target": "/workspace"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/state/hermes/SOUL.md", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 		}
 	}
 	if s.Has("ssh") {
@@ -360,7 +371,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
@@ -500,6 +511,21 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Services every spawned or secondary runtime resolves by name attach to the
 	// shared network; everything else stays on the project default.
 	sharedNetworks := []string{"default", sharedNetworkName}
+	containerSupervisor := infra && includeGateway && s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876"
+	if containerSupervisor {
+		svc := cloneMap(common)
+		svc["image"] = "hermes-hub:0.3.0-" + s.Environment + "-control"
+		svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
+		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.3.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
+		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone}
+		svc["volumes"] = []any{dockerSock,
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, "config")), "target": "/config", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "supervisor.log")), "target": "/.local/supervisor.log"}}
+		svc["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
+		svc["stop_grace_period"] = "30s"
+		services["supervisor"] = svc
+	}
 	var egressHosts []string
 	if s.CapabilityMode == "managed" {
 		egressHosts = managedEgressHosts(s, dir)
@@ -558,7 +584,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		if supervisorURL != "" {
 			toolhubEnv["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
-			toolhubEnv["HUB_COMMUNICATION_AUTH"] = "${HUB_SUPERVISOR_AUTH}"
+			toolhubEnv["HUB_COMMUNICATION_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
 			toolhubEnv[key] = value
@@ -698,7 +724,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"})
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub:8090"
 		} else {
-			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH}"
+			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
 		gateway["env_file"] = gatewayEnvFiles
@@ -864,6 +890,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// it external everywhere keeps `compose down` from deleting it and avoids
 	// compose-owned label conflicts.
 	result["networks"] = M{sharedNetworkName: M{"name": sharedNetworkName, "external": true}}
+	if containerSupervisor {
+		result["networks"].(M)["supervisor-control"] = M{"name": "hermes-hub-control", "internal": true}
+	}
 	if s.CapabilityMode == "managed" {
 		result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
 	}
@@ -874,11 +903,134 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 func PolicyVersion(s Settings) string { return policyVersion(s) }
 
 func policyVersion(s Settings) string {
-	// Executor rollout is transport state, not a grant of additional tool rights.
-	s.ExecutionMode = ""
-	body, _ := yaml.Marshal(Config(s))
+	// Only rights-bearing settings participate (SPEC-0053 R1.1): model, ports,
+	// timezone, environment and transport URLs are deployment state and must
+	// not bounce bindings.
+	body, _ := json.Marshal(rightsProjection(s))
 	hash := sha256.Sum256(body)
 	return "policy-" + hex.EncodeToString(hash[:8])
+}
+
+// ToolManifest is the render-time expectation for the runtime tool surface
+// (SPEC-0053 R1.4, ADR-0036 D6): `projected` names capabilities ToolHub must
+// serve, `direct` the toolsets Hermes attaches without hub mediation. Runtime
+// readiness compares the live surface against this list and reports the delta.
+type ToolManifest struct {
+	Schema        int      `json:"schema"`
+	Context       string   `json:"context"`
+	PolicyVersion string   `json:"policy_version"`
+	Projected     []string `json:"projected"`
+	Direct        []string `json:"direct"`
+}
+
+// toolManifest classifies every enabled tools entry: toolhub always projects;
+// builtin MCP connectors project only under managed mode, where ToolHub fronts
+// them (unmanaged render attaches a local server directly); native sets and
+// user-declared MCP servers stay direct; off entries appear in neither list.
+func toolManifest(s Settings) ToolManifest {
+	contextID := s.User
+	if s.OrgScoped() {
+		contextID = s.Organization
+		if contextID == "" {
+			contextID = "personal"
+		}
+	}
+	manifest := ToolManifest{Schema: 1, Context: contextID, PolicyVersion: policyVersion(s), Projected: []string{}, Direct: []string{}}
+	for name, entry := range s.Tools {
+		if !entry.enabled() {
+			continue
+		}
+		if entry.Via == ToolViaToolHub || (s.CapabilityMode == "managed" && entry.Via == ToolViaMCP && mcpConnectors[name]) {
+			manifest.Projected = append(manifest.Projected, name)
+		} else {
+			manifest.Direct = append(manifest.Direct, name)
+		}
+	}
+	slices.Sort(manifest.Projected)
+	slices.Sort(manifest.Direct)
+	return manifest
+}
+
+// writeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7): the
+// owner's persona file verbatim plus the hub-owned channel contract. It runs
+// after HealUserSoul so the persona it reads is the healed one. The output is
+// what the runtime mounts at /state/hermes/SOUL.md, so contract edits move
+// the session revision exactly once per render.
+func writeSoulEffective(dir string, s Settings) error {
+	persona, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))
+	if err != nil {
+		return err
+	}
+	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract
+	return atomic(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md"), []byte(body))
+}
+
+// writeToolManifest materializes the manifest beside the other generated
+// contracts so runtime readiness can load the expectation read-only.
+func writeToolManifest(dir string, s Settings) error {
+	body, err := json.MarshalIndent(toolManifest(s), "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomic(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json"), append(body, '\n'))
+}
+
+// readToolManifest loads the manifest written by the previous render; a
+// missing file means the space predates manifests (nothing to migrate).
+func readToolManifest(dir, environment string) (*ToolManifest, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "tool-manifest."+environment+".json"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var manifest ToolManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return nil, fmt.Errorf("tool manifest: %w", err)
+	}
+	return &manifest, nil
+}
+
+// migrateToolhubBindings rolls this space's active ToolHub bindings onto the
+// policy version this render computed (SPEC-0053 R1.2): a rights-hash change
+// must not orphan grants the operator never revoked. The previous version
+// comes from the last rendered manifest; disabled/revoked bindings and other
+// principals never move. Migration runs at render time so the deploy that
+// follows already finds matching bindings.
+func migrateToolhubBindings(dir string, s Settings) error {
+	manifest := toolManifest(s)
+	previous, err := readToolManifest(dir, s.Environment)
+	if err != nil {
+		return err
+	}
+	if previous == nil || previous.PolicyVersion == manifest.PolicyVersion {
+		return nil
+	}
+	if !identity.ValidID(previous.PolicyVersion) {
+		// A pre-SPEC-0053 manifest without a usable version cannot name the
+		// migration source; leave bindings and let projection log exclusions.
+		return nil
+	}
+	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
+	if _, err := os.Stat(storePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	store, err := toolhub.Load(storePath)
+	if err != nil {
+		return fmt.Errorf("toolhub store: %w", err)
+	}
+	moved, err := toolhub.MigrateBindings(store, s.User, manifest.Context, s.User, previous.PolicyVersion, manifest.PolicyVersion)
+	if err != nil {
+		return fmt.Errorf("toolhub binding migration %s -> %s: %w", previous.PolicyVersion, manifest.PolicyVersion, err)
+	}
+	if moved > 0 {
+		fmt.Fprintf(os.Stderr, "hubctl: migrated %d toolhub binding(s) %s -> %s\n", moved, previous.PolicyVersion, manifest.PolicyVersion)
+	}
+	return nil
 }
 
 func cloneMap(source M) M {
@@ -948,7 +1100,7 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
-		s.GlobalSkillsDir = filepath.Join(root, "config", "skills")
+		s.DefaultGlobalSkillsDir(filepath.Join(root, "config", "skills"))
 		if err := os.MkdirAll(s.GlobalSkillsDir, 0755); err != nil {
 			return err
 		}
@@ -976,7 +1128,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			}
 		}
 	}
-	if s.RendersInfra() && s.DiagnosticsEnabled() {
+	if s.RendersInfra() && (s.DiagnosticsEnabled() || (s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876")) {
 		// Per-user diagnostics live under the space; the repo-level .local only
 		// hosts the shared host-supervisor log, bind-mounted read-only so a
 		// missing file can never materialize as a directory inside the stack.
@@ -1107,6 +1259,12 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeToolPolicySnapshot(dir, s); err != nil {
 		return err
 	}
+	if err = migrateToolhubBindings(dir, s); err != nil {
+		return err
+	}
+	if err = writeToolManifest(dir, s); err != nil {
+		return err
+	}
 	if err = MaterializeGlobalSkills(dir, s); err != nil {
 		return err
 	}
@@ -1116,6 +1274,9 @@ func RenderEnvironment(dir, root, environment string) error {
 	// Init seeds only a stub; heal it to the global template. Real user edits
 	// differ from the stub and are never overwritten.
 	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
+		return err
+	}
+	if err = writeSoulEffective(dir, s); err != nil {
 		return err
 	}
 	for _, p := range []string{"hermes." + environment + ".yaml", "SOUL.md"} {

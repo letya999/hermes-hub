@@ -15,9 +15,21 @@ import (
 	"go.starlark.net/syntax"
 )
 
+var routineDescriptions = map[string]string{
+	"routine_create": "Create an owner-scoped routine. kind=reminder delivers exact text directly; expression after:180s resolves a three-minute delay once on the server; display the returned deadline. Reuse the same schedule ID after an uncertain create and inspect its saved status; never silently replace a delivered routine. kind=watcher polls a public url and optional regex first capture group: first successful baseline is silent, unchanged values are silent, changes include bounded old/new values; errors preserve baseline. kind=check tests expect (changed|unchanged|equals:value); kind=script runs bounded Starlark; kind=digest aggregates changed watches. Watcher, check, script, reminder and digest never wake an agent or invoke a model at firing.",
+	"routine_list":   "List owned routines and their current delivery state; observe the same schedule ID after an uncertain create before proposing another routine.",
+	"routine_update": "Update an owned routine schedule or text. Use an absolute once:RFC3339 expression or cron; after: is creation-only.",
+	"routine_snooze": "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
+	"routine_pause":  "Pause an owned routine; already queued occurrences recheck its state before execution.",
+	"routine_delete": "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
+}
+
 func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any, error) {
-	if t.CommunicationURL == "" {
+	if t.CommunicationURL == "" || strings.Contains(t.CommunicationURL, "${") {
 		return nil, errors.New("routines require HUB_COMMUNICATION_CONTROL_URL")
+	}
+	if strings.Contains(t.CommunicationAuth, "${") {
+		return nil, errors.New("routine control authorization is unavailable")
 	}
 	principal := os.Getenv("HUB_PRINCIPAL_ID")
 	if principal == "" {

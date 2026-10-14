@@ -29,7 +29,7 @@ func modelRelayHandler(target, selectedModel string) (http.Handler, error) {
 	transport.Proxy = nil
 	proxy := &httputil.ReverseProxy{Transport: transport, Rewrite: func(req *httputil.ProxyRequest) {
 		req.SetURL(upstream)
-		req.Out.URL.Path = "/v1/chat/completions"
+		req.Out.URL.Path = req.In.URL.Path
 		req.Out.URL.RawPath = ""
 		req.Out.URL.RawQuery = ""
 		req.Out.Host = upstream.Host
@@ -40,13 +40,43 @@ func modelRelayHandler(target, selectedModel string) (http.Handler, error) {
 		if response.StatusCode >= 300 && response.StatusCode < 400 {
 			return fmt.Errorf("model upstream redirect denied")
 		}
+		if response.Request.URL.Path == "/v1/models" && response.StatusCode == http.StatusOK {
+			var catalog struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&catalog) != nil {
+				return fmt.Errorf("model catalog unavailable")
+			}
+			_ = response.Body.Close()
+			filtered := catalog.Data[:0]
+			for _, entry := range catalog.Data {
+				if entry.ID == selectedModel {
+					filtered = append(filtered, entry)
+					break
+				}
+			}
+			catalog.Data = filtered
+			body, _ := json.Marshal(catalog)
+			response.Body = io.NopCloser(bytes.NewReader(body))
+			response.ContentLength = int64(len(body))
+			response.Header.Set("Content-Length", fmt.Sprint(len(body)))
+			response.Header.Del("Content-Encoding")
+		}
 		return nil
 	}, ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 		http.Error(w, "model route unavailable", http.StatusBadGateway)
 	}}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.Scheme != "" || r.URL.Host != "" || r.Header.Get("Upgrade") != "" {
+		chat := r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions"
+		catalog := r.Method == http.MethodGet && r.URL.Path == "/v1/models"
+		if (!chat && !catalog) || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.Scheme != "" || r.URL.Host != "" || r.Header.Get("Upgrade") != "" {
 			http.NotFound(w, r)
+			return
+		}
+		if catalog {
+			proxy.ServeHTTP(w, r)
 			return
 		}
 		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

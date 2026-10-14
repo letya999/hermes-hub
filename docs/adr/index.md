@@ -6,6 +6,12 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0040](ADR-0040-single-stack-supervisor.md) | Accepted direction: one Compose supervisor using the existing control image; deployment acceptance pending |
+| [ADR-0039](ADR-0039-hermes-pin-raise.md) | Proposed: conditional Hermes pin raise once upstream merges the MCP breaker fix (D12c) |
+| [ADR-0038](ADR-0038-embedded-store.md) | Proposed: embedded single-writer store gated on measured post-deploy latency (D12b) |
+| [ADR-0037](ADR-0037-supervisor-in-linux-container.md) | Proposed: containerized supervisor via the ToolHub socket proxy (D12a) |
+| [ADR-0036](ADR-0036-execution-chain-reliability.md) | Accepted: one run budget with idle deadlines, internal uncertain reconciliation, lease-safe lifecycle, rights-only policy hash, capability readiness, event-driven wakeups, correlation IDs (M19) |
+| [ADR-0035](ADR-0035-telegram-operation-contracts.md) | Proposed: byte-based images, explicit MCP env, routine creation receipts, current approval UI and exact file handoff |
 | [ADR-0033](ADR-0033-deterministic-work-isolation.md) | Local writer ownership, durable result handoff and isolated script containers |
 | [ADR-0034](ADR-0034-cli-package-policy.md) | Accepted: private package home, exact shipped CLI trust and atomic host catalog binding |
 | [ADR-0033](ADR-0033-bounded-cli-transport.md) | Accepted: bounded CLI as a ToolHub transport with executor-container isolation receipts |

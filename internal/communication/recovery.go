@@ -9,9 +9,14 @@ import (
 	"time"
 )
 
-// RequeueObservations retries observation only for durably admitted runs.
-// Unknown admission stays uncertain; replaying its input could repeat an action.
-func (s *Spool) RequeueObservations(now time.Time) error {
+// RequeueObservations retries observation for uncertain jobs. A durably
+// admitted run re-observes by run identity; an admission never confirmed
+// (no run binding) is only requeued when reconcileAdmissionUnknown is set —
+// that path re-observes through the supervisor's /v1/resume, which replays a
+// settled outcome or reports the admission still unknown. Replaying the input
+// directly could repeat an action, so the plain-runtime path keeps the old
+// run-binding requirement.
+func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries, err := os.ReadDir(filepath.Join(s.root, "failed"))
@@ -35,7 +40,11 @@ func (s *Spool) RequeueObservations(now time.Time) error {
 		if err != nil {
 			return err
 		}
-		if mapping.Status != "uncertain" || mapping.RunID == "" || mapping.SessionID == "" || mapping.RuntimeGeneration == "" || now.Before(mapping.NextObservationAt) {
+		if mapping.Status != "uncertain" || now.Before(mapping.NextObservationAt) {
+			continue
+		}
+		admitted := mapping.RunID != "" && mapping.SessionID != "" && mapping.RuntimeGeneration != ""
+		if !admitted && !reconcileAdmissionUnknown {
 			continue
 		}
 		if mapping.Fingerprint != jobFingerprint(job) || mapping.JobID != job.ID || entry.Name() != spoolFileID(job.ID)+".json" {

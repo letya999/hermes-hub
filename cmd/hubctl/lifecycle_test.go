@@ -65,13 +65,27 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	script := "#!/bin/sh\nprintf 'ENV DOCKER_BUILDKIT=%s COMPOSE_BAKE=%s COMPOSE_DOCKER_CLI_BUILD=%s\\n' \"$DOCKER_BUILDKIT\" \"$COMPOSE_BAKE\" \"$COMPOSE_DOCKER_CLI_BUILD\" >> \"$HUB_TEST_LOG\"\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\nif [ -n \"$HUB_FAIL_MATCH\" ]; then for arg do if [ \"$arg\" = \"$HUB_FAIL_MATCH\" ]; then exit 7; fi; done; fi\n"
 	if runtime.GOOS == "windows" {
 		name = "docker.cmd"
-		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"config\" (echo %* | findstr /C:\" config --quiet\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
+	}
+	if runtime.GOOS == "windows" {
+		script += "exit /b 0\r\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("HUB_TEST_LOG", log)
+	t.Setenv("HUB_FAIL_MATCH", "config")
+	for _, op := range []string{"build", "up"} {
+		if run(context.Background(), []string{op, "--dir", d, "--root", "../.."}) == nil {
+			t.Fatalf("%s accepted invalid Compose configuration", op)
+		}
+	}
+	failedConfig, _ := os.ReadFile(log)
+	if strings.Contains(string(failedConfig), "image prune") || strings.Contains(string(failedConfig), " build") || strings.Contains(string(failedConfig), " up -d") {
+		t.Fatalf("invalid configuration caused Docker mutation: %s", failedConfig)
+	}
+	t.Setenv("HUB_FAIL_MATCH", "")
 	for _, op := range []string{"doctor", "build", "up", "down", "logs", "chat", "telegram-login", "meet-auth"} {
 		if err := run(context.Background(), []string{op, "--dir", d, "--root", "../.."}); err != nil {
 			t.Fatal(op, err)
@@ -95,6 +109,9 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
+	if !strings.Contains(string(b), "ps --filter label=com.docker.compose.service=cliproxy") {
+		t.Fatal("up skipped the shared model proxy alias check")
+	}
 	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), " build communication-hub toolhub") || !strings.Contains(string(b), "--remove-orphans --no-deps communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
@@ -112,6 +129,16 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	t.Setenv("HUB_FAIL_MATCH", "")
 	s.Ingress = append(s.Ingress, "telegram")
 	save()
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build"}); err != nil {
+		t.Fatal(err)
+	}
+	ownershipLog, _ := os.ReadFile(log)
+	if !strings.Contains(string(ownershipLog), "ps --filter label=com.docker.compose.service=communication-hub") {
+		t.Fatal("up skipped the read-only Telegram ownership check")
+	}
 	if run(context.Background(), []string{"chat", "--dir", d}) == nil {
 		t.Fatal("two agents sharing one home")
 	}

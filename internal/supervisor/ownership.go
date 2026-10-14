@@ -77,6 +77,10 @@ func (m *Manager) verifyScopeMount(ctx context.Context, item Runtime) error {
 		return errors.New("runtime mounts unavailable")
 	}
 	expected := filepath.Join(m.cfg.SpacesRoot, item.ContextID, "workspace")
+	expected, err = m.hostBindSource(expected)
+	if err != nil {
+		return err
+	}
 	for _, mount := range mounts {
 		if mount.Destination != "/scope" {
 			continue

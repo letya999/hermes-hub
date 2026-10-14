@@ -624,7 +624,7 @@ func controlTestPolicy(t *testing.T, root string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.GlobalSkillsDir = filepath.Join(filepath.Dir(filepath.Dir(root)), "config", "skills")
+	settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(root)), "config", "skills"))
 	return stack.PolicyVersion(settings)
 }
 
@@ -690,7 +690,7 @@ func TestApprovalRechecksOrganizationMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.GlobalSkillsDir = filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills")
+	settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills"))
 	control := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", stack.PolicyVersion(settings)), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "acme"}}, Action: "approve"}
 	if err := m.authorizeApproval(control); err != nil {
 		t.Fatal(err)
@@ -747,6 +747,11 @@ func TestExpireUncertainReconcilesExpiredLease(t *testing.T) {
 	entry := m.items[key]
 	entry.State, entry.Leases = Busy, 1
 	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: entry.Generation, ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
+	// Past the reconciliation window: expiry is the safety net for records
+	// the reconciler could not settle.
+	expired := m.jobs[request.JobID]
+	expired.UnconfirmedSince = time.Now().Add(-2 * hubruntime.RunBudget())
+	m.jobs[request.JobID] = expired
 	m.mu.Unlock()
 	calls := 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -799,9 +804,17 @@ func TestExpireUncertainInterruptsUnobservableRun(t *testing.T) {
 	entry := m.items[key]
 	entry.State, entry.Leases = Busy, 1
 	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: entry.Generation, ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
+	expired := m.jobs[request.JobID]
+	expired.UnconfirmedSince = time.Now().Add(-2 * hubruntime.RunBudget())
+	m.jobs[request.JobID] = expired
 	m.mu.Unlock()
 	m.ExpireUncertain(context.Background(), time.Now())
 	m.mu.Lock()
+	if m.jobs[request.JobID].Response.Status != "interrupted" || m.jobs[request.JobID].Response.LastEvent != "run.interrupted" {
+		got := m.jobs[request.JobID].Response
+		m.mu.Unlock()
+		t.Fatalf("unobservable run replays a stale outcome: %+v", got)
+	}
 	if m.jobs[request.JobID].Status != "interrupted" {
 		m.mu.Unlock()
 		t.Fatalf("unobservable run not interrupted: %s", m.jobs[request.JobID].Status)
@@ -850,12 +863,38 @@ func TestExpireUncertainInterruptsDeadGeneration(t *testing.T) {
 	entry.Generation = "gen-recreated"
 	entry.State, entry.Leases = Busy, 1
 	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: "gen-dead", ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
+	expired := m.jobs[request.JobID]
+	expired.UnconfirmedSince = time.Now().Add(-2 * hubruntime.RunBudget())
+	m.jobs[request.JobID] = expired
 	m.mu.Unlock()
 	m.ExpireUncertain(context.Background(), time.Now())
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.jobs[request.JobID].Status != "interrupted" {
 		t.Fatalf("dead-generation run kept retrying a cancel that can never land: %s", m.jobs[request.JobID].Status)
+	}
+	if got := m.jobs[request.JobID].Response; got.Status != "interrupted" || got.LastEvent != "run.interrupted" {
+		t.Fatalf("dead-generation run replays stale outcome: %+v", got)
+	}
+}
+
+func TestExpireUncertainKeepsUnconfirmedWhenPersistenceFails(t *testing.T) {
+	for _, runID := range []string{"", "dead-run"} {
+		t.Run("run="+runID, func(t *testing.T) {
+			m, _ := testManager(t, nil, nil)
+			now := time.Now().UTC()
+			record := jobRecord{Request: hubruntime.ExecuteRequest{JobID: "expiry-write-failure"}, Generation: "gen-1", Status: "uncertain", Phase: phaseRunning, Unconfirmed: true, UnconfirmedSince: now.Add(-2 * hubruntime.RunBudget()), UpdatedAt: now.Add(-3 * m.cfg.WarmTTL), Response: hubruntime.ExecuteResponse{RunID: runID, Status: "uncertain", LastEvent: "run.unknown"}}
+			m.jobs[record.Request.JobID] = record
+			if runID == "" {
+				m.items[uncertainOwnerKey(record)] = &runtimeEntry{Runtime: Runtime{Generation: record.Generation}}
+			}
+			m.statePath = filepath.Join(t.TempDir(), "missing", "state.json")
+			m.ExpireUncertain(context.Background(), now)
+			got := m.jobs[record.Request.JobID]
+			if got.Status != "uncertain" || !got.Unconfirmed || got.Response.Status != "uncertain" {
+				t.Fatalf("non-durable expiry published: %+v", got)
+			}
+		})
 	}
 }
 
@@ -883,12 +922,14 @@ func TestExpireUncertainInterruptsLeaselessRecord(t *testing.T) {
 	m.mu.Lock()
 	record := m.jobs[request.JobID]
 	record.UpdatedAt = time.Now().Add(-3 * m.cfg.WarmTTL)
+	record.UnconfirmedSince = time.Now().Add(-2 * hubruntime.RunBudget())
 	m.jobs[request.JobID] = record
 	m.mu.Unlock()
 	m.ExpireUncertain(context.Background(), time.Now())
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.jobs[request.JobID].Status != "interrupted" {
-		t.Fatalf("stranded uncertain job not interrupted: %s", m.jobs[request.JobID].Status)
+	resolved := m.jobs[request.JobID]
+	if resolved.Status != "interrupted" || resolved.Phase != phaseInterrupted || resolved.Unconfirmed {
+		t.Fatalf("stranded uncertain job not interrupted: %+v", resolved)
 	}
 }

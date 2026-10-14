@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	if len(os.Args) > 1 && os.Args[1] == "--script" {
 		if err := runScriptHelper(os.Args[2:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "script failed")

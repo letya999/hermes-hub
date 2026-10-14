@@ -238,6 +238,26 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	}
 }
 
+func TestDisabledComponentsStayCold(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram")}
+	runtime := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)
+	for _, port := range runtime["ports"].([]string) {
+		if strings.Contains(port, ":6080") {
+			t.Fatalf("browser port exposed without the feature: %s", port)
+		}
+	}
+	env := runtime["environment"].(M)
+	if env["HUB_BROWSER"] != "false" || env["HUB_MEET"] != "false" {
+		t.Fatalf("browser env claims a disabled feature: %#v", env)
+	}
+	servers := Config(s)["mcp_servers"].(M)
+	for _, name := range []string{"browser", "browser_guest"} {
+		if _, ok := servers[name]; ok {
+			t.Fatalf("browser MCP rendered without the feature: %s", name)
+		}
+	}
+}
+
 func TestComposeSupervisorModeOmitsResidentRuntime(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
@@ -255,7 +275,7 @@ func TestComposeSupervisorModeOmitsResidentRuntime(t *testing.T) {
 	if files := gateway["env_file"].([]any); len(files) != 1 {
 		t.Fatalf("supervisor gateway received per-runtime auth file: %#v", files)
 	}
-	if gateway["environment"].(M)["HUB_SUPERVISOR_AUTH"] != "${HUB_SUPERVISOR_AUTH}" {
+	if gateway["environment"].(M)["HUB_SUPERVISOR_AUTH"] != "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}" {
 		t.Fatal("supervisor auth placeholder missing")
 	}
 	if _, ok := gateway["environment"].(M)["HUB_COMMUNICATION_CONFIG"]; ok {

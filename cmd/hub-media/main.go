@@ -18,6 +18,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	if len(os.Args) > 1 && os.Args[1] == "health" {
 		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8090/healthz", nil)
 		if err != nil {

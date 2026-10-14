@@ -1,8 +1,10 @@
 package communication
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -26,6 +29,7 @@ type WatchProbe struct {
 }
 
 type Schedule struct {
+	Creation       *ScheduleCreation `json:"creation,omitempty"`
 	ScheduleID     string            `json:"schedule_id"`
 	Revision       uint64            `json:"revision"`
 	Envelope       identity.Envelope `json:"envelope"`
@@ -47,20 +51,77 @@ type Schedule struct {
 	// Probe is the deterministic source spec for watcher/check schedules:
 	// an http(s) GET plus an optional regex whose first capture group is the
 	// compared value. It never carries credentials.
-	Probe             *WatchProbe   `json:"probe,omitempty"`
-	Expect            string        `json:"expect,omitempty"`
-	InitialProbeValue *string       `json:"initial_probe_value,omitempty"`
-	NotifyMode        string        `json:"notify_mode,omitempty"`
-	SourceIDs         []string      `json:"source_ids,omitempty"`
-	SnoozedUntil      time.Time     `json:"snoozed_until,omitempty"`
-	Input             string        `json:"input"`
-	Enabled           bool          `json:"enabled"`
-	Paused            bool          `json:"paused"`
-	NextDue           time.Time     `json:"next_due"`
+	Probe             *WatchProbe `json:"probe,omitempty"`
+	Expect            string      `json:"expect,omitempty"`
+	InitialProbeValue *string     `json:"initial_probe_value,omitempty"`
+	NotifyMode        string      `json:"notify_mode,omitempty"`
+	SourceIDs         []string    `json:"source_ids,omitempty"`
+	SnoozedUntil      time.Time   `json:"snoozed_until,omitempty"`
+	Input             string      `json:"input"`
+	Enabled           bool        `json:"enabled"`
+	Paused            bool        `json:"paused"`
+	NextDue           time.Time   `json:"next_due"`
+	// LastFailureSHA256 dedupes owner-facing error deliveries: a routine that
+	// fails every tick with the same normalized error notifies once, and a
+	// success clears it so the next failure notifies again.
+	LastFailureSHA256 string        `json:"last_failure_sha256,omitempty"`
 	CatchUpWindow     time.Duration `json:"catch_up_window_ns"`
 	NativeCronRef     string        `json:"native_cron_ref,omitempty"`
 	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
+}
+
+type ScheduleCreation struct {
+	RequestedExpression string    `json:"requested_expression"`
+	ResolvedDueAt       time.Time `json:"resolved_due_at"`
+	CreatedAt           time.Time `json:"created_at"`
+	IntentSHA256        string    `json:"intent_sha256"`
+}
+
+var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or retired intent")
+var errScheduleExists = errors.New("schedule already exists or is unreadable")
+
+func scheduleIntent(in Schedule) string {
+	in.Creation = nil
+	in.Revision, in.Enabled, in.Paused = 0, false, false
+	in.NextDue, in.CreatedAt, in.UpdatedAt, in.SnoozedUntil = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	in.InitialProbeValue, in.NativeCronRef, in.LastFailureSHA256 = nil, "", ""
+	if in.JobKind == "" {
+		in.JobKind = "agent"
+	}
+	if in.CatchUpWindow <= 0 {
+		in.CatchUpWindow = defaultCatchUp
+	}
+	b, _ := json.Marshal(in)
+	return fmt.Sprintf("%x", sha256.Sum256(b))
+}
+
+// A replay returns current state, never the enabled state at creation.
+// Retired IDs are never replayed or reactivated; their tombstones conflict.
+// Foreign-owner collisions and unreadable or legacy records fail closed
+// without exposing a receipt or the conflict kind.
+func (s *Spool) creationReplayLocked(in Schedule, caller identity.Envelope) (Schedule, bool, error) {
+	item, err := s.loadScheduleLocked(in.ScheduleID)
+	retired := false
+	if os.IsNotExist(err) {
+		b, readErr := os.ReadFile(s.cancelPath(in.ScheduleID))
+		if os.IsNotExist(readErr) {
+			return Schedule{}, false, nil
+		}
+		if readErr != nil || json.Unmarshal(b, &item) != nil {
+			return Schedule{}, true, errScheduleExists
+		}
+		retired = true
+	} else if err != nil {
+		return Schedule{}, true, errScheduleExists
+	}
+	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
+		return Schedule{}, true, errScheduleExists
+	}
+	if retired || item.Creation == nil || item.Creation.IntentSHA256 != scheduleIntent(in) {
+		return Schedule{}, true, ErrScheduleConflict
+	}
+	return item, true, nil
 }
 
 func (s *Spool) CreateSchedule(in Schedule, caller identity.Envelope, nativeCron string) (Schedule, error) {
@@ -69,6 +130,12 @@ func (s *Spool) CreateSchedule(in Schedule, caller identity.Envelope, nativeCron
 
 // ValidateSchedule checks a complete draft without mutating the spool.
 func ValidateSchedule(in Schedule, caller identity.Envelope, now time.Time) error {
+	in = normalizeScheduleDraft(in)
+	var err error
+	in, err = resolveRelativeReminder(in, now)
+	if err != nil {
+		return err
+	}
 	if err := validateScheduleDraft(in, caller); err != nil {
 		return err
 	}
@@ -81,6 +148,25 @@ func ValidateSchedule(in Schedule, caller identity.Envelope, now time.Time) erro
 }
 
 func (s *Spool) createSchedule(in Schedule, caller identity.Envelope, nativeCron string, initialValue *string) (Schedule, error) {
+	return s.createScheduleAt(in, caller, nativeCron, initialValue, time.Now().UTC())
+}
+
+func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time) (Schedule, error) {
+	in = normalizeScheduleDraft(in)
+	if err := validateScheduleDraft(in, caller); err != nil {
+		return Schedule{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if item, found, err := s.creationReplayLocked(in, caller); found || err != nil {
+		return item, err
+	}
+	requested, intent := in.Expression, scheduleIntent(in)
+	var err error
+	in, err = resolveRelativeReminder(in, now)
+	if err != nil {
+		return Schedule{}, err
+	}
 	in.InitialProbeValue = initialValue
 	if nativeCron == "unmigrated" {
 		return Schedule{}, errors.New("native Hermes cron is still the clock for this context")
@@ -92,7 +178,6 @@ func (s *Spool) createSchedule(in Schedule, caller identity.Envelope, nativeCron
 	if err != nil {
 		return Schedule{}, errors.New("invalid timezone")
 	}
-	now := time.Now().UTC()
 	next, err := nextExpression(in.Expression, loc, now)
 	if err != nil {
 		return Schedule{}, err
@@ -109,8 +194,7 @@ func (s *Spool) createSchedule(in Schedule, caller identity.Envelope, nativeCron
 	in.NextDue = next
 	in.CreatedAt = now
 	in.UpdatedAt = now
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	in.Creation = &ScheduleCreation{RequestedExpression: requested, ResolvedDueAt: next, CreatedAt: now, IntentSHA256: intent}
 	path := s.schedulePath(in.ScheduleID)
 	if _, err := os.Stat(s.cancelPath(in.ScheduleID)); !os.IsNotExist(err) {
 		return Schedule{}, errors.New("schedule id was retired; use a new id")
@@ -222,7 +306,10 @@ func (s *Spool) DeleteSchedule(id string, caller identity.Envelope) error {
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
 		return errors.New("schedule not owned")
 	}
-	if err := atomicJSON(s.cancelPath(id), map[string]any{"revision": item.Revision, "deleted_at": time.Now().UTC()}); err != nil {
+	item.Enabled, item.Paused = false, true
+	item.NextDue = time.Time{}
+	item.UpdatedAt = time.Now().UTC()
+	if err := atomicJSON(s.cancelPath(id), item); err != nil {
 		return err
 	}
 	return os.Remove(s.schedulePath(id))
@@ -249,6 +336,48 @@ func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.T
 
 func (s *Spool) cancelPath(id string) string {
 	return filepath.Join(s.root, "schedules", spoolFileID(id)+".deleted")
+}
+
+// RecordRoutineFailure stores the schedule's last failure digest and reports
+// whether this failure should notify the owner: only a digest that differs
+// from the stored one (or follows a success) is fresh. Schedules without a
+// durable record (externally owned clocks) cannot dedupe and always notify.
+func (s *Spool) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, err := s.loadScheduleLocked(scheduleID)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if digest != "" && item.LastFailureSHA256 == digest {
+		return false, nil
+	}
+	item.LastFailureSHA256 = digest
+	item.UpdatedAt = time.Now().UTC()
+	return true, atomicJSON(s.schedulePath(scheduleID), item)
+}
+
+// ClearRoutineFailure drops the stored failure digest after a success so the
+// next failure notifies again. Externally owned schedules are a no-op.
+func (s *Spool) ClearRoutineFailure(scheduleID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, err := s.loadScheduleLocked(scheduleID)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if item.LastFailureSHA256 == "" {
+		return nil
+	}
+	item.LastFailureSHA256 = ""
+	item.UpdatedAt = time.Now().UTC()
+	return atomicJSON(s.schedulePath(scheduleID), item)
 }
 
 func (s *Spool) occurrenceCurrentLocked(o RoutineOccurrence) bool {
@@ -370,7 +499,31 @@ func (s *Spool) loadScheduleLocked(id string) (Schedule, error) {
 	return item, nil
 }
 
+func resolveRelativeReminder(in Schedule, now time.Time) (Schedule, error) {
+	if !strings.HasPrefix(in.Expression, "after:") {
+		return in, nil
+	}
+	delay, err := time.ParseDuration(strings.TrimPrefix(in.Expression, "after:"))
+	if in.JobKind != "reminder" || err != nil || delay < time.Second || delay > 8760*time.Hour || delay%time.Second != 0 {
+		return Schedule{}, errors.New("after: requires a reminder and an integral delay from 1s to 8760h")
+	}
+	in.Expression = "once:" + now.Add(delay).UTC().Format(time.RFC3339Nano)
+	return in, nil
+}
+
+func normalizeScheduleDraft(in Schedule) Schedule {
+	if in.Probe != nil {
+		probe := *in.Probe
+		probe.URL = strings.TrimSpace(probe.URL)
+		in.Probe = &probe
+	}
+	return in
+}
+
 func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
+	if in.Probe != nil && strings.ContainsFunc(in.Probe.URL, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
+		return errors.New("probe URL contains invisible or control characters")
+	}
 	if len(in.ScheduleID) > 80 || !spoolIDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
