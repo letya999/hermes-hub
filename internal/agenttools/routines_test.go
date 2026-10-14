@@ -219,6 +219,29 @@ func TestRoutineCreateKindIsOptionalInCatalog(t *testing.T) {
 	t.Fatal("routine_create missing from catalog")
 }
 
+// Watcher policy fields ride the same create payload so an agent can set a
+// quiet window, a daily cap and check retries without a second endpoint.
+func TestRoutineCreateForwardsPolicyFields(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"quiet-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "quiet-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch", Kind: "watcher", URL: "https://example.com/q", QuietFrom: "22:00", QuietTo: "07:00", DailyLimit: 4, MaxRetries: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if request["quiet_from"] != "22:00" || request["quiet_to"] != "07:00" {
+		t.Fatalf("quiet window lost: %v", request)
+	}
+	if request["daily_limit"] != float64(4) || request["max_retries"] != float64(5) {
+		t.Fatalf("limit fields lost: %v", request)
+	}
+}
+
 func TestCredentialFormCallCommunicationHub(t *testing.T) {
 	v := fixture(t)
 	t.Setenv("HUB_PRINCIPAL_ID", "alice")

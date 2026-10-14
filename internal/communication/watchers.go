@@ -29,6 +29,10 @@ type WatchState struct {
 	ChangedAt   time.Time `json:"changed_at"`
 	LastSuccess time.Time `json:"last_success"`
 	LastError   string    `json:"last_error,omitempty"`
+	// NotifyDay/NotifyCount implement the owner-timezone daily notification
+	// cap (SPEC-0054 R2.2): the day rolls the counter back to zero.
+	NotifyDay   string `json:"notify_day,omitempty"`
+	NotifyCount int    `json:"notify_count,omitempty"`
 }
 
 // DigestState marks when the owner's watches were last aggregated.
@@ -303,12 +307,39 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 			notify = schedule.NotifyMode != "digest"
 			live.State = "dispatched"
 		}
-		if notify {
+		if notify && schedule.DailyLimit > 0 {
+			day := now.UTC().Format("2006-01-02")
+			if loc, err := time.LoadLocation(schedule.Timezone); err == nil {
+				day = now.In(loc).Format("2006-01-02")
+			}
+			if st.NotifyDay != day {
+				st.NotifyDay, st.NotifyCount = day, 0
+			}
+			if st.NotifyCount >= schedule.DailyLimit {
+				// The baseline already advanced above; the owner sees the
+				// occurrence as capped rather than a lost notification.
+				live.State = "capped"
+				notify = false
+			} else {
+				st.NotifyCount++
+			}
+		}
+		if notify && schedule.NotifyMode == "agent" {
+			// Semantic escalation is opt-in per revision: the change evidence
+			// reaches the model flagged untrusted, through the same idempotent
+			// job admission the agent kind uses (SPEC-0054 R2.3).
+			admitted := live.Job
+			admitted.Envelope.ConversationID = routineConversation(live.ScheduleID)
+			admitted.Text = "[untrusted watcher evidence] " + text
+			if _, err := s.enqueueLocked(admitted); err != nil {
+				return
+			}
+		} else if notify {
 			prefix := "watch-"
 			if live.JobKind == "check" {
 				prefix = "check-"
 			}
-			d, err := normalizeDelivery(Delivery{ID: prefix + live.Job.ID, OccurrenceID: live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: text, CreatedAt: now.UTC()})
+			d, err := normalizeDelivery(Delivery{ID: prefix + live.Job.ID, OccurrenceID: live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: text, NotBefore: quietDefer(schedule, now), CreatedAt: now.UTC()})
 			if err != nil {
 				return
 			}
@@ -321,6 +352,41 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 		return
 	}
 	_ = s.applyProbeResultLocked(result)
+}
+
+// quietDefer reports when a delivery may leave the outbox: zero outside the
+// owner's quiet window, the next window end inside it. Overnight windows
+// (22:00-07:00) wrap. Bad input defers nothing — validation already rejected
+// it, and a corrupt record must not silently silence notifications.
+func quietDefer(schedule Schedule, now time.Time) time.Time {
+	if schedule.QuietFrom == "" || schedule.QuietTo == "" {
+		return time.Time{}
+	}
+	loc, err := time.LoadLocation(schedule.Timezone)
+	if err != nil {
+		return time.Time{}
+	}
+	from, err1 := time.Parse("15:04", schedule.QuietFrom)
+	to, err2 := time.Parse("15:04", schedule.QuietTo)
+	if err1 != nil || err2 != nil {
+		return time.Time{}
+	}
+	local := now.In(loc)
+	start := time.Date(local.Year(), local.Month(), local.Day(), from.Hour(), from.Minute(), 0, 0, loc)
+	end := time.Date(local.Year(), local.Month(), local.Day(), to.Hour(), to.Minute(), 0, 0, loc)
+	if to.Before(from) || to.Equal(from) {
+		// Overnight window: the part after midnight belongs to the day that
+		// started at `from` yesterday.
+		if local.Before(start) {
+			start = start.AddDate(0, 0, -1)
+		} else {
+			end = end.AddDate(0, 0, 1)
+		}
+	}
+	if local.Before(start) || !local.Before(end) {
+		return time.Time{}
+	}
+	return end.UTC()
 }
 
 func boundedWatchText(value string) string {

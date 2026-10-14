@@ -108,7 +108,7 @@ func (s *Spool) dispatchDigestLocked(o RoutineOccurrence, now time.Time, authori
 			}
 			lines = append(lines, message)
 		}
-		delivery, err := normalizeDelivery(Delivery{ID: "digest-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + strings.Join(lines, "\n"), CreatedAt: now.UTC()})
+		delivery, err := normalizeDelivery(Delivery{ID: "digest-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + strings.Join(lines, "\n"), NotBefore: quietDefer(digest, now), CreatedAt: now.UTC()})
 		if err != nil {
 			return err
 		}

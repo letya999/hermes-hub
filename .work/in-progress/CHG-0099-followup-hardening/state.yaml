@@ -4,7 +4,7 @@ title: Verified follow-up hardening
 status: in_progress
 branch: feat/m13-proactive-automation
 updated: 2026-10-14
-phase: design-complete
+phase: implementation
 adr: ADR-0041
 spec: SPEC-0054
 requirements: [R1.1, R1.2, R1.3, R1.4]
@@ -12,18 +12,26 @@ depends_on: []
 github_milestone: M12 — Proactive Automation
 github_issue: 251
 design_status: accepted
-implementation_status: not_started
+implementation_status: in_progress
 slices:
-  S1.1-bounded-retry: not_started
-  S1.2-check-verdict: not_started
-  S1.3-task-probe: not_started
-  S1.4-reminder-evidence: not_started
+  S1.1-bounded-retry: green
+  S1.2-check-verdict: green
+  S1.3-task-probe: green
+  S1.4-reminder-evidence: green
 validation:
-  documents: pending
+  documents: updated
   just_check: not_run
   docker_check: not_run
-  red_team: not_started
+  red_team: recorded
   live_acceptance: not_started
-evidence: []
-remaining: []
-limitations: []
+evidence:
+  - "commit 28b74a0 — bounded check retry (max_retries 0..8, default 3), verdict text, task: probe, HTTP baseline seeding"
+  - "go test ./internal/communication — ok 40.4s"
+  - "tests: TestCheckProbeErrorRetriesThenFails, watcher error stays failed, TestMaxRetriesValidation, TestCheckDeliveryNamesVerdict, TestCheckTaskProbeFiresOnClose, TestCheckTaskProbeForeignTaskFails, TestTaskProbeValidation, TestReminderOverdueSettlesMissed, TestCheckTaskProbeSeedsBaselineOverHTTP"
+  - "reminder no-runtime proof pre-existing: TestReminderOccurrenceDeliversWithoutAgent, TestReminderScheduleFiresThroughOutbox (ClaimJob nil)"
+remaining:
+  - "issue #251/#247 evidence comments (after PR)"
+  - "just check at milestone close"
+limitations:
+  - "task: probe returns open|closed (archived maps to closed); no other task fields exposed"
+  - "check retry reuses occurrence probing state; RetryAfter backoff is per-retry linear minutes"

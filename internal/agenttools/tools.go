@@ -69,6 +69,10 @@ type Input struct {
 	NotifyMode         string   `json:"notify_mode,omitempty"`
 	SourceIDs          []string `json:"source_ids,omitempty"`
 	Expect             string   `json:"expect,omitempty"`
+	QuietFrom          string   `json:"quiet_from,omitempty"`
+	QuietTo            string   `json:"quiet_to,omitempty"`
+	DailyLimit         int      `json:"daily_limit,omitempty"`
+	MaxRetries         int      `json:"max_retries,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root

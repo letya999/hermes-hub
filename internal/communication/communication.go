@@ -562,6 +562,9 @@ type Delivery struct {
 	SlackThread  string `json:"slack_thread,omitempty"`
 	Text         string `json:"text"`
 	Format       string `json:"format,omitempty"`
+	// NotBefore defers quiet-window deliveries: the entry stays durable in
+	// pending until the schedule's quiet window ends (SPEC-0054 R2.1).
+	NotBefore time.Time `json:"not_before,omitempty"`
 	// PartCount/SentParts persist multi-part progress so a mid-sequence failure
 	// leaves an uncertain delivery with an exact sent boundary; SourceSent marks
 	// the optional raw-source document part of the same ordered sequence.
@@ -1338,23 +1341,41 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 	s.deliverPolls.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	name, err := firstJSON(filepath.Join(s.root, "outbox", "pending"))
-	if err != nil || name == "" {
-		return nil, err
-	}
-	from, to := filepath.Join(s.root, "outbox", "pending", name), filepath.Join(s.root, "outbox", "sending", name)
-	if err := os.Rename(from, to); err != nil {
-		return nil, err
-	}
-	b, err := os.ReadFile(to)
+	pending := filepath.Join(s.root, "outbox", "pending")
+	entries, err := os.ReadDir(pending)
 	if err != nil {
 		return nil, err
 	}
-	var d Delivery
-	if err := json.Unmarshal(b, &d); err != nil {
-		return nil, err
+	names := []string{}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			names = append(names, entry.Name())
+		}
 	}
-	return &d, nil
+	sort.Strings(names)
+	// Quiet-window deliveries stay durable in pending until not_before; a
+	// bounded scan keeps a deferred backlog from stalling the claim loop.
+	for i, name := range names {
+		if i >= 256 {
+			break
+		}
+		b, err := os.ReadFile(filepath.Join(pending, name))
+		if err != nil {
+			return nil, err
+		}
+		var d Delivery
+		if err := json.Unmarshal(b, &d); err != nil {
+			return nil, err
+		}
+		if d.NotBefore.After(time.Now().UTC()) {
+			continue
+		}
+		if err := os.Rename(filepath.Join(pending, name), filepath.Join(s.root, "outbox", "sending", name)); err != nil {
+			return nil, err
+		}
+		return &d, nil
+	}
+	return nil, nil
 }
 
 func (s *Spool) CompleteDelivery(id string) error {

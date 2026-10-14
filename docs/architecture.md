@@ -249,6 +249,14 @@ probes verify the owner's own task state without a fetch. Deliveries re-validate
 occurrence and owner before sending, and a transport answer lost mid-send leaves the
 delivery failed/uncertain rather than claimed sent.
 
+Watcher, check and digest deliveries respect the owner's notification policy:
+`quiet_from`/`quiet_to` set an owner-timezone HH:MM window inside which the outbox
+entry stays pending until the window end; `daily_limit` (0..32) caps same-day
+watcher/check notifications — an over-cap occurrence settles `capped` while its
+baseline still advances. `notify_mode=digest` feeds the daily digest;
+`notify_mode=agent` escalates only a real change as an untrusted-evidence job
+through ordinary idempotent admission — never on reminder, script or digest kinds.
+
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
 OAuth and Hermes state stay in that user's named volumes. Organization documents are

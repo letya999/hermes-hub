@@ -68,7 +68,15 @@ type Schedule struct {
 	CatchUpWindow     time.Duration `json:"catch_up_window_ns"`
 	// MaxRetries bounds probe-error retries for check occurrences (SPEC-0054
 	// R1.1): 0 means the default 3, values above 8 are rejected.
-	MaxRetries    int       `json:"max_retries,omitempty"`
+	MaxRetries int `json:"max_retries,omitempty"`
+	// QuietFrom/QuietTo bound an owner-timezone HH:MM window in which
+	// owner-facing deliveries are deferred to the window end (SPEC-0054 R2.1);
+	// both-or-neither, overnight wraps.
+	QuietFrom string `json:"quiet_from,omitempty"`
+	QuietTo   string `json:"quiet_to,omitempty"`
+	// DailyLimit caps owner-facing notifications per owner-timezone day
+	// (SPEC-0054 R2.2): 0 is unlimited, 32 the bound.
+	DailyLimit    int       `json:"daily_limit,omitempty"`
 	NativeCronRef string    `json:"native_cron_ref,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -591,8 +599,24 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		}
 		seenSources[id] = true
 	}
-	if in.NotifyMode != "" && in.NotifyMode != "immediate" && in.NotifyMode != "digest" {
+	if in.NotifyMode != "" && in.NotifyMode != "immediate" && in.NotifyMode != "digest" && in.NotifyMode != "agent" {
 		return errors.New("invalid notify mode")
+	}
+	if in.NotifyMode == "agent" && in.JobKind != "watcher" && in.JobKind != "check" {
+		return errors.New("agent escalation requires a watcher or check")
+	}
+	if (in.QuietFrom == "") != (in.QuietTo == "") {
+		return errors.New("quiet window needs both bounds")
+	}
+	if in.QuietFrom != "" {
+		from, err1 := time.Parse("15:04", in.QuietFrom)
+		to, err2 := time.Parse("15:04", in.QuietTo)
+		if err1 != nil || err2 != nil || from.Equal(to) {
+			return errors.New("invalid quiet window")
+		}
+	}
+	if in.DailyLimit < 0 || in.DailyLimit > 32 {
+		return errors.New("daily_limit must be 0..32")
 	}
 	if in.Probe != nil {
 		if len(in.Probe.URL) > 2048 {

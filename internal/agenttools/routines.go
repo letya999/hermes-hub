@@ -16,7 +16,7 @@ import (
 )
 
 var routineDescriptions = map[string]string{
-	"routine_create": "Create an owner-scoped routine. kind=reminder delivers exact text directly; expression after:180s resolves a three-minute delay once on the server; display the returned deadline. Reuse the same schedule ID after an uncertain create and inspect its saved status; never silently replace a delivered routine. kind=watcher polls a public url and optional regex first capture group: first successful baseline is silent, unchanged values are silent, changes include bounded old/new values; errors preserve baseline. kind=check tests expect (changed|unchanged|equals:value) against a url or task:<task_id> predicate, retrying a failed probe a bounded number of times; kind=script runs bounded Starlark; kind=digest aggregates changed watches. Watcher, check, script, reminder and digest never wake an agent or invoke a model at firing.",
+	"routine_create": "Create an owner-scoped routine. kind=reminder delivers exact text directly; expression after:180s resolves a three-minute delay once on the server; display the returned deadline. Reuse the same schedule ID after an uncertain create and inspect its saved status; never silently replace a delivered routine. kind=watcher polls a public url and optional regex first capture group: first successful baseline is silent, unchanged values are silent, changes include bounded old/new values; errors preserve baseline. kind=check tests expect (changed|unchanged|equals:value) against a url or task:<task_id> predicate, retrying a failed probe up to max_retries times (default 3); kind=script runs bounded Starlark; kind=digest aggregates changed watches. quiet_from/quiet_to set an HH:MM owner-timezone window in which watcher, check and digest notifications defer to the window end; daily_limit (0..32) caps same-day watcher and check notifications. notify_mode=digest feeds the owner's digest instead of immediate text; notify_mode=agent escalates a real change to the model as untrusted evidence. Watcher, check, script, reminder and digest never wake an agent or invoke a model at firing.",
 	"routine_list":   "List owned routines and their current delivery state; observe the same schedule ID after an uncertain create before proposing another routine.",
 	"routine_update": "Update an owned routine schedule or text. Use an absolute once:RFC3339 expression or cron; after: is creation-only.",
 	"routine_snooze": "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
@@ -67,6 +67,16 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		if r.NotifyMode != "" {
 			create["notify_mode"] = r.NotifyMode
+		}
+		if r.QuietFrom != "" {
+			create["quiet_from"] = r.QuietFrom
+			create["quiet_to"] = r.QuietTo
+		}
+		if r.DailyLimit > 0 {
+			create["daily_limit"] = r.DailyLimit
+		}
+		if r.MaxRetries > 0 {
+			create["max_retries"] = r.MaxRetries
 		}
 		if len(r.SourceIDs) > 0 {
 			create["source_ids"] = r.SourceIDs
