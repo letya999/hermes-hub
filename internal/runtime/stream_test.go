@@ -175,6 +175,9 @@ func TestToolHubProgressMessages(t *testing.T) {
 }
 
 func TestPersistentStreamAdmissionApprovalAndTerminal(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
 	var polls atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

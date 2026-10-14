@@ -533,13 +533,13 @@ func TestDeferredBrowserStopsSpawningAfterShutdown(t *testing.T) {
 	oldNotify, oldStop := signalNotify, signalStop
 	state, browserURL = t.TempDir(), server.URL
 	var mu sync.Mutex
-	var spawned []string
+	var spawned []*exec.Cmd
 	command = func(name string, args ...string) *exec.Cmd {
-		mu.Lock()
-		spawned = append(spawned, name)
-		mu.Unlock()
 		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
 		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
+		mu.Lock()
+		spawned = append(spawned, cmd)
+		mu.Unlock()
 		return cmd
 	}
 	displayBlocked := make(chan struct{})
@@ -580,9 +580,9 @@ func TestDeferredBrowserStopsSpawningAfterShutdown(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	for _, name := range spawned {
-		if name != "Xvfb" {
-			t.Fatalf("browser stack spawned after shutdown: %v", spawned)
+	for _, cmd := range spawned {
+		if cmd.ProcessState == nil {
+			t.Fatal("deferred browser child survived shutdown")
 		}
 	}
 }
