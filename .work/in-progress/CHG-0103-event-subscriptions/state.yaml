@@ -19,7 +19,7 @@ slices:
   S5.3-surface-catalog: done
 validation:
   documents: done
-  just_check: not_run
+  just_check: pass
   docker_check: not_run
   red_team: done
   live_acceptance: not_available
