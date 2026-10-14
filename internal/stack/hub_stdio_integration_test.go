@@ -74,6 +74,12 @@ func TestHubStdioReminderContract(t *testing.T) {
 	if err := os.Chmod(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		cleanup := exec.Command("docker", "run", "--rm", "--user", "0", "-v", filepath.ToSlash(dir)+":/fixture", "--entrypoint", "chmod", image, "-R", "a+rwX", "/fixture")
+		if output, err := cleanup.CombinedOutput(); err != nil {
+			t.Errorf("fixture cleanup permissions: %v: %s", err, output)
+		}
+	}()
 	const script = `import asyncio,json,os,sys
 sys.path.insert(0,'/opt/hermes')
 os.environ['HERMES_HOME']='/fixture/hermes-home'
