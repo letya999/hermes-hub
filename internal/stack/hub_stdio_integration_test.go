@@ -71,6 +71,9 @@ func TestHubStdioReminderContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	const script = `import asyncio,json,os,sys
 sys.path.insert(0,'/opt/hermes')
 os.environ['HERMES_HOME']='/fixture/hermes-home'
@@ -104,13 +107,19 @@ asyncio.run(main())
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0700); err != nil {
 			t.Fatal(err)
 		}
-	}
-	for _, sub := range []string{filepath.Join("state", "hermes"), "hermes-home"} {
-		if err := os.WriteFile(filepath.Join(dir, sub, "config.yaml"), cfgBody, 0600); err != nil {
+		if err := os.Chmod(filepath.Join(dir, sub), 0777); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "canary.py"), []byte(script), 0600); err != nil {
+	if err := os.Chmod(filepath.Join(dir, "state"), 0777); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{filepath.Join("state", "hermes"), "hermes-home"} {
+		if err := os.WriteFile(filepath.Join(dir, sub, "config.yaml"), cfgBody, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "canary.py"), []byte(script), 0644); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)

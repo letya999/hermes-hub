@@ -541,11 +541,14 @@ func fasterWhisperFixtureSmoke(ctx context.Context, image string) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
+	if err := os.Chmod(dir, 0755); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "hello.wav"), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "hello.wav"), data, 0644); err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "/usr/local/bin/hub-stt", "-v", dir+":/fixture:ro", image, "/fixture/hello.wav", "audio/wav")
