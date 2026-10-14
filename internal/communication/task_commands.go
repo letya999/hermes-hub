@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -64,16 +65,26 @@ func (g *Gateway) newTaskCommand(ctx context.Context, user User, chatID, topic i
 
 // useCommand implements /use <id|имя|default>: switch the chat's current
 // session. Posting afterwards follows the selected task's conversation.
-func (g *Gateway) useCommand(user User, chatID int64, text string) string {
+func (g *Gateway) useCommand(ctx context.Context, user User, chatID int64, text string) string {
 	fields := strings.Fields(text)
 	if len(fields) < 2 {
 		return "Используйте /use <id|имя|default>."
 	}
-	selected, err := g.spool.UseTask(user, chatID, strings.Join(fields[1:], " "))
-	if err != nil {
+	selector := strings.Join(fields[1:], " ")
+	selected, err := g.spool.UseTask(user, chatID, selector)
+	if err == nil {
+		return "Текущая задача: " + taskLabel(selected) + "."
+	}
+	restored, rebound, uerr := g.spool.UnarchiveTask(user, chatID, selector)
+	if uerr != nil {
 		return "Задача не найдена: " + err.Error()
 	}
-	return "Текущая задача: " + taskLabel(selected) + "."
+	if rebound && chatID < 0 {
+		if err := g.api.ReopenForumTopic(ctx, chatID, restored.TopicID); err != nil {
+			log.Printf("gateway forum topic reopen failed chat=%d topic=%d: %v", chatID, restored.TopicID, err)
+		}
+	}
+	return "Сессия " + taskLabel(restored) + " восстановлена из архива и выбрана текущей."
 }
 
 // deleteCommand implements /delete [id|имя]: bare removes the current task,
@@ -101,6 +112,73 @@ func (g *Gateway) deleteCommand(ctx context.Context, user User, chatID, topic in
 		}
 	}
 	return "Задача " + taskLabel(deleted) + " удалена, текущая — default. Её Hermes-сессия сохранена наверху для аудита.", replyTopic
+}
+
+// archiveCommand implements /archive [id|имя]: retire the resolved or
+// addressed session. In a forum group its topic is closed so the UI mirrors
+// the archive state; the Hermes session itself is kept for audit and /use
+// can restore it.
+func (g *Gateway) archiveCommand(ctx context.Context, user User, chatID int64, task Task, text string) string {
+	if fields := strings.Fields(text); len(fields) >= 2 {
+		addressed, err := g.spool.TaskBySelector(user, chatID, strings.Join(fields[1:], " "))
+		if err != nil {
+			return "Задача не найдена: " + err.Error()
+		}
+		task = addressed
+	}
+	archived, err := g.spool.ArchiveTask(user, chatID, task.TaskID)
+	if err != nil {
+		return "Не удалось архивировать: " + err.Error()
+	}
+	if archived.TopicID != 0 && chatID < 0 {
+		if err := g.api.CloseForumTopic(ctx, chatID, archived.TopicID); err != nil {
+			log.Printf("gateway forum topic close failed chat=%d topic=%d: %v", chatID, archived.TopicID, err)
+		}
+	}
+	return "Сессия " + taskLabel(archived) + " заархивирована (" + archived.UpdatedAt.UTC().Format("02.01.2006 15:04") + " UTC). Восстановить: /use " + archived.TaskID + "."
+}
+
+// archivedCommand implements /archived: list archived sessions with dates.
+func (g *Gateway) archivedCommand(user User, chatID int64) string {
+	tasks, err := g.spool.ListArchivedTasks(user, chatID)
+	if err != nil {
+		return "Список архива недоступен."
+	}
+	if len(tasks) == 0 {
+		return "Архив пуст."
+	}
+	lines := []string{"Архив сессий:"}
+	for _, task := range tasks {
+		line := "— " + taskLabel(task)
+		if !task.UpdatedAt.IsZero() {
+			line += " — архив " + task.UpdatedAt.UTC().Format("02.01.2006 15:04") + " UTC"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stopCommand implements /stop: cancel the non-terminal job bound to the
+// resolved session. A queued job is cancelled locally; an admitted run still
+// goes through the runtime control loop for confirmation.
+func (g *Gateway) stopCommand(user User, task Task, callerForJob func(string) identity.Envelope) string {
+	jobs, err := g.spool.ActiveJobsForTask(user.ID, task.TaskID)
+	if err != nil {
+		return "Не удалось проверить активные задачи."
+	}
+	if len(jobs) == 0 {
+		return "В этой сессии нет активной работы."
+	}
+	lines := []string{}
+	for _, job := range jobs {
+		updated, err := g.spool.RequestCancel(job.JobID, callerForJob(job.JobID))
+		if err != nil {
+			lines = append(lines, job.JobID+": отмена недоступна.")
+			continue
+		}
+		lines = append(lines, "Останавливаю "+job.JobID+" (состояние: "+updated.Status+").")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // forumTopicCreated mirrors a user-created forum topic into a bound session

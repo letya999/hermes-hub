@@ -530,7 +530,7 @@ func TestTaskCommandRejectsBadInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := g.useCommand(user, 11, "/use"); !strings.Contains(got, "Используйте /use") {
+	if got := g.useCommand(context.Background(), user, 11, "/use"); !strings.Contains(got, "Используйте /use") {
 		t.Fatalf("/use hint=%q", got)
 	}
 	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {

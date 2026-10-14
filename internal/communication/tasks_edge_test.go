@@ -300,10 +300,10 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new alpha"); !strings.Contains(got, "уже есть") {
 		t.Fatalf("reuse=%q", got)
 	}
-	if got := g.useCommand(user, 11, "/use"); !strings.Contains(got, "/use <id|имя|default>") {
+	if got := g.useCommand(context.Background(), user, 11, "/use"); !strings.Contains(got, "/use <id|имя|default>") {
 		t.Fatalf("use hint=%q", got)
 	}
-	if got := g.useCommand(user, 11, "/use missing-task"); !strings.Contains(got, "не найдена") {
+	if got := g.useCommand(context.Background(), user, 11, "/use missing-task"); !strings.Contains(got, "не найдена") {
 		t.Fatalf("use missing=%q", got)
 	}
 	if got, _ := g.deleteCommand(context.Background(), user, 11, 0, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {

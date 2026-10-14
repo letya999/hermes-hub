@@ -14,11 +14,15 @@ go run ./cmd/e2e mock --report C:/private/e2e-mock.json
 
 Mock mode runs the existing deterministic boundary tests sequentially with race detection. It does not claim real Hermes/provider/Telegram success. A missing fixture is BLOCKED.
 
-For server-driven real Telegram verification, compile cmd/e2e for Linux, copy it into the running communication-hub container, and run:
+For server-driven real Telegram verification, the runner ships inside the communication-hub image; run it with one docker exec:
 
 ```text
-/data/e2e-acceptance/runner telegram --principal <configured-principal> --select E2E-064,E2E-066,E2E-081 --report /tmp/e2e-report.json
+docker exec <communication-hub-container> e2e telegram --principal <configured-principal> --select E2E-064,E2E-066,E2E-081 --report /tmp/e2e-report.json
 ```
+
+The same applies to `mock-server`: `docker exec <communication-hub-container> e2e mock-server --principal <configured-principal> --select E2E-064,E2E-066 --report /tmp/e2e-report.json` is the one-command mock-channel harness — it exercises the real `/v1/mock/message` ingress, owner binding, durable outbox capture and the configured provider inside the live stack.
+
+Session-management commands (`/stop`, `/cancel <job-id>`, `/archive [id|имя]`, `/archived`, `/use` on archived sessions) and forum-topic session binding are covered by deterministic package tests: no slash command reaches the model queue (`TestAllCommandsStayDeterministic`), cancellation goes through the durable `RequestCancel` control path, and archive/restore mirrors topic close/reopen through fake-API assertions. Live progress (typing re-arm plus elapsed-time status edits) is covered by `TestLiveProgressTickRearmsAndAges`/`TestProgressLoopRunsDuringGatewayRun` at the spool/fake-API boundary. None of this is evidence of behavior against the real Bot API; live acceptance of the new commands remains unverified.
 
 The principal must already be enabled and have a Telegram binding. Credentials come from the existing gateway environment, never command-line flags. Server mode automates text, outgoing voice, files/documents, bounded shell execution, usage, routine management, read-only settings/catalog queries and credential-free installation checks. Reminder/script firing uses the routine API in an isolated task. It checks the durable Bot API delivery receipt and agent session/run metadata. It does not exercise incoming Telegram polling. Other scenarios stay BLOCKED until a functional oracle and safe synthetic resources are implemented. A timeout does not resend a potentially delivered message. Schedule, digest-source and terminal-task cleanup errors fail the case and stop subsequent admission; cleanup cannot be hidden behind a successful delivery.
 

@@ -653,6 +653,345 @@ func TestLateTopicCreatedFixesPlaceholder(t *testing.T) {
 	}
 }
 
+// /stop cancels the running job of the session resolved in this chat.
+func TestStopCancelsCurrentTaskJob(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "длинная работа", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	// The job sits in the queue unclaimed (mapping "accepted", no run yet).
+	ids, err := g.spool.activeMappingIDs()
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("active jobs: %v %v", ids, err)
+	}
+	if err := g.handleUpdate(ctx, taskUpdate(2, 2, "/stop", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	mapping, found, err := g.spool.Mapping(ids[0])
+	if err != nil || !found || mapping.Status != "cancelled" {
+		t.Fatalf("job not cancelled: %+v found=%v err=%v", mapping, found, err)
+	}
+	last := fake.sent[len(fake.sent)-1]
+	if !strings.Contains(last, "станавл") || !strings.Contains(last, ids[0]) {
+		t.Fatalf("stop confirmation missing job id: %q", last)
+	}
+}
+
+// Issue #217: /archive retires the resolved session; in a forum group its
+// bot-managed topic is closed so the archive state mirrors in the UI.
+func TestArchiveCommandClosesForumTopic(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+	user := g.user("alice")
+
+	// /new in a forum group mints the bot-managed topic bound to the session.
+	if err := g.handleUpdate(ctx, forumUpdate(1, 1, "/new работа", 11, -100123, 7)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	task, err := g.spool.ResolveTask(user, -100123, 0, false)
+	if err != nil || task.TopicID == 0 {
+		t.Fatalf("session without topic: %+v %v", task, err)
+	}
+	if err := g.handleUpdate(ctx, forumUpdate(2, 2, "/archive", 11, -100123, task.TopicID)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if _, err := g.spool.TaskByID(user, -100123, task.TaskID); err == nil {
+		t.Fatal("archived task still live")
+	}
+	archived, err := g.spool.ListArchivedTasks(user, -100123)
+	if err != nil || len(archived) != 1 || archived[0].TaskID != task.TaskID {
+		t.Fatalf("archived list: %v %v", archived, err)
+	}
+	if !forumOpCalled(fake.forumOps, "close", -100123, task.TopicID, "") {
+		t.Fatalf("forum topic not closed on archive: %+v", fake.forumOps)
+	}
+	last := fake.sent[len(fake.sent)-1]
+	if !strings.Contains(last, "архив") || !strings.Contains(last, task.Name) {
+		t.Fatalf("archive confirmation: %q", last)
+	}
+	// The chat falls back to the default session.
+	current, err := g.spool.ResolveTask(user, -100123, 0, false)
+	if err != nil || current.TaskID != defaultTaskID {
+		t.Fatalf("current after archive: %+v", current)
+	}
+}
+
+// /archived lists archived sessions with their dates; /archive list is the
+// same listing inside the archive namespace.
+func TestArchivedListsArchivedSessions(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+
+	for i, text := range []string{"/new alpha", "/archive", "/new beta", "/archive"} {
+		if err := g.handleUpdate(ctx, taskUpdate(i+1, i+1, text, 11, 0)); err != nil {
+			t.Fatal(err)
+		}
+		g.deliverOne(ctx)
+	}
+	if err := g.handleUpdate(ctx, taskUpdate(9, 9, "/archived", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	last := fake.sent[len(fake.sent)-1]
+	if !strings.Contains(last, "alpha") || !strings.Contains(last, "beta") || !strings.Contains(last, "—") {
+		t.Fatalf("archived list missing names/dates: %q", last)
+	}
+	// Live sessions stay out of the archived listing.
+	if err := g.handleUpdate(ctx, taskUpdate(10, 10, "/new gamma", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if err := g.handleUpdate(ctx, taskUpdate(11, 11, "/archived", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if strings.Contains(fake.sent[len(fake.sent)-1], "gamma") {
+		t.Fatalf("live session leaked into archive list: %q", fake.sent[len(fake.sent)-1])
+	}
+}
+
+// /use on an archived session restores it; in a forum group the session's
+// topic is reopened so its UI mirror matches the live state again.
+func TestUseRestoresArchivedSession(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+	user := g.user("alice")
+
+	if err := g.handleUpdate(ctx, forumUpdate(1, 1, "/new работа", 11, -100123, 7)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	task, err := g.spool.ResolveTask(user, -100123, 0, false)
+	if err != nil || task.TopicID == 0 {
+		t.Fatalf("session without topic: %+v %v", task, err)
+	}
+	if err := g.handleUpdate(ctx, forumUpdate(2, 2, "/archive", 11, -100123, task.TopicID)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if err := g.handleUpdate(ctx, forumUpdate(3, 3, "/use "+task.TaskID, 11, -100123, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	live, err := g.spool.TaskByID(user, -100123, task.TaskID)
+	if err != nil || live.Archived {
+		t.Fatalf("archived task not restored: %+v %v", live, err)
+	}
+	current, err := g.spool.ResolveTask(user, -100123, 0, false)
+	if err != nil || current.TaskID != task.TaskID {
+		t.Fatalf("restored task not current: %+v %v", current, err)
+	}
+	if !forumOpCalled(fake.forumOps, "reopen", -100123, task.TopicID, "") {
+		t.Fatalf("forum topic not reopened on restore: %+v", fake.forumOps)
+	}
+	last := fake.sent[len(fake.sent)-1]
+	if !strings.Contains(last, "восстанов") && !strings.Contains(last, "архив") {
+		t.Fatalf("restore reply: %q", last)
+	}
+}
+
+// /archive accepts a selector: an addressed session is archived without
+// touching the current one.
+func TestArchiveCommandBySelector(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+	user := g.user("alice")
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/new первая", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if err := g.handleUpdate(ctx, taskUpdate(2, 2, "/new вторая", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	first, err := g.spool.TaskBySelector(user, 11, "первая")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.handleUpdate(ctx, taskUpdate(3, 3, "/archive первая", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if _, err := g.spool.TaskByID(user, 11, first.TaskID); err == nil {
+		t.Fatal("addressed session still live")
+	}
+	// The current session stays the second one; the reply confirms the target.
+	second, err := g.spool.TaskBySelector(user, 11, "вторая")
+	if err != nil || second.Archived {
+		t.Fatalf("current session harmed: %+v %v", second, err)
+	}
+	if last := fake.sent[len(fake.sent)-1]; !strings.Contains(last, "первая") {
+		t.Fatalf("archive reply does not name the target: %q", last)
+	}
+}
+
+// /use restores an archived session by name as well; if another live session
+// adopted its topic meanwhile, the restored one comes back unbound instead of
+// stealing the binding — and no foreign topic is reopened.
+func TestUseArchivedByNameAndTopicCollision(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+	user := g.user("alice")
+
+	if err := g.handleUpdate(ctx, forumUpdate(1, 1, "/new работа", 11, -100123, 7)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	task, err := g.spool.ResolveTask(user, -100123, 0, false)
+	if err != nil || task.TopicID == 0 {
+		t.Fatalf("session without topic: %+v %v", task, err)
+	}
+	topic := task.TopicID
+	if err := g.handleUpdate(ctx, forumUpdate(2, 2, "/archive", 11, -100123, topic)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	// Another live session adopts the freed topic meanwhile.
+	adopter, _, err := g.spool.CreateTask(user, -100123, topic, "захватчик", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.handleUpdate(ctx, forumUpdate(3, 3, "/use работа", 11, -100123, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	live, err := g.spool.TaskByID(user, -100123, task.TaskID)
+	if err != nil || live.Archived {
+		t.Fatalf("archived task not restored by name: %+v %v", live, err)
+	}
+	if live.TopicID != 0 {
+		t.Fatalf("restored task stole occupied topic: %+v", live)
+	}
+	if forumOpCalled(fake.forumOps, "reopen", -100123, topic, "") {
+		t.Fatal("occupied topic reopened for restored task")
+	}
+	// The adopter still owns the topic binding.
+	resolved, err := g.spool.ResolveTask(user, -100123, topic, false)
+	if err != nil || resolved.TaskID != adopter.TaskID {
+		t.Fatalf("adopter lost topic binding: %+v", resolved)
+	}
+}
+
+// Every local slash command — including the session-management additions —
+// is answered by the gateway itself: none may reach the model queue,
+// whatever its outcome (missing args, archived target, no active job).
+func TestAllCommandsStayDeterministic(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api, g.runner = &fakeAPI{}, &fakeRunner{}
+	ctx := context.Background()
+	commands := []string{"/status", "/session", "/sessions", "/archived", "/stop", "/cancel", "/cancel some-job", "/archive", "/use", "/use missing", "/delete", "/usage", "/routines", "/connectors", "/credentials", "/approve", "/new tmp", "/bogus"}
+	for i, command := range commands {
+		if err := g.handleUpdate(ctx, taskUpdate(1000+i, 1000+i, command, 11, 0)); err != nil {
+			t.Fatalf("%s: %v", command, err)
+		}
+		if job, err := g.spool.ClaimJob(); err != nil || job != nil {
+			t.Fatalf("%s entered LLM queue: %+v %v", command, job, err)
+		}
+	}
+	g.usageWG.Wait()
+}
+
+// The control commands /stop and /cancel are advertised in /help and the
+// registered Telegram menu like every other supported command.
+func TestStopCancelInCommandInventory(t *testing.T) {
+	help := commandHelp()
+	for _, cmd := range []string{"/stop", "/cancel", "/archive", "/archived"} {
+		if !strings.Contains(help, cmd+" ") && !strings.Contains(help, cmd+"\n") {
+			t.Fatalf("command %s absent from help:\n%s", cmd, help)
+		}
+	}
+}
+
+// /cancel <job-id> cancels a job by id — the approval prompt texts already
+// reference this command, so it must exist.
+func TestCancelByJobID(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "работа", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := g.spool.activeMappingIDs()
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("active jobs: %v %v", ids, err)
+	}
+	if err := g.handleUpdate(ctx, taskUpdate(2, 2, "/cancel "+ids[0], 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	mapping, found, err := g.spool.Mapping(ids[0])
+	if err != nil || !found || mapping.Status != "cancelled" {
+		t.Fatalf("job not cancelled: %+v found=%v err=%v", mapping, found, err)
+	}
+	last := fake.sent[len(fake.sent)-1]
+	if !strings.Contains(last, ids[0]) {
+		t.Fatalf("cancel confirmation missing job id: %q", last)
+	}
+	// Cancelling a terminal or foreign job is rejected with an answer, not silence.
+	if err := g.handleUpdate(ctx, taskUpdate(3, 3, "/cancel "+ids[0], 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if err := g.handleUpdate(ctx, taskUpdate(4, 4, "/cancel не-существует", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if !strings.Contains(fake.sent[len(fake.sent)-1], "не удалось") && !strings.Contains(fake.sent[len(fake.sent)-1], "недоступн") {
+		t.Fatalf("missing-job cancel reply: %q", fake.sent[len(fake.sent)-1])
+	}
+}
+
 // A forum service message from a non-configured user must not mint sessions.
 func TestForeignForumServiceIgnored(t *testing.T) {
 	c := testConfig(t)

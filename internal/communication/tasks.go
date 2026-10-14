@@ -313,6 +313,14 @@ func (s *Spool) TaskByID(user User, chatID int64, taskID string) (Task, error) {
 	return s.taskByIDLocked(user, chatID, taskID)
 }
 
+// TaskBySelector resolves a live task by id or unique name — the selector
+// surface shared by /archive and other mutating commands.
+func (s *Spool) TaskBySelector(user User, chatID int64, selector string) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.findTaskLocked(user, chatID, selector)
+}
+
 func (s *Spool) taskByIDLocked(user User, chatID int64, taskID string) (Task, error) {
 	if taskID == "" || taskID == defaultTaskID {
 		task, err := s.loadTaskLocked(user.ID, defaultTaskID)
@@ -669,6 +677,49 @@ func (s *Spool) deleteTaskLocked(user User, chatID int64, task Task) (Task, erro
 		return Task{}, err
 	}
 	return task, nil
+}
+
+// UnarchiveTask restores an archived task by id or unique name and makes it
+// the chat's current session; a topic binding is restored and reported via
+// rebound unless another live task adopted the topic meanwhile.
+func (s *Spool) UnarchiveTask(user User, chatID int64, selector string) (Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, err := s.loadTaskLocked(user.ID, selector)
+	if err != nil || !task.Archived {
+		tasks, lerr := s.listTasksLocked(user.ID)
+		if lerr != nil {
+			return Task{}, false, lerr
+		}
+		found, count := Task{}, 0
+		for _, t := range tasks {
+			if t.Archived && t.Name == selector {
+				found, count = t, count+1
+			}
+		}
+		if count > 1 {
+			return Task{}, false, errors.New("task name is ambiguous; use its id")
+		}
+		if count == 0 {
+			return Task{}, false, errors.New("task not found")
+		}
+		task = found
+	}
+	if task.ChatID != chatID {
+		return Task{}, false, errors.New("task belongs to a different chat")
+	}
+	if task.TopicID != 0 {
+		if bound, err := s.topicTaskLocked(user.ID, chatID, task.TopicID); err != nil {
+			return Task{}, false, err
+		} else if bound != "" && bound != task.TaskID {
+			task.TopicID = 0
+		}
+	}
+	task.Archived = false
+	if err := s.materializeTaskLocked(task); err != nil {
+		return Task{}, false, err
+	}
+	return task, task.TopicID != 0, s.setCurrentLocked(task)
 }
 
 // ListArchivedTasks returns the owner's archived tasks, oldest first.

@@ -1594,6 +1594,8 @@ type TelegramAPI interface {
 	CreateForumTopic(context.Context, int64, string) (int64, error)
 	EditForumTopic(context.Context, int64, int64, string) error
 	DeleteForumTopic(context.Context, int64, int64) error
+	CloseForumTopic(context.Context, int64, int64) error
+	ReopenForumTopic(context.Context, int64, int64) error
 }
 
 type telegramAPI struct {
@@ -1868,6 +1870,12 @@ func (t *telegramAPI) EditForumTopic(ctx context.Context, chatID, topicID int64,
 }
 func (t *telegramAPI) DeleteForumTopic(ctx context.Context, chatID, topicID int64) error {
 	return t.call(ctx, "deleteForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID}, nil)
+}
+func (t *telegramAPI) CloseForumTopic(ctx context.Context, chatID, topicID int64) error {
+	return t.call(ctx, "closeForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID}, nil)
+}
+func (t *telegramAPI) ReopenForumTopic(ctx context.Context, chatID, topicID int64) error {
+	return t.call(ctx, "reopenForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID}, nil)
 }
 func (t *telegramAPI) GetFile(ctx context.Context, fileID string) (TelegramFile, error) {
 	var file TelegramFile
@@ -2220,6 +2228,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
 	proactiveDone := make(chan struct{})
+	progressDone := make(chan struct{})
 	canaryDone := make(chan struct{})
 	go func() {
 		defer close(canaryDone)
@@ -2243,6 +2252,19 @@ func (g *Gateway) Run(ctx context.Context) error {
 		g.controlLoop(workerCtx)
 	}()
 	go func() {
+		defer close(progressDone)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			g.progressTick(workerCtx)
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	go func() {
 		defer close(deliveryDone)
 		g.deliveryLoop(workerCtx)
 	}()
@@ -2252,6 +2274,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-deliveryDone
 		<-controlDone
 		<-proactiveDone
+		<-progressDone
 		<-canaryDone
 		g.usageWG.Wait()
 	}()
@@ -2461,12 +2484,30 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		case "sessions":
 			return reply(g.sessionsCommand(user, message.Chat.ID))
 		case "use":
-			return reply(g.useCommand(user, message.Chat.ID, text))
+			return reply(g.useCommand(ctx, user, message.Chat.ID, text))
 		case "delete":
 			answer, replyTopic := g.deleteCommand(ctx, user, message.Chat.ID, topic, task, text)
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, replyTopic, answer)
+		case "archive":
+			return reply(g.archiveCommand(ctx, user, message.Chat.ID, task, text))
+		case "archived":
+			return reply(g.archivedCommand(user, message.Chat.ID))
 		case "session", "status":
 			return reply(g.taskStatus(user, task))
+		case "stop":
+			return reply(g.stopCommand(user, task, callerForJob))
+		case "cancel":
+			fields := strings.Fields(text)
+			answer := "Используйте /cancel <job-id>."
+			if len(fields) >= 2 {
+				mapping, err := g.spool.RequestCancel(fields[1], callerForJob(fields[1]))
+				if err == nil {
+					answer = "Отмена " + mapping.JobID + ": " + mapping.Status + "."
+				} else {
+					answer = "Не удалось отменить: задача недоступна в этом разговоре."
+				}
+			}
+			return reply(answer)
 		case "routines":
 			items, err := g.spool.ListSchedules(user.envelope(message.From.ID))
 			if err != nil {
@@ -2604,6 +2645,44 @@ func (g *Gateway) wakeRuntime(job Job) {
 	}
 }
 
+// progressTick refreshes live progress for every non-terminal telegram job:
+// typing is re-armed (it expires after ~5s) and the job's single status
+// message gets a fresh elapsed-time suffix through the durable upsert path,
+// so a real stream event or a restarted gateway never duplicates it.
+func (g *Gateway) progressTick(ctx context.Context) {
+	ids, err := g.spool.activeMappingIDs()
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		m, found, err := g.spool.Mapping(id)
+		if err != nil || !found || m.Channel != "telegram_bot" || m.CancelRequested {
+			continue
+		}
+		_ = g.api.SendChatAction(ctx, m.ChatID, m.TopicID, "typing")
+		base := strings.TrimSpace(m.StatusText)
+		if base == "" {
+			base = "Выполняю запрос."
+		}
+		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(g.now().Sub(m.CreatedAt)), CreatedAt: g.now().UTC()})
+	}
+}
+
+func formatElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	s := int(d.Round(time.Second).Seconds())
+	switch {
+	case s < 60:
+		return strconv.Itoa(s) + " сек"
+	case s < 3600:
+		return strconv.Itoa(s/60) + " мин " + strconv.Itoa(s%60) + " сек"
+	default:
+		return strconv.Itoa(s/3600) + " ч " + strconv.Itoa((s%3600)/60) + " мин"
+	}
+}
+
 // botCommandInventory is the single source of truth for supported slash
 // commands: it feeds both the Telegram menu (registered on every startup, so
 // stale scope registrations left by other adapters cannot linger) and /help.
@@ -2624,6 +2703,10 @@ var botCommandInventory = []struct {
 	{"connections", "Подключения и коннекторы ToolHub"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
 	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
+	{"stop", "Остановить выполнение текущей сессии"},
+	{"cancel", "Отменить задачу: /cancel <job-id>"},
+	{"archive", "Архивировать сессию: /archive [id|имя]"},
+	{"archived", "Архивные сессии с датами"},
 }
 
 // commandHelp is the authoritative inventory of supported slash commands;
