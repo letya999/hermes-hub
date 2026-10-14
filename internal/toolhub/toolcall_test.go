@@ -154,7 +154,6 @@ type stubBackend struct {
 	text    string
 	isError bool
 	err     error
-	got     map[string]any
 }
 
 func (b stubBackend) Call(_ context.Context, _ EffectiveBinding, _ ToolSpec, arguments map[string]any) (BackendResult, error) {
