@@ -205,6 +205,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(DefaultEndpointPath, g.protect())
 	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
+	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/grants/", http.HandlerFunc(g.serveGrantAck))
@@ -267,6 +268,70 @@ func (g *Gateway) serveConnectors(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": views})
+}
+
+// serveToolCall is the deterministic-probe path: the same auth as the
+// connector inventory, but it invokes one projected tool through the audited
+// call fences and returns its flattened text.
+func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "browser origins forbidden", http.StatusForbidden)
+		return
+	}
+	auth, ok := g.connectorAuth(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		Tool      string         `json:"tool"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil || body.Tool == "" {
+		http.Error(w, "invalid tool call", http.StatusBadRequest)
+		return
+	}
+	tools, err := g.Store.ListProjectedTools(auth)
+	if err != nil {
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if tools, err = g.filterProjectedTools(auth, tools); err != nil {
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	allowed := false
+	for _, tool := range tools {
+		if tool.Name == body.Tool && tool.Tool.Effect == ReadEffect {
+			allowed = true
+		}
+	}
+	if !allowed {
+		http.Error(w, "tool is not a projected read tool", http.StatusForbidden)
+		return
+	}
+	result, err := g.call(r.Context(), auth, body.Tool, body.Arguments)
+	if err != nil {
+		http.Error(w, "tool call failed", http.StatusBadGateway)
+		return
+	}
+	var text strings.Builder
+	for _, content := range result.Content {
+		if tc, ok := content.(*mcp.TextContent); ok {
+			if text.Len() > 0 {
+				text.WriteByte('\n')
+			}
+			text.WriteString(tc.Text)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"text": text.String(), "is_error": result.IsError})
 }
 
 // serveCLIJobRelease is the job-end hook: the communication hub calls it when

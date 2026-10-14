@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -305,5 +308,238 @@ func TestAgentModeRejectedOnReminder(t *testing.T) {
 	bad := Schedule{ScheduleID: "ra", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "ping", JobKind: "reminder", NotifyMode: "agent"}
 	if _, err := s.CreateSchedule(bad, caller, ""); err == nil {
 		t.Fatal("notify_mode=agent accepted on a reminder")
+	}
+}
+
+// S3.2 — a watcher may poll an owner's read-only ToolHub tool instead of a
+// URL: the projected tool text is the compared value, and the URL fetch is
+// never touched (SPEC-0054 R3.2).
+func TestMCPToolProbeFeedsWatcher(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	now := time.Now().UTC()
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wm", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch connector", JobKind: "watcher", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-google-work-search-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	o.ScheduleID = "wm"
+	o.JobKind = "watcher"
+	o.Job.Text = "watch connector"
+	var toolArgs map[string]any
+	value := "v1"
+	toolCall := func(_ context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		if principal != "alice" {
+			t.Fatalf("probe ran under %q", principal)
+		}
+		toolArgs = probe.Args
+		return []byte(value), nil
+	}
+	noFetch := func(context.Context, string) ([]byte, error) {
+		t.Fatal("mcp_tool probe fetched a URL")
+		return nil, nil
+	}
+	fire := func(occ RoutineOccurrence) {
+		t.Helper()
+		if err := s.PutOccurrence(occ, caller); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DispatchDueOccurrences(occ.DueAt, g.authorizeOccurrence); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, noFetch, toolCall); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fire(o)
+	if d, _ := s.ClaimDelivery(); d != nil {
+		t.Fatalf("baseline seed notified: %+v", d)
+	}
+	value = "v2"
+	o2 := o
+	o2.DueAt = o.DueAt.Add(time.Hour)
+	fire(o2)
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || !strings.Contains(d.Text, "v2") {
+		t.Fatalf("mcp_tool change did not deliver: %+v %v", d, err)
+	}
+	_ = toolArgs
+}
+
+// S3.2 — the gateway's tool-call probe posts {tool, arguments} to ToolHub's
+// /v1/tool-call with the owner-pinned credential; is_error is a probe error,
+// never a compared value.
+func TestToolCallProbeHTTP(t *testing.T) {
+	var auth, principal, body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tool-call" {
+			http.Error(w, "missing", http.StatusNotFound)
+			return
+		}
+		auth = r.Header.Get("Authorization")
+		principal = r.Header.Get("X-Hub-Principal")
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		_, _ = w.Write([]byte(`{"text":"price 42","is_error":false}`))
+	}))
+	defer server.Close()
+	g := &Gateway{config: Config{ToolHubURL: server.URL, Supervised: true, RuntimeAuth: "control-token"}}
+	got, err := g.toolCallProbe(context.Background(), "alice", &WatchProbe{Kind: "mcp_tool", Tool: "hub-x", Args: map[string]any{"q": "price"}})
+	if err != nil || string(got) != "price 42" {
+		t.Fatalf("toolCallProbe: %q %v", got, err)
+	}
+	if auth != "Bearer control-token" || principal != "alice" {
+		t.Fatalf("credential headers: %q %q", auth, principal)
+	}
+	if !strings.Contains(body, `"tool":"hub-x"`) || !strings.Contains(body, `"q":"price"`) {
+		t.Fatalf("tool call body: %s", body)
+	}
+}
+
+// S3.2 — a tool error or a missing ToolHub config is a probe error
+// (unknown), never a compared value.
+func TestToolCallProbeErrors(t *testing.T) {
+	g := &Gateway{config: Config{}}
+	if _, err := g.toolCallProbe(context.Background(), "alice", &WatchProbe{Kind: "mcp_tool", Tool: "hub-x"}); err == nil {
+		t.Fatal("unconfigured tool hub probed successfully")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"text":"internal failure","is_error":true}`))
+	}))
+	defer server.Close()
+	g = &Gateway{config: Config{ToolHubURL: server.URL, Supervised: true, RuntimeAuth: "tok"}}
+	if _, err := g.toolCallProbe(context.Background(), "alice", &WatchProbe{Kind: "mcp_tool", Tool: "hub-x"}); err == nil {
+		t.Fatal("is_error tool result accepted as a value")
+	}
+	g = &Gateway{config: Config{ToolHubURL: server.URL, Supervised: true}}
+	if _, err := g.toolCallProbe(context.Background(), "alice", &WatchProbe{Kind: "mcp_tool", Tool: "hub-x"}); err == nil {
+		t.Fatal("credential-less tool hub probed successfully")
+	}
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"text":"should not parse"}`))
+	}))
+	defer denied.Close()
+	g = &Gateway{config: Config{ToolHubURL: denied.URL, Supervised: true, RuntimeAuth: "tok"}}
+	if _, err := g.toolCallProbe(context.Background(), "alice", &WatchProbe{Kind: "mcp_tool", Tool: "hub-x"}); err == nil {
+		t.Fatal("non-2xx tool hub response accepted as a value")
+	}
+}
+
+// S3.2 — mcp_tool probes validate their tool name, reject a URL, and bound
+// args; a check may also use one.
+func TestMCPToolProbeValidation(t *testing.T) {
+	s, o, _ := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	base := Schedule{ScheduleID: "mv", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch", JobKind: "watcher"}
+	noTool := base
+	noTool.Probe = &WatchProbe{Kind: "mcp_tool"}
+	if _, err := s.CreateSchedule(noTool, caller, ""); err == nil {
+		t.Fatal("mcp_tool without a tool accepted")
+	}
+	withURL := base
+	withURL.ScheduleID = "mv2"
+	withURL.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-x", URL: "https://example.com"}
+	if _, err := s.CreateSchedule(withURL, caller, ""); err == nil {
+		t.Fatal("mcp_tool with a url accepted")
+	}
+	badName := base
+	badName.ScheduleID = "mv3"
+	badName.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "bad name!"}
+	if _, err := s.CreateSchedule(badName, caller, ""); err == nil {
+		t.Fatal("unsafe tool name accepted")
+	}
+	bigArgs := base
+	bigArgs.ScheduleID = "mv4"
+	bigArgs.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-x", Args: map[string]any{"blob": strings.Repeat("x", 9*1024)}}
+	if _, err := s.CreateSchedule(bigArgs, caller, ""); err == nil {
+		t.Fatal("oversized args accepted")
+	}
+	badRequeue := base
+	badRequeue.ScheduleID = "mv5"
+	badRequeue.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-x", RequeueTool: "bad name!"}
+	if _, err := s.CreateSchedule(badRequeue, caller, ""); err == nil {
+		t.Fatal("unsafe requeue tool name accepted")
+	}
+	check := base
+	check.ScheduleID = "mv6"
+	check.JobKind = "check"
+	check.Expect = "changed"
+	check.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-x"}
+	if _, err := s.CreateSchedule(check, caller, ""); err != nil {
+		t.Fatalf("check mcp_tool rejected: %v", err)
+	}
+}
+
+// S3.2 — end to end: the proactive tick resolves an mcp_tool watcher through
+// ToolHub's /v1/tool-call and notifies on a changed result.
+func TestTickProbesMCPToolWatcher(t *testing.T) {
+	value := "seed"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tool-call" {
+			http.Error(w, "missing", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"text": value, "is_error": false})
+	}))
+	defer server.Close()
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-tick-mcp", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch connector", JobKind: "watcher", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-x"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	g.spool = s
+	g.config.ToolHubURL = server.URL
+	g.config.Supervised = true
+	g.config.RuntimeAuth = "control-token"
+	due := time.Now().UTC().Add(-time.Minute)
+	sched, _ := s.loadScheduleLocked("w-tick-mcp")
+	sched.NextDue = due
+	_ = atomicJSON(s.schedulePath("w-tick-mcp"), sched)
+	g.tickProactive(due)
+	if d, _ := s.ClaimDelivery(); d != nil {
+		t.Fatalf("seed notified: %+v", d)
+	}
+	value = "changed-value"
+	sched, _ = s.loadScheduleLocked("w-tick-mcp")
+	sched.NextDue = due.Add(time.Minute)
+	_ = atomicJSON(s.schedulePath("w-tick-mcp"), sched)
+	g.tickProactive(due.Add(2 * time.Minute))
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || !strings.Contains(d.Text, "changed-value") {
+		t.Fatalf("mcp tick did not deliver the change: %+v %v", d, err)
+	}
+}
+
+// S3.2 — creating an mcp_tool check over HTTP seeds the baseline through the
+// tool call, never through a URL fetch.
+func TestCheckMCPProbeSeedsBaselineOverHTTP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tool-call" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"text": "open"})
+			return
+		}
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	defer server.Close()
+	s, _, g := occurrenceFixture(t)
+	g.spool = s
+	g.config.ControlAuth = "tok"
+	g.config.ToolHubURL = server.URL
+	g.config.Supervised = true
+	g.config.RuntimeAuth = "control-token"
+	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	body := `{"schedule_id":"c-http-mcp","timezone":"UTC","expression":"0 * * * *","input":"connector state","job_kind":"check","expect":"equals:closed","probe":{"kind":"mcp_tool","tool":"hub-x"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/routines", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("X-Hub-Principal", "alice")
+	w := httptest.NewRecorder()
+	g.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", w.Code, w.Body)
+	}
+	s.mu.Lock()
+	st, err := s.loadWatchStateLocked("c-http-mcp")
+	s.mu.Unlock()
+	if err != nil || st.Value != "open" {
+		t.Fatalf("baseline not seeded from tool call: %+v %v", st, err)
 	}
 }

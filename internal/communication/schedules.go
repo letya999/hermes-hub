@@ -26,6 +26,12 @@ type WatchProbe struct {
 	Kind  string `json:"kind,omitempty"`
 	URL   string `json:"url"`
 	Regex string `json:"regex,omitempty"`
+	// Tool names one projected read ToolHub tool when kind=mcp_tool; Args is
+	// its verbatim argument object (bounded JSON). RequeueTool reserves the
+	// event-subscription requeue hook for stage 5.
+	Tool        string         `json:"tool,omitempty"`
+	Args        map[string]any `json:"args,omitempty"`
+	RequeueTool string         `json:"requeue_tool,omitempty"`
 }
 
 type Schedule struct {
@@ -522,6 +528,30 @@ func resolveRelativeReminder(in Schedule, now time.Time) (Schedule, error) {
 	return in, nil
 }
 
+var probeToolPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+
+// validMCPProbe bounds a tool-call probe (SPEC-0054 R3.2): a named projected
+// tool and no URL — credentials stay inside the ToolHub workload so the
+// probe never carries a source address.
+func validMCPProbe(probe *WatchProbe) error {
+	if probe == nil || !probeToolPattern.MatchString(probe.Tool) {
+		return errors.New("mcp_tool probe needs a projected tool name")
+	}
+	if probe.URL != "" {
+		return errors.New("mcp_tool probe takes no url")
+	}
+	if probe.RequeueTool != "" && !probeToolPattern.MatchString(probe.RequeueTool) {
+		return errors.New("invalid requeue tool name")
+	}
+	if probe.Args != nil {
+		b, err := json.Marshal(probe.Args)
+		if err != nil || len(b) > 8*1024 {
+			return errors.New("probe args exceed bounds")
+		}
+	}
+	return nil
+}
+
 // validTaskProbe reports whether url is a hub-internal task predicate
 // (task:<id>) — a verified source the probe resolves without any fetch
 // (SPEC-0054 R1.3).
@@ -559,7 +589,11 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		if in.Probe == nil {
 			return errors.New("check needs a probe")
 		}
-		if strings.HasPrefix(in.Probe.URL, "task:") {
+		if in.Probe.Kind == "mcp_tool" {
+			if err := validMCPProbe(in.Probe); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(in.Probe.URL, "task:") {
 			if !validTaskProbe(in.Probe.URL) {
 				return errors.New("invalid task probe")
 			}
@@ -579,13 +613,19 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		if in.Probe == nil {
 			return errors.New("watcher needs a probe")
 		}
-		u, err := url.Parse(in.Probe.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
-			return errors.New("watch probe must be a plain http(s) url")
-		}
-		if in.Probe.Regex != "" {
-			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
-				return errors.New("watch probe regex does not compile")
+		if in.Probe.Kind == "mcp_tool" {
+			if err := validMCPProbe(in.Probe); err != nil {
+				return err
+			}
+		} else {
+			u, err := url.Parse(in.Probe.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+				return errors.New("watch probe must be a plain http(s) url")
+			}
+			if in.Probe.Regex != "" {
+				if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+					return errors.New("watch probe regex does not compile")
+				}
 			}
 		}
 	}
@@ -622,7 +662,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		if len(in.Probe.URL) > 2048 {
 			return errors.New("probe URL exceeds limit")
 		}
-		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" {
+		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" {
 			return errors.New("invalid probe kind")
 		}
 		if in.Probe.Regex != "" {

@@ -257,6 +257,14 @@ baseline still advances. `notify_mode=digest` feeds the daily digest;
 `notify_mode=agent` escalates only a real change as an untrusted-evidence job
 through ordinary idempotent admission — never on reminder, script or digest kinds.
 
+A `mcp_tool` probe polls the owner's connectors without a public URL: ToolHub
+exposes `POST /v1/tool-call` for the control plane (owner-pinned credential,
+`X-Hub-Principal`, read-effect tools only, bounded arguments and response), and
+the probe compares the returned text like any other watch value. An `is_error`
+tool result is a probe error, not a value — the occurrence retries/settles
+through the same policy path. This keeps connector state verifiable without
+publishing credentials or letting model output stand in for evidence.
+
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
 OAuth and Hermes state stay in that user's named volumes. Organization documents are

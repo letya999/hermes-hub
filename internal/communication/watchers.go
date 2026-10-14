@@ -118,8 +118,12 @@ func (s *Spool) ProbeDueOccurrences(now time.Time, fetch func(context.Context, s
 	return s.ProbeDueOccurrencesContext(context.Background(), now, nil, fetch)
 }
 
-func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error)) error {
-	return s.processProactive(ctx, "probing", func(o RoutineOccurrence) { s.probeOne(ctx, o, now, authorize, fetch) })
+func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error), toolCalls ...func(context.Context, string, *WatchProbe) ([]byte, error)) error {
+	var toolCall func(context.Context, string, *WatchProbe) ([]byte, error)
+	if len(toolCalls) > 0 {
+		toolCall = toolCalls[0]
+	}
+	return s.processProactive(ctx, "probing", func(o RoutineOccurrence) { s.probeOne(ctx, o, now, authorize, fetch, toolCall) })
 }
 
 // fetchWatch is the live probe: one GET, caches bypassed, body capped at
@@ -150,7 +154,7 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	return body, err
 }
 
-func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error)) {
+func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) {
 	if o.RetryAfter.After(now) {
 		return // bounded check retry waiting out its backoff (R1.1)
 	}
@@ -192,6 +196,14 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 			return
 		}
 		body = []byte(state)
+	} else if schedule.Probe.Kind == "mcp_tool" {
+		// ToolHub probe: credentials never leave the connector workload —
+		// the hub only sees the flattened tool text (SPEC-0054 R3.2).
+		if toolCall == nil {
+			fetchErr = errors.New("tool-call probe path unavailable")
+		} else {
+			body, fetchErr = toolCall(ctx, o.Job.PrincipalID, schedule.Probe)
+		}
 	} else {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()

@@ -3445,6 +3445,62 @@ func (g *Gateway) toolHubCredential(userID string) (token, principalHeader strin
 	return "", ""
 }
 
+// toolCallProbe is the mcp_tool probe fetch (SPEC-0054 R3.2): one bounded
+// POST to ToolHub's read-only /v1/tool-call under the owner's pinned
+// credential. An is_error result is a probe error — unknown, never a
+// compared value; a missing ToolHub config fails the probe, not the hub.
+func (g *Gateway) toolCallProbe(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
+	base := strings.TrimRight(strings.TrimSpace(g.config.ToolHubURL), "/")
+	if base == "" {
+		return nil, errors.New("tool hub unconfigured")
+	}
+	token, header := g.toolHubCredential(principalID)
+	if token == "" {
+		return nil, errors.New("tool hub credential unavailable")
+	}
+	body, err := json.Marshal(map[string]any{"tool": probe.Tool, "arguments": probe.Args})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/tool-call", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if header != "" {
+		req.Header.Set("X-Hub-Principal", header)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > 256*1024 {
+		return nil, errors.New("tool probe response exceeds size limit")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tool probe status %d", resp.StatusCode)
+	}
+	var out struct {
+		Text    string `json:"text"`
+		IsError bool   `json:"is_error"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, errors.New("invalid tool probe response")
+	}
+	if out.IsError {
+		return nil, errors.New("tool probe failed")
+	}
+	return []byte(out.Text), nil
+}
+
 // toolHubJobDone notifies ToolHub that a job reached a terminal status so
 // task-tier bounded-cli cells keyed by that job are released. Best-effort:
 // the caller already treats the job as done and the controller's own ladder

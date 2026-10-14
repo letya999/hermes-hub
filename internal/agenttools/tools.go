@@ -66,6 +66,7 @@ type Input struct {
 	URL                string   `json:"url,omitempty"`
 	Regex              string   `json:"regex,omitempty"`
 	ProbeKind          string   `json:"probe_kind,omitempty"`
+	Tool               string   `json:"tool,omitempty"`
 	NotifyMode         string   `json:"notify_mode,omitempty"`
 	SourceIDs          []string `json:"source_ids,omitempty"`
 	Expect             string   `json:"expect,omitempty"`

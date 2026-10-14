@@ -217,7 +217,9 @@ func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
 		func() error { return g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence) },
 		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
 		func() error { return g.spool.RunDueScripts(ctx, now, g.authorizeOccurrence, g.runIsolatedScript) },
-		func() error { return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch) },
+		func() error {
+			return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch, g.toolCallProbe)
+		},
 		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
 	}
 	for i, step := range steps {

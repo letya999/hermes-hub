@@ -242,6 +242,27 @@ func TestRoutineCreateForwardsPolicyFields(t *testing.T) {
 	}
 }
 
+// An mcp_tool probe names one projected read tool instead of a URL; the
+// create payload must carry kind + tool so the hub can validate it.
+func TestRoutineCreateForwardsMCPTool(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"conn-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "conn-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch connector", Kind: "watcher", ProbeKind: "mcp_tool", Tool: "hub-google-work-search-abc"}); err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := request["probe"].(map[string]any)
+	if !ok || probe["kind"] != "mcp_tool" || probe["tool"] != "hub-google-work-search-abc" {
+		t.Fatalf("mcp_tool probe lost: %v", request)
+	}
+}
+
 func TestCredentialFormCallCommunicationHub(t *testing.T) {
 	v := fixture(t)
 	t.Setenv("HUB_PRINCIPAL_ID", "alice")

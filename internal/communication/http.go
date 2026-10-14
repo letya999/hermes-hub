@@ -173,7 +173,14 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			// seed the baseline, then create — a dead source must not
 			// become a silently-skipping schedule.
 			var body []byte
-			if strings.HasPrefix(in.Probe.URL, "task:") {
+			if in.Probe.Kind == "mcp_tool" {
+				var err error
+				body, err = g.toolCallProbe(r.Context(), caller.PrincipalID, in.Probe)
+				if err != nil {
+					http.Error(w, "check source unreachable", http.StatusBadGateway)
+					return
+				}
+			} else if strings.HasPrefix(in.Probe.URL, "task:") {
 				g.spool.mu.Lock()
 				state, taskErr := g.spool.taskProbeValueLocked(caller.PrincipalID, strings.TrimPrefix(in.Probe.URL, "task:"))
 				g.spool.mu.Unlock()
