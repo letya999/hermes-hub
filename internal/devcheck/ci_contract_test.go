@@ -8,6 +8,103 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestCIDeploymentConfigurationGate(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct{ Steps []struct{ Run string } }
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []string{"checks-verify", "image"} {
+		found := false
+		for _, step := range workflow.Jobs[job].Steps {
+			found = found || step.Run == "just config-check"
+		}
+		if !found {
+			t.Errorf("%s can pass without the deployment configuration contract", job)
+		}
+	}
+	data, err = os.ReadFile("../../justfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"check: go-check lint docs-check config-check", "build: config-check", "TestDeploymentConfigurationContract"} {
+		if !strings.Contains(string(data), required) {
+			t.Errorf("local gate missing %q", required)
+		}
+	}
+	gateScripts := ""
+	for _, step := range workflow.Jobs["container-gates"].Steps {
+		gateScripts += step.Run
+	}
+	if !strings.Contains(gateScripts, "TestHubStdioReminderContract") || !strings.Contains(gateScripts, "HUB_CONTRACT_IMAGE=hermes-hub:test") {
+		t.Fatal("image-side MCP stdio reminder contract is not enforced in container gates")
+	}
+}
+
+func TestCIShipsBaseCLICellImages(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Strategy struct{ Matrix struct{ Target []string } }
+			Steps    []struct{ Run string }
+		}
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	imageTargets := strings.Join(workflow.Jobs["image"].Strategy.Matrix.Target, ",")
+	if !strings.Contains(imageTargets, "cli-tools") || !strings.Contains(imageTargets, "cell-proxy") {
+		t.Fatal("CI does not publish the base CLI cell images")
+	}
+	var scratch string
+	for _, step := range workflow.Jobs["container-gates"].Steps {
+		scratch += step.Run
+	}
+	for _, want := range []string{"docker-pull hermes-hub-cli-tools:test cli-tools", "docker-pull hermes-hub-cell-proxy:test cell-proxy"} {
+		if !strings.Contains(scratch, want) {
+			t.Errorf("scratch gate misses %s", want)
+		}
+	}
+	dockerfile, err := os.ReadFile("../../docker/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"cli-tools", "cell-proxy"} {
+		start := strings.Index(string(dockerfile), "AS "+stage)
+		if start < 0 {
+			t.Fatalf("%s stage missing", stage)
+		}
+		end := strings.Index(string(dockerfile)[start:], "\nFROM ")
+		chunk := string(dockerfile)[start:]
+		if end >= 0 {
+			chunk = chunk[:end]
+		}
+		if !strings.Contains(chunk, `LABEL org.opencontainers.image.revision="${GIT_SHA}"`) {
+			t.Errorf("%s image cannot prove its source revision", stage)
+		}
+	}
+	just, err := os.ReadFile("../../justfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"docker-pull hermes-hub-cli-tools:test cli-tools", "docker-pull hermes-hub-cell-proxy:test cell-proxy"} {
+		if !strings.Contains(string(just), want) {
+			t.Errorf("local prebuilt image gate misses %s", want)
+		}
+	}
+	if !strings.Contains(string(just), "go test -tags integration -run TestHubStdioReminderContract") {
+		t.Fatal("local Docker gate omitted the image MCP stdio reminder contract")
+	}
+}
+
 // All former sequential gates must remain reachable; the aggregate status
 // must fail when any matrix child is failed, skipped or cancelled.
 func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {

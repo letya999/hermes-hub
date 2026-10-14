@@ -19,6 +19,30 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
+// The idle-retention default must survive a process started with no explicit
+// flag: 30 minutes keeps short conversation gaps warm.
+func TestDefaultWarmTTLIsThirtyMinutes(t *testing.T) {
+	m, err := New(Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.WarmTTL != 30*time.Minute {
+		t.Fatalf("default warm TTL=%s, want 30m", m.cfg.WarmTTL)
+	}
+}
+
+// The runtime memory default must cover Hermes plus the lazy browser stack:
+// 2g leaves headroom for Chromium without changing warm-retention semantics.
+func TestDefaultMemoryIsTwoGigabytes(t *testing.T) {
+	m, err := New(Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.Memory != "2g" {
+		t.Fatalf("default memory=%s, want 2g", m.cfg.Memory)
+	}
+}
+
 func testManager(t *testing.T, command func(context.Context, ...string) ([]byte, error), probe func(context.Context, string, string) error) (*Manager, string) {
 	t.Helper()
 	// Model labels created by docker run rather than pretending every named
@@ -191,6 +215,87 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 	}
 	if !restarted {
 		t.Fatal("runtime /v1/restart was not called")
+	}
+}
+
+// SPEC-0053 R2.1: /v1/wake warms the caller's runtime so a cold spawn
+// overlaps gateway work. Same binding authorization as /v1/jobs; it creates
+// no job record and carries no prompt text.
+func TestWakeIsIdempotentAndCarriesNoText(t *testing.T) {
+	runs := 0
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			runs++
+		}
+		if args[0] == "inspect" {
+			if runs == 0 {
+				return nil, os.ErrNotExist
+			}
+			return []byte("running"), nil
+		}
+		return []byte("ok"), nil
+	}, func(context.Context, string, string) error { return nil })
+	if _, err := m.normalize(binding(root)); err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "wake"}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		httpRequest := httptest.NewRequest(http.MethodPost, "/v1/wake", bytes.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer secret")
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("wake %d status=%d body=%s", i, recorder.Code, recorder.Body.String())
+		}
+	}
+	if runs != 1 {
+		t.Fatalf("wake spawned %d runtimes, want 1 (idempotent)", runs)
+	}
+	m.mu.Lock()
+	jobs := len(m.jobs)
+	m.mu.Unlock()
+	if jobs != 0 {
+		t.Fatalf("wake created %d job records", jobs)
+	}
+	// Wake is a warm-up peek, not a hold: the Ensure reference is released
+	// when the request ends so the runtime settles back to its idle hold.
+	b := binding(root)
+	runtime, ok, err := m.Status(b)
+	if err != nil || !ok {
+		t.Fatalf("post-wake status: ok=%v err=%v", ok, err)
+	}
+	if runtime.Leases != 0 || runtime.State != Idle {
+		t.Fatalf("post-wake runtime leases=%d state=%s, want 0/%s", runtime.Leases, runtime.State, Idle)
+	}
+}
+
+func TestWakeEndpointRejectsForeignBinding(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	for _, body := range []string{`not-json`, `{"principal_id":"bad id!","context_id":"x","runtime_id":"y","user_id":"z"}`} {
+		httpRequest := httptest.NewRequest(http.MethodPost, "/v1/wake", strings.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer secret")
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		if recorder.Code != http.StatusBadRequest && recorder.Code != http.StatusConflict {
+			t.Fatalf("wake %q → %d, want 400/409", body, recorder.Code)
+		}
+	}
+	httpRequest := httptest.NewRequest(http.MethodGet, "/v1/wake", nil)
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /v1/wake → %d, want 405", recorder.Code)
+	}
+	httpRequest = httptest.NewRequest(http.MethodPost, "/v1/wake", strings.NewReader(`{}`))
+	recorder = httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httpRequest)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated /v1/wake → %d, want 401", recorder.Code)
 	}
 }
 
@@ -637,7 +742,7 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := restored.Reap(context.Background(), time.Unix(100, 0).Add(6*time.Minute)); err != nil {
+	if err := restored.Reap(context.Background(), time.Unix(100, 0).Add(DefaultWarmTTL+time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	status, _, _ := restored.Status(b)
@@ -681,6 +786,135 @@ func TestSupervisorRejectsInvalidPersistedRuntime(t *testing.T) {
 	if _, err := New(Config{SpacesRoot: root, StateDir: root, RuntimeAuth: "control", Image: "hermes:test"}); err == nil {
 		t.Fatal("invalid persisted runtime accepted")
 	}
+}
+
+// The supervisor forwards X-Hub-Job-ID on every runtime hop whose request
+// knows the job: execute, artifact, usage, self-env and the restart-request
+// marker (propagated from the caller's own correlation header).
+func TestSupervisorForwardsJobCorrelationHeader(t *testing.T) {
+	root := t.TempDir()
+	ctxRoot := filepath.Join(root, "alice")
+	for _, name := range []string{"runtime", "hermes", "workspace"} {
+		if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeHermesSources(t, ctxRoot)
+	var mu sync.Mutex
+	headers := map[string]string{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		headers[r.URL.Path] = r.Header.Get("X-Hub-Job-ID")
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/execute":
+			_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Text: "answer", Status: "completed", RunID: "run-1"})
+		case "/v1/usage":
+			_ = json.NewEncoder(w).Encode(hubruntime.SessionUsage{})
+		case "/v1/artifact":
+			_, _ = w.Write([]byte("data"))
+		case "/v1/restart-request", "/v1/self-env":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer backend.Close()
+	command := func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}
+	m, err := New(Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: command, Probe: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := binding(ctxRoot)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(b)].Address = backend.URL
+	m.mu.Unlock()
+	envelope := identity.TelegramEnvelope("alice", 1, "alice", "policy-1")
+	post := func(path string, payload any, jobHeader string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+		req.Header.Set("Authorization", "Bearer control")
+		if jobHeader != "" {
+			req.Header.Set("X-Hub-Job-ID", jobHeader)
+		}
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	job := hubruntime.ExecuteRequest{Envelope: envelope, JobID: "job-correlation", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-correlation", Text: "hello"}
+	if rec := post("/v1/execute", job, ""); rec.Code != http.StatusOK {
+		t.Fatalf("execute=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post("/v1/artifact", hubruntime.ArtifactRequest{ExecuteRequest: job, Name: "report.txt"}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("artifact=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post("/v1/usage", hubruntime.UsageRequest{ExecuteRequest: job, LookupOnly: true}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("usage=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post("/v1/self-env", hubruntime.SelfEnvRequest{Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice"}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("self-env=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post("/v1/restart-request", map[string]string{"principal_id": "alice", "context_id": b.ContextID}, "caller-job-9"); rec.Code != http.StatusOK {
+		t.Fatalf("restart-request=%d %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for path, want := range map[string]string{
+		"/v1/execute":         "job-correlation",
+		"/v1/artifact":        "job-correlation",
+		"/v1/usage":           "job-correlation",
+		"/v1/self-env":        "credential-form",
+		"/v1/restart-request": "caller-job-9",
+	} {
+		if headers[path] != want {
+			t.Fatalf("%s carried X-Hub-Job-ID=%q, want %q", path, headers[path], want)
+		}
+	}
+}
+
+// The control plane binds a private address by default: a wildcard or empty
+// listen host must be refused by Serve itself unless the operator opted in —
+// the cmd-level flag is just the CLI spelling of that opt-in.
+func TestServeRefusesWildcardListenWithoutOptIn(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
+	for _, listen := range []string{"0.0.0.0:0", ":0", "[::]:0"} {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- Serve(ctx, m, listen) }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "opt-in") {
+				t.Fatalf("wildcard listen %q rejected for the wrong reason: %v", listen, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("wildcard listen %q bound without opt-in", listen)
+		}
+		cancel()
+	}
+	m.cfg.AllowWildcardListen = true
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, m, "0.0.0.0:0") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+	}
+	cancel()
+	<-done
 }
 
 func TestSupervisorJobOutcomeReplaysAfterRestart(t *testing.T) {
@@ -879,6 +1113,47 @@ func TestConcurrentNamedLeaseReleaseIsAtomic(t *testing.T) {
 	runtime, _, _ := m.Status(b)
 	if success != 1 || runtime.Leases != 0 || runtime.State != Idle {
 		t.Fatalf("success=%d runtime=%+v", success, runtime)
+	}
+}
+
+func TestConcurrentReleaseAndSweepPreserveOtherPrincipal(t *testing.T) {
+	m, _ := testManager(t, nil, nil)
+	for _, principal := range []string{"alice", "bob"} {
+		b := Binding{PrincipalID: principal, ContextID: principal, RuntimeMode: "gateway"}
+		lease := Lease{ID: "lease-" + principal, PrincipalID: principal, ContextID: principal, RuntimeMode: "gateway", Generation: "gen-" + principal, Owner: "job:" + principal, Kind: LeaseJob}
+		m.items[runtimeKey(b)] = &runtimeEntry{Runtime: Runtime{PrincipalID: principal, ContextID: principal, RuntimeMode: "gateway", Generation: lease.Generation, State: Busy, Leases: 1}, leases: map[string]Lease{lease.ID: lease}}
+		status := "running"
+		if principal == "alice" {
+			status = "completed"
+		}
+		m.jobs[principal] = jobRecord{Status: status}
+	}
+	start := make(chan struct{})
+	var done sync.WaitGroup
+	for i := range 3 {
+		done.Go(func() {
+			<-start
+			if i == 0 {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				m.sweepStaleLeasesLocked(m.cfg.Now())
+			} else {
+				_ = m.ReleaseLease("lease-alice")
+			}
+		})
+	}
+	close(start)
+	done.Wait()
+	for _, entry := range m.items {
+		if entry.Leases != len(entry.leases) {
+			t.Fatalf("lease map/count diverged: %+v", entry.Runtime)
+		}
+		if entry.PrincipalID == "alice" && (entry.Leases != 0 || entry.State != Idle) {
+			t.Fatalf("terminal principal still busy: %+v", entry.Runtime)
+		}
+		if entry.PrincipalID == "bob" && (entry.Leases != 1 || entry.State != Busy) {
+			t.Fatalf("other principal lost its hold: %+v", entry.Runtime)
+		}
 	}
 }
 
@@ -1141,7 +1416,9 @@ func TestTypedLeasesProtectStreamsApprovalsAndPrincipalIsolation(t *testing.T) {
 	if stream.Kind != LeaseStream || approval.Kind != LeaseApproval || stream.ID == approval.ID {
 		t.Fatalf("leases=%+v %+v", stream, approval)
 	}
-	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
+	// Held leases protect the runtime from reaping while inside their claim
+	// window (ExpiresAt + WarmTTL grace); a caller must not lose them mid-hold.
+	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	status, _, _ := m.Status(b)
@@ -1424,7 +1701,7 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 1024", "--memory 1g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
+	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 1024", "--memory 2g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("run args missing %q: %s", want, joined)
 		}
@@ -1442,6 +1719,60 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 	otherArgs := strings.Join(rawOther, " ")
 	if !strings.Contains(otherArgs, "--network hermes-hub-runtime") || !strings.Contains(otherArgs, "src=hermes-hub-bob-dev_broker-secrets-runtime") || strings.Contains(otherArgs, "hermes-hub-alice-dev") {
 		t.Fatalf("runtime secrets are not owner-scoped: %s", otherArgs)
+	}
+}
+
+// SPEC-0053 R1.4: supervisor-spawned runtimes mount the rendered tool
+// manifest read-only and get HUB_TOOL_MANIFEST, matching the compose contract.
+func TestRunArgsMountsToolManifest(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	if err := os.WriteFile(filepath.Join(root, "hermes.dev.yaml"), []byte("model: {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "generated", "tool-manifest.dev.json"), []byte(`{"schema":1,"context":"alice","policy_version":"p","projected":[],"direct":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err := m.runArgs(binding(root), "hermes-context-test", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	manifest := filepath.Join(root, "generated", "tool-manifest.dev.json")
+	if !strings.Contains(joined, "src="+manifest+",dst=/config/tool-manifest.json,readonly") {
+		t.Fatalf("run args missing manifest mount: %s", joined)
+	}
+	if !strings.Contains(joined, "-e HUB_TOOL_MANIFEST=/config/tool-manifest.json") {
+		t.Fatalf("run args missing HUB_TOOL_MANIFEST: %s", joined)
+	}
+}
+
+// SPEC-0053 R1.8: supervisor-spawned runtimes mount the rendered effective
+// SOUL at /state/hermes/SOUL.md, matching the compose contract; the raw
+// persona stays at /config/SOUL.md for the heal path.
+func TestRunArgsMountsEffectiveSoul(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	if err := os.WriteFile(filepath.Join(root, "hermes.dev.yaml"), []byte("model: {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	effective := filepath.Join(root, "generated", "soul-effective.dev.md")
+	if err := os.WriteFile(effective, []byte("persona\ncontract"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rawArgs, err := m.runArgs(binding(root), "hermes-context-test", 19000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	if !strings.Contains(joined, "src="+effective+",dst=/state/hermes/SOUL.md,readonly") {
+		t.Fatalf("run args missing effective SOUL mount: %s", joined)
 	}
 }
 
@@ -1574,9 +1905,10 @@ func TestReapSweepsOrphanLeases(t *testing.T) {
 		"lease-job":      {ID: "lease-job", Kind: LeaseJob, Owner: "job:ghost", Generation: entry.Generation},
 		"lease-gen":      {ID: "lease-gen", Kind: LeaseJob, Owner: "job:still-running", Generation: "old-generation"},
 		"lease-super":    {ID: "lease-super", Kind: LeaseStream, Owner: "supervisor", Generation: entry.Generation, ExpiresAt: m.cfg.Now().Add(-time.Minute)},
+		"lease-superold": {ID: "lease-superold", Kind: LeaseJob, Owner: "supervisor", Generation: entry.Generation, ExpiresAt: m.cfg.Now().Add(-2 * time.Minute)},
 		"lease-live-job": {ID: "lease-live-job", Kind: LeaseJob, Owner: "job:live", Generation: entry.Generation},
 	}
-	entry.Leases = 4
+	entry.Leases = 5
 	m.jobs["live"] = jobRecord{Status: "running"}
 	m.jobs["ghost"] = jobRecord{Status: "completed"}
 	m.mu.Unlock()
@@ -1592,6 +1924,9 @@ func TestReapSweepsOrphanLeases(t *testing.T) {
 		if _, ok := entry.leases[id]; !ok {
 			t.Fatalf("live lease %s swept: %v", id, entry.leases)
 		}
+	}
+	if _, ok := entry.leases["lease-superold"]; ok {
+		t.Fatalf("supervisor-owned lease past ExpiresAt+WarmTTL must be swept: %v", entry.leases)
 	}
 	if entry.State != Busy {
 		t.Fatalf("entry with live leases must stay busy: %s", entry.State)
@@ -1611,11 +1946,12 @@ func TestReapSweepsOrphanLeases(t *testing.T) {
 }
 
 func TestReapMarksDegradedOnDockerFailure(t *testing.T) {
+	failRemoval := true
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) > 0 && args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
-		if len(args) > 0 && args[0] == "rm" {
+		if len(args) > 0 && args[0] == "rm" && failRemoval {
 			return nil, os.ErrPermission
 		}
 		return nil, nil
@@ -1633,6 +1969,14 @@ func TestReapMarksDegradedOnDockerFailure(t *testing.T) {
 	r, _, _ := m.Status(b)
 	if r.State != Degraded {
 		t.Fatalf("state=%s", r.State)
+	}
+	failRemoval = false
+	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	r, _, _ = m.Status(b)
+	if r.State != Stopped {
+		t.Fatalf("idle cleanup never retried after Docker recovered: state=%s", r.State)
 	}
 }
 

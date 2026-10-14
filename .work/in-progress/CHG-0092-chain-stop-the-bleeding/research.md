@@ -53,3 +53,32 @@ not authorize external actions, dependencies or upstream patches.
 
 Not found during research: a project named `open-grok-bot`. `osinara` is an Eve-based
 memory reference and is not relevant to chain reliability.
+
+## Follow-up verification — 2026-10-14
+
+- [Eve](https://github.com/vercel/eve) and [its documentation](https://eve.dev/)
+  separate durable checkpoints and parked waits from worker lifetime. This
+  supports keeping uncertainty owned by a reconciler; it does not justify
+  introducing another execution engine or database into the hub.
+- [GoClaw](https://github.com/nextlevelbuilder/goclaw) reinforces tenant-scoped
+  admission and event retry/deduplication. [NanoClaw lifecycle](https://docs.nanoclaw.dev/concepts/container-lifecycle)
+  uses session claims and deduplicated spawning; the relevant local invariant
+  is one runtime owner with independent job receipts and bounded leases.
+- [OpenClaw agent loop](https://docs.openclaw.ai/concepts/agent-loop) distinguishes
+  waiting for a terminal receipt from cancelling work. A disconnected waiter
+  is not evidence that the underlying execution completed or stopped.
+- [Iva](https://github.com/smixs/iva-agent) makes turn traces and diagnosis
+  separate from restart. Keep diagnosis read-only and preserve useful tools
+  when an optional integration is unhealthy.
+- [Hermes Runs API](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
+  requires the same JSON payload as well as the same Idempotency-Key. A changed
+  payload returns 409; retention is 24 hours after the last update. The prior
+  runtime readmit path rebuilt an empty input from supervisor metadata and a
+  current session revision. A real pinned-Hermes smoke test reproduced HTTP
+  500 at the hub boundary on that path. New runtime-owned admission receipts
+  preserve the original payload and refuse legacy/expired replay.
+- Correction to the breaker row above: [PR 68455](https://github.com/NousResearch/hermes-agent/pull/68455)
+  configures thresholds and is not itself proof that tool-level errors stop
+  counting as transport failures. [PR 68669](https://github.com/NousResearch/hermes-agent/pull/68669)
+  addresses that distinction. The reviewed PR states do not establish an
+  accepted pin upgrade; ADR-0039 remains proposed.

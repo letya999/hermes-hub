@@ -97,6 +97,43 @@ func TestAgentExecToolError(t *testing.T) {
 	}
 }
 
+// SPEC-0053 R1.7: an expected tool failure crosses the gateway as an MCP
+// isError result — never as a transport error — so the Hermes circuit breaker
+// cannot count it against the whole hub. Only a dead executor channel becomes
+// a Go error.
+func TestAgentExecErrorSurvivesGateway(t *testing.T) {
+	s := NewStore()
+	definition := agentDefinition()
+	if err := s.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	if err := s.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	execResult := AgentExecResult{Error: "path outside capability scope"}
+	execErr := error(nil)
+	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
+		Injector: func(context.Context, EffectiveBinding) (CredentialInjection, error) {
+			return CredentialInjection{}, nil
+		},
+		Backend: RoutingBackend{Agent: AgentExecBackend{Exec: func(context.Context, EffectiveBinding, AgentExecRequest) (AgentExecResult, error) {
+			return execResult, execErr
+		}}}}
+	name := ProjectedToolName(definition.DefinitionID, definition.Version, "file_read")
+	out, err := g.CallAuthorized(t.Context(), auth, name, map[string]any{"path": "x"})
+	if err != nil || out == nil || !out.IsError {
+		t.Fatalf("expected failure must arrive as IsError, not a transport error: %v %+v", err, out)
+	}
+	execResult, execErr = AgentExecResult{}, errors.New("channel dead")
+	out, err = g.CallAuthorized(t.Context(), auth, name, map[string]any{"path": "x"})
+	if err == nil || out != nil {
+		t.Fatalf("channel fault must be a transport error: %v %+v", err, out)
+	}
+}
+
 func TestManagedAgentContainerName(t *testing.T) {
 	binding := EffectiveBinding{Binding: ToolBinding{PrincipalID: "alice", ContextID: "alice"}}
 	name, err := ManagedAgentContainer(binding)

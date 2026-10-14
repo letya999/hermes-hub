@@ -2,6 +2,7 @@ package communication
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -141,15 +142,29 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			in.Envelope = g.user(caller.PrincipalID).mockEnvelope(in.ChatID)
 			caller = in.Envelope
 		}
-		if err := ValidateSchedule(in, caller, g.now().UTC()); err != nil {
+		in = normalizeScheduleDraft(in)
+		if err := validateScheduleDraft(in, caller); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		g.spool.mu.Lock()
-		_, existingErr := g.spool.loadScheduleLocked(in.ScheduleID)
+		replayed, found, existingErr := g.spool.creationReplayLocked(in, caller)
 		g.spool.mu.Unlock()
-		if !os.IsNotExist(existingErr) {
-			http.Error(w, "schedule already exists or is unreadable", http.StatusBadRequest)
+		if existingErr != nil {
+			if errors.Is(existingErr, ErrScheduleConflict) {
+				http.Error(w, existingErr.Error(), http.StatusConflict)
+			} else {
+				http.Error(w, existingErr.Error(), http.StatusBadRequest)
+			}
+			return
+		}
+		if found {
+			writeJSON(w, replayed)
+			return
+		}
+		now := g.now().UTC()
+		if err := ValidateSchedule(in, caller, now); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		var initialValue *string
@@ -169,9 +184,13 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			}
 			initialValue = &value
 		}
-		created, err := g.spool.createSchedule(in, caller, g.config.NativeCron, initialValue)
+		created, err := g.spool.createScheduleAt(in, caller, g.config.NativeCron, initialValue, now)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrScheduleConflict) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		writeJSON(w, created)

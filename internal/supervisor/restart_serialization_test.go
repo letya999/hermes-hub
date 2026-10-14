@@ -33,7 +33,7 @@ func TestProjectionRestartBlocksNewLeaseUntilActualReadiness(t *testing.T) {
 			return nil, os.ErrNotExist
 		}
 		if args[0] == "restart" {
-			id, err := hex.DecodeString(args[1])
+			id, err := hex.DecodeString(args[len(args)-1])
 			if err != nil || len(id) != 32 {
 				t.Error("restart did not use immutable owned ID")
 			}
@@ -78,6 +78,43 @@ func TestProjectionRestartBlocksNewLeaseUntilActualReadiness(t *testing.T) {
 	}
 	if err := <-acquired; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// docker restart defaults to a 10 s grace; long runs need SIGTERM room, so the
+// supervisor must pass an explicit --time >= 30.
+func TestRuntimeRestartUsesSigtermGrace(t *testing.T) {
+	var restartArgs []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+	}))
+	defer api.Close()
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		if args[0] == "restart" {
+			restartArgs = append([]string{}, args...)
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(binding(root))]
+	entry.Address, entry.Leases, entry.State = api.URL, 0, Idle
+	rt := entry.Runtime
+	m.mu.Unlock()
+	applied, err := m.applyRuntimeRestart(context.Background(), rt, "secret", 0)
+	if err != nil || !applied {
+		t.Fatal(applied, err)
+	}
+	if len(restartArgs) != 4 || restartArgs[0] != "restart" || restartArgs[1] != "--time" || restartArgs[2] != "30" {
+		t.Fatalf("restart without SIGTERM grace window: %v", restartArgs)
+	}
+	if id, err := hex.DecodeString(restartArgs[3]); err != nil || len(id) != 32 {
+		t.Fatalf("restart target is not the immutable container ID: %v", restartArgs)
 	}
 }
 
@@ -251,5 +288,38 @@ func TestManagedRestartMaterializesChangedDisplayOverlay(t *testing.T) {
 	applied, err := m.applyRuntimeRestart(context.Background(), rt, "secret", 1)
 	if err != nil || !applied || !checked {
 		t.Fatal(applied, checked, err)
+	}
+}
+
+// Every accepted restart is counted on the persisted runtime record — /status
+// renders the count so an operator sees restart churn (SPEC-0053 R3.6).
+func TestAcceptedRestartCountedOnRuntime(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+	}))
+	defer api.Close()
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(binding(root))]
+	entry.Address, entry.Leases, entry.State = api.URL, 0, Idle
+	rt := entry.Runtime
+	m.mu.Unlock()
+	applied, err := m.applyRuntimeRestart(context.Background(), rt, "secret", 0)
+	if err != nil || !applied {
+		t.Fatal(applied, err)
+	}
+	m.mu.Lock()
+	restarts := m.items[runtimeKey(binding(root))].Runtime.Restarts
+	m.mu.Unlock()
+	if restarts != 1 {
+		t.Fatalf("restarts=%d, want 1", restarts)
 	}
 }

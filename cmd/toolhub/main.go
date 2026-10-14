@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "hub-toolhub:", err)
 		os.Exit(1)

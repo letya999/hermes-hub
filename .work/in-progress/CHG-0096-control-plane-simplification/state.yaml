@@ -1,10 +1,11 @@
 schema: 1
 change: CHG-0096
 title: Control-plane simplification proposals (M19 stage 4)
-status: in_progress
+status: done
+acceptance_decision: "Owner closed M19 on 2026-10-14: P4a single-stack supervisor accepted via ADR-0040/CHG-0097; P4b embedded store not needed on measured evidence; P4c Hermes pin deferred pending upstream fix and full gate."
 branch: feat/m19-execution-chain-reliability
-updated: 2026-10-13
-phase: design-complete
+updated: 2026-10-14
+phase: accepted_with_deferred_proposals
 adr: ADR-0036
 spec: SPEC-0053
 requirements: [R4]
@@ -14,13 +15,32 @@ github_issue: https://github.com/letya999/hermes-hub/issues/265
 design_status: accepted
 implementation_status: decision_only
 proposals:
-  P4a-supervisor-in-linux-container: not_started
-  P4b-embedded-store: not_started
-  P4c-hermes-pin: not_started
+  P4a-supervisor-in-linux-container: owner_requested_single_stack_alternative_adr0040_chg0097
+  P4b-embedded-store: adr_proposed
+  P4c-hermes-pin: adr_proposed_deferred
 validation:
-  documents: pending
-evidence: []
+  documents: done
+evidence:
+  - "Owner requested one Docker stack and removal of unnecessary Windows services.
+    ADR-0040/CHG-0097 implement the container direction using the existing CLI
+    and control image; this does not accept the unimplemented ADR-0037 proxy/HTTP adapter."
+  - "ADR-0037 (P4a): containerized supervisor via ToolHub socket proxy, stdlib
+    HTTP over unix socket replacing the docker CLI seam, HUB_HOST_SPACES path
+    mapping; isolation = same Docker authority scoped by proxy allowlist;
+    rollback = re-enable host service on the same .control state (single writer)."
+  - "ADR-0038 (P4b): measured gate — enqueue->claim ~26.4ms fsync-bound,
+    idempotency ~131-172us at 10k mappings, zero file-store correctness
+    incidents in stages 0-3. Default outcome: keep files; embedded pure-Go
+    SQLite (journal_mode=DELETE) only if live SLO shows >2x fsync floor or a
+    reproducing correctness incident."
+  - "ADR-0039 (P4c): no replacement revision has been verified by this change.
+    PR #68455 configures thresholds, not tool-error classification; PR #68669
+    addresses classification. Proposed deferral (not an owner decision): pin
+    stays 869228cab4a8276d3b4c78da9d9939670c47bd0f; conditional
+    go = upstream merge + full docker gate on the raised pin."
+  - "ADR index updated; all three ADRs carry isolation impact, migration,
+    rollback, chaos plan and explicit go/no-go criteria per R4."
 remaining:
-  - Collect stage 0-3 metrics; draft one ADR per proposal; owner decision.
+  - Owner decision per proposal in state.yaml; implementation CHGs only for accepted ADRs.
 limitations:
   - No implementation before each proposal ADR is accepted.

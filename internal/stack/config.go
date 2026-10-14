@@ -19,6 +19,7 @@ import (
 )
 
 type Settings struct {
+	defaultGlobalSkills  bool
 	ExecutionMode        string `yaml:"-"`
 	SupervisorURL        string `yaml:"-"`
 	NativeCron           string `yaml:"-"`
@@ -95,6 +96,15 @@ type Settings struct {
 	// skill enforces. Empty keeps upstream autodetect and defaults.
 	Web WebSettings `yaml:"web,omitempty"`
 }
+
+// DefaultGlobalSkillsDir resolves the bundled catalog without changing operator rights.
+func (s *Settings) DefaultGlobalSkillsDir(dir string) {
+	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
+		s.GlobalSkillsDir = dir
+		s.defaultGlobalSkills = true
+	}
+}
+
 type Feature struct {
 	Name     string   `json:"name"`
 	Requires []string `json:"requires"`

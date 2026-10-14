@@ -30,7 +30,15 @@ func Coverage(name string, minimum float64) (float64, error) {
 		return 0, fmt.Errorf("invalid coverage header")
 	}
 	var total, covered int
+	trailingBlank := false
 	for s.Scan() {
+		if strings.TrimSpace(s.Text()) == "" {
+			trailingBlank = true
+			continue
+		}
+		if trailingBlank {
+			return 0, fmt.Errorf("invalid coverage row after blank line")
+		}
 		fields := strings.Fields(s.Text())
 		if len(fields) != 3 {
 			return 0, fmt.Errorf("invalid coverage row %q", s.Text())

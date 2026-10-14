@@ -227,8 +227,12 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	if err != nil {
 		return nil, err
 	}
+	excluded, err := c.Store.ProjectionExclusions(auth)
+	if err != nil {
+		return nil, err
+	}
 	if c.DiagnosticsDir == "" {
-		return map[string]any{"enabled": false, "detail": "diagnostics are not enabled on this hub"}, nil
+		return map[string]any{"enabled": false, "excluded": excluded, "detail": "diagnostics are not enabled on this hub"}, nil
 	}
 	raw, _ := diagUserLimiter.LoadOrStore(auth.PrincipalID, make(chan struct{}, 2))
 	userSem := raw.(chan struct{})
@@ -249,7 +253,7 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	handle, err := os.Open(path) // #nosec G304 -- fixed file inside configured diagnostics dir.
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]any{"enabled": true, "workloads": scope.workloads, "lines": []map[string]any{}, "detail": "no diagnostics collected yet"}, nil
+			return map[string]any{"enabled": true, "workloads": scope.workloads, "excluded": excluded, "lines": []map[string]any{}, "detail": "no diagnostics collected yet"}, nil
 		}
 		return nil, fmt.Errorf("%w: diagnostics store", ErrInvalid)
 	}
@@ -322,6 +326,7 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	return map[string]any{
 		"enabled":   true,
 		"workloads": scope.workloads,
+		"excluded":  excluded,
 		"runtime":   scope.runtime != "",
 		"lines":     matched,
 		"truncated": truncated,

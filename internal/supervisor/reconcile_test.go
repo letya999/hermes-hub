@@ -8,12 +8,68 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
+
+func TestReconcileDoesNotBlockAcquire(t *testing.T) {
+	probing := make(chan struct{})
+	release := make(chan struct{})
+	armedCh := make(chan struct{})
+	var once sync.Once
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" && len(args) > 2 && args[2] == "{{.State.Status}}" {
+			select {
+			case <-armedCh:
+				once.Do(func() { close(probing) })
+				<-release
+				return []byte("running"), nil
+			default:
+			}
+		}
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	close(armedCh)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.ReconcileHealth(context.Background(), time.Now())
+	}()
+	select {
+	case <-probing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile never probed")
+	}
+	acquired := make(chan error, 1)
+	go func() {
+		lease, _, err := m.Acquire(context.Background(), b, LeaseJob)
+		if err == nil {
+			_ = m.ReleaseLease(lease.ID)
+		}
+		acquired <- err
+	}()
+	select {
+	case err := <-acquired:
+		if err != nil {
+			t.Fatalf("acquire during reconcile probe: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("acquire blocked behind reconcile probe")
+	}
+	close(release)
+	<-done
+}
 
 func TestHealthReconciliationSeparatesReadinessAndPreservesUnknown(t *testing.T) {
 	unknown := false
@@ -228,6 +284,14 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 						t.Fatalf("replacement budget loss=%d runs=%d", loss, runs)
 					}
 				}
+			} else {
+				status, _, _ = m.Status(b)
+				if status.State != Stopped || status.Leases != 0 {
+					t.Fatalf("missing idle runtime stayed registered: %+v", status)
+				}
+				if _, err := m.Ensure(context.Background(), b); err != nil || runs != 2 {
+					t.Fatalf("idle wake after disappearance: runs=%d err=%v", runs, err)
+				}
 			}
 		})
 	}
@@ -342,6 +406,145 @@ func TestRuntimeHealthContractChecksAuthenticationBoundsAndStatuses(t *testing.T
 			t.Fatalf("invalid %s accepted", kind)
 		}
 		health = original
+	}
+}
+
+// SPEC-0053 R1.4-R1.6: the supervisor accepts the additive tool-surface and
+// model fields a current runtime reports, and still rejects out-of-vocabulary
+// or oversized values so a hostile or broken runtime cannot poison the record.
+func TestRuntimeHealthAcceptsToolSurfaceFields(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	health := hubruntime.RuntimeHealth{
+		HermesReadiness: "degraded", ConnectorHealth: "healthy", Connected: 1, ExternalConnections: "not_probed",
+		ToolSurface: "degraded", MissingTools: []string{"image_gen", "terminal"},
+		ToolReasons: map[string]string{"hub": "child_env_unresolved:HUB_POLICY_VERSION"}, ModelStatus: "model_not_found",
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(health)
+	}))
+	defer api.Close()
+	observed, err := m.runtimeHealth(context.Background(), api.URL, "context-secret")
+	if err != nil || observed.ToolSurface != "degraded" || observed.ModelStatus != "model_not_found" || len(observed.MissingTools) != 2 {
+		t.Fatalf("extended health rejected: %+v %v", observed, err)
+	}
+	for _, kind := range []string{"surface", "model", "missing", "reasons"} {
+		original := health
+		switch kind {
+		case "surface":
+			health.ToolSurface = "rm -rf"
+		case "model":
+			health.ModelStatus = "secret"
+		case "missing":
+			health.MissingTools = make([]string, 65)
+		case "reasons":
+			health.ToolReasons = map[string]string{"hub": strings.Repeat("x", 1025)}
+		}
+		if _, err := m.runtimeHealth(context.Background(), api.URL, "context-secret"); err == nil {
+			t.Fatalf("invalid %s accepted", kind)
+		}
+		health = original
+	}
+}
+
+// SPEC-0053 R1.4: the reconciler persists the runtime's tool-surface and model
+// observations on the durable runtime record so /v1/runtimes (and /status via
+// the gateway) can show them without re-probing the runtime.
+func TestReconcilePersistsToolSurface(t *testing.T) {
+	started := false
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			started = true
+		}
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{
+			HermesReadiness: "degraded", ConnectorHealth: "healthy", Connected: 1, ExternalConnections: "not_probed",
+			ToolSurface: "degraded", MissingTools: []string{"image_gen"},
+			ToolReasons: map[string]string{"hub": "child_env_unresolved:HUB_POLICY_VERSION"}, ModelStatus: "model_not_found",
+		})
+	}))
+	defer api.Close()
+	m.cfg.Probe = nil
+	key := runtimeKey(b)
+	m.mu.Lock()
+	m.items[key].Runtime.Address = api.URL
+	m.mu.Unlock()
+	m.ReconcileHealth(context.Background(), time.Now())
+	r, _, err := m.Status(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ToolSurface != "degraded" || r.ModelStatus != "model_not_found" || len(r.MissingTools) != 1 || r.MissingTools[0] != "image_gen" {
+		t.Fatalf("surface not persisted: %+v", r)
+	}
+	if r.ToolReasons["hub"] != "child_env_unresolved:HUB_POLICY_VERSION" {
+		t.Fatalf("reasons not persisted: %+v", r.ToolReasons)
+	}
+}
+
+// SPEC-0053 R1.4: a degraded tool surface is observation, never a restart
+// cause. Remediation stays gated on readiness "unavailable" alone, so the
+// reconciler must not issue docker restart for a degraded-only runtime even
+// when every other wedge condition is met.
+func TestToolSurfaceDegradedNeverRestarts(t *testing.T) {
+	started := false
+	restarts := 0
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			started = true
+		}
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
+		if args[0] == "restart" {
+			restarts++
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReleaseBinding(b); err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.Envelope{PrincipalID: b.PrincipalID, ContextID: b.ContextID}, JobID: "active", IdempotencyKey: "active", Text: "work"}
+	if _, _, err := m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{
+			HermesReadiness: "degraded", ConnectorHealth: "healthy", Connected: 1, ExternalConnections: "not_probed",
+			ToolSurface: "degraded", MissingTools: []string{"terminal"}, ModelStatus: "model_not_found",
+		})
+	}))
+	defer api.Close()
+	m.cfg.Probe = nil
+	key := runtimeKey(b)
+	m.mu.Lock()
+	m.items[key].Runtime.Address = api.URL
+	m.items[key].consecutiveUncertain = 5
+	m.items[key].readinessBadSince = time.Now().Add(-time.Hour)
+	m.mu.Unlock()
+	m.ReconcileHealth(context.Background(), time.Now())
+	if restarts != 0 {
+		t.Fatal("degraded tool surface triggered a restart")
 	}
 }
 
@@ -506,6 +709,81 @@ func TestWedgedRuntimeRestartRemediatesConsecutiveUncertainJobs(t *testing.T) {
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow+time.Second))
 	if restarts != 1 {
 		t.Fatalf("cooldown bypassed: %d", restarts)
+	}
+}
+
+// A wedged runtime that still holds a live lease has a job, stream, approval
+// or lifecycle in flight — restarting it would kill that work, so remediation
+// defers until the runtime is free, then stops it with a SIGTERM grace window.
+func TestWedgedRemediationSkipsLeasedRuntimeAndUsesSigtermGrace(t *testing.T) {
+	var restartArgs []string
+	started := false
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" && !started {
+			return nil, os.ErrNotExist
+		}
+		if args[0] == "run" {
+			started = true
+			return []byte("container"), nil
+		}
+		if args[0] == "inspect" {
+			return []byte("running"), nil
+		}
+		if args[0] == "restart" {
+			restartArgs = append([]string{}, args...)
+		}
+		return nil, nil
+	}, func(context.Context, string, string) error { return nil })
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: "unavailable", ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	for _, entry := range m.items {
+		entry.Address = api.URL
+	}
+	m.mu.Unlock()
+	m.cfg.Probe = nil
+	outcome := func(id string) {
+		request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: id, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: id, Text: "work"}
+		if _, _, err := m.beginJob(request); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
+			t.Fatal(err)
+		}
+		response := hubruntime.ExecuteResponse{JobID: id, RuntimeGeneration: runtime.Generation, Status: "uncertain"}
+		if err := m.finishJobGeneration(request, response, "uncertain", runtime.Generation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Unix(200, 0)
+	outcome("lease-wedged-1")
+	outcome("lease-wedged-2")
+	lease, _, err := m.Acquire(context.Background(), b, LeaseStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ReconcileHealth(context.Background(), now)
+	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
+	if len(restartArgs) != 0 {
+		t.Fatalf("leased runtime restarted mid-work: %v", restartArgs)
+	}
+	if err := m.ReleaseLease(lease.ID); err != nil {
+		t.Fatal(err)
+	}
+	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow+time.Second))
+	if len(restartArgs) != 4 || restartArgs[0] != "restart" || restartArgs[1] != "--time" || restartArgs[2] != "30" {
+		t.Fatalf("remediation restart without grace window: %v", restartArgs)
 	}
 }
 

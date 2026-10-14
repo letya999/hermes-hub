@@ -64,42 +64,35 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 	if err := os.MkdirAll(filepath.Dir(destPath), 0770); err != nil {
 		return err
 	}
+	// Replace host-owned files rather than chmod them from an unprivileged
+	// controller; failed validation must leave the previous revision intact.
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), ".hermes-effective-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(name, body, 0600); err != nil {
+		return err
+	}
+	if err := ApplyHermesConfig(name, opts); err != nil {
+		return err
+	}
 	if opts.Managed {
-		// Publish a validated revision atomically. A rejected edit must not
-		// leave half-written effective YAML for a later runtime restart.
-		tmp, err := os.CreateTemp(filepath.Dir(destPath), ".hermes-managed-*")
-		if err != nil {
-			return err
-		}
-		name := tmp.Name()
-		defer os.Remove(name)
-		if err := tmp.Close(); err != nil {
-			return err
-		}
-		if err := os.WriteFile(name, body, 0600); err != nil {
-			return err
-		}
-		if err := ApplyHermesConfig(name, opts); err != nil {
-			return err
-		}
 		if err := applySelfSettings(name, opts); err != nil {
 			return err
 		}
-		if err := os.Chmod(name, 0644); err != nil {
-			return err
-		}
-		return os.Rename(name, destPath)
-	}
-	if err := os.WriteFile(destPath, body, 0660); err != nil {
-		return err
-	}
-	if err := ApplyHermesConfig(destPath, opts); err != nil {
-		return err
 	}
 	// The rendered file is bind-mounted into the runtime container: on Linux
 	// hosts the file keeps the host uid, so it must be world-readable for the
 	// container's agent uid (10001). Contents hold endpoint names, no secrets.
-	return os.Chmod(destPath, 0644)
+	if err := os.Chmod(name, 0644); err != nil {
+		return err
+	}
+	return os.Rename(name, destPath)
 }
 
 // ApplyHermesConfig rewrites the effective config in place: self-service MCP

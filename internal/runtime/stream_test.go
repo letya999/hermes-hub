@@ -105,7 +105,7 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 			return
 		}
 		state := "running"
-		if polls.Add(1) >= 22 {
+		if polls.Add(1) >= 3 {
 			state = "completed"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": state, "output": "answer"})
@@ -123,6 +123,9 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 		}
 		if event.LastEvent == "tool.start" {
 			progress++
+			if event.ToolName != "mcp__toolhub__prepare_source" {
+				t.Errorf("tool identity lost: %q", event.ToolName)
+			}
 		}
 		payload, _ := json.Marshal(event)
 		if strings.Contains(string(payload), "PRIVATE_CANARY") {

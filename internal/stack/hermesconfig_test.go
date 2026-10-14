@@ -46,6 +46,49 @@ func TestMaterializeHermesConfigAddsToolHubServer(t *testing.T) {
 	}
 }
 
+func TestLegacyMaterializationReplacesFileAndPreservesItOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	source, dest := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "effective.yaml")
+	if err := os.WriteFile(source, []byte("model: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("previous\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(dir, "original.yaml")
+	if err := os.Link(dest, original); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("modified existing host-owned file instead of replacing it")
+	}
+	good, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("invalid: [\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{}); err == nil {
+		t.Fatal("invalid YAML accepted")
+	}
+	unchanged, err := os.ReadFile(dest)
+	if err != nil || string(unchanged) != string(good) {
+		t.Fatalf("failed edit changed config: %q %v", unchanged, err)
+	}
+}
+
 func TestLegacyHubReceivesRoutineControlEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	source, dest := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "effective.yaml")

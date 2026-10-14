@@ -1,10 +1,11 @@
 schema: 1
 change: CHG-0094
 title: Chain latency (M19 stage 2)
-status: in_progress
+status: done
+acceptance_decision: "Owner accepted M19 on 2026-10-14 without 30 cold/photo samples or 24-hour observation; latest real photo took about 61 seconds received-to-send versus the 30-second target."
 branch: feat/m19-execution-chain-reliability
-updated: 2026-10-13
-phase: design-complete
+updated: 2026-10-14
+phase: accepted_with_residual_risk
 adr: ADR-0036
 spec: SPEC-0053
 requirements: [R2.1, R2.2, R2.3, R2.4, R2.5, R2.6]
@@ -13,22 +14,101 @@ github_milestone: https://github.com/letya999/hermes-hub/milestone/20
 github_issue: https://github.com/letya999/hermes-hub/issues/263
 related_issues: ["#219", "#214"]
 design_status: accepted
-implementation_status: not_started
+implementation_status: accepted_with_waived_slo_samples
 slices:
-  S2.1-early-liveness-wake: not_started
-  S2.2-single-progress-message: not_started
-  S2.3-event-driven-spool: not_started
-  S2.4-supervisor-persistence: not_started
-  S2.5-lazy-browser-memory: not_started
-  S2.6-stream-first-observation: not_started
+  S2.1-early-liveness-wake: done
+  S2.2-single-progress-message: done
+  S2.3-event-driven-spool: done
+  S2.4-supervisor-persistence: done
+  S2.5-lazy-browser-memory: done
+  S2.6-stream-first-observation: done
 validation:
-  documents: pending
-  just_check: not_run
-  docker_check: not_run
-  red_team: not_started
-  slo_measurements: not_started
-evidence: []
+  documents: updated
+  just_check: passed
+  docker_check: passed_with_stt_decode
+  red_team: covered_by_tests
+  slo_measurements: thirty_live_owner_texts_usage_and_five_minute_idle_cpu_passed
+evidence:
+  - S2.1: typing action after authorized enqueue with message_thread_id;
+    supervised wake POST /v1/wake (no prompt text, idempotent, binding-checked);
+    tests TestAcceptedUpdateSendsTypingBeforeRun, TestUnknownSenderGetsNoChatAction,
+    TestWakeEndpointRejectsForeignBinding, TestWakeIsIdempotentAndCarriesNoText,
+    TestAcceptedJobWakesSupervisedRuntime green in internal/communication and
+    internal/supervisor.
+  - S2.2: one editable status delivery job-<id>-status; TelegramMessageID
+    persisted via SendMessageReceipt + UpdateSending; edits coalesce pending
+    and throttle to 1 per 2s per chat; CloseStatusDelivery deletes the status
+    on -response/-error; failed/sending status never blind-resent; tests
+    TestProgressUsesSingleEditedMessage, TestProgressEditRateLimited,
+    TestStatusMessageFinalizedOnResponse, TestStatusSurvivesGatewayRestart,
+    TestEditFailureFallsBackWithoutDuplicates, TestUncertainStatusSendIsNotResent
+    green; internal/communication suite passes.
+  - S2.3: spool notify channel coalesced to one pending wake; Enqueue,
+    CompleteJob, EnqueueDelivery, UpsertStatusDelivery, RequestCancel and
+    RequestApproval signal; worker/delivery/control loops select on Notify
+    plus 1s fallback ticker; idle loops poll once per interval not every
+    100ms; idempotency index under mappings/by-key rebuilt at open with
+    legacy-scan self-heal; Compact prunes terminal jobs/deliveries/events
+    older than HUB_SPOOL_RETENTION (default 336h) while preserving live work,
+    open approvals and pending/sending receipts; HUB_MOCK_DIR separates mock
+    capture/links from the production spool; tests
+    TestEnqueueWakesWorkerWithoutPoll, TestWorkerDrainsEnqueuedJobOnNotify,
+    TestWorkerIdlesBetweenSignals, TestDeliveryLoopDrainsOnNotify,
+    TestControlLoopWakesOnCancelRequest, TestControlLoopCompactsAgedTerminal,
+    TestIndexBuiltForLegacyMappings, TestCompactionKeepsLiveWorkAndOpenApprovals,
+    TestCompactionKeepsPendingReceipts, TestConfigFromEnvSpoolKnobs,
+    TestMockCaptureUsesConfiguredDir green, race-clean; idempotency lookup
+    benchmark ~172us at 10k mappings.
+  - S2.4: job records never persist Request.Text or inbound content
+    (TestJobRecordHasNoPromptText); finishJobGeneration persists only on
+    status, first RunID/SessionID assignment, approval/lease mutation,
+    approval-deadline or control-close changes — progress events update
+    memory only (TestProgressEventDoesNotPersist,
+    TestLeaseChangeWhileRunningPersists); CompactJobs shrinks terminal
+    records older than 24h to status/run_id/finished_at (fingerprint kept
+    so same-payload retries still replay) wired into the supervisor sweep
+    (TestTerminalJobsCompacted, TestSweepCompactsTerminalJobs);
+    ReconcileHealth snapshots under lockFor, probes Docker/HTTP with the
+    key lock released, re-acquires and applies only when generation still
+    matches (TestReconcileDoesNotBlockAcquire, race-clean).
+  - S2.5: supervisor memory default 1g -> 2g (TestDefaultMemoryIsTwoGigabytes);
+    browser stack (Xvfb/fluxbox/x11vnc/websockify/chromium) starts in a
+    background goroutine after the readiness marker instead of gating it —
+    HUB_MEET keeps the eager display; children bookkeeping mutex-guarded;
+    disabled browser produces no 6080 port, no browser MCP servers and
+    HUB_BROWSER/HUB_MEET=false env (TestDisabledComponentsStayCold);
+    TestTextOnlyContextStartsNoBrowser, TestBrowserStartsAfterReady green.
+  - S2.6: observeHermesRunWindow polls durable status every 2s while the
+    Hermes SSE channel is open and tightens to 1s once it closes (timer
+    reset on close); terminal detection unchanged via status; tests
+    TestObservePollsSlowlyWhileStreamOpen (25 polls -> <=4 per 2.5s) and
+    the existing SSE dedup/cap/privacy suite green.
 remaining:
-  - Implement S2.1-S2.6; measure SLO S1-S4, S9.
+  - "S3 cold-start p95 and S4 photo p50 lack 30-job samples: one cold answer
+    and one real photo were measured. The owner waived the 24-hour observation;
+    full Telegram inbound transport was not exercised."
+slo_evidence:
+  - "Thirty synthetic inbound owner texts reached the real model and Telegram
+    outbound API: liveness p50/p95 257/515 ms, warm response p50/p95
+    6297/7941 ms, one final send each. S8 input-token p50/p95 was
+    11988/12827 across the same 30 tool-free turns. The repeated 30-sample
+    five-minute idle CPU mean was 1.47% (p95 5.18%), meeting S9's mean target.
+    See CHG-0095 evidence."
+  - "S1 proxy: typing action + /v1/wake fire synchronously at update-accept
+    before runtime dispatch; durable enqueue->claim ~26.4ms/op fsync-bound
+    (BenchmarkEnqueueToClaimLatency) vs up-to-100ms idle poll before."
+  - "S2.3 loop idle polls: <=1 per second per loop while parked (was 10/s),
+    verified by ClaimJob/ClaimDelivery/mapping-scan counters in
+    TestWorkerIdlesBetweenSignals, TestDeliveryLoopDrainsOnNotify,
+    TestControlLoopWakesOnCancelRequest."
+  - "Idempotency lookup ~131us/op at 10k mappings (BenchmarkIdempotencyLookup10k)."
+  - "S6 proxy: status polls 25 -> <=4 per 2.5s while SSE open
+    (TestObservePollsSlowlyWhileStreamOpen)."
+  - "Red-team: /v1/wake foreign binding rejected (TestWakeEndpointRejectsForeignBinding);
+    edits target the persisted delivery chat from the job record, not caller
+    input; compaction atomic renames + pending-receipt preservation
+    (TestCompactionKeepsPendingReceipts); no prompt text in supervisor state
+    or logs (TestJobRecordHasNoPromptText); CDP stays 127.0.0.1-bound."
 limitations:
   - Telegram drafts are optional and flag-gated; editable status message is the default.
+  - Slack progress unchanged (per-event deliveries) per spec scope.

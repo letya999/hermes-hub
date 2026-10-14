@@ -1,13 +1,15 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"net/http"
 	"strings"
 	"time"
+
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 var (
@@ -38,9 +40,11 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		desired := m.runtimeDesiredLocked(entry)
 		auth := entry.auth
 		m.mu.Unlock()
+		lock.Unlock()
 		health, readiness := "stopped", "not_checked"
 		connectorHealth := "not_checked"
 		ownership := "not_checked"
+		var observed *hubruntime.RuntimeHealth
 		if snapshot.State != Stopped {
 			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			ownership = "unverified"
@@ -64,8 +68,8 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 					connectorHealth = "unknown"
 					if auth != "" && m.cfg.Probe == nil {
 						readiness = "unavailable"
-						observed, e := m.runtimeHealth(probeCtx, snapshot.Address, auth)
-						if e == nil {
+						if result, e := m.runtimeHealth(probeCtx, snapshot.Address, auth); e == nil {
+							observed = &result
 							readiness = observed.HermesReadiness
 							connectorHealth = observed.ConnectorHealth
 						}
@@ -76,12 +80,16 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			cancel()
 		}
 		remediate := false
+		lock.Lock()
 		m.mu.Lock()
 		if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
 			previous := current.Runtime
 			current.RuntimeHealth, current.HermesReadiness, current.HealthCheckedAt, current.Desired = health, readiness, now, desired
 			current.Ownership = ownership
 			current.ConnectorHealth = connectorHealth
+			if observed != nil {
+				current.ToolSurface, current.MissingTools, current.ToolReasons, current.ModelStatus = observed.ToolSurface, observed.MissingTools, observed.ToolReasons, observed.ModelStatus
+			}
 			// A degraded runtime still serves (e.g. host disk over the
 			// readiness threshold): restart cannot remediate a host-side
 			// cause and kills in-flight runs. Remediate only unavailable.
@@ -93,13 +101,16 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			} else {
 				current.readinessBadSince = time.Time{}
 			}
-			remediate = wedged && current.consecutiveUncertain >= 2 &&
+			// A live typed lease means a job, stream, approval or lifecycle
+			// is in flight — restarting now would kill it, so remediation
+			// waits for a free runtime rather than racing the lease holder.
+			remediate = wedged && len(current.leases) == 0 && current.consecutiveUncertain >= 2 &&
 				now.Sub(current.readinessBadSince) >= wedgedReadinessWindow &&
 				now.Sub(current.lastRemediatedAt) >= wedgedRemediationCooldown
 			if desired && recoverableRuntime(current.Runtime) && current.FailureGeneration != current.Generation {
 				m.recordRuntimeFailureLocked(&current.Runtime)
 			}
-			absentWithoutWork := health == "missing" && !desired && current.State != Idle
+			absentWithoutWork := health == "missing" && !desired
 			if absentWithoutWork {
 				current.State, current.IdleDeadline = Stopped, time.Time{}
 			}
@@ -111,7 +122,7 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		}
 		m.mu.Unlock()
 		if remediate && snapshot.Container != "" {
-			if _, err := m.command(ctx, "restart", snapshot.Container); err == nil {
+			if _, err := m.command(ctx, "restart", "--time", "30", snapshot.Container); err == nil {
 				m.mu.Lock()
 				if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
 					current.restored, current.consecutiveUncertain, current.lastRemediatedAt = true, 0, now
@@ -122,6 +133,100 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		}
 		lock.Unlock()
 	}
+}
+
+// reconcileUnconfirmed retries observation for jobs whose outcome was never
+// confirmed. A run-bound job is re-observed through the runtime's stream so a
+// late or replayed terminal event settles the record once.
+func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
+	m.mu.Lock()
+	var targets []jobRecord
+	for _, record := range m.jobs {
+		if !record.Unconfirmed || terminalRunStatus(record.Status) || record.UnconfirmedSince.IsZero() {
+			continue
+		}
+		if now.Sub(record.UnconfirmedSince) < 30*time.Second {
+			continue
+		}
+		targets = append(targets, record)
+	}
+	m.mu.Unlock()
+	for _, record := range targets {
+		if !now.Before(record.UnconfirmedSince.Add(hubruntime.RunBudget())) {
+			// The run's own budget has elapsed: an outcome that never
+			// confirmed is still named — failed with a timeout cause —
+			// rather than left unknown forever.
+			timeout := hubruntime.ExecuteResponse{JobID: record.Request.JobID, RunID: record.Response.RunID, SessionID: record.Response.SessionID, RuntimeGeneration: record.Generation, Status: "failed", LastEvent: "run.timeout"}
+			_ = m.finishJobGeneration(record.Request, timeout, "failed", record.Generation)
+			continue
+		}
+		lock := m.lockFor("observation:" + executeJobKey(record.Request))
+		if !lock.TryLock() {
+			continue
+		}
+		record := record
+		// Reconciliation outlives the sweep tick that scheduled it; the
+		// stream client's own deadlines bound each observe/readmit call.
+		go func() {
+			defer lock.Unlock()
+			m.reconcileJob(context.Background(), record)
+		}()
+	}
+}
+
+// reconcileJob re-observes one unconfirmed run against its binding's current
+// runtime generation. Events land through the same durable path as a live
+// stream, so a replayed or late terminal outcome settles the record once.
+func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
+	binding, err := m.bindingFor(record.Request)
+	if err != nil {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 130*time.Second)
+	lease, runtime, err := m.Acquire(callCtx, binding, LeaseUncertain)
+	cancel()
+	if err != nil {
+		return
+	}
+	_ = m.attachJobLease(lease.ID, executeJobKey(record.Request))
+	defer m.settleJobLeases(record.Request, lease)
+	// The attempt hold is request-scoped: the nonterminal record already pins
+	// the runtime as desired, so keeping the lease after the observe/readmit
+	// call would accumulate one permanent hold per sweep on an open record.
+	defer func() { _ = m.ReleaseLease(lease.ID) }()
+	fresh, err := m.rebindJobObservation(record.Request, record, runtime)
+	if err != nil || terminalRunStatus(fresh.Status) {
+		return
+	}
+	var endpoint string
+	var body []byte
+	if fresh.Response.RunID != "" {
+		// The run was admitted before the observation loss: re-attach to it.
+		endpoint = "/v1/observe"
+		body, _ = json.Marshal(hubruntime.RunReference{ExecuteRequest: record.Request, RunID: fresh.Response.RunID, SessionID: fresh.Response.SessionID, RuntimeGeneration: runtime.Generation})
+	} else {
+		// Admission itself was lost before a run id arrived. Re-post the
+		// durable request under its original idempotency key: Hermes replays
+		// the same run rather than duplicating the work.
+		endpoint = "/v1/readmit"
+		body, _ = json.Marshal(record.Request)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, runtime.Address+endpoint, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", hubruntime.RunStreamContentType)
+	req.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
+	response, err := m.cfg.StreamHTTP.Do(req)
+	if err != nil {
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != hubruntime.RunStreamContentType {
+		return
+	}
+	m.consumeJobStream(record.Request, runtime, response.Body, nil)
 }
 
 func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {
@@ -264,6 +369,31 @@ func (m *Manager) runtimeHealth(ctx context.Context, address, auth string) (hubr
 	case "healthy", "degraded", "unknown", "not_configured":
 	default:
 		return health, errors.New("invalid connector health")
+	}
+	// R1.4-R1.6 additive observations: an older runtime may omit them, a
+	// current one stays inside the fixed vocabulary and bounded lists.
+	switch health.ToolSurface {
+	case "", "ok", "degraded", "not_probed":
+	default:
+		return health, errors.New("invalid tool surface")
+	}
+	switch health.ModelStatus {
+	case "", "ok", "model_not_found", "unavailable", "not_configured":
+	default:
+		return health, errors.New("invalid model status")
+	}
+	if len(health.MissingTools) > 64 || len(health.ToolReasons) > 16 {
+		return health, errors.New("invalid tool surface bounds")
+	}
+	for _, name := range health.MissingTools {
+		if len(name) == 0 || len(name) > 128 {
+			return health, errors.New("invalid tool surface bounds")
+		}
+	}
+	for key, reason := range health.ToolReasons {
+		if len(key) > 64 || len(reason) > 256 {
+			return health, errors.New("invalid tool surface bounds")
+		}
 	}
 	return health, nil
 }

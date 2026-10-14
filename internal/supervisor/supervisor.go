@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -66,26 +67,38 @@ type Lease struct {
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
+// DefaultWarmTTL is the project idle-retention default; a shorter window
+// drops runtimes between messages and forces cold starts mid-conversation.
+const DefaultWarmTTL = 30 * time.Minute
+
 type Config struct {
-	Docker        string
-	Image         string
-	Network       string
-	SpacesRoot    string
-	StateDir      string
-	RuntimeAuth   string
-	Environment   string
-	WarmTTL       time.Duration
-	MaxConcurrent int
-	CPU           string
-	Memory        string
-	PIDs          int
-	RuntimePort   int
-	PortBase      int
-	PortRange     int
-	HTTP          *http.Client
-	Probe         func(context.Context, string, string) error
-	Command       func(context.Context, ...string) ([]byte, error)
-	Now           func() time.Time
+	Docker         string
+	Image          string
+	Network        string
+	SpacesRoot     string
+	HostSpacesRoot string
+	StateDir       string
+	RuntimeAuth    string
+	Environment    string
+	WarmTTL        time.Duration
+	MaxConcurrent  int
+	CPU            string
+	Memory         string
+	PIDs           int
+	RuntimePort    int
+	PortBase       int
+	PortRange      int
+	HTTP           *http.Client
+	// StreamHTTP serves run-stream calls: no total timeout, bounded header
+	// wait; the request context carries the run budget and the body an idle
+	// deadline.
+	StreamHTTP *http.Client
+	Probe      func(context.Context, string, string) error
+	Command    func(context.Context, ...string) ([]byte, error)
+	Now        func() time.Time
+	// AllowWildcardListen permits Serve to bind a non-loopback control-plane
+	// address; without it wildcard or empty hosts are refused.
+	AllowWildcardListen bool
 }
 
 type Binding struct {
@@ -112,19 +125,26 @@ type Runtime struct {
 	RuntimeHealth     string    `json:"runtime_health,omitempty"`
 	HermesReadiness   string    `json:"hermes_readiness,omitempty"`
 	HealthCheckedAt   time.Time `json:"health_checked_at,omitempty"`
-	Desired           bool      `json:"desired"`
-	PrincipalID       string    `json:"principal_id"`
-	ContextID         string    `json:"context_id"`
-	RuntimeID         string    `json:"runtime_id"`
-	RuntimeMode       string    `json:"runtime_mode"`
-	Generation        string    `json:"generation"`
-	Container         string    `json:"container"`
-	Address           string    `json:"address"`
-	State             State     `json:"state"`
-	Leases            int       `json:"leases"`
-	LastUsed          time.Time `json:"last_used"`
-	IdleDeadline      time.Time `json:"idle_deadline,omitempty"`
-	Managed           bool      `json:"managed,omitempty"`
+	// R1.4-R1.6 observations persisted from the runtime's own surface probe.
+	// Reporting only: they never feed remediation decisions or grants.
+	ToolSurface  string            `json:"tool_surface,omitempty"`
+	MissingTools []string          `json:"missing_tools,omitempty"`
+	ToolReasons  map[string]string `json:"tool_reasons,omitempty"`
+	ModelStatus  string            `json:"model_status,omitempty"`
+	Restarts     int               `json:"restarts,omitempty"`
+	Desired      bool              `json:"desired"`
+	PrincipalID  string            `json:"principal_id"`
+	ContextID    string            `json:"context_id"`
+	RuntimeID    string            `json:"runtime_id"`
+	RuntimeMode  string            `json:"runtime_mode"`
+	Generation   string            `json:"generation"`
+	Container    string            `json:"container"`
+	Address      string            `json:"address"`
+	State        State             `json:"state"`
+	Leases       int               `json:"leases"`
+	LastUsed     time.Time         `json:"last_used"`
+	IdleDeadline time.Time         `json:"idle_deadline,omitempty"`
+	Managed      bool              `json:"managed,omitempty"`
 }
 
 type runtimeEntry struct {
@@ -177,6 +197,9 @@ type jobRecord struct {
 	Fingerprint      string                     `json:"fingerprint"`
 	Response         hubruntime.ExecuteResponse `json:"response"`
 	Status           string                     `json:"status"`
+	Phase            string                     `json:"phase,omitempty"`
+	Unconfirmed      bool                       `json:"unconfirmed,omitempty"`
+	UnconfirmedSince time.Time                  `json:"unconfirmed_since,omitempty"`
 	Generation       string                     `json:"generation,omitempty"`
 	UpdatedAt        time.Time                  `json:"updated_at"`
 }
@@ -186,6 +209,12 @@ type jobRecord struct {
 func Serve(ctx context.Context, manager *Manager, listen string) error {
 	if manager == nil || strings.TrimSpace(listen) == "" {
 		return errors.New("manager and listen address are required")
+	}
+	if !manager.cfg.AllowWildcardListen {
+		host, _, err := net.SplitHostPort(listen)
+		if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
+			return fmt.Errorf("wildcard listen %q requires an explicit opt-in; the control plane binds a private address by default", listen)
+		}
 	}
 	server := &http.Server{Addr: listen, Handler: diagnostics.HTTP("supervisor", manager.Handler()), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 * 1024}
 	go func() {
@@ -200,24 +229,7 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
-				sweepCtx, cancel := context.WithTimeout(ctx, 150*time.Second)
-				_ = manager.DetectOrphans(sweepCtx)
-				manager.ReapOrphans(sweepCtx)
-				manager.ReconcileHealth(sweepCtx, now)
-				if sweepCtx.Err() == nil {
-					manager.RecoverMissingWork(sweepCtx)
-				}
-				if sweepCtx.Err() == nil {
-					manager.ReconcilePins(sweepCtx)
-				}
-				if sweepCtx.Err() == nil {
-					manager.ExpireApprovals(sweepCtx, now)
-					manager.ExpireUncertain(sweepCtx, now)
-				}
-				if sweepCtx.Err() == nil {
-					_ = manager.Reap(sweepCtx, now)
-				}
-				cancel()
+				manager.sweep(ctx, now)
 			}
 		}
 	}()
@@ -242,6 +254,15 @@ func New(cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("spaces root: %w", err)
 	}
 	cfg.SpacesRoot = root
+	if cfg.HostSpacesRoot == "" {
+		cfg.HostSpacesRoot = os.Getenv("HUB_SUPERVISOR_HOST_SPACES")
+	}
+	if strings.ContainsAny(cfg.HostSpacesRoot, ",\r\n") {
+		return nil, errors.New("invalid host spaces root")
+	}
+	if _, err := (&Manager{cfg: cfg}).hostBindSource(root); err != nil {
+		return nil, err
+	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = filepath.Join(root, ".control")
 	}
@@ -255,7 +276,7 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Network = "hermes-hub-runtime"
 	}
 	if cfg.WarmTTL <= 0 {
-		cfg.WarmTTL = 5 * time.Minute
+		cfg.WarmTTL = DefaultWarmTTL
 	}
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 8
@@ -264,7 +285,7 @@ func New(cfg Config) (*Manager, error) {
 		cfg.CPU = "2"
 	}
 	if cfg.Memory == "" {
-		cfg.Memory = "1g"
+		cfg.Memory = "2g"
 	}
 	if cfg.PIDs <= 0 {
 		cfg.PIDs = 1024
@@ -282,9 +303,15 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Now = time.Now
 	}
 	if cfg.HTTP == nil {
-		// Long runs outlive the default cap: the stream severs but the run
-		// keeps executing and reconciles later. Tune via HUB_SUPERVISOR_JOB_TIMEOUT.
+		// Bounded client for readiness, restart, usage and artifact calls.
 		cfg.HTTP = &http.Client{Timeout: durationEnv("HUB_SUPERVISOR_JOB_TIMEOUT", 130*time.Second)}
+	}
+	if cfg.StreamHTTP == nil {
+		cfg.StreamHTTP = &http.Client{Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			ResponseHeaderTimeout: 30 * time.Second,
+		}}
 	}
 	if cfg.Command == nil {
 		cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -322,14 +349,22 @@ func (m *Manager) load() error {
 	}
 	dirty := false
 	for key, record := range m.jobs {
+		legacy := record.Phase == ""
+		// Older expiry code changed the record but left its replay uncertain.
+		if record.Status == "interrupted" && (record.Response.Status == "" || record.Response.Status == "uncertain") {
+			record.Response.Status, record.Response.LastEvent = "interrupted", "run.interrupted"
+			dirty = true
+		}
 		if record.Status == "running" {
 			record.Status = "uncertain"
 			record.Response.Status = "uncertain"
 			record.Response.LastEvent = "run.unknown"
 			record.UpdatedAt = m.cfg.Now().UTC()
-			m.jobs[key] = record
 			dirty = true
 		}
+		mapLegacyPhase(&record)
+		m.jobs[key] = record
+		dirty = dirty || legacy
 	}
 	for _, item := range state.Items {
 		if !validID(item.Runtime.PrincipalID) || !validID(item.Runtime.ContextID) || !validID(item.Runtime.RuntimeID) || !validID(item.Runtime.RuntimeMode) || item.Runtime.Generation == "" {
@@ -386,6 +421,29 @@ func (m *Manager) persistLocked() error {
 		err = os.Rename(name, m.statePath)
 	}
 	return err
+}
+
+func (m *Manager) sweep(ctx context.Context, now time.Time) {
+	sweepCtx, cancel := context.WithTimeout(ctx, 150*time.Second)
+	defer cancel()
+	_ = m.DetectOrphans(sweepCtx)
+	m.ReapOrphans(sweepCtx)
+	m.ReconcileHealth(sweepCtx, now)
+	if sweepCtx.Err() == nil {
+		m.RecoverMissingWork(sweepCtx)
+	}
+	if sweepCtx.Err() == nil {
+		m.ReconcilePins(sweepCtx)
+	}
+	if sweepCtx.Err() == nil {
+		m.ExpireApprovals(sweepCtx, now)
+		m.reconcileUnconfirmed(sweepCtx, now)
+		m.ExpireUncertain(sweepCtx, now)
+		m.CompactJobs(now)
+	}
+	if sweepCtx.Err() == nil {
+		_ = m.Reap(sweepCtx, now)
+	}
 }
 
 func (m *Manager) lockFor(key string) *sync.Mutex {
@@ -556,7 +614,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		}
 		return Runtime{}, portErr
 	}
-	address := "http://127.0.0.1:" + strconv.Itoa(port)
+	address := m.runtimeAddress(container, port, managed)
 	m.gen++
 	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
@@ -606,10 +664,12 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		} else {
 			// Port allocation may have moved since this container started;
 			// reuse requires its actually published port.
-			if hostPort, portErr := m.publishedPort(ctx, logical.Runtime); portErr == nil {
-				address = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
-				logical.Address = address
+			if m.cfg.HostSpacesRoot == "" {
+				if hostPort, portErr := m.publishedPort(ctx, logical.Runtime); portErr == nil {
+					address = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
+				}
 			}
+			logical.Address = address
 			if err = m.ready(ctx, address, binding.runtimeAuth); err == nil {
 				m.mu.Lock()
 				logical.State = Busy
@@ -819,12 +879,15 @@ func (m *Manager) ReleaseBinding(binding Binding) error {
 
 // sweepStaleLeasesLocked drops holds that can never be released through the
 // normal path: leases pinned to a superseded runtime generation (ReleaseLease
-// only answers "stale runtime lease" for them) and job-owned leases whose job
-// is terminal or gone. Caller-held stream/approval/lifecycle leases have no
-// time bound — ExpiresAt is not a validity check for them. Uncertain jobs are
-// resolved by ExpireUncertain through the durable control path, not here.
-// Without this an orphaned lease keeps runtimeDesiredLocked true forever and
-// the runtime is never reaped. m.mu must be held.
+// only answers "stale runtime lease" for them), job-owned leases whose job
+// is terminal or gone, and supervisor-owned leases past their claim deadline —
+// owner "supervisor" is the transient state between Acquire and attachJobLease,
+// so an expired one means the request that held it died and nothing can ever
+// release it. Caller-held stream/approval/lifecycle leases attached to a job
+// have no time bound — ExpiresAt is not a validity check for them. Uncertain
+// jobs are resolved by ExpireUncertain through the durable control path, not
+// here. Without this an orphaned lease keeps runtimeDesiredLocked true forever
+// and the runtime is never reaped. m.mu must be held.
 func (m *Manager) sweepStaleLeasesLocked(now time.Time) {
 	for _, entry := range m.items {
 		changed := false
@@ -834,6 +897,11 @@ func (m *Manager) sweepStaleLeasesLocked(now time.Time) {
 				if jobID, ok := strings.CutPrefix(lease.Owner, "job:"); ok {
 					record, found := m.jobs[jobID]
 					stale = !found || terminalRunStatus(record.Status)
+				} else if lease.Owner == "supervisor" && !lease.ExpiresAt.IsZero() {
+					// The claim deadline is Acquire's own bound; WarmTTL of
+					// grace keeps a slow-but-alive request from losing its
+					// hold mid-flight.
+					stale = now.After(lease.ExpiresAt.Add(m.cfg.WarmTTL))
 				}
 			}
 			if !stale {
@@ -860,7 +928,8 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 	m.sweepStaleLeasesLocked(now)
 	keys := []string{}
 	for key, runtime := range m.items {
-		if runtime.State == Idle && !m.runtimeDesiredLocked(runtime) && runtime.RuntimeHealth != "unknown" && runtime.Ownership != "unverified" && !runtime.IdleDeadline.After(now) {
+		// A failed idle cleanup retains its deadline and must be retried.
+		if (runtime.State == Idle || runtime.State == Degraded && !runtime.IdleDeadline.IsZero()) && !m.runtimeDesiredLocked(runtime) && runtime.RuntimeHealth != "unknown" && runtime.Ownership != "unverified" && !runtime.IdleDeadline.After(now) {
 			keys = append(keys, key)
 		}
 	}
@@ -870,7 +939,7 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 		lock.Lock()
 		m.mu.Lock()
 		runtime := m.items[key]
-		if runtime == nil || runtime.State != Idle || m.runtimeDesiredLocked(runtime) || runtime.RuntimeHealth == "unknown" || runtime.Ownership == "unverified" || runtime.IdleDeadline.After(now) {
+		if runtime == nil || (runtime.State != Idle && (runtime.State != Degraded || runtime.IdleDeadline.IsZero())) || m.runtimeDesiredLocked(runtime) || runtime.RuntimeHealth == "unknown" || runtime.Ownership == "unverified" || runtime.IdleDeadline.After(now) {
 			m.mu.Unlock()
 			lock.Unlock()
 			continue
@@ -995,6 +1064,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.list(w, r)
 	case "/v1/leases":
 		m.lease(w, r)
+	case "/v1/wake":
+		m.wake(w, r)
 	case "/v1/self-env":
 		m.selfEnv(w, r)
 	case "/v1/restart":
@@ -1055,6 +1126,45 @@ func (m *Manager) lease(w http.ResponseWriter, r *http.Request) {
 		Lease   Lease   `json:"lease"`
 		Runtime Runtime `json:"runtime"`
 	}{lease, runtime})
+}
+
+// wake warms the request's runtime without a lease or job record (SPEC-0053
+// R2.1): the gateway fires it right after spooling so a cold spawn overlaps
+// its own work. bindingFor gives the same authorization as /v1/jobs; Ensure
+// is idempotent, and the request never carries prompt text.
+func (m *Manager) wake(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body too large"})
+		return
+	}
+	var request hubruntime.ExecuteRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	binding, err := m.bindingFor(request)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	runtime, err := m.Ensure(r.Context(), binding)
+	if err != nil {
+		log.Printf("wake failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	// Wake is a warm-up peek, not a hold: the Ensure reference returns here so
+	// the runtime settles back to its warm idle hold instead of accumulating a
+	// lease per wake call.
+	_ = m.ReleaseBinding(binding)
+	writeJSON(w, http.StatusOK, runtime)
 }
 
 // restartHTTP forwards a runtime restart request to the runtime owning the
@@ -1161,12 +1271,15 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	}
 	m.mu.Lock()
 	entry.restored = true // A failed restart must force fresh ownership/readiness checks.
+	entry.Runtime.Restarts++
 	m.mu.Unlock()
 	// Complete an accepted restart even when the notifying client's short
 	// deadline expires. New jobs remain behind this same acquisition lock.
 	restart, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	if _, err := m.command(restart, "restart", container); err != nil {
+	// SIGTERM first, then 30 s before SIGKILL — an abrupt kill loses Hermes's
+	// own cleanup and any in-flight work the lease check could not see.
+	if _, err := m.command(restart, "restart", "--time", "30", container); err != nil {
 		return false, err
 	}
 	if err := m.ready(restart, runtime.Address, auth); err != nil {
@@ -1224,6 +1337,9 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	marker.Header.Set("Authorization", "Bearer "+auth)
+	if jobID := r.Header.Get("X-Hub-Job-ID"); validID(jobID) {
+		marker.Header.Set("X-Hub-Job-ID", jobID)
+	}
 	response, err := m.cfg.HTTP.Do(marker)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
@@ -1302,6 +1418,9 @@ func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
 		return
 	}
+	if request.JobID != "" {
+		upstream.Header.Set("X-Hub-Job-ID", request.JobID)
+	}
 	m.forwardRuntimeRequest(w, r, upstream, binding)
 }
 
@@ -1354,6 +1473,9 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
 		return
+	}
+	if request.JobID != "" {
+		upstream.Header.Set("X-Hub-Job-ID", request.JobID)
 	}
 	m.forwardRuntimeRequest(w, r, upstream, binding)
 }
@@ -1413,6 +1535,7 @@ func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
 	upstream.Header.Set("Content-Type", "application/json")
+	upstream.Header.Set("X-Hub-Job-ID", "credential-form")
 	response, err := m.cfg.HTTP.Do(upstream)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
@@ -1483,7 +1606,7 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	}
 	metadata := request
 	metadata.Text = ""
-	m.jobs[key] = jobRecord{Request: metadata, Fingerprint: fingerprint, Status: "running", UpdatedAt: time.Now().UTC()}
+	m.jobs[key] = jobRecord{Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
 	if err := m.persistLocked(); err != nil {
 		delete(m.jobs, key)
 		return hubruntime.ExecuteResponse{}, false, err
@@ -1526,6 +1649,7 @@ func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generatio
 		return errors.New("job cannot bind generation")
 	}
 	previous := record
+	transitionJobPhase(key, &record, phaseAdmitted)
 	record.Generation, record.UpdatedAt = generation, time.Now().UTC()
 	if record.Status == "cancelled" {
 		record.Response.RuntimeGeneration = generation
@@ -1576,6 +1700,7 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 			response.SessionID = record.Response.SessionID
 		}
 		previous := record
+		durable := record.Status != status || (record.Response.RunID == "" && response.RunID != "") || (record.Response.SessionID == "" && response.SessionID != "")
 		if terminalRunStatus(status) {
 			controls := make(map[string]controlRecord, len(record.Controls))
 			for id, control := range record.Controls {
@@ -1604,6 +1729,7 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 			if response.ApprovalID != "" {
 				id := "approval:" + key + ":" + response.ApprovalID
 				if _, exists := entry.leases[id]; !exists {
+					durable = true
 					deadline := record.ApprovalDeadline
 					if response.ApprovalID != record.Response.ApprovalID {
 						deadline = time.Now().UTC().Add(2 * time.Minute)
@@ -1634,10 +1760,23 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 			break
 		}
 		if response.ApprovalID != "" && response.ApprovalID != record.Response.ApprovalID {
+			durable = true
 			record.ApprovalDeadline = time.Now().UTC().Add(2 * time.Minute)
+		}
+		if status == "uncertain" {
+			if !record.Unconfirmed {
+				record.UnconfirmedSince = time.Now().UTC()
+			}
+			record.Unconfirmed = true
+		} else {
+			transitionJobPhase(key, &record, statusPhase(status))
+			record.Unconfirmed, record.UnconfirmedSince = false, time.Time{}
 		}
 		record.Response, record.Status, record.UpdatedAt = response, status, time.Now().UTC()
 		m.jobs[key] = record
+		if !durable {
+			return nil
+		}
 		if err := m.persistLocked(); err != nil {
 			m.jobs[key] = previous
 			if approvalEntry != nil {
@@ -1696,6 +1835,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Accept") == hubruntime.RunStreamContentType {
 		kind = LeaseStream
 	}
+	m.setJobPhase(request, phaseWaking)
 	lease, runtime, err := m.Acquire(r.Context(), binding, kind)
 	if err != nil {
 		// The job never reached a runtime: drop the record so a retry re-admits
@@ -1735,7 +1875,18 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "dispatch state unavailable"})
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/execute", bytes.NewReader(body))
+	callCtx := r.Context()
+	client := m.cfg.HTTP
+	streaming := r.Header.Get("Accept") == hubruntime.RunStreamContentType
+	var release context.CancelFunc = func() {}
+	if streaming {
+		// No total timeout on the stream hop: the run budget bounds the whole
+		// job and an idle deadline abandons silent hops.
+		callCtx, release = context.WithTimeout(r.Context(), hubruntime.RunBudget())
+		client = m.cfg.StreamHTTP
+	}
+	defer release()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, runtime.Address+"/v1/execute", bytes.NewReader(body))
 	if err != nil {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
 		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
@@ -1745,7 +1896,10 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
 	req.Header.Set("Accept", r.Header.Get("Accept"))
-	response, err := m.cfg.HTTP.Do(req)
+	if request.JobID != "" {
+		req.Header.Set("X-Hub-Job-ID", request.JobID)
+	}
+	response, err := client.Do(req)
 	if err != nil {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
 		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
@@ -1754,7 +1908,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK && response.Header.Get("Content-Type") == hubruntime.RunStreamContentType {
-		m.relayRunStream(w, request, runtime, response.Body)
+		m.relayRunStream(w, request, runtime, hubruntime.IdleReader(response.Body, hubruntime.StreamIdleDeadline(), release))
 		return
 	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
@@ -1767,6 +1921,18 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	var result hubruntime.ExecuteResponse
 	if json.Unmarshal(body, &result) == nil {
 		status := result.Status
+		if status == "" && response.StatusCode/100 != 2 {
+			status = "uncertain"
+			event := "run.unknown"
+			if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnprocessableEntity {
+				status = "failed"
+				event = "run.failed"
+			}
+			result = hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: status, LastEvent: event}
+			m.finishJobGeneration(request, result, status, runtime.Generation)
+			writeJSON(w, response.StatusCode, result)
+			return
+		}
 		if status == "" && response.StatusCode/100 == 2 {
 			status = "completed"
 		}
@@ -1788,9 +1954,32 @@ func terminalRunStatus(status string) bool {
 
 func (m *Manager) relayRunStream(w http.ResponseWriter, request hubruntime.ExecuteRequest, runtime Runtime, reader io.Reader) {
 	w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
+	m.consumeJobStream(request, runtime, reader, func(event hubruntime.ExecuteResponse) error {
+		if err := json.NewEncoder(w).Encode(event); err != nil {
+			return err
+		}
+		return http.NewResponseController(w).Flush()
+	})
+}
+
+// consumeJobStream records runtime stream events into the durable job record
+// and optionally forwards each event downstream. Identity and generation
+// fences apply identically to the live relay and the reconciler's re-observe.
+func (m *Manager) consumeJobStream(request hubruntime.ExecuteRequest, runtime Runtime, reader io.Reader, forward func(hubruntime.ExecuteResponse) error) {
 	known := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
 	err := hubruntime.ReadRunStream(reader, func(event hubruntime.ExecuteResponse) error {
-		if event.JobID != request.JobID || event.RuntimeGeneration != runtime.Generation || (known.RunID != "" && event.RunID != known.RunID) || (known.SessionID != "" && event.SessionID != known.SessionID) {
+		if event.JobID != request.JobID || event.RuntimeGeneration != runtime.Generation {
+			return errors.New("stream identity mismatch")
+		}
+		if event.LastEvent == "run.heartbeat" {
+			// Transport keepalive: forward it so the next hop's idle deadline
+			// resets, but never persist it into the job record.
+			if forward == nil {
+				return nil
+			}
+			return forward(event)
+		}
+		if (known.RunID != "" && event.RunID != known.RunID) || (known.SessionID != "" && event.SessionID != known.SessionID) {
 			return errors.New("stream identity mismatch")
 		}
 		m.mu.Lock()
@@ -1804,10 +1993,10 @@ func (m *Manager) relayRunStream(w http.ResponseWriter, request hubruntime.Execu
 			return err
 		}
 		known = event
-		if err := json.NewEncoder(w).Encode(event); err != nil {
-			return err
+		if forward == nil {
+			return nil
 		}
-		return http.NewResponseController(w).Flush()
+		return forward(event)
 	})
 	if !terminalRunStatus(known.Status) {
 		known.Status, known.LastEvent, known.Text = "uncertain", "run.unknown", ""
@@ -2047,7 +2236,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 		spawnSettings = stack.Settings{}
 	}
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
-		spawnSettings.GlobalSkillsDir = filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills")
+		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
 	}
 	if err := stack.MaterializeGlobalSkills(binding.ContextRoot, spawnSettings); err != nil {
 		log.Printf("supervisor skills materialization skipped: %v", err)
@@ -2090,6 +2279,19 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 		return nil, fmt.Errorf("materialize tool policy: %w", err)
 	}
 	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+	// The render-time tool-surface expectation, mounted read-only like the
+	// policy snapshot; the runtime's /v1/health probe reads it and nothing
+	// inside the container can rewrite it.
+	if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
+		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
+		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+	}
+	// The rendered effective SOUL — persona plus channel contract — is what
+	// Hermes reads at $HERMES_HOME/SOUL.md. Without it (pre-R1.8 space) the
+	// heal path copies the raw persona as before.
+	if soul := filepath.Join(binding.ContextRoot, "generated", "soul-effective."+env+".md"); fileExists(soul) {
+		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
+	}
 	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
 	if binding.OrganizationRoot != "" {
 		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
@@ -2155,7 +2357,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		return nil, err
 	}
 	args = append(args, "--mount", "type=bind,src="+effectiveConfig+",dst=/state/hermes/config.yaml,readonly")
-	if soul := filepath.Join(binding.ContextRoot, "SOUL.md"); fileExists(soul) {
+	if soul := filepath.Join(binding.ContextRoot, "generated", "soul-effective."+env+".md"); fileExists(soul) {
 		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
 	}
 	if settings.Environment == "" {
@@ -2166,6 +2368,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		return nil, fmt.Errorf("materialize tool policy: %w", err)
 	}
 	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+	if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
+		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
+		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+	}
 	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
 	for _, name := range managedExtensionRootTmpfs {
 		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")
@@ -2326,6 +2532,13 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 func (m *Manager) command(ctx context.Context, args ...string) ([]byte, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if m.cfg.HostSpacesRoot != "" && len(args) > 0 && args[0] == "run" {
+		var err error
+		args, err = m.containerDockerArgs(args)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return m.cfg.Command(callCtx, args...)
 }
 func (m *Manager) releaseSlot(key string) {

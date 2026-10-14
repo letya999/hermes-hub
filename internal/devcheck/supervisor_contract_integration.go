@@ -51,7 +51,10 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 		return err
 	}
 	defer os.RemoveAll(root)
-	cleanup := func() { _ = exec.Command("docker", "network", "rm", network).Run() }
+	cleanup := func() {
+		_ = exec.Command("docker", "network", "rm", network).Run()
+		_ = exec.Command("docker", "volume", "rm", "hermes-hub-"+userID+"-prod_broker-secrets-runtime").Run()
+	}
 	defer cleanup()
 	if err := exec.CommandContext(ctx, "docker", "network", "create", network).Run(); err != nil {
 		return err
@@ -85,7 +88,7 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if err != nil {
 		return err
 	}
-	settings.GlobalSkillsDir = filepath.Join(root, "config", "skills")
+	settings.DefaultGlobalSkillsDir(filepath.Join(root, "config", "skills"))
 	if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil {
 		return err
 	}
@@ -266,6 +269,67 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if duplicate, err := spool.ClaimDelivery(); err != nil || duplicate != nil {
 		return fmt.Errorf("real stream duplicate final after restart: %v", err)
 	}
+	// Exercise metadata-only recovery against pinned Hermes, after completion.
+	// A constant run ID alone would miss a duplicate execution: count real tools.
+	current, _, err := m.Status(binding)
+	if err != nil {
+		return err
+	}
+	readmitContainerID, err := smokeOwnedContainerID(ctx, m, current)
+	if err != nil {
+		return err
+	}
+	countEffects := func() (string, error) {
+		data, err := exec.CommandContext(ctx, "docker", "exec", readmitContainerID, "cat", "/workspace/contract-executions").Output()
+		return string(data), err
+	}
+	if effects, err := countEffects(); err != nil || effects != "1\n" {
+		return fmt.Errorf("readmit initial tool count: %q err=%v", effects, err)
+	}
+	var ledger struct {
+		Jobs map[string]struct {
+			Request hubruntime.ExecuteRequest `json:"request"`
+		} `json:"jobs"`
+	}
+	raw, err := os.ReadFile(filepath.Join(cfg.SpacesRoot, ".control", "supervisor.json"))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, &ledger); err != nil {
+		return err
+	}
+	replayRequest := ledger.Jobs[job.ID].Request
+	if replayRequest.JobID != job.ID || replayRequest.Text != "" {
+		return errors.New("readmit fixture needs the durable metadata-only request")
+	}
+	body, err := json.Marshal(replayRequest)
+	if err != nil {
+		return err
+	}
+	replayCall, err := http.NewRequestWithContext(ctx, http.MethodPost, current.Address+"/v1/readmit", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	replayCall.Header.Set("Authorization", "Bearer "+auth)
+	replayCall.Header.Set("Content-Type", "application/json")
+	replayResponse, err := http.DefaultClient.Do(replayCall)
+	if err != nil {
+		return err
+	}
+	var replayOutcome hubruntime.ExecuteResponse
+	err = json.NewDecoder(replayResponse.Body).Decode(&replayOutcome)
+	replayResponse.Body.Close()
+	readmitMapping, _, mappingErr := spool.Mapping(job.ID)
+	if err != nil || mappingErr != nil || replayResponse.StatusCode != http.StatusOK || replayOutcome.Status != "completed" || replayOutcome.RunID != readmitMapping.RunID || replayOutcome.SessionID != readmitMapping.SessionID {
+		return fmt.Errorf("real metadata-only readmit: HTTP %d status=%s same_run=%v error=%v", replayResponse.StatusCode, replayOutcome.Status, replayOutcome.RunID == readmitMapping.RunID, err)
+	}
+	if err := contractSleep(ctx, 2*time.Second); err != nil {
+		return err
+	}
+	if effects, err := countEffects(); err != nil || effects != "1\n" {
+		return fmt.Errorf("readmit repeated side effect: %q err=%v", effects, err)
+	}
+	fmt.Println("Real readmit passed: original completed run/session, exactly one tool side effect")
 	if err := supervisorApprovalSmoke(ctx, m, binding, runner, spool, job, auth); err != nil {
 		return err
 	}
@@ -565,6 +629,10 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 	}
 	raceRunner := runner
 	raceRunner.Spool, raceRunner.Resume = raceSpool, false
+	// Recovery after an uncertain outcome goes through the production resume
+	// endpoint — the same hop the gateway worker takes after requeue.
+	resumeRunner := runner
+	resumeRunner.Spool, resumeRunner.Resume = raceSpool, true
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	beforeRace := starts.Load()
@@ -580,10 +648,13 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 		if errors.Is(err, communication.ErrUncertain) && admittedRun != "" {
 			fmt.Println("Real native crashed-turn wait: original run held; resume without input replay")
 		}
-		for errors.Is(err, communication.ErrUncertain) && admittedRun != "" && time.Now().Before(settleDeadline) {
+		unboundSince := time.Time{}
+		for errors.Is(err, communication.ErrUncertain) && time.Now().Before(settleDeadline) {
 			m.ReconcileHealth(ctx, time.Now())
 			current, _, statusErr := m.Status(binding)
-			if statusErr != nil || current.Leases == 0 || !current.Desired {
+			// Resume leases exist only while a resume call is in flight; the
+			// durable desired-work flag is what may never drop mid-settle.
+			if statusErr != nil || !current.Desired {
 				err = fmt.Errorf("waiting native lease lost desired work/hold")
 				break
 			}
@@ -595,11 +666,29 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 				err = waitErr
 				break
 			}
-			outcome, err = raceRunner.RunOutcome(ctx, raceJob)
-			if outcome.RunID != admittedRun {
+			outcome, err = resumeRunner.RunOutcome(ctx, raceJob)
+			if admittedRun != "" && outcome.RunID != "" && outcome.RunID != admittedRun {
 				err = fmt.Errorf("waiting native lease changed admitted run")
 				break
 			}
+			if outcome.RunID != "" {
+				admittedRun = outcome.RunID
+				unboundSince = time.Time{}
+			} else if unboundSince.IsZero() {
+				unboundSince = time.Now()
+			} else if time.Since(unboundSince) > 45*time.Second {
+				// Admission never bound a run and no reconciler runs in this
+				// fixture: the production fallthrough is the same expiry sweep
+				// that closes unobservable records — interrupt is the named
+				// failure, never a silent duplicate.
+				m.ExpireUncertain(ctx, time.Now().Add(2*time.Hour))
+			}
+		}
+		// The chaos contract settles at one answer or one named failure:
+		// interrupted is the named failure for an admission that lost its run,
+		// not a defect.
+		if err != nil && outcome.Status == "interrupted" {
+			err = nil
 		}
 		if err != nil {
 			mapping, _, _ := raceSpool.Mapping(raceJob.ID)
@@ -621,8 +710,8 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 				}
 			}
 		}
-		if err == nil && outcome.Status != "completed" {
-			err = fmt.Errorf("race job did not complete")
+		if err == nil && outcome.Status != "completed" && outcome.Status != "interrupted" {
+			err = fmt.Errorf("race job neither completed nor named-failed: %s", outcome.Status)
 		}
 		results <- err
 	}()

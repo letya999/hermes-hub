@@ -1,0 +1,22 @@
+schema: 1
+change: CHG-0088
+status: complete
+branch: dev
+updated: 2026-10-13
+completed:
+  - Reproduced closed approval delivery with failing regression test and fixed it.
+  - Added current-request and read-only listing guidance with a failing contract test.
+  - Telegram approval message receipts persist across restart; resolved requests are removed, terminal queued requests suppressed.
+  - Legacy closed keyboards can be removed by their verified owner's tap; foreign senders cannot remove them.
+  - Completed outcomes stay in the done queue during worker error cleanup.
+  - Receipt reads use os.Root; a symlink outside the spool cannot trigger message deletion.
+  - Seven regressions were observed failing before their fixes; communication race tests and final just check passed.
+evidence:
+  - Final just check passed; own Go statement coverage 85.22 percent.
+  - Exact listing request in the original Hermes session completed with a 3052-character tree, one search_files call, zero approvals, and no AGENTS.md write; assistant reply persisted in state.db.
+  - Live gateway with real Hermes and mock delivery captured exactly one Markdown tree response, zero approval requests and zero error deliveries; response persisted after gateway restart.
+  - Telegram getMe authenticated successfully; actual Telegram sending and button round trip were not exercised.
+  - Both hubctl builds completed; final communication service recreated from the new image with no temporary binary mount. Other stacks and AI-STP remain stopped.
+limitations:
+  - Legacy Telegram send receipts did not save message IDs; old closed messages need an owner tap for exact-message cleanup.
+  - Broad repo-safety scan is not green: Gitleaks failed without a finding report, Opengrep hit an existing Windows cache symlink, Ruff reports existing script findings and gosec reports existing findings plus an SSA importer error. New receipt-read G304 was fixed with os.Root and an observed failing isolation test; govulncheck reports zero affected imported-code vulnerabilities.

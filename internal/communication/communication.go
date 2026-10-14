@@ -148,6 +148,12 @@ type Config struct {
 	// Workers bounds concurrent job execution; contexts serialize per
 	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
 	Workers int `yaml:"-"`
+	// SpoolRetention bounds how long terminal spool history is kept; zero
+	// means the 336-hour default (SPEC-0053 R2.3).
+	SpoolRetention time.Duration `yaml:"-"`
+	// MockDir relocates mock-channel capture outside the production spool;
+	// empty keeps the historical spool/mock-* location (SPEC-0053 R2.3).
+	MockDir string `yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -299,6 +305,8 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, err
 		}
 		config.Workers = workersFromEnv()
+		config.SpoolRetention = spoolRetentionFromEnv()
+		config.MockDir = os.Getenv("HUB_MOCK_DIR")
 		fillChannelSecrets(&config)
 		return config, nil
 	}
@@ -331,7 +339,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit)}
+	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
 	if err != nil {
@@ -339,6 +347,15 @@ func ConfigFromEnv() (Config, error) {
 	}
 	fillChannelSecrets(&config)
 	return config, nil
+}
+
+// spoolRetentionFromEnv reads HUB_SPOOL_RETENTION as a duration; the default
+// is 336 hours (SPEC-0053 R2.3).
+func spoolRetentionFromEnv() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(os.Getenv("HUB_SPOOL_RETENTION"))); err == nil && d > 0 {
+		return d
+	}
+	return 336 * time.Hour
 }
 
 // durationSecondsFromEnv reads a seconds-valued duration (HUB_STT_TIMEOUT).
@@ -562,9 +579,23 @@ type Delivery struct {
 	VoiceSent bool `json:"voice_sent,omitempty"`
 	// Buttons carries Telegram inline-keyboard rows (one button per row) for
 	// channels that support them; Data is the opaque callback payload.
-	Buttons   []DeliveryButton `json:"buttons,omitempty"`
-	Attempts  int              `json:"attempts"`
-	CreatedAt time.Time        `json:"created_at"`
+	Buttons            []DeliveryButton `json:"buttons,omitempty"`
+	ApprovalJobID      string           `json:"approval_job_id,omitempty"`
+	ApprovalID         string           `json:"approval_id,omitempty"`
+	ApprovalRunID      string           `json:"approval_run_id,omitempty"`
+	ApprovalGeneration string           `json:"approval_generation,omitempty"`
+	TelegramMessageID  int              `json:"telegram_message_id,omitempty"`
+	// EditMessageID targets a status message already delivered: the delivery
+	// worker edits it instead of sending a new message (SPEC-0053 R2.2).
+	EditMessageID int `json:"edit_message_id,omitempty"`
+	// StreamPosition orders status updates so a replayed event can never move
+	// the rendered status backwards.
+	StreamPosition uint64 `json:"stream_position,omitempty"`
+	// StatusClosed marks the run's status message finalized: late events must
+	// not resurrect or edit it.
+	StatusClosed bool      `json:"status_closed,omitempty"`
+	Attempts     int       `json:"attempts"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type DeliveryButton struct {
@@ -629,9 +660,28 @@ type Spool struct {
 	// rebuilt from durable mappings on startup (ADR-0025).
 	inFlight        map[string]string
 	proactiveFlight map[string]bool
+	activeMappings  map[string]bool // Lazily rebuilt; only this spool's writer changes mappings.
+	// notify coalesces wakeups for the worker/control/delivery loops so work
+	// starts on enqueue or completion instead of a poll tick (SPEC-0053 R2.3).
+	notify chan struct{}
+	// claimPolls counts ClaimJob/ClaimDelivery scans; the spec target is an
+	// idle control plane — roughly one fallback poll per second, not ten.
+	claimPolls   atomic.Int64
+	deliverPolls atomic.Int64
 	// JobDone, when set, runs asynchronously at each terminal outcome so the
 	// ToolHub cell controller can reap task-tier cells keyed by the job.
 	JobDone func(jobID, principalID string)
+}
+
+// Notify exposes the coalesced wake channel. Buffered with capacity one: a
+// pending signal means "look again", duplicates carry no extra information.
+func (s *Spool) Notify() <-chan struct{} { return s.notify }
+
+func (s *Spool) signal() {
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
 }
 
 func NewSpool(root string) (*Spool, error) {
@@ -670,8 +720,8 @@ func LockSpool(root string) (func(), error) {
 // OpenSpool opens queue directories without classifying in-progress work.
 // Offline mutations must hold LockSpool until every write completes.
 func OpenSpool(root string) (*Spool, error) {
-	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp"} {
+	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1)}
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -689,6 +739,9 @@ func (s *Spool) recover() error {
 		return err
 	}
 	if err := s.rebuildMappings(); err != nil {
+		return err
+	}
+	if err := s.rebuildIdempotencyIndex(); err != nil {
 		return err
 	}
 	if err := s.recoverStreamEvents(); err != nil {
@@ -778,6 +831,150 @@ func (s *Spool) rebuildMappings() error {
 	return nil
 }
 
+// rebuildIdempotencyIndex backfills mappings/by-key for mappings written
+// before the index existed (SPEC-0053 R2.3). Afterwards the index is the
+// authoritative key→job pointer and the linear scan is a fallback only.
+func (s *Spool) rebuildIdempotencyIndex() error {
+	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+		if err != nil {
+			return err
+		}
+		var mapping JobMapping
+		if json.Unmarshal(b, &mapping) != nil || strings.TrimSpace(mapping.IdempotencyKey) == "" {
+			continue
+		}
+		index := s.idempotencyIndexPath(mapping.IdempotencyKey)
+		if _, err := os.Stat(index); err == nil {
+			continue
+		}
+		if err := s.writeIdempotencyIndexLocked(mapping.IdempotencyKey, mapping.JobID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Compact drops terminal spool history older than retention (SPEC-0053 R2.3):
+// done records and aged terminal mappings plus their idempotency index
+// entries. Non-terminal records and open approvals are never touched.
+func (s *Spool) Compact(now time.Time, retention time.Duration) error {
+	cutoff := now.Add(-retention)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	aged := func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && info.ModTime().Before(cutoff)
+	}
+	if err := s.compactAgedLocked(filepath.Join(s.root, "done"), aged); err != nil {
+		return err
+	}
+	if err := s.compactReceiptsLocked(aged); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(s.root, "mappings", entry.Name())
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var mapping JobMapping
+		if json.Unmarshal(b, &mapping) != nil || mapping.JobID == "" || !terminalStatus(mapping.Status) || mapping.ApprovalState == "pending" || !aged(path) {
+			continue
+		}
+		// A job file that still exists is live state regardless of mapping age.
+		live := false
+		for _, dir := range []string{"pending", "running"} {
+			if _, err := os.Stat(filepath.Join(s.root, dir, spoolFileID(mapping.JobID)+".json")); err == nil {
+				live = true
+			}
+		}
+		if live {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		if strings.TrimSpace(mapping.IdempotencyKey) != "" {
+			_ = os.Remove(s.idempotencyIndexPath(mapping.IdempotencyKey))
+		}
+	}
+	return nil
+}
+
+func (s *Spool) compactAgedLocked(dir string, aged func(string) bool) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if aged(path) {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// compactReceiptsLocked drops aged event receipts except those whose delivery
+// record is still pending or in flight — those are live state, not history.
+func (s *Spool) compactReceiptsLocked(aged func(string) bool) error {
+	live := map[string]bool{}
+	for _, dir := range []string{"outbox/pending", "outbox/sending"} {
+		entries, err := os.ReadDir(filepath.Join(s.root, dir))
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				live[strings.TrimSuffix(entry.Name(), ".json")] = true
+			}
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(s.root, "events", entry.Name())
+		if !aged(path) {
+			continue
+		}
+		if b, err := os.ReadFile(path); err == nil {
+			var receipt streamReceipt
+			if json.Unmarshal(b, &receipt) == nil && receipt.Delivery != nil && live[spoolFileID(receipt.Delivery.ID)] {
+				continue
+			}
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func recoverFiles(from, to string) error {
 	entries, err := os.ReadDir(from)
 	if err != nil {
@@ -811,7 +1008,9 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		if task.ChatID != job.ChatID {
 			return false, errors.New("task binding audience mismatch")
 		}
-		job.Envelope.ConversationID = task.ConversationID
+		if job.Trigger != "cron" {
+			job.Envelope.ConversationID = task.ConversationID
+		}
 	}
 	fingerprint := jobFingerprint(job)
 	if strings.TrimSpace(job.IdempotencyKey) != "" {
@@ -847,11 +1046,27 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 			return false, err
 		}
 	}
+	s.signal()
 	return true, nil
 }
 
 func (s *Spool) findIdempotencyLocked(key string) (JobMapping, bool, error) {
-	// ponytail: linear scan is bounded by the single-host spool; add an index if job volume makes it measurable.
+	// Constant-time path (SPEC-0053 R2.3): the by-key index points to the
+	// owning job; the entry is verified against the mapping it names.
+	if b, err := os.ReadFile(s.idempotencyIndexPath(key)); err == nil {
+		var index struct {
+			JobID string `json:"job_id"`
+		}
+		if json.Unmarshal(b, &index) == nil && index.JobID != "" {
+			if mapping, loadErr := s.loadMappingLocked(index.JobID); loadErr == nil && mapping.IdempotencyKey == key {
+				return mapping, true, nil
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return JobMapping{}, false, err
+	}
+	// Legacy path: linear scan kept for entries the index has not seen; a hit
+	// self-heals the index so the scan happens at most once per key.
 	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return JobMapping{}, false, err
@@ -869,13 +1084,19 @@ func (s *Spool) findIdempotencyLocked(key string) (JobMapping, bool, error) {
 			return JobMapping{}, false, errors.New("invalid job mapping")
 		}
 		if mapping.IdempotencyKey == key {
+			_ = s.writeIdempotencyIndexLocked(key, mapping.JobID)
 			return mapping, true, nil
 		}
 	}
 	return JobMapping{}, false, nil
 }
 
+// ClaimPolls reports how many pending-job scans ran; it bounds the fallback
+// poll rate for an idle control plane (SPEC-0053 R2.3).
+func (s *Spool) ClaimPolls() int64 { return s.claimPolls.Load() }
+
 func (s *Spool) ClaimJob() (*Job, error) {
+	s.claimPolls.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.inFlight == nil {
@@ -885,13 +1106,16 @@ func (s *Spool) ClaimJob() (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	type candidate struct {
+		name string
+		job  Job
+	}
+	var candidates []candidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		name := entry.Name()
-		pending := filepath.Join(s.root, "pending", name)
-		b, err := os.ReadFile(pending)
+		b, err := os.ReadFile(filepath.Join(s.root, "pending", entry.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -899,6 +1123,18 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		if err := json.Unmarshal(b, &job); err != nil {
 			return nil, err
 		}
+		candidates = append(candidates, candidate{entry.Name(), job})
+	}
+	// Interactive work outranks routine occurrences inside one context: a due
+	// cron job must not claim the context ahead of a user who just typed.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i].job, candidates[j].job
+		return jobContextKey(a.PrincipalID, a.ContextID) == jobContextKey(b.PrincipalID, b.ContextID) && a.Trigger != "cron" && b.Trigger == "cron"
+	})
+	for _, entry := range candidates {
+		name := entry.name
+		job := entry.job
+		pending := filepath.Join(s.root, "pending", name)
 		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") {
 			body, err := os.ReadFile(filepath.Join(s.root, "occurrences", spoolFileID(job.ID)+".json"))
 			var o RoutineOccurrence
@@ -963,8 +1199,12 @@ func (s *Spool) CompleteJob(id string) error {
 		return err
 	}
 	if _, err := s.loadMappingLocked(id); err == nil {
-		return s.updateMappingLocked(id, RunOutcome{Status: "completed", LastEvent: "job.completed"}, "completed", true)
+		if err := s.updateMappingLocked(id, RunOutcome{Status: "completed", LastEvent: "job.completed"}, "completed", true); err != nil {
+			return err
+		}
 	}
+	// Completion frees the in-flight context: wake a worker for queued work.
+	s.signal()
 	return nil
 }
 
@@ -973,6 +1213,10 @@ func (s *Spool) FailJob(id string) error {
 	defer s.mu.Unlock()
 	delete(s.secret, id)
 	fileID := spoolFileID(id)
+	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil && mapping.Status == "completed" {
+		s.releaseInFlightLocked(id)
+		return os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "done", fileID+".json"))
+	}
 	err := os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
 	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil {
 		// terminal outcomes release via updateMappingLocked; uncertain holds.
@@ -998,8 +1242,12 @@ func (s *Spool) EnqueueDelivery(d Delivery) error {
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.enqueueDeliveryLocked(d)
+	err = s.enqueueDeliveryLocked(d)
+	s.mu.Unlock()
+	if err == nil {
+		s.signal()
+	}
+	return err
 }
 
 func normalizeDelivery(d Delivery) (Delivery, error) {
@@ -1082,7 +1330,12 @@ func (s *Spool) SaveOffset(offset int64) error {
 	}{offset})
 }
 
+// DeliverPolls reports how many outbox scans ran; it bounds the fallback
+// poll rate for an idle control plane (SPEC-0053 R2.3).
+func (s *Spool) DeliverPolls() int64 { return s.deliverPolls.Load() }
+
 func (s *Spool) ClaimDelivery() (*Delivery, error) {
+	s.deliverPolls.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name, err := firstJSON(filepath.Join(s.root, "outbox", "pending"))
@@ -1154,6 +1407,12 @@ func (s *Spool) UpdateSending(d Delivery) error {
 }
 func (s *Spool) UncertainDelivery(id string) error {
 	return s.move("outbox/sending", "outbox/failed", id)
+}
+
+// RetryDelivery returns a claimed delivery to pending so a deferred send (for
+// example a rate-limited status edit) is retried on a later pass.
+func (s *Spool) RetryDelivery(id string) error {
+	return s.move("outbox/sending", "outbox/pending", id)
 }
 
 func (s *Spool) move(from, to, id string) error {
@@ -1313,7 +1572,8 @@ type TelegramAPI interface {
 	SendPhoto(context.Context, int64, int64, string, string, []byte) error
 	SendVideo(context.Context, int64, int64, string, string, []byte) error
 	DeleteMessage(context.Context, int64, int) error
-	SendChatAction(context.Context, int64, string) error
+	EditMessageText(context.Context, int64, int, string) error
+	SendChatAction(context.Context, int64, int64, string) error
 	GetFile(context.Context, string) (TelegramFile, error)
 	DownloadFile(context.Context, string, io.Writer) error
 	SendVoice(context.Context, int64, int64, []byte, string) error
@@ -1359,7 +1619,7 @@ func (t *telegramAPI) callRequest(req *http.Request, result any) error {
 		return err
 	}
 	if response.StatusCode/100 != 2 {
-		return fmt.Errorf("telegram API returned HTTP %d", response.StatusCode)
+		return telegramStatusError{code: response.StatusCode}
 	}
 	var envelope struct {
 		OK          bool            `json:"ok"`
@@ -1377,6 +1637,16 @@ func (t *telegramAPI) callRequest(req *http.Request, result any) error {
 	}
 	return nil
 }
+
+// telegramStatusError carries the HTTP status of a failed Bot API call so the
+// poll loop can recognize a second-poller conflict without string matching.
+type telegramStatusError struct{ code int }
+
+func (e telegramStatusError) Error() string {
+	return fmt.Sprintf("telegram API returned HTTP %d", e.code)
+}
+
+var telegramConflictBackoff = time.Minute
 
 func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int) ([]Update, error) {
 	var result []Update
@@ -1397,13 +1667,18 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, te
 	return t.call(ctx, "sendMessage", payload, nil)
 }
 func (t *telegramAPI) SendKeyboard(ctx context.Context, chatID, topicID int64, text string, buttons []DeliveryButton) error {
+	_, err := t.SendKeyboardReceipt(ctx, chatID, topicID, text, buttons)
+	return err
+}
+
+func (t *telegramAPI) SendKeyboardReceipt(ctx context.Context, chatID, topicID int64, text string, buttons []DeliveryButton) (int, error) {
 	if len(buttons) == 0 {
-		return errors.New("invalid Telegram button")
+		return 0, errors.New("invalid Telegram button")
 	}
 	rows := make([][]map[string]string, 0, len(buttons))
 	for _, button := range buttons {
 		if len(button.Data) > 64 {
-			return errors.New("invalid Telegram button")
+			return 0, errors.New("invalid Telegram button")
 		}
 		rows = append(rows, []map[string]string{{"text": button.Text, "callback_data": button.Data}})
 	}
@@ -1411,7 +1686,11 @@ func (t *telegramAPI) SendKeyboard(ctx context.Context, chatID, topicID int64, t
 	if topicID > 0 {
 		payload[topicField(chatID)] = topicID
 	}
-	return t.call(ctx, "sendMessage", payload, nil)
+	var result struct {
+		MessageID int `json:"message_id"`
+	}
+	err := t.call(ctx, "sendMessage", payload, &result)
+	return result.MessageID, err
 }
 func (t *telegramAPI) AnswerCallbackQuery(ctx context.Context, id, text string) error {
 	return t.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
@@ -1530,8 +1809,35 @@ func (t *telegramAPI) SendPhoto(ctx context.Context, chatID, topicID int64, name
 func (t *telegramAPI) DeleteMessage(ctx context.Context, chatID int64, messageID int) error {
 	return t.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": messageID}, nil)
 }
-func (t *telegramAPI) SendChatAction(ctx context.Context, chatID int64, action string) error {
-	return t.call(ctx, "sendChatAction", map[string]any{"chat_id": chatID, "action": action}, nil)
+func (t *telegramAPI) EditMessageText(ctx context.Context, chatID int64, messageID int, text string) error {
+	if !utf8.ValidString(text) || text == "" || len(text) > 2*1024*1024 {
+		return errors.New("invalid Telegram output")
+	}
+	return t.call(ctx, "editMessageText", map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}, nil)
+}
+func (t *telegramAPI) SendMessageReceipt(ctx context.Context, chatID, topicID int64, text, parseMode string) (int, error) {
+	if !utf8.ValidString(text) || text == "" || len(text) > 2*1024*1024 {
+		return 0, errors.New("invalid Telegram output")
+	}
+	payload := map[string]any{"chat_id": chatID, "text": text}
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
+	}
+	if topicID > 0 {
+		payload[topicField(chatID)] = topicID
+	}
+	var result struct {
+		MessageID int `json:"message_id"`
+	}
+	err := t.call(ctx, "sendMessage", payload, &result)
+	return result.MessageID, err
+}
+func (t *telegramAPI) SendChatAction(ctx context.Context, chatID int64, topicID int64, action string) error {
+	params := map[string]any{"chat_id": chatID, "action": action}
+	if topicID > 0 {
+		params[topicField(chatID)] = topicID
+	}
+	return t.call(ctx, "sendChatAction", params, nil)
 }
 func (t *telegramAPI) GetFile(ctx context.Context, fileID string) (TelegramFile, error) {
 	var file TelegramFile
@@ -1701,6 +2007,13 @@ type Gateway struct {
 	// contentUntil bounds the explicit content-capture window: inside it
 	// message logs carry redacted text, outside only lengths and IDs.
 	contentUntil time.Time
+	// lastEdit throttles status-message edits to one per editInterval per
+	// chat (SPEC-0053 R2.2).
+	editMu   sync.Mutex
+	lastEdit map[int64]time.Time
+	// controlPolls counts control-loop mapping scans; an idle loop scans at
+	// most once per second (SPEC-0053 R2.3).
+	controlPolls atomic.Int64
 }
 
 func New(config Config) (*Gateway, error) {
@@ -1733,6 +2046,13 @@ func New(config Config) (*Gateway, error) {
 	spool, err := NewSpool(config.SpoolDir)
 	if err != nil {
 		return nil, err
+	}
+	if config.MockDir != "" {
+		for _, dir := range []string{"mock-sent", "mock-links"} {
+			if err := os.MkdirAll(filepath.Join(config.MockDir, dir), 0700); err != nil {
+				return nil, err
+			}
+		}
 	}
 	users := map[int64]User{}
 	slackUsers := map[string]User{}
@@ -1870,9 +2190,14 @@ func (g *Gateway) Run(ctx context.Context) error {
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
 	proactiveDone := make(chan struct{})
+	canaryDone := make(chan struct{})
+	go func() {
+		defer close(canaryDone)
+		g.canaryLoop(workerCtx, canaryInterval())
+	}()
 	go func() {
 		defer close(proactiveDone)
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
 			g.tickProactiveContext(workerCtx, g.now().UTC())
@@ -1885,29 +2210,11 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}()
 	go func() {
 		defer close(controlDone)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			g.controlOne(workerCtx)
-			select {
-			case <-workerCtx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
+		g.controlLoop(workerCtx)
 	}()
 	go func() {
 		defer close(deliveryDone)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			g.deliverOne(workerCtx)
-			select {
-			case <-workerCtx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
+		g.deliveryLoop(workerCtx)
 	}()
 	defer func() {
 		cancel()
@@ -1915,6 +2222,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-deliveryDone
 		<-controlDone
 		<-proactiveDone
+		<-canaryDone
 		g.usageWG.Wait()
 	}()
 	offset, err := g.spool.LoadOffset()
@@ -1930,21 +2238,48 @@ func (g *Gateway) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			var status telegramStatusError
+			if errors.As(err, &status) && status.code == http.StatusConflict {
+				// A second process holds this bot token: log once per wake,
+				// tell the owner once ever, then retry quietly after a minute.
+				log.Printf("telegram-conflict: getUpdates returned HTTP 409")
+				g.notifyTelegramConflict()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(telegramConflictBackoff):
+				}
+				continue
+			}
 			time.Sleep(time.Second)
 			continue
 		}
-		for _, update := range updates {
-			if err := g.handleUpdate(ctx, update); err != nil {
-				return err
+		offset, err = g.processBatch(ctx, updates, offset)
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// processBatch applies one polled batch. A poison update is quarantined and
+// skipped — one bad update must never take the whole gateway down or wedge
+// the offset behind it (SPEC-0053 R3.3).
+func (g *Gateway) processBatch(ctx context.Context, updates []Update, offset int64) (int64, error) {
+	for _, update := range updates {
+		if err := g.handleUpdate(ctx, update); err != nil {
+			log.Printf("gateway quarantined update_id=%d class=%s", update.UpdateID, quarantineClass(err))
+			if qerr := g.spool.Quarantine(update, err, g.now()); qerr != nil {
+				return offset, qerr
 			}
-			if int64(update.UpdateID) >= offset {
-				offset = int64(update.UpdateID) + 1
-				if err := g.spool.SaveOffset(offset); err != nil {
-					return err
-				}
+		}
+		if int64(update.UpdateID) >= offset {
+			offset = int64(update.UpdateID) + 1
+			if err := g.spool.SaveOffset(offset); err != nil {
+				return offset, err
 			}
 		}
 	}
+	return offset, nil
 }
 
 // handleCallback applies an inline-keyboard tap: the opaque data resolves to a
@@ -1960,6 +2295,11 @@ func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) erro
 				if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
 					caller.ConversationID = mapping.ConversationID
 					caller.DeliveryTargetID = mapping.DeliveryTargetID
+					// Legacy keyboards had no send receipt. A verified tap supplies
+					// the exact old message, without guessing IDs or deleting chat history.
+					if ownsMapping(caller, mapping) && terminalStatus(mapping.Status) && query.Message != nil && query.Message.MessageID > 0 && mapping.DeliveryTargetID == "telegram-"+strconv.FormatInt(query.Message.Chat.ID, 10) {
+						_ = g.api.DeleteMessage(ctx, query.Message.Chat.ID, query.Message.MessageID)
+					}
 				}
 				if err := g.spool.RequestApproval(jobID, caller, requestID, choice); err == nil {
 					answer = "Ответ на подтверждение сохранен."
@@ -2183,10 +2523,44 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}
+	if g.config.Supervised {
+		// The runtime spawn overlaps the gateway's own work (SPEC-0053 R2.1);
+		// a failed wake is harmless — /v1/jobs ensures again on dispatch.
+		go g.wakeRuntime(job)
+	}
 	if channel == "telegram_bot" {
-		_ = g.api.SendChatAction(ctx, chatID, "typing")
+		_ = g.api.SendChatAction(ctx, chatID, task.TopicID, "typing")
 	}
 	return nil
+}
+
+// wakeRuntime asks the supervisor to warm the job's runtime (SPEC-0053 R2.1).
+// It carries the durable binding identity only — never the prompt — and logs
+// its failures instead of affecting the accepted update.
+func (g *Gateway) wakeRuntime(job Job) {
+	request := hubruntime.ExecuteRequest{Envelope: job.Envelope, OrganizationID: job.OrganizationID, UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID, Channel: "communication", Trigger: "wake"}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(g.config.RuntimeURL, "/")+"/v1/wake", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("gateway wake failed job_id=%q: %v", job.ID, err)
+		return
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	if response.StatusCode >= 300 {
+		log.Printf("gateway wake job_id=%q status=%d", job.ID, response.StatusCode)
+	}
 }
 
 // botCommandInventory is the single source of truth for supported slash
@@ -2313,6 +2687,17 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, topicID, reply)
 }
 
+// notifyTelegramConflict enqueues one owner notice — the idempotency key
+// telegram-conflict makes a flapping second poller notify exactly once.
+func (g *Gateway) notifyTelegramConflict() {
+	for _, u := range g.config.Users {
+		if u.Enabled && len(u.TelegramIDs) > 0 {
+			_ = g.queueDelivery(context.Background(), "telegram-conflict", u.TelegramIDs[0], 0, "Обнаружен второй экземпляр этого бота с тем же токеном — опрос приостановлен. Остановите лишний процесс.")
+			return
+		}
+	}
+}
+
 func (g *Gateway) queueDelivery(_ context.Context, key string, chatID, topicID int64, text string) error {
 	id := key
 	if id == "" {
@@ -2322,12 +2707,15 @@ func (g *Gateway) queueDelivery(_ context.Context, key string, chatID, topicID i
 }
 
 func (g *Gateway) worker(ctx context.Context) {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Fallback tick only; work arrives through the spool's notify channel.
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	var nextObservation time.Time
 	for {
 		g.deliverOne(ctx)
-		if g.config.RuntimeURL != "" {
-			_ = g.spool.RequeueObservations(g.now().UTC())
+		if now := g.now().UTC(); g.config.RuntimeURL != "" && !now.Before(nextObservation) {
+			_ = g.spool.RequeueObservations(now, g.config.Supervised)
+			nextObservation = now.Add(5 * time.Second)
 		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
 			if job.Trigger == "cron" && job.Text != "" && g.authorizeOccurrence(*job) != nil {
@@ -2344,6 +2732,9 @@ func (g *Gateway) worker(ctx context.Context) {
 			} else {
 				response, runErr = g.runner.Run(ctx, *job, g.user(job.UserID))
 				outcome = RunOutcome{Text: response, Status: "completed", LastEvent: "run.completed"}
+				if runErr != nil {
+					outcome.Status = "failed"
+				}
 			}
 			g.busy.Add(-1)
 			if runErr != nil || outcome.Status == "uncertain" {
@@ -2368,19 +2759,53 @@ func (g *Gateway) worker(ctx context.Context) {
 					_ = g.spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: outcome.SessionID, RunID: outcome.RunID, RuntimeGeneration: outcome.RuntimeGeneration, Status: "uncertain", LastEvent: "run.unknown"})
 				}
 				_ = g.spool.FailJob(job.ID)
-				key, message := "job-"+job.ID+"-error", "Не удалось завершить задачу."
+				key, message := "job-"+job.ID+"-error", failureMessage(job.ID, outcome.Status)
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
 					key = "job-" + job.ID + "-uncertain"
 					message = "Исход задачи пока неизвестен. Повторный запуск может продублировать действие. ID: " + job.ID
 					if outcome.RunID != "" && g.config.RuntimeURL != "" {
 						message = "Проверяю исходную задачу после потери соединения. ID: " + job.ID
 					}
-				} else if outcome.Status == "cancelled" {
-					message = "Задача отменена. ID: " + job.ID
 				}
-				_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
+				// Routines dedupe owner-facing errors per schedule: an identical
+				// failure on every tick notifies once until a success resets it.
+				deliver := true
+				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
+					// SPEC-0053 R3.2: while the reconciliation window is still
+					// open the owner is not told the outcome is unknown — the
+					// reconciler or a named cause settles it first. The window
+					// is anchored at the first uncertain outcome, not the
+					// latest re-observation attempt.
+					if mapping, ok, merr := g.spool.Mapping(job.ID); merr == nil && ok {
+						since := mapping.UncertainSince
+						if since.IsZero() {
+							since = mapping.UpdatedAt
+						}
+						if g.now().Before(since.Add(hubruntime.RunBudget())) {
+							deliver = false
+						}
+					}
+				}
+				if deliver && job.Trigger == "cron" {
+					if o, ok := g.occurrenceFor(job.ID); ok {
+						if fresh, derr := g.spool.RecordRoutineFailure(o.ScheduleID, routineFailureDigest(job.ID, message)); derr == nil {
+							deliver = fresh
+						}
+					}
+				}
+				if deliver {
+					_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
+				}
+				if outcome.Status == "" {
+					outcome.Status = "failed"
+				}
 			} else {
 				_ = g.spool.RecordOutcome(job.ID, outcome)
+				if job.Trigger == "cron" {
+					if o, ok := g.occurrenceFor(job.ID); ok {
+						_ = g.spool.ClearRoutineFailure(o.ScheduleID)
+					}
+				}
 				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 				g.maybeAutoTitle(ctx, *job)
@@ -2393,6 +2818,23 @@ func (g *Gateway) worker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-g.spool.Notify():
+		case <-ticker.C:
+		}
+	}
+}
+
+// deliveryLoop drains the outbox on the spool's notify signal with a
+// one-second fallback tick (SPEC-0053 R2.3).
+func (g *Gateway) deliveryLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		g.deliverOne(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-g.spool.Notify():
 		case <-ticker.C:
 		}
 	}
@@ -2402,6 +2844,23 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	delivery, err := g.spool.ClaimDelivery()
 	if err != nil || delivery == nil {
 		return
+	}
+	if delivery.ApprovalJobID != "" || len(delivery.Buttons) > 0 {
+		mapping, found, mapErr := g.spool.Mapping(delivery.ApprovalJobID)
+		if mapErr != nil || !found {
+			_ = g.spool.UncertainDelivery(delivery.ID)
+			return
+		}
+		if terminalStatus(mapping.Status) || mapping.CancelRequested || mapping.ApprovalID != delivery.ApprovalID || mapping.ApprovalState != "pending" || !g.now().Before(mapping.ApprovalDeadline) || mapping.Control != nil {
+			_ = g.spool.CompleteDelivery(delivery.ID)
+			return
+		}
+		user := g.user(mapping.PrincipalID)
+		current := user.envelope(1)
+		if delivery.ApprovalRunID == "" || delivery.ApprovalGeneration == "" || delivery.ApprovalRunID != mapping.RunID || delivery.ApprovalGeneration != mapping.RuntimeGeneration || delivery.ConversationID != mapping.ConversationID || delivery.DeliveryTargetID != mapping.DeliveryTargetID || !user.Enabled || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion {
+			_ = g.spool.UncertainDelivery(delivery.ID)
+			return
+		}
 	}
 	if delivery.JobID != "" {
 		mapping, found, err := g.spool.Mapping(delivery.JobID)
@@ -2456,6 +2915,25 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
 		}
 	default:
+		if delivery.EditMessageID > 0 {
+			// Status update: edit the delivered status message in place
+			// (SPEC-0053 R2.2), no more than once per editInterval per chat.
+			g.editMu.Lock()
+			if now, last := g.now(), g.lastEdit[delivery.ChatID]; !last.IsZero() && now.Sub(last) < 2*time.Second {
+				g.editMu.Unlock()
+				_ = g.spool.RetryDelivery(delivery.ID)
+				return
+			}
+			sendErr = g.api.EditMessageText(ctx, delivery.ChatID, delivery.EditMessageID, limitTelegramText(delivery.Text))
+			if sendErr == nil {
+				if g.lastEdit == nil {
+					g.lastEdit = map[int64]time.Time{}
+				}
+				g.lastEdit[delivery.ChatID] = g.now()
+			}
+			g.editMu.Unlock()
+			break
+		}
 		speak, voiceOnly := g.voicePlan(*delivery)
 		if strings.TrimSpace(delivery.Text) == "" {
 			// A VOICE:-only reply keeps its spoken payload as the text
@@ -2475,9 +2953,29 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			if delivery.Format == formatMarkdown {
 				sendErr = g.sendTelegramMarkdown(ctx, delivery)
 			} else if len(delivery.Buttons) > 0 {
-				sendErr = g.api.SendKeyboard(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), delivery.Buttons)
+				if receiptAPI, ok := g.api.(interface {
+					SendKeyboardReceipt(context.Context, int64, int64, string, []DeliveryButton) (int, error)
+				}); ok {
+					delivery.TelegramMessageID, sendErr = receiptAPI.SendKeyboardReceipt(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), delivery.Buttons)
+					if sendErr == nil && delivery.ApprovalJobID != "" {
+						sendErr = g.spool.trackApprovalMessage(*delivery)
+					}
+				} else {
+					sendErr = g.api.SendKeyboard(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), delivery.Buttons)
+				}
 			} else {
-				sendErr = g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
+				// Capturing the send receipt is what lets later status events
+				// edit this message in place instead of stacking new ones.
+				if receiptAPI, ok := g.api.(interface {
+					SendMessageReceipt(context.Context, int64, int64, string, string) (int, error)
+				}); ok {
+					delivery.TelegramMessageID, sendErr = receiptAPI.SendMessageReceipt(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
+					if sendErr == nil && delivery.TelegramMessageID > 0 {
+						sendErr = g.spool.UpdateSending(*delivery)
+					}
+				} else {
+					sendErr = g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
+				}
 			}
 			if sendErr == nil && speak != "" && !voiceOnly {
 				voiceErr := g.sendVoiceReply(ctx, *delivery, speak)
@@ -2511,6 +3009,13 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d %s", delivery.JobID, delivery.ID, delivery.ChatID, g.contentField(visible))
 	}
 	_ = g.spool.CompleteDelivery(delivery.ID)
+	if delivery.JobID != "" && (strings.HasSuffix(delivery.ID, "-response") || strings.HasSuffix(delivery.ID, "-error")) {
+		// The answer now stands alone; retire the editable status message
+		// and close its receipt so late progress cannot resurrect it.
+		if chatID, messageID := g.spool.CloseStatusDelivery(delivery.JobID); messageID > 0 {
+			_ = g.api.DeleteMessage(ctx, chatID, messageID)
+		}
+	}
 	if delivery.JobID != "" {
 		if g.restart != nil {
 			request, ok := g.restartRequest(*delivery)
@@ -2657,7 +3162,7 @@ func (g *Gateway) recordJob(job Job, outcome RunOutcome) {
 	if status == "" {
 		status = "completed"
 	}
-	log.Printf("gateway job user=%q job_id=%q run_id=%q status=%q", job.UserID, job.ID, outcome.RunID, status)
+	diagnostics.Logger("gateway").Info("job outcome", "job_id", job.ID, "run_id", outcome.RunID, "principal", job.UserID, "status", status)
 	if g.audit == nil {
 		return
 	}
@@ -2946,6 +3451,9 @@ func (g *Gateway) toolHubJobDone(jobID, principalID string) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	if header != "" {
 		req.Header.Set("X-Hub-Principal", header)
+	}
+	if jobID != "" {
+		req.Header.Set("X-Hub-Job-ID", jobID)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

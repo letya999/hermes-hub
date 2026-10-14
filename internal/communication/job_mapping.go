@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,18 @@ type RunOutcome struct {
 	Artifacts []hubruntime.ArtifactRef
 	// Voice is the run-requested spoken payload (upstream VOICE: marker).
 	Voice string
+}
+
+// Only controlled status labels reach chat; upstream error text may contain credentials.
+func failureMessage(jobID, status string) string {
+	switch status {
+	case "cancelled":
+		return "Задача отменена (run.cancelled). ID: " + jobID
+	case "interrupted":
+		return "Выполнение задачи прервано (run.interrupted). ID: " + jobID
+	default:
+		return "Не удалось завершить задачу: ошибка выполнения агента (run.failed). ID: " + jobID
+	}
 }
 
 // JobMapping is durable routing/lifecycle metadata. Binding fields are copied
@@ -57,26 +70,30 @@ type JobMapping struct {
 	Trigger             string          `json:"trigger"`
 	// TaskID/TopicID pin the durable task binding; Style/StyleVersion/
 	// StyleSnapshotted pin the admitted-run presentation snapshot.
-	TaskID            string    `json:"task_id,omitempty"`
-	TopicID           int64     `json:"topic_id,omitempty"`
-	Style             string    `json:"style,omitempty"`
-	StyleVersion      uint64    `json:"style_version,omitempty"`
-	StyleSnapshotted  bool      `json:"style_snapshotted,omitempty"`
-	Status            string    `json:"status"`
-	SessionID         string    `json:"session_id,omitempty"`
-	RunID             string    `json:"run_id,omitempty"`
-	RuntimeGeneration string    `json:"runtime_generation,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	TerminalAt        time.Time `json:"terminal_at,omitempty"`
-	LastKnownEvent    string    `json:"last_known_event,omitempty"`
-	EventPosition     uint64    `json:"event_position,omitempty"`
-	LastEventID       string    `json:"last_event_id,omitempty"`
-	ApprovalID        string    `json:"approval_id,omitempty"`
-	ApprovalChoices   []string  `json:"approval_choices,omitempty"`
-	ApprovalDeadline  time.Time `json:"approval_deadline,omitempty"`
-	ApprovalState     string    `json:"approval_state,omitempty"`
-	Result            string    `json:"result,omitempty"`
+	TaskID            string `json:"task_id,omitempty"`
+	TopicID           int64  `json:"topic_id,omitempty"`
+	Style             string `json:"style,omitempty"`
+	StyleVersion      uint64 `json:"style_version,omitempty"`
+	StyleSnapshotted  bool   `json:"style_snapshotted,omitempty"`
+	Status            string `json:"status"`
+	SessionID         string `json:"session_id,omitempty"`
+	RunID             string `json:"run_id,omitempty"`
+	RuntimeGeneration string `json:"runtime_generation,omitempty"`
+	// UncertainSince anchors the reconciliation window: it is stamped once
+	// when the outcome first becomes unknown and cleared when the run names
+	// a terminal cause. Repeated uncertain observations never extend it.
+	UncertainSince   time.Time `json:"uncertain_since,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	TerminalAt       time.Time `json:"terminal_at,omitempty"`
+	LastKnownEvent   string    `json:"last_known_event,omitempty"`
+	EventPosition    uint64    `json:"event_position,omitempty"`
+	LastEventID      string    `json:"last_event_id,omitempty"`
+	ApprovalID       string    `json:"approval_id,omitempty"`
+	ApprovalChoices  []string  `json:"approval_choices,omitempty"`
+	ApprovalDeadline time.Time `json:"approval_deadline,omitempty"`
+	ApprovalState    string    `json:"approval_state,omitempty"`
+	Result           string    `json:"result,omitempty"`
 }
 
 type ConversationMapping struct {
@@ -123,13 +140,73 @@ func (s *Spool) mappingPath(id string) string {
 	return filepath.Join(s.root, "mappings", spoolFileID(id)+".json")
 }
 
+// idempotencyIndexPath locates the by-key index entry for an idempotency key
+// (SPEC-0053 R2.3): a constant-time pointer to the owning job mapping.
+func (s *Spool) idempotencyIndexPath(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return filepath.Join(s.root, "mappings", "by-key", hex.EncodeToString(h[:])+".json")
+}
+
 func (s *Spool) conversationPath(principal, context, conversation string) string {
 	h := sha256.Sum256([]byte(principal + "\x00" + context + "\x00" + conversation))
 	return filepath.Join(s.root, "conversations", hex.EncodeToString(h[:])+".json")
 }
 
+func (s *Spool) writeIdempotencyIndexLocked(key, jobID string) error {
+	return atomicJSON(s.idempotencyIndexPath(key), struct {
+		JobID string `json:"job_id"`
+	}{jobID})
+}
+
 func (s *Spool) writeMappingLocked(mapping JobMapping) error {
-	return atomicJSON(s.mappingPath(mapping.JobID), mapping)
+	if err := atomicJSON(s.mappingPath(mapping.JobID), mapping); err != nil {
+		return err
+	}
+	if s.activeMappings != nil {
+		if terminalStatus(mapping.Status) {
+			delete(s.activeMappings, mapping.JobID)
+		} else {
+			s.activeMappings[mapping.JobID] = true
+		}
+	}
+	if strings.TrimSpace(mapping.IdempotencyKey) != "" {
+		return s.writeIdempotencyIndexLocked(mapping.IdempotencyKey, mapping.JobID)
+	}
+	return nil
+}
+
+// Active IDs avoid reading terminal history on every control tick. Callers still
+// reload each durable mapping under the spool lock before acting on it.
+func (s *Spool) activeMappingIDs() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeMappings == nil {
+		entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+		if err != nil {
+			return nil, err
+		}
+		active := map[string]bool{}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+			var mapping JobMapping
+			if err != nil || json.Unmarshal(body, &mapping) != nil {
+				continue
+			}
+			if mapping.JobID != "" && !terminalStatus(mapping.Status) && entry.Name() == spoolFileID(mapping.JobID)+".json" {
+				active[mapping.JobID] = true
+			}
+		}
+		s.activeMappings = active
+	}
+	ids := make([]string, 0, len(s.activeMappings))
+	for id := range s.activeMappings {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 func (s *Spool) loadMappingLocked(id string) (JobMapping, error) {
@@ -195,6 +272,9 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 		mapping.LastKnownEvent = outcome.LastEvent
 	}
 	if status != "" {
+		if status == "uncertain" && mapping.UncertainSince.IsZero() {
+			mapping.UncertainSince = time.Now().UTC()
+		}
 		mapping.Status = status
 	}
 	if terminal && mapping.Control != nil {
@@ -208,6 +288,7 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 	mapping.UpdatedAt = time.Now().UTC()
 	if terminal {
 		mapping.TerminalAt = mapping.UpdatedAt
+		mapping.UncertainSince = time.Time{}
 	}
 	if err := s.writeMappingLocked(mapping); err != nil {
 		return err

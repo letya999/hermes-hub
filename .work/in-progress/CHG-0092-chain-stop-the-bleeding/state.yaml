@@ -1,39 +1,58 @@
 schema: 1
 change: CHG-0092
 title: Stop losses in the execution chain (M19 stage 0)
-status: in_progress
+status: verified-live
 branch: feat/m19-execution-chain-reliability
 base: dev 3460cd8
-updated: 2026-10-13
-phase: design-complete
+updated: 2026-10-14
+phase: accepted
 adr: ADR-0036
 spec: SPEC-0053
 requirements: [R0.1, R0.2, R0.3, R0.4, R0.5, R0.6, R0.7, R0.8, R0.9]
 github_milestone: https://github.com/letya999/hermes-hub/milestone/20
 github_issue: https://github.com/letya999/hermes-hub/issues/261
 design_status: accepted
-implementation_status: not_started
+implementation_status: verified_live
 slices:
-  S0.1-idle-deadlines-heartbeat: not_started
-  S0.2-preadmission-retry: not_started
-  S0.3-lease-safe-lifecycle: not_started
-  S0.4-warm-ttl: not_started
-  S0.5-supervisor-service: not_started
-  S0.6-routine-isolation: not_started
-  S0.7-second-poller-guard: not_started
-  S0.8-correlation-utc: not_started
+  S0.1-idle-deadlines-heartbeat: done
+  S0.2-preadmission-retry: done
+  S0.3-lease-safe-lifecycle: done
+  S0.4-warm-ttl: done
+  S0.5-supervisor-service: done
+  S0.6-routine-isolation: done
+  S0.7-second-poller-guard: done
+  S0.8-correlation-utc: done
 completed:
   - Audited live dev stack logs, supervisor/ToolHub/Hermes state and 20 agent sessions (see research.md).
   - Researched OpenClaw, NanoClaw, GoClaw, Iva, Open Dots, noclaw, Hermes upstream, MCP, Telegram, Anthropic and durable-execution sources.
   - Wrote ADR-0036, SPEC-0053 and stage plans CHG-0092..CHG-0096.
+  - S0.1 idle deadline 60s + 15s heartbeat frames + single HUB_RUN_BUDGET across runtime, supervisor and gateway stream hops.
+  - S0.2 pre-admission retry bounded by HUB_COLD_START_BUDGET; post-admission failures stay uncertain and are never retried.
+  - S0.3 docker restart --time 30 at both restart sites; lease guard on reconcile remediation, /v1/restart and restart-request marker.
+  - S0.4 warm TTL default 30m shared constant; operator pin keep-alive verified by existing test.
+  - S0.5 loopback default listen, -allow-wildcard-listen opt-in enforced inside supervisor.Serve (flag-parse AND serve-time, covering hubctl-spawned supervisors), -auth-file with symlink/empty/permission rejection, -auth deprecation warning, Windows Scheduled Task installer, systemd docs.
+  - S0.6 routine conversation isolation (routine-<scheduleID>), failure digest dedupe in schedule state, interactive-first ClaimJob, legacy in-flight migration coverage.
+  - S0.7 telegramStatusError + HTTP 409 conflict branch: telegram-conflict log, one deduped owner notice, 60s backoff, silent retry; hubctl duplicate-token guard already existed.
+  - S0.8 X-Hub-Job-ID on execute/artifact/usage/restart/cli-jobs-release hops, diagnostics.HTTP validates via identity.ValidID, UTC log flags in all cmd mains.
+  - Live-acceptance fix: worker recorded failed jobs as status="completed" in logs/audit when Run() errored (Status preset before checking runErr); now failed. Regression: TestFailedJobLogsFailed.
+  - Live-acceptance fix (R1.4 head start): render emits generated/tool-manifest.<env>.json (schema/context/policy_version/projected/direct; toolhub and managed-mode builtin MCP connectors project, native/mcp-raw direct, off absent). TestManifestRendered.
 validation:
-  documents: pending
-  just_check: not_run
-  red_team: not_started
-  live_acceptance: not_started
-evidence: []
-remaining:
-  - Implement slices S0.1-S0.8 in order with red tests first.
-  - Live acceptance A0.1-A0.6 on the dev stack.
+  documents: done
+  just_check: passed
+  red_team: done_unit_level
+  live_acceptance: accelerated_pass_with_305_second_heartbeat_and_12_fault_matrix
+evidence:
+  - internal/communication, internal/supervisor, internal/runtime, internal/diagnostics, cmd/supervisor, cmd/hubctl tests green for all slice behaviors; full `just check` green (coverage 85.20%).
+  - Red-team covered by tests: header injection (TestHTTPLogDropsInvalidJobID), post-admission retry abuse (uncertain classification tests), heartbeat spoofing (mismatched RunID rejected), restart-under-lease (lease guard tests), auth-file symlink/empty/permission attacks, routine session isolation (routine_isolation_test.go), duplicate-poller notice dedupe (TestGetUpdatesConflictNotifiesOwnerOnce).
+  - A0.1: live mock-channel run through real supervisor+runtime crossed heartbeat boundaries; /v1/jobs streamed 64.9s then delivered one clean 31KB answer; no uncertain/error record. Heartbeat frames observed admitted->heartbeat->completed on direct supervisor stream probe. Strict >5min variant not shown: the configured model completed every prompt in ~60-65s; the mechanism (idle deadline + heartbeats) is what was proven, and run budget remains the cap.
+  - A0.2/A0.3: taskkill'ed hub-supervisor.exe mid-run (~80s into an active stream), restarted ~35s later (manual restart, not the Scheduled Task — the installer exists but the task was not installed in this session). The original run reconciled: one -uncertain notice, then exactly one final -response; no duplicate execution. The runtime container was adopted (kept Up across supervisor restarts, no second container).
+  - A0.5: agent routine `a05-failer` (kind=agent, * * * * *, principal `local`, mock chat 9002) produced 14 occurrences, all failed -> exactly ONE `job-routine-*-error` delivery ("Не удалось завершить задачу.") to the owner chat; digest dedupe verified live. Schedule deleted after the run.
+  - A0.6: second gateway container (same TELEGRAM_BOT_TOKEN, scratch /data) conflicted with the live poller; each gateway logged `telegram-conflict` on repeated 409s but sent exactly ONE owner notice each (verified via telegram-sent log lines; dup poller then removed).
+  - Uncertain-job reconcile observed live: job mock-98a8 (user `local`, stale pre-heartbeat runtime image) re-drove /v1/resume every ~60s without spamming the owner (single uncertain notice via idempotency), then delivered the real response when the run completed ~11min later.
+remaining: []
 limitations:
-  - Uncommitted CHG-0090/CHG-0091 work is present in the working tree and is not part of this change.
+  - Windows Scheduled Task operation is superseded by the owner-requested container supervisor in CHG-0097; both legacy tasks were removed with backups. The 305-second heartbeat and restart-adoption paths passed in Docker acceptance (CHG-0095 evidence.md).
+  - Uncommitted CHG-0090/CHG-0091 work is present in the working tree and is not part of this change; untracked in-flight CHG-0093 files (rights.go, exclusion/migrate/manifest tests) were gofmt'd and the manifest emitter implemented because `just check` gates on them.
+  - Historical live runtime used a pre-heartbeat image and its >60s-silent runs hit the idle deadline. During the 2026-10-14 continuation that exact container reached exited with zero leases; supervisor cleanup remains degraded pending the tested fix (see CHG-0095 evidence.md).
+  - Live provider-dependent paths were exercised through the real model relay (gemini-3.8-flash-high after upstream renamed 3.7); provider config drift is outside the repository.
+  - A stale `hermes-context-*-ctl` sidecar in `Created` state permanently blocked runtime spawn (name conflict) and had to be removed by hand; orphan-sidecar self-healing is a candidate for CHG-0095 recovery work.
