@@ -66,9 +66,12 @@ type Schedule struct {
 	// success clears it so the next failure notifies again.
 	LastFailureSHA256 string        `json:"last_failure_sha256,omitempty"`
 	CatchUpWindow     time.Duration `json:"catch_up_window_ns"`
-	NativeCronRef     string        `json:"native_cron_ref,omitempty"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
+	// MaxRetries bounds probe-error retries for check occurrences (SPEC-0054
+	// R1.1): 0 means the default 3, values above 8 are rejected.
+	MaxRetries    int       `json:"max_retries,omitempty"`
+	NativeCronRef string    `json:"native_cron_ref,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type ScheduleCreation struct {
@@ -511,6 +514,14 @@ func resolveRelativeReminder(in Schedule, now time.Time) (Schedule, error) {
 	return in, nil
 }
 
+// validTaskProbe reports whether url is a hub-internal task predicate
+// (task:<id>) — a verified source the probe resolves without any fetch
+// (SPEC-0054 R1.3).
+func validTaskProbe(url string) bool {
+	id := strings.TrimPrefix(url, "task:")
+	return id != url && id != "" && len(id) <= 80 && spoolIDPattern.MatchString(id)
+}
+
 func normalizeScheduleDraft(in Schedule) Schedule {
 	if in.Probe != nil {
 		probe := *in.Probe
@@ -533,17 +544,26 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if in.JobKind == "check" && in.Expect != "changed" && in.Expect != "unchanged" && (!strings.HasPrefix(in.Expect, "equals:") || len(in.Expect) <= len("equals:") || len(in.Expect) > 1024) {
 		return errors.New("invalid check expect")
 	}
+	if in.MaxRetries != 0 && (in.JobKind != "check" || in.MaxRetries < 0 || in.MaxRetries > 8) {
+		return errors.New("max_retries is a check bound between 0 and 8")
+	}
 	if in.JobKind == "check" {
 		if in.Probe == nil {
 			return errors.New("check needs a probe")
 		}
-		u, err := url.Parse(in.Probe.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
-			return errors.New("check probe must be http(s)")
-		}
-		if in.Probe.Regex != "" {
-			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
-				return errors.New("check probe regex does not compile")
+		if strings.HasPrefix(in.Probe.URL, "task:") {
+			if !validTaskProbe(in.Probe.URL) {
+				return errors.New("invalid task probe")
+			}
+		} else {
+			u, err := url.Parse(in.Probe.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+				return errors.New("check probe must be http(s)")
+			}
+			if in.Probe.Regex != "" {
+				if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+					return errors.New("check probe regex does not compile")
+				}
 			}
 		}
 	}

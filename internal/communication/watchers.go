@@ -87,6 +87,19 @@ func watchValue(body []byte, re *regexp.Regexp) string {
 	return ""
 }
 
+// taskProbeValueLocked resolves a task: probe under the schedule owner's
+// principal — a foreign or missing id is an error, never a synthetic state.
+func (s *Spool) taskProbeValueLocked(principal, taskID string) (string, error) {
+	task, err := s.loadTaskLocked(principal, taskID)
+	if err != nil {
+		return "", err
+	}
+	if task.Archived {
+		return "closed", nil
+	}
+	return "open", nil
+}
+
 func watchHash(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
@@ -134,6 +147,9 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 }
 
 func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error)) {
+	if o.RetryAfter.After(now) {
+		return // bounded check retry waiting out its backoff (R1.1)
+	}
 	s.mu.Lock()
 	schedule, err := s.loadScheduleLocked(o.ScheduleID)
 	current := s.occurrenceCurrentLocked(o) && (authorize == nil || authorize(o.Job) == nil)
@@ -159,9 +175,24 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 	} else if !os.IsNotExist(err) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	body, fetchErr := fetch(ctx, schedule.Probe.URL)
+	var body []byte
+	var fetchErr error
+	if strings.HasPrefix(schedule.Probe.URL, "task:") {
+		// Hub-internal predicate: the compared value is the owner's task
+		// state, resolved under the schedule owner's principal (R1.3).
+		s.mu.Lock()
+		state, taskErr := s.taskProbeValueLocked(o.Job.PrincipalID, strings.TrimPrefix(schedule.Probe.URL, "task:"))
+		s.mu.Unlock()
+		if taskErr != nil {
+			s.settleProbe(o, schedule, "", "", now, taskErr, authorize)
+			return
+		}
+		body = []byte(state)
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		body, fetchErr = fetch(ctx, schedule.Probe.URL)
+	}
 	if fetchErr != nil {
 		s.settleProbe(o, schedule, "", "", now, fetchErr, authorize)
 		return
@@ -230,6 +261,22 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 	result := probeResult{Watch: st, Occurrence: live}
 	if probeErr != nil {
 		st.LastError = "probe failed; baseline unchanged"
+		limit := schedule.MaxRetries
+		if limit <= 0 {
+			limit = 3
+		}
+		if live.JobKind == "check" && live.RetryCount < limit {
+			// unknown != false: stay probing with a retry deadline instead
+			// of settling failed on the first probe error (R1.1). DueAt is
+			// immutable — it keys the occurrence id. The retry writes go
+			// straight to the durable files: a probe-result receipt here
+			// would replay forever and block the actual retry.
+			live.RetryCount++
+			live.RetryAfter = now.Add(time.Duration(live.RetryCount) * time.Minute).UTC()
+			_ = atomicJSON(s.watchPath(live.ScheduleID), st)
+			_ = atomicJSON(path, live)
+			return
+		}
 		live.State = "failed"
 	} else {
 		st.LastSuccess, st.LastError = now.UTC(), ""
@@ -239,6 +286,9 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 			live.State = "skipped"
 			if notify {
 				live.State = "dispatched"
+				// The verdict travels with the delivery: the owner sees which
+				// predicate fired and the anchored/current values (R1.2).
+				text = fmt.Sprintf("%s\ncheck %s met\nwas: %s\nnow: %s", live.Job.Text, schedule.Expect, boundedWatchText(st.Value), boundedWatchText(value))
 			}
 		} else if st.Baseline == "" {
 			st.Baseline, st.Value = hash, value

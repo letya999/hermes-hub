@@ -238,6 +238,17 @@ owning context. Hermes performs the agent run but does not remain alive merely t
 a clock. Existing native Hermes cron is migrated explicitly or pins that context on
 until migration; dual scheduling is forbidden.
 
+Deterministic routine kinds (reminder, watcher, check, digest, script) never start a
+runtime or call a model at fire time: reminder text goes straight to the outbox,
+watcher/check occurrences run one bounded probe, digest aggregates owner watch states
+into one message. After downtime an occurrence inside its `catch_up_window` (default
+one hour) still fires; outside it settles `missed`. A `check` whose probe errors
+re-probes at most `max_retries` times (default three, `retry_after` backoff) before
+settling `failed` — an unverifiable predicate never reads as false. `task:<id>`
+probes verify the owner's own task state without a fetch. Deliveries re-validate the
+occurrence and owner before sending, and a transport answer lost mid-send leaves the
+delivery failed/uncertain rather than claimed sent.
+
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
 OAuth and Hermes state stay in that user's named volumes. Organization documents are

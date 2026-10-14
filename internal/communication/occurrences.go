@@ -29,7 +29,11 @@ type RoutineOccurrence struct {
 	// JobKind mirrors the schedule kind. "reminder" occurrences deliver their
 	// text through the outbox directly — no ordinary job, no runtime, no model.
 	JobKind string `json:"job_kind,omitempty"`
-	State   string `json:"state"`
+	// RetryCount counts probe-error retries (check kind, SPEC-0054 R1.1) and
+	// RetryAfter holds them back until the backoff deadline passes.
+	RetryCount int       `json:"retry_count,omitempty"`
+	RetryAfter time.Time `json:"retry_after,omitempty"`
+	State      string    `json:"state"`
 }
 
 func OccurrenceID(o RoutineOccurrence) string { return occurrenceID(o) }
