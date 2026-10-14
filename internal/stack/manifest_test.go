@@ -109,6 +109,9 @@ func TestStablePromptRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("effective SOUL missing: %v", err)
 	}
+	if info, err := os.Stat(filepath.Join(d, "generated", "soul-effective.prod.md")); err != nil || info.Mode().Perm()&0004 == 0 {
+		t.Fatalf("effective SOUL must be readable by container uid: info=%v err=%v", info, err)
+	}
 	text := string(body)
 	if !strings.Contains(text, "# Persona") || !strings.Contains(text, "Speak plainly.") {
 		t.Fatalf("effective SOUL lost the persona: %q", text)

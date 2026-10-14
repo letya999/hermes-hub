@@ -1279,7 +1279,7 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeSoulEffective(dir, s); err != nil {
 		return err
 	}
-	for _, p := range []string{"hermes." + environment + ".yaml", "SOUL.md"} {
+	for _, p := range []string{"hermes." + environment + ".yaml", "SOUL.md", filepath.Join("generated", "soul-effective."+environment+".md")} {
 		if err = os.Chmod(filepath.Join(dir, p), 0644); err != nil {
 			return err
 		}
