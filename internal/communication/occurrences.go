@@ -152,7 +152,7 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 			o.State = "blocked"
 		} else if o.JobKind == "script" {
 			o.State = "scripting"
-		} else if o.JobKind == "watcher" || o.JobKind == "check" {
+		} else if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" {
 			// Probing runs outside the lock in ProbeDueOccurrences.
 			o.State = "probing"
 		} else if o.JobKind == "digest" || o.JobKind == "brief" {

@@ -2503,6 +2503,8 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply("Измеряю расход и квоту…")
 		case "connections", "connection", "connectors":
 			return reply(g.connectionsCommand(user, message.From.ID))
+		case "watches":
+			return reply(g.watchesCommand(user, message.From.ID))
 		case "help":
 			return reply(commandHelp())
 		default:
@@ -2602,6 +2604,7 @@ var botCommandInventory = []struct {
 	{"usage", "Журнал расхода: /usage [day|week|month|session]"},
 	{"connectors", "Подключения и коннекторы ToolHub"},
 	{"connections", "Подключения и коннекторы ToolHub"},
+	{"watches", "Подписки на события коннекторов"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
 	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
 }
@@ -3327,6 +3330,60 @@ func (g *Gateway) connectionsCommand(user User, sender int64) string {
 		lines = append(lines, "- "+connectorLine(t.DefinitionID, kind[t.DefinitionID], names))
 	}
 	return answer + strings.Join(lines, "\n")
+}
+
+// watchesCommand answers /watches: the caller's event subscriptions with
+// source, sink, last success/error and degraded state — owner-scoped via
+// ListSchedules, so a sibling's subscriptions never render (SPEC-0054 R5.5).
+func (g *Gateway) watchesCommand(user User, sender int64) string {
+	items, err := g.spool.ListSchedules(user.envelope(sender))
+	if err != nil {
+		return "Список подписок недоступен."
+	}
+	lines := []string{"Подписки на события:"}
+	count := 0
+	for _, item := range items {
+		if item.JobKind != "event" {
+			continue
+		}
+		count++
+		source := "-"
+		if item.Probe != nil {
+			if item.Probe.Tool != "" {
+				source = item.Probe.Tool
+			} else {
+				source = item.Probe.URL
+			}
+		}
+		sink := item.Sink
+		if sink == "" {
+			sink = "notify"
+		}
+		line := item.ScheduleID + " — " + item.Input + ", " + source + ", sink " + sink
+		st, err := g.spool.EventStateOf(item.ScheduleID)
+		if err == nil {
+			if !st.LastSuccess.IsZero() {
+				line += ", ok " + st.LastSuccess.UTC().Format(time.RFC3339)
+			}
+			if st.LastError != "" {
+				line += ", err " + st.LastError
+			}
+			if st.Degraded {
+				line += ", degraded"
+			}
+			if st.Overflow > 0 {
+				line += ", overflow " + strconv.Itoa(st.Overflow)
+			}
+		}
+		if item.Paused || !item.Enabled {
+			line += ", пауза"
+		}
+		lines = append(lines, line)
+	}
+	if count == 0 {
+		lines = append(lines, "Пока нет.")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // connectorLine renders one ToolHub connector compactly: the hashed projected

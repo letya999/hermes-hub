@@ -82,7 +82,10 @@ type Schedule struct {
 	QuietTo   string `json:"quiet_to,omitempty"`
 	// DailyLimit caps owner-facing notifications per owner-timezone day
 	// (SPEC-0054 R2.2): 0 is unlimited, 32 the bound.
-	DailyLimit    int       `json:"daily_limit,omitempty"`
+	DailyLimit int `json:"daily_limit,omitempty"`
+	// Sink routes event-subscription output: "notify" fans events out to the
+	// outbox (default), "agent" bundles them into one untrusted-evidence job.
+	Sink          string    `json:"sink,omitempty"`
 	NativeCronRef string    `json:"native_cron_ref,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -576,7 +579,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if len(in.ScheduleID) > 80 || !spoolIDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
-	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" && in.JobKind != "brief" {
+	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" && in.JobKind != "brief" && in.JobKind != "event" {
 		return errors.New("invalid job kind")
 	}
 	if in.JobKind == "check" && in.Expect != "changed" && in.Expect != "unchanged" && (!strings.HasPrefix(in.Expect, "equals:") || len(in.Expect) <= len("equals:") || len(in.Expect) > 1024) {
@@ -612,7 +615,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 			}
 		}
 	}
-	if in.JobKind == "watcher" {
+	if in.JobKind == "watcher" || in.JobKind == "event" {
 		if in.Probe == nil {
 			return errors.New("watcher needs a probe")
 		}
@@ -660,6 +663,12 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	}
 	if in.DailyLimit < 0 || in.DailyLimit > 32 {
 		return errors.New("daily_limit must be 0..32")
+	}
+	if in.Sink != "" && in.Sink != "notify" && in.Sink != "agent" {
+		return errors.New("invalid event sink")
+	}
+	if in.Sink != "" && in.JobKind != "event" {
+		return errors.New("sink requires an event schedule")
 	}
 	if in.Probe != nil {
 		if len(in.Probe.URL) > 2048 {

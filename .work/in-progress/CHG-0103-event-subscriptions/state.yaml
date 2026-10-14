@@ -4,7 +4,7 @@ title: Event subscriptions
 status: in_progress
 branch: feat/m13-proactive-automation
 updated: 2026-10-14
-phase: design-complete
+phase: implementation
 adr: ADR-0041
 spec: SPEC-0054
 requirements: [R5.1, R5.2, R5.3, R5.4, R5.5]
@@ -12,17 +12,34 @@ depends_on: [CHG-0101]
 github_milestone: M12 — Proactive Automation
 github_issue: 257
 design_status: accepted
-implementation_status: not_started
+implementation_status: implemented
 slices:
-  S5.1-event-state-extract: not_started
-  S5.2-settle-sinks: not_started
-  S5.3-surface-catalog: not_started
+  S5.1-event-state-extract: done
+  S5.2-settle-sinks: done
+  S5.3-surface-catalog: done
 validation:
-  documents: pending
+  documents: done
   just_check: not_run
   docker_check: not_run
-  red_team: not_started
-  live_acceptance: not_started
-evidence: []
-remaining: []
-limitations: []
+  red_team: done
+  live_acceptance: not_available
+evidence:
+  - internal/communication: TestEventNotifyFanout, TestEventAgentSinkBundles,
+    TestEventDailyCap, TestEventSeenBounded, TestEventOverflowCounted,
+    TestEventNotifyCapOverflow, TestEventBundleBounded,
+    TestEventDegradedOnAuthError, TestExtractEvents{Array,FallbackID,HTTPChange,TextFallbacks},
+    TestSinkValidation, TestWatchesCommand{Lists,Routes}
+  - internal/agenttools: TestWatchSubscribeCreatesEventSchedule,
+    TestWatchOpsFilterEventKind, TestWatchToolsDispatch,
+    TestWatchToolsPublished, TestWatchToolsInCatalog
+  - internal/toolhub: TestPreparedTelegramEventTools
+  - docs/architecture.md event-subscription paragraph;
+    docs/prepared-connectors.md event tools + persistent-workload limitation
+remaining:
+  - live acceptance A7 (real connector, crash mid-fanout) needs a deployment;
+    reported as unavailable, not claimed from mocks
+limitations:
+  - requeue_tool is invoked by event id only; cap-overflow events stay unseen
+    for the next occurrence rather than requeued (connector still holds them)
+  - event-capable connectors poll at schedule cadence; no persistent
+    connector workload lifecycle yet (spec R5.5 dependency)

@@ -210,6 +210,19 @@ Handoff: “Install the pinned `letya999/telegram-mcp` personal connector with
 expected user ID only in the protected form. Verify `list_accounts` and a
 bounded history read; leave sends and deletes disabled.”
 
+The read set also carries four event tools for hub event subscriptions:
+`wait_for_new_message` and `wait_for_settled_message` return a bounded batch
+of new events for one poll, `requeue_event` puts one dropped event back by
+its id only, and `incoming_feed_status` reports feed health. An event
+subscription (`watch_subscribe`) polls one of these projected read tools at
+its own schedule cadence through ToolHub's read-only `/v1/tool-call`; the
+hub deduplicates event ids in its durable seen-set, fans out deliveries or
+one bundled agent job, and marks the subscription degraded on a connector
+auth failure. Persistent connector workload lifecycle does not exist yet:
+there is no always-on push stream into the hub, so until that platform work
+lands an event-capable source is polled at the subscription's cadence and
+`requeue_event` receives only the event id, never owner content.
+
 ## Blocked bundle entries
 
 `google-workspace` is blocked as a *single generic prepared artifact*: the

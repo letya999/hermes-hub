@@ -3,6 +3,7 @@ package communication
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // S2.1 — a change inside the owner's quiet window still lands in the outbox
@@ -650,6 +653,532 @@ func TestBriefRevokedStaysQuietAndRestartDedups(t *testing.T) {
 	}
 	if again, err := s.ClaimJob(); err != nil || again != nil {
 		t.Fatal("crash replay admitted a second brief job")
+	}
+}
+
+// S5.1 — a tool result carrying an events array (or a bare array) yields one
+// discrete event per item with its durable identity (SPEC-0054 R5.2).
+func TestExtractEventsArray(t *testing.T) {
+	body := []byte(`{"events":[{"id":"m1","text":"new mail"},{"event_id":"m2","text":"newsletter"}]}`)
+	events, err := extractEvents(&WatchProbe{Kind: "mcp_tool"}, body)
+	if err != nil || len(events) != 2 || events[0].ID != "m1" || events[1].ID != "m2" {
+		t.Fatalf("events not extracted: %+v %v", events, err)
+	}
+	flat, err := extractEvents(&WatchProbe{Kind: "mcp_tool"}, []byte(`[{"message_id":"x1","text":"ping"}]`))
+	if err != nil || len(flat) != 1 || flat[0].ID != "x1" {
+		t.Fatalf("bare array not extracted: %+v %v", flat, err)
+	}
+}
+
+// S5.1 — an event without a declared id gets a stable content hash so the
+// same item dedupes across polls (SPEC-0054 R5.2).
+func TestExtractEventsFallbackID(t *testing.T) {
+	body := []byte(`{"events":[{"text":"no id here"}]}`)
+	first, err := extractEvents(&WatchProbe{Kind: "mcp_tool"}, body)
+	if err != nil || len(first) != 1 || first[0].ID == "" {
+		t.Fatalf("no fallback id: %+v %v", first, err)
+	}
+	second, err := extractEvents(&WatchProbe{Kind: "mcp_tool"}, body)
+	if err != nil || second[0].ID != first[0].ID {
+		t.Fatal("fallback id unstable across polls")
+	}
+}
+
+// S5.1 — a changed http value is exactly one event keyed by the new value
+// hash, carrying its bounded text (SPEC-0054 R5.2).
+func TestExtractEventsHTTPChange(t *testing.T) {
+	events, err := extractEvents(&WatchProbe{Kind: "http"}, []byte("new value"))
+	if err != nil || len(events) != 1 || events[0].ID != watchHash("new value") || events[0].Text != "new value" {
+		t.Fatalf("http change not one event: %+v %v", events, err)
+	}
+}
+
+// S5.2 — an event subscription fans each new event out to its own outbox
+// delivery; a re-poll of the same result is fully deduped (SPEC-0054 R5.3).
+func TestEventNotifyFanout(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev1", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev1"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return []byte(`{"events":[{"id":"a1","text":"first mail"},{"id":"b2","text":"second mail"}]}`), nil
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for range 2 {
+		d, err := s.ClaimDelivery()
+		if err != nil || d == nil {
+			t.Fatalf("missing event delivery: %+v %v", d, err)
+		}
+		got[d.Text] = true
+	}
+	if !got["scheduled work\nfirst mail"] || !got["scheduled work\nsecond mail"] {
+		t.Fatalf("fanout deliveries wrong: %v", got)
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("event fanout produced an extra delivery")
+	}
+	// Same poll result on the next occurrence: every id already seen.
+	o2 := o
+	o2.DueAt = now.Add(time.Hour)
+	if err := s.PutOccurrence(o2, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now.Add(time.Hour), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("seen events delivered again")
+	}
+}
+
+// S5.1 — a bare string item carries itself as the event text, and an object
+// without `text` falls back to a human-facing key (SPEC-0054 R5.1).
+func TestExtractEventsTextFallbacks(t *testing.T) {
+	probe := &WatchProbe{Kind: "mcp_tool"}
+	events, err := extractEvents(probe, []byte(`[{"id":"a1","title":"headline"},"just a string",{"id":"b2","message":"hello"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events: %v", events)
+	}
+	if events[0].Text != "headline" || events[1].Text != "just a string" || events[2].Text != "hello" {
+		t.Fatalf("text fallbacks: %+v", events)
+	}
+}
+
+// S5.2 — sink=agent bundles the fresh events into one untrusted-evidence
+// job instead of per-event deliveries (SPEC-0054 R5.4).
+func TestEventAgentSinkBundles(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev2", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev2"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return []byte(`{"events":[{"id":"a1","text":"first mail"},{"id":"b2","text":"second mail"}]}`), nil
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("agent sink admitted no job")
+	}
+	if !strings.Contains(job.Text, "untrusted") || !strings.Contains(job.Text, "first mail") || !strings.Contains(job.Text, "second mail") {
+		t.Fatalf("bundle missing events or untrusted flag: %q", job.Text)
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("agent sink produced a plain delivery")
+	}
+}
+
+// S5.2 — sink is event-only; reminders keep refusing agent escalation
+// (SPEC-0054 R5.2 red-team).
+func TestSinkValidation(t *testing.T) {
+	s, o, _ := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	base := Schedule{ScheduleID: "sv", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "x"}
+	rem := base
+	rem.ScheduleID = "sv1"
+	rem.JobKind = "reminder"
+	rem.Sink = "agent"
+	if _, err := s.CreateSchedule(rem, caller, ""); err == nil {
+		t.Fatal("sink=agent accepted on a reminder")
+	}
+	ev := base
+	ev.ScheduleID = "sv2"
+	ev.JobKind = "event"
+	ev.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}
+	ev.Sink = "pager"
+	if _, err := s.CreateSchedule(ev, caller, ""); err == nil {
+		t.Fatal("unknown sink value accepted")
+	}
+	ev.Sink = "notify"
+	if _, err := s.CreateSchedule(ev, caller, ""); err != nil {
+		t.Fatalf("sink=notify rejected: %v", err)
+	}
+}
+
+// S5.2 — the durable seen-set is bounded: 600 distinct events must not grow
+// spool/events state past the 512-entry FIFO cap (SPEC-0054 R5.1).
+func TestEventSeenBounded(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev5", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev5"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	var sb strings.Builder
+	sb.WriteString(`{"events":[`)
+	for i := 0; i < 600; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"id":"e%d","text":"m%d"}`, i, i)
+	}
+	sb.WriteString(`]}`)
+	payload := sb.String()
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return []byte(payload), nil
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(s.eventPath("ev5"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st EventState
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Seen) > 512 {
+		t.Fatalf("seen-set unbounded: %d entries", len(st.Seen))
+	}
+}
+
+// S5.2 — the owner-timezone daily cap counts event fan-out deliveries:
+// events over the cap stay unseen instead of spamming the outbox.
+func TestEventDailyCap(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev4", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", DailyLimit: 1, Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev4"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return []byte(`{"events":[{"id":"a1","text":"first"},{"id":"b2","text":"second"}]}`), nil
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil {
+		t.Fatal("expected one event delivery")
+	}
+	if d2, err := s.ClaimDelivery(); err != nil || d2 != nil {
+		t.Fatal("daily cap did not hold back the second event")
+	}
+}
+
+// S5.2 — the agent bundle is bounded: 200 fat events must not blow past the
+// job-text limit (SPEC-0054 R5.4 red-team).
+func TestEventBundleBounded(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev7", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev7"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	var sb strings.Builder
+	sb.WriteString(`{"events":[`)
+	for i := 0; i < 200; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"id":"e%d","text":"%s"}`, i, strings.Repeat("x", 4000))
+	}
+	sb.WriteString(`]}`)
+	payload := sb.String()
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return []byte(payload), nil
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("agent sink admitted no job")
+	}
+	if len(job.Text) > 16*1024 {
+		t.Fatalf("bundle unbounded: %d bytes", len(job.Text))
+	}
+}
+
+// S5.2 — a sink admission failure leaves the event unseen, counts durable
+// overflow, and best-effort requeues it to the connector by id only —
+// owner content never leaves in the requeue call (SPEC-0054 R5.3).
+func TestEventOverflowCounted(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev6", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc", RequeueTool: "hub-mail-requeue"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Break the outbox: admission fails for every event delivery.
+	pending := filepath.Join(s.root, "outbox", "pending")
+	if err := os.RemoveAll(pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pending, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev6"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	var requeueArgs map[string]any
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		if probe.Tool == "hub-mail-requeue" {
+			requeueArgs = probe.Args
+			return []byte(`{"ok":true}`), nil
+		}
+		return []byte(`{"events":[{"id":"a1","text":"first mail"}]}`), nil
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(s.eventPath("ev6"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st EventState
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Overflow == 0 {
+		t.Fatal("admission failure not counted as overflow")
+	}
+	if st.seen("a1") {
+		t.Fatal("dropped event wrongly marked seen")
+	}
+	if len(requeueArgs) != 1 || requeueArgs["event_id"] != "a1" {
+		t.Fatalf("requeue args must carry only the event id: %v", requeueArgs)
+	}
+}
+
+// S5.2 — notify fan-out caps at 8 deliveries per occurrence; the rest count
+// as durable overflow and requeue by id (SPEC-0054 R5.3).
+func TestEventNotifyCapOverflow(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev9", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc", RequeueTool: "hub-mail-requeue"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev9"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	var requeued []string
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		if probe.Tool == "hub-mail-requeue" {
+			requeued = append(requeued, fmt.Sprint(probe.Args["event_id"]))
+			return []byte(`{"ok":true}`), nil
+		}
+		return []byte(`{"events":[{"id":"e1","text":"m1"},{"id":"e2","text":"m2"},{"id":"e3","text":"m3"},{"id":"e4","text":"m4"},{"id":"e5","text":"m5"},{"id":"e6","text":"m6"},{"id":"e7","text":"m7"},{"id":"e8","text":"m8"},{"id":"e9","text":"m9"},{"id":"e10","text":"m10"}]}`), nil
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	delivered := 0
+	for {
+		d, err := s.ClaimDelivery()
+		if err != nil || d == nil {
+			break
+		}
+		delivered++
+	}
+	if delivered != 8 {
+		t.Fatalf("per-occurrence fan-out cap: %d deliveries", delivered)
+	}
+	b, err := os.ReadFile(s.eventPath("ev9"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st EventState
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Overflow != 2 {
+		t.Fatalf("overflow: %d", st.Overflow)
+	}
+	// Cap-overflow stays unseen for the next occurrence; only a real sink
+	// admission failure earns a connector requeue, else the next poll and
+	// the requeued copy would double-deliver.
+	if len(requeued) != 0 {
+		t.Fatalf("cap-overflow wrongly requeued: %v", requeued)
+	}
+}
+
+// S5.2 — a 401/403-shaped tool error degrades the subscription durably and
+// fails the occurrence instead of silently retrying forever.
+func TestEventDegradedOnAuthError(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev3", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev3"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return nil, errors.New("tool error: hub-mail-events-abc: is_error: 403 forbidden")
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(s.eventPath("ev3"))
+	if err != nil {
+		t.Fatalf("event state not persisted: %v", err)
+	}
+	var st EventState
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Degraded {
+		t.Fatal("auth error did not degrade the subscription")
+	}
+}
+
+// S5.3 — /watches lists the caller's event subscriptions with source, sink,
+// last success/error and degraded state; foreign owners stay invisible.
+func TestWatchesCommandLists(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev8", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	bob := identity.TelegramEnvelope("bob", 22, "bob", "policy-1")
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "ev-bob", Envelope: bob, OrganizationID: o.Job.OrganizationID, UserID: "bob", ActorID: "bob", ScopeID: "user:bob", Channel: "telegram_bot", ChatID: 22, Timezone: "UTC", Expression: "0 * * * *", Input: "bob events", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-bob-events"}}, bob, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev8"
+	o.JobKind = "event"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return []byte(`{"events":[{"id":"a1","text":"first mail"}]}`), nil
+		}
+		return nil, errors.New("tool error: 403 forbidden")
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	out := g.watchesCommand(user, 11)
+	if !strings.Contains(out, "ev8") || !strings.Contains(out, "hub-mail-events-abc") || !strings.Contains(out, "notify") || !strings.Contains(out, ", ok ") {
+		t.Fatalf("subscription not rendered: %q", out)
+	}
+	if strings.Contains(out, "ev-bob") {
+		t.Fatalf("foreign owner's subscription listed: %q", out)
+	}
+	// A second poll that auth-fails degrades the line durably.
+	o2 := o
+	o2.DueAt = o.DueAt.Add(time.Hour)
+	if err := s.PutOccurrence(o2, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now.Add(time.Hour), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall); err != nil {
+		t.Fatal(err)
+	}
+	out = g.watchesCommand(user, 11)
+	if !strings.Contains(out, "degraded") || !strings.Contains(out, "403") {
+		t.Fatalf("degraded state not rendered: %q", out)
+	}
+}
+
+// S5.3 — /watches is a real command: it routes to the subscription list
+// instead of falling through to unknown-command help.
+func TestWatchesCommandRoutes(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/watches", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "Подписки на события") {
+		t.Fatalf("/watches did not route: %v", fake.sent)
 	}
 }
 

@@ -209,6 +209,16 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 		defer cancel()
 		body, fetchErr = fetch(ctx, schedule.Probe.URL)
 	}
+	if o.JobKind == "event" {
+		for _, id := range s.settleEvents(o, schedule, body, now, fetchErr, authorize) {
+			// Best-effort requeue to the connector: the call carries only
+			// the event id, never owner content (SPEC-0054 R5.3).
+			if toolCall != nil && schedule.Probe.RequeueTool != "" {
+				_, _ = toolCall(ctx, o.Job.PrincipalID, &WatchProbe{Kind: "mcp_tool", Tool: schedule.Probe.RequeueTool, Args: map[string]any{"event_id": id}})
+			}
+		}
+		return
+	}
 	if fetchErr != nil {
 		s.settleProbe(o, schedule, "", "", now, fetchErr, authorize)
 		return

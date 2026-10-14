@@ -273,6 +273,25 @@ no model call. A non-empty slot admits one routine-conversation job whose
 text carries the snapshot flagged untrusted; the durable cursor prevents
 re-reporting and the job file dedups crash replay.
 
+An `event` routine is a hub-owned subscription to a connector's event feed:
+each occurrence probes one projected read tool (usually `mcp_tool`) and the
+deterministic extractor turns the result into discrete events — `{events:[…]}`
+or a bare array items keyed by `id`/`event_id`/`message_id` else a stable
+content hash; any other value is one event keyed by its hash. The durable
+`spool/events/<id>.json` state holds a bounded 512-entry seen-set (FIFO),
+last success/error, a `degraded` flag set by 401/403-shaped connector
+errors, and an `overflow` counter. `sink=notify` (default) fans out one
+deterministically-id'd outbox delivery per unseen event under the same
+quiet-window and daily-cap policy; `sink=agent` admits one job bundling the
+new events flagged untrusted, bounded to 8 KiB with the rest left unseen for
+the next occurrence. An event the sink cannot admit stays unseen, increments
+`overflow`, and is best-effort requeued to the connector by id only through
+`requeue_tool`. `watch_subscribe`/`watch_list`/`watch_pause`/`watch_delete`
+are the agent surface — create goes through the ordinary routine path with
+`job_kind=event`, the others operate only on event-kind schedules — and
+`/watches` is the owner-facing listing (id, source, sink, last success/error,
+degraded, overflow).
+
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
 OAuth and Hermes state stay in that user's named volumes. Organization documents are
