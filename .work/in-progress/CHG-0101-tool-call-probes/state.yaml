@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0101
+title: Control-plane tool calls and mcp_tool probes
+status: in_progress
+branch: feat/m13-proactive-automation
+updated: 2026-10-14
+phase: design-complete
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R3.1, R3.2]
+depends_on: [CHG-0099]
+github_milestone: M12 — Proactive Automation
+github_issue: 257
+design_status: accepted
+implementation_status: not_started
+slices:
+  S3.1-tool-call-endpoint: not_started
+  S3.2-mcp-tool-probe: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

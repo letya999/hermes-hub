@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0102
+title: Owner brief
+status: in_progress
+branch: feat/m13-proactive-automation
+updated: 2026-10-14
+phase: design-complete
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R4.1, R4.2, R4.3]
+depends_on: [CHG-0100]
+github_milestone: M12 — Proactive Automation
+github_issue: 250
+design_status: accepted
+implementation_status: not_started
+slices:
+  S4.1-snapshot-dispatch: not_started
+  S4.2-pause-cursor: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

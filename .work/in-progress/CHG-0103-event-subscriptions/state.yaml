@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0103
+title: Event subscriptions
+status: in_progress
+branch: feat/m13-proactive-automation
+updated: 2026-10-14
+phase: design-complete
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R5.1, R5.2, R5.3, R5.4, R5.5]
+depends_on: [CHG-0101]
+github_milestone: M12 — Proactive Automation
+github_issue: 257
+design_status: accepted
+implementation_status: not_started
+slices:
+  S5.1-event-state-extract: not_started
+  S5.2-settle-sinks: not_started
+  S5.3-surface-catalog: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

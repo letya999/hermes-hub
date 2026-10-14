@@ -13,6 +13,11 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0103](in-progress/CHG-0103-event-subscriptions/plan.md) | M12 stage 5: event subscriptions, sinks, watch_* surface, telegram event tools |
+| [CHG-0102](in-progress/CHG-0102-owner-brief/plan.md) | M12 stage 4: opt-in owner brief — deterministic snapshot, in-slot model synthesis |
+| [CHG-0101](in-progress/CHG-0101-tool-call-probes/plan.md) | M12 stage 3: ToolHub /v1/tool-call + mcp_tool probes |
+| [CHG-0100](in-progress/CHG-0100-watcher-policy/plan.md) | M12 stage 2: quiet window, daily cap, agent escalation |
+| [CHG-0099](in-progress/CHG-0099-followup-hardening/plan.md) | M12 stage 1: bounded check retry, verdict text, task: probe, reminder evidence |
 | [CHG-0097](in-progress/CHG-0097-single-stack-supervisor/plan.md) | Docker restored; container supervisor wake/restart verified, Windows tasks removed; final image rollout in progress |
 | [CHG-0092](in-progress/CHG-0092-chain-stop-the-bleeding/plan.md) | M19 stage 0, implemented; acceptance in progress: idle deadlines, pre-admission retry, lease-safe lifecycle, supervisor service, routine isolation |
 | [CHG-0093](in-progress/CHG-0093-tool-surface-integrity/plan.md) | M19 stage 1, implemented; acceptance in progress: rights-only policy hash, binding migration, tool manifest readiness, context hygiene |

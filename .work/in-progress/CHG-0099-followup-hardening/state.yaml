@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0099
+title: Verified follow-up hardening
+status: in_progress
+branch: feat/m13-proactive-automation
+updated: 2026-10-14
+phase: design-complete
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R1.1, R1.2, R1.3, R1.4]
+depends_on: []
+github_milestone: M12 — Proactive Automation
+github_issue: 251
+design_status: accepted
+implementation_status: not_started
+slices:
+  S1.1-bounded-retry: not_started
+  S1.2-check-verdict: not_started
+  S1.3-task-probe: not_started
+  S1.4-reminder-evidence: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

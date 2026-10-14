@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0100
+title: Watcher notification policy
+status: in_progress
+branch: feat/m13-proactive-automation
+updated: 2026-10-14
+phase: design-complete
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R2.1, R2.2, R2.3]
+depends_on: [CHG-0099]
+github_milestone: M12 — Proactive Automation
+github_issue: 248
+design_status: accepted
+implementation_status: not_started
+slices:
+  S2.1-quiet-window: not_started
+  S2.2-daily-cap: not_started
+  S2.3-agent-escalation: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []
