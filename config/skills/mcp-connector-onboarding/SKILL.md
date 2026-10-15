@@ -52,5 +52,22 @@ self-install request, not a request for package-management instructions.
   those exact names and its normal arguments; never construct or guess the name. Do
   not claim live access until that invocation succeeds.
 
+## Lifecycle from chat
+
+- `status`, `disable`, `revoke` and `remove` accept a conversational
+  `selector`: the connector's definition id, its source repository URL, or just
+  the repository basename (`name` and `source` are aliases). If ToolHub reports
+  the selector as ambiguous, retry with the exact source URL or `onboarding_id`;
+  never guess between candidates.
+- `status` also accepts `operation_id` — the `request_key` used on the original
+  call — to resume an in-flight operation without an `onboarding_id`.
+- `remove` is destructive and two-step: the first call returns
+  `requires_confirmation`, a deletion inventory and a `remove_nonce`. Ask the
+  user to confirm, then repeat `remove` with that `remove_nonce`. A wrong or
+  expired nonce refuses; nothing is deleted on the preview call.
+- On a shared connector, member `disable`/`revoke`/`remove` cut only that
+  member's access; the shared workload and credential belong to the policy's
+  store owner and stay up for the other members.
+
 For a known catalog connector without a repository URL, use the same ToolHub control
 flow with its catalog definition; do not bypass ToolHub with manual Hermes config.

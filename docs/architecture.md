@@ -381,7 +381,10 @@ created anonymous per-user workload IDs and `per-user/<context>/<definition>`
 directories are not reused or automatically moved/deleted. The existing
 credential-bearing Telegram/controller path remains connection-scoped. The generic
 Docker fallback gives each binding its own workload ID, network, volumes and
-`credentials.env`; shared stateful or credential-bearing workloads stay denied.
+`credentials.env`; shared stateful workloads stay denied, and a shared
+credential-bearing workload exists only where a `Shared` definition carries the
+reviewed `sharable` flag under an operator shared-credential policy — members
+then resolve the policy owner's single connection and workload.
 Live Docker 95-plus-5 used 100 sequential unique networks, volumes and
 containers (95 distinct owner env-files + 5 of one shared file). One hundred
 users means one hundred **registered** bindings and a bounded live set

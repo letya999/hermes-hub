@@ -1,0 +1,24 @@
+schema: 1
+id: CHG-0105-m13-closeout
+status: done
+phase: verified-and-documented
+started_at: "2026-10-08"
+updated_at: "2026-10-15"
+completed:
+  - "Audit confirmed #150/#151 shipped, #106 mostly done; deltas mapped to #104/#105/#106/#133 on feat/m13-closeout from dev@c1502be."
+  - "S1.1: ErrAmbiguousEntrypoint/ErrUnsupportedCredentialContract/ErrUnsupportedAuth sentinels, ErrorCode mapping, Onboarding.ErrorCode persisted and surfaced in status body; ambiguity wrapped in node/go/rust/compose entrypoint resolution."
+  - "S1.2: selector + name/source aliases resolve definition id, exact source URL or repo basename; ambiguity fails with candidate list; status(operation_id)/request_key resolves by idempotency key; two-phase remove with nonce+expiry; confirmed remove deletes ciphertext, binding/connection/credential rows (shared-safe) and workload rows, keeps scrubbed tombstone."
+  - "S1.3: credential delivery/target propagated recipe→definition; file delivery container-only with reviewed absolute mount target; form renders file inputs and accepts bounded (64KiB) multipart uploads; json is env-carried; oauth delivery rejected from static form with unsupported_auth; unknown delivery is unsupported_credential_contract."
+  - "S1.4: Workload.Sharable admits stored credentials on Shared class; member bindings converge on one policy-owned connection and one workload id; sharedConnectionCoversLocked authorizes members per call; member rotate refused, member revoke/remove scoped to own binding; shared workload survives member disable until last active binding drops; shared rows/ciphertext survive member remove."
+  - "Docs: SKILL.md lifecycle selectors/two-phase remove/shared member notes; prepared-connectors.md selector+remove contract; architecture.md and SPEC-0023 updated for Sharable shared workloads, selector resolution, hard remove."
+verification:
+  - "just check: green — all packages pass, gofmt/vet/staticcheck/docs/actionlint, integration contract test; Go statement coverage 85.26% (>=85%)."
+  - "internal/toolhub + toolhub/api + secrets focused tests green (21 new m13_closeout tests)."
+  - "One transient Windows fork/exec flake (TestAgentExecPoolCallAndReuse, api.test.exe access denied) observed once under full-suite load; passes in isolation and on rerun — unrelated to changes."
+  - "Docker gates deferred to CI per repo convention; no image-side code changed (control plane + api only)."
+  - "Red-team: selector resolution is principal/context/runtime-scoped by construction; ambiguity refuses with candidates; shared ciphertext survives member remove; file targets validated as absolute reviewed paths, uploads bounded at 64KiB; request_key replay returns tombstone without re-running cleanup."
+next: []
+risks:
+  - "Mock-level acceptance does not prove live provider OAuth; live evidence stays out of scope per repo gate split."
+  - "Shared owner revoke/rotate requires the store owner to hold an onboarding on the shared connection; an operator-side lifecycle op for policy-only owners is not in this slice."
+  - "Generic OAuth remains prepared/official-provider only — no reviewed metadata source exists for arbitrary repos, so the platform fails closed rather than guessing a provider contract."

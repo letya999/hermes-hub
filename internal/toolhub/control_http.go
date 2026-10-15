@@ -75,6 +75,10 @@ func controlToolContract(name string) (string, map[string]any) {
 	properties := map[string]any{
 		"onboarding_id": map[string]any{"type": "string", "description": "Exact onboarding_id returned by prepare_source."},
 		"definition_id": map[string]any{"type": "string", "description": "Connector definition ID. Use this to resume an earlier onboarding when its onboarding_id is unknown."},
+		"selector":      map[string]any{"type": "string", "description": "Conversational connector name: a definition_id, the source repository URL or its basename (for example search-mcp). Use when the user names a connector instead of quoting an id. Refuses ambiguous matches; retry with the source URL or onboarding_id."},
+		"name":          map[string]any{"type": "string", "description": "Alias of selector."},
+		"source":        map[string]any{"type": "string", "description": "Alias of selector — pass the exact source repository URL."},
+		"operation_id":  map[string]any{"type": "string", "description": "Request key from the original install call; resolves the matching onboarding for status checks."},
 		"version":       map[string]any{"type": "string"},
 	}
 	description := "ToolHub control operation " + name + ". Identity is taken from the authenticated request; owner, locator, backend and policy arguments are rejected."
@@ -102,6 +106,10 @@ func controlToolContract(name string) (string, map[string]any) {
 		cli["examples"] = []any{map[string]any{"name": "jq", "source": "github-release:jqlang/jq@latest", "asset": "jq-linux-amd64", "binary": "/usr/local/bin/jq", "args": []string{"--version"}, "tools": []any{map[string]any{"name": "version", "effect": "read"}}}}
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
+		if name == "remove" {
+			properties["remove_nonce"] = map[string]any{"type": "string", "description": "Confirmation token from the previous remove preview response."}
+			description += " Remove is destructive: the first call returns a preview with remove_nonce; ask the user to confirm, then call remove again with that remove_nonce."
+		}
 	case "diagnostics":
 		properties = map[string]any{
 			"tail":     map[string]any{"type": "integer", "description": "Newest lines to return, 1-500 (default 200).", "minimum": 1, "maximum": 500},
@@ -119,7 +127,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		}
 		description = "Request activation of a host-created tool governance grant. Call only when the user's current message explicitly asks to enable a denied tool section. Returns a protected acknowledge URL — the user opens it to activate the grant; the URL alone does not grant anything."
 	case "status", "required_credentials":
-		description += " Pass onboarding_id, or pass definition_id to resume the latest onboarding for that connector."
+		description += " Pass onboarding_id, definition_id, a selector/name/source naming the connector, or the operation_id (request_key) of the original call."
 		if name == "status" {
 			description += " With no selector, status returns the latest onboarding for the authenticated user."
 		}
@@ -336,6 +344,30 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// File-delivery fields arrive as multipart parts, not form values; the
+	// uploaded content is the credential.
+	for _, hint := range onboarding.Required {
+		if hint.Delivery != "file" || values[hint.Name] != "" {
+			continue
+		}
+		file, _, ferr := r.FormFile(hint.Name)
+		if ferr == http.ErrMissingFile {
+			continue
+		}
+		if ferr != nil {
+			http.Error(w, "invalid file upload", http.StatusBadRequest)
+			return
+		}
+		data, ferr := io.ReadAll(io.LimitReader(file, (64<<10)+1))
+		file.Close()
+		if ferr != nil || len(data) > 64<<10 {
+			http.Error(w, "invalid file upload", http.StatusBadRequest)
+			return
+		}
+		if len(strings.TrimSpace(string(data))) > 0 {
+			values[hint.Name] = string(data)
+		}
+	}
 	if googleOAuthRequired(onboarding.Required) {
 		value, err := googleOAuthFormValue(r)
 		if err != nil {
@@ -462,6 +494,9 @@ func credentialFieldMarkup(hint api.CredentialHint) string {
 	}
 	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 		return `<fieldset><legend>Данные OAuth-клиента Google</legend><label>Выберите скачанный JSON-файл<input type="file" name="google_oauth_file" accept=".json,application/json"></label><small>Подойдёт файл с именем вроде client_secret_….apps.googleusercontent.com.json.</small><details><summary>Или ввести значения вручную</summary><label>Client ID<input type="text" name="google_oauth_client_id" autocomplete="off"></label><label>Client Secret<input type="password" name="google_oauth_client_secret" autocomplete="off"></label></details></fieldset>`
+	}
+	if hint.Delivery == "file" {
+		return "<label>" + label + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + "</label>"
 	}
 	if hint.Delivery == "json" || strings.EqualFold(hint.Type, "json") {
 		return "<label>" + label + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + "</label>"

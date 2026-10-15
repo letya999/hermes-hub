@@ -286,7 +286,11 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "revoke", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+	preview, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]}); err != nil {
 		t.Fatal(err)
 	}
 	hints := credentialHints(api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}, {Name: "CALL_TOKEN", Required: true, PerRequest: true}}})

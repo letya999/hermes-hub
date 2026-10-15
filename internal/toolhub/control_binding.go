@@ -10,6 +10,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -161,6 +162,7 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 		onboarding.BrokerAttempts++
 		onboarding.Phase = api.PhaseAwaitingCreds
 		onboarding.Error = ""
+		onboarding.ErrorCode = ""
 		onboarding.ConfirmationNonce = ""
 		onboarding.ConfirmationUsed = false
 		onboarding.Revision++
@@ -179,6 +181,11 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 func (c *ControlPlane) rotateLocal(auth identity.Envelope, onboarding api.Onboarding) (map[string]any, error) {
 	if onboarding.ConnectionID == "" || onboarding.Locator == "" {
 		return nil, fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	// Only the policy's store owner rotates a shared credential — a member's
+	// rotate would rewrite the connection every member resolves through.
+	if c.Store.sharedForeignConnection(auth.PrincipalID, onboarding.ConnectionID) {
+		return nil, fmt.Errorf("%w: shared credential rotation is owner-only", api.ErrUnauthorized)
 	}
 	keys := credentialNames(onboarding)
 	if binding, err := c.Store.binding(onboarding.BindingID); err == nil && binding.CredentialRefID != "" {
@@ -209,6 +216,11 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
 		if err := c.Store.SetBindingStatus(onboarding.BindingID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
 			return err
 		}
+	}
+	// A member of a shared connection cuts only its own binding: revoking the
+	// connection, its ciphertext or the shared workload is owner-only.
+	if c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
+		return nil
 	}
 	if onboarding.ConnectionID != "" {
 		if err := c.Store.SetConnectionStatus(onboarding.ConnectionID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
@@ -378,6 +390,17 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		}
 		return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
 	}
+	// A sharable shared-class definition under an active shared-credential
+	// policy binds the member to one connection owned by the policy's store
+	// owner — every member then resolves the same workload.
+	if definition.Workload.Class == api.Shared && definition.Workload.Sharable {
+		c.Store.mu.RLock()
+		policy := c.Store.sharedPolicyLocked(auth, definition.DefinitionID)
+		c.Store.mu.RUnlock()
+		if policy != nil {
+			return c.materializeSharedBinding(ctx, auth, onboarding, definition, *policy)
+		}
+	}
 	connectionID := api.DeterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
 	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: credstore.BackendLocal, Locator: onboarding.Locator, Keys: credentialNames(onboarding), Status: api.ActiveStatus}
 	if c.brokerCredentialRequired(definition, onboarding) {
@@ -402,6 +425,25 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	if onboarding.CredentialOwner != "" && onboarding.CredentialOwner != auth.PrincipalID {
 		connection.Metadata = map[string]string{"credential_owner": onboarding.CredentialOwner}
 	}
+	if err := c.Store.PutConnection(connection); err != nil {
+		return api.ToolBinding{}, err
+	}
+	if c.Ready != nil {
+		return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+	}
+	return c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+}
+
+// materializeSharedBinding records the policy's owner-scoped connection and
+// credential reference — deterministic ids make every member's enable converge
+// on the same records — then enables the member's own audited binding on it.
+func (c *ControlPlane) materializeSharedBinding(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition, policy api.SharedCredentialPolicy) (api.ToolBinding, error) {
+	connectionID := api.DeterministicID("conn", "shared", policy.PolicyID, definition.DefinitionID, policy.Locator)
+	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: credstore.BackendLocal, Locator: policy.Locator, Keys: credentialNames(onboarding), Status: api.ActiveStatus}
+	if err := c.Store.PutCredentialReference(reference); err != nil {
+		return api.ToolBinding{}, err
+	}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: policy.StoreOwner}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"credential_owner": policy.StoreOwner, "shared_policy": policy.PolicyID}}
 	if err := c.Store.PutConnection(connection); err != nil {
 		return api.ToolBinding{}, err
 	}
@@ -527,27 +569,78 @@ func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string
 		}
 		return onboarding, nil
 	}
+	operationID := api.ArgString(args, "operation_id")
+	if operationID == "" {
+		operationID = api.ArgString(args, "request_key")
+	}
+	if operationID != "" {
+		if onboarding, ok := c.Store.FindOnboardingByKey(auth, operationID); ok {
+			return onboarding, nil
+		}
+		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
+	}
 	definitionID := api.ArgString(args, "definition_id")
 	version := api.ArgString(args, "version")
-	if definitionID == "" {
+	selector := api.ArgString(args, "selector")
+	for _, alias := range []string{"name", "source"} {
+		if selector == "" {
+			selector = api.ArgString(args, alias)
+		}
+	}
+	if definitionID == "" && selector == "" {
 		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
 	}
 	c.Store.mu.RLock()
 	defer c.Store.mu.RUnlock()
-	var found api.Onboarding
-	ok := false
+	var matches []api.Onboarding
 	for _, onboarding := range c.Store.onboardings {
-		if onboarding.PrincipalID == auth.PrincipalID && onboarding.ContextID == auth.ContextID && onboarding.RuntimeID == auth.RuntimeID && onboarding.PolicyVersion == auth.PolicyVersion && onboarding.DefinitionID == definitionID && (version == "" || onboarding.DefinitionVersion == version) && onboarding.Phase != api.PhaseRemoved {
-			if ok && onboarding.CreatedAt.Before(found.CreatedAt) {
+		if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion || onboarding.Phase == api.PhaseRemoved {
+			continue
+		}
+		if selector != "" {
+			// Conversational selector: the definition id, the exact source URL
+			// or the repository basename all name this connector.
+			if onboarding.DefinitionID != selector && onboarding.SourceURL != selector && sourceBasename(onboarding.SourceURL) != strings.ToLower(selector) {
 				continue
 			}
-			found, ok = onboarding, true
+		} else if onboarding.DefinitionID != definitionID || version != "" && onboarding.DefinitionVersion != version {
+			continue
+		}
+		matches = append(matches, onboarding)
+	}
+	switch len(matches) {
+	case 0:
+		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
+	case 1:
+		return matches[0], nil
+	}
+	if selector != "" {
+		// A conversational selector must never silently pick one record.
+		candidates := make([]string, 0, len(matches))
+		for _, onboarding := range matches {
+			candidates = append(candidates, onboarding.OnboardingID+" ("+onboarding.DefinitionID+")")
+		}
+		return api.Onboarding{}, fmt.Errorf("%w: selector %q is ambiguous; candidates: %s", api.ErrInvalid, selector, strings.Join(candidates, ", "))
+	}
+	// The definition_id+version path historically resolves to the newest
+	// matching record; keep that behavior for non-selector callers.
+	found := matches[0]
+	for _, onboarding := range matches[1:] {
+		if onboarding.CreatedAt.After(found.CreatedAt) {
+			found = onboarding
 		}
 	}
-	if !ok {
-		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
-	}
 	return found, nil
+}
+
+// sourceBasename normalizes a repository URL to its lowercase final path
+// segment, without a .git suffix — the friendly name a user would say.
+func sourceBasename(sourceURL string) string {
+	trimmed := strings.TrimSuffix(strings.TrimRight(sourceURL, "/"), ".git")
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+		trimmed = trimmed[i+1:]
+	}
+	return strings.ToLower(trimmed)
 }
 
 func (c *ControlPlane) definitionOf(onboarding api.Onboarding) (api.ToolDefinition, error) {

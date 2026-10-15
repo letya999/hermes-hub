@@ -91,11 +91,19 @@ ordinary arguments; runtime identity and credential selectors remain reserved.
 For replacement, explicitly call `rotate` with the existing `onboarding_id`,
 complete the Broker form, confirm and enable. The old owner workload stops
 before new credentials are admitted. Ambiguous active connections fail closed.
-`status` resumes onboarding; retry transient failures with the same request key.
+`status` resumes onboarding; retry transient failures with the same request key
+(`operation_id` resolves an onboarding by that key). Lifecycle operations also
+accept a conversational `selector` — the definition id, the exact source
+repository URL or its basename — which fails closed with a candidate list when
+ambiguous instead of guessing.
 Upgrade by reviewing the new SHA and catalog data, retaining the old artifact
 and evidence. `disable` removes projection, `revoke` denies further access and
-releases the workload, and `remove` also cleans its workspace. Shared immutable
-artifacts must not be deleted while another owner uses them.
+releases the workload, and `remove` is destructive two-phase: a bare call
+returns a preview with `requires_confirmation` and a `remove_nonce`; only the
+nonce-carrying repeat deletes the credential ciphertext, unreferenced
+connection and binding rows and the workspace, leaving a scrubbed onboarding
+tombstone for idempotent replay. Shared immutable artifacts must not be
+deleted while another owner uses them.
 
 ## Bundle IDs and one-operation start
 

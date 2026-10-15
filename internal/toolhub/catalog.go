@@ -363,7 +363,10 @@ type ownerConnectionMatch struct {
 func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definition api.ToolDefinition) []ownerConnectionMatch {
 	matches := make([]ownerConnectionMatch, 0)
 	for _, candidate := range s.connections {
-		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != api.ActiveStatus || !candidate.Owner.Matches(auth) || candidate.CredentialRefID == "" {
+		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != api.ActiveStatus || candidate.CredentialRefID == "" {
+			continue
+		}
+		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) {
 			continue
 		}
 		reference, found := s.credentials[candidate.CredentialRefID]

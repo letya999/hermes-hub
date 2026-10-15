@@ -180,7 +180,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 					continue
 				}
 				if selected != "" {
-					return ArtifactRecipe{}, nil, fmt.Errorf("%w: ambiguous MCP workspace", ErrInvalid)
+					return ArtifactRecipe{}, nil, fmt.Errorf("%w: multiple *-mcp workspaces; select one literal argv", ErrAmbiguousEntrypoint)
 				}
 				selected = name
 				pkg = candidate
@@ -264,7 +264,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 			mains = disambiguateGoMain(mains, files)
 		}
 		if len(mains) != 1 {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Go recipe requires one main package", ErrInvalid)
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Go recipe requires one main package; select literal argv", ErrAmbiguousEntrypoint)
 		}
 		goMainBase = path.Base(mains[0])
 		// JSON exec form avoids interpolating even repository directory names.
@@ -281,7 +281,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		locks = []string{"Cargo.lock"}
 		name := artifactTOMLSection(files[manifest], "package")["name"]
 		if !toolNamePattern.MatchString(name) || files["src/main.rs"] == nil || strings.Contains(string(files[manifest]), "[[bin]]") || strings.Contains(string(files[manifest]), "[workspace]") {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Rust recipe requires one package binary", ErrInvalid)
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Rust recipe requires one package binary; select literal argv", ErrAmbiguousEntrypoint)
 		}
 		lines = append(lines, "RUN "+runPrefix+"cargo build --release --locked")
 		automatic = [][]string{{"/app/target/release/" + name}}
@@ -292,7 +292,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 	}
 	if len(entrypoint) == 0 {
 		if len(inferred) != 1 {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: ambiguous MCP entrypoint; select literal argv", ErrInvalid)
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: select literal argv", ErrAmbiguousEntrypoint)
 		}
 		entrypoint = inferred[0]
 	} else {
