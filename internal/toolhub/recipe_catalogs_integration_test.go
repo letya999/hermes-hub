@@ -16,7 +16,7 @@ func TestRealMCPRegistryNameSearch(t *testing.T) {
 	if os.Getenv("HUB_REAL_REGISTRY_SEARCH") != "1" {
 		t.Skip("set HUB_REAL_REGISTRY_SEARCH=1 for public MCP Registry name search")
 	}
-	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{api.MCPRegistryCatalog{Endpoint: officialMCPRegistryURL}}}
+	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{api.MCPRegistryCatalog{Endpoint: "https://registry.modelcontextprotocol.io/v0.1/servers"}}}
 	result, err := control.discover(t.Context(), aliceAuth(), "weather")
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestRealSmitheryPublicConnectionSchema(t *testing.T) {
 	if os.Getenv("HUB_REAL_SMITHERY") != "1" {
 		t.Skip("set HUB_REAL_SMITHERY=1 for the public Smithery schema acceptance")
 	}
-	body, _, err := api.FetchCatalogJSON(context.Background(), &http.Client{}, smitheryAPIURL+"/servers/brave", nil, 8<<20)
+	body, _, err := api.FetchCatalogJSON(context.Background(), &http.Client{}, "https://api.smithery.ai/servers/brave", nil, 8<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

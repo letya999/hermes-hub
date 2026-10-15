@@ -89,3 +89,22 @@ func TestConfirmedContractJSONRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func importedReviewPacket(t *testing.T) ImportedArtifact {
+	t.Helper()
+	definition := statefulContainerDefinition()
+	definition.Source.Repository = "https://github.com/example/mcp"
+	definition.Source.CommitSHA = "0123456789012345678901234567890123456789"
+	definition.Source.ArchiveDigest = "sha256:" + repeatHex('a')
+	definition.Source.ProvenanceDigest = "sha256:" + repeatHex('b')
+	definition.Source.SBOMDigest = "sha256:" + repeatHex('c')
+	definition.Source.RecipeDigest = "sha256:" + repeatHex('d')
+	artifact := ImportedArtifact{Definition: definition, Recipe: ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}}, Artifact: StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}}}
+	config := ArtifactImportConfig{DefinitionID: definition.DefinitionID, Version: definition.Version, Image: definition.Source.Image, Tools: definition.Tools, Credentials: definition.Credentials, Environment: definition.Environment, Workload: definition.Workload, Execution: definition.Execution, Health: definition.Health}
+	digest, err := ReviewDigest(ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA}, artifact.Recipe, artifact.Artifact, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.Definition.Source.ReviewDigest = digest
+	return artifact
+}

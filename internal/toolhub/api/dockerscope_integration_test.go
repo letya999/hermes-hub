@@ -78,12 +78,12 @@ func TestDockerScopeRealDocker(t *testing.T) {
 		{"volume", "rm", foreignVol},
 	}
 	for _, args := range denied {
-		if _, err := s.runScoped(ctx, LocalCommand, "docker", args...); !errors.Is(err, ErrIsolation) {
+		if _, err := s.RunScoped(ctx, LocalCommand, "docker", args...); !errors.Is(err, ErrIsolation) {
 			t.Errorf("docker %v on foreign object: want ErrIsolation, got %v", args, err)
 		}
 	}
 	// ToolHive removes by name through a non-docker binary.
-	if _, err := s.runScoped(ctx, LocalCommand, "thv", "rm", foreign); !errors.Is(err, ErrIsolation) {
+	if _, err := s.RunScoped(ctx, LocalCommand, "thv", "rm", foreign); !errors.Is(err, ErrIsolation) {
 		t.Errorf("thv rm foreign: want ErrIsolation, got %v", err)
 	}
 
@@ -93,7 +93,7 @@ func TestDockerScopeRealDocker(t *testing.T) {
 		{"volume", "inspect", ownVol},
 	}
 	for _, args := range allowed {
-		if _, err := s.runScoped(ctx, LocalCommand, "docker", args...); err != nil {
+		if _, err := s.RunScoped(ctx, LocalCommand, "docker", args...); err != nil {
 			t.Errorf("docker %v on own object: %v", args, err)
 		}
 	}
@@ -103,12 +103,12 @@ func TestDockerScopeRealDocker(t *testing.T) {
 	managed := "capscope-managed-" + suffix
 	must("create", "--name", managed, "--network", agentNetOK(t, agentNet), image)
 	t.Cleanup(func() { _, _ = LocalCommand(context.Background(), "docker", "rm", "-f", managed) })
-	if _, err := s.runScoped(ctx, LocalCommand, "docker", "inspect", managed); err != nil {
+	if _, err := s.RunScoped(ctx, LocalCommand, "docker", "inspect", managed); err != nil {
 		t.Errorf("inspect managed-network container: %v", err)
 	}
 
 	// Nonexistent objects pass the guard (docker itself reports absence).
-	if _, err := s.runScoped(ctx, LocalCommand, "docker", "inspect", "capscope-missing-"+suffix); errors.Is(err, ErrIsolation) {
+	if _, err := s.RunScoped(ctx, LocalCommand, "docker", "inspect", "capscope-missing-"+suffix); errors.Is(err, ErrIsolation) {
 		t.Error("missing object must not be denied by the scope guard")
 	}
 }
