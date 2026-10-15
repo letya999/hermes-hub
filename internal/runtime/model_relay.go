@@ -339,6 +339,15 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 	transport.Proxy = nil
 	client := &http.Client{Transport: transport}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Same review-contract fences as the env relay: fixed paths only, no
+		// query strings, absolute-form targets or protocol upgrades.
+		known := (req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions") ||
+			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops")) ||
+			(req.Method == http.MethodPut && req.URL.Path == "/v1/model")
+		if !known || req.URL.RawPath != "" || req.URL.RawQuery != "" || req.URL.Scheme != "" || req.URL.Host != "" || req.Header.Get("Upgrade") != "" {
+			http.NotFound(w, req)
+			return
+		}
 		if req.Method == http.MethodPut && req.URL.Path == "/v1/model" {
 			r.serveSelect(w, req)
 			return
@@ -534,12 +543,18 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	body, _ := json.Marshal(map[string]string{"model": sel.Model})
+	persisted := false
 	if err := os.MkdirAll(filepath.Dir(r.statePath), 0700); err == nil {
 		if tmp, err := os.CreateTemp(filepath.Dir(r.statePath), ".sel-*"); err == nil {
 			_, _ = tmp.Write(body)
-			_ = tmp.Close()
-			_ = os.Rename(tmp.Name(), r.statePath)
+			if err := tmp.Close(); err == nil {
+				persisted = os.Rename(tmp.Name(), r.statePath) == nil
+			}
 		}
+	}
+	if !persisted {
+		http.Error(w, "selection not persisted", http.StatusBadGateway)
+		return
 	}
 	log.Printf("model-relay owner=%s selected model=%s", r.owner, sel.Model)
 	w.Header().Set("Content-Type", "application/json")

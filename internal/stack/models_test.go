@@ -155,3 +155,43 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 		t.Fatalf("model-relay.auth not provisioned: %v", err)
 	}
 }
+
+// A managed space with no models.yaml anywhere still renders a working
+// registry: the space's cliproxy carrying the configured model.
+func TestRenderEnvironmentSynthesizesDefaultRegistry(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	user := filepath.Join(spaces, "alice")
+	if err := InitEnvironment(user, "alice", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ReadEnvironment(user, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
+	s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
+	if err := WriteSpace(user, s); err != nil {
+		t.Fatal(err)
+	}
+	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
+	if err := os.WriteFile(filepath.Join(user, "execution.prod.json"), []byte(selection), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte(`soul`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(user, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(user, "generated", "models.prod.yaml"))
+	if err != nil {
+		t.Fatalf("default registry not materialized: %v", err)
+	}
+	if !strings.Contains(string(b), "cliproxy") || !strings.Contains(string(b), "model: m") {
+		t.Fatalf("synthesized default missing: %s", b)
+	}
+}
