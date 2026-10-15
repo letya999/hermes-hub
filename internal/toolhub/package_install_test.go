@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 	"testing"
 )
@@ -10,21 +11,21 @@ import (
 func TestPackageInstallPrivateCell(t *testing.T) {
 	c, fake := cellFixture(t, nil)
 	req := cliReq("rg", cellExecution())
-	req.Lifecycle, req.InstallPackages = CLILifecycleBinding, true
-	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, ErrUnauthorized) {
+	req.Lifecycle, req.InstallPackages = api.CLILifecycleBinding, true
+	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("operator gate: %v", err)
 	}
 	c.config.CLI.AllowPackageInstall = true
-	for _, lifecycle := range []string{CLILifecycleSharedPool, CLILifecycleToolbox} {
+	for _, lifecycle := range []string{api.CLILifecycleSharedPool, api.CLILifecycleToolbox} {
 		bad := req
 		bad.Lifecycle = lifecycle
-		if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, ErrUnauthorized) {
+		if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("shared gate: %v", err)
 		}
 	}
 	bad := req
 	bad.Stateless = true
-	if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, ErrUnauthorized) {
+	if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("stateless gate: %v", err)
 	}
 	installed, err := c.execCLI(context.Background(), req)
@@ -57,7 +58,7 @@ func TestPackageInstallPrivateCell(t *testing.T) {
 		}
 	}
 	for _, call := range fake.execCalls {
-		if contains(call, "HOME="+cellHomeGuest) && contains(call, "PATH="+cellHomeGuest+"/.local/bin:"+cellHomeGuest+"/.cargo/bin:"+cellHomeGuest+"/go/bin:/usr/local/bin:/usr/bin:/bin:"+cellToolsetGuest) {
+		if api.Contains(call, "HOME="+cellHomeGuest) && api.Contains(call, "PATH="+cellHomeGuest+"/.local/bin:"+cellHomeGuest+"/.cargo/bin:"+cellHomeGuest+"/go/bin:/usr/local/bin:/usr/bin:/bin:"+cellToolsetGuest) {
 			foundExec = true
 		}
 	}
@@ -72,7 +73,7 @@ func TestPackageInstallPrivateCell(t *testing.T) {
 		}
 	}
 	req.Principal, req.ContextID = "alice", "ctx-alice"
-	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, ErrIsolation) {
+	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("home drift accepted: %v", err)
 	}
 }
@@ -82,24 +83,24 @@ func TestPackageInstallDefinitionContract(t *testing.T) {
 	if !w.InstallPackages {
 		t.Fatal("install_packages was dropped")
 	}
-	d := CLICatalogDefinitions()[0]
+	d := api.CLICatalogDefinitions()[0]
 	d.Workload = w
 	if err := d.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutate := range []func(*ToolDefinition){func(d *ToolDefinition) { d.Workload.Stateless = true }, func(d *ToolDefinition) { d.Workload.Lifecycle = CLILifecycleSharedPool }, func(d *ToolDefinition) { d.Transport = AgentTools }} {
+	for _, mutate := range []func(*api.ToolDefinition){func(d *api.ToolDefinition) { d.Workload.Stateless = true }, func(d *api.ToolDefinition) { d.Workload.Lifecycle = api.CLILifecycleSharedPool }, func(d *api.ToolDefinition) { d.Transport = api.AgentTools }} {
 		bad := d
 		mutate(&bad)
-		if err := bad.Validate(); !errors.Is(err, ErrInvalid) {
+		if err := bad.Validate(); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("invalid install definition: %v", err)
 		}
 	}
 }
 
 func TestPackageHomeMustBePresentAndCannotBeSharedTmpfs(t *testing.T) {
-	c, fake := cellFixture(t, func(cfg *CLIControllerConfig) { cfg.AllowPackageInstall = true })
+	c, fake := cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.AllowPackageInstall = true })
 	req := cliReq("rg", cellExecution())
-	req.InstallPackages, req.Lifecycle = true, CLILifecycleBinding
+	req.InstallPackages, req.Lifecycle = true, api.CLILifecycleBinding
 	resp, err := c.execCLI(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)

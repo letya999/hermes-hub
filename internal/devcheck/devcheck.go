@@ -29,7 +29,11 @@ func Coverage(name string, minimum float64) (float64, error) {
 	if !s.Scan() || !regexp.MustCompile(`^mode: (set|count|atomic)$`).MatchString(s.Text()) {
 		return 0, fmt.Errorf("invalid coverage header")
 	}
-	var total, covered int
+	type block struct {
+		statements int
+		covered    bool
+	}
+	blocks := map[string]block{}
 	trailingBlank := false
 	for s.Scan() {
 		if strings.TrimSpace(s.Text()) == "" {
@@ -48,13 +52,22 @@ func Coverage(name string, minimum float64) (float64, error) {
 		if err1 != nil || err2 != nil || statements < 0 || count < 0 {
 			return 0, fmt.Errorf("invalid coverage row %q", s.Text())
 		}
-		total += statements
-		if count > 0 {
-			covered += statements
+		merged := blocks[fields[0]]
+		if merged.statements == 0 {
+			merged.statements = statements
 		}
+		merged.covered = merged.covered || count > 0
+		blocks[fields[0]] = merged
 	}
 	if err := s.Err(); err != nil {
 		return 0, err
+	}
+	var total, covered int
+	for _, merged := range blocks {
+		total += merged.statements
+		if merged.covered {
+			covered += merged.statements
+		}
 	}
 	if total == 0 {
 		return 0, fmt.Errorf("empty coverage profile")
@@ -64,6 +77,48 @@ func Coverage(name string, minimum float64) (float64, error) {
 		return actual, fmt.Errorf("go coverage %.2f%% < %.2f%%", actual, minimum)
 	}
 	return actual, nil
+}
+
+func CoverAll(profile string, minimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
+	packages, err := listPackages()
+	if err != nil {
+		return 0, err
+	}
+	out, err := os.Create(profile)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := out.WriteString("mode: count\n"); err != nil {
+		out.Close()
+		return 0, err
+	}
+	tmp := profile + ".tmp"
+	for _, pkg := range packages {
+		if err := testPackage(pkg, tmp); err != nil {
+			out.Close()
+			return 0, err
+		}
+		body, err := os.ReadFile(tmp)
+		if err != nil {
+			out.Close()
+			return 0, err
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			line = strings.TrimRight(line, "\r")
+			if line == "" || strings.HasPrefix(line, "mode:") {
+				continue
+			}
+			if _, err := out.WriteString(line + "\n"); err != nil {
+				out.Close()
+				return 0, err
+			}
+		}
+	}
+	_ = os.Remove(tmp)
+	if err := out.Close(); err != nil {
+		return 0, err
+	}
+	return Coverage(profile, minimum)
 }
 
 func Project(root string) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 
 // cellWorkspaceBind resolves the request's workspace into the host-side bind
 // source; the empty string means the cell mounts nothing at /work.
-func (c *genericController) cellWorkspaceBind(req cliExecRequest) (hostPath string, rw bool, err error) {
+func (c *genericController) cellWorkspaceBind(req api.CliExecRequest) (hostPath string, rw bool, err error) {
 	cfg := c.config.CLI
 	scope := req.Workspace.Scope
 	if scope == "" {
@@ -22,7 +23,7 @@ func (c *genericController) cellWorkspaceBind(req cliExecRequest) (hostPath stri
 	switch scope {
 	case "none":
 		if req.Workspace.Path != "" {
-			return "", false, fmt.Errorf("%w: workspace path without a scope", ErrInvalid)
+			return "", false, fmt.Errorf("%w: workspace path without a scope", api.ErrInvalid)
 		}
 		return "", false, nil
 	case "binding":
@@ -31,27 +32,27 @@ func (c *genericController) cellWorkspaceBind(req cliExecRequest) (hostPath stri
 			access = "rw"
 		}
 		if access != "rw" && access != "ro" {
-			return "", false, fmt.Errorf("%w: binding workspace access", ErrInvalid)
+			return "", false, fmt.Errorf("%w: binding workspace access", api.ErrInvalid)
 		}
 		path, err := filepath.Abs(req.Workspace.Path)
-		if err != nil || !containedPath(c.config.StateRoot, path) || noSymlinkPath(path) != nil {
-			return "", false, fmt.Errorf("%w: binding workspace outside state root", ErrIsolation)
+		if err != nil || !api.ContainedPath(c.config.StateRoot, path) || api.NoSymlinkPath(path) != nil {
+			return "", false, fmt.Errorf("%w: binding workspace outside state root", api.ErrIsolation)
 		}
 		info, err := os.Stat(path)
 		if err != nil || !info.IsDir() {
-			return "", false, fmt.Errorf("%w: binding workspace is missing", ErrIsolation)
+			return "", false, fmt.Errorf("%w: binding workspace is missing", api.ErrIsolation)
 		}
-		return dockerBindSource(path), access == "rw", nil
+		return api.DockerBindSource(path), access == "rw", nil
 	case "principal":
 		if cfg.SpacesRoot == "" {
-			return "", false, fmt.Errorf("%w: principal workspaces are not configured", ErrIsolation)
+			return "", false, fmt.Errorf("%w: principal workspaces are not configured", api.ErrIsolation)
 		}
 		access := req.Workspace.Access
 		if access == "" {
 			access = "ro"
 		}
 		if access != "rw" && access != "ro" {
-			return "", false, fmt.Errorf("%w: principal workspace access", ErrInvalid)
+			return "", false, fmt.Errorf("%w: principal workspace access", api.ErrInvalid)
 		}
 		path := filepath.Join(cfg.SpacesRoot, req.Principal, "workspace")
 		if cfg.Environment != "" {
@@ -63,22 +64,22 @@ func (c *genericController) cellWorkspaceBind(req cliExecRequest) (hostPath stri
 				path = managed
 			}
 		}
-		if !containedPath(cfg.SpacesRoot, path) || noSymlinkPath(path) != nil {
-			return "", false, fmt.Errorf("%w: principal workspace path", ErrIsolation)
+		if !api.ContainedPath(cfg.SpacesRoot, path) || api.NoSymlinkPath(path) != nil {
+			return "", false, fmt.Errorf("%w: principal workspace path", api.ErrIsolation)
 		}
 		info, err := os.Stat(path)
 		if err != nil || !info.IsDir() {
-			return "", false, fmt.Errorf("%w: principal workspace is missing", ErrIsolation)
+			return "", false, fmt.Errorf("%w: principal workspace is missing", api.ErrIsolation)
 		}
-		return dockerBindSource(path), access == "rw", nil
+		return api.DockerBindSource(path), access == "rw", nil
 	default:
-		return "", false, fmt.Errorf("%w: unknown workspace scope %q", ErrInvalid, scope)
+		return "", false, fmt.Errorf("%w: unknown workspace scope %q", api.ErrInvalid, scope)
 	}
 }
 
 // cellArgv assembles the docker create argv for a cell. Every isolation claim
 // the receipt later makes is set here and verified back from inspect.
-func (c *genericController) cellArgv(req cliExecRequest, cell *cliCell, runtime string) []string {
+func (c *genericController) cellArgv(req api.CliExecRequest, cell *cliCell, runtime string) []string {
 	limits := req.Plan.Execution
 	args := []string{
 		"create", "--name", cell.name,
@@ -145,7 +146,7 @@ func (c *genericController) cellArgv(req cliExecRequest, cell *cliCell, runtime 
 // cellInitHost returns the state-root copy of cellinit — the source the
 // daemon resolves when a sibling bind mounts the helper.
 func (c *genericController) cellInitHost() string {
-	return dockerBindSource(filepath.Join(c.config.StateRoot, "cli-cellinit"))
+	return api.DockerBindSource(filepath.Join(c.config.StateRoot, "cli-cellinit"))
 }
 
 // cellInitSeed copies the shipped cellinit into the state root so a sibling
@@ -159,12 +160,12 @@ func (c *genericController) cellInitSeed() error {
 	}
 	src, err := os.Open(c.config.CLI.CellInit)
 	if err != nil {
-		return fmt.Errorf("%w: cellinit binary: %v", ErrIsolation, err)
+		return fmt.Errorf("%w: cellinit binary: %v", api.ErrIsolation, err)
 	}
 	defer src.Close()
 	info, err := src.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("%w: cellinit is not a regular file", ErrIsolation)
+		return fmt.Errorf("%w: cellinit is not a regular file", api.ErrIsolation)
 	}
 	tmp, err := os.CreateTemp(c.config.StateRoot, ".cellinit-*")
 	if err != nil {
@@ -214,11 +215,11 @@ func (c *genericController) cellDrifted(ctx context.Context, cell *cliCell) stri
 func (c *genericController) inspectCell(ctx context.Context, name string) (genericContainer, error) {
 	body, err := c.docker(ctx, "inspect", name)
 	if err != nil {
-		return genericContainer{}, fmt.Errorf("%w: cell inspect: %v", ErrIsolation, err)
+		return genericContainer{}, fmt.Errorf("%w: cell inspect: %v", api.ErrIsolation, err)
 	}
 	var containers []genericContainer
 	if json.Unmarshal(body, &containers) != nil || len(containers) != 1 {
-		return genericContainer{}, fmt.Errorf("%w: cell inspect", ErrIsolation)
+		return genericContainer{}, fmt.Errorf("%w: cell inspect", api.ErrIsolation)
 	}
 	return containers[0], nil
 }
@@ -242,7 +243,7 @@ func cellProfileProblem(container genericContainer, cell *cliCell, seccomp, stat
 	if len(container.HostConfig.CapAdd) != 0 || len(container.HostConfig.CapDrop) != 1 || container.HostConfig.CapDrop[0] != "ALL" {
 		return "caps"
 	}
-	if !contains(container.HostConfig.SecurityOpt, "no-new-privileges=true") || !securityOptHasSeccomp(container.HostConfig.SecurityOpt, seccomp) {
+	if !api.Contains(container.HostConfig.SecurityOpt, "no-new-privileges=true") || !api.SecurityOptHasSeccomp(container.HostConfig.SecurityOpt, seccomp) {
 		return "security-opt"
 	}
 	if container.Config.Image != cell.image {
@@ -291,7 +292,7 @@ func cellProfileProblem(container genericContainer, cell *cliCell, seccomp, stat
 		}
 		switch mount.Destination {
 		case cellInitGuest:
-			if mount.Type != "bind" || mount.RW || mount.Source != dockerBindSource(filepath.Join(stateRoot, "cli-cellinit")) {
+			if mount.Type != "bind" || mount.RW || mount.Source != api.DockerBindSource(filepath.Join(stateRoot, "cli-cellinit")) {
 				return "cellinit-mount"
 			}
 		case cellWorkGuest:

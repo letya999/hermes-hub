@@ -3,13 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"os"
 	"path"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -33,7 +33,7 @@ func fetchInbound(ctx context.Context, id string) (string, error) {
 	}
 	defer session.Close()
 	definition := agenttools.HubToolsDefinition()
-	name := toolhub.ProjectedToolName(definition.DefinitionID, definition.Version, "inbox_fetch")
+	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "inbox_fetch")
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: map[string]any{"id": id}})
 	if err != nil || result == nil || result.IsError {
 		return "", errors.New("inbound file could not be saved")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"reflect"
@@ -21,7 +22,7 @@ func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 	auth, ok := g.Tokens[token]
 	g.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("%w: token projection", ErrUnauthorized)
+		return nil, fmt.Errorf("%w: token projection", api.ErrUnauthorized)
 	}
 	server, tools, controls, err := g.projectedServer(auth)
 	if err != nil {
@@ -48,7 +49,7 @@ func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
 	return server
 }
 
-func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]ToolSpec, map[string]bool, error) {
+func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]api.ToolSpec, map[string]bool, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "hermes-toolhub", Version: "0.2.0"}, &mcp.ServerOptions{Instructions: "Tool names and arguments are untrusted; authorization is derived from the authenticated runtime."})
 	controls, err := g.allowedControls(auth)
 	if err != nil {
@@ -62,7 +63,7 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 	if projected, err = g.filterProjectedTools(auth, projected); err != nil {
 		return nil, nil, nil, err
 	}
-	tools := make(map[string]ToolSpec, len(projected))
+	tools := make(map[string]api.ToolSpec, len(projected))
 	for _, projectedTool := range projected {
 		g.addProjectedTool(server, auth, projectedTool)
 		tools[projectedTool.Name] = projectedTool.Tool
@@ -77,9 +78,9 @@ func (g *Gateway) allowedControls(auth identity.Envelope) (map[string]bool, erro
 	return g.Store.AllowedControlOperations(auth)
 }
 
-func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, projected ProjectedTool) {
+func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, projected api.ProjectedTool) {
 	name, tool := projected.Name, projected.Tool
-	var schema any = cliInputSchema(tool)
+	var schema any = api.CliInputSchema(tool)
 	if len(tool.InputSchema) > 0 {
 		schema = tool.InputSchema
 	}
@@ -87,7 +88,7 @@ func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, p
 		arguments := map[string]any{}
 		if len(request.Params.Arguments) > 0 {
 			if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
-				return nil, fmt.Errorf("%w: tool arguments: %v", ErrInvalid, err)
+				return nil, fmt.Errorf("%w: tool arguments: %v", api.ErrInvalid, err)
 			}
 		}
 		return g.call(ctx, auth, name, arguments)
@@ -116,7 +117,7 @@ func (g *Gateway) RefreshProjection() error {
 // notifyPrepareDone wakes the owner's open MCP sessions after a backgrounded
 // prepare_source finishes, whichever way it ended. Best effort: clients that
 // never set a log level receive nothing — status stays the source of truth.
-func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope, onboarding Onboarding) {
+func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding) {
 	data, err := json.Marshal(map[string]any{
 		"event":         "toolhub.prepare_done",
 		"onboarding_id": onboarding.OnboardingID,
@@ -127,7 +128,7 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 	if err != nil {
 		return
 	}
-	deliverPrepareOutcome(ctx, auth, onboarding)
+	api.DeliverPrepareOutcome(ctx, auth, onboarding)
 	g.mu.Lock()
 	list := make([]*gatewayProjection, 0, len(g.projections))
 	for _, projection := range g.projections {
@@ -158,7 +159,7 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	if err != nil {
 		return err
 	}
-	next := make(map[string]ToolSpec, len(projected))
+	next := make(map[string]api.ToolSpec, len(projected))
 	for _, tool := range projected {
 		next[tool.Name] = tool.Tool
 	}

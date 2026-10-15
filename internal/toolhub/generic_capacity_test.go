@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
 	"os"
@@ -19,9 +20,9 @@ import (
 func TestGenericFallbackNinetyFivePlusFiveUniqueWorkloads(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	d.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	d.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
 	d.Workload.Stateful = true
-	d.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
+	d.Execution.Mounts = []api.Mount{{Source: "connection-state", Target: "/state"}}
 	sharedDir := filepath.Join(root, "shared")
 	if err := os.Mkdir(sharedDir, 0700); err != nil {
 		t.Fatal(err)
@@ -29,7 +30,7 @@ func TestGenericFallbackNinetyFivePlusFiveUniqueWorkloads(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sharedDir, "credentials.env"), []byte("TOKEN=shared-ref\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	budget, err := NewWorkloadBudget(4, time.Minute)
+	budget, err := api.NewWorkloadBudget(4, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func TestGenericFallbackNinetyFivePlusFiveUniqueWorkloads(t *testing.T) {
 func TestGenericControllerFIFOBudgetAndIdleCleanup(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	budget, err := NewWorkloadBudget(1, 50*time.Millisecond)
+	budget, err := api.NewWorkloadBudget(1, 50*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestGenericControllerFIFOBudgetAndIdleCleanup(t *testing.T) {
 	}
 }
 
-func fakeFallbackCommands(t *testing.T, definition ToolDefinition, seccomp string, calls *[]string) (
+func fakeFallbackCommands(t *testing.T, definition api.ToolDefinition, seccomp string, calls *[]string) (
 	func(context.Context, string, ...string) ([]byte, error),
 	func(context.Context, map[string]string, string, ...string) ([]byte, error),
 ) {
@@ -150,7 +151,7 @@ func fakeFallbackCommands(t *testing.T, definition ToolDefinition, seccomp strin
 		if binary == "docker" && len(args) > 0 && args[0] == "info" {
 			return []byte("linux"), nil
 		}
-		if binary == "docker" && len(args) > 0 && args[0] == "inspect" && contains(args, "--format") {
+		if binary == "docker" && len(args) > 0 && args[0] == "inspect" && api.Contains(args, "--format") {
 			name := args[1]
 			id := strings.TrimSuffix(strings.TrimSuffix(name, "-egress"), "-relay")
 			return []byte(`{"hermes-` + id + `":{"IPAddress":"172.20.0.2"}}`), nil

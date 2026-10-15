@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,20 +23,20 @@ func diagFixture(t *testing.T, store *Store, auth identity.Envelope, workloadID 
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatalf("register definition: %v", err)
 	}
-	binding := ToolBinding{
-		Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
+	binding := api.ToolBinding{
+		Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion,
-		WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1,
+		WorkloadClass: api.PerUser, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1,
 	}
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatalf("put binding: %v", err)
 	}
-	bindingID := DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
-	workload := WorkloadInstance{
-		Schema: SchemaVersion, WorkloadID: workloadID, BindingID: bindingID,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Class: PerUser,
-		Owner: &OwnerRef{Type: ContextOwner, ID: auth.ContextID}, RuntimeID: auth.RuntimeID,
-		Generation: 1, Status: RunningStatus, StartedAt: time.Now().UTC(),
+	bindingID := api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	workload := api.WorkloadInstance{
+		Schema: api.SchemaVersion, WorkloadID: workloadID, BindingID: bindingID,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Class: api.PerUser,
+		Owner: &api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}, RuntimeID: auth.RuntimeID,
+		Generation: 1, Status: api.RunningStatus, StartedAt: time.Now().UTC(),
 	}
 	if err := store.PutWorkloadInstance(workload); err != nil {
 		t.Fatalf("put workload: %v", err)
@@ -113,7 +114,7 @@ func TestDiagnosticsScopeIsolation(t *testing.T) {
 	}
 	// The inferred entry mirrors the deterministic ID resolveLocked would
 	// request for a credential-less per-user binding.
-	if derived := WorkloadInstanceID("diag-aaaaaaaa", PerUser, workloads[0].BindingID, ""); workloads[1].WorkloadID != derived || workloads[1].Status != "inferred" {
+	if derived := api.WorkloadInstanceID("diag-aaaaaaaa", api.PerUser, workloads[0].BindingID, ""); workloads[1].WorkloadID != derived || workloads[1].Status != "inferred" {
 		t.Fatalf("inferred workload: %#v", workloads[1])
 	}
 	// Bob sees only his own material.
@@ -238,7 +239,7 @@ func TestDiagnosticsSelectorAndRevocation(t *testing.T) {
 		t.Fatalf("foreign selector exposed data: %#v", body)
 	}
 	// Revoking the binding removes the workload from diagnostics scope.
-	if err := store.SetBindingStatus(bindingID, RevokedStatus); err != nil {
+	if err := store.SetBindingStatus(bindingID, api.RevokedStatus); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 	body, err = control.diagnostics(t.Context(), alice, map[string]any{})

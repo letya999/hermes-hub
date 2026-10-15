@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -15,11 +16,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func asyncFixture(t *testing.T, reviewer SourceReviewer) *ControlPlane {
+func asyncFixture(t *testing.T, reviewer api.SourceReviewer) *ControlPlane {
 	t.Helper()
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", "prepare_source", "status")
-	if err := putGrant(t, store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	return &ControlPlane{Store: store, Reviewer: reviewer, WorkloadRoot: t.TempDir(), Now: time.Now,
@@ -28,37 +29,37 @@ func asyncFixture(t *testing.T, reviewer SourceReviewer) *ControlPlane {
 
 func TestPrepareSelfInstallAsyncReturnsPreparingThenCompletes(t *testing.T) {
 	release := make(chan struct{})
-	notified := make(chan Onboarding, 1)
-	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	notified := make(chan api.Onboarding, 1)
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		<-release
 		definition := userMCPDefinition()
-		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review"}, nil
+		return api.SourceReview{Definition: definition, Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition), ReviewDigest: "sha256:review"}, nil
 	})
-	control.PrepareDone = func(_ context.Context, _ identity.Envelope, onboarding Onboarding) { notified <- onboarding }
+	control.PrepareDone = func(_ context.Context, _ identity.Envelope, onboarding api.Onboarding) { notified <- onboarding }
 
 	body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "async-ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body["phase"] != PhasePreparing || body["next_action"] != "poll_status" {
+	if body["phase"] != api.PhasePreparing || body["next_action"] != "poll_status" {
 		t.Fatalf("expected preparing body, got %v", body)
 	}
 	id := body["onboarding_id"].(string)
 	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": id})
-	if err != nil || st["phase"] != PhasePreparing {
+	if err != nil || st["phase"] != api.PhasePreparing {
 		t.Fatalf("mid-flight status=%v err=%v", st, err)
 	}
 	close(release)
 	select {
 	case onboarding := <-notified:
-		if onboarding.Phase != PhaseAwaitingConfirm {
+		if onboarding.Phase != api.PhaseAwaitingConfirm {
 			t.Fatalf("wake phase=%s", onboarding.Phase)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("PrepareDone never fired")
 	}
 	st, err = control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": id})
-	if err != nil || st["phase"] != PhaseAwaitingConfirm {
+	if err != nil || st["phase"] != api.PhaseAwaitingConfirm {
 		t.Fatalf("final status=%v err=%v", st, err)
 	}
 }
@@ -68,22 +69,22 @@ func TestPrepareSelfInstallURLContractStillAwaitsCredentials(t *testing.T) {
 	// nothing and newOnboarding picks awaiting-confirm; the recipe overwrite
 	// then repopulates Required. The phase must follow the final Required set
 	// or confirm deadlocks on a locator that can never be submitted.
-	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		definition := userMCPDefinition()
-		definition.Credentials = []CredentialInput{{Name: "UPSTREAM_URL", Required: true}}
-		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review",
-			Recipe: &RecipeResolution{Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "UPSTREAM_URL", Type: "url", Required: true, Secret: false, Delivery: "env", Target: "UPSTREAM_URL"}}}}}, nil
+		definition.Credentials = []api.CredentialInput{{Name: "UPSTREAM_URL", Required: true}}
+		return api.SourceReview{Definition: definition, Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition), ReviewDigest: "sha256:review",
+			Recipe: &api.RecipeResolution{Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{{Name: "UPSTREAM_URL", Type: "url", Required: true, Secret: false, Delivery: "env", Target: "UPSTREAM_URL"}}}}}, nil
 	})
 	control.PrepareSyncWindow = -1
 	body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "url-contract"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body["phase"] != PhaseAwaitingCreds {
+	if body["phase"] != api.PhaseAwaitingCreds {
 		t.Fatalf("url-only contract skipped credentials phase: %v", body["phase"])
 	}
 	onboarding, ok := control.Store.FindOnboardingByKey(aliceAuth(), "url-contract")
-	if !ok || onboarding.Phase != PhaseAwaitingCreds || len(onboarding.Required) != 1 || onboarding.ConfirmationNonce != "" {
+	if !ok || onboarding.Phase != api.PhaseAwaitingCreds || len(onboarding.Required) != 1 || onboarding.ConfirmationNonce != "" {
 		t.Fatalf("deadlocked onboarding persisted: %+v", onboarding)
 	}
 }
@@ -93,25 +94,25 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 	// (for example, stamped by an older pipeline) must not be reused: it can
 	// only fail admission with a digest-drift error. Reuse skips re-review, so
 	// the intact check has to happen before the reuse decision.
-	stored := ToolDefinition{
-		Schema: SchemaVersion, DefinitionID: "mcp", Version: "0.0.2", Transport: ContainerMCP,
-		Source: DefinitionSource{
+	stored := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "mcp", Version: "0.0.2", Transport: api.ContainerMCP,
+		Source: api.DefinitionSource{
 			Repository:         "https://github.com/example/mcp",
 			CommitSHA:          "0123456789abcdef0123456789abcdef01234567",
 			Image:              "hermes-artifact/mcp",
 			Digest:             "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			ToolContractSource: ToolContractPreflight,
+			ToolContractSource: api.ToolContractPreflight,
 		},
-		Tools:     []ToolSpec{{Name: "search", Effect: ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}},
-		Workload:  WorkloadPolicy{Class: PerUser, Rationale: "user self-install", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
-		Execution: ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}},
-		Health:    HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
+		Tools:     []api.ToolSpec{{Name: "search", Effect: api.ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "user self-install", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}},
+		Health:    api.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
 	}
 	for _, scenario := range []string{"intact", "drifted"} {
 		t.Run(scenario, func(t *testing.T) {
 			definition := stored
 			if scenario == "intact" {
-				digest, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractPreflight, Tools: definition.Tools})
+				digest, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: definition.Tools})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -120,9 +121,9 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 				definition.Source.ToolContractDigest = "sha256:" + strings.Repeat("0", 64)
 			}
 			var calls atomic.Int32
-			control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+			control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 				calls.Add(1)
-				return SourceReview{Definition: userMCPDefinition()}, nil
+				return api.SourceReview{Definition: userMCPDefinition()}, nil
 			})
 			// The reuse decision must resolve synchronously: the default 50ms
 			// async window can expire before the goroutine runs on a slow host.
@@ -130,7 +131,7 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 			if err := control.Store.RegisterDefinition(definition); err != nil {
 				t.Fatal(err)
 			}
-			if err := control.Store.PutPublication(DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
+			if err := control.Store.PutPublication(api.DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: api.PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
 				t.Fatal(err)
 			}
 			body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "reuse-" + scenario})
@@ -138,7 +139,7 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "intact" {
-				if calls.Load() != 0 || body["phase"] != PhaseAwaitingConfirm {
+				if calls.Load() != 0 || body["phase"] != api.PhaseAwaitingConfirm {
 					t.Fatalf("intact contract not reused: calls=%d phase=%v", calls.Load(), body["phase"])
 				}
 				return
@@ -152,24 +153,24 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 
 func TestPrepareSelfInstallAsyncFailureIsDurable(t *testing.T) {
 	release := make(chan struct{})
-	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		<-release
-		return SourceReview{}, errors.New("build blew up")
+		return api.SourceReview{}, errors.New("build blew up")
 	})
 	body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "async-fail"})
-	if err != nil || body["phase"] != PhasePreparing {
+	if err != nil || body["phase"] != api.PhasePreparing {
 		t.Fatalf("expected preparing, got %v err=%v", body, err)
 	}
 	close(release)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if existing, ok := control.Store.FindOnboardingByKey(aliceAuth(), "async-fail"); ok && existing.Phase == PhaseFailed {
+		if existing, ok := control.Store.FindOnboardingByKey(aliceAuth(), "async-fail"); ok && existing.Phase == api.PhaseFailed {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	existing, ok := control.Store.FindOnboardingByKey(aliceAuth(), "async-fail")
-	if !ok || existing.Phase != PhaseFailed {
+	if !ok || existing.Phase != api.PhaseFailed {
 		t.Fatalf("failed prepare left phase=%v ok=%v", existing.Phase, ok)
 	}
 	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": existing.OnboardingID})
@@ -181,18 +182,18 @@ func TestPrepareSelfInstallAsyncFailureIsDurable(t *testing.T) {
 func TestPrepareSelfInstallAsyncRetryWhilePreparingDoesNotDuplicate(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
-	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		calls.Add(1)
 		<-release
-		return SourceReview{Definition: userMCPDefinition()}, nil
+		return api.SourceReview{Definition: userMCPDefinition()}, nil
 	})
 	args := map[string]any{"source": githubCommitURL(), "request_key": "async-dup"}
 	first, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", args)
-	if err != nil || first["phase"] != PhasePreparing {
+	if err != nil || first["phase"] != api.PhasePreparing {
 		t.Fatalf("first=%v err=%v", first, err)
 	}
 	again, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", args)
-	if err != nil || again["phase"] != PhasePreparing || again["onboarding_id"] != first["onboarding_id"] {
+	if err != nil || again["phase"] != api.PhasePreparing || again["onboarding_id"] != first["onboarding_id"] {
 		t.Fatalf("retry=%v err=%v", again, err)
 	}
 	close(release)
@@ -220,7 +221,7 @@ func TestNotifyPrepareDoneReachesSubscribedSession(t *testing.T) {
 	if err := session.SetLoggingLevel(context.Background(), &mcp.SetLoggingLevelParams{Level: "notice"}); err != nil {
 		t.Fatal(err)
 	}
-	fix.gateway.notifyPrepareDone(context.Background(), aliceAuth(), Onboarding{OnboardingID: "onboard-x", Phase: PhaseAwaitingConfirm, DefinitionID: "user-mcp", SourceURL: "https://github.com/example/mcp"})
+	fix.gateway.notifyPrepareDone(context.Background(), aliceAuth(), api.Onboarding{OnboardingID: "onboard-x", Phase: api.PhaseAwaitingConfirm, DefinitionID: "user-mcp", SourceURL: "https://github.com/example/mcp"})
 	select {
 	case params := <-messages:
 		data, _ := json.Marshal(params.Data)
@@ -231,7 +232,7 @@ func TestNotifyPrepareDoneReachesSubscribedSession(t *testing.T) {
 		t.Fatal("no wake notification")
 	}
 	// A different owner's session is never woken for alice's onboarding.
-	fix.gateway.notifyPrepareDone(context.Background(), bobAuth(), Onboarding{OnboardingID: "onboard-y", Phase: PhaseFailed})
+	fix.gateway.notifyPrepareDone(context.Background(), bobAuth(), api.Onboarding{OnboardingID: "onboard-y", Phase: api.PhaseFailed})
 	select {
 	case params := <-messages:
 		t.Fatalf("foreign wake leaked: %v", params.Data)
@@ -244,18 +245,18 @@ func TestPrepareSelfInstallAsyncWindowBranches(t *testing.T) {
 	control := asyncFixture(t, fixtureReviewer(userMCPDefinition()))
 	control.PrepareSyncWindow = -1
 	body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "sync-mode"})
-	if err != nil || body["phase"] == PhasePreparing {
+	if err != nil || body["phase"] == api.PhasePreparing {
 		t.Fatalf("sync prepare=%v err=%v", body, err)
 	}
 
 	// A canceled caller context still returns the durable preparing record.
-	control = asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	control = asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		select {} // reviewer never returns
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	body, err = control.Invoke(ctx, aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "gone-client"})
-	if err != nil || body["phase"] != PhasePreparing {
+	if err != nil || body["phase"] != api.PhasePreparing {
 		t.Fatalf("disconnected prepare=%v err=%v", body, err)
 	}
 
@@ -282,13 +283,13 @@ func TestPrepareRequestKeyDedupeRefreshesExisting(t *testing.T) {
 
 func TestLatestPrepareRecordFindsBumpedSibling(t *testing.T) {
 	control := asyncFixture(t, nil)
-	stub := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-stub", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: OnboardingSelfInstall, Phase: PhaseRemoved, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now().Add(-time.Hour)}
+	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-stub", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseRemoved, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now().Add(-time.Hour)}
 	if err := control.Store.PutOnboarding(stub); err != nil {
 		t.Fatal(err)
 	}
 	sibling := stub
 	sibling.OnboardingID = "onboard-real"
-	sibling.Phase = PhaseAwaitingConfirm
+	sibling.Phase = api.PhaseAwaitingConfirm
 	sibling.CreatedAt = time.Now()
 	if err := control.Store.PutOnboarding(sibling); err != nil {
 		t.Fatal(err)
@@ -312,15 +313,15 @@ func TestLatestPrepareRecordFindsBumpedSibling(t *testing.T) {
 func TestPrepareSelfInstallDedupesInFlightKeylessRetry(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
-	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		calls.Add(1)
 		<-release
-		return SourceReview{Definition: userMCPDefinition()}, nil
+		return api.SourceReview{Definition: userMCPDefinition()}, nil
 	})
 	// No request_key: the deterministic stub id still dedupes the retry.
 	args := map[string]any{"source": githubCommitURL()}
 	first, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", args)
-	if err != nil || first["phase"] != PhasePreparing {
+	if err != nil || first["phase"] != api.PhasePreparing {
 		t.Fatalf("first=%v err=%v", first, err)
 	}
 	again, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", args)
@@ -336,23 +337,23 @@ func TestPrepareSelfInstallDedupesInFlightKeylessRetry(t *testing.T) {
 func TestPrepareSelfInstallRetriesStalePreparing(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
-	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		calls.Add(1)
 		<-release
-		return SourceReview{Definition: userMCPDefinition()}, nil
+		return api.SourceReview{Definition: userMCPDefinition()}, nil
 	})
 	// A stub older than the background deadline belongs to a crashed prepare;
 	// the retry re-runs review+build instead of trusting it forever.
-	stale := Onboarding{Schema: SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: OnboardingSelfInstall, Phase: PhasePreparing, Revision: 1, CreatedAt: time.Now().Add(-time.Hour),
+	stale := api.Onboarding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now().Add(-time.Hour),
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567",
 		DefinitionID: "mcp", DefinitionVersion: "0.0.1"}
-	stale.OnboardingID = deterministicID("onboard", "alice", "alice", "runtime", string(OnboardingSelfInstall)+":mcp@0.0.1:https://github.com/example/mcp:0123456789abcdef0123456789abcdef01234567")
+	stale.OnboardingID = api.DeterministicID("onboard", "alice", "alice", "runtime", string(api.OnboardingSelfInstall)+":mcp@0.0.1:https://github.com/example/mcp:0123456789abcdef0123456789abcdef01234567")
 	if err := control.Store.PutOnboarding(stale); err != nil {
 		t.Fatal(err)
 	}
 	body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL()})
-	if err != nil || body["phase"] != PhasePreparing {
+	if err != nil || body["phase"] != api.PhasePreparing {
 		t.Fatalf("stale retry=%v err=%v", body, err)
 	}
 	if calls.Load() != 1 {
@@ -364,10 +365,10 @@ func TestPrepareSelfInstallRetriesStalePreparing(t *testing.T) {
 func TestPrepareSelfInstallConcurrentCallsShareOneReview(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
-	control := asyncFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		calls.Add(1)
 		<-release
-		return SourceReview{Definition: userMCPDefinition()}, nil
+		return api.SourceReview{Definition: userMCPDefinition()}, nil
 	})
 	// Two truly concurrent identical prepares must not both run review+build:
 	// ClaimPreparingOnboarding decides under the store lock.
@@ -401,26 +402,26 @@ func TestPrepareSelfInstallConcurrentCallsShareOneReview(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st["phase"] == PhaseAwaitingConfirm || time.Now().After(deadline) {
+		if st["phase"] == api.PhaseAwaitingConfirm || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if st["phase"] != PhaseAwaitingConfirm {
+	if st["phase"] != api.PhaseAwaitingConfirm {
 		t.Fatalf("stub did not resolve to finished record: status=%v", st)
 	}
 	if st["onboarding_id"] == second["onboarding_id"] && st["onboarding_id"] != a["onboarding_id"] {
 		t.Fatalf("status kept the superseded stub instead of the finished record: status=%v", st)
 	}
-	if a["phase"] == PhaseAwaitingConfirm && st["onboarding_id"] != a["onboarding_id"] {
+	if a["phase"] == api.PhaseAwaitingConfirm && st["onboarding_id"] != a["onboarding_id"] {
 		t.Fatalf("concurrent callers disagree on the finished record: first=%v status=%v", a, st)
 	}
 }
 
 func TestPreparingRecordSurvivesStoreReload(t *testing.T) {
 	store := NewStore()
-	stub := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-reload", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: OnboardingSelfInstall, Phase: PhasePreparing, Revision: 1, CreatedAt: time.Now(),
+	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-reload", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now(),
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k-reload"}
 	if err := store.PutOnboarding(stub); err != nil {
 		t.Fatal(err)
@@ -436,7 +437,7 @@ func TestPreparingRecordSurvivesStoreReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := fresh.onboarding("onboard-reload")
-	if err != nil || onboarding.Phase != PhasePreparing {
+	if err != nil || onboarding.Phase != api.PhasePreparing {
 		t.Fatalf("reloaded onboarding=%+v err=%v", onboarding, err)
 	}
 	if _, ok := fresh.FindOnboardingByKey(aliceAuth(), "k-reload"); !ok {
@@ -446,13 +447,13 @@ func TestPreparingRecordSurvivesStoreReload(t *testing.T) {
 
 func TestStatusRejectsForeignSupersededPointer(t *testing.T) {
 	control := asyncFixture(t, nil)
-	real := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-real", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: OnboardingSelfInstall, Phase: PhaseAwaitingConfirm, Revision: 1, CreatedAt: time.Now()}
+	real := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-real", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, CreatedAt: time.Now()}
 	stub := real
 	stub.OnboardingID = "onboard-stub"
-	stub.Phase = PhaseRemoved
+	stub.Phase = api.PhaseRemoved
 	stub.SupersededBy = "onboard-real"
-	for _, record := range []Onboarding{real, stub} {
+	for _, record := range []api.Onboarding{real, stub} {
 		if err := control.Store.PutOnboarding(record); err != nil {
 			t.Fatal(err)
 		}
@@ -463,7 +464,7 @@ func TestStatusRejectsForeignSupersededPointer(t *testing.T) {
 	}
 	// Alice's stub resolves through the pointer to the live record.
 	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": "onboard-stub"})
-	if err != nil || st["onboarding_id"] != "onboard-real" || st["phase"] != PhaseAwaitingConfirm {
+	if err != nil || st["onboarding_id"] != "onboard-real" || st["phase"] != api.PhaseAwaitingConfirm {
 		t.Fatalf("superseded status=%v err=%v", st, err)
 	}
 }

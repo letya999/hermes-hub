@@ -6,24 +6,25 @@ import (
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
 
-func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding, definition ToolDefinition) error {
+func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, definition api.ToolDefinition) error {
 	if c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 {
 		return nil
 	}
 	// Bounded-cli credentials are owner-declared environment values, not
 	// provider sessions: without a reviewed broker contract the protected
 	// loopback form carries them. A bound contract keeps the broker path.
-	if definition.Transport == BoundedCLI && definition.CredentialContractID == "" {
+	if definition.Transport == api.BoundedCLI && definition.CredentialContractID == "" {
 		return nil
 	}
 	if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 || len(definition.CredentialContractEnv) == 0 {
-		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", ErrUnauthorized, definition.DefinitionID)
+		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", api.ErrUnauthorized, definition.DefinitionID)
 	}
 	control, err := c.Broker.New(auth, "broker:control")
 	if err != nil {
@@ -37,17 +38,17 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		matches := c.Store.matchingOwnerConnectionsLocked(auth, definition)
 		c.Store.mu.RUnlock()
 		if len(matches) > 1 {
-			return fmt.Errorf("%w: ambiguous owner connection", ErrUnauthorized)
+			return fmt.Errorf("%w: ambiguous owner connection", api.ErrUnauthorized)
 		}
 		if len(matches) == 1 {
 			ref := matches[0].credential
 			if ref.Backend == "credential-broker" && ref.BrokerContractID == definition.CredentialContractID && ref.BrokerContractRevision == definition.CredentialContractRevision && brokerCredentialActive(ctx, control, ref.Locator) {
 				onboarding.Locator, onboarding.BrokerCredentialID = ref.Locator, ref.Locator
 				onboarding.BrokerContractID, onboarding.BrokerContractRevision = ref.BrokerContractID, ref.BrokerContractRevision
-				onboarding.Phase = PhaseAwaitingConfirm
+				onboarding.Phase = api.PhaseAwaitingConfirm
 				onboarding.FormNonce = ""
 				onboarding.FormExpires = time.Time{}
-				onboarding.ConfirmationNonce = randomNonce()
+				onboarding.ConfirmationNonce = api.RandomNonce()
 				onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 				onboarding.Revision++
 				if err := c.Store.PutOnboarding(*onboarding); err != nil {
@@ -72,10 +73,10 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	}
 	if onboarding.BrokerRequestID == "" {
 		ownerKind := "user"
-		if definition.Workload.Class == Shared {
+		if definition.Workload.Class == api.Shared {
 			ownerKind = "context"
 		}
-		connectionID := deterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
+		connectionID := api.DeterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
 		consumerID := definition.DefinitionID
 		if onboarding.BrokerRotateCredentialID != "" {
 			var credential brokerv1.Credential
@@ -122,7 +123,7 @@ func brokerCredentialActive(ctx context.Context, control *brokerclient.Client, i
 	return credential.Status == "active"
 }
 
-func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding) error {
+func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
 	if c == nil || c.Broker == nil || !c.Broker.Enabled() || onboarding == nil {
 		return nil
 	}
@@ -148,13 +149,13 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		if onboarding.AdmissionPending {
 			return c.completeBrokerAdmission(ctx, auth, onboarding, request.CredentialID)
 		}
-		if onboarding.BrokerCredentialID != request.CredentialID || onboarding.Locator != request.CredentialID || onboarding.Phase == PhaseAwaitingCreds {
+		if onboarding.BrokerCredentialID != request.CredentialID || onboarding.Locator != request.CredentialID || onboarding.Phase == api.PhaseAwaitingCreds {
 			onboarding.BrokerCredentialID = request.CredentialID
 			onboarding.Locator = request.CredentialID
-			onboarding.Phase = PhaseAwaitingConfirm
+			onboarding.Phase = api.PhaseAwaitingConfirm
 			onboarding.FormNonce = ""
 			onboarding.FormExpires = time.Time{}
-			onboarding.ConfirmationNonce = randomNonce()
+			onboarding.ConfirmationNonce = api.RandomNonce()
 			onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 			onboarding.ConfirmationUsed = false
 			changed = true
@@ -167,7 +168,7 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 	return nil
 }
 
-func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identity.Envelope, onboarding *Onboarding, credentialID string) error {
+func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, credentialID string) error {
 	c.admissionMu.Lock()
 	defer c.admissionMu.Unlock()
 	current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID)
@@ -179,7 +180,7 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 		return nil
 	}
 	if current.BrokerRequestID != onboarding.BrokerRequestID || current.BrokerCredentialID != "" && current.BrokerCredentialID != credentialID && current.BrokerRotateCredentialID != current.BrokerCredentialID {
-		return ErrStale
+		return api.ErrStale
 	}
 	if strings.HasPrefix(current.Error, "Проверка не прошла") {
 		*onboarding = current
@@ -191,7 +192,7 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	}
 	admitted, err := c.admitWithBrokerCredential(ctx, auth, current, definition, credentialID)
 	if err == nil && !c.selfInstallUsable(admitted) {
-		err = fmt.Errorf("%w: admitted Broker definition differs from reviewed entry", ErrUnauthorized)
+		err = fmt.Errorf("%w: admitted Broker definition differs from reviewed entry", api.ErrUnauthorized)
 	}
 	if err == nil {
 		err = c.registerAdmittedDefinition(&admitted, current.PrincipalID)
@@ -201,22 +202,22 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 		return readErr
 	}
 	if !latest.AdmissionPending || latest.Phase != current.Phase || latest.BrokerRequestID != current.BrokerRequestID || latest.BrokerRotateCredentialID != current.BrokerRotateCredentialID {
-		return ErrStale
+		return api.ErrStale
 	}
 	latest.BrokerCredentialID, latest.Locator = credentialID, credentialID
 	latest.FormNonce, latest.FormExpires = "", time.Time{}
 	if err != nil {
-		latest.Phase = PhaseAwaitingCreds
+		latest.Phase = api.PhaseAwaitingCreds
 		latest.Error = "Проверка не прошла. " + credentialProbeFailure(err)
 	} else {
 		latest.Definition = &admitted
 		latest.DefinitionID, latest.DefinitionVersion = admitted.DefinitionID, admitted.Version
-		latest.Permissions, latest.Effects = toolNames(admitted), effectNames(admitted)
+		latest.Permissions, latest.Effects = api.ToolNames(admitted), api.EffectNames(admitted)
 		latest.ReviewDigest = admitted.Source.ReviewDigest
 		latest.AdmissionPending = false
 		latest.Error = ""
-		latest.Phase = PhaseAwaitingConfirm
-		latest.ConfirmationNonce = randomNonce()
+		latest.Phase = api.PhaseAwaitingConfirm
+		latest.ConfirmationNonce = api.RandomNonce()
 		latest.ConfirmationExpires = c.now().Add(c.ttl())
 		latest.ConfirmationUsed = false
 	}
@@ -231,8 +232,8 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 // regenerateBrokerRequest replaces an expired or canceled broker request while
 // the onboarding still waits for credentials, so a dead connect link heals on
 // the next status poll instead of pinning the onboarding forever.
-func (c *ControlPlane) regenerateBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *Onboarding) error {
-	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds {
+func (c *ControlPlane) regenerateBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
+	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingCreds {
 		return nil
 	}
 	definition, err := c.definitionOf(*onboarding)
@@ -250,22 +251,22 @@ func (c *ControlPlane) regenerateBrokerRequest(ctx context.Context, auth identit
 // brokerCredentialRequired is true when the definition is bound to a reviewed
 // broker contract or the onboarding already holds a broker credential. A
 // credential-gate admission has neither, so its loopback secret stays local.
-func (c *ControlPlane) brokerCredentialRequired(definition ToolDefinition, onboarding Onboarding) bool {
+func (c *ControlPlane) brokerCredentialRequired(definition api.ToolDefinition, onboarding api.Onboarding) bool {
 	return c != nil && c.Broker != nil && c.Broker.Enabled() && (definition.CredentialContractID != "" || onboarding.BrokerCredentialID != "")
 }
 
-func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Envelope, definition ToolDefinition, onboarding Onboarding, binding ToolBinding) (string, error) {
+func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Envelope, definition api.ToolDefinition, onboarding api.Onboarding, binding api.ToolBinding) (string, error) {
 	if c.Broker == nil || !c.Broker.Enabled() || onboarding.BrokerCredentialID == "" {
-		return "", fmt.Errorf("%w: credential broker credential", ErrUnauthorized)
+		return "", fmt.Errorf("%w: credential broker credential", api.ErrUnauthorized)
 	}
-	if binding.WorkloadClass == PerJob {
-		return "", fmt.Errorf("%w: credential broker per-job grants are not supported yet", ErrUnauthorized)
+	if binding.WorkloadClass == api.PerJob {
+		return "", fmt.Errorf("%w: credential broker per-job grants are not supported yet", api.ErrUnauthorized)
 	}
-	owner := (*OwnerRef)(nil)
-	if binding.WorkloadClass != Shared {
-		owner = &OwnerRef{Type: ContextOwner, ID: auth.ContextID}
+	owner := (*api.OwnerRef)(nil)
+	if binding.WorkloadClass != api.Shared {
+		owner = &api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}
 	}
-	workload, err := NewWorkloadInstance(binding, owner, "", 1, c.now(), time.Time{})
+	workload, err := api.NewWorkloadInstance(binding, owner, "", 1, c.now(), time.Time{})
 	if err != nil {
 		return "", err
 	}
@@ -274,14 +275,14 @@ func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Enve
 		return "", err
 	}
 	execution := "dedicated"
-	if binding.WorkloadClass == Shared {
+	if binding.WorkloadClass == api.Shared {
 		execution = "shared"
 	}
 	grant, err := control.Grant(ctx, onboarding.BrokerCredentialID, brokerv1.GrantRequest{
 		ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		BindingID: binding.ToolBindingID, WorkloadID: workload.WorkloadID, Execution: execution,
-		IdempotencyKey: deterministicID("grant", onboarding.OnboardingID, binding.ToolBindingID),
+		IdempotencyKey: api.DeterministicID("grant", onboarding.OnboardingID, binding.ToolBindingID),
 	})
 	if err != nil {
 		return "", err

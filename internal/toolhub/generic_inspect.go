@@ -4,19 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"strconv"
 	"time"
 )
 
-func (c *genericController) inspect(ctx context.Context, workload genericWorkload) (AdmissionReceipt, error) {
+func (c *genericController) inspect(ctx context.Context, workload genericWorkload) (api.AdmissionReceipt, error) {
 	inspectArgs := []string{"inspect", workload.plan.WorkloadID, workload.proxyName}
 	if workload.dockerFallback {
 		inspectArgs = append(inspectArgs, workload.relayName)
 	}
 	body, err := c.docker(ctx, inspectArgs...)
 	if err != nil {
-		return AdmissionReceipt{}, err
+		return api.AdmissionReceipt{}, err
 	}
 	var containers []genericContainer
 	expectedContainers := 2
@@ -24,12 +25,12 @@ func (c *genericController) inspect(ctx context.Context, workload genericWorkloa
 		expectedContainers = 3
 	}
 	if json.Unmarshal(body, &containers) != nil || len(containers) != expectedContainers {
-		return AdmissionReceipt{}, ErrIsolation
+		return api.AdmissionReceipt{}, api.ErrIsolation
 	}
 	network := "hermes-" + workload.plan.WorkloadID
 	for i, container := range containers {
 		if problem := genericProfileProblem(container, network, c.config.SeccompProfile, workload.plan.Execution); problem != "" {
-			return AdmissionReceipt{}, fmt.Errorf("%w: generic runtime profile container %d: %s", ErrIsolation, i, problem)
+			return api.AdmissionReceipt{}, fmt.Errorf("%w: generic runtime profile container %d: %s", api.ErrIsolation, i, problem)
 		}
 		credentialMountOK := credentialMountsOK(container.Mounts, workload.plan.CredentialMounts)
 		bridgeMountOK := !workload.dockerFallback && credentialMountOK
@@ -41,22 +42,22 @@ func (c *genericController) inspect(ctx context.Context, workload genericWorkloa
 			for _, mount := range container.Mounts {
 				mounts = append(mounts, mount.Type+":"+mount.Destination+":"+strconv.FormatBool(mount.RW))
 			}
-			return AdmissionReceipt{}, fmt.Errorf("%w: MCP container image=%t user=%t credentials=%t bridge=%t mounts=%v expected=%d networks=%d", ErrIsolation, artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef), container.Config.User != "" && container.Config.User != "0" && container.Config.User != "0:0", credentialMountOK, bridgeMountOK, mounts, len(workload.stateVols)+len(workload.plan.CredentialMounts)+1, len(container.NetworkSettings.Networks))
+			return api.AdmissionReceipt{}, fmt.Errorf("%w: MCP container image=%t user=%t credentials=%t bridge=%t mounts=%v expected=%d networks=%d", api.ErrIsolation, artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef), container.Config.User != "" && container.Config.User != "0" && container.Config.User != "0:0", credentialMountOK, bridgeMountOK, mounts, len(workload.stateVols)+len(workload.plan.CredentialMounts)+1, len(container.NetworkSettings.Networks))
 		}
 		if i == 1 && (len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.proxyVol && container.Mounts[0].Source != workload.proxyVol) || container.Mounts[0].Destination != "/etc/squid" || len(container.NetworkSettings.Networks) != 2 || container.Image == "") {
-			return AdmissionReceipt{}, fmt.Errorf("%w: egress proxy identity or mounts", ErrIsolation)
+			return api.AdmissionReceipt{}, fmt.Errorf("%w: egress proxy identity or mounts", api.ErrIsolation)
 		}
-		if i == 2 && workload.dockerFallback && (container.Config.Image != workload.plan.SidecarImages[0] || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.relayVol && container.Mounts[0].Source != workload.relayVol) || container.Mounts[0].Destination != "/hermes-relay" || container.Mounts[0].RW || len(container.NetworkSettings.Networks) != 2 || !envHasBridgeToken(container.Config.Env)) {
-			return AdmissionReceipt{}, fmt.Errorf("%w: relay identity or mounts", ErrIsolation)
+		if i == 2 && workload.dockerFallback && (container.Config.Image != workload.plan.SidecarImages[0] || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.relayVol && container.Mounts[0].Source != workload.relayVol) || container.Mounts[0].Destination != "/hermes-relay" || container.Mounts[0].RW || len(container.NetworkSettings.Networks) != 2 || !api.EnvHasBridgeToken(container.Config.Env)) {
+			return api.AdmissionReceipt{}, fmt.Errorf("%w: relay identity or mounts", api.ErrIsolation)
 		}
-		if workload.dockerFallback && i == 0 && envContainsForwardingSecret(container.Config.Env) {
-			return AdmissionReceipt{}, fmt.Errorf("%w: MCP container received a forwarding secret", ErrIsolation)
+		if workload.dockerFallback && i == 0 && api.EnvContainsForwardingSecret(container.Config.Env) {
+			return api.AdmissionReceipt{}, fmt.Errorf("%w: MCP container received a forwarding secret", api.ErrIsolation)
 		}
 	}
-	return AdmissionReceipt{WorkloadID: workload.plan.WorkloadID, State: "running", Enforced: true, Endpoint: workload.endpoint, ImageDigest: workload.plan.Digest, SidecarImages: workload.plan.SidecarImages, Execution: workload.plan.Execution}, nil
+	return api.AdmissionReceipt{WorkloadID: workload.plan.WorkloadID, State: "running", Enforced: true, Endpoint: workload.endpoint, ImageDigest: workload.plan.Digest, SidecarImages: workload.plan.SidecarImages, Execution: workload.plan.Execution}, nil
 }
 
-func credentialMountsOK(actual []genericMount, declared []Mount) bool {
+func credentialMountsOK(actual []genericMount, declared []api.Mount) bool {
 	if len(actual) != len(declared) {
 		return false
 	}
@@ -66,7 +67,7 @@ func credentialMountsOK(actual []genericMount, declared []Mount) bool {
 		}
 		matched := false
 		for _, want := range declared {
-			if mount.Source == dockerBindSource(want.Source) && mount.Destination == want.Target && mount.RW != want.ReadOnly {
+			if mount.Source == api.DockerBindSource(want.Source) && mount.Destination == want.Target && mount.RW != want.ReadOnly {
 				if matched {
 					return false
 				}
@@ -81,7 +82,7 @@ func credentialMountsOK(actual []genericMount, declared []Mount) bool {
 	return true
 }
 
-func genericProfileProblem(container genericContainer, network, seccomp string, execution ExecutionPolicy) string {
+func genericProfileProblem(container genericContainer, network, seccomp string, execution api.ExecutionPolicy) string {
 	checks := []struct {
 		failed bool
 		name   string
@@ -93,8 +94,8 @@ func genericProfileProblem(container genericContainer, network, seccomp string, 
 		{container.HostConfig.PidMode != "", "pid-mode"},
 		{len(container.HostConfig.CapAdd) != 0, "cap-add"},
 		{len(container.HostConfig.CapDrop) != 1 || container.HostConfig.CapDrop[0] != "ALL", "cap-drop"},
-		{!contains(container.HostConfig.SecurityOpt, "no-new-privileges=true"), "no-new-privileges"},
-		{!securityOptHasSeccomp(container.HostConfig.SecurityOpt, seccomp), "seccomp"},
+		{!api.Contains(container.HostConfig.SecurityOpt, "no-new-privileges=true"), "no-new-privileges"},
+		{!api.SecurityOptHasSeccomp(container.HostConfig.SecurityOpt, seccomp), "seccomp"},
 		{container.HostConfig.NanoCpus != int64(execution.CPUMillis)*1000000, "cpu"},
 		{container.HostConfig.Memory != int64(execution.MemoryMiB)*1048576, "memory"},
 		{container.HostConfig.PidsLimit != int64(execution.MaxPIDs), "pids"},
@@ -120,7 +121,7 @@ func fallbackBridgeMountsOK(mounts []genericMount, workload genericWorkload) boo
 			}
 			matched := false
 			for _, declared := range workload.plan.CredentialMounts {
-				if mount.Source == dockerBindSource(declared.Source) && mount.Destination == declared.Target && mount.RW != declared.ReadOnly {
+				if mount.Source == api.DockerBindSource(declared.Source) && mount.Destination == declared.Target && mount.RW != declared.ReadOnly {
 					matched = true
 					break
 				}

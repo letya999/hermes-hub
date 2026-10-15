@@ -3,13 +3,13 @@ package devcheck
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -65,7 +65,7 @@ func TestToolHubGatewayContractFixture(t *testing.T) {
 	t.Setenv("TOOLHIVE_STATEFUL_TOOL", "stateful-read")
 	t.Setenv("TOOLHIVE_STATEFUL_IMAGE_DIGEST", "sha256:"+strings.Repeat("0", 64))
 	digest := os.Getenv("TOOLHIVE_STATEFUL_IMAGE_DIGEST")
-	definition := gatewayProbeDefinition("stateful-fixture", toolhub.ContainerMCP, "stateful-read", toolhub.PerUser, true, "", digest)
+	definition := gatewayProbeDefinition("stateful-fixture", api.ContainerMCP, "stateful-read", api.PerUser, true, "", digest)
 	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var plan struct {
 			ID string `json:"workload_id"`
@@ -73,7 +73,7 @@ func TestToolHubGatewayContractFixture(t *testing.T) {
 		if json.NewDecoder(r.Body).Decode(&plan) != nil {
 			t.Error("invalid controller plan")
 		}
-		_ = json.NewEncoder(w).Encode(toolhub.AdmissionReceipt{WorkloadID: plan.ID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution})
+		_ = json.NewEncoder(w).Encode(api.AdmissionReceipt{WorkloadID: plan.ID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution})
 	}))
 	defer controller.Close()
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", controller.URL)

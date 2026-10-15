@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
 	"net/http"
@@ -24,7 +25,7 @@ func (c *genericController) handler(token string) http.Handler {
 			return
 		}
 		if r.URL.Path == "/release" {
-			var release controllerRelease
+			var release api.ControllerRelease
 			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 			decoder.DisallowUnknownFields()
 			if decoder.Decode(&release) != nil || !identity.ValidID(release.WorkloadID) {
@@ -51,7 +52,7 @@ func (c *genericController) handler(token string) http.Handler {
 			return
 		}
 		if r.URL.Path == "/cli-release" {
-			var release cliReleaseRequest
+			var release api.CliReleaseRequest
 			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 			decoder.DisallowUnknownFields()
 			if decoder.Decode(&release) != nil {
@@ -63,7 +64,7 @@ func (c *genericController) handler(token string) http.Handler {
 			return
 		}
 		if r.URL.Path == "/cli-exec" {
-			var request cliExecRequest
+			var request api.CliExecRequest
 			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
 			decoder.DisallowUnknownFields()
 			if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
@@ -73,10 +74,10 @@ func (c *genericController) handler(token string) http.Handler {
 			response, err := c.execCLI(r.Context(), request)
 			if err != nil {
 				status := http.StatusForbidden
-				if !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrUnauthorized) {
+				if !errors.Is(err, api.ErrInvalid) && !errors.Is(err, api.ErrUnauthorized) {
 					status = http.StatusServiceUnavailable
 				}
-				http.Error(w, "cli exec denied: "+publicPrepareError(err), status)
+				http.Error(w, "cli exec denied: "+api.PublicPrepareError(err), status)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -87,7 +88,7 @@ func (c *genericController) handler(token string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		var plan controllerPlan
+		var plan api.ControllerPlan
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(&plan) != nil || decoder.Decode(new(any)) != io.EOF {
@@ -101,7 +102,7 @@ func (c *genericController) handler(token string) http.Handler {
 			return
 		}
 		if err := c.validatePlan(plan); err != nil {
-			http.Error(w, "unapproved plan: "+publicPrepareError(err), http.StatusForbidden)
+			http.Error(w, "unapproved plan: "+api.PublicPrepareError(err), http.StatusForbidden)
 			return
 		}
 		if !c.config.DynamicDefinitions {
@@ -135,10 +136,10 @@ func (c *genericController) handler(token string) http.Handler {
 
 func writeGenericReceipt(w http.ResponseWriter, workload genericWorkload) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(AdmissionReceipt{WorkloadID: workload.plan.WorkloadID, State: "running", Enforced: true, Endpoint: workload.endpoint, ImageDigest: workload.plan.Digest, SidecarImages: workload.plan.SidecarImages, Execution: workload.plan.Execution})
+	_ = json.NewEncoder(w).Encode(api.AdmissionReceipt{WorkloadID: workload.plan.WorkloadID, State: "running", Enforced: true, Endpoint: workload.endpoint, ImageDigest: workload.plan.Digest, SidecarImages: workload.plan.SidecarImages, Execution: workload.plan.Execution})
 }
 
-func (c *genericController) start(ctx context.Context, plan controllerPlan) (genericWorkload, error) {
+func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) (genericWorkload, error) {
 	if _, err := c.toolhive(ctx, "version"); err != nil {
 		return genericWorkload{}, err
 	}
@@ -146,24 +147,24 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		return genericWorkload{}, err
 	}
 	if len(plan.Execution.Mounts) != 0 && !c.config.DockerFallback {
-		return genericWorkload{}, fmt.Errorf("%w: generic host state mounts are not enabled", ErrIsolation)
+		return genericWorkload{}, fmt.Errorf("%w: generic host state mounts are not enabled", api.ErrIsolation)
 	}
 	if len(plan.Execution.TCPForwards) != 0 && !c.config.DockerFallback {
-		return genericWorkload{}, fmt.Errorf("%w: tcp forwards require the Docker fallback companion", ErrIsolation)
+		return genericWorkload{}, fmt.Errorf("%w: tcp forwards require the Docker fallback companion", api.ErrIsolation)
 	}
 	help, err := c.toolhive(ctx, "run", "--help")
 	if err != nil {
-		return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", ErrIsolation)
+		return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", api.ErrIsolation)
 	}
 	if !toolHiveSupportsRuntime(string(help)) {
 		if !c.config.DockerFallback {
-			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", ErrIsolation)
+			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", api.ErrIsolation)
 		}
 		return c.startDockerRemoteFallback(ctx, plan)
 	}
 	if len(plan.CredentialMounts) > 0 && !strings.Contains(string(help), "--volume") {
 		if !c.config.DockerFallback {
-			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express credential mounts", ErrIsolation)
+			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express credential mounts", api.ErrIsolation)
 		}
 		return c.startDockerRemoteFallback(ctx, plan)
 	}
@@ -190,7 +191,7 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), proxyVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	proxyConfig, err := genericProxyConfig(plan.Execution.Egress)
+	proxyConfig, err := api.GenericProxyConfig(plan.Execution.Egress)
 	if err != nil {
 		return genericWorkload{}, err
 	}
@@ -227,12 +228,12 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	if plan.WorkspacePath != "" {
 		secretPath := filepath.Join(plan.WorkspacePath, "credentials.env")
 		if _, statErr := os.Lstat(secretPath); statErr == nil {
-			secretValues, err = readGenericSecrets(secretPath, plan.Definition)
+			secretValues, err = api.ReadGenericSecrets(secretPath, plan.Definition)
 			if err != nil {
 				return genericWorkload{}, err
 			}
 		} else if !os.IsNotExist(statErr) {
-			return genericWorkload{}, ErrIsolation
+			return genericWorkload{}, api.ErrIsolation
 		}
 	}
 	commandEnv := map[string]string{}
@@ -253,10 +254,10 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 		if !mount.ReadOnly {
 			mode = ":rw"
 		}
-		toolArgs = append(toolArgs, "--volume", dockerBindSource(mount.Source)+":"+mount.Target+mode)
+		toolArgs = append(toolArgs, "--volume", api.DockerBindSource(mount.Source)+":"+mount.Target+mode)
 	}
-	toolArgs = append(toolArgs, runtimeEnvironmentArgs(plan.Definition)...)
-	toolArgs = append(toolArgs, proxyEnvironmentArgs(plan.Definition, "http://"+ip+":3128")...)
+	toolArgs = append(toolArgs, api.RuntimeEnvironmentArgs(plan.Definition)...)
+	toolArgs = append(toolArgs, api.ProxyEnvironmentArgs(plan.Definition, "http://"+ip+":3128")...)
 	imageRef, err := c.resolveArtifactImage(ctx, plan)
 	if err != nil {
 		return genericWorkload{}, err
@@ -268,9 +269,9 @@ func (c *genericController) start(ctx context.Context, plan controllerPlan) (gen
 	// ToolHive cannot stamp hub labels; the spawned name registers as owned
 	// so later scope-checked inspect/rm see it as ours.
 	if c.scope != nil {
-		c.scope.register(plan.WorkloadID)
+		c.scope.Register(plan.WorkloadID)
 	}
-	if err := waitLocalWorkload(ctx, func() error {
+	if err := api.WaitLocalWorkload(ctx, func() error {
 		_, err := c.docker(ctx, "inspect", plan.WorkloadID)
 		return err
 	}); err != nil {
@@ -319,7 +320,7 @@ func (c *genericController) waitProxyListen(ctx context.Context, name string) er
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%w: egress proxy not listening", ErrIsolation)
+			return fmt.Errorf("%w: egress proxy not listening", api.ErrIsolation)
 		}
 		select {
 		case <-ctx.Done():
@@ -336,12 +337,12 @@ func (c *genericController) proxyIP(ctx context.Context, name, network string) (
 	}
 	var networks map[string]struct{ IPAddress string }
 	if json.Unmarshal(body, &networks) != nil {
-		return "", ErrIsolation
+		return "", api.ErrIsolation
 	}
 	ip := strings.TrimSpace(networks[network].IPAddress)
 	parsed := net.ParseIP(ip)
 	if parsed == nil || !parsed.IsPrivate() {
-		return "", ErrIsolation
+		return "", api.ErrIsolation
 	}
 	return ip, nil
 }

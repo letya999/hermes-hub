@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,18 +14,18 @@ import (
 func TestApplyPreflightToolListRestampAndRegisters(t *testing.T) {
 	artifact := importedReviewPacket(t)
 	claimedDigest := artifact.Definition.Source.ReviewDigest
-	listed := []ToolSpec{{Name: "get_current_config", Effect: ReadEffect}, {Name: "list_dir", Effect: ReadEffect}}
-	contract, err := ApplyPreflightToolList(&artifact, listed)
+	listed := []api.ToolSpec{{Name: "get_current_config", Effect: api.ReadEffect}, {Name: "list_dir", Effect: api.ReadEffect}}
+	contract, err := api.ApplyPreflightToolList(&artifact, listed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contract.Source != ToolContractPreflight || len(contract.Tools) != 2 {
+	if contract.Source != api.ToolContractPreflight || len(contract.Tools) != 2 {
 		t.Fatalf("preflight contract: %+v", contract)
 	}
 	if artifact.Definition.Source.ReviewDigest == "" || artifact.Definition.Source.ReviewDigest == claimedDigest {
 		t.Fatal("review digest was not recomputed from the confirmed tools")
 	}
-	if artifact.Definition.Source.ToolContractSource != ToolContractPreflight || artifact.Definition.Source.ToolContractDigest == "" {
+	if artifact.Definition.Source.ToolContractSource != api.ToolContractPreflight || artifact.Definition.Source.ToolContractDigest == "" {
 		t.Fatal("preflight contract was not stamped")
 	}
 	store := NewStore()
@@ -38,13 +39,13 @@ func TestApplyPreflightToolListRestampAndRegisters(t *testing.T) {
 
 func TestApplyPreflightToolListRejectsInvalidTools(t *testing.T) {
 	artifact := importedReviewPacket(t)
-	if _, err := ApplyPreflightToolList(nil, []ToolSpec{{Name: "read", Effect: ReadEffect}}); err == nil {
+	if _, err := api.ApplyPreflightToolList(nil, []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}}); err == nil {
 		t.Fatal("nil packet accepted")
 	}
-	if _, err := ApplyPreflightToolList(&artifact, nil); err == nil {
+	if _, err := api.ApplyPreflightToolList(&artifact, nil); err == nil {
 		t.Fatal("empty tools/list accepted")
 	}
-	if _, err := ApplyPreflightToolList(&artifact, []ToolSpec{{Name: "Not a tool", Effect: ReadEffect}}); err == nil {
+	if _, err := api.ApplyPreflightToolList(&artifact, []api.ToolSpec{{Name: "Not a tool", Effect: api.ReadEffect}}); err == nil {
 		t.Fatal("invalid MCP tool name accepted")
 	}
 }
@@ -53,8 +54,8 @@ func TestDecodeMCPToolListReadsID2Payload(t *testing.T) {
 	body := `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"API-get-self","annotations":{"readOnlyHint":true}},{"name":"delete_file","annotations":{"destructiveHint":true}},{"name":"unknown_effect"}]}}
 `
-	tools, err := decodeMCPToolList(strings.NewReader(body))
-	if err != nil || len(tools) != 3 || tools[0].Name != "API-get-self" || tools[0].Effect != ReadEffect || tools[1].Effect != WriteEffect || tools[2].Effect != WriteEffect {
+	tools, err := api.DecodeMCPToolList(strings.NewReader(body))
+	if err != nil || len(tools) != 3 || tools[0].Name != "API-get-self" || tools[0].Effect != api.ReadEffect || tools[1].Effect != api.WriteEffect || tools[2].Effect != api.WriteEffect {
 		t.Fatalf("decode: %+v %v", tools, err)
 	}
 }
@@ -69,8 +70,8 @@ plain text startup line
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}
 {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"conversations_history","annotations":{"readOnlyHint":true}}]}}
 `
-	tools, err := decodeMCPToolList(strings.NewReader(body))
-	if err != nil || len(tools) != 1 || tools[0].Name != "conversations_history" || tools[0].Effect != ReadEffect {
+	tools, err := api.DecodeMCPToolList(strings.NewReader(body))
+	if err != nil || len(tools) != 1 || tools[0].Name != "conversations_history" || tools[0].Effect != api.ReadEffect {
 		t.Fatalf("decode with log lines: %+v %v", tools, err)
 	}
 }
@@ -78,7 +79,7 @@ plain text startup line
 func TestDecodeMCPToolListReturnsRPCError(t *testing.T) {
 	body := `{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"bad request"}}
 `
-	if _, err := decodeMCPToolList(strings.NewReader(body)); err == nil || !strings.Contains(err.Error(), "bad request") {
+	if _, err := api.DecodeMCPToolList(strings.NewReader(body)); err == nil || !strings.Contains(err.Error(), "bad request") {
 		t.Fatalf("expected RPC error, got %v", err)
 	}
 }
@@ -87,25 +88,25 @@ func TestParseMCPHelpCredentialsUsesServerDeclaration(t *testing.T) {
 	help := `Environment Variables:
   SERVICE_TOKEN          Provider token (recommended)
   OPENAPI_HEADERS        JSON headers (alternative)
-  AUTH_TOKEN             Transport authentication (alternative)
+  AUTH_TOKEN             api.Transport authentication (alternative)
   REQUIRED_SECRET        Account secret (required)
 
 Examples:`
-	got := parseMCPHelpCredentials(help)
+	got := api.ParseMCPHelpCredentials(help)
 	if len(got) != 2 || got[0].Name != "SERVICE_TOKEN" || got[1].Name != "REQUIRED_SECRET" || !got[0].Required || !got[1].Required {
 		t.Fatalf("credentials=%+v", got)
 	}
-	if got := parseMCPHelpCredentials("Environment Variables:\n  TOKEN optional\n"); len(got) != 0 {
+	if got := api.ParseMCPHelpCredentials("Environment Variables:\n  TOKEN optional\n"); len(got) != 0 {
 		t.Fatalf("optional credential guessed: %+v", got)
 	}
 }
 
 func TestRandomPreflightContainerName(t *testing.T) {
-	first, err := randomPreflightContainerName("preflight-")
+	first, err := api.RandomPreflightContainerName("preflight-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := randomPreflightContainerName("preflight-")
+	second, err := api.RandomPreflightContainerName("preflight-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestPreflightDockerRunArgsPinMCPRuntimeNotBuilder(t *testing.T) {
 	imported := importedReviewPacket(t)
 	imported.Definition.Source.Image = "hermes-artifact/serena"
 	imported.Definition.Execution.Mounts = nil
-	args := preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
+	args := api.PreflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, api.PreflightCommandArgs(imported))
 	joined := strings.Join(args, "\x00")
 	for _, required := range []string{"--read-only", "--cap-drop\x00ALL", "no-new-privileges", "--network\x00none", "--user\x0010001:10001", "HOME=/tmp"} {
 		if !strings.Contains(joined, required) {
@@ -130,21 +131,21 @@ func TestPreflightDockerRunArgsPinMCPRuntimeNotBuilder(t *testing.T) {
 			t.Fatalf("builder/host flag %q leaked into preflight: %q", forbidden, args)
 		}
 	}
-	imported.Definition.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
+	imported.Definition.Execution.Mounts = []api.Mount{{Source: "connection-state", Target: "/state"}}
 	imported.Recipe.Entrypoint = []string{"/app/mcp-server"}
-	args = preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
+	args = api.PreflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, api.PreflightCommandArgs(imported))
 	joined = strings.Join(args, "\x00")
 	if !strings.Contains(joined, "/state:rw") || args[len(args)-1] != "/state" {
 		t.Fatalf("stateful preflight must pass allowed dir: %q", args)
 	}
 	imported.Recipe.Entrypoint = []string{"/app/mcp-server", "/state"}
-	args = preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
+	args = api.PreflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, api.PreflightCommandArgs(imported))
 	if args[len(args)-1] != imported.Definition.Source.Image {
 		t.Fatalf("duplicate allowed dir appended: %q", args)
 	}
 	imported.Definition.Source.Args = []string{"--transport", "sse"}
 	imported.Definition.Execution.Mounts = nil
-	args = preflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, preflightCommandArgs(imported))
+	args = api.PreflightDockerRunArgs(imported, "hermes-preflight-x", []string{"--rm", "-i"}, api.PreflightCommandArgs(imported))
 	if !strings.Contains(strings.Join(args, " "), "--transport stdio") || strings.Contains(strings.Join(args, " "), "--transport sse") {
 		t.Fatalf("network transport was not probed over stdio: %q", args)
 	}
@@ -168,7 +169,7 @@ func TestNetworkTransportValue(t *testing.T) {
 		if argv != "" {
 			args = strings.Fields(argv)
 		}
-		if got := networkTransportValue(args); got != want {
+		if got := api.NetworkTransportValue(args); got != want {
 			t.Fatalf("networkTransportValue(%q) = %q, want %q", argv, got, want)
 		}
 	}
@@ -176,26 +177,26 @@ func TestNetworkTransportValue(t *testing.T) {
 
 func TestNetworkTransportFallbackMarksAndPropagates(t *testing.T) {
 	imported := importedReviewPacket(t)
-	if _, _, _, err := networkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil); err == nil || imported.Definition.Source.NetworkTransport != "" {
+	if _, _, _, err := api.NetworkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil); err == nil || imported.Definition.Source.NetworkTransport != "" {
 		t.Fatal("fallback ran without a declared network transport")
 	}
 	imported.Definition.Source.Args = []string{"--transport", "sse"}
-	saved := networkMCPToolList
-	defer func() { networkMCPToolList = saved }()
-	networkMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
-		return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+	saved := api.NetworkMCPToolList
+	defer func() { api.NetworkMCPToolList = saved }()
+	api.NetworkMCPToolList = func(context.Context, api.ImportedArtifact) ([]api.ToolSpec, error) {
+		return []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}}, nil
 	}
-	tools, marked, list, err := networkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil)
+	tools, marked, list, err := api.NetworkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil)
 	if err != nil || len(tools) != 1 || marked.Definition.Source.NetworkTransport != "sse" {
 		t.Fatalf("fallback = %v %v %q", tools, err, marked.Definition.Source.NetworkTransport)
 	}
 	if list == nil {
 		t.Fatal("network probe not kept for credential promotion")
 	}
-	networkMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+	api.NetworkMCPToolList = func(context.Context, api.ImportedArtifact) ([]api.ToolSpec, error) {
 		return nil, errors.New("no listener")
 	}
-	_, unmarked, _, err := networkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil)
+	_, unmarked, _, err := api.NetworkTransportFallback(context.Background(), imported, errors.New("stdio died"), nil)
 	if err == nil || !strings.Contains(err.Error(), "network transport probe") || unmarked.Definition.Source.NetworkTransport != "" {
 		t.Fatalf("failed fallback marked the definition or hid the error: %v %q", err, unmarked.Definition.Source.NetworkTransport)
 	}
@@ -204,11 +205,11 @@ func TestNetworkTransportFallbackMarksAndPropagates(t *testing.T) {
 func TestNetworkProbeToolListFailClosed(t *testing.T) {
 	bad := importedReviewPacket(t)
 	bad.Definition.Source.Image = "bad image"
-	if _, err := networkProbeToolList(context.Background(), bad); err == nil {
+	if _, err := api.NetworkProbeToolList(context.Background(), bad); err == nil {
 		t.Fatal("invalid local image reached network preflight")
 	}
 	noTransport := importedReviewPacket(t)
-	if _, err := networkProbeToolList(context.Background(), noTransport); !errors.Is(err, ErrInvalid) {
+	if _, err := api.NetworkProbeToolList(context.Background(), noTransport); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("network probe ran without a declared transport: %v", err)
 	}
 	// A declared transport reaches the bridge-staging stage; without a
@@ -217,7 +218,7 @@ func TestNetworkProbeToolListFailClosed(t *testing.T) {
 	declared.Definition.Source.Args = []string{"--transport", "sse"}
 	t.Setenv("HUB_STATE", t.TempDir())
 	t.Setenv("HUB_DOCKER_HOST_ROOT", "")
-	if _, err := networkProbeToolList(context.Background(), declared); err == nil {
+	if _, err := api.NetworkProbeToolList(context.Background(), declared); err == nil {
 		t.Fatal("network probe ran without a stageable bridge binary")
 	}
 }
@@ -226,7 +227,7 @@ func TestStagePreflightBridge(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HUB_STATE", dir)
 	t.Setenv("HUB_DOCKER_HOST_ROOT", "")
-	host, cleanup, err := stagePreflightBridge()
+	host, cleanup, err := api.StagePreflightBridge()
 	defer cleanup()
 	if err != nil {
 		t.Fatalf("stagePreflightBridge: %v", err)
@@ -253,7 +254,7 @@ func TestStagePreflightBridge(t *testing.T) {
 	}
 	// Host-path translation uses the daemon-visible prefix mapping.
 	t.Setenv("HUB_DOCKER_HOST_ROOT", "/state=/host/state")
-	if got := dockerBindSource("/state/x/hubctl"); got != "/host/state/x/hubctl" {
+	if got := api.DockerBindSource("/state/x/hubctl"); got != "/host/state/x/hubctl" {
 		t.Fatalf("dockerBindSource = %q", got)
 	}
 }
@@ -261,8 +262,8 @@ func TestStagePreflightBridge(t *testing.T) {
 func TestRestampFromMCPListIgnoresClaimedImportTools(t *testing.T) {
 	artifact := importedReviewPacket(t)
 	claimed := artifact.Definition.Tools[0].Name
-	listed := []ToolSpec{{Name: "resolve-library-id", Effect: ReadEffect}}
-	packet, contract, err := restampFromMCPList(context.Background(), artifact, func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+	listed := []api.ToolSpec{{Name: "resolve-library-id", Effect: api.ReadEffect}}
+	packet, contract, err := api.RestampFromMCPList(context.Background(), artifact, func(context.Context, api.ImportedArtifact) ([]api.ToolSpec, error) {
 		return listed, nil
 	})
 	if err != nil {
@@ -276,10 +277,10 @@ func TestRestampFromMCPListIgnoresClaimedImportTools(t *testing.T) {
 func TestPreflightHelpersFailClosedBeforeDocker(t *testing.T) {
 	bad := importedReviewPacket(t)
 	bad.Definition.Source.Image = "bad image"
-	if _, err := listMCPToolsFromLocalImage(context.Background(), bad); err == nil {
+	if _, err := api.ListMCPToolsFromLocalImage(context.Background(), bad); err == nil {
 		t.Fatal("invalid local image reached Docker preflight")
 	}
-	if got := discoverMCPHelpCredentials(context.Background(), bad); got != nil {
+	if got := api.DiscoverMCPHelpCredentials(context.Background(), bad); got != nil {
 		t.Fatalf("invalid local image produced credentials: %+v", got)
 	}
 	for _, body := range []string{
@@ -288,7 +289,7 @@ func TestPreflightHelpersFailClosedBeforeDocker(t *testing.T) {
 		`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`,
 		`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"bad name"}]}}`,
 	} {
-		if _, err := decodeMCPToolList(strings.NewReader(body)); err == nil {
+		if _, err := api.DecodeMCPToolList(strings.NewReader(body)); err == nil {
 			t.Fatalf("unsafe tools/list accepted: %q", body)
 		}
 	}
@@ -309,9 +310,9 @@ func TestMCPPreflightUsesIsolatedDockerToolsList(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	packet := importedReviewPacket(t)
 	packet.Definition.Source.Image = "ghcr.io/acme/weather"
-	packet.Definition.Credentials = []CredentialInput{{Name: "API_TOKEN", Required: true}}
-	tools, err := listMCPToolsFromLocalImage(context.Background(), packet)
-	if err != nil || len(tools) != 1 || tools[0].Name != "read" || tools[0].Effect != ReadEffect {
+	packet.Definition.Credentials = []api.CredentialInput{{Name: "API_TOKEN", Required: true}}
+	tools, err := api.ListMCPToolsFromLocalImage(context.Background(), packet)
+	if err != nil || len(tools) != 1 || tools[0].Name != "read" || tools[0].Effect != api.ReadEffect {
 		t.Fatalf("isolated tools/list: %+v %v", tools, err)
 	}
 }
@@ -322,11 +323,11 @@ func TestAttachConfirmedToolContractIsRequiredForTrust(t *testing.T) {
 	if err := store.RegisterTrustedArtifact(artifact, artifact.Definition.Source.ReviewDigest); err == nil {
 		t.Fatal("claimed ArtifactImportConfig tools registered without a confirmed contract")
 	}
-	claimed := ConfirmedToolContract{Source: ToolContractPreflight, Tools: artifact.Definition.Tools}
-	if err := AttachConfirmedToolContract(&artifact, claimed); err != nil {
+	claimed := api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: artifact.Definition.Tools}
+	if err := api.AttachConfirmedToolContract(&artifact, claimed); err != nil {
 		t.Fatal(err)
 	}
-	if artifact.Definition.Source.ToolContractDigest == "" || artifact.Definition.Source.ToolContractSource != ToolContractPreflight {
+	if artifact.Definition.Source.ToolContractDigest == "" || artifact.Definition.Source.ToolContractSource != api.ToolContractPreflight {
 		t.Fatal("contract digest was not recorded")
 	}
 	if err := store.RegisterTrustedArtifact(artifact, artifact.Definition.Source.ReviewDigest); err != nil {
@@ -336,45 +337,45 @@ func TestAttachConfirmedToolContractIsRequiredForTrust(t *testing.T) {
 
 func TestAttachConfirmedToolContractRejectsMismatches(t *testing.T) {
 	artifact := importedReviewPacket(t)
-	for name, contract := range map[string]ConfirmedToolContract{
+	for name, contract := range map[string]api.ConfirmedToolContract{
 		"empty-source": {Tools: artifact.Definition.Tools},
 		"claimed-list": {Source: "artifact-import-config", Tools: artifact.Definition.Tools},
-		"extra-tool": {Source: ToolContractPreflight, Tools: []ToolSpec{
+		"extra-tool": {Source: api.ToolContractPreflight, Tools: []api.ToolSpec{
 			artifact.Definition.Tools[0],
-			{Name: "other", Effect: ReadEffect},
+			{Name: "other", Effect: api.ReadEffect},
 		}},
-		"effect-drift": {Source: ToolContractReviewManifest, Tools: []ToolSpec{{Name: artifact.Definition.Tools[0].Name, Effect: WriteEffect}}},
-		"empty-tools":  {Source: ToolContractPreflight},
+		"effect-drift": {Source: api.ToolContractReviewManifest, Tools: []api.ToolSpec{{Name: artifact.Definition.Tools[0].Name, Effect: api.WriteEffect}}},
+		"empty-tools":  {Source: api.ToolContractPreflight},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := artifact
-			if err := AttachConfirmedToolContract(&candidate, contract); err == nil {
+			if err := api.AttachConfirmedToolContract(&candidate, contract); err == nil {
 				t.Fatal("unsafe tool contract accepted")
 			}
 		})
 	}
-	if err := AttachConfirmedToolContract(nil, ConfirmedToolContract{Source: ToolContractPreflight, Tools: artifact.Definition.Tools}); err == nil {
+	if err := api.AttachConfirmedToolContract(nil, api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: artifact.Definition.Tools}); err == nil {
 		t.Fatal("nil packet accepted")
 	}
 }
 
 func TestConfirmedToolContractDigestIsStableAndCanonical(t *testing.T) {
-	tools := []ToolSpec{{Name: "b-tool", Effect: WriteEffect}, {Name: "a-tool", Effect: ReadEffect}}
-	left, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractPreflight, Tools: tools})
+	tools := []api.ToolSpec{{Name: "b-tool", Effect: api.WriteEffect}, {Name: "a-tool", Effect: api.ReadEffect}}
+	left, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: tools})
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractPreflight, Tools: []ToolSpec{tools[1], tools[0]}})
+	right, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: []api.ToolSpec{tools[1], tools[0]}})
 	if err != nil || left != right || !strings.HasPrefix(left, "sha256:") {
 		t.Fatalf("canonical digest drifted: %q %q %v", left, right, err)
 	}
-	other, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractReviewManifest, Tools: []ToolSpec{tools[1], tools[0]}})
+	other, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: api.ToolContractReviewManifest, Tools: []api.ToolSpec{tools[1], tools[0]}})
 	if err != nil || other == left {
 		t.Fatal("preflight and review-manifest contracts must not share a digest")
 	}
 }
 
-func importedReviewPacket(t *testing.T) ImportedArtifact {
+func importedReviewPacket(t *testing.T) api.ImportedArtifact {
 	t.Helper()
 	definition := statefulContainerDefinition()
 	definition.Source.Repository = "https://github.com/example/mcp"
@@ -383,9 +384,9 @@ func importedReviewPacket(t *testing.T) ImportedArtifact {
 	definition.Source.ProvenanceDigest = "sha256:" + repeatHex('b')
 	definition.Source.SBOMDigest = "sha256:" + repeatHex('c')
 	definition.Source.RecipeDigest = "sha256:" + repeatHex('d')
-	artifact := ImportedArtifact{Definition: definition, Recipe: ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}}, Artifact: StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}}}
-	config := ArtifactImportConfig{DefinitionID: definition.DefinitionID, Version: definition.Version, Image: definition.Source.Image, Tools: definition.Tools, Credentials: definition.Credentials, Environment: definition.Environment, Workload: definition.Workload, Execution: definition.Execution, Health: definition.Health}
-	digest, err := reviewDigest(ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA}, artifact.Recipe, artifact.Artifact, config)
+	artifact := api.ImportedArtifact{Definition: definition, Recipe: api.ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}}, Artifact: api.StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: api.OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}}}
+	config := api.ArtifactImportConfig{DefinitionID: definition.DefinitionID, Version: definition.Version, Image: definition.Source.Image, Tools: definition.Tools, Credentials: definition.Credentials, Environment: definition.Environment, Workload: definition.Workload, Execution: definition.Execution, Health: definition.Health}
+	digest, err := api.ReviewDigest(api.ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA}, artifact.Recipe, artifact.Artifact, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +396,7 @@ func importedReviewPacket(t *testing.T) ImportedArtifact {
 
 func TestDecodeMCPToolListKeepsAuthTextWhenNoToolsReply(t *testing.T) {
 	body := "Authentication required: Either SLACK_MCP_XOXP_TOKEN or SLACK_MCP_XOXB_TOKEN must be provided\n{\"level\":\"fatal\",\"error\":\"authentication required\"}\n"
-	_, err := decodeMCPToolList(strings.NewReader(body))
+	_, err := api.DecodeMCPToolList(strings.NewReader(body))
 	if err == nil || !strings.Contains(err.Error(), "SLACK_MCP_XOXP_TOKEN") || !strings.Contains(err.Error(), "authentication required") {
 		t.Fatalf("auth text dropped: %v", err)
 	}
@@ -403,11 +404,11 @@ func TestDecodeMCPToolListKeepsAuthTextWhenNoToolsReply(t *testing.T) {
 
 func TestPreflightRetainsSchemaAndBoundsDescription(t *testing.T) {
 	body := `{"id":2,"result":{"tools":[{"name":"read","description":"repository read","inputSchema":{"type":"object","properties":{"owner":{"type":"string"}}}}]}}`
-	tools, err := decodeMCPToolList(strings.NewReader(body))
+	tools, err := api.DecodeMCPToolList(strings.NewReader(body))
 	if err != nil || len(tools) != 1 || tools[0].Description != "repository read" || !strings.Contains(string(tools[0].InputSchema), `"owner"`) {
 		t.Fatalf("schema lost: %+v %v", tools, err)
 	}
-	definition := ToolDefinition{Source: DefinitionSource{ToolContractSource: ToolContractPreflight}, Tools: tools}
+	definition := api.ToolDefinition{Source: api.DefinitionSource{ToolContractSource: api.ToolContractPreflight}, Tools: tools}
 	if !completeToolSchemas(definition) {
 		t.Fatal("complete schema rejected")
 	}
@@ -416,12 +417,12 @@ func TestPreflightRetainsSchemaAndBoundsDescription(t *testing.T) {
 		t.Fatal("stale schema-less preflight reused")
 	}
 	body = strings.ReplaceAll(body, "repository read", strings.Repeat("x", 1025))
-	tools, err = decodeMCPToolList(strings.NewReader(body))
+	tools, err = api.DecodeMCPToolList(strings.NewReader(body))
 	if err != nil || tools[0].Description != "" {
 		t.Fatal("long prose rejected schema")
 	}
 	body = strings.ReplaceAll(body, `"owner"`, `"`+strings.Repeat("x", 65536)+`"`)
-	if _, err = decodeMCPToolList(strings.NewReader(body)); err == nil {
+	if _, err = api.DecodeMCPToolList(strings.NewReader(body)); err == nil {
 		t.Fatal("oversized schema accepted")
 	}
 }

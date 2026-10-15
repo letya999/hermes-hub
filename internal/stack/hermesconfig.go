@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/selfsettings"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
 )
 
@@ -240,7 +240,7 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 		s.Model == "" || s.ModelURL == "" || s.Timezone == "" {
 		return fmt.Errorf("managed effective config identity is incomplete")
 	}
-	if err := toolhub.ValidateBackendEndpoint(opts.ToolHubEndpoint); err != nil {
+	if err := api.ValidateBackendEndpoint(opts.ToolHubEndpoint); err != nil {
 		return fmt.Errorf("managed ToolHub endpoint: %w", err)
 	}
 	tokenEnv := opts.ToolHubTokenEnv
@@ -388,7 +388,7 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	if endpoint == "" {
 		return nil
 	}
-	if err := toolhub.ValidateBackendEndpoint(endpoint); err != nil {
+	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
 		return fmt.Errorf("HUB_TOOLHUB_ENDPOINT: %w", err)
 	}
 	tokenEnv := opts.ToolHubTokenEnv

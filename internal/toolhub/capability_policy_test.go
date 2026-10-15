@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ import (
 // operator CLI performs with --confirm, pinned to a fixed time for tests.
 func mustConfirm(t *testing.T, record any) {
 	t.Helper()
-	if err := Confirm(record, "", time.Unix(1700000000, 0).UTC()); err != nil {
+	if err := api.Confirm(record, "", time.Unix(1700000000, 0).UTC()); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
 }
@@ -30,28 +31,28 @@ func mustConfirm(t *testing.T, record any) {
 // The put* helpers re-stamp the record's own issuer before admission, matching
 // what a confirmed operator write looks like; negative-path tests keep working
 // because confirmation happens before the store's own checks run.
-func putPolicy(t *testing.T, s *Store, p CapabilityPolicy) error {
+func putPolicy(t *testing.T, s *Store, p api.CapabilityPolicy) error {
 	mustConfirm(t, &p)
 	return s.PutCapabilityPolicy(p)
 }
 
-func putProfile(t *testing.T, s *Store, p CapabilityProfile) error {
+func putProfile(t *testing.T, s *Store, p api.CapabilityProfile) error {
 	mustConfirm(t, &p)
 	return s.PutCapabilityProfile(p)
 }
 
-func putGrant(t *testing.T, s *Store, g Grant) error {
+func putGrant(t *testing.T, s *Store, g api.Grant) error {
 	mustConfirm(t, &g)
 	return s.PutGrant(g)
 }
 
-func managedStore(t *testing.T) (*Store, identity.Envelope, CapabilityPolicy, CapabilityProfile) {
+func managedStore(t *testing.T) (*Store, identity.Envelope, api.CapabilityPolicy, api.CapabilityProfile) {
 	t.Helper()
 	s, auth, binding := seededStore(t)
 	definition := remoteDefinition()
 	definition.Version = "2.0.0"
 	definition.Tools[0].CapabilityID = "files.read"
-	definition.Tools[0].Uses = []CapabilityUse{{Action: "read", Resource: "workspace", PathArgument: "path"}}
+	definition.Tools[0].Uses = []api.CapabilityUse{{Action: "read", Resource: "workspace", PathArgument: "path"}}
 	definition.Tools[0].ArgumentEquals = map[string]string{"scope": "workspace"}
 	definition.Tools[0].InputSchema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"scope":{"type":"string"}},"required":["path","scope"],"additionalProperties":false}`)
 	if err := s.RegisterDefinition(definition); err != nil {
@@ -62,14 +63,14 @@ func managedStore(t *testing.T) (*Store, identity.Envelope, CapabilityPolicy, Ca
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
-	rule := CapabilityRule{CapabilityID: "files.read", ImplementationDigest: DefinitionDigest(definition), Action: "read", Resource: "workspace", ConnectionID: binding.ConnectionID,
-		PathPrefix: "docs", Limits: CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
-	policy := CapabilityPolicy{Schema: SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice", "bob"}, Revision: 1,
-		IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed synthetic fixture", Status: ActiveStatus, Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
-	profile := CapabilityProfile{Schema: SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
+	rule := api.CapabilityRule{CapabilityID: "files.read", ImplementationDigest: api.DefinitionDigest(definition), Action: "read", Resource: "workspace", ConnectionID: binding.ConnectionID,
+		PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice", "bob"}, Revision: 1,
+		IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus, Ceiling: []api.CapabilityRule{rule}, Defaults: []api.CapabilityRule{rule}}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
-		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: ActiveStatus,
-		Selections: []CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest,
+		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
+		Selections: []api.CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest,
 			ToolName: "search", Name: "workspace_read", ConnectionID: binding.ConnectionID}}}
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
@@ -85,11 +86,11 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	rule := policy.Defaults[0]
 	policy.Revision++
 	policy.Defaults = nil
-	policy.DefaultGroups = []CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []CapabilityRule{rule}}}
+	policy.DefaultGroups = []api.CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []api.CapabilityRule{rule}}}
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.ListProjectedTools(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("old profile survived group revision: %v", err)
 	}
 	profile.Revision++
@@ -102,7 +103,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	}
 
 	changed := policy
-	changed.DefaultGroups = []CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []CapabilityRule{{CapabilityID: rule.CapabilityID, ImplementationDigest: rule.ImplementationDigest, Action: rule.Action, Resource: rule.Resource, ConnectionID: rule.ConnectionID, Limits: rule.Limits}}}}
+	changed.DefaultGroups = []api.CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []api.CapabilityRule{{CapabilityID: rule.CapabilityID, ImplementationDigest: rule.ImplementationDigest, Action: rule.Action, Resource: rule.Resource, ConnectionID: rule.ConnectionID, Limits: rule.Limits}}}}
 	if err := putPolicy(t, s, changed); err == nil {
 		t.Fatal("same policy revision changed group membership")
 	}
@@ -123,7 +124,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	}
 	profile.Revision++
 	profile.PolicyRevision = policy.Revision
-	profile.AllowGroups = []CapabilityGroup{{GroupID: "personal-reads", Revision: 1, Members: []CapabilityRule{rule}}}
+	profile.AllowGroups = []api.CapabilityGroup{{GroupID: "personal-reads", Revision: 1, Members: []api.CapabilityRule{rule}}}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	}
 	changed = policy
 	changed.Revision++
-	changed.DefaultGroups = []CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []CapabilityRule{rule}}}
+	changed.DefaultGroups = []api.CapabilityGroup{{GroupID: "workspace-reads", Revision: 1, Members: []api.CapabilityRule{rule}}}
 	changed.DefaultGroups[0].Members[0].Limits.OutputBytes--
 	if err := putPolicy(t, reloaded, changed); err == nil {
 		t.Fatal("removed group revision reused with changed members after restart")
@@ -170,21 +171,21 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 			}
 		}
 		return nil
-	}, Injector: func(context.Context, EffectiveBinding) (CredentialInjection, error) {
+	}, Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
 		injections++
-		return CredentialInjection{}, nil
-	}, Backend: backendFunc(func(_ context.Context, e EffectiveBinding, tool ToolSpec, _ map[string]any) (BackendResult, error) {
+		return api.CredentialInjection{}, nil
+	}, Backend: backendFunc(func(_ context.Context, e api.EffectiveBinding, tool api.ToolSpec, _ map[string]any) (api.BackendResult, error) {
 		calls++
 		if tool.Name != "search" || e.Definition.Execution.OutputBytes != 8192 || e.Definition.Execution.TimeoutSeconds != 10 {
 			t.Fatalf("wrong implementation or limits: %+v", e)
 		}
-		return BackendResult{Text: "synthetic content"}, nil
+		return api.BackendResult{Text: "synthetic content"}, nil
 	})}
 	args := map[string]any{"path": "docs/readme.txt", "scope": "workspace"}
 	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", args); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"search", "send", "invoke", ProjectedToolName("google-work", "1.0.0", "search"), ProjectedToolName("google-work", "2.0.0", "search")} {
+	for _, name := range []string{"search", "send", "invoke", api.ProjectedToolName("google-work", "1.0.0", "search"), api.ProjectedToolName("google-work", "2.0.0", "search")} {
 		if _, err := g.CallAuthorized(t.Context(), auth, name, args); err == nil {
 			t.Fatalf("raw/legacy alias %s allowed", name)
 		}
@@ -220,10 +221,10 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	if _, err := s.Resolve(auth, tools[0].BindingID); err == nil {
 		t.Fatal("bare binding bypassed capability")
 	}
-	if err := s.Authorize(auth, tools[0].BindingID, func(EffectiveBinding) error { calls++; return nil }); err == nil {
+	if err := s.Authorize(auth, tools[0].BindingID, func(api.EffectiveBinding) error { calls++; return nil }); err == nil {
 		t.Fatal("bare binding admitted")
 	}
-	for _, grant := range []Grant{OperatorGrant(GrantSelfInstall, "alice", "", ""), OperatorControlGrant("alice", "invoke")} {
+	for _, grant := range []api.Grant{api.OperatorGrant(api.GrantSelfInstall, "alice", "", ""), api.OperatorControlGrant("alice", "invoke")} {
 		if err := putGrant(t, s, grant); err != nil {
 			t.Fatal(err)
 		}
@@ -246,11 +247,11 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 		t.Fatal("removed selection callable")
 	}
 	policy.Revision++
-	policy.Status = RevokedStatus
+	policy.Status = api.RevokedStatus
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.ListProjectedTools(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("revoked policy: %v", err)
 	}
 }
@@ -261,61 +262,63 @@ func TestCapabilityCompleteTupleAndScopeIntersection(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
 		name    string
-		edit    func(*CapabilityPolicy, *CapabilityProfile)
+		edit    func(*api.CapabilityPolicy, *api.CapabilityProfile)
 		path    string
 		allowed bool
 	}{
-		{"default", func(*CapabilityPolicy, *CapabilityProfile) {}, "docs/a", true},
-		{"zero", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Defaults = nil }, "docs/a", false},
-		{"personal-add", func(p *CapabilityPolicy, u *CapabilityProfile) { u.Allows = p.Defaults; p.Defaults = nil }, "docs/a", true},
-		{"no-ceiling", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Ceiling = nil }, "docs/a", false},
-		{"allow-wider", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Defaults[0].PathPrefix = "" }, "outside", false},
-		{"ceiling-wider", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Ceiling[0].PathPrefix = "" }, "docs/a", true},
-		{"disjoint", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Ceiling[0].PathPrefix = "other" }, "docs/a", false},
-		{"partial-deny", func(p *CapabilityPolicy, _ *CapabilityProfile) {
+		{"default", func(*api.CapabilityPolicy, *api.CapabilityProfile) {}, "docs/a", true},
+		{"zero", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Defaults = nil }, "docs/a", false},
+		{"personal-add", func(p *api.CapabilityPolicy, u *api.CapabilityProfile) { u.Allows = p.Defaults; p.Defaults = nil }, "docs/a", true},
+		{"no-ceiling", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Ceiling = nil }, "docs/a", false},
+		{"allow-wider", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Defaults[0].PathPrefix = "" }, "outside", false},
+		{"ceiling-wider", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Ceiling[0].PathPrefix = "" }, "docs/a", true},
+		{"disjoint", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Ceiling[0].PathPrefix = "other" }, "docs/a", false},
+		{"partial-deny", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) {
 			d := rule
 			d.PathPrefix = "docs/private"
-			p.Denies = []CapabilityRule{d}
+			p.Denies = []api.CapabilityRule{d}
 		}, "docs/public/a", true},
-		{"org-deny", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Denies = []CapabilityRule{rule} }, "docs/a", false},
-		{"user-deny", func(_ *CapabilityPolicy, u *CapabilityProfile) { u.Denies = []CapabilityRule{rule} }, "docs/a", false},
-		{"expired-allow", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Defaults[0].ExpiresAt = now.Add(-time.Second) }, "docs/a", false},
-		{"expired-ceiling", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Ceiling[0].ExpiresAt = now }, "docs/a", false},
-		{"expired-deny", func(p *CapabilityPolicy, _ *CapabilityProfile) {
+		{"org-deny", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Denies = []api.CapabilityRule{rule} }, "docs/a", false},
+		{"user-deny", func(_ *api.CapabilityPolicy, u *api.CapabilityProfile) { u.Denies = []api.CapabilityRule{rule} }, "docs/a", false},
+		{"expired-allow", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) {
+			p.Defaults[0].ExpiresAt = now.Add(-time.Second)
+		}, "docs/a", false},
+		{"expired-ceiling", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Ceiling[0].ExpiresAt = now }, "docs/a", false},
+		{"expired-deny", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) {
 			d := rule
 			d.ExpiresAt = now.Add(-time.Second)
-			p.Denies = []CapabilityRule{d}
+			p.Denies = []api.CapabilityRule{d}
 		}, "docs/a", true},
-		{"separate-action-resource", func(p *CapabilityPolicy, _ *CapabilityProfile) {
+		{"separate-action-resource", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) {
 			a, b := rule, rule
 			a.Action = "edit"
 			b.Resource = "archive"
-			p.Defaults = []CapabilityRule{a, b}
+			p.Defaults = []api.CapabilityRule{a, b}
 		}, "docs/a", false},
-		{"different-digest", func(p *CapabilityPolicy, _ *CapabilityProfile) {
+		{"different-digest", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) {
 			p.Defaults[0].ImplementationDigest = "sha256:" + strings.Repeat("0", 64)
 		}, "docs/a", false},
-		{"different-connection", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Defaults[0].ConnectionID = "other" }, "docs/a", false},
-		{"ceiling-different-action", func(p *CapabilityPolicy, _ *CapabilityProfile) { p.Ceiling[0].Action = "edit" }, "docs/a", false},
+		{"different-connection", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Defaults[0].ConnectionID = "other" }, "docs/a", false},
+		{"ceiling-different-action", func(p *api.CapabilityPolicy, _ *api.CapabilityProfile) { p.Ceiling[0].Action = "edit" }, "docs/a", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := CapabilityPolicy{Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
-			u := CapabilityProfile{}
+			p := api.CapabilityPolicy{Ceiling: []api.CapabilityRule{rule}, Defaults: []api.CapabilityRule{rule}}
+			u := api.CapabilityProfile{}
 			tc.edit(&p, &u)
-			_, _, got := capabilityRuleDecision(u, p, rule, &tc.path, now)
+			_, _, got := api.CapabilityRuleDecision(u, p, rule, &tc.path, now)
 			if got != tc.allowed {
 				t.Fatalf("allowed=%v want=%v", got, tc.allowed)
 			}
 		})
 	}
-	p := CapabilityPolicy{Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
-	p.Defaults[0].Limits = CapabilityLimits{4096, 20}
-	limits, _, allowed := capabilityRuleDecision(CapabilityProfile{}, p, rule, nil, now)
-	if !allowed || limits != (CapabilityLimits{4096, 10}) {
+	p := api.CapabilityPolicy{Ceiling: []api.CapabilityRule{rule}, Defaults: []api.CapabilityRule{rule}}
+	p.Defaults[0].Limits = api.CapabilityLimits{OutputBytes: 4096, TimeoutSeconds: 20}
+	limits, _, allowed := api.CapabilityRuleDecision(api.CapabilityProfile{}, p, rule, nil, now)
+	if !allowed || limits != (api.CapabilityLimits{OutputBytes: 4096, TimeoutSeconds: 10}) {
 		t.Fatalf("limits widened: %+v %v", limits, allowed)
 	}
 	for _, value := range []string{"../a", "a/../b", ".", "..", "/a", "a/", "a//b", "C:a", "a\x00b", "a\nb", "a\\b", strings.Repeat("a", 4097)} {
-		if validCapabilityPath(value) {
+		if api.ValidCapabilityPath(value) {
 			t.Fatalf("unsafe logical path %q", value)
 		}
 	}
@@ -337,18 +340,20 @@ func TestManagedIdentityAndImplementationPin(t *testing.T) {
 			}
 		})
 	}
-	for _, mutate := range []func(*CapabilityProfile){
-		func(p *CapabilityProfile) { p.Selections[0].ImplementationDigest = "sha256:" + strings.Repeat("0", 64) },
-		func(p *CapabilityProfile) { p.Selections[0].ToolName = "send" },
-		func(p *CapabilityProfile) { p.Selections[0].DefinitionVersion = "9.0.0" },
-		func(p *CapabilityProfile) { p.PrincipalID = "mallory" },
-		func(p *CapabilityProfile) { p.PolicyRevision++ },
+	for _, mutate := range []func(*api.CapabilityProfile){
+		func(p *api.CapabilityProfile) {
+			p.Selections[0].ImplementationDigest = "sha256:" + strings.Repeat("0", 64)
+		},
+		func(p *api.CapabilityProfile) { p.Selections[0].ToolName = "send" },
+		func(p *api.CapabilityProfile) { p.Selections[0].DefinitionVersion = "9.0.0" },
+		func(p *api.CapabilityProfile) { p.PrincipalID = "mallory" },
+		func(p *api.CapabilityProfile) { p.PolicyRevision++ },
 	} {
 		copy := profile
-		copy.Selections = append([]CapabilitySelection(nil), profile.Selections...)
+		copy.Selections = append([]api.CapabilitySelection(nil), profile.Selections...)
 		copy.Revision++
 		mutate(&copy)
-		if err := putProfile(t, s, copy); !errors.Is(err, ErrUnauthorized) {
+		if err := putProfile(t, s, copy); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("unreviewed profile: %v", err)
 		}
 	}
@@ -368,7 +373,7 @@ func TestManagedIdentityAndImplementationPin(t *testing.T) {
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.ListProjectedTools(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("removed membership admitted: %v", err)
 	}
 }
@@ -388,20 +393,20 @@ func TestManagedProfilePersistenceAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile.Revision++
-	profile.Status = RevokedStatus
+	profile.Status = api.RevokedStatus
 	if err := putProfile(t, writer, profile); err != nil {
 		t.Fatal(err)
 	}
-	if err := putProfile(t, reader, reader.capabilityProfiles[profile.ProfileID]); !errors.Is(err, ErrConflict) {
+	if err := putProfile(t, reader, reader.capabilityProfiles[profile.ProfileID]); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale identical retry reported successful publication: %v", err)
 	}
 	stale := profile
 	stale.Revision++
-	stale.Status = ActiveStatus
-	if err := putProfile(t, reader, stale); !errors.Is(err, ErrConflict) {
+	stale.Status = api.ActiveStatus
+	if err := putProfile(t, reader, stale); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale write resurrected profile: %v", err)
 	}
-	if _, err := reader.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := reader.ListProjectedTools(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("stale reader admitted: %v", err)
 	}
 	if err := putProfile(t, reader, profile); err != nil {
@@ -409,12 +414,12 @@ func TestManagedProfilePersistenceAndRollback(t *testing.T) {
 	}
 	old := profile
 	old.Revision--
-	old.Status = ActiveStatus
-	if err := putProfile(t, reader, old); !errors.Is(err, ErrConflict) {
+	old.Status = api.ActiveStatus
+	if err := putProfile(t, reader, old); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("old revision allowed: %v", err)
 	}
 	old.Revision = profile.Revision
-	if err := putProfile(t, reader, old); !errors.Is(err, ErrConflict) {
+	if err := putProfile(t, reader, old); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("same revision changed: %v", err)
 	}
 	policy.Revision++
@@ -425,12 +430,12 @@ func TestManagedProfilePersistenceAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldPolicy := policy
-	oldPolicy.Status = DisabledStatus
-	if err := putPolicy(t, reader, oldPolicy); !errors.Is(err, ErrConflict) {
+	oldPolicy.Status = api.DisabledStatus
+	if err := putPolicy(t, reader, oldPolicy); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("same policy revision changed: %v", err)
 	}
 	oldPolicy.Revision--
-	if err := putPolicy(t, reader, oldPolicy); !errors.Is(err, ErrConflict) {
+	if err := putPolicy(t, reader, oldPolicy); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("old policy revision allowed: %v", err)
 	}
 	if err := os.Rename(path, path+".backup"); err != nil {
@@ -496,7 +501,7 @@ func TestCapabilityHistoryRecoversPolicyAndIssuerTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restarted.ListProjectedTools(auth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := restarted.ListProjectedTools(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("stale profile survived policy commit: %v", err)
 	}
 	profile.Revision++
@@ -531,7 +536,7 @@ func TestCapabilityHistoryRecoversPolicyAndIssuerTogether(t *testing.T) {
 	if err := os.WriteFile(file, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(file); !errors.Is(err, ErrUnauthorized) {
+	if _, err := Load(file); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid history order admitted: %v", err)
 	}
 }
@@ -551,7 +556,7 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := map[string]any{"path": "docs/a", "scope": "workspace"}
-	err = reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(ProjectedTool, EffectiveBinding) error {
+	err = reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(api.ProjectedTool, api.EffectiveBinding) error {
 		// A separate file handle represents a different operator process. It
 		// must not publish policy while admission uses this locked revision.
 		lock := flock.New(file + ".lock")
@@ -569,7 +574,7 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.Revision++
-	policy.Status = RevokedStatus
+	policy.Status = api.RevokedStatus
 	if err := putPolicy(t, writer, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -580,11 +585,11 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 	if release != nil {
 		release()
 	}
-	if !errors.Is(err, ErrStale) {
+	if !errors.Is(err, api.ErrStale) {
 		t.Fatalf("old snapshot passed admission fence: %v", err)
 	}
 	called := false
-	if err := reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(ProjectedTool, EffectiveBinding) error { called = true; return nil }); err == nil || called {
+	if err := reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(api.ProjectedTool, api.EffectiveBinding) error { called = true; return nil }); err == nil || called {
 		t.Fatal("committed revoke admitted another call")
 	}
 	if err := os.Remove(file); err != nil {
@@ -622,7 +627,7 @@ func TestManagedPolicyOwnsPublishedData(t *testing.T) {
 	if err != nil || stored.Tools[0].Name != "search" || !json.Valid(stored.Tools[0].InputSchema) {
 		t.Fatalf("caller mutated immutable definition: %v", err)
 	}
-	if DefinitionDigest(d) != "" {
+	if api.DefinitionDigest(d) != "" {
 		t.Fatal("invalid definition received a digest")
 	}
 }
@@ -631,9 +636,9 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	s, auth, _, profile := managedStore(t)
 	var calls atomic.Int32
 	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth}, AuditWrite: func(string, map[string]string) error { return nil },
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
-			return BackendResult{Text: "ok"}, nil
+			return api.BackendResult{Text: "ok"}, nil
 		})}
 	handler, err := g.Handler()
 	if err != nil {
@@ -651,7 +656,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile.Revision++
-	profile.Denies = []CapabilityRule{{CapabilityID: profile.Selections[0].CapabilityID, ImplementationDigest: profile.Selections[0].ImplementationDigest, Action: "read", Resource: "workspace", ConnectionID: profile.Selections[0].ConnectionID}}
+	profile.Denies = []api.CapabilityRule{{CapabilityID: profile.Selections[0].CapabilityID, ImplementationDigest: profile.Selections[0].ImplementationDigest, Action: "read", Resource: "workspace", ConnectionID: profile.Selections[0].ConnectionID}}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
@@ -669,9 +674,9 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 func TestManagedDispatchRequiresDurableAudit(t *testing.T) {
 	s, auth, _, _ := managedStore(t)
 	calls := 0
-	g := &Gateway{Store: s, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+	g := &Gateway{Store: s, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		calls++
-		return BackendResult{}, nil
+		return api.BackendResult{}, nil
 	})}
 	args := map[string]any{"path": "docs/a", "scope": "workspace"}
 	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", args); err == nil {
@@ -688,27 +693,27 @@ func TestManagedDispatchRequiresDurableAudit(t *testing.T) {
 
 func TestCapabilityPolicyRejectsMalformedAuthority(t *testing.T) {
 	_, _, policy, profile := managedStore(t)
-	for name, mutate := range map[string]func(*CapabilityPolicy){
-		"schema":           func(p *CapabilityPolicy) { p.Schema++ },
-		"revision":         func(p *CapabilityPolicy) { p.Revision = 0 },
-		"issuer":           func(p *CapabilityPolicy) { p.IssuedBy = "model" },
-		"issue-time":       func(p *CapabilityPolicy) { p.IssuedAt = time.Time{} },
-		"reason":           func(p *CapabilityPolicy) { p.Reason = "\nforged" },
-		"membership":       func(p *CapabilityPolicy) { p.Members = nil },
-		"duplicate-member": func(p *CapabilityPolicy) { p.Members = []string{"alice", "alice"} },
-		"bad-member":       func(p *CapabilityPolicy) { p.Members = []string{"*"} },
-		"personal-members": func(p *CapabilityPolicy) { p.Organization = "" },
-		"unbounded":        func(p *CapabilityPolicy) { p.Ceiling[0].Limits.OutputBytes = 0 },
-		"digest":           func(p *CapabilityPolicy) { p.Defaults[0].ImplementationDigest = "latest" },
-		"traversal":        func(p *CapabilityPolicy) { p.Defaults[0].PathPrefix = "../other" },
-		"over-ceiling":     func(p *CapabilityPolicy) { p.Defaults[0].PathPrefix = "" },
-		"limit-ceiling":    func(p *CapabilityPolicy) { p.Defaults[0].Limits.TimeoutSeconds++ },
-		"expiry-ceiling":   func(p *CapabilityPolicy) { p.Ceiling[0].ExpiresAt = time.Now().Add(time.Hour) },
-		"deny-limits":      func(p *CapabilityPolicy) { p.Denies = p.Defaults },
-		"rule-count":       func(p *CapabilityPolicy) { p.Ceiling = make([]CapabilityRule, 4097) },
+	for name, mutate := range map[string]func(*api.CapabilityPolicy){
+		"schema":           func(p *api.CapabilityPolicy) { p.Schema++ },
+		"revision":         func(p *api.CapabilityPolicy) { p.Revision = 0 },
+		"issuer":           func(p *api.CapabilityPolicy) { p.IssuedBy = "model" },
+		"issue-time":       func(p *api.CapabilityPolicy) { p.IssuedAt = time.Time{} },
+		"reason":           func(p *api.CapabilityPolicy) { p.Reason = "\nforged" },
+		"membership":       func(p *api.CapabilityPolicy) { p.Members = nil },
+		"duplicate-member": func(p *api.CapabilityPolicy) { p.Members = []string{"alice", "alice"} },
+		"bad-member":       func(p *api.CapabilityPolicy) { p.Members = []string{"*"} },
+		"personal-members": func(p *api.CapabilityPolicy) { p.Organization = "" },
+		"unbounded":        func(p *api.CapabilityPolicy) { p.Ceiling[0].Limits.OutputBytes = 0 },
+		"digest":           func(p *api.CapabilityPolicy) { p.Defaults[0].ImplementationDigest = "latest" },
+		"traversal":        func(p *api.CapabilityPolicy) { p.Defaults[0].PathPrefix = "../other" },
+		"over-ceiling":     func(p *api.CapabilityPolicy) { p.Defaults[0].PathPrefix = "" },
+		"limit-ceiling":    func(p *api.CapabilityPolicy) { p.Defaults[0].Limits.TimeoutSeconds++ },
+		"expiry-ceiling":   func(p *api.CapabilityPolicy) { p.Ceiling[0].ExpiresAt = time.Now().Add(time.Hour) },
+		"deny-limits":      func(p *api.CapabilityPolicy) { p.Denies = p.Defaults },
+		"rule-count":       func(p *api.CapabilityPolicy) { p.Ceiling = make([]api.CapabilityRule, 4097) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			var copy CapabilityPolicy
+			var copy api.CapabilityPolicy
 			body, _ := json.Marshal(policy)
 			if err := json.Unmarshal(body, &copy); err != nil {
 				t.Fatal(err)
@@ -725,42 +730,42 @@ func TestCapabilityPolicyRejectsMalformedAuthority(t *testing.T) {
 			}
 		})
 	}
-	for name, mutate := range map[string]func(*CapabilityProfile){
-		"no-generation":  func(p *CapabilityProfile) { p.Generation = 0 },
-		"no-environment": func(p *CapabilityProfile) { p.Environment = "" },
-		"no-reason":      func(p *CapabilityProfile) { p.Reason = "" },
-		"duplicate":      func(p *CapabilityProfile) { p.Selections = append(p.Selections, p.Selections[0]) },
-		"same-capability": func(p *CapabilityProfile) {
+	for name, mutate := range map[string]func(*api.CapabilityProfile){
+		"no-generation":  func(p *api.CapabilityProfile) { p.Generation = 0 },
+		"no-environment": func(p *api.CapabilityProfile) { p.Environment = "" },
+		"no-reason":      func(p *api.CapabilityProfile) { p.Reason = "" },
+		"duplicate":      func(p *api.CapabilityProfile) { p.Selections = append(p.Selections, p.Selections[0]) },
+		"same-capability": func(p *api.CapabilityProfile) {
 			other := p.Selections[0]
 			other.Name = "other_name"
 			p.Selections = append(p.Selections, other)
 		},
-		"reserved":       func(p *CapabilityProfile) { p.Selections[0].Name = "invoke" },
-		"unknown-action": func(p *CapabilityProfile) { p.Allows = []CapabilityRule{{}} },
-		"bad-deny":       func(p *CapabilityProfile) { p.Denies = []CapabilityRule{{}} },
+		"reserved":       func(p *api.CapabilityProfile) { p.Selections[0].Name = "invoke" },
+		"unknown-action": func(p *api.CapabilityProfile) { p.Allows = []api.CapabilityRule{{}} },
+		"bad-deny":       func(p *api.CapabilityProfile) { p.Denies = []api.CapabilityRule{{}} },
 	} {
 		t.Run(name, func(t *testing.T) {
-			var copy CapabilityProfile
+			var copy api.CapabilityProfile
 			body, _ := json.Marshal(profile)
 			if err := json.Unmarshal(body, &copy); err != nil {
 				t.Fatal(err)
 			}
 			mutate(&copy)
-			if err := putProfile(t, NewStore(), copy); !errors.Is(err, ErrInvalid) {
+			if err := putProfile(t, NewStore(), copy); !errors.Is(err, api.ErrInvalid) {
 				t.Fatalf("malformed profile accepted: %v", err)
 			}
 		})
 	}
-	for _, tool := range []ToolSpec{
+	for _, tool := range []api.ToolSpec{
 		{CapabilityID: "files.read"},
-		{CapabilityID: "files.read", Uses: []CapabilityUse{{Action: "*", Resource: "workspace"}}},
-		{CapabilityID: "files.read", Uses: []CapabilityUse{{Action: "read", Resource: "workspace", PathArgument: "a/b"}}},
-		{CapabilityID: "files.read", Uses: []CapabilityUse{{Action: "read", Resource: "workspace"}}, ArgumentEquals: map[string]string{"scope": "\n"}},
+		{CapabilityID: "files.read", Uses: []api.CapabilityUse{{Action: "*", Resource: "workspace"}}},
+		{CapabilityID: "files.read", Uses: []api.CapabilityUse{{Action: "read", Resource: "workspace", PathArgument: "a/b"}}},
+		{CapabilityID: "files.read", Uses: []api.CapabilityUse{{Action: "read", Resource: "workspace"}}, ArgumentEquals: map[string]string{"scope": "\n"}},
 	} {
 		d := remoteDefinition()
-		tool.Name, tool.Effect = "read", ReadEffect
-		d.Tools = []ToolSpec{tool}
-		if err := NewStore().RegisterDefinition(d); !errors.Is(err, ErrInvalid) {
+		tool.Name, tool.Effect = "read", api.ReadEffect
+		d.Tools = []api.ToolSpec{tool}
+		if err := NewStore().RegisterDefinition(d); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("invalid tool contract accepted: %v", err)
 		}
 	}
@@ -795,7 +800,7 @@ func TestCapabilityStoreRejectsMalformedAndDuplicateRecords(t *testing.T) {
 				}
 			}
 		},
-		func(s *snapshot) { s.CapabilityChanges[0] = capabilityChange{} },
+		func(s *snapshot) { s.CapabilityChanges[0] = api.CapabilityChange{} },
 	} {
 		var state snapshot
 		if err := json.Unmarshal(body, &state); err != nil {
@@ -809,7 +814,7 @@ func TestCapabilityStoreRejectsMalformedAndDuplicateRecords(t *testing.T) {
 		if err := os.WriteFile(storePath, bad, 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Load(storePath); !errors.Is(err, ErrInvalid) {
+		if _, err := Load(storePath); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("bad store admitted: %v", err)
 		}
 	}
@@ -818,44 +823,44 @@ func TestCapabilityStoreRejectsMalformedAndDuplicateRecords(t *testing.T) {
 func TestCapabilityRecordsRequireHumanConfirmation(t *testing.T) {
 	s, _, policy, profile := managedStore(t)
 	// A record with no operator confirmation carries no authority at all.
-	if err := NewStore().PutCapabilityPolicy(policy); !errors.Is(err, ErrUnauthorized) {
+	if err := NewStore().PutCapabilityPolicy(policy); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unconfirmed policy admitted: %v", err)
 	}
-	if err := NewStore().PutCapabilityProfile(profile); !errors.Is(err, ErrUnauthorized) {
+	if err := NewStore().PutCapabilityProfile(profile); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unconfirmed profile admitted: %v", err)
 	}
-	grant := OperatorGrant(GrantSelfInstall, "alice", "", "")
-	if err := s.PutGrant(grant); !errors.Is(err, ErrUnauthorized) {
+	grant := api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")
+	if err := s.PutGrant(grant); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unconfirmed grant admitted: %v", err)
 	}
-	// Confirmation is bound to the exact bytes reviewed: tampering voids it.
+	// confirmation is bound to the exact bytes reviewed: tampering voids it.
 	body, _ := json.Marshal(profile)
-	var tampered CapabilityProfile
+	var tampered api.CapabilityProfile
 	if err := json.Unmarshal(body, &tampered); err != nil {
 		t.Fatal(err)
 	}
 	mustConfirm(t, &tampered)
 	tampered.Selections[0].Name = "sneaked_in"
-	if err := NewStore().PutCapabilityProfile(tampered); !errors.Is(err, ErrUnauthorized) {
+	if err := NewStore().PutCapabilityProfile(tampered); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("post-confirmation tamper admitted: %v", err)
 	}
 	// One operator identity cannot stand in for a record issued by another:
 	// the stamp succeeds, but admission binds confirmation issuer to record
 	// issuer and rejects the mismatch durably.
-	crossed := OperatorGrant(GrantSelfInstall, "alice", "", "")
-	if err := Confirm(&crossed, "mallory", time.Unix(1, 0).UTC()); err != nil {
+	crossed := api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")
+	if err := api.Confirm(&crossed, "mallory", time.Unix(1, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutGrant(crossed); !errors.Is(err, ErrUnauthorized) {
+	if err := s.PutGrant(crossed); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("cross-issuer confirmation admitted: %v", err)
 	}
 	// Model/agent issuers can never mint a confirmation.
 	for _, issuer := range []string{"model", "hermes"} {
-		if err := Confirm(&grant, issuer, time.Unix(1, 0).UTC()); !errors.Is(err, ErrUnauthorized) {
+		if err := api.Confirm(&grant, issuer, time.Unix(1, 0).UTC()); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("%s confirmation minted: %v", issuer, err)
 		}
 	}
-	// Grant mutations are durable lifecycle records, replayed like policies.
+	// grant mutations are durable lifecycle records, replayed like policies.
 	storePath := filepath.Join(t.TempDir(), "registry.json")
 	if err := putGrant(t, s, grant); err != nil {
 		t.Fatal(err)
@@ -885,8 +890,8 @@ func TestManagedAuditPersistsScopeWithoutArguments(t *testing.T) {
 	s, auth, _, profile := managedStore(t)
 	ledgerPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	t.Setenv("HUB_AUDIT_LEDGER", ledgerPath)
-	config := EndpointConfig{Token: aliceToken, Auth: auth, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{Text: "private result"}, nil
+	config := EndpointConfig{Token: aliceToken, Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "private result"}, nil
 	})}
 	handler, err := NewEndpointHandler(config, s)
 	if err != nil {
@@ -930,13 +935,13 @@ func TestManagedAuditPersistsScopeWithoutArguments(t *testing.T) {
 // will do — including denied selections staying visible.
 // draftProfile deep-copies a profile so preview fixtures cannot mutate the
 // stored fixture's shared slices.
-func draftProfile(t *testing.T, p CapabilityProfile) CapabilityProfile {
+func draftProfile(t *testing.T, p api.CapabilityProfile) api.CapabilityProfile {
 	t.Helper()
 	body, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out CapabilityProfile
+	var out api.CapabilityProfile
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatal(err)
 	}
@@ -962,7 +967,7 @@ func TestPreviewCapabilityProfileDiff(t *testing.T) {
 	if len(preview.Added) != 1 || preview.Added[0] != "files_read" || len(preview.Removed) != 1 || preview.Removed[0] != "workspace_read" || len(preview.Changed) != 0 {
 		t.Fatalf("rename diff wrong: %+v", preview)
 	}
-	for _, side := range [][]ProfilePreviewEntry{preview.Current, preview.Candidate} {
+	for _, side := range [][]api.ProfilePreviewEntry{preview.Current, preview.Candidate} {
 		if len(side) != 1 || !side[0].Admitted || len(side[0].Scopes) != 1 || side[0].Scopes[0].PathPrefix != "docs" {
 			t.Fatalf("admitted entry missing scope: %+v", side)
 		}
@@ -981,7 +986,7 @@ func TestPreviewCapabilityProfileDiff(t *testing.T) {
 
 	// Stale or replayed revisions are rejected exactly as apply rejects them.
 	stale := draftProfile(t, profile)
-	if _, err := s.PreviewCapabilityProfile(stale); !errors.Is(err, ErrConflict) {
+	if _, err := s.PreviewCapabilityProfile(stale); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale preview admitted: %v", err)
 	}
 
@@ -989,8 +994,8 @@ func TestPreviewCapabilityProfileDiff(t *testing.T) {
 	denied := draftProfile(t, profile)
 	denied.Revision++
 	denyRule := policy.Defaults[0]
-	denyRule.Limits = CapabilityLimits{}
-	denied.Denies = []CapabilityRule{denyRule}
+	denyRule.Limits = api.CapabilityLimits{}
+	denied.Denies = []api.CapabilityRule{denyRule}
 	deniedPreview, err := s.PreviewCapabilityProfile(denied)
 	if err != nil {
 		t.Fatal(err)
@@ -1008,8 +1013,8 @@ func TestPreviewCapabilityProfileDiff(t *testing.T) {
 	overreach.Revision++
 	wider := policy.Defaults[0]
 	wider.PathPrefix = ""
-	overreach.Allows = []CapabilityRule{wider}
-	if _, err := s.PreviewCapabilityProfile(overreach); !errors.Is(err, ErrUnauthorized) {
+	overreach.Allows = []api.CapabilityRule{wider}
+	if _, err := s.PreviewCapabilityProfile(overreach); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("ceiling violation previewed: %v", err)
 	}
 
@@ -1019,8 +1024,8 @@ func TestPreviewCapabilityProfileDiff(t *testing.T) {
 	narrower.Revision++
 	rule := narrower.Ceiling[0]
 	rule.PathPrefix = "docs/inbox"
-	narrower.Ceiling = []CapabilityRule{rule}
-	narrower.Defaults = []CapabilityRule{rule}
+	narrower.Ceiling = []api.CapabilityRule{rule}
+	narrower.Defaults = []api.CapabilityRule{rule}
 	if err := putPolicy(t, s, narrower); err != nil {
 		t.Fatal(err)
 	}
@@ -1071,13 +1076,13 @@ func TestPreviewMatchesApply(t *testing.T) {
 // opt-in, HH stays a separately reviewed connector and nothing maps to a
 // default grant.
 func TestRecommendedConnectorManifest(t *testing.T) {
-	manifest := RecommendedConnectorManifest()
+	manifest := api.RecommendedConnectorManifest()
 	if err := manifest.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	var hh *ConnectorRecommendation
+	var hh *api.ConnectorRecommendation
 	for i, entry := range manifest.Entries {
-		if entry.Admission != AdmissionOptIn {
+		if entry.Admission != api.AdmissionOptIn {
 			t.Fatalf("non-opt-in admission on %q", entry.Family)
 		}
 		if entry.Family == "hh" {
@@ -1124,7 +1129,7 @@ func TestProfileRollbackRestoresOnlyReviewedSurface(t *testing.T) {
 	// Rollback is republishing the rev-1 content at a new revision; replaying
 	// the old revision number is rejected as stale.
 	stale := draftProfile(t, profile)
-	if err := putProfile(t, s, stale); !errors.Is(err, ErrConflict) {
+	if err := putProfile(t, s, stale); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale rollback accepted: %v", err)
 	}
 	rolledBack := draftProfile(t, profile)
@@ -1151,17 +1156,17 @@ func TestProfileRollbackRestoresOnlyReviewedSurface(t *testing.T) {
 // (provenance: the onboarding record under the same policy generation) project
 // and dispatch like unmanaged installs; everything else still fails closed.
 func TestManagedSelfInstallAndControlOperations(t *testing.T) {
-	for _, mode := range []string{OnboardingSelfInstall, OnboardingRemote} {
+	for _, mode := range []string{api.OnboardingSelfInstall, api.OnboardingRemote} {
 		t.Run(mode, func(t *testing.T) { testManagedSelfInstallAndControlOperations(t, mode) })
 	}
 }
 
 func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	s, auth, _, profile := managedStore(t)
-	if err := s.RequireControlOperation(auth, "prepare_source"); !errors.Is(err, ErrUnauthorized) {
+	if err := s.RequireControlOperation(auth, "prepare_source"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("control op before profile grant: %v", err)
 	}
-	if err := s.RequireSelfInstall(auth); !errors.Is(err, ErrUnauthorized) {
+	if err := s.RequireSelfInstall(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("self-install before profile grant: %v", err)
 	}
 
@@ -1191,19 +1196,19 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	definition := remoteDefinition()
 	definition.DefinitionID, definition.Version = "github-self", "0.1.0"
 	definition.Credentials = nil
-	definition.Tools = []ToolSpec{{Name: "repo_list", Effect: ReadEffect}}
+	definition.Tools = []api.ToolSpec{{Name: "repo_list", Effect: api.ReadEffect}}
 	if err := s.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion,
-		WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 2}
+		WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 2}
 	if err := s.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
-	bindingID := DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
-	onboarding := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-self-1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
-		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: mode, Phase: PhaseEnabled,
+	bindingID := api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-self-1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: mode, Phase: api.PhaseEnabled,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, BindingID: bindingID,
 		SourceURL: "https://github.com/example/repo", Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := s.PutOnboarding(onboarding); err != nil {
@@ -1214,7 +1219,7 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := ProjectedToolName(definition.DefinitionID, definition.Version, "repo_list")
+	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "repo_list")
 	found := false
 	for _, tool := range projected {
 		if tool.Name == name {
@@ -1226,9 +1231,9 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	}
 	dispatched := false
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			dispatched = true
-			return BackendResult{Text: "ok"}, nil
+			return api.BackendResult{Text: "ok"}, nil
 		})}
 	if _, err := g.CallAuthorized(t.Context(), auth, name, map[string]any{}); err != nil || !dispatched {
 		t.Fatalf("self-installed call denied: %v", err)
@@ -1237,30 +1242,30 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	// A catalog onboarding does not admit the binding; nor does a pre-managed
 	// policy generation or another principal's pipeline.
 	other := onboarding
-	other.OnboardingID, other.Mode = "onboard-self-2", OnboardingCatalog
+	other.OnboardingID, other.Mode = "onboard-self-2", api.OnboardingCatalog
 	if err := s.PutOnboarding(other); err != nil {
 		t.Fatal(err)
 	}
 	staleDef := remoteDefinition()
 	staleDef.DefinitionID, staleDef.Version, staleDef.Credentials = "stale-self", "0.0.1", nil
-	staleDef.Tools = []ToolSpec{{Name: "peek", Effect: ReadEffect}}
+	staleDef.Tools = []api.ToolSpec{{Name: "peek", Effect: api.ReadEffect}}
 	if err := s.RegisterDefinition(staleDef); err != nil {
 		t.Fatal(err)
 	}
-	staleID := DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, staleDef.DefinitionID, staleDef.Version, "", "")
+	staleID := api.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, staleDef.DefinitionID, staleDef.Version, "", "")
 	stale := onboarding
 	stale.OnboardingID, stale.PolicyVersion, stale.BindingID = "onboard-self-3", "policy-0", staleID
 	stale.DefinitionID, stale.DefinitionVersion = staleDef.DefinitionID, staleDef.Version
 	if err := s.PutOnboarding(stale); err != nil {
 		t.Fatal(err)
 	}
-	staleBinding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+	staleBinding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, DefinitionID: staleDef.DefinitionID, DefinitionVersion: staleDef.Version, PolicyVersion: "policy-0",
-		WorkloadClass: staleDef.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 3}
+		WorkloadClass: staleDef.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 3}
 	if err := s.PutBinding(staleBinding); err != nil {
 		t.Fatal(err)
 	}
-	for _, denied := range []string{ProjectedToolName(staleDef.DefinitionID, staleDef.Version, "peek")} {
+	for _, denied := range []string{api.ProjectedToolName(staleDef.DefinitionID, staleDef.Version, "peek")} {
 		if _, err := g.CallAuthorized(t.Context(), auth, denied, map[string]any{}); err == nil {
 			t.Fatalf("non-self-install binding %s dispatched under managed", denied)
 		}
@@ -1276,10 +1281,10 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 1 {
 		t.Fatalf("self-install surface survived grant removal: %v %v", tools, err)
 	}
-	if err := s.RequireControlOperation(auth, "status"); !errors.Is(err, ErrUnauthorized) {
+	if err := s.RequireControlOperation(auth, "status"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("control op survived grant removal: %v", err)
 	}
-	if err := s.RequireSelfInstall(auth); !errors.Is(err, ErrUnauthorized) {
+	if err := s.RequireSelfInstall(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("self-install survived grant removal: %v", err)
 	}
 
@@ -1298,11 +1303,11 @@ func TestCapabilityPathArgumentNormalization(t *testing.T) {
 	// still bounded by the granted prefix, so a scoped grant keeps denying
 	// root-level calls while a root grant admits them.
 	digest := "sha256:" + strings.Repeat("7", 64)
-	rule := CapabilityRule{CapabilityID: "files.list", ImplementationDigest: digest, Action: "list", Resource: "files", Limits: CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
-	policy := CapabilityPolicy{Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
-	profile := CapabilityProfile{}
-	selection := CapabilitySelection{CapabilityID: "files.list", ImplementationDigest: digest, ToolName: "file_list"}
-	tool := ToolSpec{Name: "file_list", CapabilityID: "files.list", Uses: []CapabilityUse{{Action: "list", Resource: "files", PathArgument: "path"}}}
+	rule := api.CapabilityRule{CapabilityID: "files.list", ImplementationDigest: digest, Action: "list", Resource: "files", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
+	policy := api.CapabilityPolicy{Ceiling: []api.CapabilityRule{rule}, Defaults: []api.CapabilityRule{rule}}
+	profile := api.CapabilityProfile{}
+	selection := api.CapabilitySelection{CapabilityID: "files.list", ImplementationDigest: digest, ToolName: "file_list"}
+	tool := api.ToolSpec{Name: "file_list", CapabilityID: "files.list", Uses: []api.CapabilityUse{{Action: "list", Resource: "files", PathArgument: "path"}}}
 	for _, tc := range []struct {
 		name string
 		args map[string]any
@@ -1318,7 +1323,7 @@ func TestCapabilityPathArgumentNormalization(t *testing.T) {
 		{"non-string", map[string]any{"path": float64(5)}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, got := capabilityDecision(profile, policy, selection, tool, tc.args, false); got != tc.want {
+			if _, _, got := api.CapabilityDecision(profile, policy, selection, tool, tc.args, false); got != tc.want {
 				t.Fatalf("allowed=%v want=%v", got, tc.want)
 			}
 		})
@@ -1326,13 +1331,13 @@ func TestCapabilityPathArgumentNormalization(t *testing.T) {
 	// A prefix-scoped grant still denies the normalized root.
 	scoped := rule
 	scoped.PathPrefix = "docs"
-	scopedPolicy := CapabilityPolicy{Ceiling: []CapabilityRule{scoped}, Defaults: []CapabilityRule{scoped}}
+	scopedPolicy := api.CapabilityPolicy{Ceiling: []api.CapabilityRule{scoped}, Defaults: []api.CapabilityRule{scoped}}
 	for _, args := range []map[string]any{{}, {"path": "."}, {"path": ""}} {
-		if _, _, got := capabilityDecision(profile, scopedPolicy, selection, tool, args, false); got {
+		if _, _, got := api.CapabilityDecision(profile, scopedPolicy, selection, tool, args, false); got {
 			t.Fatalf("scoped grant admitted a root call: %v", args)
 		}
 	}
-	if _, _, got := capabilityDecision(profile, scopedPolicy, selection, tool, map[string]any{"path": "docs/a"}, false); !got {
+	if _, _, got := api.CapabilityDecision(profile, scopedPolicy, selection, tool, map[string]any{"path": "docs/a"}, false); !got {
 		t.Fatal("scoped grant denied an in-prefix call")
 	}
 }

@@ -15,6 +15,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,8 +31,8 @@ func TestCLICellRealDocker(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	tools := envOr("HUB_CLI_TOOLS_IMAGE", "hermes-hub-cli-tools:test")
-	if out, err := localCommand(ctx, "docker", "image", "inspect", tools); err != nil {
+	tools := api.EnvOr("HUB_CLI_TOOLS_IMAGE", "hermes-hub-cli-tools:test")
+	if out, err := api.LocalCommand(ctx, "docker", "image", "inspect", tools); err != nil {
 		t.Skipf("image %s unavailable: %v (%s)", tools, err, out)
 	}
 
@@ -55,25 +56,25 @@ func TestCLICellRealDocker(t *testing.T) {
 			SeccompProfile: seccomp,
 			IdleTTLSeconds: 60,
 			MaxActive:      4,
-			CLI: &CLIControllerConfig{
+			CLI: &api.CLIControllerConfig{
 				ToolsImage:    tools,
 				CellInit:      cellinit,
 				AllowedEgress: []string{"*"},
-				Ceiling:       ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 65536, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 64},
+				Ceiling:       api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 65536, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 64},
 				UserCommands:  []string{"ls", "cat", "sleep", "sh", "uv"},
 			},
 		},
-		command:     localCommand,
-		commandExit: localCommandExit,
+		command:     api.LocalCommand,
+		commandExit: api.LocalCommandExit,
 		workloads:   map[string]genericWorkload{},
 		registry:    newCellRegistry(),
 	}
 	t.Cleanup(func() { c.releaseAllCells(context.Background(), "test-done") })
 
-	req := func(command string, args ...string) cliExecRequest {
-		return cliExecRequest{
-			Plan: controllerPlan{WorkloadID: "w-cell-int", DefinitionID: "cli-probe", DefinitionVersion: "1.0.0",
-				Execution: ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 65536, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 64, Egress: []string{"127.0.0.1"}}},
+	req := func(command string, args ...string) api.CliExecRequest {
+		return api.CliExecRequest{
+			Plan: api.ControllerPlan{WorkloadID: "w-cell-int", DefinitionID: "cli-probe", DefinitionVersion: "1.0.0",
+				Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 65536, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 64, Egress: []string{"127.0.0.1"}}},
 			Command: command, Args: args,
 			Principal: "alice", ContextID: "ctx-alice", BindingID: "bind-alice",
 		}
@@ -130,7 +131,7 @@ func TestCLICellRealDocker(t *testing.T) {
 	// home; neither a different caller nor the runtime home can supply it.
 	c.config.CLI.AllowPackageInstall = true
 	install := req("sh", "-c", `mkdir -p "$HOME/.local/bin"; printf '#!/bin/sh\necho private-install\n' > "$HOME/.local/bin/probe"; chmod +x "$HOME/.local/bin/probe"; probe`)
-	install.InstallPackages, install.Lifecycle = true, CLILifecycleBinding
+	install.InstallPackages, install.Lifecycle = true, api.CLILifecycleBinding
 	resp, err = c.execCLI(ctx, install)
 	if err != nil || resp.ExitCode != 0 || !strings.Contains(resp.Output, "private-install") {
 		t.Fatalf("private executable home: %v %+v", err, resp)
@@ -146,12 +147,12 @@ func TestCLICellRealDocker(t *testing.T) {
 		t.Fatalf("installation leaked to another caller: %v %+v", err, resp)
 	}
 	if proxy := os.Getenv("HUB_CLI_REGISTRY_PROXY_IMAGE"); proxy != "" {
-		c.config.CLI.ToolsImage = envOr("HUB_CLI_REGISTRY_TOOLS_IMAGE", "hermes-hub:0.3.0-dev")
+		c.config.CLI.ToolsImage = api.EnvOr("HUB_CLI_REGISTRY_TOOLS_IMAGE", "hermes-hub:0.3.0-dev")
 		c.config.CLI.ProxyImage = proxy
 		c.config.CLI.Ceiling.Egress = []string{"pypi.org", "files.pythonhosted.org"}
 		install = req("uv", "tool", "install", "--python", "/opt/hermes/.venv/bin/python3", "--no-python-downloads", "ruff==0.11.13")
 		install.Plan.Execution.Egress = append([]string(nil), c.config.CLI.Ceiling.Egress...)
-		install.InstallPackages, install.Lifecycle, install.BindingID = true, CLILifecycleBinding, "bind-registry"
+		install.InstallPackages, install.Lifecycle, install.BindingID = true, api.CLILifecycleBinding, "bind-registry"
 		resp, err = c.execCLI(ctx, install)
 		if err != nil || resp.ExitCode != 0 {
 			t.Fatalf("PyPI install through allowlist: %v %+v", err, resp)
@@ -167,7 +168,7 @@ func TestCLICellRealDocker(t *testing.T) {
 		short, stop := context.WithTimeout(ctx, 2*time.Second)
 		defer stop()
 		_, err = c.execCLI(short, req("sleep", "60"))
-		if err == nil || errors.Is(err, ErrInvalid) {
+		if err == nil || errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("cancelled exec: %v", err)
 		}
 	}

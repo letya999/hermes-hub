@@ -7,6 +7,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/sshcap"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -67,7 +68,7 @@ type Tools struct {
 	// deny/deny-all/refuse-read only decisions compiled per capability
 	// family. Nil on unmanaged runtimes — the env pin is only rendered with
 	// the managed mount.
-	ToolPolicy        *toolhub.ToolPolicySnapshot
+	ToolPolicy        *api.ToolPolicySnapshot
 	StateDir          string
 	ToolHub           *toolhub.Store
 	ToolHubAuth       identity.Envelope
@@ -171,7 +172,7 @@ func readOnlyToolNames(capabilities map[string]bool) map[string]bool {
 	names := map[string]bool{}
 	for _, spec := range HubToolsDefinition().Tools {
 		family, _, _ := strings.Cut(spec.CapabilityID, ".")
-		if spec.Effect == toolhub.WriteEffect && (capabilities[spec.CapabilityID] || capabilities[family]) {
+		if spec.Effect == api.WriteEffect && (capabilities[spec.CapabilityID] || capabilities[family]) {
 			names[spec.Name] = true
 		}
 	}
@@ -182,12 +183,12 @@ func readOnlyToolNames(capabilities map[string]bool) map[string]bool {
 // only with the managed /config mount, so a set pin with a missing or
 // corrupt file is a hard failure — the executor refuses to start rather than
 // guessing at authority.
-func loadToolPolicy() (*toolhub.ToolPolicySnapshot, error) {
+func loadToolPolicy() (*api.ToolPolicySnapshot, error) {
 	path := strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY"))
 	if path == "" {
 		return nil, nil
 	}
-	policy, err := toolhub.LoadToolPolicy(path)
+	policy, err := api.LoadToolPolicy(path)
 	if err != nil {
 		return nil, fmt.Errorf("tool policy: %w", err)
 	}
@@ -207,8 +208,8 @@ func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return nil, identity.Envelope{}, fmt.Errorf("ToolHub identity: %w", err)
 	}
-	store.Reconnect = &toolhub.ReconnectController{Store: store, Auth: auth, OnChange: func(change toolhub.ProjectionChange) error {
-		return toolhub.WriteReconnectMarker(stateDir, change)
+	store.Reconnect = &toolhub.ReconnectController{Store: store, Auth: auth, OnChange: func(change api.ProjectionChange) error {
+		return api.WriteReconnectMarker(stateDir, change)
 	}}
 	return store, auth, nil
 }

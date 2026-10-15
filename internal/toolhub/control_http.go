@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"html"
 	"io"
 	"net"
@@ -21,7 +22,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 	if g == nil || g.Control == nil || server == nil {
 		return
 	}
-	for _, op := range ControlOperations {
+	for _, op := range api.ControlOperations {
 		if !allowed[op] {
 			continue
 		}
@@ -31,7 +32,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			arguments := map[string]any{}
 			if request != nil && len(request.Params.Arguments) > 0 {
 				if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
-					return nil, fmt.Errorf("%w: tool arguments: %v", ErrInvalid, err)
+					return nil, fmt.Errorf("%w: tool arguments: %v", api.ErrInvalid, err)
 				}
 			}
 			notifyControlProgress(ctx, request, name, false, nil)
@@ -40,7 +41,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 				return nil, err
 			}
 			notifyControlProgress(ctx, request, name, true, body)
-			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == PhaseAwaitingOAuth {
+			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == api.PhaseAwaitingOAuth {
 				if pending := pendingCredentialElicit(ctx, request, body); pending != nil {
 					return pending, nil
 				}
@@ -64,7 +65,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			Arguments map[string]any `json:"arguments"`
 		}
 		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil || strings.TrimSpace(arguments.Tool) == "" {
-			return nil, fmt.Errorf("%w: invoke arguments", ErrInvalid)
+			return nil, fmt.Errorf("%w: invoke arguments", api.ErrInvalid)
 		}
 		return g.call(ctx, auth, arguments.Tool, arguments.Arguments)
 	})
@@ -196,7 +197,7 @@ func notifyControlProgress(ctx context.Context, request *mcp.CallToolRequest, op
 			progress, message = 1, "ToolHub operation completed"
 		}
 	}
-	if phase, _ := body["phase"].(string); done && phase == PhaseFailed {
+	if phase, _ := body["phase"].(string); done && phase == api.PhaseFailed {
 		message = "MCP installation failed"
 	}
 	_ = request.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: progress, Total: 1, Message: message})
@@ -261,11 +262,11 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 	nonce := r.URL.Query().Get("nonce")
 	if r.Method == http.MethodGet {
 		onboarding, err := g.Control.Store.onboarding(onboardingID)
-		if err != nil || onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" || nonce != onboarding.FormNonce || onboarding.FormExpires.IsZero() || g.Control.now().After(onboarding.FormExpires) {
+		if err != nil || onboarding.Phase != api.PhaseAwaitingCreds || onboarding.FormNonce == "" || nonce != onboarding.FormNonce || onboarding.FormExpires.IsZero() || g.Control.now().After(onboarding.FormExpires) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		cspNonce := randomNonce()
+		cspNonce := api.RandomNonce()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
@@ -361,7 +362,7 @@ func credentialResultPage(title, message string) string {
 	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>` + html.EscapeString(title) + `</h1><p>` + html.EscapeString(message) + `</p></main></html>`
 }
 
-func credentialFormIntro(hints []CredentialHint) string {
+func credentialFormIntro(hints []api.CredentialHint) string {
 	if googleOAuthRequired(hints) {
 		return "Выберите готовый JSON-файл Google или введите Client ID и Client Secret отдельно. Данные сохранятся в защищённом хранилище и не попадут в чат."
 	}
@@ -371,15 +372,15 @@ func credentialFormIntro(hints []CredentialHint) string {
 	return "Введите запрошенные поля. Они сохранятся в защищённом хранилище и не попадут в чат."
 }
 
-func writeCredentialFields(b *strings.Builder, hints []CredentialHint, nonce string) {
+func writeCredentialFields(b *strings.Builder, hints []api.CredentialHint, nonce string) {
 	if !credentialHintsUseAlternatives(hints) {
 		for _, hint := range hints {
 			b.WriteString(credentialFieldMarkup(hint))
 		}
 		return
 	}
-	groups := map[int][]CredentialHint{}
-	var plain []CredentialHint
+	groups := map[int][]api.CredentialHint{}
+	var plain []api.CredentialHint
 	var order []int
 	for _, hint := range hints {
 		if hint.AlternativeGroup <= 0 {
@@ -403,7 +404,7 @@ func writeCredentialFields(b *strings.Builder, hints []CredentialHint, nonce str
 		if index > 0 {
 			b.WriteString(`<details><summary>Другой набор: ` + html.EscapeString(legend) + `</summary>`)
 		}
-		group := append(append([]CredentialHint{}, plain...), groups[id]...)
+		group := append(append([]api.CredentialHint{}, plain...), groups[id]...)
 		b.WriteString(`<form method="post" enctype="multipart/form-data"><input type="hidden" name="nonce" value="` + html.EscapeString(nonce) + `"><fieldset><legend>`)
 		b.WriteString(html.EscapeString(legend))
 		b.WriteString("</legend>")
@@ -425,10 +426,10 @@ func credentialSubmitPage(err error) (int, string, string) {
 		}
 		return http.StatusServiceUnavailable, "Подключение не завершено", "Данные сохранены. Завершить привязку из формы не удалось: " + reason + " Повторите подтверждение в чате."
 	}
-	if errors.Is(err, ErrUnauthorized) && credentialLinkRejected(err) {
+	if errors.Is(err, api.ErrUnauthorized) && credentialLinkRejected(err) {
 		return http.StatusUnauthorized, "Ссылка устарела", "Форма больше не действует. Данные не сохранены. Попросите в чате новую ссылку."
 	}
-	if errors.Is(err, ErrInvalid) {
+	if errors.Is(err, api.ErrInvalid) {
 		return http.StatusBadRequest, "Форма заполнена не так", credentialFormRejection(err)
 	}
 	reason := strings.TrimPrefix(credentialProbeFailure(err), "Проверка не прошла. ")
@@ -443,7 +444,7 @@ func credentialLinkRejected(err error) bool {
 	return strings.Contains(text, "form nonce") || strings.Contains(text, "expired form") || strings.Contains(text, "credentials not expected")
 }
 
-func credentialFieldMarkup(hint CredentialHint) string {
+func credentialFieldMarkup(hint api.CredentialHint) string {
 	label := html.EscapeString(credentialFieldLabel(hint))
 	inputName := html.EscapeString(hint.Name)
 	inputType := "password"
@@ -479,7 +480,7 @@ func credentialFieldMarkup(hint CredentialHint) string {
 	return "<label>" + label + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + "</label>"
 }
 
-func credentialHintsUseAlternatives(hints []CredentialHint) bool {
+func credentialHintsUseAlternatives(hints []api.CredentialHint) bool {
 	for _, hint := range hints {
 		if hint.AlternativeGroup > 0 {
 			return true
@@ -488,8 +489,8 @@ func credentialHintsUseAlternatives(hints []CredentialHint) bool {
 	return false
 }
 
-func credentialFormHints(hints []CredentialHint) []CredentialHint {
-	visible := make([]CredentialHint, 0, len(hints))
+func credentialFormHints(hints []api.CredentialHint) []api.CredentialHint {
+	visible := make([]api.CredentialHint, 0, len(hints))
 	for _, hint := range hints {
 		switch strings.ToUpper(hint.Name) {
 		case "HOST", "PORT", "TRANSPORT":
@@ -500,7 +501,7 @@ func credentialFormHints(hints []CredentialHint) []CredentialHint {
 	return visible
 }
 
-func applyCredentialDefaults(hints []CredentialHint, values map[string]string) {
+func applyCredentialDefaults(hints []api.CredentialHint, values map[string]string) {
 	defaults := map[string]string{"HOST": "127.0.0.1", "PORT": "3000", "TRANSPORT": "stdio"}
 	for _, hint := range hints {
 		if value := defaults[strings.ToUpper(hint.Name)]; value != "" && values[hint.Name] == "" {
@@ -509,7 +510,7 @@ func applyCredentialDefaults(hints []CredentialHint, values map[string]string) {
 	}
 }
 
-func googleOAuthRequired(hints []CredentialHint) bool {
+func googleOAuthRequired(hints []api.CredentialHint) bool {
 	for _, hint := range hints {
 		if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 			return true
@@ -555,14 +556,14 @@ func googleOAuthFormValue(r *http.Request) (string, error) {
 	return string(data), nil
 }
 
-func credentialFieldLabel(hint CredentialHint) string {
+func credentialFieldLabel(hint api.CredentialHint) string {
 	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 		return "Файл OAuth-клиента Google (JSON)"
 	}
 	return strings.ReplaceAll(strings.TrimSpace(hint.Name), "_", " ")
 }
 
-func credentialFieldHint(hint CredentialHint) string {
+func credentialFieldHint(hint api.CredentialHint) string {
 	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 		return "<small>Вставьте содержимое файла gcp-oauth.keys.json, скачанного для OAuth client ID типа Desktop app. Email, host, port и transport здесь не нужны.</small>"
 	}

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,7 +23,7 @@ func Config(s Settings) M {
 	servers := M{}
 	// The hub executor server is the hub:tools section: governance can cut it
 	// without touching the filesystem contract (the snapshot denies calls too).
-	if s.govAllows(toolhub.SectionHubTools) && (s.Has("workspace") || s.Has("hh") || s.Has("ssh")) {
+	if s.govAllows(api.SectionHubTools) && (s.Has("workspace") || s.Has("hh") || s.Has("ssh")) {
 		e := env("HH_TOKEN", "HH_USER_AGENT")
 		e["HUB_HH_ENABLED"] = fmt.Sprint(s.Has("hh"))
 		e["HUB_ORG_ACTIONS"] = "${HUB_ORG_ACTIONS}"
@@ -73,7 +73,7 @@ func Config(s Settings) M {
 	// state. Mutation tools exist only behind the explicit browser_act
 	// capability.
 	if s.Has("browser") {
-		if s.govAllows(toolhub.SectionHubBrowser) {
+		if s.govAllows(api.SectionHubBrowser) {
 			servers["browser"] = browserServer(false, s.Has("browser_act"))
 		}
 		if s.govAllows("hub:browser_guest") {

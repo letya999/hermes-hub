@@ -3,10 +3,10 @@ package toolhub
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,7 +33,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]ToolDefinition{}, connections: map[string]Connection{}, credentials: map[string]CredentialReference{}, bindings: map[string]ToolBinding{}, workloads: map[string]WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]Grant{}, onboardings: map[string]Onboarding{}, publications: map[string]DefinitionPublication{}, sharedPolicies: map[string]SharedCredentialPolicy{}, capabilityPolicies: map[string]CapabilityPolicy{}, capabilityProfiles: map[string]CapabilityProfile{}, exclusions: map[string]ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -45,13 +45,13 @@ func (s *Store) Save(path string) error {
 // saveLocked lets authorization mutations become visible only after the same
 // snapshot fence and durable write used by Save have succeeded.
 func (s *Store) saveLocked(path string) error {
-	if err := safeStorePath(path); err != nil {
+	if err := api.SafeStorePath(path); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	if err := safeStorePath(path + ".lock"); err != nil {
+	if err := api.SafeStorePath(path + ".lock"); err != nil {
 		return err
 	}
 	lock := flock.New(path + ".lock")
@@ -61,12 +61,12 @@ func (s *Store) saveLocked(path string) error {
 	defer lock.Unlock()
 	previous, err := os.ReadFile(path) // #nosec G304 -- trusted, symlink-checked registry path.
 	if err == nil && (s.savedPath != path || sha256.Sum256(previous) != s.diskDigest) {
-		return ErrConflict
+		return api.ErrConflict
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	state := snapshot{Schema: SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
+	state := snapshot{Schema: api.SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
 	}
@@ -97,19 +97,19 @@ func (s *Store) saveLocked(path string) error {
 	for _, policy := range s.sharedPolicies {
 		state.SharedPolicies = append(state.SharedPolicies, policy)
 	}
-	slices.SortFunc(state.Definitions, func(a, b ToolDefinition) int {
+	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
-	slices.SortFunc(state.Connections, func(a, b Connection) int { return strings.Compare(a.ConnectionID, b.ConnectionID) })
-	slices.SortFunc(state.Credentials, func(a, b CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
-	slices.SortFunc(state.Bindings, func(a, b ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
-	slices.SortFunc(state.Workloads, func(a, b WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
-	slices.SortFunc(state.Grants, func(a, b Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
-	slices.SortFunc(state.Onboardings, func(a, b Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
-	slices.SortFunc(state.Publications, func(a, b DefinitionPublication) int {
+	slices.SortFunc(state.Connections, func(a, b api.Connection) int { return strings.Compare(a.ConnectionID, b.ConnectionID) })
+	slices.SortFunc(state.Credentials, func(a, b api.CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
+	slices.SortFunc(state.Bindings, func(a, b api.ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
+	slices.SortFunc(state.Workloads, func(a, b api.WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
+	slices.SortFunc(state.Grants, func(a, b api.Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
+	slices.SortFunc(state.Onboardings, func(a, b api.Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
+	slices.SortFunc(state.Publications, func(a, b api.DefinitionPublication) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
-	slices.SortFunc(state.SharedPolicies, func(a, b SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
+	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -144,7 +144,7 @@ func (s *Store) saveLocked(path string) error {
 }
 
 func Load(path string) (*Store, error) {
-	if err := safeStorePath(path); err != nil {
+	if err := api.SafeStorePath(path); err != nil {
 		return nil, err
 	}
 	// Stamp before the read: a rename landing between stat and read leaves a
@@ -159,14 +159,14 @@ func Load(path string) (*Store, error) {
 	decoder.DisallowUnknownFields()
 	var state snapshot
 	if err := decoder.Decode(&state); err != nil {
-		return nil, fmt.Errorf("%w: store JSON: %v", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: store JSON: %v", api.ErrInvalid, err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("%w: one store JSON document expected", ErrInvalid)
+		return nil, fmt.Errorf("%w: one store JSON document expected", api.ErrInvalid)
 	}
-	if state.Schema != SchemaVersion {
-		return nil, fmt.Errorf("%w: store schema", ErrInvalid)
+	if state.Schema != api.SchemaVersion {
+		return nil, fmt.Errorf("%w: store schema", api.ErrInvalid)
 	}
 	store := NewStore()
 	for _, definition := range state.Definitions {
@@ -182,7 +182,7 @@ func Load(path string) (*Store, error) {
 			}
 		}
 		if records != 1 {
-			return nil, fmt.Errorf("%w: exactly one capability change expected", ErrInvalid)
+			return nil, fmt.Errorf("%w: exactly one capability change expected", api.ErrInvalid)
 		}
 		before := len(store.capabilityChanges)
 		switch {
@@ -197,7 +197,7 @@ func Load(path string) (*Store, error) {
 			return nil, err
 		}
 		if len(store.capabilityChanges) != before+1 {
-			return nil, fmt.Errorf("%w: duplicate capability change", ErrInvalid)
+			return nil, fmt.Errorf("%w: duplicate capability change", api.ErrInvalid)
 		}
 	}
 	store.mu.Lock()
@@ -213,12 +213,12 @@ func Load(path string) (*Store, error) {
 			return nil, err
 		}
 		if !store.hasDefinitionID(connection.DefinitionID) {
-			return nil, fmt.Errorf("%w: connection definition", ErrNotFound)
+			return nil, fmt.Errorf("%w: connection definition", api.ErrNotFound)
 		}
 		if connection.CredentialRefID != "" {
 			reference, ok := store.credentials[connection.CredentialRefID]
 			if !ok || reference.ConnectionID != connection.ConnectionID {
-				return nil, fmt.Errorf("%w: connection credential", ErrInvalid)
+				return nil, fmt.Errorf("%w: connection credential", api.ErrInvalid)
 			}
 		}
 		store.connections[connection.ConnectionID] = connection
@@ -237,13 +237,13 @@ func Load(path string) (*Store, error) {
 	}
 	for key, revision := range state.ProjectionRevisions {
 		if revision == 0 {
-			return nil, fmt.Errorf("%w: persisted projection revision", ErrInvalid)
+			return nil, fmt.Errorf("%w: persisted projection revision", api.ErrInvalid)
 		}
 		store.projectionRevisions[key] = revision
 	}
 	for _, change := range state.BindingChanges {
 		if !identity.ValidID(change.BindingID) || change.FromPolicy == "" || change.ToPolicy == "" || change.Revision == 0 {
-			return nil, fmt.Errorf("%w: persisted binding change", ErrInvalid)
+			return nil, fmt.Errorf("%w: persisted binding change", api.ErrInvalid)
 		}
 		store.bindingChanges = append(store.bindingChanges, change)
 	}
@@ -339,11 +339,11 @@ func (s *Store) Reload() error {
 	}
 	stopped := make([]string, 0)
 	for id, old := range s.workloads {
-		if old.Status != RunningStatus && old.Status != StartingStatus {
+		if old.Status != api.RunningStatus && old.Status != api.StartingStatus {
 			continue
 		}
 		next, ok := fresh.workloads[id]
-		if !ok || (next.Status != RunningStatus && next.Status != StartingStatus) {
+		if !ok || (next.Status != api.RunningStatus && next.Status != api.StartingStatus) {
 			stopped = append(stopped, id)
 		}
 	}
@@ -372,49 +372,19 @@ func (s *Store) validateLocked() error {
 	for _, binding := range s.bindings {
 		definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
 		if !ok || definition.Workload.Class != binding.WorkloadClass {
-			return fmt.Errorf("%w: persisted binding definition", ErrInvalid)
+			return fmt.Errorf("%w: persisted binding definition", api.ErrInvalid)
 		}
 		if binding.ConnectionID != "" {
 			connection, ok := s.connections[binding.ConnectionID]
 			if !ok || connection.DefinitionID != binding.DefinitionID {
-				return fmt.Errorf("%w: persisted binding connection", ErrInvalid)
+				return fmt.Errorf("%w: persisted binding connection", api.ErrInvalid)
 			}
 		}
 	}
 	for _, workload := range s.workloads {
 		binding, ok := s.bindings[workload.BindingID]
 		if !ok || binding.DefinitionID != workload.DefinitionID || binding.DefinitionVersion != workload.DefinitionVersion {
-			return fmt.Errorf("%w: persisted workload binding", ErrInvalid)
-		}
-	}
-	return nil
-}
-
-func safeStorePath(path string) error {
-	if path == "" || !filepath.IsAbs(path) {
-		return fmt.Errorf("%w: store path must be absolute", ErrInvalid)
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("%w: store path: %v", ErrInvalid, err)
-	}
-	volume := filepath.VolumeName(abs)
-	root := volume + string(filepath.Separator)
-	current := root
-	for _, part := range strings.Split(strings.TrimPrefix(abs, root), string(filepath.Separator)) {
-		if part == "" {
-			continue
-		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("%w: store path: %v", ErrInvalid, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: store path contains symlink", ErrInvalid)
+			return fmt.Errorf("%w: persisted workload binding", api.ErrInvalid)
 		}
 	}
 	return nil

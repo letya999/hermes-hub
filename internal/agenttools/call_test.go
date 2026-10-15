@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 func write(t *testing.T, v *Tools, path, text string) {
@@ -19,7 +18,7 @@ func write(t *testing.T, v *Tools, path, text string) {
 	}
 }
 
-func execRead(t *testing.T, v *Tools, path string, scopes []toolhub.CapabilityScope) (any, error) {
+func execRead(t *testing.T, v *Tools, path string, scopes []api.CapabilityScope) (any, error) {
 	t.Helper()
 	return v.ExecCall(context.Background(), "file_read", map[string]any{"path": path}, scopes)
 }
@@ -28,7 +27,7 @@ func TestExecCallScopeBoundaries(t *testing.T) {
 	v := fixture(t)
 	write(t, v, "docs/a.txt", "scoped body")
 	write(t, v, "secret.txt", "outside")
-	scoped := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	scoped := []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
 
 	out, err := execRead(t, v, "docs/a.txt", scoped)
 	if err != nil {
@@ -47,7 +46,7 @@ func TestExecCallScopeBoundaries(t *testing.T) {
 	}
 
 	// File-level grant: scope is the file itself; only that file resolves.
-	fileScope := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs/a.txt"}}
+	fileScope := []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs/a.txt"}}
 	if _, err := execRead(t, v, "docs/a.txt", fileScope); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +55,7 @@ func TestExecCallScopeBoundaries(t *testing.T) {
 	}
 
 	// Whole-domain grant (empty prefix) keeps the original roots.
-	if _, err := execRead(t, v, "secret.txt", []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path"}}); err != nil {
+	if _, err := execRead(t, v, "secret.txt", []api.CapabilityScope{{Resource: "files", PathArgument: "path"}}); err != nil {
 		t.Fatal(err)
 	}
 	// No scopes at all: executor behavior is identical to the direct path.
@@ -66,10 +65,10 @@ func TestExecCallScopeBoundaries(t *testing.T) {
 
 	// A scope naming an argument the executor cannot map is rejected, never
 	// silently ignored.
-	if _, err := execRead(t, v, "docs/a.txt", []toolhub.CapabilityScope{{Resource: "files", PathArgument: "query", PathPrefix: "docs"}}); err == nil {
+	if _, err := execRead(t, v, "docs/a.txt", []api.CapabilityScope{{Resource: "files", PathArgument: "query", PathPrefix: "docs"}}); err == nil {
 		t.Fatal("scope on an unmapped argument was ignored")
 	}
-	if _, err := execRead(t, v, "docs/a.txt", []toolhub.CapabilityScope{{Resource: "no-such-domain", PathArgument: "path", PathPrefix: "docs"}}); err == nil {
+	if _, err := execRead(t, v, "docs/a.txt", []api.CapabilityScope{{Resource: "no-such-domain", PathArgument: "path", PathPrefix: "docs"}}); err == nil {
 		t.Fatal("unknown scope resource was ignored")
 	}
 }
@@ -88,7 +87,7 @@ func TestExecCallSymlinkBoundaries(t *testing.T) {
 		}
 		return true
 	}
-	scoped := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	scoped := []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
 	if !mklink(filepath.Join(ws, "secret.txt"), filepath.Join(ws, "docs", "link.txt")) {
 		t.Skip("symlink creation requires privileges on this platform")
 	}
@@ -146,27 +145,27 @@ func TestExecCallScopeBaseResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	read := func(args map[string]any, scopes []toolhub.CapabilityScope) (any, error) {
+	read := func(args map[string]any, scopes []api.CapabilityScope) (any, error) {
 		return v.ExecCall(context.Background(), "file_read", args, scopes)
 	}
-	out, err := read(map[string]any{"root": "archive", "path": "arc.txt"}, []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "arc.txt"}})
+	out, err := read(map[string]any{"root": "archive", "path": "arc.txt"}, []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "arc.txt"}})
 	if err != nil || out.(map[string]any)["text"] != "archived" {
 		t.Fatalf("archive-scoped read: %v %v", out, err)
 	}
-	if _, err := read(map[string]any{"root": "archive", "path": "other.txt"}, []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "arc.txt"}}); err == nil {
+	if _, err := read(map[string]any{"root": "archive", "path": "other.txt"}, []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "arc.txt"}}); err == nil {
 		t.Fatal("archive file-boundary admitted a sibling")
 	}
-	out, err = read(map[string]any{"root": "organization", "path": "MEMORY.md"}, []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "MEMORY.md"}})
+	out, err = read(map[string]any{"root": "organization", "path": "MEMORY.md"}, []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "MEMORY.md"}})
 	if err != nil || out.(map[string]any)["text"] != "org fact" {
 		t.Fatalf("organization-scoped read: %v %v", out, err)
 	}
 	// Direct archive/organization resources narrow the workspace root to
 	// their own boundary.
-	out, err = read(map[string]any{"path": "arc.txt"}, []toolhub.CapabilityScope{{Resource: "archive", PathArgument: "path", PathPrefix: "arc.txt"}})
+	out, err = read(map[string]any{"path": "arc.txt"}, []api.CapabilityScope{{Resource: "archive", PathArgument: "path", PathPrefix: "arc.txt"}})
 	if err != nil || out.(map[string]any)["text"] != "archived" {
 		t.Fatalf("archive-resource scope: %v %v", out, err)
 	}
-	if _, err := read(map[string]any{"root": "bogus", "path": "arc.txt"}, []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "arc.txt"}}); err == nil {
+	if _, err := read(map[string]any{"root": "bogus", "path": "arc.txt"}, []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "arc.txt"}}); err == nil {
 		t.Fatal("unknown root ignored")
 	}
 	// Without an organization root the organization scope fails closed.
@@ -175,7 +174,7 @@ func TestExecCallScopeBaseResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer narrow.Close()
-	if _, err := narrow.ExecCall(context.Background(), "file_read", map[string]any{"path": "x"}, []toolhub.CapabilityScope{{Resource: "organization", PathArgument: "path", PathPrefix: "x"}}); err == nil {
+	if _, err := narrow.ExecCall(context.Background(), "file_read", map[string]any{"path": "x"}, []api.CapabilityScope{{Resource: "organization", PathArgument: "path", PathPrefix: "x"}}); err == nil {
 		t.Fatal("organization scope applied without an organization root")
 	}
 }
@@ -246,7 +245,7 @@ func TestPrivateScratchExportPreservesBinaryAndScope(t *testing.T) {
 	if err := v.Workspace.MkdirAll("docs", 0700); err != nil {
 		t.Fatal(err)
 	}
-	scope := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	scope := []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
 	data := []byte{0x89, 'P', 'N', 'G', 0, 0xff, 0xfe}
 	args := map[string]any{"path": "docs/proof.png", "export_base64": base64.StdEncoding.EncodeToString(data)}
 	out, err := v.ExecCall(context.Background(), "file_write", args, scope)

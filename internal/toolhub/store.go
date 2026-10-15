@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 	"sync"
 )
@@ -18,25 +19,25 @@ type Store struct {
 	diskDigest          [32]byte
 	diskStamp           storeStamp
 	Reconnect           *ReconnectController
-	Stopper             WorkloadStopper
-	definitions         map[string]ToolDefinition
-	connections         map[string]Connection
-	credentials         map[string]CredentialReference
-	bindings            map[string]ToolBinding
-	workloads           map[string]WorkloadInstance
+	Stopper             api.WorkloadStopper
+	definitions         map[string]api.ToolDefinition
+	connections         map[string]api.Connection
+	credentials         map[string]api.CredentialReference
+	bindings            map[string]api.ToolBinding
+	workloads           map[string]api.WorkloadInstance
 	projectionRevisions map[string]uint64
-	grants              map[string]Grant
-	onboardings         map[string]Onboarding
-	publications        map[string]DefinitionPublication
-	sharedPolicies      map[string]SharedCredentialPolicy
-	capabilityPolicies  map[string]CapabilityPolicy
-	capabilityProfiles  map[string]CapabilityProfile
-	capabilityChanges   []capabilityChange
+	grants              map[string]api.Grant
+	onboardings         map[string]api.Onboarding
+	publications        map[string]api.DefinitionPublication
+	sharedPolicies      map[string]api.SharedCredentialPolicy
+	capabilityPolicies  map[string]api.CapabilityPolicy
+	capabilityProfiles  map[string]api.CapabilityProfile
+	capabilityChanges   []api.CapabilityChange
 	bindingChanges      []bindingChange
 	// exMu guards the exclusion set separately: exclusions are observability
 	// written from read-locked projection scans, so they must not ride s.mu.
 	exMu           sync.Mutex
-	exclusions     map[string]ProjectionExclusion
+	exclusions     map[string]api.ProjectionExclusion
 	exclusionOrder []string
 }
 
@@ -44,7 +45,7 @@ func projectionKey(principalID, contextID, runtimeID string) string {
 	return principalID + "\x00" + contextID + "\x00" + runtimeID
 }
 
-func (s *Store) touchProjectionLocked(binding *ToolBinding) uint64 {
+func (s *Store) touchProjectionLocked(binding *api.ToolBinding) uint64 {
 	key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
 	next := s.projectionRevisions[key] + 1
 	if next <= binding.ProjectionRevision {
@@ -60,7 +61,7 @@ func (s *Store) touchProjectionLocked(binding *ToolBinding) uint64 {
 // reset after a process restart.
 func (s *Store) ProjectionRevision(auth identity.Envelope) (uint64, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return 0, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -70,26 +71,26 @@ func (s *Store) ProjectionRevision(auth identity.Envelope) (uint64, error) {
 // ProjectionRevisions snapshots every runtime projection revision. Keys come
 // only from persisted bindings, so a token-file enrolment alone never creates
 // a target.
-func (s *Store) ProjectionRevisions() ([]ProjectionTarget, error) {
+func (s *Store) ProjectionRevisions() ([]api.ProjectionTarget, error) {
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]ProjectionTarget, 0, len(s.projectionRevisions))
+	out := make([]api.ProjectionTarget, 0, len(s.projectionRevisions))
 	for key, revision := range s.projectionRevisions {
 		parts := strings.SplitN(key, "\x00", 3)
 		if len(parts) != 3 || revision == 0 {
 			continue
 		}
-		out = append(out, ProjectionTarget{PrincipalID: parts[0], ContextID: parts[1], RuntimeID: parts[2], Revision: revision})
+		out = append(out, api.ProjectionTarget{PrincipalID: parts[0], ContextID: parts[1], RuntimeID: parts[2], Revision: revision})
 	}
 	return out, nil
 }
 
 func definitionKey(id, version string) string { return id + "@" + version }
 
-func (s *Store) RegisterDefinition(definition ToolDefinition) error {
+func (s *Store) RegisterDefinition(definition api.ToolDefinition) error {
 	if err := definition.Validate(); err != nil {
 		return err
 	}
@@ -99,7 +100,7 @@ func (s *Store) RegisterDefinition(definition ToolDefinition) error {
 	if err != nil {
 		return err
 	}
-	var owned ToolDefinition
+	var owned api.ToolDefinition
 	if err := json.Unmarshal(body, &owned); err != nil {
 		return err
 	}
@@ -107,43 +108,43 @@ func (s *Store) RegisterDefinition(definition ToolDefinition) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := definitionKey(definition.DefinitionID, definition.Version)
-	if existing, ok := s.definitions[key]; ok && !definitionsEqual(existing, definition) {
-		return fmt.Errorf("%w: immutable definition %s", ErrConflict, key)
+	if existing, ok := s.definitions[key]; ok && !api.DefinitionsEqual(existing, definition) {
+		return fmt.Errorf("%w: immutable definition %s", api.ErrConflict, key)
 	}
 	s.definitions[key] = definition
 	return nil
 }
 
-func (s *Store) PutCredentialReference(reference CredentialReference) error {
+func (s *Store) PutCredentialReference(reference api.CredentialReference) error {
 	if err := reference.Validate(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.credentials[reference.CredentialRefID]; ok && !recordsEqual(existing, reference) {
-		return fmt.Errorf("%w: immutable credential reference", ErrConflict)
+	if existing, ok := s.credentials[reference.CredentialRefID]; ok && !api.RecordsEqual(existing, reference) {
+		return fmt.Errorf("%w: immutable credential reference", api.ErrConflict)
 	}
 	s.credentials[reference.CredentialRefID] = reference
 	return nil
 }
 
-func (s *Store) PutConnection(connection Connection) error {
+func (s *Store) PutConnection(connection api.Connection) error {
 	if err := connection.Validate(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.hasDefinitionID(connection.DefinitionID) {
-		return fmt.Errorf("%w: connection definition", ErrNotFound)
+		return fmt.Errorf("%w: connection definition", api.ErrNotFound)
 	}
 	if connection.CredentialRefID != "" {
 		reference, ok := s.credentials[connection.CredentialRefID]
 		if !ok || reference.ConnectionID != connection.ConnectionID {
-			return fmt.Errorf("%w: connection credential reference", ErrInvalid)
+			return fmt.Errorf("%w: connection credential reference", api.ErrInvalid)
 		}
 	}
-	if existing, ok := s.connections[connection.ConnectionID]; ok && !recordsEqual(existing, connection) {
-		return fmt.Errorf("%w: connection is immutable within a revision", ErrConflict)
+	if existing, ok := s.connections[connection.ConnectionID]; ok && !api.RecordsEqual(existing, connection) {
+		return fmt.Errorf("%w: connection is immutable within a revision", api.ErrConflict)
 	}
 	s.connections[connection.ConnectionID] = connection
 	return nil
@@ -158,9 +159,9 @@ func (s *Store) hasDefinitionID(id string) bool {
 	return false
 }
 
-func (s *Store) PutBinding(binding ToolBinding) error {
+func (s *Store) PutBinding(binding api.ToolBinding) error {
 	if binding.ToolBindingID == "" {
-		binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+		binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	}
 	if err := binding.Validate(); err != nil {
 		return err
@@ -169,42 +170,42 @@ func (s *Store) PutBinding(binding ToolBinding) error {
 	defer s.mu.Unlock()
 	definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
 	if !ok {
-		return fmt.Errorf("%w: binding definition", ErrNotFound)
+		return fmt.Errorf("%w: binding definition", api.ErrNotFound)
 	}
 	if definition.Workload.Class != binding.WorkloadClass {
-		return fmt.Errorf("%w: binding workload class", ErrInvalid)
+		return fmt.Errorf("%w: binding workload class", api.ErrInvalid)
 	}
-	var connection Connection
+	var connection api.Connection
 	var hasConnection bool
-	var reference CredentialReference
+	var reference api.CredentialReference
 	if binding.ConnectionID != "" {
 		connection, hasConnection = s.connections[binding.ConnectionID]
 		if !hasConnection || connection.DefinitionID != binding.DefinitionID {
-			return fmt.Errorf("%w: binding connection", ErrInvalid)
+			return fmt.Errorf("%w: binding connection", api.ErrInvalid)
 		}
 		if binding.ConnectionRevision != connection.Revision {
-			return fmt.Errorf("%w: binding connection revision", ErrStale)
+			return fmt.Errorf("%w: binding connection revision", api.ErrStale)
 		}
 		if binding.CredentialRefID != "" {
 			var ok bool
 			reference, ok = s.credentials[binding.CredentialRefID]
 			if !ok || reference.ConnectionID != connection.ConnectionID || reference.Revision != binding.CredentialRevision || connection.CredentialRefID != reference.CredentialRefID {
-				return fmt.Errorf("%w: binding credential revision", ErrStale)
+				return fmt.Errorf("%w: binding credential revision", api.ErrStale)
 			}
 		} else if len(definition.Credentials) > 0 {
-			return fmt.Errorf("%w: credential-bearing binding needs a credential reference", ErrInvalid)
+			return fmt.Errorf("%w: credential-bearing binding needs a credential reference", api.ErrInvalid)
 		}
 	} else if len(definition.Credentials) > 0 {
-		return fmt.Errorf("%w: credential-bearing definition needs a connection", ErrInvalid)
+		return fmt.Errorf("%w: credential-bearing definition needs a connection", api.ErrInvalid)
 	} else if binding.CredentialRefID != "" {
-		return fmt.Errorf("%w: anonymous binding cannot carry a credential reference", ErrInvalid)
+		return fmt.Errorf("%w: anonymous binding cannot carry a credential reference", api.ErrInvalid)
 	}
-	expectedID := DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	expectedID := api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	if binding.ToolBindingID != expectedID {
-		return fmt.Errorf("%w: nondeterministic binding id", ErrInvalid)
+		return fmt.Errorf("%w: nondeterministic binding id", api.ErrInvalid)
 	}
 	if existing, ok := s.bindings[binding.ToolBindingID]; ok && existing != binding {
-		return fmt.Errorf("%w: binding is immutable within a revision", ErrConflict)
+		return fmt.Errorf("%w: binding is immutable within a revision", api.ErrConflict)
 	}
 	key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
 	if binding.ProjectionRevision > s.projectionRevisions[key] {
@@ -214,7 +215,7 @@ func (s *Store) PutBinding(binding ToolBinding) error {
 	return nil
 }
 
-func (s *Store) PutWorkloadInstance(workload WorkloadInstance) error {
+func (s *Store) PutWorkloadInstance(workload api.WorkloadInstance) error {
 	if err := workload.Validate(); err != nil {
 		return err
 	}
@@ -222,28 +223,28 @@ func (s *Store) PutWorkloadInstance(workload WorkloadInstance) error {
 	defer s.mu.Unlock()
 	binding, ok := s.bindings[workload.BindingID]
 	if !ok || binding.DefinitionID != workload.DefinitionID || binding.DefinitionVersion != workload.DefinitionVersion || binding.WorkloadClass != workload.Class {
-		return fmt.Errorf("%w: workload binding", ErrInvalid)
+		return fmt.Errorf("%w: workload binding", api.ErrInvalid)
 	}
-	if existing, ok := s.workloads[workload.WorkloadID]; ok && !recordsEqual(existing, workload) {
-		return fmt.Errorf("%w: workload identity", ErrConflict)
+	if existing, ok := s.workloads[workload.WorkloadID]; ok && !api.RecordsEqual(existing, workload) {
+		return fmt.Errorf("%w: workload identity", api.ErrConflict)
 	}
 	s.workloads[workload.WorkloadID] = workload
 	return nil
 }
 
-func (s *Store) RotateCredential(connectionID, backend, locator string, keys []string) (CredentialReference, error) {
+func (s *Store) RotateCredential(connectionID, backend, locator string, keys []string) (api.CredentialReference, error) {
 	s.mu.Lock()
 	connection, ok := s.connections[connectionID]
 	if !ok {
 		s.mu.Unlock()
-		return CredentialReference{}, fmt.Errorf("%w: connection", ErrNotFound)
+		return api.CredentialReference{}, fmt.Errorf("%w: connection", api.ErrNotFound)
 	}
-	if connection.Status != ActiveStatus {
+	if connection.Status != api.ActiveStatus {
 		s.mu.Unlock()
-		return CredentialReference{}, fmt.Errorf("%w: connection is not active", ErrRevoked)
+		return api.CredentialReference{}, fmt.Errorf("%w: connection is not active", api.ErrRevoked)
 	}
 	next := connection.Revision + 1
-	reference := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID(connectionID, next), ConnectionID: connectionID, Revision: next, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), Status: ActiveStatus}
+	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, next), ConnectionID: connectionID, Revision: next, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), Status: api.ActiveStatus}
 	return s.rotateCredentialLocked(connection, reference)
 }
 
@@ -251,35 +252,35 @@ func (s *Store) RotateCredential(connectionID, backend, locator string, keys []s
 // populated reference (broker backend fields included). The caller sets
 // Revision to the expected next connection revision so a concurrent rotation
 // fails instead of recording a grant bound to the wrong reference.
-func (s *Store) RotateCredentialRecord(reference CredentialReference) (CredentialReference, error) {
+func (s *Store) RotateCredentialRecord(reference api.CredentialReference) (api.CredentialReference, error) {
 	s.mu.Lock()
 	connection, ok := s.connections[reference.ConnectionID]
 	if !ok {
 		s.mu.Unlock()
-		return CredentialReference{}, fmt.Errorf("%w: connection", ErrNotFound)
+		return api.CredentialReference{}, fmt.Errorf("%w: connection", api.ErrNotFound)
 	}
-	if connection.Status != ActiveStatus {
+	if connection.Status != api.ActiveStatus {
 		s.mu.Unlock()
-		return CredentialReference{}, fmt.Errorf("%w: connection is not active", ErrRevoked)
+		return api.CredentialReference{}, fmt.Errorf("%w: connection is not active", api.ErrRevoked)
 	}
 	next := connection.Revision + 1
-	if reference.Revision != next || reference.CredentialRefID != CredentialReferenceID(reference.ConnectionID, next) {
+	if reference.Revision != next || reference.CredentialRefID != api.CredentialReferenceID(reference.ConnectionID, next) {
 		s.mu.Unlock()
-		return CredentialReference{}, fmt.Errorf("%w: credential rotation conflict", ErrConflict)
+		return api.CredentialReference{}, fmt.Errorf("%w: credential rotation conflict", api.ErrConflict)
 	}
-	reference.Schema = SchemaVersion
-	reference.Status = ActiveStatus
+	reference.Schema = api.SchemaVersion
+	reference.Status = api.ActiveStatus
 	return s.rotateCredentialLocked(connection, reference)
 }
 
-func (s *Store) rotateCredentialLocked(connection Connection, reference CredentialReference) (CredentialReference, error) {
+func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.CredentialReference) (api.CredentialReference, error) {
 	if err := reference.Validate(); err != nil {
 		s.mu.Unlock()
-		return CredentialReference{}, err
+		return api.CredentialReference{}, err
 	}
 	if connection.CredentialRefID != "" {
 		old := s.credentials[connection.CredentialRefID]
-		old.Status = RevokedStatus
+		old.Status = api.RevokedStatus
 		s.credentials[old.CredentialRefID] = old
 	}
 	s.credentials[reference.CredentialRefID] = reference
@@ -297,24 +298,24 @@ func (s *Store) rotateCredentialLocked(connection Connection, reference Credenti
 	s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
 		_ = s.MarkDegraded(connection.ConnectionID)
-		return CredentialReference{}, err
+		return api.CredentialReference{}, err
 	}
 	return reference, nil
 }
 
-func (s *Store) SetConnectionStatus(connectionID string, status Status) error {
-	if status != ActiveStatus && status != DisabledStatus && status != RevokedStatus {
-		return fmt.Errorf("%w: connection status", ErrInvalid)
+func (s *Store) SetConnectionStatus(connectionID string, status api.Status) error {
+	if status != api.ActiveStatus && status != api.DisabledStatus && status != api.RevokedStatus {
+		return fmt.Errorf("%w: connection status", api.ErrInvalid)
 	}
 	s.mu.Lock()
 	connection, ok := s.connections[connectionID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: connection", ErrNotFound)
+		return fmt.Errorf("%w: connection", api.ErrNotFound)
 	}
-	if connection.Status == RevokedStatus && status == ActiveStatus {
+	if connection.Status == api.RevokedStatus && status == api.ActiveStatus {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: revoked connection cannot be re-enabled", ErrRevoked)
+		return fmt.Errorf("%w: revoked connection cannot be re-enabled", api.ErrRevoked)
 	}
 	connection.Status = status
 	connection.Revision++
@@ -336,9 +337,9 @@ func (s *Store) MarkDegraded(connectionID string) error {
 	connection, ok := s.connections[connectionID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: connection", ErrNotFound)
+		return fmt.Errorf("%w: connection", api.ErrNotFound)
 	}
-	connection.Status = DegradedStatus
+	connection.Status = api.DegradedStatus
 	connection.Revision++
 	s.connections[connectionID] = connection
 	for id, binding := range s.bindings {
@@ -358,7 +359,7 @@ func (s *Store) SetTerminalExposure(connectionID string, enabled bool) error {
 	connection, ok := s.connections[connectionID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: connection", ErrNotFound)
+		return fmt.Errorf("%w: connection", api.ErrNotFound)
 	}
 	connection.TerminalExposure = enabled
 	connection.Revision++
@@ -367,19 +368,19 @@ func (s *Store) SetTerminalExposure(connectionID string, enabled bool) error {
 	return s.persistAndNotify()
 }
 
-func (s *Store) SetBindingStatus(bindingID string, status Status) error {
-	if status != ActiveStatus && status != DisabledStatus && status != RevokedStatus {
-		return fmt.Errorf("%w: binding status", ErrInvalid)
+func (s *Store) SetBindingStatus(bindingID string, status api.Status) error {
+	if status != api.ActiveStatus && status != api.DisabledStatus && status != api.RevokedStatus {
+		return fmt.Errorf("%w: binding status", api.ErrInvalid)
 	}
 	s.mu.Lock()
 	binding, ok := s.bindings[bindingID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: binding", ErrNotFound)
+		return fmt.Errorf("%w: binding", api.ErrNotFound)
 	}
-	if binding.Status == RevokedStatus && status == ActiveStatus {
+	if binding.Status == api.RevokedStatus && status == api.ActiveStatus {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: revoked binding cannot be re-enabled", ErrRevoked)
+		return fmt.Errorf("%w: revoked binding cannot be re-enabled", api.ErrRevoked)
 	}
 	binding.Status = status
 	binding.Revision++
@@ -391,12 +392,12 @@ func (s *Store) SetBindingStatus(bindingID string, status Status) error {
 	return s.persistAndNotify()
 }
 
-func (s *Store) Resolve(auth identity.Envelope, bindingID string) (EffectiveBinding, error) {
+func (s *Store) Resolve(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
 	if auth.CapabilityProfile != "" {
-		return EffectiveBinding{}, fmt.Errorf("%w: managed lookup requires a capability", ErrUnauthorized)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: managed lookup requires a capability", api.ErrUnauthorized)
 	}
 	if err := s.Reload(); err != nil {
-		return EffectiveBinding{}, err
+		return api.EffectiveBinding{}, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -408,12 +409,12 @@ func (s *Store) Resolve(auth identity.Envelope, bindingID string) (EffectiveBind
 // already admitted call finishes under its recorded revision.
 // ponytail: one registry lock serializes authorization and lifecycle mutations;
 // use per-connection locks only if measured connector concurrency needs it.
-func (s *Store) Authorize(auth identity.Envelope, bindingID string, admit func(EffectiveBinding) error) error {
+func (s *Store) Authorize(auth identity.Envelope, bindingID string, admit func(api.EffectiveBinding) error) error {
 	if auth.CapabilityProfile != "" {
-		return fmt.Errorf("%w: managed admission requires a capability and arguments", ErrUnauthorized)
+		return fmt.Errorf("%w: managed admission requires a capability and arguments", api.ErrUnauthorized)
 	}
 	if admit == nil {
-		return fmt.Errorf("%w: nil admission callback", ErrInvalid)
+		return fmt.Errorf("%w: nil admission callback", api.ErrInvalid)
 	}
 	if err := s.Reload(); err != nil {
 		return err
@@ -427,104 +428,104 @@ func (s *Store) Authorize(auth identity.Envelope, bindingID string, admit func(E
 	return admit(effective)
 }
 
-func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (EffectiveBinding, error) {
+func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return EffectiveBinding{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	if !identity.ValidID(bindingID) {
-		return EffectiveBinding{}, fmt.Errorf("%w: binding id", ErrInvalid)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: binding id", api.ErrInvalid)
 	}
 	binding, ok := s.bindings[bindingID]
 	if !ok {
-		return EffectiveBinding{}, fmt.Errorf("%w: binding", ErrNotFound)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: binding", api.ErrNotFound)
 	}
-	if binding.Status == RevokedStatus {
-		return EffectiveBinding{}, fmt.Errorf("%w: binding", ErrRevoked)
+	if binding.Status == api.RevokedStatus {
+		return api.EffectiveBinding{}, fmt.Errorf("%w: binding", api.ErrRevoked)
 	}
-	if binding.Status != ActiveStatus {
-		return EffectiveBinding{}, fmt.Errorf("%w: binding disabled", ErrUnauthorized)
+	if binding.Status != api.ActiveStatus {
+		return api.EffectiveBinding{}, fmt.Errorf("%w: binding disabled", api.ErrUnauthorized)
 	}
 	if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID || binding.PolicyVersion != auth.PolicyVersion {
-		return EffectiveBinding{}, fmt.Errorf("%w: exact runtime owner", ErrUnauthorized)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: exact runtime owner", api.ErrUnauthorized)
 	}
 	definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
 	if !ok {
-		return EffectiveBinding{}, fmt.Errorf("%w: definition", ErrStale)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: definition", api.ErrStale)
 	}
 	if definition.Workload.Class != binding.WorkloadClass {
-		return EffectiveBinding{}, fmt.Errorf("%w: workload class changed", ErrStale)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: workload class changed", api.ErrStale)
 	}
-	effective := EffectiveBinding{Binding: binding, Definition: definition}
+	effective := api.EffectiveBinding{Binding: binding, Definition: definition}
 	if binding.ConnectionID == "" {
 		if len(definition.Credentials) > 0 {
-			return EffectiveBinding{}, fmt.Errorf("%w: missing connection", ErrUnauthorized)
+			return api.EffectiveBinding{}, fmt.Errorf("%w: missing connection", api.ErrUnauthorized)
 		}
 		ownerID := ""
-		if definition.Workload.Class == PerUser {
+		if definition.Workload.Class == api.PerUser {
 			ownerID = binding.ToolBindingID
 		}
-		effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
+		effective.WorkloadID = api.WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
 		return effective, nil
 	}
 	connection, ok := s.connections[binding.ConnectionID]
 	if !ok {
-		return EffectiveBinding{}, fmt.Errorf("%w: connection", ErrStale)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: connection", api.ErrStale)
 	}
 	if !connection.Owner.Matches(auth) {
-		return EffectiveBinding{}, fmt.Errorf("%w: exact connection owner", ErrUnauthorized)
+		return api.EffectiveBinding{}, fmt.Errorf("%w: exact connection owner", api.ErrUnauthorized)
 	}
-	if connection.Status == RevokedStatus {
-		return EffectiveBinding{}, fmt.Errorf("%w: connection", ErrRevoked)
+	if connection.Status == api.RevokedStatus {
+		return api.EffectiveBinding{}, fmt.Errorf("%w: connection", api.ErrRevoked)
 	}
-	if connection.Status == DegradedStatus {
-		return EffectiveBinding{}, fmt.Errorf("%w: connection", ErrDegraded)
+	if connection.Status == api.DegradedStatus {
+		return api.EffectiveBinding{}, fmt.Errorf("%w: connection", api.ErrDegraded)
 	}
-	if connection.Status != ActiveStatus || connection.Revision != binding.ConnectionRevision || connection.DefinitionID != definition.DefinitionID {
-		return EffectiveBinding{}, fmt.Errorf("%w: current connection revision", ErrStale)
+	if connection.Status != api.ActiveStatus || connection.Revision != binding.ConnectionRevision || connection.DefinitionID != definition.DefinitionID {
+		return api.EffectiveBinding{}, fmt.Errorf("%w: current connection revision", api.ErrStale)
 	}
 	effective.Connection = &connection
 	if len(definition.Credentials) > 0 {
 		if binding.CredentialRefID == "" || connection.CredentialRefID != binding.CredentialRefID || binding.CredentialRevision == 0 {
-			return EffectiveBinding{}, fmt.Errorf("%w: current credential reference", ErrStale)
+			return api.EffectiveBinding{}, fmt.Errorf("%w: current credential reference", api.ErrStale)
 		}
 		reference, ok := s.credentials[binding.CredentialRefID]
-		if !ok || reference.Status != ActiveStatus || reference.ConnectionID != connection.ConnectionID || reference.Revision != binding.CredentialRevision {
-			return EffectiveBinding{}, fmt.Errorf("%w: current credential revision", ErrStale)
+		if !ok || reference.Status != api.ActiveStatus || reference.ConnectionID != connection.ConnectionID || reference.Revision != binding.CredentialRevision {
+			return api.EffectiveBinding{}, fmt.Errorf("%w: current credential revision", api.ErrStale)
 		}
 		keys := map[string]bool{}
 		for _, key := range reference.Keys {
 			keys[key] = true
 		}
-		if !definition.credentialsSatisfied(func(name string) bool { return keys[name] }) {
-			return EffectiveBinding{}, fmt.Errorf("%w: missing credential input", ErrUnauthorized)
+		if !definition.CredentialsSatisfied(func(name string) bool { return keys[name] }) {
+			return api.EffectiveBinding{}, fmt.Errorf("%w: missing credential input", api.ErrUnauthorized)
 		}
 		effective.Credential = &reference
 	}
 	ownerID := auth.ContextID
-	if definition.Workload.Class == Shared {
+	if definition.Workload.Class == api.Shared {
 		ownerID = ""
 	}
-	if definition.Workload.Class == PerUser {
+	if definition.Workload.Class == api.PerUser {
 		ownerID += ":" + auth.PrincipalID + ":" + connection.ConnectionID
 	}
-	effective.WorkloadID = WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
+	effective.WorkloadID = api.WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
 	return effective, nil
 }
 
 type snapshot struct {
-	Schema              int                      `json:"schema"`
-	Definitions         []ToolDefinition         `json:"definitions"`
-	Connections         []Connection             `json:"connections"`
-	Credentials         []CredentialReference    `json:"credential_references"`
-	Bindings            []ToolBinding            `json:"bindings"`
-	Workloads           []WorkloadInstance       `json:"workloads"`
-	ProjectionRevisions map[string]uint64        `json:"projection_revisions,omitempty"`
-	Grants              []Grant                  `json:"grants,omitempty"`
-	Onboardings         []Onboarding             `json:"onboardings,omitempty"`
-	Publications        []DefinitionPublication  `json:"publications,omitempty"`
-	SharedPolicies      []SharedCredentialPolicy `json:"shared_credential_policies,omitempty"`
-	CapabilityChanges   []capabilityChange       `json:"capability_changes,omitempty"`
-	BindingChanges      []bindingChange          `json:"binding_changes,omitempty"`
+	Schema              int                          `json:"schema"`
+	Definitions         []api.ToolDefinition         `json:"definitions"`
+	Connections         []api.Connection             `json:"connections"`
+	Credentials         []api.CredentialReference    `json:"credential_references"`
+	Bindings            []api.ToolBinding            `json:"bindings"`
+	Workloads           []api.WorkloadInstance       `json:"workloads"`
+	ProjectionRevisions map[string]uint64            `json:"projection_revisions,omitempty"`
+	Grants              []api.Grant                  `json:"grants,omitempty"`
+	Onboardings         []api.Onboarding             `json:"onboardings,omitempty"`
+	Publications        []api.DefinitionPublication  `json:"publications,omitempty"`
+	SharedPolicies      []api.SharedCredentialPolicy `json:"shared_credential_policies,omitempty"`
+	CapabilityChanges   []api.CapabilityChange       `json:"capability_changes,omitempty"`
+	BindingChanges      []bindingChange              `json:"binding_changes,omitempty"`
 }
 
 func (s *Store) stopAffectedLocked(connectionID string) []string {
@@ -534,8 +535,8 @@ func (s *Store) stopAffectedLocked(connectionID string) []string {
 		if !ok || binding.ConnectionID != connectionID {
 			continue
 		}
-		if workload.Status == RunningStatus || workload.Status == StartingStatus {
-			workload.Status = StoppedStatus
+		if workload.Status == api.RunningStatus || workload.Status == api.StartingStatus {
+			workload.Status = api.StoppedStatus
 			s.workloads[id] = workload
 			ids = append(ids, workload.WorkloadID)
 		}
@@ -549,8 +550,8 @@ func (s *Store) stopBindingLocked(bindingID string) []string {
 		if workload.BindingID != bindingID {
 			continue
 		}
-		if workload.Status == RunningStatus || workload.Status == StartingStatus {
-			workload.Status = StoppedStatus
+		if workload.Status == api.RunningStatus || workload.Status == api.StartingStatus {
+			workload.Status = api.StoppedStatus
 			s.workloads[id] = workload
 			ids = append(ids, workload.WorkloadID)
 		}

@@ -7,15 +7,6 @@ import (
 	"time"
 )
 
-func contains(items []string, wanted string) bool {
-	for _, item := range items {
-		if item == wanted {
-			return true
-		}
-	}
-	return false
-}
-
 func limitTelegramText(text string) string {
 	runes := []rune(text)
 	if len(runes) <= 4000 {

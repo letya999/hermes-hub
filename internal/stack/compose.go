@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 	"os"
 	"path/filepath"
@@ -660,7 +660,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 // network none unless the plan declares reviewed egress. Approvals are
 // compiled from the shipped catalog so the plan tuple can never drift from
 // the definition the store registers.
-func cliControllerSection(s Settings, dir string) toolhub.CLIControllerConfig {
+func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 	// *.githubusercontent.com serves github release assets and archive
 	// redirects — the same trust class as github.com already allowed here,
 	// and required for package managers that fetch toolchains from releases
@@ -669,12 +669,12 @@ func cliControllerSection(s Settings, dir string) toolhub.CLIControllerConfig {
 	for _, registry := range s.CLIRegistries {
 		egress = append(egress, cliRegistryHosts[registry]...)
 	}
-	definitions := toolhub.CLICatalogDefinitions()
-	approved := make([]toolhub.CLIApproval, 0, len(definitions))
+	definitions := api.CLICatalogDefinitions()
+	approved := make([]api.CLIApproval, 0, len(definitions))
 	for _, definition := range definitions {
-		approved = append(approved, toolhub.CLIApproval{DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Command: definition.Source.Command, Execution: definition.Execution})
+		approved = append(approved, api.CLIApproval{DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Command: definition.Source.Command, Execution: definition.Execution})
 	}
-	return toolhub.CLIControllerConfig{
+	return api.CLIControllerConfig{
 		AllowPackageInstall: len(s.CLIRegistries) > 0,
 		// The rendered tag resolves to the immutable image ID at controller
 		// start; cells are created from that content reference, never the
@@ -683,7 +683,7 @@ func cliControllerSection(s Settings, dir string) toolhub.CLIControllerConfig {
 		CellInit:      "/usr/local/bin/cellinit",
 		ProxyImage:    "hermes-hub-cell-proxy:0.3.0-" + s.Environment,
 		AllowedEgress: egress,
-		Ceiling:       toolhub.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
+		Ceiling:       api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
 		Approved:      approved,
 		// /spaces is the read-only view of the spaces root the controller
 		// container carries; Environment selects the managed/<env> workspace

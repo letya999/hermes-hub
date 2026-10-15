@@ -7,6 +7,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 	"io"
 	"net/url"
@@ -460,21 +461,21 @@ func splitList(raw string) []string {
 
 func runtimeEnv(features []string) map[string]string {
 	keys := map[string]bool{"OPENAI_API_KEY": true}
-	if contains(features, "gitlab") {
+	if api.Contains(features, "gitlab") {
 		keys["GITLAB_HOST"] = true
 	}
-	if contains(features, "google") {
+	if api.Contains(features, "google") {
 		keys["GOOGLE_EMAIL"] = true
 		keys["GOOGLE_OAUTH_REDIRECT_URI"] = true
 	}
-	if contains(features, "workspace") || contains(features, "hh") {
+	if api.Contains(features, "workspace") || api.Contains(features, "hh") {
 		keys["HH_USER_AGENT"] = true
 	}
-	if contains(features, "slack") {
+	if api.Contains(features, "slack") {
 		keys["SLACK_MCP_ADD_MESSAGE_TOOL"] = true
 	}
 	for _, feature := range stack.Features {
-		if !contains(features, feature.Name) {
+		if !api.Contains(features, feature.Name) {
 			continue
 		}
 		for _, key := range feature.Requires {

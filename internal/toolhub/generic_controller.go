@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
 	"net/http"
@@ -19,95 +20,25 @@ import (
 // ToolHive invocation and checks Docker's returned profile before admission.
 
 type GenericControllerConfig struct {
-	StateRoot           string          `json:"state_root"`
-	ToolHiveBinary      string          `json:"toolhive_binary"`
-	SeccompProfile      string          `json:"seccomp_profile"`
-	DockerFallback      bool            `json:"docker_fallback,omitempty"`
-	BridgeBinary        string          `json:"bridge_binary,omitempty"`
-	CredentialMountRoot string          `json:"credential_mount_root,omitempty"`
-	Definition          ToolDefinition  `json:"definition"`
-	DynamicDefinitions  bool            `json:"dynamic_definitions,omitempty"`
-	Budget              *WorkloadBudget `json:"-"`
-	MaxActive           int             `json:"max_active"`
-	IdleTTLSeconds      int             `json:"idle_ttl_seconds"`
+	StateRoot           string              `json:"state_root"`
+	ToolHiveBinary      string              `json:"toolhive_binary"`
+	SeccompProfile      string              `json:"seccomp_profile"`
+	DockerFallback      bool                `json:"docker_fallback,omitempty"`
+	BridgeBinary        string              `json:"bridge_binary,omitempty"`
+	CredentialMountRoot string              `json:"credential_mount_root,omitempty"`
+	Definition          api.ToolDefinition  `json:"definition"`
+	DynamicDefinitions  bool                `json:"dynamic_definitions,omitempty"`
+	Budget              *api.WorkloadBudget `json:"-"`
+	MaxActive           int                 `json:"max_active"`
+	IdleTTLSeconds      int                 `json:"idle_ttl_seconds"`
 	// CLI configures bounded-cli admission: the executor container the
 	// process lands in is inspected per call and only approved plans are
 	// admitted. Nil disables the CLI path entirely.
-	CLI *CLIControllerConfig `json:"cli,omitempty"`
-}
-
-// CLIControllerConfig is the operator-approved envelope for bounded-cli cell
-// execution. Every admitted call runs in a sibling container the controller
-// creates, inspects and destroys; nothing here is model-supplied.
-type CLIControllerConfig struct {
-	AllowPackageInstall bool `json:"allow_package_install,omitempty"`
-	// ToolsImage is the digest-pinned image catalog commands run on.
-	ToolsImage string `json:"tools_image"`
-	// CellInit is the host path of the statically-linked cellinit helper;
-	// it is copied into the state root and bind-mounted read-only as the
-	// cell's PID 1 and canary agent.
-	CellInit string `json:"cell_init"`
-	// ProxyImage is the digest-pinned egress proxy image; required when any
-	// admitted plan declares non-loopback egress or brokered credentials.
-	ProxyImage string `json:"proxy_image,omitempty"`
-	// Runtime selects the OCI runtime tier: empty or "runc" (default),
-	// "runsc" or "kata"; the daemon must list the runtime before a cell
-	// may start on it.
-	Runtime string `json:"runtime,omitempty"`
-	// PerPrincipalUID maps each principal to a stable cell uid (20000+) so
-	// files a read-write cell leaves in a workspace carry a per-principal
-	// owner instead of the shared cli uid.
-	PerPrincipalUID bool `json:"per_principal_uid,omitempty"`
-	// SpacesRoot is the host root for principal workspaces; required when a
-	// definition requests a principal-scoped workspace bind.
-	SpacesRoot string `json:"spaces_root,omitempty"`
-	// Environment names the managed deployment tier (dev/prod). When set and
-	// <spaces_root>/<principal>/managed/<environment>/workspace exists, the
-	// principal scope binds that managed workspace; otherwise it falls back
-	// to <spaces_root>/<principal>/workspace for unmanaged principals.
-	Environment string `json:"environment,omitempty"`
-	// AllowedEgress is the union of egress hosts any CLI plan may declare.
-	// Cells with non-loopback egress get a per-cell internal network plus a
-	// CONNECT-allowlisted Squid proxy; all other cells are network none.
-	AllowedEgress []string `json:"allowed_egress"`
-	// Ceiling bounds every admitted execution policy; the plan may be
-	// stricter but never looser.
-	Ceiling ExecutionPolicy `json:"ceiling"`
-	// Approved are the immutable CLI plans the controller will attest:
-	// definition id+version, command, optional image+digest and the exact
-	// execution policy.
-	Approved []CLIApproval `json:"approved"`
-	// UserCommands admits owner-registered catalog command plans: the bare
-	// command name must be listed and the policy must fit Ceiling. Entries
-	// are reviewed for exec-capability (hooks, preprocessors, subcommands
-	// that spawn binaries); a binary that can run other code never belongs
-	// here. Image-carrying artifact plans are never admitted this way.
-	UserCommands []string `json:"user_commands,omitempty"`
-	// Toolboxes are operator-pinned toolsets for toolbox-lifecycle cells:
-	// name -> digest-pinned member images mounted read-only at /tools/<i>.
-	Toolboxes map[string][]string `json:"toolboxes,omitempty"`
-	// PoolSize caps live cells (idle + claimed) per stateless pool key;
-	// callers past the cap wait up to PoolClaimWaitSeconds then fail closed.
-	PoolSize             int `json:"pool_size,omitempty"`
-	PoolClaimWaitSeconds int `json:"pool_claim_wait_seconds,omitempty"`
-	// WarmMaxAgeSeconds and WarmMaxReuse bound warm-cell reuse; a cell past
-	// either limit is rotated before another exec claims it.
-	WarmMaxAgeSeconds int `json:"warm_max_age_seconds,omitempty"`
-	WarmMaxReuse      int `json:"warm_max_reuse,omitempty"`
-}
-
-// CLIApproval pins one admitted bounded-cli plan shape.
-type CLIApproval struct {
-	DefinitionID      string          `json:"definition_id"`
-	DefinitionVersion string          `json:"definition_version"`
-	Command           string          `json:"command"`
-	Image             string          `json:"image,omitempty"`
-	Digest            string          `json:"digest,omitempty"`
-	Execution         ExecutionPolicy `json:"execution"`
+	CLI *api.CLIControllerConfig `json:"cli,omitempty"`
 }
 
 type genericWorkload struct {
-	plan           controllerPlan
+	plan           api.ControllerPlan
 	endpoint       string
 	proxyName      string
 	proxyVol       string
@@ -130,7 +61,7 @@ type genericController struct {
 	// code; `docker exec` needs the tool's own exit status, which the
 	// output-only command seam cannot carry.
 	commandExit func(context.Context, io.Writer, string, ...string) (int, error)
-	scope       *dockerScope
+	scope       *api.DockerScope
 	mu          sync.Mutex // ponytail: one controller lock; split only after measured contention.
 	workloads   map[string]genericWorkload
 	registry    *cellRegistry
@@ -151,14 +82,14 @@ func (c *genericController) docker(ctx context.Context, args ...string) ([]byte,
 	if c.scope == nil {
 		return c.command(ctx, "docker", args...)
 	}
-	return c.scope.runScoped(ctx, c.command, "docker", args...)
+	return c.scope.RunScoped(ctx, c.command, "docker", args...)
 }
 
 func (c *genericController) toolhive(ctx context.Context, args ...string) ([]byte, error) {
 	if c.scope == nil {
 		return c.command(ctx, c.config.ToolHiveBinary, args...)
 	}
-	return c.scope.runScoped(ctx, c.command, c.config.ToolHiveBinary, args...)
+	return c.scope.RunScoped(ctx, c.command, c.config.ToolHiveBinary, args...)
 }
 
 // scopeLabel is the hermes-hub.scope marker stamped on every object the
@@ -168,7 +99,7 @@ func (c *genericController) scopeLabel() string {
 	if c.scope == nil {
 		return ""
 	}
-	return "hermes-hub.scope=" + c.scope.project
+	return "hermes-hub.scope=" + c.scope.Project
 }
 
 func (c *genericController) scopeLabelArgs() []string {
@@ -220,18 +151,18 @@ type genericMount struct {
 
 func newGenericController(config GenericControllerConfig) (*genericController, error) {
 	if !filepath.IsAbs(config.StateRoot) || !filepath.IsAbs(config.ToolHiveBinary) || !filepath.IsAbs(config.SeccompProfile) {
-		return nil, fmt.Errorf("%w: generic controller paths", ErrInvalid)
+		return nil, fmt.Errorf("%w: generic controller paths", api.ErrInvalid)
 	}
 	if config.BridgeBinary != "" {
-		if err := ValidateLinuxBridgeBinary(config.BridgeBinary); err != nil {
+		if err := api.ValidateLinuxBridgeBinary(config.BridgeBinary); err != nil {
 			return nil, err
 		}
 	}
 	if config.Budget == nil {
 		if config.MaxActive < 1 || config.IdleTTLSeconds < 1 {
-			return nil, fmt.Errorf("%w: generic controller budget", ErrInvalid)
+			return nil, fmt.Errorf("%w: generic controller budget", api.ErrInvalid)
 		}
-		budget, err := NewWorkloadBudget(config.MaxActive, time.Duration(config.IdleTTLSeconds)*time.Second)
+		budget, err := api.NewWorkloadBudget(config.MaxActive, time.Duration(config.IdleTTLSeconds)*time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -241,8 +172,8 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	config.ToolHiveBinary = filepath.Clean(config.ToolHiveBinary)
 	config.SeccompProfile = filepath.Clean(config.SeccompProfile)
 	if config.CredentialMountRoot != "" {
-		if !filepath.IsAbs(config.CredentialMountRoot) || noSymlinkPath(config.CredentialMountRoot) != nil {
-			return nil, ErrIsolation
+		if !filepath.IsAbs(config.CredentialMountRoot) || api.NoSymlinkPath(config.CredentialMountRoot) != nil {
+			return nil, api.ErrIsolation
 		}
 		config.CredentialMountRoot = filepath.Clean(config.CredentialMountRoot)
 	}
@@ -254,18 +185,18 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 			return nil, err
 		}
 	}
-	if err := validateCLIConfig(config.CLI); err != nil {
+	if err := api.ValidateCLIConfig(config.CLI); err != nil {
 		return nil, err
 	}
-	if noSymlinkPath(config.StateRoot) != nil || noSymlinkPath(config.SeccompProfile) != nil {
-		return nil, ErrIsolation
+	if api.NoSymlinkPath(config.StateRoot) != nil || api.NoSymlinkPath(config.SeccompProfile) != nil {
+		return nil, api.ErrIsolation
 	}
-	controller := &genericController{config: config, command: localCommand, commandEnv: isolatedCommandEnv, commandExit: localCommandExit, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
-	controller.scope = newDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
+	controller := &genericController{config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
+	controller.scope = api.NewDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
 	return controller, nil
 }
 
-func (c *genericController) validatePlan(plan controllerPlan) error {
+func (c *genericController) validatePlan(plan api.ControllerPlan) error {
 	definition := c.config.Definition
 	if c.config.DynamicDefinitions {
 		definition = plan.Definition
@@ -273,22 +204,22 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 	if err := validateGenericDefinition(definition); err != nil {
 		return err
 	}
-	if !identity.ValidID(plan.WorkloadID) || plan.DefinitionID != definition.DefinitionID || plan.DefinitionVersion != definition.Version || plan.Image != definition.Source.Image || plan.Digest != definition.Source.Digest || plan.ToolHiveVersion != definition.Workload.ToolHiveVersion || !equalStrings(plan.SidecarImages, definition.Workload.SidecarImages) || !reflectExecution(plan.Execution, definition.Execution) {
-		return fmt.Errorf("%w: generic plan drift", ErrStale)
+	if !identity.ValidID(plan.WorkloadID) || plan.DefinitionID != definition.DefinitionID || plan.DefinitionVersion != definition.Version || plan.Image != definition.Source.Image || plan.Digest != definition.Source.Digest || plan.ToolHiveVersion != definition.Workload.ToolHiveVersion || !api.EqualStrings(plan.SidecarImages, definition.Workload.SidecarImages) || !api.ReflectExecution(plan.Execution, definition.Execution) {
+		return fmt.Errorf("%w: generic plan drift", api.ErrStale)
 	}
 	if plan.WorkspacePath != "" {
 		path, err := filepath.Abs(plan.WorkspacePath)
-		if err != nil || !containedPath(c.config.StateRoot, path) || noSymlinkPath(path) != nil {
-			return ErrIsolation
+		if err != nil || !api.ContainedPath(c.config.StateRoot, path) || api.NoSymlinkPath(path) != nil {
+			return api.ErrIsolation
 		}
 	}
 	if len(plan.Execution.Mounts) != 0 {
 		if !c.config.DockerFallback {
-			return fmt.Errorf("%w: generic host state mounts are not enabled", ErrIsolation)
+			return fmt.Errorf("%w: generic host state mounts are not enabled", api.ErrIsolation)
 		}
 		for _, mount := range plan.Execution.Mounts {
 			if mount.Source != "connection-state" && mount.Source != "job-state" {
-				return fmt.Errorf("%w: generic mount source is not a named state volume", ErrIsolation)
+				return fmt.Errorf("%w: generic mount source is not a named state volume", api.ErrIsolation)
 			}
 		}
 	}
@@ -297,7 +228,7 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 		// network namespace; the stock ToolHive path has no forwarder, so
 		// refusing here is the difference between a bounded relay and a
 		// silently unmet connectivity promise.
-		return fmt.Errorf("%w: tcp forwards require the Docker fallback companion", ErrIsolation)
+		return fmt.Errorf("%w: tcp forwards require the Docker fallback companion", api.ErrIsolation)
 	}
 	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
 		return err
@@ -305,38 +236,34 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 	return nil
 }
 
-func (c *genericController) validateCredentialMounts(mounts []Mount) error {
+func (c *genericController) validateCredentialMounts(mounts []api.Mount) error {
 	if len(mounts) == 0 {
 		return nil
 	}
 	if c.config.CredentialMountRoot == "" || len(mounts) > 16 {
-		return fmt.Errorf("%w: credential mount root is not configured", ErrIsolation)
+		return fmt.Errorf("%w: credential mount root is not configured", api.ErrIsolation)
 	}
 	for _, mount := range mounts {
-		if !filepath.IsAbs(mount.Source) || !validContainerMountTarget(mount.Target) || !containedPath(c.config.CredentialMountRoot, mount.Source) || noSymlinkPath(mount.Source) != nil {
-			return fmt.Errorf("%w: unsafe credential mount", ErrIsolation)
+		if !filepath.IsAbs(mount.Source) || !api.ValidContainerMountTarget(mount.Target) || !api.ContainedPath(c.config.CredentialMountRoot, mount.Source) || api.NoSymlinkPath(mount.Source) != nil {
+			return fmt.Errorf("%w: unsafe credential mount", api.ErrIsolation)
 		}
 		info, err := os.Stat(mount.Source)
 		if err != nil || (mount.ReadOnly && !info.Mode().IsRegular()) || (!mount.ReadOnly && (!info.IsDir() || filepath.Base(mount.Source) != "state" || filepath.Dir(mount.Source) == filepath.Clean(c.config.CredentialMountRoot))) {
-			return fmt.Errorf("%w: credential mount must be a read-only file or lease state directory", ErrIsolation)
+			return fmt.Errorf("%w: credential mount must be a read-only file or lease state directory", api.ErrIsolation)
 		}
 	}
 	return nil
 }
 
-func validContainerMountTarget(target string) bool {
-	return strings.HasPrefix(target, "/") && target != "/" && !strings.ContainsAny(target, "\x00\r\n") && filepath.ToSlash(filepath.Clean(target)) == target
-}
-
-func validateGenericDefinition(definition ToolDefinition) error {
-	if err := ValidateTrustedArtifactDefinition(definition); err != nil {
+func validateGenericDefinition(definition api.ToolDefinition) error {
+	if err := api.ValidateTrustedArtifactDefinition(definition); err != nil {
 		return err
 	}
-	if definition.Transport != ContainerMCP || len(definition.Workload.SidecarImages) != 1 {
-		return fmt.Errorf("%w: generic controller requires one ContainerMCP proxy image", ErrInvalid)
+	if definition.Transport != api.ContainerMCP || len(definition.Workload.SidecarImages) != 1 {
+		return fmt.Errorf("%w: generic controller requires one ContainerMCP proxy image", api.ErrInvalid)
 	}
-	if definition.Workload.Class == Shared && len(definition.Credentials) != 0 {
-		return fmt.Errorf("%w: shared generic MCP cannot retain credentials", ErrUnauthorized)
+	if definition.Workload.Class == api.Shared && len(definition.Credentials) != 0 {
+		return fmt.Errorf("%w: shared generic MCP cannot retain credentials", api.ErrUnauthorized)
 	}
 	return nil
 }

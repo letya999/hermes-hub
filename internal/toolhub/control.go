@@ -8,34 +8,21 @@ import (
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
-type SourceReview struct {
-	Definition       ToolDefinition
-	Permissions      []string
-	Effects          []string
-	ReviewDigest     string
-	Recipe           *RecipeResolution
-	AdmissionPending bool
-	AdmissionDetail  string
-	AdmissionGroups  [][]string
-}
-
-type SourceReviewer func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error)
-type SourceResolver func(context.Context, string) (ArtifactSource, error)
-
 type ControlPlane struct {
 	Store          *Store
 	Secrets        credstore.Backend
-	Reviewer       SourceReviewer
-	SourceResolver SourceResolver
-	RecipeCatalogs []RecipeCatalog
+	Reviewer       api.SourceReviewer
+	SourceResolver api.SourceResolver
+	RecipeCatalogs []api.RecipeCatalog
 	OAuth          *oauth.Broker
-	Injector       CredentialInjector
+	Injector       api.CredentialInjector
 	admissionMu    sync.Mutex
 	oauthFlows     oauthFlowStore
 	Now            func() time.Time
@@ -46,7 +33,7 @@ type ControlPlane struct {
 	// diagnostics control op reads only the collected log file inside it.
 	DiagnosticsDir  string
 	ConfirmationTTL time.Duration
-	Ready           func(context.Context, EffectiveBinding) error
+	Ready           func(context.Context, api.EffectiveBinding) error
 	Broker          *credentialbroker.Config
 	BrokerRuntime   *credentialbroker.Config
 	discovery       discoverySelections
@@ -57,7 +44,7 @@ type ControlPlane struct {
 	// CLIRelease drops bounded-cli sandbox cells by principal/binding/job
 	// selector: disable and revoke kill warm cells, the /v1 job-end route
 	// kills task cells. Nil leaves cells to the controller's own ladder.
-	CLIRelease func(context.Context, cliReleaseRequest) error
+	CLIRelease func(context.Context, api.CliReleaseRequest) error
 	// PrepareSyncWindow bounds how long prepare_source waits for review+build
 	// before returning the durable "preparing" record; the work then continues
 	// on a detached context and its result is read via status. Zero uses the
@@ -65,16 +52,16 @@ type ControlPlane struct {
 	PrepareSyncWindow time.Duration
 	// PrepareDone, when set, runs after a backgrounded prepare finishes —
 	// whatever the outcome — so transports can wake open sessions.
-	PrepareDone func(context.Context, identity.Envelope, Onboarding)
+	PrepareDone func(context.Context, identity.Envelope, api.Onboarding)
 	// AdmitWithCredentials re-runs tools/list with owner-submitted secrets
 	// after a server refused MCP until those secrets existed. Nil means a
 	// deferred admission cannot be completed.
-	AdmitWithCredentials func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error)
+	AdmitWithCredentials func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error)
 	// CLIArtifacts is the owner bounded-cli artifact pipeline (immutable
 	// source → restricted build → digest-pinned extracted binary). Nil fails
 	// the cli artifact source path closed.
 	CLIArtifacts *CLIArtifactPipeline
-	// Governance is the host-owned tool policy document (issue 139). The
+	// governance is the host-owned tool policy document (issue 139). The
 	// grant_request control op stamps the in-conversation request onto a
 	// host-created pending grant; nil disables the op entirely.
 	Governance *GovernanceStore
@@ -109,20 +96,20 @@ func (c *ControlPlane) origin() string {
 
 func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op string, args map[string]any) (map[string]any, error) {
 	if c == nil || c.Store == nil {
-		return nil, fmt.Errorf("%w: control plane", ErrInvalid)
+		return nil, fmt.Errorf("%w: control plane", api.ErrInvalid)
 	}
-	if err := RejectAuthorityArguments(args); err != nil {
+	if err := api.RejectAuthorityArguments(args); err != nil {
 		return nil, err
 	}
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return nil, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	if err := c.Store.RequireControlOperation(auth, op); err != nil {
 		return nil, err
 	}
 	switch op {
 	case "discover":
-		return c.discover(ctx, auth, argString(args, "query"))
+		return c.discover(ctx, auth, api.ArgString(args, "query"))
 	case "prepare_source":
 		return c.prepareSource(ctx, auth, args)
 	case "status":
@@ -136,7 +123,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "rotate":
 		return c.Rotate(auth, args)
 	case "disable":
-		return c.setPhase(auth, args, DisabledStatus, PhaseDisabled)
+		return c.setPhase(auth, args, api.DisabledStatus, api.PhaseDisabled)
 	case "revoke":
 		return c.revoke(auth, args)
 	case "remove":
@@ -146,22 +133,22 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "grant_request":
 		return c.grantRequest(auth, args)
 	default:
-		return nil, fmt.Errorf("%w: unknown control operation", ErrInvalid)
+		return nil, fmt.Errorf("%w: unknown control operation", api.ErrInvalid)
 	}
 }
 
 func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[string]any, error) {
-	if argString(args, "onboarding_id") == "" && argString(args, "definition_id") == "" {
+	if api.ArgString(args, "onboarding_id") == "" && api.ArgString(args, "definition_id") == "" {
 		c.Store.mu.RLock()
-		var latest Onboarding
+		var latest api.Onboarding
 		for _, candidate := range c.Store.onboardings {
-			if candidate.PrincipalID == auth.PrincipalID && candidate.ContextID == auth.ContextID && candidate.RuntimeID == auth.RuntimeID && candidate.PolicyVersion == auth.PolicyVersion && candidate.Phase != PhaseRemoved && (latest.OnboardingID == "" || candidate.CreatedAt.After(latest.CreatedAt)) {
+			if candidate.PrincipalID == auth.PrincipalID && candidate.ContextID == auth.ContextID && candidate.RuntimeID == auth.RuntimeID && candidate.PolicyVersion == auth.PolicyVersion && candidate.Phase != api.PhaseRemoved && (latest.OnboardingID == "" || candidate.CreatedAt.After(latest.CreatedAt)) {
 				latest = candidate
 			}
 		}
 		c.Store.mu.RUnlock()
 		if latest.OnboardingID == "" {
-			return nil, fmt.Errorf("%w: onboarding", ErrNotFound)
+			return nil, fmt.Errorf("%w: onboarding", api.ErrNotFound)
 		}
 		args = map[string]any{"onboarding_id": latest.OnboardingID}
 	}
@@ -169,7 +156,7 @@ func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	if onboarding.Phase == PhaseAwaitingOAuth {
+	if onboarding.Phase == api.PhaseAwaitingOAuth {
 		definition, err := c.definitionOf(onboarding)
 		if err != nil {
 			return nil, err
@@ -200,33 +187,33 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectEscalation(definition, args); err != nil {
+	if err := api.RejectEscalation(definition, args); err != nil {
 		return nil, err
 	}
-	if onboarding.Phase == PhaseAwaitingOAuth {
+	if onboarding.Phase == api.PhaseAwaitingOAuth {
 		return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
 	}
-	nonce := argString(args, "nonce")
+	nonce := api.ArgString(args, "nonce")
 	if onboarding.ConfirmationUsed {
-		return nil, fmt.Errorf("%w: replayed nonce", ErrUnauthorized)
+		return nil, fmt.Errorf("%w: replayed nonce", api.ErrUnauthorized)
 	}
 	if onboarding.ConfirmationNonce == "" || nonce != onboarding.ConfirmationNonce {
-		return nil, fmt.Errorf("%w: confirmation nonce", ErrUnauthorized)
+		return nil, fmt.Errorf("%w: confirmation nonce", api.ErrUnauthorized)
 	}
 	if onboarding.ConfirmationExpires.IsZero() || c.now().After(onboarding.ConfirmationExpires) {
-		return nil, fmt.Errorf("%w: expired confirmation", ErrUnauthorized)
+		return nil, fmt.Errorf("%w: expired confirmation", api.ErrUnauthorized)
 	}
 	if len(onboarding.Required) > 0 && onboarding.Locator == "" {
-		return nil, fmt.Errorf("%w: credentials required", ErrUnauthorized)
+		return nil, fmt.Errorf("%w: credentials required", api.ErrUnauthorized)
 	}
 	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
-		if errors.Is(err, ErrUnauthorized) {
-			if entry, matched, lookupErr := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); lookupErr == nil && matched && entry.OAuth != nil {
+		if errors.Is(err, api.ErrUnauthorized) {
+			if entry, matched, lookupErr := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); lookupErr == nil && matched && entry.OAuth != nil {
 				return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
 			}
 		}
-		return nil, c.persistFailure(onboarding, publicPrepareError(err), err)
+		return nil, c.persistFailure(onboarding, api.PublicPrepareError(err), err)
 	}
 	onboarding.ConfirmationUsed = true
 	onboarding.BindingID = binding.ToolBindingID
@@ -234,7 +221,7 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	onboarding.CredentialRefID = binding.CredentialRefID
 	onboarding.BrokerRotateCredentialID = ""
 	onboarding.Error = ""
-	onboarding.Phase = PhaseConfirmed
+	onboarding.Phase = api.PhaseConfirmed
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -245,8 +232,8 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
-		definitionID := argString(args, "definition_id")
-		version := argString(args, "version")
+		definitionID := api.ArgString(args, "definition_id")
+		version := api.ArgString(args, "version")
 		if definitionID == "" || version == "" {
 			return nil, err
 		}
@@ -254,15 +241,15 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		if defErr != nil {
 			return nil, defErr
 		}
-		if err := rejectEscalation(definition, args); err != nil {
+		if err := api.RejectEscalation(definition, args); err != nil {
 			return nil, err
 		}
-		if pub := c.Store.publicationFor(definition); pub.Visibility != PublicationUser {
+		if pub := c.Store.publicationFor(definition); pub.Visibility != api.PublicationUser {
 			if err := c.Store.RequireCatalogAccess(auth, definition); err != nil {
 				return nil, err
 			}
 		}
-		var binding ToolBinding
+		var binding api.ToolBinding
 		var enableErr error
 		if c.Ready != nil {
 			binding, enableErr = c.Store.EnableReady(ctx, auth, definitionID, version, c.Ready)
@@ -272,22 +259,22 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		if enableErr != nil {
 			return nil, enableErr
 		}
-		return map[string]any{"phase": PhaseEnabled, "status": string(binding.Status), "binding_id": binding.ToolBindingID, "definition_id": binding.DefinitionID, "version": binding.DefinitionVersion}, nil
+		return map[string]any{"phase": api.PhaseEnabled, "status": string(binding.Status), "binding_id": binding.ToolBindingID, "definition_id": binding.DefinitionID, "version": binding.DefinitionVersion}, nil
 	}
 	definition, err := c.definitionOf(onboarding)
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectEscalation(definition, args); err != nil {
+	if err := api.RejectEscalation(definition, args); err != nil {
 		return nil, err
 	}
 	if onboarding.BindingID == "" {
-		if onboarding.Phase != PhaseConfirmed && onboarding.Phase != PhaseEnabled && onboarding.Phase != PhaseDisabled {
-			return nil, fmt.Errorf("%w: confirm required", ErrUnauthorized)
+		if onboarding.Phase != api.PhaseConfirmed && onboarding.Phase != api.PhaseEnabled && onboarding.Phase != api.PhaseDisabled {
+			return nil, fmt.Errorf("%w: confirm required", api.ErrUnauthorized)
 		}
 		binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 		if err != nil {
-			return nil, c.persistFailure(onboarding, publicPrepareError(err), err)
+			return nil, c.persistFailure(onboarding, api.PublicPrepareError(err), err)
 		}
 		onboarding.BindingID = binding.ToolBindingID
 		onboarding.ConnectionID = binding.ConnectionID
@@ -297,18 +284,18 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 	if err != nil {
 		return nil, err
 	}
-	if existing.Status == RevokedStatus {
-		return nil, ErrRevoked
+	if existing.Status == api.RevokedStatus {
+		return nil, api.ErrRevoked
 	}
-	if existing.Status != ActiveStatus {
-		var binding ToolBinding
+	if existing.Status != api.ActiveStatus {
+		var binding api.ToolBinding
 		if c.Ready != nil {
 			binding, err = c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
 		} else {
 			binding, err = c.Store.Enable(auth, definition.DefinitionID, definition.Version)
 		}
 		if err != nil {
-			return nil, c.persistFailure(onboarding, publicPrepareError(err), err)
+			return nil, c.persistFailure(onboarding, api.PublicPrepareError(err), err)
 		}
 		onboarding.BindingID = binding.ToolBindingID
 		onboarding.ConnectionID = binding.ConnectionID
@@ -319,7 +306,7 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		return nil, err
 	}
 	onboarding.Error = ""
-	onboarding.Phase = PhaseEnabled
+	onboarding.Phase = api.PhaseEnabled
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -327,13 +314,13 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) setPhase(auth identity.Envelope, args map[string]any, status Status, phase string) (map[string]any, error) {
+func (c *ControlPlane) setPhase(auth identity.Envelope, args map[string]any, status api.Status, phase string) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
 	}
 	if onboarding.BindingID == "" {
-		return nil, fmt.Errorf("%w: binding", ErrNotFound)
+		return nil, fmt.Errorf("%w: binding", api.ErrNotFound)
 	}
 	if err := c.Store.SetBindingStatus(onboarding.BindingID, status); err != nil {
 		return nil, err
@@ -354,7 +341,7 @@ func (c *ControlPlane) revoke(auth identity.Envelope, args map[string]any) (map[
 	if err := c.cutAuthorization(onboarding); err != nil {
 		return nil, err
 	}
-	onboarding.Phase = PhaseRevoked
+	onboarding.Phase = api.PhaseRevoked
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -371,18 +358,18 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 	if onboarding.BindingID != "" {
 		if binding, err := c.Store.binding(onboarding.BindingID); err == nil {
 			definition, _ := c.definitionOf(onboarding)
-			effective := EffectiveBinding{Binding: binding, Definition: definition}
+			effective := api.EffectiveBinding{Binding: binding, Definition: definition}
 			if binding.ConnectionID != "" {
 				if conn, _, err := c.Store.OwnedConnection(auth, binding.ConnectionID); err == nil {
 					effective.Connection = &conn
 				}
 			}
-			if err := RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
+			if err := api.RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
 				return nil, err
 			}
 		}
 	}
-	onboarding.Phase = PhaseRemoved
+	onboarding.Phase = api.PhaseRemoved
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -390,7 +377,7 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[string]any {
+func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map[string]any {
 	body := map[string]any{
 		"onboarding_id":  onboarding.OnboardingID,
 		"phase":          onboarding.Phase,
@@ -415,7 +402,7 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 			body["authorization_url"] = onboarding.BrokerAuthorizationURL
 		}
 	}
-	if onboarding.Phase == PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
+	if onboarding.Phase == api.PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
 		body["authorization_url"] = onboarding.ProviderAuthorizationURL
 	}
 	if withHints {
@@ -430,13 +417,13 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 		}
 	}
 	switch onboarding.Phase {
-	case PhasePreparing:
+	case api.PhasePreparing:
 		body["next_action"] = "poll_status"
 		body["instructions"] = "Source review and build continue in the background; call status with onboarding_id until the phase changes."
-	case PhaseFailed:
+	case api.PhaseFailed:
 		body["next_action"] = "retry"
 		body["instructions"] = "The prepare failed; call prepare_source again with the same request_key to retry."
-	case PhaseAwaitingCreds:
+	case api.PhaseAwaitingCreds:
 		body["next_action"] = "submit_credentials"
 		body["instructions"] = "Ask the user to open the credential URL, submit the form, then call this tool again."
 		if onboarding.AdmissionPending {
@@ -459,32 +446,32 @@ func (c *ControlPlane) statusBody(onboarding Onboarding, withHints bool) map[str
 				}
 			}
 		}
-	case PhaseAwaitingConfirm:
+	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"
 		body["instructions"] = "Call confirm with onboarding_id and the nonce from this response, then call enable. No browser action is required."
 		if onboarding.Error != "" {
 			body["instructions"] = "The last confirm or enable failed; read error and tell the user that text verbatim. Do not invent a runtime restart, controller outage, or network cause. Retry confirm with the nonce only after the recorded cause is addressed or looks transient; do not poll in a loop."
 		}
-	case PhaseAwaitingOAuth:
+	case api.PhaseAwaitingOAuth:
 		body["next_action"] = "authorize"
 		body["instructions"] = "Send authorization_url to the user. After the browser callback, call status to verify the connection."
-	case PhaseConfirmed:
+	case api.PhaseConfirmed:
 		body["next_action"] = "enable"
 		body["instructions"] = "Call enable with onboarding_id."
-	case PhaseEnabled:
+	case api.PhaseEnabled:
 		body["next_action"] = "ready"
 	}
 	if onboarding.Error != "" {
 		body["error"] = onboarding.Error
 	}
-	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
+	if onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
 		body["nonce"] = onboarding.ConfirmationNonce
 	}
-	if onboarding.Phase == PhaseEnabled {
+	if onboarding.Phase == api.PhaseEnabled {
 		if definition, err := c.definitionOf(onboarding); err == nil {
 			tools := make([]string, 0, len(definition.Tools))
 			for _, tool := range definition.Tools {
-				tools = append(tools, ProjectedToolName(definition.DefinitionID, definition.Version, tool.Name))
+				tools = append(tools, api.ProjectedToolName(definition.DefinitionID, definition.Version, tool.Name))
 			}
 			body["projected_tools"] = tools
 		}

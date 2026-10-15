@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -20,22 +21,22 @@ func TestPreflightCredentialGateWhenToolsListNeedsRealSecrets(t *testing.T) {
 	definition.DefinitionID = "slack-mcp-server"
 	definition.Version = "0.0.2"
 	definition.Credentials = nil
-	definition.Tools = []ToolSpec{{Name: "mcp", Effect: ReadEffect}}
-	packet := ImportedArtifact{Definition: definition, Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
-	originalLoader, originalList := storedArtifactLoader, localMCPToolList
-	defer func() { storedArtifactLoader, localMCPToolList = originalLoader, originalList }()
-	storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+	definition.Tools = []api.ToolSpec{{Name: "mcp", Effect: api.ReadEffect}}
+	packet := api.ImportedArtifact{Definition: definition, Artifact: api.StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
+	originalLoader, originalList := api.StoredArtifactLoader, api.LocalMCPToolList
+	defer func() { api.StoredArtifactLoader, api.LocalMCPToolList = originalLoader, originalList }()
+	api.StoredArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
 		return packet.Definition.Source.Image, nil
 	}
 	text := "Authentication required: Either SLACK_MCP_XOXP_TOKEN, SLACK_MCP_XOXB_TOKEN, or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN must be provided"
 	attempts := 0
-	localMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+	api.LocalMCPToolList = func(context.Context, api.ImportedArtifact) ([]api.ToolSpec, error) {
 		attempts++
-		return nil, fmt.Errorf("%w: %s", ErrIsolation, text)
+		return nil, fmt.Errorf("%w: %s", api.ErrIsolation, text)
 	}
-	preflighted, contract, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir())
-	var gate *CredentialGate
-	if attempts != 2 || !errors.As(err, &gate) || !errors.Is(err, ErrIsolation) || contract.Source != "" || len(contract.Tools) != 0 {
+	preflighted, contract, err := api.PreflightImportedArtifact(context.Background(), packet, t.TempDir())
+	var gate *api.CredentialGate
+	if attempts != 2 || !errors.As(err, &gate) || !errors.Is(err, api.ErrIsolation) || contract.Source != "" || len(contract.Tools) != 0 {
 		t.Fatalf("attempts=%d contract=%+v err=%v", attempts, contract, err)
 	}
 	if len(preflighted.Definition.Tools) != 0 || preflighted.Definition.Source.ToolContractSource != "" || preflighted.Definition.Source.ToolContractDigest != "" {
@@ -62,7 +63,7 @@ func TestPreflightCredentialGateWhenToolsListNeedsRealSecrets(t *testing.T) {
 
 	plain := statefulContainerDefinition()
 	plain.Credentials = nil
-	if _, _, ok := credentialGateFrom(ImportedArtifact{Definition: plain}, errors.New("authentication required")); ok {
+	if _, _, ok := api.CredentialGateFrom(api.ImportedArtifact{Definition: plain}, errors.New("authentication required")); ok {
 		t.Fatal("auth text without secret names became a credential gate")
 	}
 }
@@ -72,8 +73,8 @@ func TestPreflightCredentialGateWhenToolsListNeedsRealSecrets(t *testing.T) {
 // a credential gate on the declared inputs instead of failing the review.
 func TestCredentialGateFromAnsweredEmptyToolList(t *testing.T) {
 	definition := statefulContainerDefinition()
-	definition.Tools = []ToolSpec{{Name: "mcp", Effect: ReadEffect}}
-	definition.Credentials = []CredentialInput{
+	definition.Tools = []api.ToolSpec{{Name: "mcp", Effect: api.ReadEffect}}
+	definition.Credentials = []api.CredentialInput{
 		{Name: "JIRA_URL", Required: true},
 		{Name: "JIRA_USERNAME", Required: true},
 		{Name: "JIRA_API_TOKEN", Required: true},
@@ -82,8 +83,8 @@ func TestCredentialGateFromAnsweredEmptyToolList(t *testing.T) {
 		{Name: "CONFLUENCE_API_TOKEN", Required: true},
 		{Name: "ATLASSIAN_OAUTH_CLIENT_ID"},
 	}
-	emptyList := fmt.Errorf("%w: MCP tools/list empty (%w): %v: %s", ErrIsolation, errEmptyToolList, error(nil), "server noise")
-	gated, gate, ok := credentialGateFrom(ImportedArtifact{Definition: definition}, emptyList)
+	emptyList := fmt.Errorf("%w: MCP tools/list empty (%w): %v: %s", api.ErrIsolation, api.ErrEmptyToolList, error(nil), "server noise")
+	gated, gate, ok := api.CredentialGateFrom(api.ImportedArtifact{Definition: definition}, emptyList)
 	if !ok || gate == nil {
 		t.Fatal("answered-empty tools/list with required inputs did not gate")
 	}
@@ -110,7 +111,7 @@ func TestCredentialGateFromAnsweredEmptyToolList(t *testing.T) {
 		t.Fatalf("prefix alternatives not synthesized: %v", gate.Groups)
 	}
 	hints := credentialGateHints(gate.Names, gate.Groups)
-	byName := map[string]CredentialHint{}
+	byName := map[string]api.CredentialHint{}
 	for _, hint := range hints {
 		byName[hint.Name] = hint
 	}
@@ -119,19 +120,19 @@ func TestCredentialGateFromAnsweredEmptyToolList(t *testing.T) {
 	}
 
 	// A process that died before answering tools/list is not a credential gate.
-	eof := fmt.Errorf("%w: MCP tools/list empty: %s", ErrIsolation, "EOF: <stderr>")
-	if _, _, ok := credentialGateFrom(ImportedArtifact{Definition: definition}, eof); ok {
+	eof := fmt.Errorf("%w: MCP tools/list empty: %s", api.ErrIsolation, "EOF: <stderr>")
+	if _, _, ok := api.CredentialGateFrom(api.ImportedArtifact{Definition: definition}, eof); ok {
 		t.Fatal("unanswered tools/list became a credential gate")
 	}
 	// Optional-only inputs cannot satisfy anything; keep the failure explicit.
 	optional := statefulContainerDefinition()
-	optional.Credentials = []CredentialInput{{Name: "ATLASSIAN_OAUTH_CLIENT_ID"}}
-	if _, _, ok := credentialGateFrom(ImportedArtifact{Definition: optional}, emptyList); ok {
+	optional.Credentials = []api.CredentialInput{{Name: "ATLASSIAN_OAUTH_CLIENT_ID"}}
+	if _, _, ok := api.CredentialGateFrom(api.ImportedArtifact{Definition: optional}, emptyList); ok {
 		t.Fatal("answered-empty tools/list without required inputs became a gate")
 	}
 	bare := statefulContainerDefinition()
 	bare.Credentials = nil
-	if _, _, ok := credentialGateFrom(ImportedArtifact{Definition: bare}, emptyList); ok {
+	if _, _, ok := api.CredentialGateFrom(api.ImportedArtifact{Definition: bare}, emptyList); ok {
 		t.Fatal("answered-empty tools/list without declared inputs became a gate")
 	}
 }
@@ -147,9 +148,9 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour, FormOrigin: "http://127.0.0.1:8090"}
-	preparing := Onboarding{
-		Schema: SchemaVersion, OnboardingID: "onboard-gate1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: OnboardingSelfInstall, Phase: PhasePreparing, SourceURL: "https://github.com/example/slack-mcp-server",
+	preparing := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onboard-gate1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, SourceURL: "https://github.com/example/slack-mcp-server",
 		DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now(),
 	}
 	if err := store.PutOnboarding(preparing); err != nil {
@@ -158,25 +159,25 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	definition := userMCPDefinition()
 	definition.DefinitionID = "slack-mcp-server"
 	definition.Version = "0.0.2"
-	definition.Tools = []ToolSpec{{Name: "mcp", Effect: ReadEffect}}
-	definition.Credentials = []CredentialInput{
+	definition.Tools = []api.ToolSpec{{Name: "mcp", Effect: api.ReadEffect}}
+	definition.Credentials = []api.CredentialInput{
 		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXB_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXC_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXD_TOKEN", Required: true},
 	}
 	definition.ProxyEnvironment = []string{"SLACK_MCP_PROXY"}
-	review := SourceReview{
+	review := api.SourceReview{
 		Definition: definition, AdmissionPending: true,
 		AdmissionDetail: "Authentication required: Either SLACK_MCP_XOXP_TOKEN, SLACK_MCP_XOXB_TOKEN, or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN must be provided",
 		AdmissionGroups: [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}},
 	}
 	body, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, review)
 	instructions, _ := body["instructions"].(string)
-	if err != nil || body["phase"] != PhaseAwaitingCreds || body["tools_confirmed"] != false || strings.Contains(instructions, "one token field") || !strings.Contains(instructions, "field names") {
+	if err != nil || body["phase"] != api.PhaseAwaitingCreds || body["tools_confirmed"] != false || strings.Contains(instructions, "one token field") || !strings.Contains(instructions, "field names") {
 		t.Fatalf("body=%v err=%v", body, err)
 	}
-	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("definition registered before tools/list: %v", err)
 	}
 	stored, err := store.onboarding(preparing.OnboardingID)
@@ -238,31 +239,31 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if err != nil || !strings.Contains(noted.Error, "один полный набор") || strings.Contains(noted.Error, "one") {
 		t.Fatalf("form rejection was not recorded: %+v %v", noted.Error, err)
 	}
-	if strings.Contains(credentialFieldMarkup(CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}), "required") {
+	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}), "required") {
 		t.Fatal("alternative field is required")
 	}
 	nonce := stored.FormNonce
-	if err := control.SubmitCredentials(preparing.OnboardingID, nonce, map[string]string{"SLACK_MCP_XOXC_TOKEN": "only-half"}); !errors.Is(err, ErrInvalid) {
+	if err := control.SubmitCredentials(preparing.OnboardingID, nonce, map[string]string{"SLACK_MCP_XOXC_TOKEN": "only-half"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("partial alternative accepted: %v", err)
 	}
-	control.AdmitWithCredentials = func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error) {
-		return ToolDefinition{}, errors.New("auth.test failed")
+	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
+		return api.ToolDefinition{}, errors.New("auth.test failed")
 	}
-	if err := control.SubmitCredentials(preparing.OnboardingID, nonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); !errors.Is(err, ErrIsolation) {
+	if err := control.SubmitCredentials(preparing.OnboardingID, nonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("probe failure=%v", err)
 	}
 	stored, _ = store.onboarding(preparing.OnboardingID)
-	if stored.Phase != PhaseAwaitingCreds || stored.FormNonce != nonce || stored.Error == "" || strings.Contains(stored.Error, "xoxp-real-token-value") {
+	if stored.Phase != api.PhaseAwaitingCreds || stored.FormNonce != nonce || stored.Error == "" || strings.Contains(stored.Error, "xoxp-real-token-value") {
 		t.Fatalf("probe failure mutated onboarding: %+v", stored)
 	}
-	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatal("failed probe registered a definition")
 	}
-	control.AdmitWithCredentials = func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error) {
+	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
 		admitted := userMCPDefinition()
 		admitted.DefinitionID = "slack-mcp-server"
 		admitted.Version = "0.0.2"
-		admitted.Tools = []ToolSpec{{Name: "search", Effect: ReadEffect}}
+		admitted.Tools = []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}}
 		return admitted, nil
 	}
 	if err := control.SubmitCredentials(preparing.OnboardingID, nonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
@@ -270,44 +271,44 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	}
 	stored, _ = store.onboarding(preparing.OnboardingID)
 	admitted, err := store.Definition("slack-mcp-server", "0.0.2")
-	if err != nil || stored.Phase != PhaseAwaitingConfirm || stored.AdmissionPending || stored.Error != "" || len(admitted.Tools) != 1 || admitted.Tools[0].Name != "search" {
+	if err != nil || stored.Phase != api.PhaseAwaitingConfirm || stored.AdmissionPending || stored.Error != "" || len(admitted.Tools) != 1 || admitted.Tools[0].Name != "search" {
 		t.Fatalf("admitted=%+v stored=%+v err=%v", admitted.Tools, stored, err)
 	}
 }
 
 func TestCredentialSubmitPageDoesNotClaimSavedSecrets(t *testing.T) {
 	for _, err := range []error{
-		fmt.Errorf("%w: expired form", ErrUnauthorized),
-		fmt.Errorf("%w: tools/list with the submitted credentials failed", ErrIsolation),
+		fmt.Errorf("%w: expired form", api.ErrUnauthorized),
+		fmt.Errorf("%w: tools/list with the submitted credentials failed", api.ErrIsolation),
 	} {
 		_, _, message := credentialSubmitPage(err)
 		if strings.Contains(message, "Данные сохранены") {
 			t.Fatalf("page claims a save: %s", message)
 		}
 	}
-	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: incomplete credential alternative: SLACK_MCP_XOXD_TOKEN", ErrInvalid)); !strings.Contains(message, "не все поля") || !strings.Contains(message, "SLACK MCP XOXD TOKEN") {
+	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: incomplete credential alternative: SLACK_MCP_XOXD_TOKEN", api.ErrInvalid)); !strings.Contains(message, "не все поля") || !strings.Contains(message, "SLACK MCP XOXD TOKEN") {
 		t.Fatal(message)
 	}
-	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: tools/list empty: {\"message\":\"Authentication failed - check your Slack tokens\",\"stacktrace\":\"long\"}", ErrIsolation)); title != "Проверка не прошла" || !strings.Contains(message, "Authentication failed") || strings.Contains(message, "stacktrace") || strings.Contains(message, "Данные сохранены") {
+	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: tools/list empty: {\"message\":\"Authentication failed - check your Slack tokens\",\"stacktrace\":\"long\"}", api.ErrIsolation)); title != "Проверка не прошла" || !strings.Contains(message, "Authentication failed") || strings.Contains(message, "stacktrace") || strings.Contains(message, "Данные сохранены") {
 		t.Fatalf("probe page=%s %s", title, message)
 	}
-	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: %w", errCredentialSaved, fmt.Errorf("%w: credential broker credential", ErrUnauthorized))); title != "Подключение не завершено" || !strings.Contains(message, "Данные сохранены") || strings.Contains(message, "больше не действует") || strings.Contains(message, "не сохранён") {
+	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: %w", errCredentialSaved, fmt.Errorf("%w: credential broker credential", api.ErrUnauthorized))); title != "Подключение не завершено" || !strings.Contains(message, "Данные сохранены") || strings.Contains(message, "больше не действует") || strings.Contains(message, "не сохранён") {
 		t.Fatalf("saved secret page=%s %s", title, message)
 	}
-	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: immutable definition slack-mcp-server@0.0.2", ErrConflict)); strings.Contains(message, "Данные сохранены") || !strings.Contains(message, "не сохранён") {
+	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: immutable definition slack-mcp-server@0.0.2", api.ErrConflict)); strings.Contains(message, "Данные сохранены") || !strings.Contains(message, "не сохранён") {
 		t.Fatal(message)
 	}
-	if intro := credentialFormIntro([]CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}); !strings.Contains(intro, "JSON-файл Google") {
+	if intro := credentialFormIntro([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}); !strings.Contains(intro, "JSON-файл Google") {
 		t.Fatal(intro)
 	}
 }
 
-func admittedGateDefinition(version, tool string) ToolDefinition {
+func admittedGateDefinition(version, tool string) api.ToolDefinition {
 	admitted := userMCPDefinition()
 	admitted.DefinitionID = "slack-mcp-server"
 	admitted.Version = version
-	admitted.Credentials = []CredentialInput{{Name: "SLACK_MCP_XOXP_TOKEN", Required: true}}
-	admitted.Tools = []ToolSpec{{Name: tool, Effect: ReadEffect}}
+	admitted.Credentials = []api.CredentialInput{{Name: "SLACK_MCP_XOXP_TOKEN", Required: true}}
+	admitted.Tools = []api.ToolSpec{{Name: tool, Effect: api.ReadEffect}}
 	return admitted
 }
 
@@ -322,18 +323,18 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 		t.Fatal(err)
 	}
 	seenLocal := false
-	local := func(context.Context, EffectiveBinding) (CredentialInjection, error) {
+	local := func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
 		seenLocal = true
-		return CredentialInjection{Environment: map[string]string{"TOKEN": "local"}}, nil
+		return api.CredentialInjection{Environment: map[string]string{"TOKEN": "local"}}, nil
 	}
-	injector := mergeCredentialInjectors(local, func(context.Context, EffectiveBinding) (CredentialInjection, error) {
+	injector := mergeCredentialInjectors(local, func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
 		t.Fatal("broker injector used for a contract-less admission")
-		return CredentialInjection{}, nil
+		return api.CredentialInjection{}, nil
 	}, true)
 	control := &ControlPlane{
 		Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour,
 		Broker: &credentialbroker.Config{URL: "https://broker.example"},
-		Ready: func(ctx context.Context, effective EffectiveBinding) error {
+		Ready: func(ctx context.Context, effective api.EffectiveBinding) error {
 			if effective.Credential == nil || effective.Credential.Backend != credstore.BackendLocal || effective.Credential.BrokerGrantID != "" {
 				t.Fatalf("reference=%+v", effective.Credential)
 			}
@@ -341,9 +342,9 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 			return err
 		},
 	}
-	preparing := Onboarding{
-		Schema: SchemaVersion, OnboardingID: "onboard-gate-local", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: OnboardingSelfInstall, Phase: PhasePreparing, SourceURL: "https://github.com/example/slack-mcp-server",
+	preparing := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onboard-gate-local", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, SourceURL: "https://github.com/example/slack-mcp-server",
 		DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now(),
 	}
 	if err := store.PutOnboarding(preparing); err != nil {
@@ -351,11 +352,11 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 	}
 	definition := admittedGateDefinition("0.0.2", "channels_list")
 	definition.Tools = nil
-	definition.Credentials = []CredentialInput{
+	definition.Credentials = []api.CredentialInput{
 		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXB_TOKEN", Required: true},
 	}
-	if _, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, SourceReview{
+	if _, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, api.SourceReview{
 		Definition: definition, AdmissionPending: true, AdmissionDetail: "token required",
 		AdmissionGroups: [][]string{{"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}},
 	}); err != nil {
@@ -365,21 +366,21 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	control.AdmitWithCredentials = func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error) {
+	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
 		return admittedGateDefinition("0.0.2", "channels_list"), nil
 	}
 	if err := control.AuthorizeCredentials(t.Context(), preparing.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(preparing.OnboardingID)
-	if stored.Phase != PhaseEnabled || stored.BrokerCredentialID != "" || !seenLocal {
+	if stored.Phase != api.PhaseEnabled || stored.BrokerCredentialID != "" || !seenLocal {
 		t.Fatalf("phase=%s broker=%q local=%v", stored.Phase, stored.BrokerCredentialID, seenLocal)
 	}
 	contracted := admittedGateDefinition("1.0.0", "channels_list")
 	contracted.DefinitionID = "contracted-mcp"
 	contracted.CredentialContractID = "github-pat"
 	contracted.CredentialContractRevision = 1
-	if _, err := control.materializeBinding(t.Context(), aliceAuth(), Onboarding{OnboardingID: "onboard-contract", Locator: "locator-1", Required: []CredentialHint{{Name: "SLACK_MCP_XOXP_TOKEN"}}}, contracted); !errors.Is(err, ErrUnauthorized) || !strings.Contains(err.Error(), "credential broker credential") {
+	if _, err := control.materializeBinding(t.Context(), aliceAuth(), api.Onboarding{OnboardingID: "onboard-contract", Locator: "locator-1", Required: []api.CredentialHint{{Name: "SLACK_MCP_XOXP_TOKEN"}}}, contracted); !errors.Is(err, api.ErrUnauthorized) || !strings.Contains(err.Error(), "credential broker credential") {
 		t.Fatalf("contracted definition skipped the broker: %v", err)
 	}
 }
@@ -395,10 +396,10 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour}
-	open := func(id, principal string) Onboarding {
-		onboarding := Onboarding{
-			Schema: SchemaVersion, OnboardingID: id, PrincipalID: principal, ContextID: principal, RuntimeID: "runtime", PolicyVersion: "policy-1",
-			Mode: OnboardingSelfInstall, Phase: PhasePreparing, DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now(),
+	open := func(id, principal string) api.Onboarding {
+		onboarding := api.Onboarding{
+			Schema: api.SchemaVersion, OnboardingID: id, PrincipalID: principal, ContextID: principal, RuntimeID: "runtime", PolicyVersion: "policy-1",
+			Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now(),
 		}
 		if err := store.PutOnboarding(onboarding); err != nil {
 			t.Fatal(err)
@@ -407,24 +408,24 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 		draft.Tools = nil
 		auth := aliceAuth()
 		auth.PrincipalID, auth.ContextID = principal, principal
-		if _, err := control.acceptCredentialGate(t.Context(), auth, onboarding, SourceReview{Definition: draft, AdmissionPending: true, AdmissionDetail: "token required", AdmissionGroups: [][]string{{"SLACK_MCP_XOXP_TOKEN"}}}); err != nil {
+		if _, err := control.acceptCredentialGate(t.Context(), auth, onboarding, api.SourceReview{Definition: draft, AdmissionPending: true, AdmissionDetail: "token required", AdmissionGroups: [][]string{{"SLACK_MCP_XOXP_TOKEN"}}}); err != nil {
 			t.Fatal(err)
 		}
 		return onboarding
 	}
 	alice := open("onboard-alice", "alice")
 	stored, _ := store.onboarding(alice.OnboardingID)
-	control.AdmitWithCredentials = func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error) {
-		return ToolDefinition{DefinitionID: "not valid"}, nil
+	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
+		return api.ToolDefinition{DefinitionID: "not valid"}, nil
 	}
-	if err := control.SubmitCredentials(alice.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); !errors.Is(err, ErrInvalid) {
+	if err := control.SubmitCredentials(alice.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("invalid manifest: %v", err)
 	}
 	stored, _ = store.onboarding(alice.OnboardingID)
-	if stored.Phase != PhaseAwaitingCreds || stored.FormNonce == "" || stored.Error == "" || strings.Contains(stored.Error, "Проверяю поля") {
+	if stored.Phase != api.PhaseAwaitingCreds || stored.FormNonce == "" || stored.Error == "" || strings.Contains(stored.Error, "Проверяю поля") {
 		t.Fatalf("register failure was not recorded: %+v", stored.Error)
 	}
-	control.AdmitWithCredentials = func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error) {
+	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
 		return admittedGateDefinition("0.0.2", "channels_list"), nil
 	}
 	if err := control.SubmitCredentials(alice.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
@@ -443,7 +444,7 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	bobStored, _ = store.onboarding(bob.OnboardingID)
-	if bobStored.DefinitionVersion != "0.0.3" || bobStored.Phase != PhaseAwaitingConfirm {
+	if bobStored.DefinitionVersion != "0.0.3" || bobStored.Phase != api.PhaseAwaitingConfirm {
 		t.Fatalf("bob onboarding=%+v", bobStored.DefinitionVersion)
 	}
 	owner, userOwned = store.userPublicationOwner("slack-mcp-server", "0.0.2")

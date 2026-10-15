@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
 	"net/http"
@@ -42,7 +43,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	} else if endpoint == "" || toolName == "" {
 		return errors.New("set both TOOLHIVE_VMCP_ENDPOINT and TOOLHIVE_REMOTE_TOOL, or neither for the local fixture")
 	}
-	if err := toolhub.ValidateBackendEndpoint(endpoint); err != nil {
+	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
 		return err
 	}
 	image := os.Getenv("HERMES_CONTRACT_IMAGE")
@@ -50,8 +51,8 @@ func ToolHubHermesContract(ctx context.Context) error {
 		return errors.New("set HERMES_CONTRACT_IMAGE to the pinned Hermes image")
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "contract-user", ExternalIdentityID: "contract-transport", ContextID: "contract-user", RuntimeID: "contract-runtime", ConversationID: "contract-conversation", DeliveryTargetID: "contract-delivery", PolicyVersion: "contract-policy"}
-	definition := gatewayProbeDefinition("hermes-toolhub", toolhub.RemoteMCP, toolName, toolhub.Shared, false, "https://remote-fixture.invalid/mcp", "")
-	connection := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: "hermes-connection", Owner: toolhub.OwnerRef{Type: toolhub.ContextOwner, ID: auth.ContextID}, DefinitionID: definition.DefinitionID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": endpoint}}
+	definition := gatewayProbeDefinition("hermes-toolhub", api.RemoteMCP, toolName, api.Shared, false, "https://remote-fixture.invalid/mcp", "")
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "hermes-connection", Owner: api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}, DefinitionID: definition.DefinitionID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": endpoint}}
 	binding := gatewayProbeBinding(auth, definition, connection)
 	store := toolhub.NewStore()
 	for _, record := range []func() error{func() error { return store.RegisterDefinition(definition) }, func() error { return store.PutConnection(connection) }, func() error { return store.PutBinding(binding) }} {
@@ -63,7 +64,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	if gatewayToken == "" {
 		gatewayToken = strings.Repeat("h", 32)
 	}
-	backend := &countingBackend{backend: toolhub.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN")}}
+	backend := &countingBackend{backend: api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN")}}
 	var activeGateway *toolhub.Gateway
 	newGateway := func(port int) (string, *http.Server, net.Listener, int, error) {
 		activeGateway = &toolhub.Gateway{Store: store, Backend: backend, Tokens: map[string]identity.Envelope{gatewayToken: auth}, DisableLocalhostProtection: true}
@@ -98,7 +99,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	}
 	listed, err := probeSession.ListTools(ctx, nil)
 	_ = probeSession.Close()
-	if err != nil || !hasMCPTool(listed.Tools, toolhub.ProjectedToolName(definition.DefinitionID, definition.Version, toolName)) {
+	if err != nil || !hasMCPTool(listed.Tools, api.ProjectedToolName(definition.DefinitionID, definition.Version, toolName)) {
 		return fmt.Errorf("ToolHub preflight list failed: err=%v tools=%d", err, len(listed.Tools))
 	}
 	var modelToolCalls atomic.Int32
@@ -110,7 +111,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 			close(activeRunRelease)
 		}
 	}()
-	provider, providerURL, err := nativeToolHubProvider(toolhub.ProjectedToolName(definition.DefinitionID, definition.Version, toolName), &modelToolCalls, activeRunEntered, activeRunRelease)
+	provider, providerURL, err := nativeToolHubProvider(api.ProjectedToolName(definition.DefinitionID, definition.Version, toolName), &modelToolCalls, activeRunEntered, activeRunRelease)
 	if err != nil {
 		return err
 	}
@@ -171,7 +172,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	if initialModelCalls == 0 {
 		return errors.New("Hermes model did not select the ToolHub tool")
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, toolhub.DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		return err
 	}
 	if err := activeGateway.RefreshProjection(); err != nil {
@@ -195,7 +196,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	if backend.calls.Load() != initialCalls || modelToolCalls.Load() != initialModelCalls {
 		return fmt.Errorf("Hermes retained the removed ToolHub tool: backend=%d model=%d", backend.calls.Load()-initialCalls, modelToolCalls.Load()-initialModelCalls)
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, toolhub.ActiveStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.ActiveStatus); err != nil {
 		return err
 	}
 	if err := activeGateway.RefreshProjection(); err != nil {
@@ -223,7 +224,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	case <-time.After(30 * time.Second):
 		return errors.New("Hermes active run did not reach the final model response")
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, toolhub.DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		return err
 	}
 	if err := activeGateway.RefreshProjection(); err != nil {
@@ -241,7 +242,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	if err != nil || string(currentPID) != string(processID) {
 		return errors.New("Hermes process changed during ToolHub projection refresh")
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, toolhub.ActiveStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.ActiveStatus); err != nil {
 		return err
 	}
 	if err := activeGateway.RefreshProjection(); err != nil {
@@ -287,7 +288,7 @@ func compactProbeBody(body []byte) string {
 }
 
 type countingBackend struct {
-	backend   toolhub.ToolBackend
+	backend   api.ToolBackend
 	calls     atomic.Int32
 	successes atomic.Int32
 }
@@ -393,7 +394,7 @@ func toolSearchHit(content json.RawMessage, name string) bool {
 	return found
 }
 
-func (b *countingBackend) Call(ctx context.Context, binding toolhub.EffectiveBinding, tool toolhub.ToolSpec, args map[string]any) (toolhub.BackendResult, error) {
+func (b *countingBackend) Call(ctx context.Context, binding api.EffectiveBinding, tool api.ToolSpec, args map[string]any) (api.BackendResult, error) {
 	b.calls.Add(1)
 	result, err := b.backend.Call(ctx, binding, tool, args)
 	if err == nil && !result.IsError {

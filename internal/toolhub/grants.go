@@ -2,274 +2,30 @@ package toolhub
 
 import (
 	"fmt"
-	"slices"
-	"strings"
-	"time"
-
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"slices"
+	"time"
 )
 
-type GrantKind string
-
-const (
-	GrantCatalogDefault   GrantKind = "catalog-default"
-	GrantDefinition       GrantKind = "definition"
-	GrantSelfInstall      GrantKind = "self-install"
-	GrantSharedCredential GrantKind = "shared-credential"
-	GrantControlOperation GrantKind = "control-operation"
-	PublicationCatalog    string    = "catalog"
-	PublicationUser       string    = "user"
-	OnboardingCatalog     string    = "catalog"
-	OnboardingSelfInstall string    = "self-install"
-	OnboardingRemote      string    = "remote-mcp"
-	PhasePreparing        string    = "preparing"
-	PhaseReview           string    = "review"
-	PhaseAwaitingCreds    string    = "awaiting-credentials"
-	PhaseAwaitingConfirm  string    = "awaiting-confirm"
-	PhaseAwaitingOAuth    string    = "awaiting-oauth"
-	PhaseConfirmed        string    = "confirmed"
-	PhaseEnabled          string    = "enabled"
-	PhaseDisabled         string    = "disabled"
-	PhaseRevoked          string    = "revoked"
-	PhaseRemoved          string    = "removed"
-	PhaseFailed           string    = "failed"
-)
-
-var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics", "grant_request", "install_shared"}
-
-type Grant struct {
-	Schema            int           `json:"schema"`
-	GrantID           string        `json:"grant_id"`
-	Kind              GrantKind     `json:"kind"`
-	PrincipalID       string        `json:"principal_id"`
-	DefinitionID      string        `json:"definition_id,omitempty"`
-	DefinitionVersion string        `json:"definition_version,omitempty"`
-	Operation         string        `json:"operation,omitempty"`
-	IssuedBy          string        `json:"issued_by"`
-	Status            Status        `json:"status"`
-	Revision          uint64        `json:"revision"`
-	Confirmation      *Confirmation `json:"confirmation,omitempty"`
-}
-
-type DefinitionPublication struct {
-	DefinitionID     string `json:"definition_id"`
-	Version          string `json:"version"`
-	Visibility       string `json:"visibility"`
-	OwnerPrincipalID string `json:"owner_principal_id,omitempty"`
-}
-
-type SharedCredentialPolicy struct {
-	Schema       int      `json:"schema"`
-	PolicyID     string   `json:"policy_id"`
-	DefinitionID string   `json:"definition_id"`
-	Locator      string   `json:"locator"`
-	StoreOwner   string   `json:"store_owner"`
-	Principals   []string `json:"principals"`
-	IssuedBy     string   `json:"issued_by"`
-	Status       Status   `json:"status"`
-}
-
-type CredentialHint struct {
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Hint   string `json:"hint,omitempty"`
-	Secret bool   `json:"secret,omitempty"`
-	// AlternativeGroup marks OR groups from one auth sentence. Zero means the
-	// field is independently required. A positive group is accepted only when
-	// exactly one complete group is filled.
-	AlternativeGroup int    `json:"alternative_group,omitempty"`
-	Delivery         string `json:"delivery,omitempty"`
-	Target           string `json:"target,omitempty"`
-	Alternative      string `json:"alternative,omitempty"`
-	AlternativeURL   string `json:"alternative_url,omitempty"`
-}
-
-type Onboarding struct {
-	Schema                   int              `json:"schema"`
-	OnboardingID             string           `json:"onboarding_id"`
-	PrincipalID              string           `json:"principal_id"`
-	ContextID                string           `json:"context_id"`
-	RuntimeID                string           `json:"runtime_id"`
-	PolicyVersion            string           `json:"policy_version"`
-	Mode                     string           `json:"mode"`
-	SourceURL                string           `json:"source_url,omitempty"`
-	Subfolder                string           `json:"subfolder,omitempty"`
-	CommitSHA                string           `json:"commit_sha,omitempty"`
-	DefinitionID             string           `json:"definition_id,omitempty"`
-	DefinitionVersion        string           `json:"definition_version,omitempty"`
-	Phase                    string           `json:"phase"`
-	BindingID                string           `json:"binding_id,omitempty"`
-	ConnectionID             string           `json:"connection_id,omitempty"`
-	CredentialRefID          string           `json:"credential_ref,omitempty"`
-	ReviewDigest             string           `json:"review_digest,omitempty"`
-	Required                 []CredentialHint `json:"required,omitempty"`
-	Permissions              []string         `json:"permissions,omitempty"`
-	Effects                  []string         `json:"effects,omitempty"`
-	ConfirmationNonce        string           `json:"confirmation_nonce,omitempty"`
-	ConfirmationExpires      time.Time        `json:"confirmation_expires,omitempty"`
-	ConfirmationUsed         bool             `json:"confirmation_used,omitempty"`
-	IdempotencyKey           string           `json:"idempotency_key,omitempty"`
-	FormNonce                string           `json:"form_nonce,omitempty"`
-	FormExpires              time.Time        `json:"form_expires,omitempty"`
-	Locator                  string           `json:"locator,omitempty"`
-	CredentialOwner          string           `json:"credential_owner,omitempty"`
-	BrokerRequestID          string           `json:"broker_request_id,omitempty"`
-	BrokerAttempts           int              `json:"broker_attempts,omitempty"`
-	BrokerCredentialID       string           `json:"broker_credential_id,omitempty"`
-	BrokerRotateCredentialID string           `json:"broker_rotate_credential_id,omitempty"`
-	BrokerGrantID            string           `json:"broker_grant_id,omitempty"`
-	BrokerContractID         string           `json:"broker_contract_id,omitempty"`
-	BrokerContractRevision   int              `json:"broker_contract_revision,omitempty"`
-	BrokerAuthorizationURL   string           `json:"broker_authorization_url,omitempty"`
-	ProviderAuthorizationURL string           `json:"provider_authorization_url,omitempty"`
-	SupersededBy             string           `json:"superseded_by,omitempty"`
-	// AdmissionPending means tools/list has not run because the server named
-	// required secrets and exited first. The definition is a draft until the
-	// protected form is submitted and the probe succeeds.
-	AdmissionPending bool              `json:"admission_pending,omitempty"`
-	Error            string            `json:"error,omitempty"`
-	Recipe           *RecipeResolution `json:"recipe,omitempty"`
-	Revision         uint64            `json:"revision"`
-	CreatedAt        time.Time         `json:"created_at"`
-	Definition       *ToolDefinition   `json:"definition,omitempty"`
-}
-
-func OperatorGrant(kind GrantKind, principal, definitionID, version string) Grant {
-	return Grant{
-		Schema: SchemaVersion, GrantID: deterministicID("grant", string(kind), principal, definitionID, version),
-		Kind: kind, PrincipalID: principal, DefinitionID: definitionID, DefinitionVersion: version,
-		IssuedBy: "operator", Status: ActiveStatus, Revision: 1,
-	}
-}
-
-func OperatorControlGrant(principal, operation string) Grant {
-	grant := OperatorGrant(GrantControlOperation, principal, "", "")
-	grant.Operation = operation
-	grant.GrantID = deterministicID("grant", string(grant.Kind), principal, operation)
-	return grant
-}
-
-func (g Grant) Validate() error {
-	if g.Schema != SchemaVersion || !identity.ValidID(g.GrantID) || !identity.ValidID(g.PrincipalID) || !identity.ValidID(g.IssuedBy) || g.Revision == 0 {
-		return fmt.Errorf("%w: grant identity", ErrInvalid)
-	}
-	if g.IssuedBy == "model" || g.IssuedBy == "hermes" {
-		return fmt.Errorf("%w: model cannot issue a grant", ErrUnauthorized)
-	}
-	if g.Status != ActiveStatus && g.Status != DisabledStatus && g.Status != RevokedStatus {
-		return fmt.Errorf("%w: grant status", ErrInvalid)
-	}
-	if g.Kind != GrantControlOperation && g.Operation != "" {
-		return fmt.Errorf("%w: operation on non-control grant", ErrInvalid)
-	}
-	switch g.Kind {
-	case GrantControlOperation:
-		if !validControlOperation(g.Operation) || g.DefinitionID != "" || g.DefinitionVersion != "" {
-			return fmt.Errorf("%w: control operation grant", ErrInvalid)
-		}
-	case GrantCatalogDefault, GrantSelfInstall:
-		if g.DefinitionID != "" || g.DefinitionVersion != "" {
-			return fmt.Errorf("%w: %s grant cannot name a definition", ErrInvalid, g.Kind)
-		}
-	case GrantDefinition:
-		if !identity.ValidID(g.DefinitionID) || !versionPattern.MatchString(g.DefinitionVersion) {
-			return fmt.Errorf("%w: definition grant", ErrInvalid)
-		}
-	case GrantSharedCredential:
-		if !identity.ValidID(g.DefinitionID) {
-			return fmt.Errorf("%w: shared-credential grant", ErrInvalid)
-		}
-	default:
-		return fmt.Errorf("%w: grant kind", ErrInvalid)
-	}
-	if !validConfirmation(g.Confirmation, g, g.IssuedBy) {
-		return fmt.Errorf("%w: unconfirmed grant", ErrUnauthorized)
-	}
-	return nil
-}
-
-func (p DefinitionPublication) Validate() error {
-	if !identity.ValidID(p.DefinitionID) || !versionPattern.MatchString(p.Version) {
-		return fmt.Errorf("%w: publication identity", ErrInvalid)
-	}
-	switch p.Visibility {
-	case PublicationCatalog:
-		return nil
-	case PublicationUser:
-		if !identity.ValidID(p.OwnerPrincipalID) {
-			return fmt.Errorf("%w: user publication owner", ErrInvalid)
-		}
-		return nil
-	default:
-		return fmt.Errorf("%w: publication visibility", ErrInvalid)
-	}
-}
-
-func (p SharedCredentialPolicy) Validate() error {
-	if p.Schema != SchemaVersion || !identity.ValidID(p.PolicyID) || !identity.ValidID(p.DefinitionID) || !identity.ValidID(p.StoreOwner) || !identity.ValidID(p.IssuedBy) {
-		return fmt.Errorf("%w: shared credential policy identity", ErrInvalid)
-	}
-	if p.IssuedBy == "model" || p.IssuedBy == "hermes" {
-		return fmt.Errorf("%w: model cannot issue a shared credential policy", ErrUnauthorized)
-	}
-	if p.Locator == "" || strings.ContainsAny(p.Locator, "\r\n=") || len(p.Locator) > 256 {
-		return fmt.Errorf("%w: shared locator", ErrInvalid)
-	}
-	if p.Status != ActiveStatus && p.Status != DisabledStatus && p.Status != RevokedStatus {
-		return fmt.Errorf("%w: shared policy status", ErrInvalid)
-	}
-	if len(p.Principals) == 0 || len(p.Principals) > 256 {
-		return fmt.Errorf("%w: shared policy principals", ErrInvalid)
-	}
-	seen := map[string]bool{}
-	for _, principal := range p.Principals {
-		if !identity.ValidID(principal) || seen[principal] {
-			return fmt.Errorf("%w: shared policy principal", ErrInvalid)
-		}
-		seen[principal] = true
-	}
-	return nil
-}
-
-func (o Onboarding) Validate() error {
-	if o.Schema != SchemaVersion || !identity.ValidID(o.OnboardingID) || !identity.ValidID(o.PrincipalID) || !identity.ValidID(o.ContextID) || !identity.ValidID(o.RuntimeID) || !identity.ValidID(o.PolicyVersion) || o.Revision == 0 {
-		return fmt.Errorf("%w: onboarding identity", ErrInvalid)
-	}
-	if o.Mode != OnboardingCatalog && o.Mode != OnboardingSelfInstall && o.Mode != OnboardingRemote {
-		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
-	}
-	switch o.Phase {
-	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseFailed:
-	default:
-		return fmt.Errorf("%w: onboarding phase", ErrInvalid)
-	}
-	if o.DefinitionID != "" && !identity.ValidID(o.DefinitionID) {
-		return fmt.Errorf("%w: onboarding definition", ErrInvalid)
-	}
-	if o.DefinitionVersion != "" && !versionPattern.MatchString(o.DefinitionVersion) {
-		return fmt.Errorf("%w: onboarding version", ErrInvalid)
-	}
-	return nil
-}
-
-func (s *Store) PutGrant(grant Grant) error {
+func (s *Store) PutGrant(grant api.Grant) error {
 	if err := grant.Validate(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, exists := s.grants[grant.GrantID]
-	if exists && grant.Revision == existing.Revision && recordsEqual(existing, grant) {
+	if exists && grant.Revision == existing.Revision && api.RecordsEqual(existing, grant) {
 		if s.path != "" {
 			return s.saveLocked(s.path)
 		}
 		return nil
 	}
 	if exists && grant.Revision <= existing.Revision {
-		return fmt.Errorf("%w: grant revision must advance", ErrConflict)
+		return fmt.Errorf("%w: grant revision must advance", api.ErrConflict)
 	}
 	before := len(s.capabilityChanges)
-	s.capabilityChanges = append(s.capabilityChanges, capabilityChange{Grant: &grant})
+	s.capabilityChanges = append(s.capabilityChanges, api.CapabilityChange{Grant: &grant})
 	s.grants[grant.GrantID] = grant
 	if s.path != "" {
 		if err := s.saveLocked(s.path); err != nil {
@@ -285,21 +41,21 @@ func (s *Store) PutGrant(grant Grant) error {
 	return nil
 }
 
-func (s *Store) PutPublication(pub DefinitionPublication) error {
+func (s *Store) PutPublication(pub api.DefinitionPublication) error {
 	if err := pub.Validate(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	if !s.hasDefinitionID(pub.DefinitionID) {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: publication definition", ErrNotFound)
+		return fmt.Errorf("%w: publication definition", api.ErrNotFound)
 	}
 	s.publications[definitionKey(pub.DefinitionID, pub.Version)] = pub
 	s.mu.Unlock()
 	return s.persist()
 }
 
-func (s *Store) PutSharedCredentialPolicy(policy SharedCredentialPolicy) error {
+func (s *Store) PutSharedCredentialPolicy(policy api.SharedCredentialPolicy) error {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
@@ -309,7 +65,7 @@ func (s *Store) PutSharedCredentialPolicy(policy SharedCredentialPolicy) error {
 	return s.persist()
 }
 
-func (s *Store) PutOnboarding(onboarding Onboarding) error {
+func (s *Store) PutOnboarding(onboarding api.Onboarding) error {
 	if err := onboarding.Validate(); err != nil {
 		return err
 	}
@@ -323,12 +79,12 @@ func (s *Store) PutOnboarding(onboarding Onboarding) error {
 // or persists the new one under the store lock — concurrent identical prepares
 // cannot both proceed to review+build. A record stale past maxAge belongs to a
 // crashed prepare and is overwritten.
-func (s *Store) ClaimPreparingOnboarding(onboarding Onboarding, maxAge time.Duration, now time.Time) (Onboarding, bool, error) {
+func (s *Store) ClaimPreparingOnboarding(onboarding api.Onboarding, maxAge time.Duration, now time.Time) (api.Onboarding, bool, error) {
 	if err := onboarding.Validate(); err != nil {
-		return Onboarding{}, false, err
+		return api.Onboarding{}, false, err
 	}
 	s.mu.Lock()
-	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.Phase == PhasePreparing && now.Before(existing.CreatedAt.Add(maxAge)) {
+	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.Phase == api.PhasePreparing && now.Before(existing.CreatedAt.Add(maxAge)) {
 		s.mu.Unlock()
 		return existing, true, nil
 	}
@@ -339,18 +95,18 @@ func (s *Store) ClaimPreparingOnboarding(onboarding Onboarding, maxAge time.Dura
 
 func (s *Store) PromoteToCatalog(definitionID, version, operator string) error {
 	if !identity.ValidID(operator) || operator == "model" || operator == "hermes" {
-		return fmt.Errorf("%w: catalog promotion issuer", ErrUnauthorized)
+		return fmt.Errorf("%w: catalog promotion issuer", api.ErrUnauthorized)
 	}
 	s.mu.Lock()
 	key := definitionKey(definitionID, version)
 	if _, ok := s.definitions[key]; !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: definition", ErrNotFound)
+		return fmt.Errorf("%w: definition", api.ErrNotFound)
 	}
 	pub := s.publications[key]
 	pub.DefinitionID = definitionID
 	pub.Version = version
-	pub.Visibility = PublicationCatalog
+	pub.Visibility = api.PublicationCatalog
 	if err := pub.Validate(); err != nil {
 		s.mu.Unlock()
 		return err
@@ -360,16 +116,16 @@ func (s *Store) PromoteToCatalog(definitionID, version, operator string) error {
 	return s.persist()
 }
 
-func (s *Store) publicationLocked(definition ToolDefinition) DefinitionPublication {
+func (s *Store) publicationLocked(definition api.ToolDefinition) api.DefinitionPublication {
 	if pub, ok := s.publications[definitionKey(definition.DefinitionID, definition.Version)]; ok {
 		return pub
 	}
-	return DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: PublicationCatalog}
+	return api.DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: api.PublicationCatalog}
 }
 
-func (s *Store) visibleDefinitionLocked(auth identity.Envelope, definition ToolDefinition) bool {
+func (s *Store) visibleDefinitionLocked(auth identity.Envelope, definition api.ToolDefinition) bool {
 	pub := s.publicationLocked(definition)
-	if pub.Visibility == PublicationUser {
+	if pub.Visibility == api.PublicationUser {
 		return pub.OwnerPrincipalID == auth.PrincipalID
 	}
 	return s.hasCatalogAccessLocked(auth, definition.DefinitionID, definition.Version)
@@ -381,10 +137,10 @@ func (s *Store) hasCatalogAccessLocked(auth identity.Envelope, definitionID, ver
 		if grant.PrincipalID != auth.PrincipalID {
 			continue
 		}
-		if grant.Kind != GrantCatalogDefault && !(grant.Kind == GrantDefinition && grant.DefinitionID == definitionID && grant.DefinitionVersion == version) {
+		if grant.Kind != api.GrantCatalogDefault && !(grant.Kind == api.GrantDefinition && grant.DefinitionID == definitionID && grant.DefinitionVersion == version) {
 			continue
 		}
-		if grant.Status != ActiveStatus {
+		if grant.Status != api.ActiveStatus {
 			return false
 		}
 		allowed = true
@@ -395,8 +151,8 @@ func (s *Store) hasCatalogAccessLocked(auth identity.Envelope, definitionID, ver
 func (s *Store) selfInstallAllowedLocked(auth identity.Envelope) bool {
 	allowed := false
 	for _, grant := range s.grants {
-		if grant.Kind == GrantSelfInstall && grant.PrincipalID == auth.PrincipalID {
-			if grant.Status != ActiveStatus {
+		if grant.Kind == api.GrantSelfInstall && grant.PrincipalID == auth.PrincipalID {
+			if grant.Status != api.ActiveStatus {
 				return false
 			}
 			allowed = true
@@ -405,9 +161,9 @@ func (s *Store) selfInstallAllowedLocked(auth identity.Envelope) bool {
 	return allowed
 }
 
-func (s *Store) sharedPolicyLocked(auth identity.Envelope, definitionID string) *SharedCredentialPolicy {
+func (s *Store) sharedPolicyLocked(auth identity.Envelope, definitionID string) *api.SharedCredentialPolicy {
 	for _, policy := range s.sharedPolicies {
-		if policy.Status != ActiveStatus || policy.DefinitionID != definitionID {
+		if policy.Status != api.ActiveStatus || policy.DefinitionID != definitionID {
 			continue
 		}
 		if slices.Contains(policy.Principals, auth.PrincipalID) {
@@ -418,9 +174,9 @@ func (s *Store) sharedPolicyLocked(auth identity.Envelope, definitionID string) 
 	return nil
 }
 
-func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition ToolDefinition) error {
+func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition api.ToolDefinition) error {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	if err := s.Reload(); err != nil {
 		return err
@@ -437,17 +193,17 @@ func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition ToolDefi
 				return nil
 			}
 		}
-		return fmt.Errorf("%w: catalog grant", ErrUnauthorized)
+		return fmt.Errorf("%w: catalog grant", api.ErrUnauthorized)
 	}
 	pub := s.publicationLocked(definition)
-	if pub.Visibility == PublicationUser {
+	if pub.Visibility == api.PublicationUser {
 		if pub.OwnerPrincipalID != auth.PrincipalID {
-			return fmt.Errorf("%w: user definition owner", ErrUnauthorized)
+			return fmt.Errorf("%w: user definition owner", api.ErrUnauthorized)
 		}
 		return nil
 	}
 	if !s.hasCatalogAccessLocked(auth, definition.DefinitionID, definition.Version) {
-		return fmt.Errorf("%w: catalog grant", ErrUnauthorized)
+		return fmt.Errorf("%w: catalog grant", api.ErrUnauthorized)
 	}
 	return nil
 }
@@ -458,7 +214,7 @@ func (s *Store) RequireSelfInstall(auth identity.Envelope) error {
 	// authenticated single-use confirmation before a binding materializes.
 	if auth.CapabilityProfile != "" {
 		if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-			return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+			return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 		}
 		if err := s.Reload(); err != nil {
 			return err
@@ -467,12 +223,12 @@ func (s *Store) RequireSelfInstall(auth identity.Envelope) error {
 		defer s.mu.RUnlock()
 		profile, _, err := s.capabilityProfileLocked(auth)
 		if err != nil || !profile.SelfInstall {
-			return fmt.Errorf("%w: managed installation is not admitted", ErrUnauthorized)
+			return fmt.Errorf("%w: managed installation is not admitted", api.ErrUnauthorized)
 		}
 		return nil
 	}
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	if err := s.Reload(); err != nil {
 		return err
@@ -480,22 +236,18 @@ func (s *Store) RequireSelfInstall(auth identity.Envelope) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if !s.selfInstallAllowedLocked(auth) {
-		return fmt.Errorf("%w: self-install grant", ErrUnauthorized)
+		return fmt.Errorf("%w: self-install grant", api.ErrUnauthorized)
 	}
 	return nil
-}
-
-func validControlOperation(operation string) bool {
-	return operation == "invoke" || slices.Contains(ControlOperations, operation)
 }
 
 func (s *Store) controlAllowedLocked(auth identity.Envelope, operation string) bool {
 	allowed := false
 	for _, grant := range s.grants {
-		if grant.Kind != GrantControlOperation || grant.PrincipalID != auth.PrincipalID || grant.Operation != operation {
+		if grant.Kind != api.GrantControlOperation || grant.PrincipalID != auth.PrincipalID || grant.Operation != operation {
 			continue
 		}
-		if grant.Status != ActiveStatus {
+		if grant.Status != api.ActiveStatus {
 			return false
 		}
 		allowed = true
@@ -507,7 +259,7 @@ func (s *Store) controlAllowedLocked(auth identity.Envelope, operation string) b
 // catalog grant. Every invocation checks the current grant again independently.
 func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]bool, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return nil, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	if err := s.Reload(); err != nil {
 		return nil, err
@@ -521,13 +273,13 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 			return allowed, err
 		}
 		for _, operation := range profile.ControlOperations {
-			if slices.Contains(ControlOperations, operation) {
+			if slices.Contains(api.ControlOperations, operation) {
 				allowed[operation] = true
 			}
 		}
 		return allowed, nil
 	}
-	for _, operation := range append(slices.Clone(ControlOperations), "invoke") {
+	for _, operation := range append(slices.Clone(api.ControlOperations), "invoke") {
 		if s.controlAllowedLocked(auth, operation) {
 			allowed[operation] = true
 		}
@@ -536,43 +288,43 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 }
 
 func (s *Store) RequireControlOperation(auth identity.Envelope, operation string) error {
-	if !validControlOperation(operation) {
-		return fmt.Errorf("%w: unknown control operation", ErrInvalid)
+	if !api.ValidControlOperation(operation) {
+		return fmt.Errorf("%w: unknown control operation", api.ErrInvalid)
 	}
 	allowed, err := s.AllowedControlOperations(auth)
 	if err != nil {
 		return err
 	}
 	if !allowed[operation] {
-		return fmt.Errorf("%w: control operation", ErrUnauthorized)
+		return fmt.Errorf("%w: control operation", api.ErrUnauthorized)
 	}
 	return nil
 }
 
-func (s *Store) OnboardingFor(auth identity.Envelope, id string) (Onboarding, error) {
+func (s *Store) OnboardingFor(auth identity.Envelope, id string) (api.Onboarding, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return Onboarding{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return api.Onboarding{}, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	onboarding, ok := s.onboardings[id]
 	if !ok {
-		return Onboarding{}, fmt.Errorf("%w: onboarding", ErrNotFound)
+		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
 	}
 	if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
-		return Onboarding{}, fmt.Errorf("%w: onboarding owner", ErrUnauthorized)
+		return api.Onboarding{}, fmt.Errorf("%w: onboarding owner", api.ErrUnauthorized)
 	}
 	return onboarding, nil
 }
 
-func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (Onboarding, bool) {
+func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (api.Onboarding, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var removed Onboarding
+	var removed api.Onboarding
 	found := false
 	for _, onboarding := range s.onboardings {
 		if onboarding.PrincipalID == auth.PrincipalID && onboarding.ContextID == auth.ContextID && onboarding.RuntimeID == auth.RuntimeID && onboarding.PolicyVersion == auth.PolicyVersion && onboarding.IdempotencyKey == key && key != "" {
-			if onboarding.Phase == PhaseRemoved {
+			if onboarding.Phase == api.PhaseRemoved {
 				removed, found = onboarding, true
 				continue
 			}

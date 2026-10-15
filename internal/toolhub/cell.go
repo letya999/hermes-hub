@@ -1,85 +1,18 @@
 package toolhub
 
-// Controller-owned CLI sandbox cells. A bounded-cli call no longer execs
-// inside the ToolHub container; the controller creates a sibling container —
-// the cell — that carries exactly one workspace bind, the read-only cellinit
-// helper, no host state, no broker material and no docker socket. Warm tiers
-// reuse cells behind a re-inspect + canary guard; anything that drifts is
-// killed and audited, never reused.
-
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
-
-// cliWorkspace is the single bind a cell may carry. Scope none mounts
-// nothing (the cell gets a scratch tmpfs at /work); binding binds the
-// controller-local path the ToolHub resolved through OpenWorkloadWorkspace;
-// principal binds <spaces_root>/<principal>/workspace resolved here — or
-// <spaces_root>/<principal>/managed/<environment>/workspace when a managed
-// deployment tier is configured and that directory exists.
-type cliWorkspace struct {
-	Scope  string `json:"scope"`
-	Path   string `json:"path,omitempty"`
-	Access string `json:"access,omitempty"`
-}
-
-// cliBrokeredCred is one credential delivered through the cell-local
-// cred-proxy sidecar: the cell env carries only
-// http://<proxy>/<host> and the proxy injects the real header on the
-// reviewed upstream. The value crosses to the controller in the request
-// body — over the bearer-authenticated control channel — but never enters
-// container config, argv or logs.
-type cliBrokeredCred struct {
-	EnvName string `json:"env_name"`
-	Host    string `json:"host"`
-	Prefix  string `json:"prefix,omitempty"`
-	Value   string `json:"value"`
-}
-
-// cliExecRequest is the /cli-exec contract. Plan carries the immutable
-// definition identity and execution policy the same way /admit does.
-type cliExecRequest struct {
-	Plan            controllerPlan    `json:"plan"`
-	Command         string            `json:"command"`
-	Args            []string          `json:"args,omitempty"`
-	Env             []string          `json:"env,omitempty"`
-	Principal       string            `json:"principal_id"`
-	ContextID       string            `json:"context_id"`
-	BindingID       string            `json:"binding_id"`
-	JobID           string            `json:"job_id,omitempty"`
-	Lifecycle       string            `json:"lifecycle,omitempty"`
-	ToolboxID       string            `json:"toolbox_id,omitempty"`
-	Brokered        []cliBrokeredCred `json:"brokered,omitempty"`
-	Stateless       bool              `json:"stateless,omitempty"`
-	InstallPackages bool              `json:"install_packages,omitempty"`
-	Workspace       cliWorkspace      `json:"workspace,omitempty"`
-}
-
-type cliExecResponse struct {
-	Receipt  AdmissionReceipt `json:"receipt"`
-	Output   string           `json:"output"`
-	ExitCode int              `json:"exit_code"`
-	// Error carries a completed-but-flagged outcome the caller maps to a
-	// typed error — "output-limit" today. Denials stay on HTTP errors.
-	Error string `json:"error,omitempty"`
-}
-
-// cliReleaseRequest kills warm cells selected by principal/binding/job.
-type cliReleaseRequest struct {
-	PrincipalID string `json:"principal_id"`
-	BindingID   string `json:"binding_id,omitempty"`
-	JobID       string `json:"job_id,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-}
 
 // cliCell is one live sandbox container the controller owns.
 type cliCell struct {
@@ -160,12 +93,12 @@ func (c *genericController) cells() *cellRegistry {
 // principal, binding or job — so reuse can never cross callers.
 func cellWarmKey(lifecycle, principal, bindingID, jobID, image string, toolset []string) string {
 	switch lifecycle {
-	case CLILifecycleTask:
+	case api.CLILifecycleTask:
 		if jobID == "" {
 			return ""
 		}
 		return lifecycle + "|" + principal + "|" + jobID + "|" + image
-	case CLILifecycleBinding:
+	case api.CLILifecycleBinding:
 		key := lifecycle + "|" + principal + "|" + bindingID + "|" + image
 		if len(toolset) > 0 {
 			refs := append([]string(nil), toolset...)
@@ -173,7 +106,7 @@ func cellWarmKey(lifecycle, principal, bindingID, jobID, image string, toolset [
 			key += "|" + cellHash(strings.Join(refs, " "))
 		}
 		return key
-	case CLILifecycleToolbox:
+	case api.CLILifecycleToolbox:
 		refs := append([]string(nil), toolset...)
 		sort.Strings(refs)
 		return lifecycle + "|" + principal + "|" + cellHash(image, strings.Join(refs, " "))
@@ -193,16 +126,16 @@ func cellHash(values ...string) string {
 
 // cellImageRef resolves the cell image: owner artifact plans pin their own
 // image+manifest digest; catalog commands run on the configured tools image.
-// Toolbox cells always run the tools image as their base: member artifacts
+// Toolbox cells always run the tools image as their Base: member artifacts
 // mount read-only under /tools/<i>, and an ELF interpreter resolves against
 // the cell rootfs — a scratch member base would leave dynamic binaries
 // without a loader. Every returned ref is the daemon's image ID —
 // create-by-ID so a retagged local name cannot swap content between
 // resolution and create.
-func (c *genericController) cellImageRef(ctx context.Context, req cliExecRequest) (string, error) {
-	if req.Plan.Image != "" && req.Lifecycle != CLILifecycleToolbox {
-		if !digestPattern.MatchString(req.Plan.Digest) {
-			return "", fmt.Errorf("%w: CLI image plan needs a manifest digest", ErrInvalid)
+func (c *genericController) cellImageRef(ctx context.Context, req api.CliExecRequest) (string, error) {
+	if req.Plan.Image != "" && req.Lifecycle != api.CLILifecycleToolbox {
+		if !api.DigestPattern.MatchString(req.Plan.Digest) {
+			return "", fmt.Errorf("%w: CLI image plan needs a manifest digest", api.ErrInvalid)
 		}
 		// image@manifest-digest resolves when the daemon knows the repo
 		// digest (pulled/pushed or containerd-store loads); a locally loaded
@@ -222,8 +155,8 @@ func (c *genericController) cellImageRef(ctx context.Context, req cliExecRequest
 func (c *genericController) resolveCellImage(ctx context.Context, ref string) (string, error) {
 	out, err := c.docker(ctx, "image", "inspect", ref, "--format", "{{.Id}}")
 	id := strings.TrimSpace(string(out))
-	if err != nil || !dockerImageIDPattern.MatchString(id) {
-		return "", fmt.Errorf("%w: cli cell image %q unavailable", ErrIsolation, ref)
+	if err != nil || !api.DockerImageIDPattern.MatchString(id) {
+		return "", fmt.Errorf("%w: cli cell image %q unavailable", api.ErrIsolation, ref)
 	}
 	return id, nil
 }
@@ -237,7 +170,7 @@ func (c *genericController) resolveToolbox(ctx context.Context, id string) ([]st
 	}
 	members := c.config.CLI.Toolboxes[id]
 	if len(members) == 0 {
-		return nil, fmt.Errorf("%w: unknown cli toolbox %q", ErrUnauthorized, id)
+		return nil, fmt.Errorf("%w: unknown cli toolbox %q", api.ErrUnauthorized, id)
 	}
 	c.mu.Lock()
 	cached, ok := c.toolboxes[id]
@@ -295,7 +228,7 @@ func realEgress(egress []string) []string {
 // cellUID picks the cell user: 10001 by default, or a stable per-principal
 // uid (20000+) when the operator opted into uid separation — files a rw cell
 // writes then carry a principal-derived uid on the host.
-func (c *genericController) cellUID(req cliExecRequest, rw bool) string {
+func (c *genericController) cellUID(req api.CliExecRequest, rw bool) string {
 	if c.config.CLI.PerPrincipalUID && rw {
 		h := fnv.New32a()
 		h.Write([]byte(req.Principal))
@@ -314,14 +247,14 @@ func (c *genericController) runtimeFlag(ctx context.Context) (string, error) {
 		return "", nil
 	case "runsc", "kata":
 	default:
-		return "", fmt.Errorf("%w: unknown cli runtime %q", ErrInvalid, runtime)
+		return "", fmt.Errorf("%w: unknown cli runtime %q", api.ErrInvalid, runtime)
 	}
 	runtimes, err := c.dockerRuntimes(ctx)
 	if err != nil {
 		return "", err
 	}
 	if !runtimes[runtime] {
-		return "", fmt.Errorf("%w: cli runtime %q is not installed on the daemon", ErrIsolation, runtime)
+		return "", fmt.Errorf("%w: cli runtime %q is not installed on the daemon", api.ErrIsolation, runtime)
 	}
 	return runtime, nil
 }
@@ -334,11 +267,11 @@ func (c *genericController) dockerRuntimes(ctx context.Context) (map[string]bool
 	}
 	body, err := c.docker(ctx, "info", "--format", "{{json .Runtimes}}")
 	if err != nil {
-		return nil, fmt.Errorf("%w: docker runtime list: %v", ErrIsolation, err)
+		return nil, fmt.Errorf("%w: docker runtime list: %v", api.ErrIsolation, err)
 	}
 	var runtimes map[string]json.RawMessage
 	if json.Unmarshal(body, &runtimes) != nil {
-		return nil, fmt.Errorf("%w: docker runtime list unparseable", ErrIsolation)
+		return nil, fmt.Errorf("%w: docker runtime list unparseable", api.ErrIsolation)
 	}
 	names := map[string]bool{}
 	for name := range runtimes {
@@ -346,35 +279,4 @@ func (c *genericController) dockerRuntimes(ctx context.Context) (map[string]bool
 	}
 	c.runtimes, c.runtimesOK = names, true
 	return names, nil
-}
-
-// validCellImageRef accepts the three refs a cell image may take: an
-// image@sha256 digest pin, a local image ID, or a local name[:tag] the
-// daemon resolves to an image ID at create time. Toolbox members stay
-// digest-pinned only — caller-controlled surfaces never take a bare tag.
-func validCellImageRef(ref string) error {
-	if at := strings.LastIndex(ref, "@"); at >= 0 {
-		if at == 0 || !digestPattern.MatchString(ref[at+1:]) || strings.ContainsAny(ref[:at], " \t\r\n") || strings.Contains(ref, "..") {
-			return fmt.Errorf("%w: cell image %q must be digest-pinned", ErrInvalid, ref)
-		}
-		return nil
-	}
-	if dockerImageIDPattern.MatchString(ref) {
-		return nil
-	}
-	if err := validateLocalImageName(ref); err != nil {
-		return fmt.Errorf("%w: cell image %q", ErrInvalid, ref)
-	}
-	return nil
-}
-
-// validPinnedImageRef is the caller-visible form: toolbox members and
-// artifact plans must pin an image@sha256 manifest digest; daemon-local
-// tags would let the approved surface drift silently.
-func validPinnedImageRef(ref string) error {
-	at := strings.LastIndex(ref, "@")
-	if at <= 0 || !digestPattern.MatchString(ref[at+1:]) || strings.ContainsAny(ref[:at], " \t\r\n") || strings.Contains(ref, "..") {
-		return fmt.Errorf("%w: cell image %q must be digest-pinned", ErrInvalid, ref)
-	}
-	return nil
 }

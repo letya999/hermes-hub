@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"os"
@@ -115,7 +115,7 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	req.Header.Set("Cache-Control", "no-cache")
 	client := g.watchHTTP
 	if client == nil {
-		client = toolhub.PublicHTTPClient(10 * time.Second)
+		client = api.PublicHTTPClient(10 * time.Second)
 		defer client.CloseIdleConnections()
 	}
 	resp, err := client.Do(req)

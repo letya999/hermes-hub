@@ -5,26 +5,26 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 )
 
-func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.Envelope, preparing Onboarding, review SourceReview) (map[string]any, error) {
+func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, review api.SourceReview) (map[string]any, error) {
 	definition := review.Definition
 	brokerGate := definition.CredentialContractID != ""
 	if brokerGate && (c.Broker == nil || !c.Broker.Enabled()) {
-		return nil, fmt.Errorf("%w: reviewed credential Broker is required for authenticated preflight", ErrIsolation)
+		return nil, fmt.Errorf("%w: reviewed credential Broker is required for authenticated preflight", api.ErrIsolation)
 	}
 	if len(requiredSecretNames(definition)) == 0 && !brokerGate {
-		return nil, fmt.Errorf("%w: credential gate named no secrets", ErrInvalid)
+		return nil, fmt.Errorf("%w: credential gate named no secrets", api.ErrInvalid)
 	}
 	names := requiredCredentialNames(definition)
 	hints := credentialGateHints(names, review.AdmissionGroups)
 	if len(hints) == 0 {
-		return nil, fmt.Errorf("%w: credential gate named no secrets", ErrInvalid)
+		return nil, fmt.Errorf("%w: credential gate named no secrets", api.ErrInvalid)
 	}
 	if len(definition.CredentialGroups) == 0 {
 		known := map[string]bool{}
@@ -55,10 +55,10 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	definition.Tools = nil
 	definition.Source.ToolContractDigest = ""
 	definition.Source.ToolContractSource = ""
-	onboarding.Phase = PhaseAwaitingCreds
+	onboarding.Phase = api.PhaseAwaitingCreds
 	onboarding.Required = hints
 	onboarding.AdmissionPending = true
-	onboarding.Error = publicPrepareError(errors.New(review.AdmissionDetail))
+	onboarding.Error = api.PublicPrepareError(errors.New(review.AdmissionDetail))
 	onboarding.Permissions = nil
 	onboarding.Effects = nil
 	onboarding.Definition = &definition
@@ -73,7 +73,7 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 		onboarding.FormNonce = ""
 		onboarding.FormExpires = time.Time{}
 	} else {
-		onboarding.FormNonce = randomNonce()
+		onboarding.FormNonce = api.RandomNonce()
 		onboarding.FormExpires = c.now().Add(c.ttl())
 	}
 	onboarding.ConfirmationNonce = ""
@@ -90,27 +90,27 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	return c.statusBody(onboarding, false), nil
 }
 
-func requiredSecretNames(definition ToolDefinition) []string {
+func requiredSecretNames(definition api.ToolDefinition) []string {
 	names := make([]string, 0, len(definition.Credentials))
 	for _, input := range definition.Credentials {
-		if input.Required && secretName(input.Name) {
+		if input.Required && api.SecretName(input.Name) {
 			names = append(names, input.Name)
 		}
 	}
 	return names
 }
 
-func credentialGateHints(names []string, groups [][]string) []CredentialHint {
+func credentialGateHints(names []string, groups [][]string) []api.CredentialHint {
 	groupOf := map[string]int{}
 	for index, group := range groups {
 		for _, name := range group {
 			groupOf[name] = index + 1
 		}
 	}
-	hints := make([]CredentialHint, 0, len(names))
+	hints := make([]api.CredentialHint, 0, len(names))
 	for _, name := range names {
-		hints = append(hints, CredentialHint{
-			Name: name, Type: connectionType(name), Secret: secretName(name),
+		hints = append(hints, api.CredentialHint{
+			Name: name, Type: api.ConnectionType(name), Secret: api.SecretName(name),
 			Delivery: "env", Target: name, Hint: "protected loopback form",
 			AlternativeGroup: groupOf[name],
 		})
@@ -118,8 +118,8 @@ func credentialGateHints(names []string, groups [][]string) []CredentialHint {
 	return hints
 }
 
-func filterSubmittedCredentials(hints []CredentialHint, values map[string]string) (map[string]string, error) {
-	alternatives := map[int][]CredentialHint{}
+func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]string) (map[string]string, error) {
+	alternatives := map[int][]api.CredentialHint{}
 	filtered := map[string]string{}
 	for _, hint := range hints {
 		if hint.AlternativeGroup > 0 {
@@ -128,7 +128,7 @@ func filterSubmittedCredentials(hints []CredentialHint, values map[string]string
 		}
 		value := strings.TrimSpace(values[hint.Name])
 		if value == "" {
-			return nil, fmt.Errorf("%w: missing %s", ErrInvalid, hint.Name)
+			return nil, fmt.Errorf("%w: missing %s", api.ErrInvalid, hint.Name)
 		}
 		filtered[hint.Name] = value
 	}
@@ -175,10 +175,10 @@ func filterSubmittedCredentials(hints []CredentialHint, values map[string]string
 		}
 	}
 	if matched == 0 && partial {
-		return nil, fmt.Errorf("%w: incomplete credential alternative: %s", ErrInvalid, strings.Join(missingNames, ","))
+		return nil, fmt.Errorf("%w: incomplete credential alternative: %s", api.ErrInvalid, strings.Join(missingNames, ","))
 	}
 	if matched != 1 {
-		return nil, fmt.Errorf("%w: choose one credential alternative", ErrInvalid)
+		return nil, fmt.Errorf("%w: choose one credential alternative", api.ErrInvalid)
 	}
 	for name, value := range chosen {
 		filtered[name] = value
@@ -229,8 +229,8 @@ func pickDuplicatedAlternative(groups []map[string]string) (map[string]string, b
 	return hits[0], true
 }
 
-func (c *ControlPlane) noteFormRejection(onboarding Onboarding, err error) {
-	if c == nil || c.Store == nil || err == nil || !errors.Is(err, ErrInvalid) {
+func (c *ControlPlane) noteFormRejection(onboarding api.Onboarding, err error) {
+	if c == nil || c.Store == nil || err == nil || !errors.Is(err, api.ErrInvalid) {
 		return
 	}
 	onboarding.Error = credentialFormRejection(err)
@@ -258,7 +258,7 @@ func credentialFormRejection(err error) string {
 	case strings.Contains(text, "missing "):
 		return "Не заполнено обязательное поле."
 	default:
-		return publicPrepareError(err)
+		return api.PublicPrepareError(err)
 	}
 }
 
@@ -274,7 +274,7 @@ func missingAlternativeNames(text string) string {
 		if name == "" || strings.ContainsAny(name, " \t") {
 			break
 		}
-		labels = append(labels, credentialFieldLabel(CredentialHint{Name: name}))
+		labels = append(labels, credentialFieldLabel(api.CredentialHint{Name: name}))
 	}
 	return strings.Join(labels, ", ")
 }
@@ -282,7 +282,7 @@ func missingAlternativeNames(text string) string {
 // credentialProbeFailure is the text shown on the form and stored for the
 // channel. It keeps the server's message and drops stack traces.
 func credentialProbeFailure(err error) string {
-	text := publicPrepareError(err)
+	text := api.PublicPrepareError(err)
 	if text == "" {
 		return ""
 	}
@@ -320,12 +320,10 @@ func credentialProbeFailure(err error) string {
 	return text
 }
 
-var secretValuePattern = regexp.MustCompile(`(?i)\b(xox[baprs]-[A-Za-z0-9-]{8,}|sk-[A-Za-z0-9]{16,}|[A-Fa-f0-9]{32,})\b`)
-
 // persistFailure records the public failure reason on the onboarding before
 // returning the original error. A failed state write is folded into the
 // returned error instead of silently dropping both cause and state update.
-func (c *ControlPlane) persistFailure(onboarding Onboarding, errorText string, cause error) error {
+func (c *ControlPlane) persistFailure(onboarding api.Onboarding, errorText string, cause error) error {
 	onboarding.Error = errorText
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -349,11 +347,11 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 		return nil, err
 	}
 	body := c.statusBody(onboarding, true)
-	if onboarding.Phase == PhaseAwaitingCreds && onboarding.FormNonce != "" && c.now().Before(onboarding.FormExpires) {
+	if onboarding.Phase == api.PhaseAwaitingCreds && onboarding.FormNonce != "" && c.now().Before(onboarding.FormExpires) {
 		body["input"] = "localhost-form"
 		body["form_url"] = c.origin() + "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
 	}
-	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == PhaseAwaitingCreds {
+	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == api.PhaseAwaitingCreds {
 		body["input"] = "credential-broker"
 		body["broker_request_id"] = onboarding.BrokerRequestID
 		body["authorization_url"] = onboarding.BrokerAuthorizationURL
@@ -369,8 +367,8 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 // refreshCredentialForm makes an idempotent resume useful after the original
 // loopback link expires. The old nonce is replaced, so an old URL cannot be
 // replayed while the same request key still identifies the onboarding.
-func (c *ControlPlane) refreshCredentialForm(onboarding *Onboarding) error {
-	if onboarding == nil || onboarding.Phase != PhaseAwaitingCreds {
+func (c *ControlPlane) refreshCredentialForm(onboarding *api.Onboarding) error {
+	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingCreds {
 		return nil
 	}
 	if onboarding.BrokerRequestID != "" || onboarding.AdmissionPending && onboarding.BrokerCredentialID != "" {
@@ -380,17 +378,17 @@ func (c *ControlPlane) refreshCredentialForm(onboarding *Onboarding) error {
 	if onboarding.FormNonce != "" && now.Before(onboarding.FormExpires) {
 		return nil
 	}
-	onboarding.FormNonce = randomNonce()
+	onboarding.FormNonce = api.RandomNonce()
 	onboarding.FormExpires = now.Add(c.ttl())
 	onboarding.Revision++
 	return c.Store.PutOnboarding(*onboarding)
 }
 
-func (c *ControlPlane) refreshConfirmation(onboarding *Onboarding) error {
-	if onboarding == nil || onboarding.Phase != PhaseAwaitingConfirm || (onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
+func (c *ControlPlane) refreshConfirmation(onboarding *api.Onboarding) error {
+	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || (onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
 		return nil
 	}
-	onboarding.ConfirmationNonce = randomNonce()
+	onboarding.ConfirmationNonce = api.RandomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
@@ -399,23 +397,23 @@ func (c *ControlPlane) refreshConfirmation(onboarding *Onboarding) error {
 
 func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[string]string) error {
 	if c == nil || c.Store == nil || c.Secrets == nil {
-		return fmt.Errorf("%w: credential store", ErrInvalid)
+		return fmt.Errorf("%w: credential store", api.ErrInvalid)
 	}
 	onboarding, err := c.Store.onboarding(onboardingID)
 	if err != nil {
 		return err
 	}
 	if onboarding.AdmissionPending && onboarding.Definition != nil && onboarding.Definition.CredentialContractID != "" {
-		return fmt.Errorf("%w: contracted credentials must be submitted to Broker", ErrUnauthorized)
+		return fmt.Errorf("%w: contracted credentials must be submitted to Broker", api.ErrUnauthorized)
 	}
 	if onboarding.FormNonce == "" || nonce != onboarding.FormNonce {
-		return fmt.Errorf("%w: form nonce", ErrUnauthorized)
+		return fmt.Errorf("%w: form nonce", api.ErrUnauthorized)
 	}
 	if onboarding.FormExpires.IsZero() || c.now().After(onboarding.FormExpires) {
-		return fmt.Errorf("%w: expired form", ErrUnauthorized)
+		return fmt.Errorf("%w: expired form", api.ErrUnauthorized)
 	}
-	if onboarding.Phase != PhaseAwaitingCreds && onboarding.Phase != PhaseAwaitingConfirm {
-		return fmt.Errorf("%w: credentials not expected", ErrUnauthorized)
+	if onboarding.Phase != api.PhaseAwaitingCreds && onboarding.Phase != api.PhaseAwaitingConfirm {
+		return fmt.Errorf("%w: credentials not expected", api.ErrUnauthorized)
 	}
 	filtered, err := filterSubmittedCredentials(onboarding.Required, values)
 	if err != nil {
@@ -429,7 +427,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 			return defErr
 		}
 		if c.AdmitWithCredentials == nil {
-			return fmt.Errorf("%w: credential admission probe is not configured", ErrInvalid)
+			return fmt.Errorf("%w: credential admission probe is not configured", api.ErrInvalid)
 		}
 		onboarding.Error = "Проверяю поля у сервера."
 		onboarding.Revision++
@@ -438,7 +436,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		}
 		// The admission probe below can hold the form POST for tens of
 		// seconds; tell the channel a real check is running, not a hang.
-		deliverPrepareEvent(context.Background(), authEnv, onboarding, "credentials-check")
+		api.DeliverPrepareEvent(context.Background(), authEnv, onboarding, "credentials-check")
 		admitted, admitErr := c.AdmitWithCredentials(context.Background(), definition, filtered)
 		if admitErr != nil {
 			failure := "Проверка не прошла. " + credentialProbeFailure(admitErr)
@@ -447,8 +445,8 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 			}
 			rejected := onboarding
 			rejected.Error = failure
-			deliverPrepareEvent(context.Background(), authEnv, rejected, "credentials-rejected")
-			return fmt.Errorf("%w: %s", ErrIsolation, failure)
+			api.DeliverPrepareEvent(context.Background(), authEnv, rejected, "credentials-rejected")
+			return fmt.Errorf("%w: %s", api.ErrIsolation, failure)
 		}
 		if regErr := c.registerAdmittedDefinition(&admitted, onboarding.PrincipalID); regErr != nil {
 			return c.persistFailure(onboarding, credentialProbeFailure(regErr), regErr)
@@ -456,8 +454,8 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		onboarding.Definition = &admitted
 		onboarding.DefinitionID = admitted.DefinitionID
 		onboarding.DefinitionVersion = admitted.Version
-		onboarding.Permissions = toolNames(admitted)
-		onboarding.Effects = effectNames(admitted)
+		onboarding.Permissions = api.ToolNames(admitted)
+		onboarding.Effects = api.EffectNames(admitted)
 		onboarding.ReviewDigest = admitted.Source.ReviewDigest
 		onboarding.AdmissionPending = false
 		onboarding.Error = ""
@@ -484,14 +482,14 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 			return err
 		}
 	} else if locator == "" {
-		return fmt.Errorf("%w: shared locator", ErrInvalid)
+		return fmt.Errorf("%w: shared locator", api.ErrInvalid)
 	}
 	onboarding.Locator = locator
 	onboarding.CredentialOwner = owner
 	onboarding.FormNonce = ""
 	onboarding.FormExpires = time.Time{}
-	onboarding.Phase = PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = randomNonce()
+	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.ConfirmationNonce = api.RandomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
@@ -511,21 +509,21 @@ func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, n
 		if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
 			notify := latest
 			notify.Error = err.Error()
-			deliverPrepareEvent(ctx, onboardingEnvelope(latest), notify, "binding-failed")
+			api.DeliverPrepareEvent(ctx, onboardingEnvelope(latest), notify, "binding-failed")
 		}
 		return fmt.Errorf("%w: %w", errCredentialSaved, err)
 	}
 	return nil
 }
 
-func credentialHints(definition ToolDefinition) []CredentialHint {
+func credentialHints(definition api.ToolDefinition) []api.CredentialHint {
 	groupOf := map[string]int{}
 	for index, group := range definition.CredentialGroups {
 		for _, name := range group {
 			groupOf[name] = index + 1
 		}
 	}
-	hints := make([]CredentialHint, 0, len(definition.Credentials))
+	hints := make([]api.CredentialHint, 0, len(definition.Credentials))
 	for _, input := range definition.Credentials {
 		upper := strings.ToUpper(input.Name)
 		// Every required stored input gates onboarding, not only secret-named
@@ -535,18 +533,18 @@ func credentialHints(definition ToolDefinition) []CredentialHint {
 		if !input.Required || input.PerRequest {
 			continue
 		}
-		kind := connectionType(input.Name)
+		kind := api.ConnectionType(input.Name)
 		delivery := "env"
 		if strings.Contains(upper, "CREDENTIALS") {
 			kind, delivery = "json", "json"
 		}
-		hints = append(hints, CredentialHint{Name: input.Name, Type: kind, Secret: secretName(input.Name), Delivery: delivery, Target: input.Name, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: input.Name, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
 	}
 	return hints
 }
 
-func credentialHintsForRecipe(definition ToolDefinition, recipe ConnectionRecipe) []CredentialHint {
-	hints := make([]CredentialHint, 0, len(recipe.Fields))
+func credentialHintsForRecipe(definition api.ToolDefinition, recipe api.ConnectionRecipe) []api.CredentialHint {
+	hints := make([]api.CredentialHint, 0, len(recipe.Fields))
 	for _, field := range recipe.Fields {
 		if !field.Required {
 			continue
@@ -556,7 +554,7 @@ func credentialHintsForRecipe(definition ToolDefinition, recipe ConnectionRecipe
 			typ = "secret"
 		}
 		hint := "protected loopback form"
-		hints = append(hints, CredentialHint{
+		hints = append(hints, api.CredentialHint{
 			Name: field.Name, Type: typ, Secret: field.Secret, Delivery: field.Delivery,
 			Target: field.Target, Alternative: field.Alternative, Hint: hint,
 		})
@@ -575,7 +573,7 @@ func credentialHintsForRecipe(definition ToolDefinition, recipe ConnectionRecipe
 	return hints
 }
 
-func credentialNames(onboarding Onboarding) []string {
+func credentialNames(onboarding api.Onboarding) []string {
 	names := make([]string, 0, len(onboarding.Required))
 	for _, hint := range onboarding.Required {
 		names = append(names, hint.Name)

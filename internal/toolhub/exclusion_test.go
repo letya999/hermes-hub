@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log/slog"
 	"sync"
 	"testing"
@@ -40,7 +41,7 @@ func (h *countingSlogHandler) count(msg string) int {
 // with an exact reason, scoped to its own principal — no silent drops.
 func TestProjectionExclusionReportedWithReason(t *testing.T) {
 	store, auth, binding := seededStore(t)
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := store.ListProjectedTools(auth)
@@ -57,7 +58,7 @@ func TestProjectionExclusionReportedWithReason(t *testing.T) {
 	if len(excluded) != 1 {
 		t.Fatalf("expected one exclusion, got %+v", excluded)
 	}
-	if excluded[0].BindingID != binding.ToolBindingID || excluded[0].Reason != ExcludeDisabled {
+	if excluded[0].BindingID != binding.ToolBindingID || excluded[0].Reason != api.ExcludeDisabled {
 		t.Fatalf("wrong exclusion: %+v", excluded[0])
 	}
 }
@@ -66,32 +67,32 @@ func TestProjectionExclusionReportedWithReason(t *testing.T) {
 func TestProjectionExclusionReasons(t *testing.T) {
 	cases := []struct {
 		name    string
-		prepare func(t *testing.T, store *Store, auth *identity.Envelope, binding ToolBinding)
+		prepare func(t *testing.T, store *Store, auth *identity.Envelope, binding api.ToolBinding)
 		reason  string
 	}{
-		{"disabled", func(t *testing.T, s *Store, _ *identity.Envelope, b ToolBinding) {
-			if err := s.SetBindingStatus(b.ToolBindingID, DisabledStatus); err != nil {
+		{"disabled", func(t *testing.T, s *Store, _ *identity.Envelope, b api.ToolBinding) {
+			if err := s.SetBindingStatus(b.ToolBindingID, api.DisabledStatus); err != nil {
 				t.Fatal(err)
 			}
-		}, ExcludeDisabled},
-		{"revoked", func(t *testing.T, s *Store, _ *identity.Envelope, b ToolBinding) {
-			if err := s.SetBindingStatus(b.ToolBindingID, RevokedStatus); err != nil {
+		}, api.ExcludeDisabled},
+		{"revoked", func(t *testing.T, s *Store, _ *identity.Envelope, b api.ToolBinding) {
+			if err := s.SetBindingStatus(b.ToolBindingID, api.RevokedStatus); err != nil {
 				t.Fatal(err)
 			}
-		}, ExcludeRevoked},
-		{"degraded", func(t *testing.T, s *Store, _ *identity.Envelope, _ ToolBinding) {
+		}, api.ExcludeRevoked},
+		{"degraded", func(t *testing.T, s *Store, _ *identity.Envelope, _ api.ToolBinding) {
 			if err := s.MarkDegraded("google-work"); err != nil {
 				t.Fatal(err)
 			}
-		}, ExcludeDegraded},
-		{"stale", func(t *testing.T, s *Store, _ *identity.Envelope, _ ToolBinding) {
-			if err := s.SetConnectionStatus("google-work", DisabledStatus); err != nil {
+		}, api.ExcludeDegraded},
+		{"stale", func(t *testing.T, s *Store, _ *identity.Envelope, _ api.ToolBinding) {
+			if err := s.SetConnectionStatus("google-work", api.DisabledStatus); err != nil {
 				t.Fatal(err)
 			}
-		}, ExcludeStale},
-		{"policy_mismatch", func(t *testing.T, _ *Store, auth *identity.Envelope, _ ToolBinding) {
+		}, api.ExcludeStale},
+		{"policy_mismatch", func(t *testing.T, _ *Store, auth *identity.Envelope, _ api.ToolBinding) {
 			auth.PolicyVersion = "policy-9"
-		}, ExcludePolicyMismatch},
+		}, api.ExcludePolicyMismatch},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,7 +121,7 @@ func TestProjectionExclusionLoggedOnce(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
 	store, auth, binding := seededStore(t)
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
@@ -132,10 +133,10 @@ func TestProjectionExclusionLoggedOnce(t *testing.T) {
 		t.Fatalf("expected one exclusion log line, got %d", got)
 	}
 	// A projection bump is a new revision: the same failing binding logs again.
-	if err := store.SetBindingStatus(binding.ToolBindingID, ActiveStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.ActiveStatus); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ListProjectedTools(auth); err != nil {
@@ -150,14 +151,14 @@ func TestProjectionExclusionLoggedOnce(t *testing.T) {
 // bindings evicts the oldest entries instead of growing without limit.
 func TestProjectionExclusionBoundedSet(t *testing.T) {
 	store := NewStore()
-	for i := 0; i < exclusionLogLimit+50; i++ {
-		binding := ToolBinding{
+	for i := 0; i < api.ExclusionLogLimit+50; i++ {
+		binding := api.ToolBinding{
 			PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
 			ToolBindingID: fmt.Sprintf("bind-%04d", i), DefinitionID: "def",
 		}
-		store.noteExclusion(binding, ExcludeDisabled)
+		store.noteExclusion(binding, api.ExcludeDisabled)
 	}
-	if len(store.exclusions) != exclusionLogLimit {
+	if len(store.exclusions) != api.ExclusionLogLimit {
 		t.Fatalf("exclusion set is not bounded: %d entries", len(store.exclusions))
 	}
 }
@@ -166,7 +167,7 @@ func TestProjectionExclusionBoundedSet(t *testing.T) {
 // excluded bindings — missing tools are authorization metadata.
 func TestProjectionExclusionsScopeIsolated(t *testing.T) {
 	store, auth, binding := seededStore(t)
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ListProjectedTools(auth); err != nil {
@@ -187,7 +188,7 @@ func TestProjectionExclusionsScopeIsolated(t *testing.T) {
 // operator-visible (SPEC-0053 R1.3).
 func TestDiagnosticsReportsExclusions(t *testing.T) {
 	store, auth, binding := seededStore(t)
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store}
@@ -195,8 +196,8 @@ func TestDiagnosticsReportsExclusions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	excluded, ok := body["excluded"].([]ProjectionExclusion)
-	if !ok || len(excluded) != 1 || excluded[0].Reason != ExcludeDisabled || excluded[0].BindingID != binding.ToolBindingID {
+	excluded, ok := body["excluded"].([]api.ProjectionExclusion)
+	if !ok || len(excluded) != 1 || excluded[0].Reason != api.ExcludeDisabled || excluded[0].BindingID != binding.ToolBindingID {
 		t.Fatalf("diagnostics surface lacks the excluded binding: %+v", body["excluded"])
 	}
 }

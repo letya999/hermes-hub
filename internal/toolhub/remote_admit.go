@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 	"time"
 )
@@ -19,25 +19,25 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	if err := c.Store.RequireSelfInstall(auth); err != nil {
 		return nil, err
 	}
-	if err := ValidateRemoteMCPEndpoint(endpoint); err != nil {
+	if err := api.ValidateRemoteMCPEndpoint(endpoint); err != nil {
 		return nil, err
 	}
-	credentials, err := RemoteCredentialInputs(args)
+	credentials, err := api.RemoteCredentialInputs(args)
 	if err != nil {
 		return nil, err
 	}
-	name := argString(args, "name")
-	allowlist := argStrings(args, "tools")
+	name := api.ArgString(args, "name")
+	allowlist := api.ArgStrings(args, "tools")
 	for _, tool := range allowlist {
-		if !mcpToolNamePattern.MatchString(tool) {
-			return nil, fmt.Errorf("%w: invalid tool allowlist entry %q", ErrInvalid, tool)
+		if !api.McpToolNamePattern.MatchString(tool) {
+			return nil, fmt.Errorf("%w: invalid tool allowlist entry %q", api.ErrInvalid, tool)
 		}
 	}
-	draft, err := remoteDefinitionBase(endpoint, name, credentials)
+	draft, err := api.RemoteDefinitionBase(endpoint, name, credentials)
 	if err != nil {
 		return nil, err
 	}
-	requestKey := argString(args, "request_key")
+	requestKey := api.ArgString(args, "request_key")
 	seed := requestKey
 	if seed == "" {
 		credKey := make([]string, 0, len(credentials))
@@ -46,8 +46,8 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 		}
 		seed = "remote-mcp:" + draft.DefinitionID + "@" + draft.Version + ":" + draft.Source.URL + ":" + strings.Join(credKey, ",") + ":" + strings.Join(allowlist, ",")
 	}
-	onboardingID := deterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, seed)
-	if existing, err := c.Store.onboarding(onboardingID); err == nil && existing.Phase != PhaseFailed && existing.Phase != PhaseRemoved {
+	onboardingID := api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, seed)
+	if existing, err := c.Store.onboarding(onboardingID); err == nil && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved {
 		if err := c.refreshCredentialForm(&existing); err != nil {
 			return nil, err
 		}
@@ -57,15 +57,15 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 		return c.statusBody(existing, false), nil
 	}
 	if len(credentials) > 0 {
-		draft.Tools = remotePlaceholders(allowlist)
-		onboarding := Onboarding{
-			Schema: SchemaVersion, OnboardingID: onboardingID,
+		draft.Tools = api.RemotePlaceholders(allowlist)
+		onboarding := api.Onboarding{
+			Schema: api.SchemaVersion, OnboardingID: onboardingID,
 			PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-			Mode: OnboardingRemote, Phase: PhaseAwaitingCreds, SourceURL: draft.Source.URL,
+			Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingCreds, SourceURL: draft.Source.URL,
 			DefinitionID: draft.DefinitionID, DefinitionVersion: draft.Version,
-			Required: remoteCredentialHints(credentials), AdmissionPending: true,
+			Required: api.RemoteCredentialHints(credentials), AdmissionPending: true,
 			Error:     "The remote endpoint needs credentials before tools/list. Submit them through the protected form; it is checked against the endpoint and the tool list is recorded.",
-			FormNonce: randomNonce(), FormExpires: c.now().Add(c.ttl()),
+			FormNonce: api.RandomNonce(), FormExpires: c.now().Add(c.ttl()),
 			IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 			Definition: &draft,
 		}
@@ -74,21 +74,21 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 		}
 		return c.statusBody(onboarding, false), nil
 	}
-	probe, err := probeRemoteMCP(ctx, draft, nil)
+	probe, err := api.ProbeRemoteMCP(ctx, draft, nil)
 	if err != nil {
 		if probe.AuthNeeded {
-			return nil, fmt.Errorf("%w: remote endpoint requires credentials; resubmit prepare_source with a credentials list", ErrUnauthorized)
+			return nil, fmt.Errorf("%w: remote endpoint requires credentials; resubmit prepare_source with a credentials list", api.ErrUnauthorized)
 		}
 		return nil, err
 	}
-	definition, err := RemoteMCPDefinition(endpoint, name, nil, probe.Tools, allowlist)
+	definition, err := api.RemoteMCPDefinition(endpoint, name, nil, probe.Tools, allowlist)
 	if err != nil {
 		return nil, err
 	}
 	if err := c.registerAdmittedDefinition(&definition, auth.PrincipalID); err != nil {
 		return nil, err
 	}
-	onboarding, err := c.newOnboarding(auth, OnboardingRemote, requestKey, definition, definition.Source.URL, "")
+	onboarding, err := c.newOnboarding(auth, api.OnboardingRemote, requestKey, definition, definition.Source.URL, "")
 	if err != nil {
 		return nil, err
 	}
@@ -107,9 +107,9 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 // owner-submitted secrets mapped onto the declared HTTP headers. The
 // definition's placeholder tools become the allowlist; the advertised set may
 // narrow but never widen it.
-func admitRemoteDefinition(ctx context.Context, definition ToolDefinition, secrets map[string]string) (ToolDefinition, error) {
-	if definition.Transport != RemoteMCP {
-		return ToolDefinition{}, fmt.Errorf("%w: remote admission needs a remote-mcp draft", ErrInvalid)
+func admitRemoteDefinition(ctx context.Context, definition api.ToolDefinition, secrets map[string]string) (api.ToolDefinition, error) {
+	if definition.Transport != api.RemoteMCP {
+		return api.ToolDefinition{}, fmt.Errorf("%w: remote admission needs a remote-mcp draft", api.ErrInvalid)
 	}
 	allowlist := make([]string, 0, len(definition.Tools))
 	for _, tool := range definition.Tools {
@@ -119,71 +119,17 @@ func admitRemoteDefinition(ctx context.Context, definition ToolDefinition, secre
 	draft.Tools = nil
 	probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	probe, err := probeRemoteMCP(probeCtx, draft, secrets)
+	probe, err := api.ProbeRemoteMCP(probeCtx, draft, secrets)
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	admitted := definition
-	admitted.Tools, err = selectRemoteTools(probe.Tools, allowlist)
+	admitted.Tools, err = api.SelectRemoteTools(probe.Tools, allowlist)
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	if len(admitted.Tools) == 0 {
-		return ToolDefinition{}, fmt.Errorf("%w: remote MCP tool allowlist is empty", ErrInvalid)
+		return api.ToolDefinition{}, fmt.Errorf("%w: remote MCP tool allowlist is empty", api.ErrInvalid)
 	}
 	return admitted, admitted.Validate()
-}
-
-// remoteReady proves the endpoint is still an MCP server and still advertises
-// every bound tool before a binding goes active.
-func (b MCPBackend) remoteReady(ctx context.Context, effective EffectiveBinding, environment map[string]string) error {
-	probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-	probe, err := probeRemoteMCP(probeCtx, effective.Definition, environment)
-	if err != nil {
-		return fmt.Errorf("%w: remote MCP readiness: %v", ErrIsolation, sanitizeRemoteError(err))
-	}
-	advertised := map[string]bool{}
-	for _, tool := range probe.Tools {
-		advertised[tool.Name] = true
-	}
-	for _, tool := range effective.Definition.Tools {
-		if !advertised[tool.Name] {
-			return fmt.Errorf("%w: remote endpoint no longer serves %q", ErrStale, tool.Name)
-		}
-	}
-	return nil
-}
-
-// callRemoteMCP projects one tools/call onto the owner's remote endpoint. The
-// endpoint is re-validated at call time and credentials arrive only as the
-// declared HTTP headers — no ToolHive admission, no credential files.
-func (b MCPBackend) callRemoteMCP(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
-	endpoint := effective.Definition.Source.URL
-	if err := ValidateRemoteMCPEndpoint(endpoint); err != nil {
-		return BackendResult{}, err
-	}
-	headers, err := CredentialHeaders(effective.Definition, environment)
-	if err != nil {
-		return BackendResult{}, err
-	}
-	session, err := connectRemoteMCP(ctx, endpoint, remoteHTTPClient(endpoint, headers))
-	if err != nil {
-		return BackendResult{}, fmt.Errorf("%w: remote MCP session: %v", ErrIsolation, sanitizeRemoteError(err))
-	}
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: arguments})
-	closeErr := session.Close()
-	if err != nil {
-		return BackendResult{}, fmt.Errorf("%w: remote MCP call: %v", ErrIsolation, sanitizeRemoteError(err))
-	}
-	if closeErr != nil {
-		return BackendResult{}, fmt.Errorf("%w: remote MCP close: %v", ErrIsolation, sanitizeRemoteError(closeErr))
-	}
-	var text strings.Builder
-	for _, content := range result.Content {
-		if value, ok := content.(*mcp.TextContent); ok {
-			text.WriteString(value.Text)
-		}
-	}
-	return BackendResult{Text: text.String(), Content: result.Content, Structured: result.StructuredContent, IsError: result.IsError}, nil
 }

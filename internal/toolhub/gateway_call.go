@@ -6,41 +6,40 @@ import (
 	"fmt"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log/slog"
-	"strings"
 	"time"
-	"unicode"
 )
 
 func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedName string, arguments map[string]any) (*mcp.CallToolResult, error) {
-	corr := callCorrelationFrom(ctx)
+	corr := api.CallCorrelationFrom(ctx)
 	if corr.ToolCallID == "" {
-		corr.ToolCallID = newToolCallID()
+		corr.ToolCallID = api.NewToolCallID()
 	}
-	ctx = withCallCorrelation(ctx, corr)
+	ctx = api.WithCallCorrelation(ctx, corr)
 	var out *mcp.CallToolResult
-	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected ProjectedTool, effective EffectiveBinding) error {
+	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) error {
 		if auth.CapabilityProfile != "" && g.AuditWrite == nil {
-			return fmt.Errorf("%w: managed dispatch requires durable audit", ErrUnauthorized)
+			return fmt.Errorf("%w: managed dispatch requires durable audit", api.ErrUnauthorized)
 		}
-		if err := rejectToolAuthorityArguments(projected.Tool, arguments); err != nil {
+		if err := api.RejectToolAuthorityArguments(projected.Tool, arguments); err != nil {
 			return err
 		}
 		if len(projected.Tool.InputSchema) > 0 {
 			var schema jsonschema.Schema
 			if json.Unmarshal(projected.Tool.InputSchema, &schema) != nil {
-				return ErrInvalid
+				return api.ErrInvalid
 			}
 			resolved, err := schema.Resolve(nil)
 			if err != nil || resolved.Validate(arguments) != nil {
-				return fmt.Errorf("%w: MCP arguments do not match admitted schema", ErrInvalid)
+				return fmt.Errorf("%w: MCP arguments do not match admitted schema", api.ErrInvalid)
 			}
 		}
 		if err := g.audit("admit", mergeAudit(auditFields(auth, projected, effective, "admit"), corr)); err != nil {
 			return err
 		}
-		injection := CredentialInjection{Environment: map[string]string{}}
+		injection := api.CredentialInjection{Environment: map[string]string{}}
 		if g.Injector != nil {
 			var injErr error
 			injection, injErr = g.Injector(ctx, effective)
@@ -51,12 +50,12 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				defer injection.Cleanup()
 			}
 		}
-		effective.CredentialMounts = append([]Mount(nil), injection.Mounts...)
+		effective.CredentialMounts = append([]api.Mount(nil), injection.Mounts...)
 		callCtx, cancel := context.WithTimeout(ctx, time.Duration(effective.Definition.Execution.TimeoutSeconds)*time.Second)
 		defer cancel()
-		var result BackendResult
+		var result api.BackendResult
 		var callErr error
-		if caller, ok := g.Backend.(envBackend); ok {
+		if caller, ok := g.Backend.(api.EnvBackend); ok {
 			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, injection.Environment)
 		} else {
 			result, callErr = g.Backend.Call(callCtx, effective, projected.Tool, arguments)
@@ -76,16 +75,16 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				return err
 			}
 			if len(encoded) > effective.Definition.Execution.OutputBytes {
-				return fmt.Errorf("%w: backend structured output", ErrInvalid)
+				return fmt.Errorf("%w: backend structured output", api.ErrInvalid)
 			}
 		}
 		if len(result.Text) > effective.Definition.Execution.OutputBytes {
-			return fmt.Errorf("%w: backend text output", ErrInvalid)
+			return fmt.Errorf("%w: backend text output", api.ErrInvalid)
 		}
 		if len(result.Content) > 0 {
 			encoded, err := json.Marshal(result.Content)
 			if err != nil || len(encoded) > effective.Definition.Execution.OutputBytes {
-				return fmt.Errorf("%w: backend content output", ErrInvalid)
+				return fmt.Errorf("%w: backend content output", api.ErrInvalid)
 			}
 		}
 		out = &mcp.CallToolResult{IsError: result.IsError, StructuredContent: result.Structured, Content: result.Content}
@@ -93,7 +92,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			out.Content = []mcp.Content{&mcp.TextContent{Text: result.Text}}
 		}
 		fields := auditFields(auth, projected, effective, "allow")
-		if receipt := SafeReceipt(result.Receipt); receipt != "" {
+		if receipt := api.SafeReceipt(result.Receipt); receipt != "" {
 			fields["receipt"] = receipt
 		}
 		return g.audit("allow", mergeAudit(fields, corr))
@@ -117,7 +116,7 @@ func (g *Gateway) CallAuthorized(ctx context.Context, auth identity.Envelope, na
 	return g.call(ctx, auth, name, arguments)
 }
 
-func auditFields(auth identity.Envelope, projected ProjectedTool, effective EffectiveBinding, outcome string) map[string]string {
+func auditFields(auth identity.Envelope, projected api.ProjectedTool, effective api.EffectiveBinding, outcome string) map[string]string {
 	fields := map[string]string{
 		"principal_id":   auth.PrincipalID,
 		"context_id":     auth.ContextID,
@@ -147,18 +146,7 @@ func auditFields(auth identity.Envelope, projected ProjectedTool, effective Effe
 	return fields
 }
 
-// SafeReceipt bounds a provider mutation receipt before it reaches the audit
-// ledger. An oversized or control-character receipt is dropped rather than
-// truncated, so a provider cannot smuggle content into control-plane records.
-func SafeReceipt(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 256 || strings.IndexFunc(value, unicode.IsControl) >= 0 {
-		return ""
-	}
-	return value
-}
-
-func mergeAudit(fields map[string]string, corr callCorrelation) map[string]string {
+func mergeAudit(fields map[string]string, corr api.CallCorrelation) map[string]string {
 	if fields == nil {
 		fields = map[string]string{}
 	}
@@ -187,41 +175,4 @@ func (g *Gateway) audit(event string, fields map[string]string) error {
 	}
 	slog.Info("toolhub "+event, attrs...)
 	return err
-}
-
-// RejectAuthorityArguments denies model-supplied identity, binding or
-// credential selectors. Authorization comes only from the authenticated
-// runtime and the resolved binding.
-func RejectAuthorityArguments(arguments map[string]any) error {
-	for key := range arguments {
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "principal_id", "context_id", "runtime_id", "policy_version", "binding_id", "tool_binding_id", "connection_id", "credential_ref", "credential_ref_id", "owner", "owner_id", "user", "user_id", "account_id", "locator", "credential_locator", "backend", "backend_url", "mcp_endpoint", "policy", "grant", "grant_id", "issued_by", "store_owner":
-			return fmt.Errorf("%w: authority argument %q", ErrUnauthorized, key)
-		}
-		if credentialPattern.MatchString(key) {
-			return fmt.Errorf("%w: credential value argument %q", ErrUnauthorized, key)
-		}
-	}
-	return nil
-}
-
-// Provider resource owners are data only when explicitly declared by the
-// admitted tool. Runtime identity and credential selectors remain reserved.
-func rejectToolAuthorityArguments(tool ToolSpec, arguments map[string]any) error {
-	var schema struct {
-		Properties map[string]json.RawMessage `json:"properties"`
-	}
-	_ = json.Unmarshal(tool.InputSchema, &schema)
-	for key, value := range arguments {
-		switch key {
-		case "owner", "owner_id", "user", "user_id", "account_id":
-			if _, declared := schema.Properties[key]; declared {
-				continue
-			}
-		}
-		if err := RejectAuthorityArguments(map[string]any{key: value}); err != nil {
-			return err
-		}
-	}
-	return nil
 }

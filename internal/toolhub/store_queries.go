@@ -3,25 +3,26 @@ package toolhub
 import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-func (s *Store) Definition(id, version string) (ToolDefinition, error) {
+func (s *Store) Definition(id, version string) (api.ToolDefinition, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	definition, ok := s.definitions[definitionKey(id, version)]
 	if !ok {
-		return ToolDefinition{}, fmt.Errorf("%w: definition", ErrNotFound)
+		return api.ToolDefinition{}, fmt.Errorf("%w: definition", api.ErrNotFound)
 	}
 	return definition, nil
 }
 
-func (s *Store) publicationFor(definition ToolDefinition) DefinitionPublication {
+func (s *Store) publicationFor(definition api.ToolDefinition) api.DefinitionPublication {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.publicationLocked(definition)
 }
 
-func (s *Store) storedPublication(id, version string) (DefinitionPublication, bool) {
+func (s *Store) storedPublication(id, version string) (api.DefinitionPublication, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	pub, ok := s.publications[definitionKey(id, version)]
@@ -30,28 +31,28 @@ func (s *Store) storedPublication(id, version string) (DefinitionPublication, bo
 
 func (s *Store) userPublicationOwner(id, version string) (string, bool) {
 	pub, ok := s.storedPublication(id, version)
-	if !ok || pub.Visibility != PublicationUser {
+	if !ok || pub.Visibility != api.PublicationUser {
 		return "", false
 	}
 	return pub.OwnerPrincipalID, true
 }
 
-func (s *Store) onboarding(id string) (Onboarding, error) {
+func (s *Store) onboarding(id string) (api.Onboarding, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	onboarding, ok := s.onboardings[id]
 	if !ok {
-		return Onboarding{}, fmt.Errorf("%w: onboarding", ErrNotFound)
+		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
 	}
 	return onboarding, nil
 }
 
-func (s *Store) binding(id string) (ToolBinding, error) {
+func (s *Store) binding(id string) (api.ToolBinding, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	binding, ok := s.bindings[id]
 	if !ok {
-		return ToolBinding{}, fmt.Errorf("%w: binding", ErrNotFound)
+		return api.ToolBinding{}, fmt.Errorf("%w: binding", api.ErrNotFound)
 	}
 	return binding, nil
 }
@@ -62,18 +63,18 @@ func (s *Store) binding(id string) (ToolBinding, error) {
 // version and credential reference — and pins the admitting policy epoch. A
 // stored binding that still resolves to that identity proves the grant covers
 // it; any version or epoch change requires a fresh grant.
-func (s *Store) brokerGrantReusable(auth identity.Envelope, definition ToolDefinition, match ownerConnectionMatch) bool {
+func (s *Store) brokerGrantReusable(auth identity.Envelope, definition api.ToolDefinition, match ownerConnectionMatch) bool {
 	if match.credential.BrokerGrantID == "" {
 		return false
 	}
-	id := DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, match.connection.ConnectionID, match.credential.CredentialRefID)
+	id := api.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, match.connection.ConnectionID, match.credential.CredentialRefID)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	binding, ok := s.bindings[id]
-	return ok && binding.Status != RevokedStatus && binding.PolicyVersion == auth.PolicyVersion
+	return ok && binding.Status != api.RevokedStatus && binding.PolicyVersion == auth.PolicyVersion
 }
 
-func (s *Store) findBinding(auth identity.Envelope, definition ToolDefinition) *ToolBinding {
+func (s *Store) findBinding(auth identity.Envelope, definition api.ToolDefinition) *api.ToolBinding {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.findBindingLocked(auth, definition)

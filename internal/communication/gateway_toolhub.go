@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"os"
@@ -220,11 +221,11 @@ func (g *Gateway) toolHubJobDone(jobID, principalID string) {
 func connectionList(user User) string {
 	lines := []string{"Подключения:"}
 	for _, service := range stack.ServiceCatalog() {
-		if contains(user.PolicyDisabled, service.Name) {
+		if api.Contains(user.PolicyDisabled, service.Name) {
 			lines = append(lines, service.Name+" — policy-disabled")
 			continue
 		}
-		if !contains(user.Features, service.Name) {
+		if !api.Contains(user.Features, service.Name) {
 			if service.SelfService {
 				lines = append(lines, service.Name+" — доступен для включения; env: "+strings.Join(service.Requires, ", "))
 			} else {

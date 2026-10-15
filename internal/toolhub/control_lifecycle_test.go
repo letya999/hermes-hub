@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,12 +18,12 @@ import (
 
 func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	store := NewStore()
-	grantTestControlOperations(t, store, "alice", ControlOperations...)
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
 	definition := catalogReadDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
@@ -52,11 +53,11 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workload, err := NewWorkloadInstance(binding, &OwnerRef{Type: ContextOwner, ID: auth.ContextID}, "", 1, time.Now().UTC(), time.Time{})
+	workload, err := api.NewWorkloadInstance(binding, &api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}, "", 1, time.Now().UTC(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	workload.Status = RunningStatus
+	workload.Status = api.RunningStatus
 	if err := store.PutWorkloadInstance(workload); err != nil {
 		t.Fatal(err)
 	}
@@ -67,17 +68,17 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if got := store.WorkloadIDsForBinding(bindingID); len(got) != 1 {
 		t.Fatalf("second enable created workloads=%v", got)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"], "effects": []any{"write"}}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"], "effects": []any{"write"}}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("effect escalation: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"], "cpu_millis": 999999}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"], "cpu_millis": 999999}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("budget escalation: %v", err)
 	}
 	effective, err := store.Resolve(auth, bindingID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, err := OpenWorkloadWorkspace(root, effective, "")
+	ws, err := api.OpenWorkloadWorkspace(root, effective, "")
 	if err != nil || ws.Path == "" {
 		t.Fatalf("workspace=%+v err=%v", ws, err)
 	}
@@ -107,11 +108,11 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	}
 
 	store2 := NewStore()
-	grantTestControlOperations(t, store2, "alice", ControlOperations...)
+	grantTestControlOperations(t, store2, "alice", api.ControlOperations...)
 	if err := store2.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store2, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store2, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	control2 := &ControlPlane{Store: store2, WorkloadRoot: t.TempDir(), Now: time.Now}
@@ -142,10 +143,10 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if onboarding.BindingID == "" {
 		return
 	}
-	err = store2.AuthorizeProjected(auth, ProjectedToolName(definition.DefinitionID, definition.Version, "search"), func(ProjectedTool, EffectiveBinding) error { return nil })
+	err = store2.AuthorizeProjected(auth, api.ProjectedToolName(definition.DefinitionID, definition.Version, "search"), func(api.ProjectedTool, api.EffectiveBinding) error { return nil })
 	if err == nil {
 		effective, resolveErr := store2.Resolve(auth, onboarding.BindingID)
-		if resolveErr != nil || effective.Binding.Status != ActiveStatus {
+		if resolveErr != nil || effective.Binding.Status != api.ActiveStatus {
 			t.Fatalf("stale authorization admitted: resolve=%v effective=%+v", resolveErr, effective)
 		}
 	}
@@ -158,11 +159,11 @@ func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	var admissions int
-	control := &ControlPlane{Store: store, Ready: func(context.Context, EffectiveBinding) error {
+	control := &ControlPlane{Store: store, Ready: func(context.Context, api.EffectiveBinding) error {
 		admissions++
 		return nil
 	}, Now: time.Now}
@@ -205,16 +206,16 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	}
 	store := NewStore()
 	definition := catalogReadDefinition()
-	definition.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	definition.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
 		t.Fatal(err)
 	}
 	admit := false
-	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error {
+	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error {
 		if !admit {
 			return errors.New("admission denied")
 		}
@@ -244,7 +245,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	if len(store.bindings) != 0 || len(store.connections) != 1 {
 		t.Fatalf("failed admission published binding or duplicated connection: bindings=%d connections=%d", len(store.bindings), len(store.connections))
 	}
-	if err := store.AuthorizeProjected(auth, ProjectedToolName(definition.DefinitionID, definition.Version, "read"), func(ProjectedTool, EffectiveBinding) error { return nil }); err == nil {
+	if err := store.AuthorizeProjected(auth, api.ProjectedToolName(definition.DefinitionID, definition.Version, "read"), func(api.ProjectedTool, api.EffectiveBinding) error { return nil }); err == nil {
 		t.Fatal("failed admission projected a tool")
 	}
 	admit = true
@@ -267,16 +268,16 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	}
 	store := NewStore()
 	definition := catalogReadDefinition()
-	definition.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	definition.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
 		t.Fatal(err)
 	}
 	admit := false
-	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error {
+	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error {
 		if !admit {
 			return errors.New("controller returned 503 Service Unavailable: workload enforcement unavailable: bridge-create: required runtime credential missing")
 		}
@@ -303,7 +304,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal("failed admission was confirmed")
 	}
 	stored, _ := store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != PhaseAwaitingConfirm || stored.ConfirmationUsed {
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseAwaitingConfirm || stored.ConfirmationUsed {
 		t.Fatalf("confirm failure not recorded: %+v", stored)
 	}
 	status, err = control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
@@ -318,7 +319,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
-	if stored.Error != "" || stored.Phase != PhaseConfirmed {
+	if stored.Error != "" || stored.Phase != api.PhaseConfirmed {
 		t.Fatalf("successful confirm kept stale error: %+v", stored)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "disable", map[string]any{"onboarding_id": id}); err != nil {
@@ -329,7 +330,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal("failed re-enable was accepted")
 	}
 	stored, _ = store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != PhaseDisabled {
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseDisabled {
 		t.Fatalf("enable failure not recorded: %+v", stored)
 	}
 	admit = true
@@ -337,7 +338,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
-	if stored.Error != "" || stored.Phase != PhaseEnabled {
+	if stored.Error != "" || stored.Phase != api.PhaseEnabled {
 		t.Fatalf("successful enable kept stale error: %+v", stored)
 	}
 }
@@ -355,7 +356,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now}
 	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm", "enable")
 	base := catalogReadDefinition()
-	base.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	base.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
 	locators := map[string]int{}
 	workloads := map[string]bool{}
 	for i := 0; i < 95; i++ {
@@ -365,7 +366,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 			t.Fatal(err)
 		}
 		auth := aliceAuth()
-		if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
 			t.Fatal(err)
 		}
 		prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": fmt.Sprintf("u-%02d", i)})
@@ -402,7 +403,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 			t.Fatalf("duplicate workload %s", effective.WorkloadID)
 		}
 		workloads[effective.WorkloadID] = true
-		env, err := DecryptAuthorized(secrets, effective)
+		env, err := api.DecryptAuthorized(secrets, effective)
 		if err != nil || env["TOKEN"] != fmt.Sprintf("value-%02d", i) {
 			t.Fatalf("unique decrypt=%v err=%v", env, err)
 		}
@@ -420,12 +421,12 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	principals := []string{"u00", "u01", "u02", "u03", "u04"}
-	if err := store.PutSharedCredentialPolicy(SharedCredentialPolicy{Schema: SchemaVersion, PolicyID: "policy-shared", DefinitionID: "mcp-shared", Locator: sharedLocator, StoreOwner: "shared-owner", Principals: principals, IssuedBy: "operator", Status: ActiveStatus}); err != nil {
+	if err := store.PutSharedCredentialPolicy(api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-shared", DefinitionID: "mcp-shared", Locator: sharedLocator, StoreOwner: "shared-owner", Principals: principals, IssuedBy: "operator", Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
 	for _, principal := range principals {
 		auth := identity.TelegramEnvelope(principal, 9, principal+"-runtime", "policy-1")
-		if err := putGrant(t, store, OperatorGrant(GrantDefinition, principal, "mcp-shared", "1.0.0")); err != nil {
+		if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, principal, "mcp-shared", "1.0.0")); err != nil {
 			t.Fatal(err)
 		}
 		grantTestControlOperations(t, store, principal, "prepare_source", "status", "confirm", "enable")
@@ -465,7 +466,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 			t.Fatalf("shared binding reused workload %s", effective.WorkloadID)
 		}
 		workloads[effective.WorkloadID] = true
-		env, err := DecryptAuthorized(secrets, effective)
+		env, err := api.DecryptAuthorized(secrets, effective)
 		if err != nil || env["TOKEN"] != "shared-value" {
 			t.Fatalf("shared decrypt=%v err=%v", env, err)
 		}
@@ -486,12 +487,12 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 
 func TestEnableOnActiveBindingSupersedesSiblingVersions(t *testing.T) {
 	store := NewStore()
-	grantTestControlOperations(t, store, "alice", ControlOperations...)
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
 	definition := catalogReadDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
@@ -528,15 +529,15 @@ func TestEnableOnActiveBindingSupersedesSiblingVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := store.bindings[bindingID]
-	stale.Status = ActiveStatus
+	stale.Status = api.ActiveStatus
 	store.bindings[bindingID] = stale
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if store.bindings[bindingID].Status != ActiveStatus {
+	if store.bindings[bindingID].Status != api.ActiveStatus {
 		t.Fatalf("kept binding status=%s", store.bindings[bindingID].Status)
 	}
-	if store.bindings[sibling.ToolBindingID].Status != DisabledStatus {
+	if store.bindings[sibling.ToolBindingID].Status != api.DisabledStatus {
 		t.Fatalf("sibling binding status=%s", store.bindings[sibling.ToolBindingID].Status)
 	}
 	tools, err := store.ListProjectedTools(auth)

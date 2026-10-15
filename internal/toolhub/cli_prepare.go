@@ -10,6 +10,7 @@ package toolhub
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -25,7 +26,7 @@ var cliSpecDeniedArgs = map[string][]string{
 }
 
 // prepareCLI admits an owner-declared bounded-cli definition. The spec is
-// validated, compiled into an immutable ToolDefinition and registered as a
+// validated, compiled into an immutable api.ToolDefinition and registered as a
 // user publication before the normal confirm/enable lifecycle runs; every
 // later enable is still bound to the authenticated principal. scope: shared
 // promotes the definition to catalog visibility and is gated to operators
@@ -33,7 +34,7 @@ var cliSpecDeniedArgs = map[string][]string{
 func (c *ControlPlane) prepareCLI(ctx context.Context, auth identity.Envelope, raw any, requestKey string) (map[string]any, error) {
 	spec, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("%w: cli spec", ErrInvalid)
+		return nil, fmt.Errorf("%w: cli spec", api.ErrInvalid)
 	}
 	shared, err := cliSpecScope(spec)
 	if err != nil {
@@ -48,11 +49,11 @@ func (c *ControlPlane) prepareCLI(ctx context.Context, auth identity.Envelope, r
 	}
 	// source+binary switch the op into immutable artifact onboarding; the
 	// direct-command shape must not mix with them.
-	if argString(spec, "source") != "" || argString(spec, "binary") != "" {
+	if api.ArgString(spec, "source") != "" || api.ArgString(spec, "binary") != "" {
 		return c.prepareCLIArtifact(ctx, auth, spec, requestKey, shared)
 	}
-	if argString(spec, "asset") != "" || argString(spec, "digest") != "" || argString(spec, "member") != "" {
-		return nil, fmt.Errorf("%w: asset, digest and member apply to github-release sources only", ErrInvalid)
+	if api.ArgString(spec, "asset") != "" || api.ArgString(spec, "digest") != "" || api.ArgString(spec, "member") != "" {
+		return nil, fmt.Errorf("%w: asset, digest and member apply to github-release sources only", api.ErrInvalid)
 	}
 	definition, err := cliDefinitionFromSpec(spec, shared)
 	if err != nil {
@@ -69,7 +70,7 @@ func (c *ControlPlane) prepareCLI(ctx context.Context, auth identity.Envelope, r
 			return nil, err
 		}
 	}
-	onboarding, err := c.newOnboarding(auth, OnboardingSelfInstall, requestKey, definition, "", "")
+	onboarding, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, definition, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -83,30 +84,30 @@ func (c *ControlPlane) prepareCLI(ctx context.Context, auth identity.Envelope, r
 // catalog-visible to every principal with catalog access; execution stays a
 // per-caller cell with the caller's own workspace.
 func cliSpecScope(spec map[string]any) (bool, error) {
-	switch argString(spec, "scope") {
+	switch api.ArgString(spec, "scope") {
 	case "", "owner":
 		return false, nil
 	case "shared":
 		return true, nil
 	default:
-		return false, fmt.Errorf("%w: cli spec scope must be owner or shared", ErrInvalid)
+		return false, fmt.Errorf("%w: cli spec scope must be owner or shared", api.ErrInvalid)
 	}
 }
 
 // cliSpecWorkload compiles the spec's lifecycle and workspace hints into the
 // immutable workload policy. Class is fixed by scope — owner installs are
-// per-user, shared installs are shared — and ToolDefinition.Validate polices
+// per-user, shared installs are shared — and api.ToolDefinition.Validate polices
 // every lifecycle/scope combination from there.
-func cliSpecWorkload(spec map[string]any, shared bool) WorkloadPolicy {
-	workload := WorkloadPolicy{Class: PerUser, Rationale: "owner-declared bounded CLI registered through the control plane; per-binding workspace"}
+func cliSpecWorkload(spec map[string]any, shared bool) api.WorkloadPolicy {
+	workload := api.WorkloadPolicy{Class: api.PerUser, Rationale: "owner-declared bounded CLI registered through the control plane; per-binding workspace"}
 	if shared {
-		workload.Class = Shared
+		workload.Class = api.Shared
 		workload.Rationale = "operator-shared bounded CLI; catalog-visible, executed in a per-caller cell"
 	}
-	workload.Lifecycle = argString(spec, "lifecycle")
-	workload.Toolbox = argString(spec, "toolbox")
-	workload.WorkspaceScope = argString(spec, "workspace_scope")
-	workload.WorkspaceAccess = argString(spec, "workspace_access")
+	workload.Lifecycle = api.ArgString(spec, "lifecycle")
+	workload.Toolbox = api.ArgString(spec, "toolbox")
+	workload.WorkspaceScope = api.ArgString(spec, "workspace_scope")
+	workload.WorkspaceAccess = api.ArgString(spec, "workspace_access")
 	workload.InstallPackages, _ = spec["install_packages"].(bool)
 	if stateless, ok := spec["stateless"].(bool); ok && stateless {
 		workload.Stateless = true
@@ -119,81 +120,81 @@ func cliSpecWorkload(spec map[string]any, shared bool) WorkloadPolicy {
 // admit at /cli-exec. Artifact binaries are guest paths inside pinned images
 // and onboard through prepareCLIArtifact, not this gate.
 func cliRegistrationAllowed(command string) error {
-	allowed := CLIAllowlistFromEnv()
+	allowed := api.CLIAllowlistFromEnv()
 	if len(allowed) == 0 {
-		return fmt.Errorf("%w: no bounded-cli executables are configured", ErrIsolation)
+		return fmt.Errorf("%w: no bounded-cli executables are configured", api.ErrIsolation)
 	}
 	if allowed[command] {
 		return nil
 	}
-	return fmt.Errorf("%w: executable %q is not allowlisted", ErrUnauthorized, command)
+	return fmt.Errorf("%w: executable %q is not allowlisted", api.ErrUnauthorized, command)
 }
 
 var cliSpecKeys = map[string]bool{"install_packages": true, "name": true, "version": true, "command": true, "source": true, "binary": true, "asset": true, "digest": true, "member": true, "base": true, "scope": true, "lifecycle": true, "stateless": true, "toolbox": true, "workspace_scope": true, "workspace_access": true, "args": true, "tools": true, "credentials": true, "runtime_env": true, "egress": true}
 
 // cliDefinitionFromSpec compiles the declarative spec into the immutable
 // record. Execution policy and health are fixed here, never model-chosen;
-// the caller still sees the result through ToolDefinition.Validate.
-func cliDefinitionFromSpec(spec map[string]any, shared bool) (ToolDefinition, error) {
+// the caller still sees the result through api.ToolDefinition.Validate.
+func cliDefinitionFromSpec(spec map[string]any, shared bool) (api.ToolDefinition, error) {
 	for key := range spec {
 		if !cliSpecKeys[key] {
-			return ToolDefinition{}, fmt.Errorf("%w: unknown cli spec field %q", ErrInvalid, key)
+			return api.ToolDefinition{}, fmt.Errorf("%w: unknown cli spec field %q", api.ErrInvalid, key)
 		}
 	}
-	name := argString(spec, "name")
+	name := api.ArgString(spec, "name")
 	if !identity.ValidID(name) {
-		return ToolDefinition{}, fmt.Errorf("%w: cli name", ErrInvalid)
+		return api.ToolDefinition{}, fmt.Errorf("%w: cli name", api.ErrInvalid)
 	}
-	version := argString(spec, "version")
+	version := api.ArgString(spec, "version")
 	if version == "" {
 		version = "1.0.0"
 	}
-	command := argString(spec, "command")
+	command := api.ArgString(spec, "command")
 	if command == "" {
-		return ToolDefinition{}, fmt.Errorf("%w: cli command", ErrInvalid)
+		return api.ToolDefinition{}, fmt.Errorf("%w: cli command", api.ErrInvalid)
 	}
 	fixed, err := strictStringList(spec["args"], "args")
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	egress, err := strictStringList(spec["egress"], "egress")
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	if len(egress) == 0 {
 		egress = []string{"127.0.0.1"}
 	}
 	runtimeEnv, err := cliSpecEnvironment(spec["runtime_env"])
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	credentials, err := strictStringList(spec["credentials"], "credentials")
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
-	inputs := make([]CredentialInput, 0, len(credentials))
+	inputs := make([]api.CredentialInput, 0, len(credentials))
 	for _, credential := range credentials {
-		inputs = append(inputs, CredentialInput{Name: credential, Required: true})
+		inputs = append(inputs, api.CredentialInput{Name: credential, Required: true})
 	}
 	tools, err := cliSpecTools(spec["tools"])
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	if err := cliSpecExecDenied(command, fixed, tools); err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
-	definition := ToolDefinition{
-		Schema: SchemaVersion, DefinitionID: name, Version: version, Transport: BoundedCLI,
-		Source:             DefinitionSource{Command: command, Args: fixed},
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: name, Version: version, Transport: api.BoundedCLI,
+		Source:             api.DefinitionSource{Command: command, Args: fixed},
 		RuntimeEnvironment: runtimeEnv,
 		Credentials:        inputs,
 		Tools:              tools,
 		Workload:           cliSpecWorkload(spec, shared),
-		Execution:          ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
-		Health:             HealthProbe{Kind: "exec", Value: command, TimeoutSeconds: 5},
+		Execution:          api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
+		Health:             api.HealthProbe{Kind: "exec", Value: command, TimeoutSeconds: 5},
 	}
 	if err := definition.Validate(); err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	return definition, nil
 }
@@ -213,16 +214,16 @@ func strictStringList(raw any, field string) ([]string, error) {
 	case []any:
 		items = typed
 	default:
-		return nil, fmt.Errorf("%w: cli spec %s must be a list", ErrInvalid, field)
+		return nil, fmt.Errorf("%w: cli spec %s must be a list", api.ErrInvalid, field)
 	}
 	if len(items) > 64 {
-		return nil, fmt.Errorf("%w: cli spec %s is too long", ErrInvalid, field)
+		return nil, fmt.Errorf("%w: cli spec %s is too long", api.ErrInvalid, field)
 	}
 	out := make([]string, 0, len(items))
 	for _, item := range items {
 		token, ok := item.(string)
 		if !ok || token == "" || len(token) > 256 || strings.ContainsAny(token, "\x00\r\n") {
-			return nil, fmt.Errorf("%w: cli spec %s token", ErrInvalid, field)
+			return nil, fmt.Errorf("%w: cli spec %s token", api.ErrInvalid, field)
 		}
 		out = append(out, token)
 	}
@@ -235,82 +236,82 @@ func cliSpecEnvironment(raw any) (map[string]string, error) {
 	}
 	values, ok := raw.(map[string]any)
 	if !ok || len(values) > 32 {
-		return nil, fmt.Errorf("%w: cli spec runtime_env", ErrInvalid)
+		return nil, fmt.Errorf("%w: cli spec runtime_env", api.ErrInvalid)
 	}
 	env := make(map[string]string, len(values))
 	for key, value := range values {
 		text, ok := value.(string)
-		if !ok || !credentialPattern.MatchString(key) || text == "" || len(text) > 16384 || strings.ContainsAny(text, "\x00\r\n") || strings.Contains(text, "${") {
-			return nil, fmt.Errorf("%w: cli spec runtime env %q", ErrInvalid, key)
+		if !ok || !api.CredentialPattern.MatchString(key) || text == "" || len(text) > 16384 || strings.ContainsAny(text, "\x00\r\n") || strings.Contains(text, "${") {
+			return nil, fmt.Errorf("%w: cli spec runtime env %q", api.ErrInvalid, key)
 		}
 		env[key] = text
 	}
 	return env, nil
 }
 
-func cliSpecTools(raw any) ([]ToolSpec, error) {
+func cliSpecTools(raw any) ([]api.ToolSpec, error) {
 	list, ok := raw.([]any)
 	if !ok || len(list) == 0 || len(list) > 16 {
-		return nil, fmt.Errorf("%w: cli spec tools", ErrInvalid)
+		return nil, fmt.Errorf("%w: cli spec tools", api.ErrInvalid)
 	}
-	tools := make([]ToolSpec, 0, len(list))
+	tools := make([]api.ToolSpec, 0, len(list))
 	for _, item := range list {
 		entry, ok := item.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%w: cli spec tool", ErrInvalid)
+			return nil, fmt.Errorf("%w: cli spec tool", api.ErrInvalid)
 		}
 		for key := range entry {
 			if key != "name" && key != "description" && key != "effect" && key != "arguments" {
-				return nil, fmt.Errorf("%w: unknown cli spec tool field %q", ErrInvalid, key)
+				return nil, fmt.Errorf("%w: unknown cli spec tool field %q", api.ErrInvalid, key)
 			}
 		}
-		effect := ReadEffect
-		switch argString(entry, "effect") {
+		effect := api.ReadEffect
+		switch api.ArgString(entry, "effect") {
 		case "", "read":
 		case "write":
-			effect = WriteEffect
+			effect = api.WriteEffect
 		default:
-			return nil, fmt.Errorf("%w: cli spec tool effect", ErrInvalid)
+			return nil, fmt.Errorf("%w: cli spec tool effect", api.ErrInvalid)
 		}
 		arguments, err := cliSpecArguments(entry["arguments"])
 		if err != nil {
 			return nil, err
 		}
-		tools = append(tools, ToolSpec{
-			Name: argString(entry, "name"), Description: argString(entry, "description"),
+		tools = append(tools, api.ToolSpec{
+			Name: api.ArgString(entry, "name"), Description: api.ArgString(entry, "description"),
 			Effect: effect, Arguments: arguments,
 		})
 	}
 	return tools, nil
 }
 
-func cliSpecArguments(raw any) ([]CLIArgument, error) {
+func cliSpecArguments(raw any) ([]api.CLIArgument, error) {
 	if raw == nil {
 		return nil, nil
 	}
 	list, ok := raw.([]any)
 	if !ok || len(list) > 32 {
-		return nil, fmt.Errorf("%w: cli spec tool arguments", ErrInvalid)
+		return nil, fmt.Errorf("%w: cli spec tool arguments", api.ErrInvalid)
 	}
-	arguments := make([]CLIArgument, 0, len(list))
+	arguments := make([]api.CLIArgument, 0, len(list))
 	for _, item := range list {
 		entry, ok := item.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%w: cli spec argument", ErrInvalid)
+			return nil, fmt.Errorf("%w: cli spec argument", api.ErrInvalid)
 		}
 		for key := range entry {
 			if key != "name" && key != "flag" && key != "type" && key != "required" && key != "pattern" {
-				return nil, fmt.Errorf("%w: unknown cli spec argument field %q", ErrInvalid, key)
+				return nil, fmt.Errorf("%w: unknown cli spec argument field %q", api.ErrInvalid, key)
 			}
 		}
-		kind := argString(entry, "type")
+		kind := api.ArgString(entry, "type")
 		if kind == "" {
 			kind = "string"
 		}
 		required, _ := entry["required"].(bool)
-		arguments = append(arguments, CLIArgument{
-			Name: argString(entry, "name"), Flag: argString(entry, "flag"), Type: kind, Required: required,
-			Pattern: argString(entry, "pattern"),
+		arguments = append(arguments, api.CLIArgument{
+			Name: api.ArgString(entry, "name"), Flag: api.ArgString(entry, "flag"), Type: kind, Required: required,
+			Pattern: api.ArgString(entry, "pattern"),
 		})
 	}
 	return arguments, nil
@@ -319,13 +320,13 @@ func cliSpecArguments(raw any) ([]CLIArgument, error) {
 // cliSpecExecDenied rejects spec argv that turns an allowlisted binary into a
 // program runner (rg --pre executes a user-supplied path per file). The check
 // covers fixed tokens and declared argument flags alike.
-func cliSpecExecDenied(command string, fixed []string, tools []ToolSpec) error {
+func cliSpecExecDenied(command string, fixed []string, tools []api.ToolSpec) error {
 	denied, known := cliSpecDeniedArgs[command]
 	if !known {
 		return nil
 	}
 	if len(denied) == 0 {
-		return fmt.Errorf("%w: %q may not be registered: it executes hook scripts from writable data", ErrUnauthorized, command)
+		return fmt.Errorf("%w: %q may not be registered: it executes hook scripts from writable data", api.ErrUnauthorized, command)
 	}
 	match := func(token string) bool {
 		for _, flag := range denied {
@@ -341,16 +342,16 @@ func cliSpecExecDenied(command string, fixed []string, tools []ToolSpec) error {
 		// contained workspace), and short-option clusters cannot be
 		// deny-checked reliably. Operands arrive through typed arguments.
 		if !strings.HasPrefix(token, "--") || len(token) < 3 {
-			return fmt.Errorf("%w: cli spec argv %q is not a long option; operands come from typed arguments", ErrUnauthorized, token)
+			return fmt.Errorf("%w: cli spec argv %q is not a long option; operands come from typed arguments", api.ErrUnauthorized, token)
 		}
 		if match(token) {
-			return fmt.Errorf("%w: cli spec argv %q executes a program or reads outside the workspace", ErrUnauthorized, token)
+			return fmt.Errorf("%w: cli spec argv %q executes a program or reads outside the workspace", api.ErrUnauthorized, token)
 		}
 	}
 	for _, tool := range tools {
 		for _, argument := range tool.Arguments {
 			if match(argument.Flag) {
-				return fmt.Errorf("%w: cli spec flag %q executes a program", ErrUnauthorized, argument.Flag)
+				return fmt.Errorf("%w: cli spec flag %q executes a program", api.ErrUnauthorized, argument.Flag)
 			}
 		}
 	}

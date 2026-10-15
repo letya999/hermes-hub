@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"os"
 	"strconv"
@@ -17,7 +18,7 @@ type cellSidecar struct {
 // cellEgress builds the internal network plus the egress proxies the plan
 // earned: a Squid CONNECT allowlist when real egress hosts are declared, and
 // a cred-proxy when the request carries brokered credentials.
-func (c *genericController) cellEgress(ctx context.Context, cell *cliCell, egress []string, brokered []cliBrokeredCred) (string, []cellSidecar, error) {
+func (c *genericController) cellEgress(ctx context.Context, cell *cliCell, egress []string, brokered []api.CliBrokeredCred) (string, []cellSidecar, error) {
 	cfg := c.config.CLI
 	network := "hermes-" + cell.name + "-net"
 	ok := false
@@ -72,7 +73,7 @@ func (c *genericController) cellSquid(ctx context.Context, cellName, network str
 	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=cli-cell"}, append(c.scopeLabelArgs(), proxyVol)...)...); err != nil {
 		return cellSidecar{}, err
 	}
-	proxyConfig, err := genericProxyConfig(egress)
+	proxyConfig, err := api.GenericProxyConfig(egress)
 	if err != nil {
 		return cellSidecar{}, err
 	}
@@ -88,7 +89,7 @@ func (c *genericController) cellSquid(ctx context.Context, cellName, network str
 		return cellSidecar{}, err
 	}
 	if c.scope != nil {
-		c.scope.register(proxyName)
+		c.scope.Register(proxyName)
 	}
 	if _, err := c.docker(ctx, "cp", fileName, proxyName+":/etc/squid/squid.conf"); err != nil {
 		return cellSidecar{}, err
@@ -108,7 +109,7 @@ func (c *genericController) cellSquid(ctx context.Context, cellName, network str
 // cellCredProxy runs cellinit cred-proxy in a throwaway companion and writes
 // the header rules into its tmpfs — rules hold the real credential, so the
 // file goes through docker cp, never argv/env/inspect.
-func (c *genericController) cellCredProxy(ctx context.Context, cellName, network string, brokered []cliBrokeredCred, toolsImage string) (cellSidecar, error) {
+func (c *genericController) cellCredProxy(ctx context.Context, cellName, network string, brokered []api.CliBrokeredCred, toolsImage string) (cellSidecar, error) {
 	name := cellName + "-cred"
 	rules := map[string]map[string]string{}
 	for _, cred := range brokered {
@@ -138,7 +139,7 @@ func (c *genericController) cellCredProxy(ctx context.Context, cellName, network
 		return cellSidecar{}, err
 	}
 	if c.scope != nil {
-		c.scope.register(name)
+		c.scope.Register(name)
 	}
 	if _, err := c.docker(ctx, "cp", fileName, name+":/tmp/rules.json"); err != nil {
 		return cellSidecar{}, err

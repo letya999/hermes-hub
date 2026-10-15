@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log"
 	"net/http"
@@ -23,7 +24,7 @@ const (
 
 type Gateway struct {
 	Store                      *Store
-	Backend                    ToolBackend
+	Backend                    api.ToolBackend
 	Tokens                     map[string]identity.Envelope
 	primaryToken               string
 	tokensFile                 string
@@ -31,9 +32,9 @@ type Gateway struct {
 	DisableLocalhostProtection bool
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
-	Injector                   CredentialInjector
+	Injector                   api.CredentialInjector
 	Control                    *ControlPlane
-	// Governance is the host-owned tool policy document (issue 139). Nil
+	// governance is the host-owned tool policy document (issue 139). Nil
 	// keeps the legacy projection behavior; a configured but unreadable
 	// document fails every projection closed.
 	Governance *GovernanceStore
@@ -43,7 +44,7 @@ type Gateway struct {
 	ControlToken string
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
-	CLIRelease  func(context.Context, cliReleaseRequest) error
+	CLIRelease  func(context.Context, api.CliReleaseRequest) error
 	projections map[string]*gatewayProjection
 }
 
@@ -52,17 +53,17 @@ type gatewayProjection struct {
 	server   *mcp.Server
 	handler  http.Handler
 	mu       sync.Mutex
-	tools    map[string]ToolSpec
+	tools    map[string]api.ToolSpec
 	controls map[string]bool
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
 	if g == nil || g.Store == nil || g.Backend == nil || len(g.Tokens) == 0 {
-		return nil, fmt.Errorf("%w: gateway dependencies", ErrInvalid)
+		return nil, fmt.Errorf("%w: gateway dependencies", api.ErrInvalid)
 	}
 	for token, auth := range g.Tokens {
 		if len(token) < 32 || auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion) != nil {
-			return nil, fmt.Errorf("%w: gateway token identity", ErrInvalid)
+			return nil, fmt.Errorf("%w: gateway token identity", api.ErrInvalid)
 		}
 	}
 	g.projections = make(map[string]*gatewayProjection, len(g.Tokens))
@@ -177,7 +178,7 @@ func (g *Gateway) serveCLIJobRelease(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err := g.CLIRelease(r.Context(), cliReleaseRequest{PrincipalID: auth.PrincipalID, JobID: body.JobID, Reason: "job-end"}); err != nil {
+	if err := g.CLIRelease(r.Context(), api.CliReleaseRequest{PrincipalID: auth.PrincipalID, JobID: body.JobID, Reason: "job-end"}); err != nil {
 		http.Error(w, "cell release failed", http.StatusServiceUnavailable)
 		return
 	}
@@ -241,8 +242,8 @@ func (g *Gateway) protect() http.Handler {
 			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		corr := headerCorrelation(r.Header.Get(HeaderJobID), r.Header.Get(HeaderRunID))
-		r = r.WithContext(withCallCorrelation(r.Context(), corr))
+		corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
+		r = r.WithContext(api.WithCallCorrelation(r.Context(), corr))
 		projection.handler.ServeHTTP(w, r)
 	})
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ func TestGovernanceAttributeRulesDoNotCollideForLongPrincipal(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	doc, err := toolhub.LoadGovernance(govPath)
+	doc, err := api.LoadGovernance(govPath)
 	if err != nil || len(doc.Rules) != 3 {
 		t.Fatalf("distinct fixture rules lost: %v %v", doc, err)
 	}
@@ -44,7 +45,7 @@ func TestGovernanceCLIRuleGrantRevoke(t *testing.T) {
 	if err := runGovernance(context.Background(), append(base, "--kind", "status")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := toolhub.LoadGovernance(govPath); !os.IsNotExist(err) {
+	if _, err := api.LoadGovernance(govPath); !os.IsNotExist(err) {
 		t.Fatal("status must not create the document")
 	}
 
@@ -55,7 +56,7 @@ func TestGovernanceCLIRuleGrantRevoke(t *testing.T) {
 	if err := runGovernance(context.Background(), append(base, "--kind", "rule", "--scope", "user", "--user", "alice", "--section", "user_mcp", "--effect", "allow", "--reason", "allow alice user mcp", "--confirm")); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := toolhub.LoadGovernance(govPath)
+	doc, err := api.LoadGovernance(govPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestGovernanceCLIRuleGrantRevoke(t *testing.T) {
 	if err := runGovernance(context.Background(), retire); err != nil {
 		t.Fatal(err)
 	}
-	doc, _ = toolhub.LoadGovernance(govPath)
+	doc, _ = api.LoadGovernance(govPath)
 	if doc.Evaluate("alice", "", "user_mcp", nil, time.Now()).Allowed() {
 		t.Fatal("disabled rule still grants access")
 	}
@@ -83,22 +84,22 @@ func TestGovernanceCLIRuleGrantRevoke(t *testing.T) {
 	if err := runGovernance(context.Background(), append(base, "--kind", "grant", "--user", "alice", "--section", "org_mcp", "--expires", "24h", "--reason", "host approved", "--confirm")); err != nil {
 		t.Fatal(err)
 	}
-	doc, _ = toolhub.LoadGovernance(govPath)
-	var pending *toolhub.ToolGrant
+	doc, _ = api.LoadGovernance(govPath)
+	var pending *api.ToolGrant
 	for i := range doc.Grants {
 		if doc.Grants[i].Section == "org_mcp" {
 			pending = &doc.Grants[i]
 		}
 	}
-	if pending == nil || pending.Status != toolhub.GrantPending {
+	if pending == nil || pending.Status != api.GrantPending {
 		t.Fatalf("grant not pending: %+v", pending)
 	}
 	if err := runGovernance(context.Background(), append(base, "--kind", "revoke", "--grant", pending.GrantID, "--reason", "cleanup")); err != nil {
 		t.Fatal(err)
 	}
-	doc, _ = toolhub.LoadGovernance(govPath)
+	doc, _ = api.LoadGovernance(govPath)
 	for _, g := range doc.Grants {
-		if g.GrantID == pending.GrantID && g.Status != toolhub.GrantRevoked {
+		if g.GrantID == pending.GrantID && g.Status != api.GrantRevoked {
 			t.Fatal("revoke did not land")
 		}
 	}
@@ -131,8 +132,8 @@ func TestGovernanceCLIRuleGrantRevoke(t *testing.T) {
 	if err := runGovernance(context.Background(), append(base, "--kind", "rule", "--scope", "global", "--match", "owner=external", "--effect", "deny", "--reason", "deny external installs", "--expires", "72h", "--confirm")); err != nil {
 		t.Fatal(err)
 	}
-	doc, _ = toolhub.LoadGovernance(govPath)
-	if d := doc.Evaluate("alice", "", "toolhub", map[string]string{"owner": "external"}, time.Now()); d.Effect != toolhub.RuleDeny {
+	doc, _ = api.LoadGovernance(govPath)
+	if d := doc.Evaluate("alice", "", "toolhub", map[string]string{"owner": "external"}, time.Now()); d.Effect != api.RuleDeny {
 		t.Fatalf("match rule not applied: %+v", d)
 	}
 }
@@ -151,7 +152,7 @@ func TestGovernanceCLIStorePathDerivation(t *testing.T) {
 	if err := runGovernance(context.Background(), []string{"--kind", "rule", "--section", "user_mcp", "--reason", "x", "--confirm", "--toolhub-store", storePath}); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := toolhub.LoadGovernance(govPath)
+	doc, err := api.LoadGovernance(govPath)
 	if err != nil || doc == nil {
 		t.Fatalf("rule path did not persist: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestGovernanceCLIFailClosedCorrupt(t *testing.T) {
 	if err := runGovernance(context.Background(), []string{"--kind", "status", "--governance", govPath}); err == nil {
 		t.Fatal("corrupt governance doc reported as status")
 	}
-	doc, loadErr := toolhub.LoadGovernance(govPath)
+	doc, loadErr := api.LoadGovernance(govPath)
 	if loadErr == nil || doc != nil {
 		t.Fatal("corrupt doc silently replaced")
 	}

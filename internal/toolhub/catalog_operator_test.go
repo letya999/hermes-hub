@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,18 +13,18 @@ import (
 )
 
 func TestShippedCLITrustRequiresExactReleaseBytes(t *testing.T) {
-	for _, d := range CLICatalogDefinitions() {
-		attrs := projectedToolAttrs(EffectiveBinding{Definition: d}, d.Tools[0])
-		if attrs["owner"] != OwnerHub || attrs["official"] != "true" {
+	for _, d := range api.CLICatalogDefinitions() {
+		attrs := projectedToolAttrs(api.EffectiveBinding{Definition: d}, d.Tools[0])
+		if attrs["owner"] != api.OwnerHub || attrs["official"] != "true" {
 			t.Fatalf("shipped catalog not trusted: %v", attrs)
 		}
-		g := NewGovernance()
-		if g.Evaluate("alice", "", SectionToolHub, attrs, time.Now()).Effect != RuleAllow {
+		g := api.NewGovernance()
+		if g.Evaluate("alice", "", api.SectionToolHub, attrs, time.Now()).Effect != api.RuleAllow {
 			t.Fatal("shipped CLI still needs transport-wide workaround")
 		}
 		d.Source.Args = []string{"--malicious"}
-		attrs = projectedToolAttrs(EffectiveBinding{Definition: d}, d.Tools[0])
-		if attrs["owner"] != OwnerExternal || attrs["official"] != "false" || g.Evaluate("alice", "", SectionToolHub, attrs, time.Now()).Effect != RuleDeny {
+		attrs = projectedToolAttrs(api.EffectiveBinding{Definition: d}, d.Tools[0])
+		if attrs["owner"] != api.OwnerExternal || attrs["official"] != "false" || g.Evaluate("alice", "", api.SectionToolHub, attrs, time.Now()).Effect != api.RuleDeny {
 			t.Fatalf("id/transport spoof trusted: %v", attrs)
 		}
 	}
@@ -31,7 +32,7 @@ func TestShippedCLITrustRequiresExactReleaseBytes(t *testing.T) {
 
 func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	s, auth, policy, profile := managedStore(t)
-	d := CLICatalogDefinitions()[1]
+	d := api.CLICatalogDefinitions()[1]
 	if err := s.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 		t.Fatal(loadErr)
 	}
 	before, _ := os.ReadFile(p)
-	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("implicit ceiling widening: %v", err)
 	}
 	after, _ := os.ReadFile(p)
@@ -63,7 +64,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	}
 	foreign := auth
 	foreign.PrincipalID = "bob"
-	if _, err := s.EnableCatalog(foreign, d.DefinitionID, d.Version, "operator", true); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.EnableCatalog(foreign, d.DefinitionID, d.Version, "operator", true); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("foreign profile accepted: %v", err)
 	}
 	binding, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", true)
@@ -109,7 +110,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision := stale.capabilityProfiles[auth.CapabilityProfile].Revision
-	if _, err := stale.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, ErrConflict) {
+	if _, err := stale.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale writer accepted: %v", err)
 	}
 	if stale.capabilityProfiles[auth.CapabilityProfile].Revision != revision {
@@ -117,7 +118,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	}
 }
 
-func containsProjectedBinding(tools []ProjectedTool, id string) bool {
+func containsProjectedBinding(tools []api.ProjectedTool, id string) bool {
 	for _, tool := range tools {
 		if tool.BindingID == id {
 			return true
@@ -128,14 +129,14 @@ func containsProjectedBinding(tools []ProjectedTool, id string) bool {
 
 func TestCatalogEnableRejectsMissingManagedContractAtomically(t *testing.T) {
 	s, auth, _, profile := managedStore(t)
-	d := CLICatalogDefinitions()[1]
+	d := api.CLICatalogDefinitions()[1]
 	d.Version = "9.0.0"
 	d.Tools[0].CapabilityID = ""
 	d.Tools[0].Uses = nil
 	if err := s.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", true); !errors.Is(err, ErrInvalid) {
+	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", true); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("uncontracted tool admitted: %v", err)
 	}
 	if s.capabilityProfiles[profile.ProfileID].Revision != profile.Revision {
@@ -150,7 +151,7 @@ func TestCatalogEnableRejectsMissingManagedContractAtomically(t *testing.T) {
 
 func TestCatalogEnablePreservesExplicitManagedDeny(t *testing.T) {
 	s, auth, _, _ := managedStore(t)
-	d := CLICatalogDefinitions()[1]
+	d := api.CLICatalogDefinitions()[1]
 	if err := s.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}
@@ -160,8 +161,8 @@ func TestCatalogEnablePreservesExplicitManagedDeny(t *testing.T) {
 	}
 	profile := s.capabilityProfiles[auth.CapabilityProfile]
 	for _, rule := range profile.Allows {
-		if rule.ImplementationDigest == DefinitionDigest(d) {
-			rule.Limits = CapabilityLimits{}
+		if rule.ImplementationDigest == api.DefinitionDigest(d) {
+			rule.Limits = api.CapabilityLimits{}
 			profile.Denies = append(profile.Denies, rule)
 		}
 	}
@@ -186,7 +187,7 @@ func TestCatalogEnablePreservesExplicitManagedDeny(t *testing.T) {
 
 func TestCatalogEnableConcurrentAndDenials(t *testing.T) {
 	s := NewStore()
-	d := CLICatalogDefinitions()[1]
+	d := api.CLICatalogDefinitions()[1]
 	if err := s.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}
@@ -206,39 +207,39 @@ func TestCatalogEnableConcurrentAndDenials(t *testing.T) {
 		t.Fatalf("duplicate bindings: %d", len(s.bindings))
 	}
 	for id, binding := range s.bindings {
-		for _, status := range []Status{DisabledStatus, RevokedStatus} {
+		for _, status := range []api.Status{api.DisabledStatus, api.RevokedStatus} {
 			binding.Status = status
 			s.bindings[id] = binding
-			if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, ErrConflict) {
+			if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrConflict) {
 				t.Fatalf("catalog resurrected %s binding: %v", status, err)
 			}
 		}
-		binding.Status = ActiveStatus
+		binding.Status = api.ActiveStatus
 		binding.PolicyVersion = "stale-policy"
 		s.bindings[id] = binding
-		if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, ErrConflict) {
+		if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrConflict) {
 			t.Fatal("catalog silently replaced stale authority")
 		}
 	}
 	for _, issuer := range []string{"model", "hermes", ""} {
-		if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, issuer, false); !errors.Is(err, ErrUnauthorized) {
+		if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, issuer, false); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.EnableCatalog(auth, "missing", d.Version, "operator", false); !errors.Is(err, ErrNotFound) {
+	if _, err := s.EnableCatalog(auth, "missing", d.Version, "operator", false); !errors.Is(err, api.ErrNotFound) {
 		t.Fatal(err)
 	}
 	bad := auth
 	bad.PrincipalID = "../bob"
-	if _, err := s.EnableCatalog(bad, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, ErrInvalid) {
+	if _, err := s.EnableCatalog(bad, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal(err)
 	}
 	d.Version = "9.0.0"
-	d.Credentials = []CredentialInput{{Name: "ACCESS_TOKEN", Required: true}}
+	d.Credentials = []api.CredentialInput{{Name: "ACCESS_TOKEN", Required: true}}
 	if err := s.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatal(err)
 	}
 }
@@ -246,7 +247,7 @@ func TestCatalogEnableConcurrentAndDenials(t *testing.T) {
 func TestCLIReleaseWrongFieldHasActionableError(t *testing.T) {
 	fix := controlCLIFixture(t, true)
 	_, err := fix.control.prepareSource(context.Background(), aliceAuth(), map[string]any{"source": "github-release:jqlang/jq@latest"})
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "cli.source") {
+	if !errors.Is(err, api.ErrInvalid) || !strings.Contains(err.Error(), "cli.source") {
 		t.Fatalf("wrong-field hint: %v", err)
 	}
 	_, schema := controlToolContract("prepare_source")
@@ -259,7 +260,7 @@ func TestCLIReleaseWrongFieldHasActionableError(t *testing.T) {
 		if _, err := cliSpecTools(spec["tools"]); err != nil {
 			t.Fatalf("example cannot compile: %v", err)
 		}
-		if _, err := parseGitHubReleaseSource(argString(spec, "source"), argString(spec, "asset"), "", ""); err != nil {
+		if _, err := api.ParseGitHubReleaseSource(api.ArgString(spec, "source"), api.ArgString(spec, "asset"), "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

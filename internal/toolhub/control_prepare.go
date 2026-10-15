@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"maps"
 	"slices"
@@ -15,9 +16,9 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	if _, requested := args["telegram_send"]; requested {
 		return c.prepareTelegramSend(ctx, auth, args)
 	}
-	requestKey := argString(args, "request_key")
+	requestKey := api.ArgString(args, "request_key")
 	if requestKey != "" {
-		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != PhaseFailed && existing.Phase != PhaseRemoved {
+		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved {
 			if err := c.regenerateBrokerRequest(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
@@ -33,44 +34,44 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 			return c.statusBody(existing, false), nil
 		}
 	}
-	source := argString(args, "source")
+	source := api.ArgString(args, "source")
 	if strings.HasPrefix(source, "github-release:") {
-		return nil, fmt.Errorf("%w: CLI release source belongs in cli.source; supply cli.name, cli.binary and cli.asset, not top-level source", ErrInvalid)
+		return nil, fmt.Errorf("%w: CLI release source belongs in cli.source; supply cli.name, cli.binary and cli.asset, not top-level source", api.ErrInvalid)
 	}
-	definitionID := argString(args, "definition_id")
-	version := argString(args, "version")
+	definitionID := api.ArgString(args, "definition_id")
+	version := api.ArgString(args, "version")
 	if spec, requested := args["cli"]; requested {
-		if source != "" || definitionID != "" || version != "" || argString(args, "remote_url") != "" || argString(args, "candidate_id") != "" {
-			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
+		if source != "" || definitionID != "" || version != "" || api.ArgString(args, "remote_url") != "" || api.ArgString(args, "candidate_id") != "" {
+			return nil, fmt.Errorf("%w: select one source", api.ErrInvalid)
 		}
 		return c.prepareCLI(ctx, auth, spec, requestKey)
 	}
-	if remote := argString(args, "remote_url"); remote != "" {
-		if source != "" || definitionID != "" || version != "" || argString(args, "candidate_id") != "" {
-			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
+	if remote := api.ArgString(args, "remote_url"); remote != "" {
+		if source != "" || definitionID != "" || version != "" || api.ArgString(args, "candidate_id") != "" {
+			return nil, fmt.Errorf("%w: select one source", api.ErrInvalid)
 		}
 		return c.prepareRemote(ctx, auth, remote, args)
 	}
-	var selected *RecipeCandidate
-	if candidate := argString(args, "candidate_id"); candidate != "" {
+	var selected *api.RecipeCandidate
+	if candidate := api.ArgString(args, "candidate_id"); candidate != "" {
 		if source != "" || definitionID != "" || version != "" {
-			return nil, fmt.Errorf("%w: select one source", ErrInvalid)
+			return nil, fmt.Errorf("%w: select one source", api.ErrInvalid)
 		}
 		choice, err := c.selectedCandidate(auth, candidate)
 		if err != nil {
 			return nil, err
 		}
-		source = choice.sourceURL()
+		source = choice.SourceURL()
 		if choice.Source.CommitSHA == "" && choice.Source.Subfolder != "" {
 			if c.SourceResolver == nil {
-				return nil, fmt.Errorf("%w: source resolver unavailable", ErrInvalid)
+				return nil, fmt.Errorf("%w: source resolver unavailable", api.ErrInvalid)
 			}
 			pinned, err := c.SourceResolver(ctx, choice.Source.Repository)
 			if err != nil {
 				return nil, err
 			}
 			if pinned.Repository != choice.Source.Repository || pinned.Subfolder != "" {
-				return nil, fmt.Errorf("%w: source resolution drift", ErrStale)
+				return nil, fmt.Errorf("%w: source resolution drift", api.ErrStale)
 			}
 			pinned.Subfolder = choice.Source.Subfolder
 			if _, err := pinned.ArchiveURL(); err != nil {
@@ -78,7 +79,7 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 			}
 			source = pinned.Repository + "/tree/" + pinned.CommitSHA + "/" + pinned.Subfolder
 		}
-		selected = choice.recipe
+		selected = choice.Recipe
 	}
 	if source != "" {
 		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, selected)
@@ -86,7 +87,7 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	if definitionID != "" && version != "" {
 		return c.prepareCatalog(ctx, auth, definitionID, version, requestKey)
 	}
-	return nil, fmt.Errorf("%w: source or definition required", ErrInvalid)
+	return nil, fmt.Errorf("%w: source or definition required", api.ErrInvalid)
 }
 
 func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelope, definitionID, version, requestKey string) (map[string]any, error) {
@@ -97,7 +98,7 @@ func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelop
 	if err := c.Store.RequireCatalogAccess(auth, definition); err != nil {
 		return nil, err
 	}
-	onboarding, err := c.newOnboarding(auth, OnboardingCatalog, requestKey, definition, "", "")
+	onboarding, err := c.newOnboarding(auth, api.OnboardingCatalog, requestKey, definition, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +117,7 @@ func (c *ControlPlane) prepareWindow() time.Duration {
 	return c.PrepareSyncWindow
 }
 
-func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
+func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate) (map[string]any, error) {
 	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
 	if err != nil {
 		return nil, err
@@ -135,7 +136,7 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 // lost HTTP response no longer discards the work. The caller waits
 // PrepareSyncWindow for a completed result, then receives the durable
 // "preparing" record — the outcome is read via status afterwards.
-func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
+func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate) (map[string]any, error) {
 	if window := c.prepareWindow(); window < 0 {
 		return c.prepareSelfInstall(ctx, auth, sourceURL, requestKey, selected)
 	}
@@ -158,7 +159,7 @@ func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identit
 	background, stop := context.WithTimeout(context.WithoutCancel(ctx), 35*time.Minute)
 	go func() {
 		defer stop()
-		deliverPrepareEvent(background, auth, preparing, "prepare-started")
+		api.DeliverPrepareEvent(background, auth, preparing, "prepare-started")
 		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected)
 		latest := c.latestPrepareRecord(auth, preparing)
 		log.Printf("toolhub prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.Phase, err)
@@ -179,26 +180,26 @@ func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identit
 	return c.statusBody(preparing, false), nil
 }
 
-func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identity.Envelope, sourceURL string) (ArtifactSource, ArtifactImportConfig, error) {
+func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identity.Envelope, sourceURL string) (api.ArtifactSource, api.ArtifactImportConfig, error) {
 	if err := c.Store.RequireSelfInstall(auth); err != nil {
-		return ArtifactSource{}, ArtifactImportConfig{}, err
+		return api.ArtifactSource{}, api.ArtifactImportConfig{}, err
 	}
-	source, err := ParseGitHubSource(sourceURL)
+	source, err := api.ParseGitHubSource(sourceURL)
 	unpinned := err != nil
 	if unpinned && c.SourceResolver != nil {
 		source, err = c.SourceResolver(ctx, sourceURL)
 	}
 	if err != nil {
-		return ArtifactSource{}, ArtifactImportConfig{}, err
+		return api.ArtifactSource{}, api.ArtifactImportConfig{}, err
 	}
 	// A bare URL means "this repository", not mutable HEAD: with a reviewed
 	// prepared entry its pinned commit is the source, never drifting code.
 	if unpinned {
-		if prepared, ok, perr := preparedForRepository(source.Repository, source.Subfolder); perr == nil && ok {
+		if prepared, ok, perr := api.PreparedForRepository(source.Repository, source.Subfolder); perr == nil && ok {
 			source = prepared.Source
 		}
 	}
-	return source, defaultSelfInstallConfig(source), nil
+	return source, api.DefaultSelfInstallConfig(source), nil
 }
 
 // ensurePreparing registers a preparing record before review+build so status
@@ -207,15 +208,15 @@ func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identi
 // prepare is running — callers must not spawn a second review+build. A stub
 // older than the background deadline belongs to a crashed prepare and is
 // overwritten to retry.
-func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source ArtifactSource, config ArtifactImportConfig, requestKey string) (Onboarding, bool, error) {
+func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.ArtifactSource, config api.ArtifactImportConfig, requestKey string) (api.Onboarding, bool, error) {
 	idSeed := requestKey
 	if idSeed == "" {
-		idSeed = string(OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA + ":" + source.Tag + ":" + source.Asset + ":" + source.PackageRegistry + ":" + source.PackageName + ":" + source.PackageVersion
+		idSeed = string(api.OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA + ":" + source.Tag + ":" + source.Asset + ":" + source.PackageRegistry + ":" + source.PackageName + ":" + source.PackageVersion
 	}
-	preparing := Onboarding{
-		Schema: SchemaVersion, OnboardingID: deterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
+	preparing := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: OnboardingSelfInstall, Phase: PhasePreparing, SourceURL: source.Repository, CommitSHA: source.CommitSHA,
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, SourceURL: source.Repository, CommitSHA: source.CommitSHA,
 		DefinitionID: config.DefinitionID, DefinitionVersion: config.Version,
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 	}
@@ -225,15 +226,15 @@ func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source ArtifactSo
 // latestPrepareRecord resolves the onboarding a backgrounded prepare actually
 // produced: normally the stub's own record, but a patch bump can move the
 // result to a sibling id. Best effort for the wake notification.
-func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub Onboarding) Onboarding {
-	if current, err := c.Store.onboarding(stub.OnboardingID); err == nil && current.Phase != PhaseRemoved {
+func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub api.Onboarding) api.Onboarding {
+	if current, err := c.Store.onboarding(stub.OnboardingID); err == nil && current.Phase != api.PhaseRemoved {
 		return current
 	}
 	c.Store.mu.RLock()
 	defer c.Store.mu.RUnlock()
 	latest := stub
 	for _, candidate := range c.Store.onboardings {
-		if candidate.PrincipalID != auth.PrincipalID || candidate.ContextID != auth.ContextID || candidate.RuntimeID != auth.RuntimeID || candidate.PolicyVersion != auth.PolicyVersion || candidate.Phase == PhaseRemoved {
+		if candidate.PrincipalID != auth.PrincipalID || candidate.ContextID != auth.ContextID || candidate.RuntimeID != auth.RuntimeID || candidate.PolicyVersion != auth.PolicyVersion || candidate.Phase == api.PhaseRemoved {
 			continue
 		}
 		same := stub.IdempotencyKey != "" && candidate.IdempotencyKey == stub.IdempotencyKey
@@ -247,23 +248,23 @@ func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub Onboardi
 	return latest
 }
 
-func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing Onboarding, source ArtifactSource, requestKey string, selected *RecipeCandidate) (map[string]any, error) {
+func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, requestKey string, selected *api.RecipeCandidate) (map[string]any, error) {
 	failPrepare := func(err error) (map[string]any, error) {
-		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == PhasePreparing {
-			latest.Phase = PhaseFailed
-			if persistErr := c.persistFailure(latest, publicPrepareError(err), err); persistErr != err {
+		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == api.PhasePreparing {
+			latest.Phase = api.PhaseFailed
+			if persistErr := c.persistFailure(latest, api.PublicPrepareError(err), err); persistErr != err {
 				return nil, persistErr
 			}
 		}
 		return nil, err
 	}
-	review := SourceReview{}
+	review := api.SourceReview{}
 	var err error
 	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) {
-		review = SourceReview{Definition: existing, Permissions: toolNames(existing), Effects: effectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
+		review = api.SourceReview{Definition: existing, Permissions: api.ToolNames(existing), Effects: api.EffectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
-			return failPrepare(fmt.Errorf("%w: source reviewer unavailable", ErrInvalid))
+			return failPrepare(fmt.Errorf("%w: source reviewer unavailable", api.ErrInvalid))
 		}
 		review, err = c.Reviewer(ctx, source, selected)
 		if err != nil {
@@ -277,7 +278,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		return failPrepare(err)
 	}
 	if !c.selfInstallUsable(review.Definition) {
-		return failPrepare(fmt.Errorf("%w: no reviewed credential broker contract covers %s credentials", ErrUnauthorized, review.Definition.DefinitionID))
+		return failPrepare(fmt.Errorf("%w: no reviewed credential broker contract covers %s credentials", api.ErrUnauthorized, review.Definition.DefinitionID))
 	}
 	// The produced definition may differ from an immutable record stored under
 	// the same id+version by an older pipeline (for example, without a broker
@@ -285,7 +286,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	// stored record is identical.
 	for i := 0; i < 100; i++ {
 		stored, lookupErr := c.Store.Definition(review.Definition.DefinitionID, review.Definition.Version)
-		if lookupErr != nil || definitionsEqual(stored, review.Definition) {
+		if lookupErr != nil || api.DefinitionsEqual(stored, review.Definition) {
 			break
 		}
 		review.Definition.Version = nextPatchVersion(review.Definition.Version)
@@ -296,17 +297,17 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	if err := c.Store.RegisterDefinition(review.Definition); err != nil {
 		return failPrepare(err)
 	}
-	if err := c.Store.PutPublication(DefinitionPublication{DefinitionID: review.Definition.DefinitionID, Version: review.Definition.Version, Visibility: PublicationUser, OwnerPrincipalID: auth.PrincipalID}); err != nil {
+	if err := c.Store.PutPublication(api.DefinitionPublication{DefinitionID: review.Definition.DefinitionID, Version: review.Definition.Version, Visibility: api.PublicationUser, OwnerPrincipalID: auth.PrincipalID}); err != nil {
 		return failPrepare(err)
 	}
-	onboarding, err := c.newOnboarding(auth, OnboardingSelfInstall, requestKey, review.Definition, source.Repository, source.CommitSHA)
+	onboarding, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, review.Definition, source.Repository, source.CommitSHA)
 	if err != nil {
 		return failPrepare(err)
 	}
 	if onboarding.OnboardingID != preparing.OnboardingID {
 		// A patch bump or a reviewed definition id shifted the deterministic
 		// key; callers holding the stub id follow SupersededBy to the result.
-		preparing.Phase = PhaseRemoved
+		preparing.Phase = api.PhaseRemoved
 		preparing.SupersededBy = onboarding.OnboardingID
 		if err := c.Store.PutOnboarding(preparing); err != nil {
 			log.Printf("toolhub: superseded onboarding stub %s not recorded: %v", preparing.OnboardingID, err)
@@ -325,9 +326,9 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	// a URL-only contract needs no token. The phase must reflect the final
 	// Required set or the onboarding deadlocks: confirm rejects a missing
 	// locator while the broker URL only surfaces in awaiting-credentials.
-	if len(onboarding.Required) > 0 && onboarding.Locator == "" && onboarding.Phase == PhaseAwaitingConfirm {
-		onboarding.Phase = PhaseAwaitingCreds
-		onboarding.FormNonce = randomNonce()
+	if len(onboarding.Required) > 0 && onboarding.Locator == "" && onboarding.Phase == api.PhaseAwaitingConfirm {
+		onboarding.Phase = api.PhaseAwaitingCreds
+		onboarding.FormNonce = api.RandomNonce()
 		onboarding.FormExpires = c.now().Add(c.ttl())
 		onboarding.ConfirmationNonce = ""
 		onboarding.ConfirmationExpires = time.Time{}
@@ -343,23 +344,11 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	return c.statusBody(onboarding, false), nil
 }
 
-func publicPrepareError(err error) string {
-	if err == nil {
-		return ""
-	}
-	text := secretValuePattern.ReplaceAllString(err.Error(), "[redacted]")
-	text = strings.Join(strings.Fields(text), " ")
-	if len(text) > 400 {
-		text = text[:400]
-	}
-	return text
-}
-
 // selfInstallUsable reports whether a stored definition can proceed past the
 // broker-contract gate, so stale records predating contract binding are not
 // reused and re-registered into an eternal failure.
-func completeToolSchemas(definition ToolDefinition) bool {
-	if definition.Source.ToolContractSource != ToolContractPreflight {
+func completeToolSchemas(definition api.ToolDefinition) bool {
+	if definition.Source.ToolContractSource != api.ToolContractPreflight {
 		return true
 	}
 	for _, tool := range definition.Tools {
@@ -374,12 +363,12 @@ func completeToolSchemas(definition ToolDefinition) bool {
 // contract no longer verifies. Reuse skips re-review, so a record stamped by
 // an older pipeline would otherwise reach admission and fail there with a
 // digest-drift error. Failing closed here forces a fresh review instead.
-func selfInstallContractIntact(definition ToolDefinition) bool {
-	return verifyDefinitionToolContract(definition) == nil
+func selfInstallContractIntact(definition api.ToolDefinition) bool {
+	return api.VerifyDefinitionToolContract(definition) == nil
 }
 
-func (c *ControlPlane) selfInstallUsable(definition ToolDefinition) bool {
-	entry, matched, err := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA, Subfolder: definition.Source.Subfolder})
+func (c *ControlPlane) selfInstallUsable(definition api.ToolDefinition) bool {
+	entry, matched, err := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA, Subfolder: definition.Source.Subfolder})
 	if err != nil {
 		return false
 	}

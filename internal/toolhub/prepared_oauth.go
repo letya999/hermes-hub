@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,10 +34,10 @@ type oauthFlowStore struct {
 
 // ensurePreparedOAuth starts only a reviewed OAuth handoff. Tool output is
 // never interpreted as an authorization URL or a provider configuration.
-func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.Envelope, onboarding Onboarding, definition ToolDefinition) (map[string]any, error) {
-	entry, matched, err := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA})
+func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition) (map[string]any, error) {
+	entry, matched, err := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA})
 	if err != nil || !matched || entry.OAuth == nil || c.Injector == nil || c.Secrets == nil {
-		return nil, ErrUnauthorized
+		return nil, api.ErrUnauthorized
 	}
 	c.oauthFlows.mu.Lock()
 	// ponytail: one lock serializes handoff creation; use per-onboarding locks if starts become a bottleneck.
@@ -47,7 +48,7 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 			continue
 		}
 		if flow.onboardingID == onboarding.OnboardingID {
-			onboarding.Phase = PhaseAwaitingOAuth
+			onboarding.Phase = api.PhaseAwaitingOAuth
 			onboarding.ProviderAuthorizationURL = flow.url
 			return c.statusBody(onboarding, false), nil
 		}
@@ -75,16 +76,16 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		}
 	}
 	if clientFile == "" || stateDir == "" {
-		return nil, ErrIsolation
+		return nil, api.ErrIsolation
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, entry.OAuth.TokenFile)); err == nil {
-		return nil, fmt.Errorf("%w: existing token state requires diagnosis", ErrUnauthorized)
+		return nil, fmt.Errorf("%w: existing token state requires diagnosis", api.ErrUnauthorized)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	data, err := os.ReadFile(clientFile)
 	if err != nil || len(data) > 65536 {
-		return nil, ErrIsolation
+		return nil, api.ErrIsolation
 	}
 	defer clear(data)
 	var document struct {
@@ -100,28 +101,28 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		} `json:"web"`
 	}
 	if json.Unmarshal(data, &document) != nil {
-		return nil, ErrInvalid
+		return nil, api.ErrInvalid
 	}
 	redirect := c.origin() + "/oauth/callback"
 	client := document.Installed
 	if client == nil {
 		client = document.Web
 		if client == nil {
-			return nil, ErrInvalid
+			return nil, api.ErrInvalid
 		}
 		allowed := false
 		for _, uri := range client.URIs {
 			allowed = allowed || uri == redirect
 		}
 		if !allowed {
-			return nil, fmt.Errorf("%w: OAuth web client callback is not registered", ErrInvalid)
+			return nil, fmt.Errorf("%w: OAuth web client callback is not registered", api.ErrInvalid)
 		}
 	}
 	if client.ID == "" || client.Secret == "" {
-		return nil, ErrInvalid
+		return nil, api.ErrInvalid
 	}
 	if _, ok := oauth.OfficialProviders()[entry.OAuth.Provider]; !ok {
-		return nil, ErrInvalid
+		return nil, api.ErrInvalid
 	}
 	broker := oauth.NewBroker(c.Secrets, []string{redirect})
 	broker.Clients[entry.OAuth.Provider] = oauth.ClientCredential{ID: client.ID, Secret: client.Secret}
@@ -130,13 +131,13 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		return nil, err
 	}
 	if !validPreparedOAuthURL(start.AuthorizeURL) {
-		return nil, ErrInvalid
+		return nil, api.ErrInvalid
 	}
 	if c.oauthFlows.flows == nil {
 		c.oauthFlows.flows = make(map[string]*preparedOAuthFlow)
 	}
 	c.oauthFlows.flows[start.State] = &preparedOAuthFlow{onboardingID: onboarding.OnboardingID, url: start.AuthorizeURL, expires: c.now().Add(c.ttl()), broker: broker}
-	onboarding.Phase = PhaseAwaitingOAuth
+	onboarding.Phase = api.PhaseAwaitingOAuth
 	onboarding.ProviderAuthorizationURL = start.AuthorizeURL
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -146,18 +147,18 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) preparedOAuthEffective(auth identity.Envelope, definition ToolDefinition) (EffectiveBinding, error) {
+func (c *ControlPlane) preparedOAuthEffective(auth identity.Envelope, definition api.ToolDefinition) (api.EffectiveBinding, error) {
 	c.Store.mu.RLock()
 	matches := c.Store.matchingOwnerConnectionsLocked(auth, definition)
 	c.Store.mu.RUnlock()
 	if len(matches) != 1 || matches[0].credential.BrokerGrantID == "" {
-		return EffectiveBinding{}, ErrUnauthorized
+		return api.EffectiveBinding{}, api.ErrUnauthorized
 	}
 	connection, credential := matches[0].connection, matches[0].credential
-	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
-	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	ownerID := auth.ContextID + ":" + auth.PrincipalID + ":" + connection.ConnectionID
-	return EffectiveBinding{Binding: binding, Definition: definition, Connection: &connection, Credential: &credential, WorkloadID: WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")}, nil
+	return api.EffectiveBinding{Binding: binding, Definition: definition, Connection: &connection, Credential: &credential, WorkloadID: api.WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")}, nil
 }
 
 func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code string) error {
@@ -166,11 +167,11 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	delete(c.oauthFlows.flows, state)
 	c.oauthFlows.mu.Unlock()
 	if flow == nil || !c.now().Before(flow.expires) || code == "" {
-		return ErrUnauthorized
+		return api.ErrUnauthorized
 	}
 	onboarding, err := c.Store.onboarding(flow.onboardingID)
-	if err != nil || onboarding.Phase != PhaseAwaitingOAuth {
-		return ErrUnauthorized
+	if err != nil || onboarding.Phase != api.PhaseAwaitingOAuth {
+		return api.ErrUnauthorized
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 	meta, err := flow.broker.HandleCallback(auth.PrincipalID, auth.ContextID, onboarding.OnboardingID, state, code, c.origin()+"/oauth/callback")
@@ -193,9 +194,9 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	if err != nil {
 		return err
 	}
-	entry, matched, err := preparedForSource(ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA})
+	entry, matched, err := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA})
 	if err != nil || !matched || entry.OAuth == nil {
-		return ErrUnauthorized
+		return api.ErrUnauthorized
 	}
 	effective, err := c.preparedOAuthEffective(auth, definition)
 	if err != nil {
@@ -215,11 +216,11 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 		}
 	}
 	if stateDir == "" || values["ACCESS_TOKEN"] == "" || values["REFRESH_TOKEN"] == "" || injection.Checkpoint == nil {
-		return ErrIsolation
+		return api.ErrIsolation
 	}
 	seconds, err := strconv.Atoi(values["EXPIRES_IN"])
 	if err != nil || seconds <= 0 {
-		return ErrInvalid
+		return api.ErrInvalid
 	}
 	token := map[string]any{"access_token": values["ACCESS_TOKEN"], "refresh_token": values["REFRESH_TOKEN"], "expiry_date": c.now().Add(time.Duration(seconds) * time.Second).UnixMilli(), "token_type": values["TOKEN_TYPE"], "scope": values["OAUTH_SCOPE"]}
 	encoded, err := json.Marshal(map[string]any{entry.OAuth.TokenAccount: token})
@@ -241,7 +242,7 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	if err := injection.Checkpoint(); err != nil {
 		return err
 	}
-	onboarding.Phase = PhaseAwaitingConfirm
+	onboarding.Phase = api.PhaseAwaitingConfirm
 	onboarding.ProviderAuthorizationURL = ""
 	onboarding.ConfirmationNonce = ""
 	onboarding.ConfirmationExpires = time.Time{}

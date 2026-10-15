@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,21 +41,21 @@ func TestArtifactApproveRequiresConfirmedContract(t *testing.T) {
 
 func TestArtifactApproveRegistersOnlyWithMatchingContract(t *testing.T) {
 	root := t.TempDir()
-	definition := toolhub.ToolDefinition{
+	definition := api.ToolDefinition{
 		Schema: 1, DefinitionID: "stateful-mcp", Version: "2.1.0", Transport: "container-mcp",
-		Source: toolhub.DefinitionSource{
+		Source: api.DefinitionSource{
 			Image: "ghcr.io/example/stateful-mcp", Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			Command: "/app/server", Repository: "https://github.com/example/mcp", CommitSHA: "0123456789012345678901234567890123456789",
 			ArchiveDigest: "sha256:" + repeatHex('a'), ProvenanceDigest: "sha256:" + repeatHex('b'),
 			SBOMDigest: "sha256:" + repeatHex('c'), RecipeDigest: "sha256:" + repeatHex('d'),
 		},
-		Tools:       []toolhub.ToolSpec{{Name: "read", Effect: "read"}},
-		Credentials: []toolhub.CredentialInput{{Name: "SERVICE_TOKEN", Required: true}},
-		Workload:    toolhub.WorkloadPolicy{Class: "per-user", Stateful: true, Rationale: "Provider session and durable connector state are user-owned", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
-		Execution:   toolhub.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"service.example.com"}, Mounts: []toolhub.Mount{{Source: "connection-state", Target: "/state"}}},
-		Health:      toolhub.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
+		Tools:       []api.ToolSpec{{Name: "read", Effect: "read"}},
+		Credentials: []api.CredentialInput{{Name: "SERVICE_TOKEN", Required: true}},
+		Workload:    api.WorkloadPolicy{Class: "per-user", Stateful: true, Rationale: "Provider session and durable connector state are user-owned", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+		Execution:   api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"service.example.com"}, Mounts: []api.Mount{{Source: "connection-state", Target: "/state"}}},
+		Health:      api.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
 	}
-	packet := toolhub.ImportedArtifact{Definition: definition, Recipe: toolhub.ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}}, Artifact: toolhub.StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: toolhub.OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}}}
+	packet := api.ImportedArtifact{Definition: definition, Recipe: api.ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}}, Artifact: api.StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: api.OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}}}
 	store := toolhub.NewStore()
 	if err := store.RegisterTrustedArtifact(packet, "pending"); err == nil {
 		t.Fatal("packet without review digest registered")
@@ -104,20 +105,20 @@ func TestArtifactCLIErrorPaths(t *testing.T) {
 		t.Fatal("preflight unknown packet field succeeded")
 	}
 	review := "sha256:" + repeatHex('e')
-	definition := toolhub.ToolDefinition{
+	definition := api.ToolDefinition{
 		Schema: 1, DefinitionID: "cli-mcp", Version: "1.0.0", Transport: "container-mcp",
-		Source: toolhub.DefinitionSource{
+		Source: api.DefinitionSource{
 			Image: "ghcr.io/example/cli-mcp", Digest: "sha256:" + repeatHex('1'), Command: "/app/server",
 			Repository: "https://github.com/example/mcp", CommitSHA: "0123456789012345678901234567890123456789",
 			ArchiveDigest: "sha256:" + repeatHex('a'), ProvenanceDigest: "sha256:" + repeatHex('b'),
 			SBOMDigest: "sha256:" + repeatHex('c'), RecipeDigest: "sha256:" + repeatHex('d'), ReviewDigest: review,
 		},
-		Tools:     []toolhub.ToolSpec{{Name: "read", Effect: "read"}},
-		Workload:  toolhub.WorkloadPolicy{Class: "per-user", Stateful: true, Rationale: "state", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:" + repeatHex('f')}},
-		Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}},
-		Health:    toolhub.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
+		Tools:     []api.ToolSpec{{Name: "read", Effect: "read"}},
+		Workload:  api.WorkloadPolicy{Class: "per-user", Stateful: true, Rationale: "state", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:" + repeatHex('f')}},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}},
+		Health:    api.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
 	}
-	body, err := json.Marshal(toolhub.ImportedArtifact{Definition: definition})
+	body, err := json.Marshal(api.ImportedArtifact{Definition: definition})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func TestArtifactCLIErrorPaths(t *testing.T) {
 	if err := runArtifact(ctx, []string{"linux-bridge", "--output", filepath.Join(root, "bridge"), "extra"}); err == nil {
 		t.Fatal("linux-bridge extra args succeeded")
 	}
-	contract := toolhub.ConfirmedToolContract{Source: toolhub.ToolContractPreflight, Tools: []toolhub.ToolSpec{{Name: "read", Effect: "read"}}}
+	contract := api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: []api.ToolSpec{{Name: "read", Effect: "read"}}}
 	contractBody, err := json.Marshal(contract)
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +196,7 @@ func TestWriteJSONFileRoundTripAndRejects(t *testing.T) {
 func TestArtifactApproveRegistersMatchingReviewPacket(t *testing.T) {
 	root := t.TempDir()
 	packet := completeCLIReviewPacket(t)
-	digest, err := toolhub.ImportedReviewDigest(packet)
+	digest, err := api.ImportedReviewDigest(packet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +210,7 @@ func TestArtifactApproveRegistersMatchingReviewPacket(t *testing.T) {
 		t.Fatal(err)
 	}
 	contractPath := filepath.Join(root, "contract.json")
-	contractBody, err := json.Marshal(toolhub.ConfirmedToolContract{Source: toolhub.ToolContractPreflight, Tools: packet.Definition.Tools})
+	contractBody, err := json.Marshal(api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: packet.Definition.Tools})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,25 +231,25 @@ func TestArtifactApproveRegistersMatchingReviewPacket(t *testing.T) {
 	}
 }
 
-func completeCLIReviewPacket(t *testing.T) toolhub.ImportedArtifact {
+func completeCLIReviewPacket(t *testing.T) api.ImportedArtifact {
 	t.Helper()
-	definition := toolhub.ToolDefinition{
+	definition := api.ToolDefinition{
 		Schema: 1, DefinitionID: "cli-mcp", Version: "1.0.0", Transport: "container-mcp",
-		Source: toolhub.DefinitionSource{
+		Source: api.DefinitionSource{
 			Image: "ghcr.io/example/cli-mcp", Digest: "sha256:" + repeatHex('1'), Command: "/app/server",
 			Repository: "https://github.com/example/mcp", CommitSHA: "0123456789012345678901234567890123456789",
 			ArchiveDigest: "sha256:" + repeatHex('a'), ProvenanceDigest: "sha256:" + repeatHex('b'),
 			SBOMDigest: "sha256:" + repeatHex('c'), RecipeDigest: "sha256:" + repeatHex('d'),
 		},
-		Tools:     []toolhub.ToolSpec{{Name: "read", Effect: "read"}},
-		Workload:  toolhub.WorkloadPolicy{Class: "per-user", Stateful: true, Rationale: "state", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:" + repeatHex('f')}},
-		Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}, Mounts: []toolhub.Mount{{Source: "connection-state", Target: "/state"}}},
-		Health:    toolhub.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
+		Tools:     []api.ToolSpec{{Name: "read", Effect: "read"}},
+		Workload:  api.WorkloadPolicy{Class: "per-user", Stateful: true, Rationale: "state", ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:" + repeatHex('f')}},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}, Mounts: []api.Mount{{Source: "connection-state", Target: "/state"}}},
+		Health:    api.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
 	}
-	return toolhub.ImportedArtifact{
+	return api.ImportedArtifact{
 		Definition: definition,
-		Recipe:     toolhub.ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}},
-		Artifact:   toolhub.StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: toolhub.OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}},
+		Recipe:     api.ArtifactRecipe{Format: "dockerfile-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"/app/server"}},
+		Artifact:   api.StoredOCIArtifact{ArchiveDigest: definition.Source.ArchiveDigest, Evidence: api.OCIArtifactEvidence{ImageManifestDigest: definition.Source.Digest, ProvenanceDigest: definition.Source.ProvenanceDigest, SBOMDigest: definition.Source.SBOMDigest}},
 	}
 }
 

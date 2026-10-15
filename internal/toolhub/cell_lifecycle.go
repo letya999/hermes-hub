@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"time"
 )
@@ -12,7 +13,7 @@ import (
 // the reuse guard is destroyed and audited, then a fresh cell takes the slot;
 // reuse never crosses a principal or trust boundary because the key embeds
 // them and the guard re-verifies image/mounts on every claim.
-func (c *genericController) warmCell(ctx context.Context, req cliExecRequest, image, key string, toolset []string) (*cliCell, error) {
+func (c *genericController) warmCell(ctx context.Context, req api.CliExecRequest, image, key string, toolset []string) (*cliCell, error) {
 	c.mu.Lock()
 	c.cells()
 	cell, ok := c.cells().cells[key]
@@ -62,7 +63,7 @@ func (c *genericController) warmCell(ctx context.Context, req cliExecRequest, im
 	full := len(c.cells().cells) >= cap_
 	c.mu.Unlock()
 	if full {
-		return nil, fmt.Errorf("%w: cli cell table is full", ErrIsolation)
+		return nil, fmt.Errorf("%w: cli cell table is full", api.ErrIsolation)
 	}
 	cell, err := c.createCell(ctx, req, image, key, toolset)
 	if err != nil {
@@ -82,7 +83,7 @@ func (c *genericController) warmCell(ctx context.Context, req cliExecRequest, im
 
 // createCell runs create -> pre-start inspect -> start -> canary seed ->
 // post-start inspect and returns the cell.
-func (c *genericController) createCell(ctx context.Context, req cliExecRequest, image, key string, toolset []string) (*cliCell, error) {
+func (c *genericController) createCell(ctx context.Context, req api.CliExecRequest, image, key string, toolset []string) (*cliCell, error) {
 	cfg := c.config.CLI
 	if err := c.cellInitSeed(); err != nil {
 		return nil, err
@@ -97,19 +98,19 @@ func (c *genericController) createCell(ctx context.Context, req cliExecRequest, 
 	}
 	lifecycle := req.Lifecycle
 	if lifecycle == "" {
-		lifecycle = CLILifecycleEphemeral
+		lifecycle = api.CLILifecycleEphemeral
 	}
 	cell := &cliCell{
-		name: "cli-" + cellHash(image+randomNonce()), key: key, principal: req.Principal, bindingID: req.BindingID,
+		name: "cli-" + cellHash(image+api.RandomNonce()), key: key, principal: req.Principal, bindingID: req.BindingID,
 		jobID: req.JobID, lifecycle: lifecycle, image: image, runtime: runtime,
 		workHost: workHost, workRW: workRW, toolset: append([]string(nil), toolset...),
 		installPackages: req.InstallPackages,
-		canary:          randomNonce(), created: time.Now(), lastUse: time.Now(), execSlot: make(chan struct{}, 1),
+		canary:          api.RandomNonce(), created: time.Now(), lastUse: time.Now(), execSlot: make(chan struct{}, 1),
 	}
 	egress := realEgress(req.Plan.Execution.Egress)
 	if len(egress) > 0 || len(req.Brokered) > 0 {
 		if cfg.ProxyImage == "" {
-			return nil, fmt.Errorf("%w: egress cells need a proxy image", ErrIsolation)
+			return nil, fmt.Errorf("%w: egress cells need a proxy image", api.ErrIsolation)
 		}
 		network, proxies, err := c.cellEgress(ctx, cell, egress, req.Brokered)
 		if err != nil {
@@ -132,10 +133,10 @@ func (c *genericController) createCell(ctx context.Context, req cliExecRequest, 
 		}
 	}()
 	if _, err := c.docker(ctx, c.cellArgv(req, cell, runtime)...); err != nil {
-		return nil, fmt.Errorf("%w: cell create: %v", ErrIsolation, err)
+		return nil, fmt.Errorf("%w: cell create: %v", api.ErrIsolation, err)
 	}
 	if c.scope != nil {
-		c.scope.register(cell.name)
+		c.scope.Register(cell.name)
 	}
 	// The pre-start inspect proves the create-time profile; a drifted daemon
 	// answer denies before the cell ever runs.
@@ -144,20 +145,20 @@ func (c *genericController) createCell(ctx context.Context, req cliExecRequest, 
 		return nil, err
 	}
 	if problem := cellProfileProblem(container, cell, c.config.SeccompProfile, c.config.StateRoot, false); problem != "" {
-		return nil, fmt.Errorf("%w: cell profile: %s", ErrIsolation, problem)
+		return nil, fmt.Errorf("%w: cell profile: %s", api.ErrIsolation, problem)
 	}
 	if _, err := c.docker(ctx, "start", cell.name); err != nil {
-		return nil, fmt.Errorf("%w: cell start: %v", ErrIsolation, err)
+		return nil, fmt.Errorf("%w: cell start: %v", api.ErrIsolation, err)
 	}
 	if code, err := c.cellRun(ctx, nil, "exec", cell.name, cellInitGuest, "write", cellCanaryPath, cell.canary); err != nil || code != 0 {
-		return nil, fmt.Errorf("%w: cell canary seed", ErrIsolation)
+		return nil, fmt.Errorf("%w: cell canary seed", api.ErrIsolation)
 	}
 	container, err = c.inspectCell(ctx, cell.name)
 	if err != nil {
 		return nil, err
 	}
 	if problem := cellProfileProblem(container, cell, c.config.SeccompProfile, c.config.StateRoot, true); problem != "" {
-		return nil, fmt.Errorf("%w: started cell profile: %s", ErrIsolation, problem)
+		return nil, fmt.Errorf("%w: started cell profile: %s", api.ErrIsolation, problem)
 	}
 	created = true
 	c.mu.Lock()
@@ -236,7 +237,7 @@ func (c *genericController) cellMetricsSnapshot() map[string]int64 {
 
 // releaseCells implements /cli-release: every warm cell matching the selector
 // is killed; the audit line carries the reason.
-func (c *genericController) releaseCells(ctx context.Context, req cliReleaseRequest) {
+func (c *genericController) releaseCells(ctx context.Context, req api.CliReleaseRequest) {
 	if !identity.ValidID(req.PrincipalID) {
 		return
 	}
@@ -312,7 +313,7 @@ func (c *genericController) cleanupCells(ctx context.Context, now time.Time) {
 	c.mu.Lock()
 	mark := func(cell *cliCell) bool {
 		cellIdle := idle
-		if cell.lifecycle == CLILifecycleTask {
+		if cell.lifecycle == api.CLILifecycleTask {
 			cellIdle = minDuration(cellIdle, 5*time.Minute)
 		}
 		switch {
