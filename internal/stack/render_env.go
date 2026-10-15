@@ -122,6 +122,14 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
+	if s.CapabilityMode == "managed" {
+		if err = writeModelRegistry(dir, s); err != nil {
+			return err
+		}
+		if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {
+			return err
+		}
+	}
 	if s.Has("transcription") || s.Has("image_gen") {
 		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
 			return err

@@ -71,60 +71,7 @@ func TestProfilesOverlayDefaultGroupOwner(t *testing.T) {
 	}
 }
 
-func TestProfilesOverlayModelFallbacks(t *testing.T) {
-	root := t.TempDir()
-	spaces := filepath.Join(root, "spaces")
-	if err := InitEnvironment(filepath.Join(spaces, "alice"), "alice", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	if err := InitEnvironment(filepath.Join(spaces, "bob"), "bob", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	// model_fallbacks render through the managed relay only.
-	for _, user := range []string{"alice", "bob"} {
-		s, err := ReadEnvironment(filepath.Join(spaces, user), "prod")
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
-		s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
-		if err := WriteSpace(filepath.Join(spaces, user), s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	saveYAML(t, filepath.Join(spaces, "profiles.yaml"), map[string]any{
-		"profiles": map[string]any{
-			"default": map[string]any{"model_fallbacks": []any{
-				map[string]any{"name": "backup", "url": "https://backup.invalid/api", "key_env": "BACKUP_KEY"},
-			}},
-		},
-	})
-	alice, err := ReadEnvironment(filepath.Join(spaces, "alice"), "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(alice.ModelFallbacks) != 1 || alice.ModelFallbacks[0].Name != "backup" || alice.ModelFallbacks[0].KeyEnv != "BACKUP_KEY" {
-		t.Fatalf("fallback ladder not inherited: %+v", alice.ModelFallbacks)
-	}
-	// bob keeps his own ladder over the shared one.
-	bob, err := ReadEnvironment(filepath.Join(spaces, "bob"), "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bob.ModelFallbacks = []ModelFallback{{Name: "own", URL: "https://own.invalid"}}
-	if err := WriteSpace(filepath.Join(spaces, "bob"), bob); err != nil {
-		t.Fatal(err)
-	}
-	bob, err = ReadEnvironment(filepath.Join(spaces, "bob"), "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(bob.ModelFallbacks) != 1 || bob.ModelFallbacks[0].Name != "own" {
-		t.Fatalf("owner ladder lost to profile: %+v", bob.ModelFallbacks)
-	}
-}
-
-func TestValidateCliproxyAndFallbacks(t *testing.T) {
+func TestValidateCliproxy(t *testing.T) {
 	base := func() Settings {
 		return Settings{Schema: 3, User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model-relay:8318/v1",
 			CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1,
@@ -136,29 +83,6 @@ func TestValidateCliproxyAndFallbacks(t *testing.T) {
 			infra := true
 			s.Infra = &infra
 			s.Cliproxy = "dedicated"
-		},
-		func(s *Settings) {
-			s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "", "", 0
-			s.ModelURL = "http://cliproxy:8317/v1"
-			s.ModelFallbacks = []ModelFallback{{Name: "x", URL: "https://x.invalid"}}
-		},
-		func(s *Settings) {
-			s.ModelFallbacks = []ModelFallback{{Name: "x", URL: "ftp://x"}}
-		},
-		func(s *Settings) {
-			s.ModelFallbacks = []ModelFallback{{Name: "x", URL: "http://u:p@x.invalid"}}
-		},
-		func(s *Settings) {
-			s.ModelFallbacks = []ModelFallback{{Name: "Bad Name", URL: "https://x.invalid"}}
-		},
-		func(s *Settings) {
-			s.ModelFallbacks = []ModelFallback{{Name: "cliproxy", URL: "https://x.invalid"}}
-		},
-		func(s *Settings) {
-			s.ModelFallbacks = []ModelFallback{{Name: "x", URL: "https://x.invalid"}, {Name: "x", URL: "https://y.invalid"}}
-		},
-		func(s *Settings) {
-			s.ModelFallbacks = []ModelFallback{{Name: "x", URL: "https://x.invalid", KeyEnv: "lower_env"}}
 		},
 	}
 	for i, mutate := range bad {
@@ -172,32 +96,52 @@ func TestValidateCliproxyAndFallbacks(t *testing.T) {
 	noInfra := false
 	good.Infra = &noInfra
 	good.Cliproxy = "dedicated"
-	good.ModelFallbacks = []ModelFallback{{Name: "or", URL: "https://openrouter.ai/api", KeyEnv: "OPENROUTER_KEY"}}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("valid topology rejected: %v", err)
 	}
 }
 
-func TestModelRelayRendersFallbackLadder(t *testing.T) {
+func TestModelRelayRendersRegistry(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1,
-		Model: "m", ModelURL: "http://model-relay:8318/v1",
-		ModelFallbacks: []ModelFallback{{Name: "or", URL: "https://openrouter.ai/api", KeyEnv: "OPENROUTER_KEY"}}}
+		Model: "m", ModelURL: "http://model-relay:8318/v1"}
 	relay := Compose(s, "/source", "/space")["services"].(M)["model-relay"].(M)
 	env := relay["environment"].(M)
-	if env["HUB_MODEL_RELAY_UPSTREAMS"] != "cliproxy=http://cliproxy:8317,or=https://openrouter.ai/api|OPENROUTER_KEY" {
-		t.Fatalf("fallback ladder not rendered: %v", env["HUB_MODEL_RELAY_UPSTREAMS"])
+	if env["HUB_MODEL_RELAY_REGISTRY"] != "/run/models.yaml" || env["HUB_MODEL_RELAY_OWNER"] != "alice" {
+		t.Fatalf("registry env not rendered: %v", env)
 	}
-	// Hop key_env names resolve from the space's own secrets env file.
-	files, _ := relay["env_file"].([]any)
-	found := false
-	for _, f := range files {
-		if m, ok := f.(M); ok && strings.HasSuffix(fmt.Sprint(m["path"]), "runtime.prod.env") {
-			found = true
+	// The merged models.yaml mounts read-only; the selection state gets a
+	// writable dir so chat-side switching survives relay restarts.
+	mounts, _ := relay["volumes"].([]any)
+	var regMount, stateMount bool
+	for _, m := range mounts {
+		mv, _ := m.(M)
+		if mv["target"] == "/run/models.yaml" && mv["read_only"] == true {
+			regMount = strings.HasSuffix(fmt.Sprint(mv["source"]), "generated/models.prod.yaml")
+		}
+		if mv["target"] == "/run/model-state" && mv["read_only"] != true {
+			stateMount = strings.Contains(fmt.Sprint(mv["source"]), "managed/prod/model-relay")
 		}
 	}
-	if !found {
-		t.Fatal("model-relay lacks the secrets env file for hop credentials")
+	if !regMount || !stateMount {
+		t.Fatalf("registry mounts missing: %v", mounts)
+	}
+	// Hop key_env names resolve from the space's own secrets env file; the
+	// admin bearer comes from model-relay.auth shared with the gateway.
+	var secretsFile, authFile bool
+	files, _ := relay["env_file"].([]any)
+	for _, f := range files {
+		if m, ok := f.(M); ok {
+			if strings.HasSuffix(fmt.Sprint(m["path"]), "runtime.prod.env") {
+				secretsFile = true
+			}
+			if strings.HasSuffix(fmt.Sprint(m["path"]), "model-relay.auth") {
+				authFile = true
+			}
+		}
+	}
+	if !secretsFile || !authFile {
+		t.Fatalf("model-relay env files missing: %v", files)
 	}
 }
 
@@ -220,7 +164,34 @@ func TestDedicatedCliproxyRenderedForSecondarySpace(t *testing.T) {
 		}
 	}
 	env := services["model-relay"].(M)["environment"].(M)
-	if env["HUB_MODEL_RELAY_UPSTREAMS"] != "cliproxy=http://cliproxy-alice:8317" {
-		t.Fatalf("relay does not point at the dedicated proxy: %v", env["HUB_MODEL_RELAY_UPSTREAMS"])
+	if env["HUB_MODEL_RELAY_CLIPROXY"] != "http://cliproxy-alice:8317" {
+		t.Fatalf("relay does not point at the dedicated proxy: %v", env["HUB_MODEL_RELAY_CLIPROXY"])
+	}
+}
+
+func TestModelRelaySharedAliasAndGatewayWiring(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1,
+		ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876",
+		Model: "m", ModelURL: "http://model-relay:8318/v1", Ingress: []string{"telegram"}}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	relay := services["model-relay"].(M)
+	shared, ok := relay["networks"].(M)[sharedNetworkName].(M)
+	if !ok || !slices.Contains(shared["aliases"].([]string), "model-relay-alice") {
+		t.Fatalf("relay misses the per-space shared alias: %v", relay["networks"])
+	}
+	gateway := services["communication-hub"].(M)
+	env := gateway["environment"].(M)
+	if env["HUB_MODEL_RELAY_URL"] != "http://model-relay-alice:8318" {
+		t.Fatalf("gateway cannot reach the owner relay: %v", env)
+	}
+	var authMounted bool
+	for _, f := range gateway["env_file"].([]any) {
+		if strings.HasSuffix(fmt.Sprint(f.(M)["path"]), "model-relay.auth") {
+			authMounted = true
+		}
+	}
+	if !authMounted {
+		t.Fatal("gateway lacks the model-relay bearer")
 	}
 }

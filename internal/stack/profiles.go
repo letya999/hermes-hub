@@ -22,11 +22,10 @@ type profilesFile struct {
 // profileOverlay carries only scalar/small settings — never secret literals.
 // model_fallbacks entries reference secrets by env name via key_env.
 type profileOverlay struct {
-	Owners         []string        `yaml:"owners,omitempty"`
-	Model          string          `yaml:"model,omitempty"`
-	ModelURL       string          `yaml:"model_url,omitempty"`
-	Cliproxy       string          `yaml:"cliproxy,omitempty"`
-	ModelFallbacks []ModelFallback `yaml:"model_fallbacks,omitempty"`
+	Owners   []string `yaml:"owners,omitempty"`
+	Model    string   `yaml:"model,omitempty"`
+	ModelURL string   `yaml:"model_url,omitempty"`
+	Cliproxy string   `yaml:"cliproxy,omitempty"`
 }
 
 // applyProfiles loads spaces/profiles.yaml relative to the space dir and
@@ -60,7 +59,7 @@ func applyProfiles(s *Settings, dir string) error {
 	// Fields the owner's own file set are final; profile layers apply
 	// default -> named (sorted) and each later layer wins over earlier ones.
 	ownModel, ownCliproxy := s.Model != "", s.Cliproxy != ""
-	ownModelURL, ownFallbacks := s.ModelURL != "", len(s.ModelFallbacks) > 0
+	ownModelURL := s.ModelURL != ""
 	ordered := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n == "default" })
 	ordered = append([]string{"default"}, ordered...)
 	for _, name := range ordered {
@@ -76,9 +75,6 @@ func applyProfiles(s *Settings, dir string) error {
 		}
 		if !ownModelURL && o.ModelURL != "" {
 			s.ModelURL = o.ModelURL
-		}
-		if !ownFallbacks && len(o.ModelFallbacks) > 0 {
-			s.ModelFallbacks = o.ModelFallbacks
 		}
 	}
 	return nil

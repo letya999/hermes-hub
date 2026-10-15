@@ -288,26 +288,33 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.CapabilityMode == "managed" {
 		modelRelay := cloneMap(common)
 		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
-		// Ordered fallback ladder: the space's cliproxy first, then the
-		// operator-declared hops. Hop secrets resolve as env names from the
-		// space's own secrets file — never as literals in compose.
+		// The merged models.yaml (spaces -> org -> user layers) mounts
+		// read-only; provider key_env names resolve from the space's own
+		// secrets env file, the owner-facing switch bearer from
+		// model-relay.auth — never as literals in compose.
 		cliproxyURL := "http://cliproxy:8317"
 		if s.Cliproxy == "dedicated" {
 			cliproxyURL = "http://cliproxy-" + s.User + ":8317"
 		}
-		ladder := "cliproxy=" + cliproxyURL
-		for _, f := range s.ModelFallbacks {
-			ladder += "," + f.Name + "=" + f.URL
-			if f.KeyEnv != "" {
-				ladder += "|" + f.KeyEnv
-			}
+		modelRelay["environment"] = M{
+			"HUB_MODEL_RELAY_REGISTRY": "/run/models.yaml",
+			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
+			"HUB_MODEL_RELAY_OWNER":    s.User,
+			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
 		}
-		modelRelay["environment"] = M{"HUB_MODEL_RELAY_MODEL": s.Model, "HUB_MODEL_RELAY_UPSTREAMS": ladder}
-		if len(s.ModelFallbacks) > 0 {
-			modelRelay["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"}}
+		modelRelay["env_file"] = []any{
+			M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
+			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
+		}
+		modelRelay["volumes"] = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "models."+s.Environment+".yaml")), "target": "/run/models.yaml", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
 		}
 		modelRelay["extra_hosts"] = []string{}
-		modelRelay["networks"] = []string{sharedNetworkName, managedAgentNetwork(s)}
+		// A stable per-space alias on the shared network lets the gateway of
+		// the same space call its own relay (owner model switching) without
+		// colliding with other spaces' model-relay service names.
+		modelRelay["networks"] = M{sharedNetworkName: M{"aliases": []string{"model-relay-" + s.User}}, managedAgentNetwork(s): M{}}
 		services["model-relay"] = modelRelay
 		toolhubRelay := cloneMap(common)
 		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
@@ -491,6 +498,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
+		if s.CapabilityMode == "managed" {
+			gatewayEnvironment["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"})
+		}
 		if s.Has("transcription") {
 			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
 			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-tts:8090"

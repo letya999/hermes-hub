@@ -1,10 +1,13 @@
 package runtime
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -317,6 +320,39 @@ func TestParseModelHops(t *testing.T) {
 	}
 }
 
+func TestModelRelayRegistryLadderRemapsModel(t *testing.T) {
+	var sawModel string
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sawModel, _ = body["model"].(string)
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer second.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := "providers:\n  local:\n    url: " + first.URL + "\n  openai:\n    url: " + second.URL + "\n    key_env: TEST_RELAY_KEY\nmodels:\n  default:\n    ladder:\n      - {provider: local, model: qwen3}\n      - {provider: openai, model: gpt-5}\n"
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	if response.Code != http.StatusOK {
+		t.Fatalf("registry ladder did not serve: %d", response.Code)
+	}
+	if sawModel != "gpt-5" || response.Header().Get("X-Model-Hop") != "openai" {
+		t.Fatalf("hop model not remapped: model=%q hop=%q", sawModel, response.Header().Get("X-Model-Hop"))
+	}
+}
+
 func TestModelRelayLogsEveryHopAttempt(t *testing.T) {
 	var logs strings.Builder
 	orig := log.Writer()
@@ -339,5 +375,133 @@ func TestModelRelayLogsEveryHopAttempt(t *testing.T) {
 	out := logs.String()
 	if !strings.Contains(out, "hop=a") || !strings.Contains(out, "429") || !strings.Contains(out, "hop=b") {
 		t.Fatalf("missing per-hop audit receipt: %q", out)
+	}
+}
+
+func TestModelRelayRegistryDeniesUngrantedModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `providers:
+  p:
+    url: ` + upstream.URL + `
+models:
+  default:
+    owners: [bob]
+    ladder:
+      - {provider: p, model: m1}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("ungranted model served: %d", response.Code)
+	}
+}
+
+func TestModelRelaySelectionEndpointSwitchesModel(t *testing.T) {
+	var sawModel string
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sawModel, _ = body["model"].(string)
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sawModel, _ = body["model"].(string)
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer second.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `providers:
+  a:
+    url: ` + first.URL + `
+  b:
+    url: ` + second.URL + `
+models:
+  default:
+    ladder:
+      - {provider: a, model: qwen3}
+  turbo:
+    ladder:
+      - {provider: b, model: gpt-5}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sel := filepath.Join(dir, "sel.json")
+	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deny := httptest.NewRecorder()
+	put := httptest.NewRequest(http.MethodPut, "/v1/model", strings.NewReader(`{"model":"turbo"}`))
+	handler.ServeHTTP(deny, put)
+	if deny.Code != http.StatusForbidden {
+		t.Fatalf("model switch without admin token: %d", deny.Code)
+	}
+
+	ok := httptest.NewRecorder()
+	put = httptest.NewRequest(http.MethodPut, "/v1/model", strings.NewReader(`{"model":"turbo"}`))
+	put.Header.Set("Authorization", "Bearer admintoken")
+	handler.ServeHTTP(ok, put)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("model switch rejected: %d", ok.Code)
+	}
+	if b, err := os.ReadFile(sel); err != nil || !strings.Contains(string(b), "turbo") {
+		t.Fatalf("selection not persisted: %v %q", err, b)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	if response.Code != http.StatusOK || sawModel != "gpt-5" || response.Header().Get("X-Model-Hop") != "b" {
+		t.Fatalf("selection not applied: code=%d model=%q hop=%q", response.Code, sawModel, response.Header().Get("X-Model-Hop"))
+	}
+}
+
+func TestModelRelayRegistryModeFromEnv(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `providers:
+  p:
+    url: ` + upstream.URL + `
+models:
+  default:
+    ladder:
+      - {provider: p, model: m1}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_MODEL_RELAY_REGISTRY", registry)
+	t.Setenv("HUB_MODEL_RELAY_STATE", filepath.Join(dir, "sel.json"))
+	t.Setenv("HUB_MODEL_RELAY_OWNER", "alice")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
+	handler, err := modelRelayHandlerFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	if response.Code != http.StatusOK {
+		t.Fatalf("registry mode from env did not serve: %d", response.Code)
 	}
 }

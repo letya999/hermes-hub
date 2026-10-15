@@ -8,6 +8,7 @@ slices:
   S4-media-routes: done
   S5-command-engine-async-handles: done
   S6-docs-and-check: done
+  S7-model-registry-v2: done
 just_check: green (86.33% own coverage; race+shuffle, vet, staticcheck, docs, actionlint, config contract)
 live_acceptance: unavailable (no deployed stack; Docker gates not run per owner request)
 notes: >
@@ -21,3 +22,11 @@ notes: >
   (stdin prompt / stdout bytes / HUB_MEDIA_REQUEST_* env), SubmitHandle
   {remote_id,engine,model} persisted on Job so restart resumes the accepting
   engine without resubmit.
+registry_v2: >
+  model_fallbacks removed from agent.yaml/profiles; layered models.yaml
+  (spaces -> org -> user) merges into generated/models.<env>.yaml mounted ro
+  at /run/models.yaml. Relay registry mode: per-hop provider model remap,
+  owners: grants, mtime reload, model-select.json state dir, PUT /v1/model
+  admin endpoint (HUB_MODEL_RELAY_ADMIN via model-relay.auth), shared alias
+  model-relay-<user>:8318, gateway /model command + HUB_MODEL_RELAY_URL env.
+  cliproxy stays a builtin provider id overridable per-space (dedicated).
