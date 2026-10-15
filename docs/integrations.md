@@ -417,7 +417,7 @@ destination feeds both the Squid ACL and the forwarder; the model cannot
 choose destinations through tool arguments.
 Do not label an artifact trusted on the basis of recipe validation or a claimed
 tool list alone. Track remaining evidence in
-`.work/in-progress/CHG-0025-trusted-artifacts/verification.md`.
+`.work/done/CHG-0025-trusted-artifacts/verification.md`.
 
 ## ToolHub Calendar (M5 stage 2)
 

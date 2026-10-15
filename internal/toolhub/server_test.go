@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,8 +24,8 @@ import (
 func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
 	store, auth, _ := seededStore(t)
 	token := strings.Repeat("t", 32)
-	backend := backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{Text: "ok"}, nil
+	backend := backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
 	})
 	bob, err := json.Marshal(bobAuth())
 	if err != nil {
@@ -73,8 +74,8 @@ func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
 func TestEndpointReloadsTokensFileOnAuthMiss(t *testing.T) {
 	store, auth, _ := seededStore(t)
 	token := strings.Repeat("t", 32)
-	backend := backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{Text: "ok"}, nil
+	backend := backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
 	})
 	carol, err := json.Marshal(identity.TelegramEnvelope("carol", 9, "runtime-carol", "policy-1"))
 	if err != nil {
@@ -148,8 +149,8 @@ func TestReloadTokensKeepsPrimaryWhenFileBreaks(t *testing.T) {
 
 func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
 	store, auth, _ := seededStore(t)
-	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backendFunc(func(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any) (BackendResult, error) {
-		return BackendResult{}, nil
+	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, _ map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{}, nil
 	})}
 	if _, err := NewEndpointHandler(config, store); err != nil {
 		t.Fatal(err)
@@ -175,17 +176,17 @@ func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
 }
 
 func TestReadinessBackendRouting(t *testing.T) {
-	backend := MCPBackend{}
-	for _, candidate := range []ToolBackend{
+	backend := api.MCPBackend{}
+	for _, candidate := range []api.ToolBackend{
 		backend, &backend,
-		RoutingBackend{MCP: backend}, &RoutingBackend{MCP: backend},
+		api.RoutingBackend{MCP: backend}, &api.RoutingBackend{MCP: backend},
 	} {
 		if readinessBackend(candidate) == nil {
 			t.Fatalf("readiness hook missing for %T", candidate)
 		}
 	}
-	var nilMCP *MCPBackend
-	var nilRouting *RoutingBackend
+	var nilMCP *api.MCPBackend
+	var nilRouting *api.RoutingBackend
 	if readinessBackend(nilMCP) != nil || readinessBackend(nilRouting) != nil || readinessBackend(nil) != nil {
 		t.Fatal("nil readiness backend accepted")
 	}
@@ -201,7 +202,7 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, auth.PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, auth.PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	var admissions atomic.Int32
@@ -210,9 +211,9 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 	t.Setenv("HUB_CREDENTIAL_STORE", "")
 	config := EndpointConfig{
 		Token: strings.Repeat("r", 32), Auth: auth, Listen: "127.0.0.1:8090",
-		Backend: MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, effective EffectiveBinding) (AdmissionReceipt, error) {
+		Backend: api.MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, effective api.EffectiveBinding) (api.AdmissionReceipt, error) {
 			admissions.Add(1)
-			return AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+			return api.AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
 		}},
 	}
 	handler, err := NewEndpointHandler(config, store)
@@ -237,7 +238,7 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 		t.Fatalf("readiness admissions=%d", got)
 	}
 	tools, err := session.ListTools(context.Background(), nil)
-	projected := ProjectedToolName(definition.DefinitionID, definition.Version, "read")
+	projected := api.ProjectedToolName(definition.DefinitionID, definition.Version, "read")
 	found := false
 	for _, tool := range tools.Tools {
 		if tool.Name == projected {
@@ -265,11 +266,11 @@ func TestEndpointConfigFromEnvUsesRuntimeIdentityDefaults(t *testing.T) {
 	if config.Listen != "127.0.0.1:8090" || config.Auth.PrincipalID != "alice" || config.Auth.ContextID != "alice" || config.Auth.RuntimeID != "alice" || config.Backend == nil {
 		t.Fatalf("unexpected default endpoint config: %+v", config)
 	}
-	routing, ok := config.Backend.(RoutingBackend)
+	routing, ok := config.Backend.(api.RoutingBackend)
 	if !ok {
 		t.Fatalf("endpoint backend=%T", config.Backend)
 	}
-	mcp, ok := routing.MCP.(MCPBackend)
+	mcp, ok := routing.MCP.(api.MCPBackend)
 	if !ok || mcp.Root != "/state" {
 		t.Fatalf("MCP backend root=%q ok=%v", mcp.Root, ok)
 	}
@@ -315,7 +316,7 @@ func TestFormOriginUsesLoopbackForWildcardListener(t *testing.T) {
 		"[::]:8090":      "http://127.0.0.1:8090",
 		"127.0.0.1:8090": "http://127.0.0.1:8090",
 	} {
-		if got := formOriginForListen(listen); got != want {
+		if got := api.FormOriginForListen(listen); got != want {
 			t.Fatalf("form origin for %q = %q, want %q", listen, got, want)
 		}
 	}
@@ -326,8 +327,8 @@ func TestEndpointHandlerAuditLedgerFailClosed(t *testing.T) {
 	ledger := filepath.Join(t.TempDir(), "audit.jsonl")
 	t.Setenv("HUB_AUDIT_LEDGER", ledger)
 	token := strings.Repeat("t", 32)
-	config := EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any) (BackendResult, error) {
-		return BackendResult{Text: "ok"}, nil
+	config := EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, _ map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
 	})}
 	handler, err := NewEndpointHandler(config, store)
 	if err != nil || handler == nil {
@@ -341,7 +342,7 @@ func TestEndpointHandlerAuditLedgerFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -376,17 +377,17 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, "google-work", "1.0.0")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, "google-work", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantSelfInstall, auth.PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantSelfInstall, auth.PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	token := strings.Repeat("t", 32)
 	handler, err := NewEndpointHandler(EndpointConfig{
 		Token: token, Auth: auth, Listen: "127.0.0.1:8090",
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-			return BackendResult{Text: "ok"}, nil
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
 		}),
 	}, store)
 	if err != nil {
@@ -452,8 +453,8 @@ func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth id
 	control.FormOrigin = control.origin()
 	gateway := &Gateway{
 		Store: store, Tokens: map[string]identity.Envelope{strings.Repeat("t", 32): auth},
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-			return BackendResult{Text: "ok"}, nil
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
 		}),
 		Control: control,
 	}
@@ -525,17 +526,17 @@ func toolCallText(result *mcp.CallToolResult, err error) string {
 
 func TestGatewayInjectorAndCallEnv(t *testing.T) {
 	store, auth, _ := seededStore(t)
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	var injected atomic.Bool
 	var wiped atomic.Bool
 	gateway := Gateway{
 		Store: store,
-		Backend: backendFunc(func(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any) (BackendResult, error) {
-			return BackendResult{Text: "ok"}, nil
+		Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, _ map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
 		}),
-		Injector: func(context.Context, EffectiveBinding) (CredentialInjection, error) {
+		Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
 			injected.Store(true)
-			return CredentialInjection{Environment: map[string]string{"GOOGLE_TOKEN": "injected"}, Cleanup: func() error { wiped.Store(true); return nil }}, nil
+			return api.CredentialInjection{Environment: map[string]string{"GOOGLE_TOKEN": "injected"}, Cleanup: func() error { wiped.Store(true); return nil }}, nil
 		},
 	}
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "x"}); err != nil {
@@ -544,8 +545,8 @@ func TestGatewayInjectorAndCallEnv(t *testing.T) {
 	if !injected.Load() || !wiped.Load() {
 		t.Fatal("injector did not run")
 	}
-	cli := RoutingBackend{CLI: CLIRunner{}}
-	if _, err := cli.CallEnv(context.Background(), EffectiveBinding{Definition: boundedCLIDefinition()}, ToolSpec{Name: "list"}, nil, nil); !errors.Is(err, ErrIsolation) && err == nil {
+	cli := api.RoutingBackend{CLI: api.CLIRunner{}}
+	if _, err := cli.CallEnv(context.Background(), api.EffectiveBinding{Definition: boundedCLIDefinition()}, api.ToolSpec{Name: "list"}, nil, nil); !errors.Is(err, api.ErrIsolation) && err == nil {
 		t.Fatal("CLI without isolation accepted")
 	}
 }
@@ -581,7 +582,7 @@ func TestEndpointHandlerInjectsFromCredstore(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		capturedBody = append(capturedBody, body...)
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		path := filepath.Join(root, "per-user", "alice", "alice", "google-work", CredentialReferenceID("google-work", 0), "credentials.env")
+		path := filepath.Join(root, "per-user", "alice", "alice", "google-work", api.CredentialReferenceID("google-work", 0), "credentials.env")
 		if data, err := os.ReadFile(path); err == nil {
 			envFile = string(data)
 		}
@@ -613,8 +614,8 @@ func TestEndpointHandlerInjectsFromCredstore(t *testing.T) {
 	config := EndpointConfig{
 		Token: token,
 		Auth:  auth,
-		Backend: RoutingBackend{
-			MCP: MCPBackend{HTTPClient: httpServer.Client(), Token: "backend-token", Root: root},
+		Backend: api.RoutingBackend{
+			MCP: api.MCPBackend{HTTPClient: httpServer.Client(), Token: "backend-token", Root: root},
 		},
 	}
 	handler, err := NewEndpointHandler(config, toolStore)
@@ -629,7 +630,7 @@ func TestEndpointHandlerInjectsFromCredstore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
 		t.Fatal(err)
 	}

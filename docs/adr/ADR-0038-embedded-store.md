@@ -10,7 +10,7 @@ No implementation before owner acceptance; adding a dependency requires
 
 Requirements: [SPEC-0053](../../specs/active/SPEC-0053-execution-chain-reliability.md) R4.
 Origin: [ADR-0036](ADR-0036-execution-chain-reliability.md) D12b,
-[CHG-0096](../../.work/in-progress/CHG-0096-control-plane-simplification/plan.md) P4b.
+[CHG-0096](../../.work/done/CHG-0096-control-plane-simplification/plan.md) P4b.
 
 ## Context and measured evidence
 

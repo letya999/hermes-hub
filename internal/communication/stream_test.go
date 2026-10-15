@@ -39,6 +39,139 @@ func streamEvent(job Job) hubruntime.ExecuteResponse {
 	return hubruntime.ExecuteResponse{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 }
 
+// Live progress: while a telegram run is non-terminal the gateway re-arms the
+// typing action and refreshes the single status message with elapsed time;
+// terminal jobs are left alone.
+func TestLiveProgressTickRearmsAndAges(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(1_800_000_000, 0)
+	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	envelope.DeliveryTargetID = "telegram--100"
+	job := Job{Envelope: envelope, ID: "live-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "live-key", ChatID: -100, TopicID: 5, Text: "hello", CreatedAt: base}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{messageSeq: 100}
+	g.api, g.spool = fake, s
+	g.now = func() time.Time { return base }
+	ctx := context.Background()
+	started := streamEvent(job)
+	started.EventID, started.LastEvent = "started", "run.started"
+	if err := s.RecordStreamEvent(job, started); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if len(fake.sent) != 1 {
+		t.Fatalf("status send lost: %v", fake.sent)
+	}
+	g.now = func() time.Time { return base.Add(65 * time.Second) }
+	g.progressTick(ctx)
+	actions := len(fake.chatActions)
+	if actions == 0 || fake.chatActions[actions-1].action != "typing" {
+		t.Fatalf("progress tick did not re-arm typing: %+v", fake.chatActions)
+	}
+	g.deliverOne(ctx)
+	if len(fake.edits) == 0 {
+		t.Fatalf("no elapsed-time edit queued: sent=%v", fake.sent)
+	}
+	last := fake.edits[len(fake.edits)-1]
+	if last.messageID != 100 || !strings.Contains(last.text, "Выполняю запрос") || !strings.Contains(last.text, "1 мин") {
+		t.Fatalf("status edit lost base text or elapsed: %+v", last)
+	}
+	// Once the run is terminal the tick produces neither actions nor edits.
+	terminal := streamEvent(job)
+	terminal.Status, terminal.LastEvent, terminal.EventID, terminal.Text = "completed", "run.completed", "done", "готово"
+	if err := s.RecordStreamEvent(job, terminal); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	actions, edits := len(fake.chatActions), len(fake.edits)
+	g.progressTick(ctx)
+	g.deliverOne(ctx)
+	if len(fake.chatActions) != actions || len(fake.edits) != edits {
+		t.Fatalf("terminal job still gets progress: actions=%d edits=%d", len(fake.chatActions), len(fake.edits))
+	}
+}
+
+// A queued job that never reached admission — a dead supervisor, a wedged
+// runtime — must not farm typing actions and status edits forever.
+func TestProgressTickSkipsUnadmittedJob(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "stuck-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "stuck-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.spool = fake, s
+	g.progressTick(context.Background())
+	g.deliverOne(context.Background())
+	if len(fake.chatActions) != 0 || len(fake.sent) != 0 {
+		t.Fatalf("unadmitted job got progress: actions=%v sent=%v", fake.chatActions, fake.sent)
+	}
+}
+
+// The gateway's run loop schedules the periodic progress tick: a non-terminal
+// telegram job gets its typing action re-armed while Run is alive.
+func TestProgressLoopRunsDuringGatewayRun(t *testing.T) {
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := g.user("alice")
+	job := Job{Envelope: user.envelope(11), ID: "loop-live", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "loop-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
+	if _, err := g.spool.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	fake := &idleAPI{}
+	g.api, g.runner = fake, blockingRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- g.Run(ctx) }()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		fake.mu.Lock()
+		n := len(fake.chatActions)
+		fake.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("progress loop never re-armed typing during Run")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != context.Canceled {
+		t.Fatalf("run exit: %v", err)
+	}
+}
+
+// idleAPI long-polls forever so Run's update loop respects cancellation.
+type idleAPI struct{ fakeAPI }
+
+func (a *idleAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func TestTerminalFailureDeliveryNamesCauseWithoutRawError(t *testing.T) {
 	for _, status := range []string{"failed", "interrupted", "cancelled"} {
 		t.Run(status, func(t *testing.T) {

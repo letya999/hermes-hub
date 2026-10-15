@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,7 @@ func runGovernance(_ context.Context, args []string) error {
 	reason := f.String("reason", "", "audit reason, required for every mutation")
 	issuer := f.String("issuer", "operator", "operator identity recorded as issuer and confirmer")
 	revision := f.Uint64("revision", 1, "monotonic revision; increment when changing an existing record")
-	status := f.String("status", string(toolhub.ActiveStatus), "rule status: active, disabled or revoked")
+	status := f.String("status", string(api.ActiveStatus), "rule status: active, disabled or revoked")
 	grantID := f.String("grant", "", "grant id for revoke (default: derived)")
 	ruleID := f.String("rule", "", "explicit rule id, including updates to legacy attribute rules")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation and commit")
@@ -75,7 +76,7 @@ func runGovernance(_ context.Context, args []string) error {
 		grants := []map[string]any{}
 		for _, g := range doc.Grants {
 			state := g.Status
-			if g.Status == toolhub.GrantActive && !now.Before(g.ExpiresAt) {
+			if g.Status == api.GrantActive && !now.Before(g.ExpiresAt) {
 				state = "expired"
 			}
 			grants = append(grants, map[string]any{"grant_id": g.GrantID, "principal": g.PrincipalID, "section": g.Section, "status": state, "expires": g.ExpiresAt.Format(time.RFC3339), "reason": g.Reason})
@@ -85,9 +86,9 @@ func runGovernance(_ context.Context, args []string) error {
 		if *reason == "" || *section == "" && *match == "" || *section != "" && *match != "" {
 			return fmt.Errorf("rule requires --reason and exactly one of --section/--match")
 		}
-		rule := toolhub.PolicyRule{Scope: *scope, Section: *section, Effect: *effect, Reason: *reason, GrantedBy: *issuer, Revision: *revision, Status: toolhub.Status(*status)}
+		rule := api.PolicyRule{Scope: *scope, Section: *section, Effect: *effect, Reason: *reason, GrantedBy: *issuer, Revision: *revision, Status: api.Status(*status)}
 		rule.Subject = *subject
-		if rule.Subject == "" && (*scope == toolhub.ScopeUser || *scope == toolhub.ScopeOrg) {
+		if rule.Subject == "" && (*scope == api.ScopeUser || *scope == api.ScopeOrg) {
 			rule.Subject = *user
 		}
 		if *match != "" {
@@ -112,11 +113,11 @@ func runGovernance(_ context.Context, args []string) error {
 			rule.RuleID = *ruleID
 		}
 		if !*confirm {
-			fmt.Fprintf(os.Stderr, "review digest: %s\nre-run with --confirm to commit\n", toolhub.ConfirmationDigest(rule))
+			fmt.Fprintf(os.Stderr, "review digest: %s\nre-run with --confirm to commit\n", api.ConfirmationDigest(rule))
 			return fmt.Errorf("rule not confirmed")
 		}
 		updated := false
-		err := store.Update(now, func(doc *toolhub.Governance) error {
+		err := store.Update(now, func(doc *api.Governance) error {
 			if err := doc.PutRule(rule, now); err != nil {
 				return err
 			}
@@ -135,11 +136,11 @@ func runGovernance(_ context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		grant := toolhub.NewToolGrant(deterministicGrantID(*user, *section, *grantID), *user, *section, *reason, *issuer, at, nil)
+		grant := api.NewToolGrant(deterministicGrantID(*user, *section, *grantID), *user, *section, *reason, *issuer, at, nil)
 		if err := confirmRecord(*confirm, *issuer, &grant); err != nil {
 			return err
 		}
-		if err := store.Update(now, func(doc *toolhub.Governance) error { return doc.PutToolGrant(grant, now) }); err != nil {
+		if err := store.Update(now, func(doc *api.Governance) error { return doc.PutToolGrant(grant, now) }); err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"grant_id": grant.GrantID, "principal_id": grant.PrincipalID, "section": grant.Section, "status": grant.Status, "expires": grant.ExpiresAt.Format(time.RFC3339), "next_step": "the principal activates it in-conversation: grant_request then the acknowledge URL"})
@@ -147,10 +148,10 @@ func runGovernance(_ context.Context, args []string) error {
 		if *grantID == "" || *reason == "" {
 			return fmt.Errorf("revoke requires --grant and --reason")
 		}
-		if err := store.Update(now, func(doc *toolhub.Governance) error { return doc.RevokeToolGrant(*grantID, *issuer, *reason, now) }); err != nil {
+		if err := store.Update(now, func(doc *api.Governance) error { return doc.RevokeToolGrant(*grantID, *issuer, *reason, now) }); err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"grant_id": *grantID, "status": toolhub.GrantRevoked})
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"grant_id": *grantID, "status": api.GrantRevoked})
 	default:
 		return fmt.Errorf("unknown --kind %q", *kind)
 	}
@@ -170,7 +171,7 @@ func parseExpiry(raw string, now time.Time) (time.Time, error) {
 	return at.UTC(), nil
 }
 
-func deterministicRuleID(r toolhub.PolicyRule) string {
+func deterministicRuleID(r api.PolicyRule) string {
 	if len(r.Match) != 0 {
 		data, _ := json.Marshal([]any{r.Scope, r.Subject, r.Match, r.Effect})
 		return fmt.Sprintf("govrule-%x", sha256.Sum256(data))[:32]

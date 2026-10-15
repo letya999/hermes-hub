@@ -5,18 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/oauth"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/letya999/hermes-hub/internal/audit"
-	"github.com/letya999/hermes-hub/internal/credentialbroker"
-	"github.com/letya999/hermes-hub/internal/credstore"
-	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/oauth"
 )
 
 type EndpointConfig struct {
@@ -28,13 +28,13 @@ type EndpointConfig struct {
 	// deployed ToolHub authenticates every principal this way; there is no
 	// per-user ToolHub instance.
 	TokensFile     string
-	Backend        ToolBackend
-	RecipeCatalogs []RecipeCatalog
+	Backend        api.ToolBackend
+	RecipeCatalogs []api.RecipeCatalog
 	BrokerControl  *credentialbroker.Config
 	BrokerRuntime  *credentialbroker.Config
 	Release        func(context.Context, string) error
 	// CLIRelease drops bounded-cli cells by principal/binding/job selector.
-	CLIRelease func(context.Context, cliReleaseRequest) error
+	CLIRelease func(context.Context, api.CliReleaseRequest) error
 }
 
 func EndpointConfigFromEnv() (EndpointConfig, error) {
@@ -42,7 +42,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH" // #nosec G101 -- this is an environment variable name, never a credential value.
 	}
-	if !credentialPattern.MatchString(tokenEnv) {
+	if !api.CredentialPattern.MatchString(tokenEnv) {
 		return EndpointConfig{}, fmt.Errorf("invalid ToolHub token environment name")
 	}
 	token := os.Getenv(tokenEnv)
@@ -79,18 +79,18 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 			return EndpointConfig{}, fmt.Errorf("managed ToolHub identity is incomplete")
 		}
 	}
-	admission, err := ControllerAdmissionVerifierFromEnv()
+	admission, err := api.ControllerAdmissionVerifierFromEnv()
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("ToolHive admission: %w", err)
 	}
 	auth := identity.Envelope{
 		Schema:             identity.Schema,
 		PrincipalID:        principal,
-		ExternalIdentityID: envOr("HUB_EXTERNAL_ID", principal),
+		ExternalIdentityID: api.EnvOr("HUB_EXTERNAL_ID", principal),
 		ContextID:          contextID,
 		RuntimeID:          runtimeID,
-		ConversationID:     envOr("HUB_CONVERSATION_ID", "toolhub"),
-		DeliveryTargetID:   envOr("HUB_DELIVERY_TARGET_ID", "toolhub"),
+		ConversationID:     api.EnvOr("HUB_CONVERSATION_ID", "toolhub"),
+		DeliveryTargetID:   api.EnvOr("HUB_DELIVERY_TARGET_ID", "toolhub"),
 		PolicyVersion:      policy,
 	}
 	if managed {
@@ -107,30 +107,30 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 	if controlBroker.Enabled() != runtimeBroker.Enabled() {
 		return EndpointConfig{}, fmt.Errorf("ToolHub requires both Credential Broker control and runtime clients")
 	}
-	release, err := ControllerAdmissionReleaserFromEnv()
+	release, err := api.ControllerAdmissionReleaserFromEnv()
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("ToolHive release: %w", err)
 	}
-	cliRelease, err := CLIReleaseFromEnv()
+	cliRelease, err := api.CLIReleaseFromEnv()
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("cli release: %w", err)
 	}
-	catalogs, err := RecipeCatalogsFromEnv()
+	catalogs, err := api.RecipeCatalogsFromEnv()
 	if err != nil {
 		return EndpointConfig{}, err
 	}
-	cli, err := CLIRunnerFromEnv()
+	cli, err := api.CLIRunnerFromEnv()
 	if err != nil {
 		return EndpointConfig{}, fmt.Errorf("bounded CLI: %w", err)
 	}
 	return EndpointConfig{
-		Listen:     envOr("HUB_TOOLHUB_LISTEN", "127.0.0.1:8090"),
+		Listen:     api.EnvOr("HUB_TOOLHUB_LISTEN", "127.0.0.1:8090"),
 		Token:      token,
 		Auth:       auth,
 		TokensFile: os.Getenv("HUB_TOOLHUB_TOKENS_FILE"),
-		Backend: RoutingBackend{
-			Provider: PersonalProviderBackend{},
-			MCP:      MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: envOr("HUB_STATE", "/state")},
+		Backend: api.RoutingBackend{
+			Provider: api.PersonalProviderBackend{},
+			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: api.EnvOr("HUB_STATE", "/state")},
 			CLI:      cli,
 			Agent:    agentBackendFromEnv(),
 		},
@@ -154,22 +154,22 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 
 func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, error) {
 	if store == nil {
-		return nil, fmt.Errorf("%w: nil ToolHub store", ErrInvalid)
+		return nil, fmt.Errorf("%w: nil ToolHub store", api.ErrInvalid)
 	}
 	if len(config.Token) < 32 || strings.ContainsAny(config.Token, "\r\n") {
-		return nil, fmt.Errorf("%w: ToolHub token", ErrInvalid)
+		return nil, fmt.Errorf("%w: ToolHub token", api.ErrInvalid)
 	}
 	if err := config.Auth.Validate(config.Auth.PrincipalID, config.Auth.ContextID, config.Auth.RuntimeID, config.Auth.PolicyVersion); err != nil {
-		return nil, fmt.Errorf("%w: ToolHub identity: %v", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: ToolHub identity: %v", api.ErrInvalid, err)
 	}
 	if config.Backend == nil {
-		return nil, fmt.Errorf("%w: nil ToolHub backend", ErrInvalid)
+		return nil, fmt.Errorf("%w: nil ToolHub backend", api.ErrInvalid)
 	}
-	if routing, ok := config.Backend.(RoutingBackend); ok {
-		if agent, ok := routing.Agent.(AgentExecBackend); ok && agent.Fence == nil {
+	if routing, ok := config.Backend.(api.RoutingBackend); ok {
+		if agent, ok := routing.Agent.(api.AgentExecBackend); ok && agent.Fence == nil {
 			// Export and apply paths re-verify the admitted authority against
 			// the live store so a mid-flight revocation stops the write.
-			agent.Fence = func(_ context.Context, effective EffectiveBinding) error {
+			agent.Fence = func(_ context.Context, effective api.EffectiveBinding) error {
 				return store.ReverifyEffective(effective)
 			}
 			routing.Agent = agent
@@ -177,7 +177,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 	}
 	if (config.BrokerControl == nil) != (config.BrokerRuntime == nil) {
-		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", ErrInvalid)
+		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", api.ErrInvalid)
 	}
 	tokens := map[string]identity.Envelope{config.Token: config.Auth}
 	if config.TokensFile != "" {
@@ -187,7 +187,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 		for token, auth := range extra {
 			if _, dup := tokens[token]; dup {
-				return nil, fmt.Errorf("%w: duplicate ToolHub token", ErrInvalid)
+				return nil, fmt.Errorf("%w: duplicate ToolHub token", api.ErrInvalid)
 			}
 			tokens[token] = auth
 		}
@@ -201,21 +201,21 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		ControlToken: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
 		// Tool governance sits beside the registry; the env pin exists for
 		// deployments that keep the policy document elsewhere.
-		Governance: NewGovernanceStore(envOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
+		Governance: NewGovernanceStore(api.EnvOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
 		// Job-end cell release shares the controller release channel.
 		CLIRelease: config.CLIRelease,
 	}
 	var secrets credstore.Backend
-	var injector CredentialInjector
+	var injector api.CredentialInjector
 	var err error
 	secrets, injector, err = credentialServicesFromEnv()
 	if err != nil {
 		return nil, err
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
-	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: envOr("HUB_STATE", ""), DiagnosticsDir: envOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
 	if ready := readinessBackend(config.Backend); ready != nil {
-		control.Ready = func(ctx context.Context, effective EffectiveBinding) (readyErr error) {
+		control.Ready = func(ctx context.Context, effective api.EffectiveBinding) (readyErr error) {
 			if gateway.Injector == nil {
 				return ready(ctx, effective, nil)
 			}
@@ -226,7 +226,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			if injection.Cleanup != nil {
 				defer func() { readyErr = errors.Join(readyErr, injection.Cleanup()) }()
 			}
-			effective.CredentialMounts = append([]Mount(nil), injection.Mounts...)
+			effective.CredentialMounts = append([]api.Mount(nil), injection.Mounts...)
 			if err := ready(ctx, effective, injection.Environment); err != nil {
 				return err
 			}
@@ -237,24 +237,24 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 	}
 	if store.Reconnect == nil {
-		store.Reconnect = &ReconnectController{Store: store, Auth: config.Auth, OnChange: func(change ProjectionChange) error {
+		store.Reconnect = &ReconnectController{Store: store, Auth: config.Auth, OnChange: func(change api.ProjectionChange) error {
 			return gateway.RefreshProjection()
 		}}
 	}
-	control.SourceResolver = ResolveGitHubSource
-	control.FormOrigin = formOriginForListen(config.Listen)
-	artifacts, seccomp := controlArtifactPaths(control.WorkloadRoot)
-	control.Reviewer = DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
+	control.SourceResolver = api.ResolveGitHubSource
+	control.FormOrigin = api.FormOriginForListen(config.Listen)
+	artifacts, seccomp := api.ControlArtifactPaths(control.WorkloadRoot)
+	control.Reviewer = api.DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	cliArtifacts, err := CLIArtifactPipelineFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("cli artifact pipeline: %w", err)
 	}
 	control.CLIArtifacts = cliArtifacts
-	control.AdmitWithCredentials = func(ctx context.Context, definition ToolDefinition, secrets map[string]string) (ToolDefinition, error) {
-		if definition.Transport == RemoteMCP {
+	control.AdmitWithCredentials = func(ctx context.Context, definition api.ToolDefinition, secrets map[string]string) (api.ToolDefinition, error) {
+		if definition.Transport == api.RemoteMCP {
 			return admitRemoteDefinition(ctx, definition, secrets)
 		}
-		return admitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
+		return api.AdmitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
 	control.Injector = gateway.Injector
@@ -309,34 +309,19 @@ type projectionEndpoint struct {
 
 func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }
 
-func formOriginForListen(listen string) string {
-	listen = strings.TrimRight(strings.TrimSpace(listen), "/")
-	if strings.Contains(listen, "://") {
-		return listen
-	}
-	host, port, err := net.SplitHostPort(listen)
-	if err == nil && (host == "" || host == "0.0.0.0" || host == "::" || host == "[::]") {
-		return "http://127.0.0.1:" + port
-	}
-	if listen == "" {
-		return "http://127.0.0.1"
-	}
-	return "http://" + listen
-}
+type workloadReadiness func(context.Context, api.EffectiveBinding, map[string]string) error
 
-type workloadReadiness func(context.Context, EffectiveBinding, map[string]string) error
-
-func readinessBackend(backend ToolBackend) workloadReadiness {
+func readinessBackend(backend api.ToolBackend) workloadReadiness {
 	switch value := backend.(type) {
-	case MCPBackend:
+	case api.MCPBackend:
 		return value.EnsureReady
-	case *MCPBackend:
+	case *api.MCPBackend:
 		if value != nil {
 			return value.EnsureReady
 		}
-	case RoutingBackend:
+	case api.RoutingBackend:
 		return readinessBackend(value.MCP)
-	case *RoutingBackend:
+	case *api.RoutingBackend:
 		if value != nil {
 			return readinessBackend(value.MCP)
 		}
@@ -356,36 +341,29 @@ func nonLoopbackListen(address string) bool {
 	return ip == nil || !ip.IsLoopback()
 }
 
-func envOr(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
-}
-
 // agentBackendFromEnv wires the private agent-tools executor. The channel is
 // `docker exec` into the owning runtime container — the only control-plane
 // path that never crosses the agent network, so an agent cannot invoke the
 // executor or forge capability scopes. Unconfigured stays nil and dispatch
 // fails closed.
-func agentBackendFromEnv() ToolBackend {
-	docker := envOr("HUB_DOCKER_BIN", "docker")
+func agentBackendFromEnv() api.ToolBackend {
+	docker := api.EnvOr("HUB_DOCKER_BIN", "docker")
 	// The docker socket sees every host container; scope checks keep exec,
 	// inspect and lifecycle ops inside this stack's own project.
-	SetDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"))
+	api.SetDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"))
 	// Durable executor leases sit next to the ToolHub store: a restart keeps
 	// quarantining bindings whose sandbox stop was never confirmed.
 	if store := os.Getenv("HUB_TOOLHUB_STORE"); store != "" {
-		if err := SetScratchLeasePath(filepath.Join(filepath.Dir(store), "executor-leases.json")); err != nil {
+		if err := api.SetScratchLeasePath(filepath.Join(filepath.Dir(store), "executor-leases.json")); err != nil {
 			fmt.Fprintf(os.Stderr, "toolhub: scratch lease file disabled: %v\n", err)
 		}
 	}
 	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
-		resolve := FixedAgentContainer(container)
-		return AgentExecBackend{Exec: DaemonAgentExec([]string{docker}, resolve), Scratch: DockerScratchExec([]string{docker}, resolve, DockerAgentExec([]string{docker}, resolve))}
+		resolve := api.FixedAgentContainer(container)
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, resolve), Scratch: api.DockerScratchExec([]string{docker}, resolve, api.DockerAgentExec([]string{docker}, resolve))}
 	}
 	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
-		return AgentExecBackend{Exec: DaemonAgentExec([]string{docker}, ManagedAgentContainer), Scratch: DockerScratchExec([]string{docker}, ManagedAgentContainer, DockerAgentExec([]string{docker}, ManagedAgentContainer))}
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, api.ManagedAgentContainer), Scratch: api.DockerScratchExec([]string{docker}, api.ManagedAgentContainer, api.DockerAgentExec([]string{docker}, api.ManagedAgentContainer))}
 	}
 	return nil
 }
@@ -397,24 +375,24 @@ func agentBackendFromEnv() ToolBackend {
 func loadTokenEnvelopes(path string) (map[string]identity.Envelope, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: ToolHub tokens file: %v", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: ToolHub tokens file: %v", api.ErrInvalid, err)
 	}
 	var entries map[string]identity.Envelope
 	if err := json.Unmarshal(body, &entries); err != nil || len(entries) == 0 {
-		return nil, fmt.Errorf("%w: ToolHub tokens file must map tokens to envelopes", ErrInvalid)
+		return nil, fmt.Errorf("%w: ToolHub tokens file must map tokens to envelopes", api.ErrInvalid)
 	}
 	for token, auth := range entries {
 		if len(token) < 32 || strings.ContainsAny(token, "\r\n") {
-			return nil, fmt.Errorf("%w: ToolHub tokens file token", ErrInvalid)
+			return nil, fmt.Errorf("%w: ToolHub tokens file token", api.ErrInvalid)
 		}
 		if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-			return nil, fmt.Errorf("%w: ToolHub tokens file identity: %v", ErrInvalid, err)
+			return nil, fmt.Errorf("%w: ToolHub tokens file identity: %v", api.ErrInvalid, err)
 		}
 	}
 	return entries, nil
 }
 
-func credentialServicesFromEnv() (credstore.Backend, CredentialInjector, error) {
+func credentialServicesFromEnv() (credstore.Backend, api.CredentialInjector, error) {
 	path := strings.TrimSpace(os.Getenv("HUB_CREDENTIAL_STORE"))
 	if path == "" {
 		return nil, nil, nil
@@ -423,8 +401,8 @@ func credentialServicesFromEnv() (credstore.Backend, CredentialInjector, error) 
 	if err != nil {
 		return nil, nil, err
 	}
-	return backend, func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
-		env, err := DecryptAuthorized(backend, effective)
-		return CredentialInjection{Environment: env}, err
+	return backend, func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+		env, err := api.DecryptAuthorized(backend, effective)
+		return api.CredentialInjection{Environment: env}, err
 	}, nil
 }

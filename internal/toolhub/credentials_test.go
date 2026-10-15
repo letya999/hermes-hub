@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,14 +23,14 @@ func (s *stopRecorder) Stop(id string) error {
 	return nil
 }
 
-func runningWorkload(t *testing.T, binding ToolBinding) WorkloadInstance {
+func runningWorkload(t *testing.T, binding api.ToolBinding) api.WorkloadInstance {
 	t.Helper()
-	owner := &OwnerRef{Type: ContextOwner, ID: "alice"}
-	workload, err := NewWorkloadInstance(binding, owner, "", 1, time.Now().UTC(), time.Time{})
+	owner := &api.OwnerRef{Type: api.ContextOwner, ID: "alice"}
+	workload, err := api.NewWorkloadInstance(binding, owner, "", 1, time.Now().UTC(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	workload.Status = RunningStatus
+	workload.Status = api.RunningStatus
 	if err := workload.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +48,9 @@ func TestRotateDisableRemoveCutOpenSessionBeforeBackend(t *testing.T) {
 	handler, err := (&Gateway{
 		Store:  store,
 		Tokens: map[string]identity.Envelope{"01234567890123456789012345678901": auth},
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
-			return BackendResult{Text: "provider"}, nil
+			return api.BackendResult{Text: "provider"}, nil
 		}),
 	}).Handler()
 	if err != nil {
@@ -67,7 +68,7 @@ func TestRotateDisableRemoveCutOpenSessionBeforeBackend(t *testing.T) {
 	if err != nil || len(tools.Tools) == 0 {
 		t.Fatalf("open session list=%+v err=%v", tools, err)
 	}
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -89,35 +90,35 @@ func TestRotateDisableRemoveCutOpenSessionBeforeBackend(t *testing.T) {
 }
 
 func TestDisableRemoveAndDegradedFailClosed(t *testing.T) {
-	projected := ProjectedToolName("google-work", "1.0.0", "search")
+	projected := api.ProjectedToolName("google-work", "1.0.0", "search")
 	store, auth, _ := seededStore(t)
-	if err := store.SetConnectionStatus("google-work", DisabledStatus); err != nil {
+	if err := store.SetConnectionStatus("google-work", api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AuthorizeProjected(auth, projected, func(ProjectedTool, EffectiveBinding) error {
+	if err := store.AuthorizeProjected(auth, projected, func(api.ProjectedTool, api.EffectiveBinding) error {
 		t.Fatal("disabled connection admitted")
 		return nil
 	}); err == nil {
 		t.Fatal("disabled connection admitted")
 	}
 	store2, auth2, _ := seededStore(t)
-	if err := store2.SetConnectionStatus("google-work", RevokedStatus); err != nil {
+	if err := store2.SetConnectionStatus("google-work", api.RevokedStatus); err != nil {
 		t.Fatal(err)
 	}
-	if err := store2.AuthorizeProjected(auth2, projected, func(ProjectedTool, EffectiveBinding) error {
+	if err := store2.AuthorizeProjected(auth2, projected, func(api.ProjectedTool, api.EffectiveBinding) error {
 		t.Fatal("revoked connection admitted")
 		return nil
-	}); !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrRevoked) {
+	}); !errors.Is(err, api.ErrNotFound) && !errors.Is(err, api.ErrRevoked) {
 		t.Fatalf("revoked connection: %v", err)
 	}
 	store3, auth3, _ := seededStore(t)
 	if err := store3.MarkDegraded("google-work"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store3.AuthorizeProjected(auth3, projected, func(ProjectedTool, EffectiveBinding) error {
+	if err := store3.AuthorizeProjected(auth3, projected, func(api.ProjectedTool, api.EffectiveBinding) error {
 		t.Fatal("degraded connection admitted")
 		return nil
-	}); !errors.Is(err, ErrDegraded) && !errors.Is(err, ErrNotFound) {
+	}); !errors.Is(err, api.ErrDegraded) && !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("degraded: %v", err)
 	}
 	catalog, err := store3.Catalog(auth3)
@@ -154,13 +155,13 @@ func TestTerminalExposureFlagIsReversible(t *testing.T) {
 
 func TestAuditWriteFailureDeniesCall(t *testing.T) {
 	store, auth, _ := seededStore(t)
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	var calls atomic.Int32
 	gateway := Gateway{
 		Store: store,
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
-			return BackendResult{Text: "nope"}, nil
+			return api.BackendResult{Text: "nope"}, nil
 		}),
 		AuditWrite: func(string, map[string]string) error { return errors.New("ledger down") },
 	}
@@ -174,11 +175,11 @@ func TestAuditWriteFailureDeniesCall(t *testing.T) {
 
 func TestAuditFieldsIncludeRevision(t *testing.T) {
 	store, auth, _ := seededStore(t)
-	effective, err := store.Resolve(auth, DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, "google-work", "1.0.0", "google-work", CredentialReferenceID("google-work", 1)))
+	effective, err := store.Resolve(auth, api.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, "google-work", "1.0.0", "google-work", api.CredentialReferenceID("google-work", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fields := auditFields(auth, ProjectedTool{BindingID: effective.Binding.ToolBindingID}, effective, "allow")
+	fields := auditFields(auth, api.ProjectedTool{BindingID: effective.Binding.ToolBindingID}, effective, "allow")
 	if fields["credential_revision"] != "1" || fields["connection_revision"] != "1" || fields["policy_version"] != auth.PolicyVersion {
 		t.Fatalf("audit fields=%v", fields)
 	}

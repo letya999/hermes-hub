@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,34 +16,34 @@ import (
 
 func TestTelegramDefinitionAndReceiptBoundary(t *testing.T) {
 	for _, write := range []bool{false, true} {
-		d, err := TelegramDefinition(statefulContainerDefinition(), write)
+		d, err := api.TelegramDefinition(statefulContainerDefinition(), write)
 		// Adapter images own their entrypoint, arbitrary command overrides denied.
 		if err == nil {
 			t.Fatal("command override accepted")
 		}
 		deployment := statefulContainerDefinition()
 		deployment.Source.Command = ""
-		d, err = TelegramDefinition(deployment, write)
+		d, err = api.TelegramDefinition(deployment, write)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, tool := range d.Tools {
-			if !telegramTool(tool.Name, tool.Effect) {
+			if !api.TelegramTool(tool.Name, tool.Effect) {
 				t.Fatal(tool)
 			}
 		}
-		if telegramTool("raw_api", ReadEffect) || telegramTool("send_message", ReadEffect) {
+		if api.TelegramTool("raw_api", api.ReadEffect) || api.TelegramTool("send_message", api.ReadEffect) {
 			t.Fatal("unknown or misclassified tool")
 		}
 	}
 	d := statefulContainerDefinition()
 	d.Source.Command = ""
-	d, _ = TelegramDefinition(d, true)
-	e := EffectiveBinding{Definition: d, Binding: ToolBinding{PrincipalID: "alice", ContextID: "alice"}, Connection: &Connection{ConnectionID: "telegram", Metadata: map[string]string{"telegram_account": "10"}}, WorkloadID: "workload"}
+	d, _ = api.TelegramDefinition(d, true)
+	e := api.EffectiveBinding{Definition: d, Binding: api.ToolBinding{PrincipalID: "alice", ContextID: "alice"}, Connection: &api.Connection{ConnectionID: "telegram", Metadata: map[string]string{"telegram_account": "10"}}, WorkloadID: "workload"}
 	env := map[string]string{"TELEGRAM_ACCOUNT_ID": "10", "TELEGRAM_WRITE": "true"}
-	tool := ToolSpec{Name: "send_message", Effect: WriteEffect}
+	tool := api.ToolSpec{Name: "send_message", Effect: api.WriteEffect}
 	for _, badEnv := range []map[string]string{nil, {"TELEGRAM_ACCOUNT_ID": "999", "TELEGRAM_WRITE": "true"}, {"TELEGRAM_ACCOUNT_ID": "10", "TELEGRAM_WRITE": "false"}} {
-		if _, err := (MCPBackend{}).CallEnv(context.Background(), e, tool, nil, badEnv); err == nil {
+		if _, err := (api.MCPBackend{}).CallEnv(context.Background(), e, tool, nil, badEnv); err == nil {
 			t.Fatal("bad credential admitted")
 		}
 	}
@@ -56,8 +57,8 @@ func TestTelegramDefinitionAndReceiptBoundary(t *testing.T) {
 	fixture := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
 	defer fixture.Close()
 	e.Connection.Metadata["mcp_endpoint"] = fixture.URL + "/mcp"
-	b := MCPBackend{Root: t.TempDir(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
-		return AdmissionReceipt{WorkloadID: e.WorkloadID, State: "running", Enforced: true, ImageDigest: d.Source.Digest, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution}, nil
+	b := api.MCPBackend{Root: t.TempDir(), AdmissionVerifier: func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
+		return api.AdmissionReceipt{WorkloadID: e.WorkloadID, State: "running", Enforced: true, ImageDigest: d.Source.Digest, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution}, nil
 	}}
 	for _, name := range []string{"send_message", "reply_message", "delete_message"} {
 		tool.Name = name
@@ -86,7 +87,7 @@ func TestWorkloadConnectionIsolationAndConcurrentInject(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	one, err := OpenWorkloadWorkspace(root, e, "")
+	one, err := api.OpenWorkloadWorkspace(root, e, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,18 +95,18 @@ func TestWorkloadConnectionIsolationAndConcurrentInject(t *testing.T) {
 	copyConnection := *e.Connection
 	copyConnection.ConnectionID = "other"
 	other.Connection = &copyConnection
-	two, err := OpenWorkloadWorkspace(root, other, "")
+	two, err := api.OpenWorkloadWorkspace(root, other, "")
 	if err != nil || one.Path == two.Path {
 		t.Fatal("connections share files")
 	}
-	wipe, err := writeAuthorizedFiles(context.Background(), root, e, map[string]string{"TOKEN": "first"})
+	wipe, err := api.WriteAuthorizedFiles(context.Background(), root, e, map[string]string{"TOKEN": "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer wipe()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if _, err := writeAuthorizedFiles(ctx, root, e, map[string]string{"TOKEN": "second"}); err == nil {
+	if _, err := api.WriteAuthorizedFiles(ctx, root, e, map[string]string{"TOKEN": "second"}); err == nil {
 		t.Fatal("concurrent injection overwritten")
 	}
 	raw, err := os.ReadFile(filepath.Join(one.Path, "credentials.env"))
@@ -115,19 +116,19 @@ func TestWorkloadConnectionIsolationAndConcurrentInject(t *testing.T) {
 	if err := wipe(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := writeAuthorizedFiles(context.Background(), root, e, map[string]string{"TOKEN": "second"})
+	second, err := api.WriteAuthorizedFiles(context.Background(), root, e, map[string]string{"TOKEN": "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer second()
 	bad := dummyTelegramDeployment()
 	bad.Source.Args = []string{"arbitrary"}
-	if _, err := TelegramDefinition(bad, false); err == nil {
+	if _, err := api.TelegramDefinition(bad, false); err == nil {
 		t.Fatal("entrypoint args override accepted")
 	}
 }
 
-func dummyTelegramDeployment() ToolDefinition {
+func dummyTelegramDeployment() api.ToolDefinition {
 	d := statefulContainerDefinition()
 	d.Source.Command = ""
 	return d
@@ -139,7 +140,7 @@ func TestTelegramPythonContainerStdio(t *testing.T) {
 	if image == "" {
 		t.Skip("explicit built adapter image required")
 	}
-	if !digestPattern.MatchString(image) {
+	if !api.DigestPattern.MatchString(image) {
 		t.Fatal("test image must be a real image digest")
 	}
 	root := t.TempDir()

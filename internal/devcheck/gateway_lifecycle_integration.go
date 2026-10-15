@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io/fs"
 	"net"
 	"net/http"
@@ -24,7 +25,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // gatewayLifecycleSmoke uses the production Telegram adapter, worker, spool,
@@ -98,7 +98,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		if err := os.MkdirAll(filepath.Join(dir, "runtime", "toolhub"), 0700); err != nil {
 			return err
 		}
-		if err := toolhub.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), toolhub.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
+		if err := api.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), api.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
 			return err
 		}
 		if err := stack.RenderEnvironment(dir, ".", "prod"); err != nil {

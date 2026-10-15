@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // Call runs one tool through the same dispatch the ToolHub executor uses.
@@ -25,7 +25,7 @@ func (t *Tools) Call(ctx context.Context, name string, r Input) (any, error) {
 // against the tool's admitted input schema by the gateway; scopes are the
 // verbatim capability path boundaries bound by admission. This is the
 // private executor entry point — never an MCP surface.
-func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]any, scopes []toolhub.CapabilityScope) (any, error) {
+func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]any, scopes []api.CapabilityScope) (any, error) {
 	body, err := json.Marshal(arguments)
 	if err != nil {
 		return nil, fmt.Errorf("executor arguments: %w", err)
@@ -90,7 +90,8 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.SettingsGet(r)
 	case "settings_set":
 		return t.SettingsSet(r)
-	case "routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete":
+	case "routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete",
+		"watch_subscribe", "watch_list", "watch_pause", "watch_delete":
 		return t.Routine(ctx, name, r)
 	case "document_extract":
 		return session().Extract(ctx, r.Path)
@@ -171,7 +172,7 @@ func (t *Tools) toolPolicyDeny(name string) string {
 		if p.Denied(spec.CapabilityID) || p.Denied(family) {
 			return name + " is denied by tool governance on this runtime"
 		}
-		if spec.Effect == toolhub.WriteEffect && (p.CappedReadOnly(spec.CapabilityID) || p.CappedReadOnly(family)) {
+		if spec.Effect == api.WriteEffect && (p.CappedReadOnly(spec.CapabilityID) || p.CappedReadOnly(family)) {
 			return name + " is read-only on this runtime"
 		}
 		return ""
@@ -240,7 +241,7 @@ func (t *Tools) sshDispatch(ctx context.Context, name string, r Input) (any, err
 // their sub-root relative form. The ToolHub backend passes the admitted
 // scopes verbatim; this routine only enforces them mechanically and can
 // never widen a grant.
-func (t *Tools) scopedRoots(name string, r *Input, scopes []toolhub.CapabilityScope) (ws, ar, org *os.Root, done func(), err error) {
+func (t *Tools) scopedRoots(name string, r *Input, scopes []api.CapabilityScope) (ws, ar, org *os.Root, done func(), err error) {
 	ws, ar, org = t.Workspace, t.Archive, t.Organization
 	opened := []*os.Root{}
 	done = func() {

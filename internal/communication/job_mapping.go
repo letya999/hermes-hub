@@ -70,8 +70,13 @@ type JobMapping struct {
 	Trigger             string          `json:"trigger"`
 	// TaskID/TopicID pin the durable task binding; Style/StyleVersion/
 	// StyleSnapshotted pin the admitted-run presentation snapshot.
-	TaskID            string `json:"task_id,omitempty"`
-	TopicID           int64  `json:"topic_id,omitempty"`
+	TaskID  string `json:"task_id,omitempty"`
+	TopicID int64  `json:"topic_id,omitempty"`
+	ChatID  int64  `json:"chat_id,omitempty"`
+	// StatusText is the latest user-facing status line for live progress:
+	// the periodic tick re-renders it with elapsed time, so the durable copy
+	// lets a restarted gateway resume the status message without the stream.
+	StatusText        string `json:"status_text,omitempty"`
 	Style             string `json:"style,omitempty"`
 	StyleVersion      uint64 `json:"style_version,omitempty"`
 	StyleSnapshotted  bool   `json:"style_snapshotted,omitempty"`
@@ -133,7 +138,7 @@ func (mapping JobMapping) MatchesJob(job Job) bool {
 }
 
 func mappingFromJob(job Job, now time.Time) JobMapping {
-	return JobMapping{IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: jobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
+	return JobMapping{IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: jobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
 }
 
 func (s *Spool) mappingPath(id string) string {
@@ -207,6 +212,27 @@ func (s *Spool) activeMappingIDs() ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// ActiveJobsForTask lists the caller's non-terminal mappings bound to one task.
+func (s *Spool) ActiveJobsForTask(principal, taskID string) ([]JobMapping, error) {
+	ids, err := s.activeMappingIDs()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []JobMapping{}
+	for _, id := range ids {
+		mapping, err := s.loadMappingLocked(id)
+		if err != nil || mapping.PrincipalID != principal || terminalStatus(mapping.Status) || mapping.CancelRequested {
+			continue
+		}
+		if mapping.TaskID == taskID {
+			out = append(out, mapping)
+		}
+	}
+	return out, nil
 }
 
 func (s *Spool) loadMappingLocked(id string) (JobMapping, error) {

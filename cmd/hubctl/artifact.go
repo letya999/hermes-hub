@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func runArtifactImport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var config toolhub.ArtifactImportConfig
+	var config api.ArtifactImportConfig
 	decoder := json.NewDecoder(strings.NewReader(string(configBytes)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
@@ -61,7 +62,7 @@ func runArtifactImport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	packet, err := toolhub.ImportGitHubArtifact(ctx, toolhub.ArtifactSource{Repository: *repository, CommitSHA: *commit}, config, toolhub.RestrictedBuildConfig{SeccompPath: seccompPath, ArtifactDirectory: artifactDirectory, MaxArtifactBytes: 8 << 30})
+	packet, err := api.ImportGitHubArtifact(ctx, api.ArtifactSource{Repository: *repository, CommitSHA: *commit}, config, api.RestrictedBuildConfig{SeccompPath: seccompPath, ArtifactDirectory: artifactDirectory, MaxArtifactBytes: 8 << 30})
 	if err != nil {
 		return err
 	}
@@ -84,7 +85,7 @@ func runArtifactPreflight(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var packet toolhub.ImportedArtifact
+	var packet api.ImportedArtifact
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&packet); err != nil {
@@ -94,7 +95,7 @@ func runArtifactPreflight(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	preflighted, contract, err := toolhub.PreflightImportedArtifact(ctx, packet, artifactDirectory)
+	preflighted, contract, err := api.PreflightImportedArtifact(ctx, packet, artifactDirectory)
 	if err != nil {
 		return err
 	}
@@ -131,7 +132,7 @@ func runArtifactApprove(args []string) error {
 	if err != nil {
 		return err
 	}
-	var packet toolhub.ImportedArtifact
+	var packet api.ImportedArtifact
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&packet); err != nil {
@@ -144,13 +145,13 @@ func runArtifactApprove(args []string) error {
 	if err != nil {
 		return err
 	}
-	var contract toolhub.ConfirmedToolContract
+	var contract api.ConfirmedToolContract
 	contractDecoder := json.NewDecoder(strings.NewReader(string(contractBody)))
 	contractDecoder.DisallowUnknownFields()
 	if err := contractDecoder.Decode(&contract); err != nil {
 		return fmt.Errorf("artifact tool contract: %w", err)
 	}
-	if err := toolhub.AttachConfirmedToolContract(&packet, contract); err != nil {
+	if err := api.AttachConfirmedToolContract(&packet, contract); err != nil {
 		return err
 	}
 	store, err := toolhub.LoadStaged(*storePath)
@@ -176,5 +177,5 @@ func runArtifactLinuxBridge(args []string) error {
 	if *output == "" || f.NArg() != 0 {
 		return fmt.Errorf("artifact linux-bridge requires --output")
 	}
-	return toolhub.BuildLinuxCompanionBridge(*output)
+	return api.BuildLinuxCompanionBridge(*output)
 }

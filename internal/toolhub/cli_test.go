@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,13 +21,13 @@ import (
 )
 
 func TestCLICatalogDefinitionsValidate(t *testing.T) {
-	definitions := CLICatalogDefinitions()
+	definitions := api.CLICatalogDefinitions()
 	if len(definitions) < 2 {
 		t.Fatalf("catalog too small: %d", len(definitions))
 	}
 	seen := map[string]bool{}
 	for _, definition := range definitions {
-		if definition.Transport != BoundedCLI || definition.Workload.Class != PerUser {
+		if definition.Transport != api.BoundedCLI || definition.Workload.Class != api.PerUser {
 			t.Fatalf("catalog definition %s is not a per-user bounded CLI", definition.DefinitionID)
 		}
 		if err := definition.Validate(); err != nil {
@@ -45,9 +46,9 @@ func TestCLICatalogDefinitionsValidate(t *testing.T) {
 }
 
 func TestCLIReceiptStrictness(t *testing.T) {
-	effective := EffectiveBinding{WorkloadID: "w-cli", Definition: boundedCLIDefinition()}
-	base := AdmissionReceipt{WorkloadID: "w-cli", State: "running", Enforced: true, Isolation: []string{"filesystem", "network", "pid"}, Execution: effective.Definition.Execution, CellID: "cli-abc123", Runtime: "runc"}
-	if err := base.validate(effective); err != nil {
+	effective := api.EffectiveBinding{WorkloadID: "w-cli", Definition: boundedCLIDefinition()}
+	base := api.AdmissionReceipt{WorkloadID: "w-cli", State: "running", Enforced: true, Isolation: []string{"filesystem", "network", "pid"}, Execution: effective.Definition.Execution, CellID: "cli-abc123", Runtime: "runc"}
+	if err := base.Validate(effective); err != nil {
 		t.Fatalf("valid CLI receipt denied: %v", err)
 	}
 	for _, drop := range []string{"filesystem", "network", "pid"} {
@@ -58,50 +59,50 @@ func TestCLIReceiptStrictness(t *testing.T) {
 				receipt.Isolation = append(receipt.Isolation, scope)
 			}
 		}
-		if err := receipt.validate(effective); err == nil {
+		if err := receipt.Validate(effective); err == nil {
 			t.Fatalf("receipt missing %s isolation accepted", drop)
 		}
 	}
 	receipt := base
 	receipt.CellID = ""
-	if err := receipt.validate(effective); err == nil {
+	if err := receipt.Validate(effective); err == nil {
 		t.Fatal("CLI receipt without a cell identity accepted")
 	}
 	receipt = base
 	receipt.Runtime = ""
-	if err := receipt.validate(effective); err == nil {
+	if err := receipt.Validate(effective); err == nil {
 		t.Fatal("CLI receipt without a runtime tier accepted")
 	}
 	receipt = base
 	receipt.Runtime = "host"
-	if err := receipt.validate(effective); err == nil {
+	if err := receipt.Validate(effective); err == nil {
 		t.Fatal("CLI receipt with a foreign runtime accepted")
 	}
 	receipt = base
 	receipt.ImageDigest = "sha256:" + strings.Repeat("1", 64)
-	if err := receipt.validate(effective); err == nil {
+	if err := receipt.Validate(effective); err == nil {
 		t.Fatal("CLI receipt with a container field accepted")
 	}
 	receipt = base
 	receipt.Enforced = false
-	if err := receipt.validate(effective); err == nil {
+	if err := receipt.Validate(effective); err == nil {
 		t.Fatal("unenforced CLI receipt accepted")
 	}
 	receipt = base
 	receipt.Execution.TimeoutSeconds++
-	if err := receipt.validate(effective); err == nil {
+	if err := receipt.Validate(effective); err == nil {
 		t.Fatal("drifted execution receipt accepted")
 	}
 	// Artifact plans require the receipt to attest the pinned image digest.
 	artifact := effective
-	artifact.Definition.Source = DefinitionSource{Image: "ghcr.io/example/tool", Digest: "sha256:" + strings.Repeat("9", 64), Command: "/bin/tool"}
+	artifact.Definition.Source = api.DefinitionSource{Image: "ghcr.io/example/tool", Digest: "sha256:" + strings.Repeat("9", 64), Command: "/bin/tool"}
 	receipt = base
 	receipt.ImageDigest = "sha256:" + strings.Repeat("9", 64)
-	if err := receipt.validate(artifact); err != nil {
+	if err := receipt.Validate(artifact); err != nil {
 		t.Fatalf("matching artifact receipt denied: %v", err)
 	}
 	receipt.ImageDigest = "sha256:" + strings.Repeat("1", 64)
-	if err := receipt.validate(artifact); err == nil {
+	if err := receipt.Validate(artifact); err == nil {
 		t.Fatal("artifact digest mismatch accepted")
 	}
 }
@@ -110,114 +111,114 @@ func TestPlanApprovedShapes(t *testing.T) {
 	c, _ := cellFixture(t, nil)
 	cfg := c.config.CLI
 	// The shipped approval tuple is attested exactly.
-	approved := controllerPlan{DefinitionID: "cli-git-ls-remote", DefinitionVersion: "1.0.1", Execution: cfg.Approved[0].Execution}
-	if !planApproved(cfg, approved, "git") {
+	approved := api.ControllerPlan{DefinitionID: "cli-git-ls-remote", DefinitionVersion: "1.0.1", Execution: cfg.Approved[0].Execution}
+	if !api.PlanApproved(cfg, approved, "git") {
 		t.Fatal("shipped approval tuple denied")
 	}
 	// Definition-id, command or execution drift on the tuple denies.
 	drifted := approved
 	drifted.Execution.TimeoutSeconds++
-	if planApproved(cfg, drifted, "git") {
+	if api.PlanApproved(cfg, drifted, "git") {
 		t.Fatal("execution drift on approved tuple admitted")
 	}
 	// A different command than the approved tuple is a different plan shape —
 	// "rm" is in neither the tuple nor UserCommands.
-	if planApproved(cfg, approved, "rm") {
+	if api.PlanApproved(cfg, approved, "rm") {
 		t.Fatal("unlisted command admitted through the approved tuple")
 	}
 	// Catalog commands come from UserCommands only.
-	if !planApproved(cfg, controllerPlan{}, "rg") || planApproved(cfg, controllerPlan{}, "curl") {
+	if !api.PlanApproved(cfg, api.ControllerPlan{}, "rg") || api.PlanApproved(cfg, api.ControllerPlan{}, "curl") {
 		t.Fatal("user command shape wrong")
 	}
 	// Artifact plans admit on a digest-pinned image plus absolute guest path.
-	artifact := controllerPlan{Image: "ghcr.io/example/tool", Digest: "sha256:" + strings.Repeat("9", 64)}
-	if !planApproved(cfg, artifact, "/usr/bin/tool") {
+	artifact := api.ControllerPlan{Image: "ghcr.io/example/tool", Digest: "sha256:" + strings.Repeat("9", 64)}
+	if !api.PlanApproved(cfg, artifact, "/usr/bin/tool") {
 		t.Fatal("pinned artifact plan denied")
 	}
-	if planApproved(cfg, artifact, "tool") {
+	if api.PlanApproved(cfg, artifact, "tool") {
 		t.Fatal("bare artifact command admitted")
 	}
-	mutable := controllerPlan{Image: "ghcr.io/example/tool:latest"}
-	if planApproved(cfg, mutable, "/usr/bin/tool") {
+	mutable := api.ControllerPlan{Image: "ghcr.io/example/tool:latest"}
+	if api.PlanApproved(cfg, mutable, "/usr/bin/tool") {
 		t.Fatal("mutable artifact image admitted")
 	}
 }
 
 func TestValidateCLIConfigBounds(t *testing.T) {
-	if err := validateCLIConfig(nil); err != nil {
+	if err := api.ValidateCLIConfig(nil); err != nil {
 		t.Fatalf("nil config denied: %v", err)
 	}
 	cellinit := filepath.Join(t.TempDir(), "cellinit")
 	if err := os.WriteFile(cellinit, []byte("x"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	valid := func() *CLIControllerConfig {
-		return &CLIControllerConfig{
+	valid := func() *api.CLIControllerConfig {
+		return &api.CLIControllerConfig{
 			ToolsImage: "hermes-hub-cli-tools:test", CellInit: cellinit, AllowedEgress: []string{"127.0.0.1"},
 			Ceiling:  cellExecution(),
-			Approved: []CLIApproval{{DefinitionID: "cli-x", DefinitionVersion: "1.0.0", Command: "rg", Execution: ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1024, CPUMillis: 100, MemoryMiB: 64, MaxPIDs: 8, Egress: []string{"127.0.0.1"}}}},
+			Approved: []api.CLIApproval{{DefinitionID: "cli-x", DefinitionVersion: "1.0.0", Command: "rg", Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1024, CPUMillis: 100, MemoryMiB: 64, MaxPIDs: 8, Egress: []string{"127.0.0.1"}}}},
 		}
 	}
-	if err := validateCLIConfig(valid()); err != nil {
+	if err := api.ValidateCLIConfig(valid()); err != nil {
 		t.Fatalf("valid config denied: %v", err)
 	}
 	cfg := valid()
 	cfg.ToolsImage = "bad image with spaces"
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("invalid tools image accepted")
 	}
 	cfg = valid()
 	cfg.CellInit = "relative/cellinit"
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("relative cellinit accepted")
 	}
 	cfg = valid()
 	cfg.Runtime = "not-a-runtime"
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("unknown runtime accepted")
 	}
 	cfg = valid()
 	cfg.AllowedEgress = nil
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("empty egress allowlist accepted")
 	}
 	cfg = valid()
 	cfg.Approved = nil
 	cfg.UserCommands = nil
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("empty approval surface accepted")
 	}
 	cfg = valid()
 	cfg.Approved[0].Image = "ghcr.io/example/tool"
 	cfg.Approved[0].Digest = "sha256:" + strings.Repeat("1", 64)
 	cfg.Approved[0].Command = "tool" // artifact approvals need a guest path
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("artifact approval without guest path accepted")
 	}
 	cfg = valid()
 	cfg.Toolboxes = map[string][]string{"box": {"ghcr.io/example/tool:latest"}}
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("unpinned toolbox member accepted")
 	}
 	cfg = valid()
 	cfg.PoolSize = 99
-	if err := validateCLIConfig(cfg); err == nil {
+	if err := api.ValidateCLIConfig(cfg); err == nil {
 		t.Fatal("unbounded pool accepted")
 	}
 }
 
 // runnerExecStub answers the runner's Exec seam; receipt defaults to a valid
 // cell attestation for the call's workload and execution plan.
-func runnerExecStub(t *testing.T, hook func(*cliExecRequest)) (CLIExecFunc, *cliExecRequest) {
+func runnerExecStub(t *testing.T, hook func(*api.CliExecRequest)) (api.CLIExecFunc, *api.CliExecRequest) {
 	t.Helper()
-	var captured cliExecRequest
-	return func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+	var captured api.CliExecRequest
+	return func(ctx context.Context, req api.CliExecRequest) (api.CliExecResponse, error) {
 		captured = req
 		if hook != nil {
 			hook(&req)
 		}
-		return cliExecResponse{
-			Receipt: AdmissionReceipt{
+		return api.CliExecResponse{
+			Receipt: api.AdmissionReceipt{
 				WorkloadID: req.Plan.WorkloadID, State: "running", Enforced: true,
 				Isolation: []string{"filesystem", "network", "pid"},
 				Execution: req.Plan.Execution, CellID: "cli-test", Runtime: "runc",
@@ -229,10 +230,10 @@ func runnerExecStub(t *testing.T, hook func(*cliExecRequest)) (CLIExecFunc, *cli
 }
 
 // cliCallEffective builds a resolvable per-user binding for runner calls.
-func cliCallEffective(definition ToolDefinition) EffectiveBinding {
-	return EffectiveBinding{
+func cliCallEffective(definition api.ToolDefinition) api.EffectiveBinding {
+	return api.EffectiveBinding{
 		WorkloadID: "w-cli-1",
-		Binding:    ToolBinding{PrincipalID: "alice", ContextID: "ctx-alice", ToolBindingID: "bind-alice"},
+		Binding:    api.ToolBinding{PrincipalID: "alice", ContextID: "ctx-alice", ToolBindingID: "bind-alice"},
 		Definition: definition,
 	}
 }
@@ -240,7 +241,7 @@ func cliCallEffective(definition ToolDefinition) EffectiveBinding {
 func TestCLIRunnerArtifactReceipt(t *testing.T) {
 	root := t.TempDir()
 	definition := testCLIDefinition("/usr/bin/mytool", []string{"--serve"})
-	definition.Workload.Class = PerUser
+	definition.Workload.Class = api.PerUser
 	definition.Source.Image = "ghcr.io/example/mytool"
 	definition.Source.Digest = "sha256:" + strings.Repeat("9", 64)
 	definition.Source.Repository = "https://github.com/example/tool"
@@ -254,7 +255,7 @@ func TestCLIRunnerArtifactReceipt(t *testing.T) {
 	effective := cliCallEffective(definition)
 	// A receipt that attests the pinned image digest admits.
 	execFn, captured := runnerExecStub(t, nil)
-	runner := CLIRunner{Root: root, Exec: execFn}
+	runner := api.CLIRunner{Root: root, Exec: execFn}
 	result, err := runner.Call(context.Background(), effective, definition.Tools[0], nil)
 	if err != nil || result.IsError {
 		t.Fatalf("artifact call denied: %v", err)
@@ -264,30 +265,30 @@ func TestCLIRunnerArtifactReceipt(t *testing.T) {
 	}
 	// A receipt attesting the wrong image digest denies.
 	execFn, _ = runnerExecStub(t, nil)
-	runner = CLIRunner{Root: root, Exec: func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+	runner = api.CLIRunner{Root: root, Exec: func(ctx context.Context, req api.CliExecRequest) (api.CliExecResponse, error) {
 		response, _ := execFn(ctx, req)
 		response.Receipt.ImageDigest = "sha256:" + strings.Repeat("f", 64)
 		return response, nil
 	}}
-	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("drifted artifact receipt admitted: %v", err)
 	}
 	// A receipt missing the cell identity denies.
-	runner.Exec = func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+	runner.Exec = func(ctx context.Context, req api.CliExecRequest) (api.CliExecResponse, error) {
 		response, _ := execFn(ctx, req)
 		response.Receipt.CellID = ""
 		return response, nil
 	}
-	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("cell-less receipt admitted: %v", err)
 	}
 }
 
 func TestCLIRunnerNonzeroExitRemainsVisible(t *testing.T) {
 	definition := testCLIDefinition("bash", []string{"-c"})
-	definition.Workload.Class = PerUser
+	definition.Workload.Class = api.PerUser
 	execFn, _ := runnerExecStub(t, nil)
-	runner := CLIRunner{Root: t.TempDir(), Exec: func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+	runner := api.CLIRunner{Root: t.TempDir(), Exec: func(ctx context.Context, req api.CliExecRequest) (api.CliExecResponse, error) {
 		response, err := execFn(ctx, req)
 		response.ExitCode = 7
 		response.Output = "failed"
@@ -329,12 +330,12 @@ func controlCLIFixture(t *testing.T, selfInstall bool) *controlFixture {
 	t.Helper()
 	// rg is the only owner-registrable command; git deliberately absent.
 	t.Setenv("HUB_CLI_ALLOWLIST", "rg")
-	fix := newControlFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
-		return SourceReview{}, fmt.Errorf("reviewer must not run for cli")
+	fix := newControlFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
+		return api.SourceReview{}, fmt.Errorf("reviewer must not run for cli")
 	})
 	fix.control.CLIArtifacts = nil
 	if selfInstall {
-		if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+		if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -348,13 +349,13 @@ func TestPrepareCLIGrantAndAllowlist(t *testing.T) {
 	}
 	// Without the self-install grant the op denies before touching the spec.
 	fix := controlCLIFixture(t, false)
-	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "k1"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "k1"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("missing self-install grant admitted: %v", err)
 	}
 	fix = controlCLIFixture(t, true)
 	// git is intentionally not owner-registrable: hooks execute code.
 	git := map[string]any{"name": "owner-git", "command": "git", "tools": []any{map[string]any{"name": "g", "effect": "read"}}}
-	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": git, "request_key": "k2"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": git, "request_key": "k2"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("git owner registration admitted: %v", err)
 	}
 	// Shell names (not operator-allowlisted here), absolute paths and
@@ -387,10 +388,10 @@ func TestPrepareCLIShellAllowlisted(t *testing.T) {
 	}
 	// Artifact guest paths named like shells stay denied: no allowlist can
 	// smuggle a shell in through the pinned-image channel.
-	artifact := ToolDefinition{Schema: SchemaVersion, DefinitionID: "bash-img", Version: "1.0.0", Transport: BoundedCLI,
-		Source: DefinitionSource{Command: "/usr/local/bin/bash", Image: "img", Digest: "sha256:" + strings.Repeat("a", 64),
+	artifact := api.ToolDefinition{Schema: api.SchemaVersion, DefinitionID: "bash-img", Version: "1.0.0", Transport: api.BoundedCLI,
+		Source: api.DefinitionSource{Command: "/usr/local/bin/bash", Image: "img", Digest: "sha256:" + strings.Repeat("a", 64),
 			Repository: "https://github.com/x/y", ArchiveDigest: "sha256:" + strings.Repeat("b", 64), RecipeDigest: "sha256:" + strings.Repeat("c", 64), ReviewDigest: "sha256:" + strings.Repeat("d", 64)},
-		Tools: []ToolSpec{{Name: "run", Effect: WriteEffect}}}
+		Tools: []api.ToolSpec{{Name: "run", Effect: api.WriteEffect}}}
 	if err := artifact.Validate(); err == nil {
 		t.Fatal("shell guest path on image plan validated")
 	}
@@ -414,14 +415,14 @@ func TestPrepareCLISpecStrictness(t *testing.T) {
 	// Unknown spec keys deny — no silent passthrough.
 	bad := base()
 	bad["shell"] = true
-	if err := invoke(bad); !errors.Is(err, ErrInvalid) {
+	if err := invoke(bad); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("unknown spec key admitted: %v", err)
 	}
 	// rg --pre/--pre-glob can spawn a preprocessor; file-operand flags read
 	// outside the workspace; bare tokens are positional path operands. All deny.
 	bad = base()
 	bad["tools"] = []any{map[string]any{"name": "search", "effect": "read", "arguments": []any{map[string]any{"name": "pre", "type": "string", "flag": "--pre"}}}}
-	if err := invoke(bad); !errors.Is(err, ErrUnauthorized) {
+	if err := invoke(bad); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("--pre flag admitted: %v", err)
 	}
 	bad = base()
@@ -431,34 +432,34 @@ func TestPrepareCLISpecStrictness(t *testing.T) {
 	}
 	bad = base()
 	bad["args"] = []any{"--file=/etc/passwd"}
-	if err := invoke(bad); !errors.Is(err, ErrUnauthorized) {
+	if err := invoke(bad); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("--file operand admitted: %v", err)
 	}
 	bad = base()
 	bad["args"] = []any{"../escape"}
-	if err := invoke(bad); !errors.Is(err, ErrUnauthorized) {
+	if err := invoke(bad); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("path operand admitted: %v", err)
 	}
 	bad = base()
 	bad["args"] = []any{"200"} // flag values use --flag=value form; a bare token is a path operand.
-	if err := invoke(bad); !errors.Is(err, ErrUnauthorized) {
+	if err := invoke(bad); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bare value token admitted: %v", err)
 	}
 	// Duplicate tool names, invalid names, missing tools deny.
 	bad = base()
 	bad["name"] = "Owner Search!"
-	if err := invoke(bad); !errors.Is(err, ErrInvalid) {
+	if err := invoke(bad); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("invalid name admitted: %v", err)
 	}
 	bad = base()
 	bad["tools"] = []any{}
-	if err := invoke(bad); !errors.Is(err, ErrInvalid) {
+	if err := invoke(bad); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("empty tools admitted: %v", err)
 	}
 	// Credential names must be env-shaped.
 	bad = base()
 	bad["credentials"] = []any{"not-a-cred"}
-	if err := invoke(bad); !errors.Is(err, ErrInvalid) {
+	if err := invoke(bad); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("invalid credential name admitted: %v", err)
 	}
 	// A valid rg spec registers the immutable definition, publishes it to the
@@ -468,22 +469,22 @@ func TestPrepareCLISpecStrictness(t *testing.T) {
 		t.Fatalf("owner rg spec denied: %v", err)
 	}
 	onboarding := mustOnboarding(t, fix.store, body["onboarding_id"].(string))
-	if onboarding.Phase != PhaseAwaitingConfirm || onboarding.Mode != OnboardingSelfInstall {
+	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.Mode != api.OnboardingSelfInstall {
 		t.Fatalf("onboarding=%+v", onboarding)
 	}
 	definition, err := fix.store.Definition("owner-search", "1.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if definition.Transport != BoundedCLI || definition.Source.Command != "rg" || definition.Workload.Class != PerUser {
+	if definition.Transport != api.BoundedCLI || definition.Source.Command != "rg" || definition.Workload.Class != api.PerUser {
 		t.Fatalf("registered definition=%+v", definition)
 	}
 	pub := fix.store.publicationFor(definition)
-	if pub.Visibility != PublicationUser || pub.OwnerPrincipalID != "alice" {
+	if pub.Visibility != api.PublicationUser || pub.OwnerPrincipalID != "alice" {
 		t.Fatalf("publication=%+v", pub)
 	}
 	// The owner-scoped definition is invisible to another principal.
-	if err := fix.store.RequireCatalogAccess(bobAuth(), definition); !errors.Is(err, ErrUnauthorized) {
+	if err := fix.store.RequireCatalogAccess(bobAuth(), definition); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bob saw alice's owner definition: %v", err)
 	}
 	if err := fix.store.RequireCatalogAccess(aliceAuth(), definition); err != nil {
@@ -497,7 +498,7 @@ func TestPrepareCLIArtifactFailsClosedWithoutPipeline(t *testing.T) {
 		"name": "owner-tool", "source": githubCommitURL(), "binary": "/usr/local/bin/mytool",
 		"tools": []any{map[string]any{"name": "run", "effect": "read"}},
 	}
-	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "art-1"}); !errors.Is(err, ErrIsolation) {
+	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "art-1"}); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("nil artifact pipeline admitted: %v", err)
 	}
 }
@@ -505,8 +506,8 @@ func TestPrepareCLIArtifactFailsClosedWithoutPipeline(t *testing.T) {
 func TestPrepareCLIArtifactImmutableSourceOnly(t *testing.T) {
 	fix := controlCLIFixture(t, true)
 	fix.control.CLIArtifacts = &CLIArtifactPipeline{
-		Build: func(context.Context, ArtifactSource, ArtifactImportConfig) (ImportedArtifact, error) {
-			return ImportedArtifact{}, errors.New("must not build")
+		Build: func(context.Context, api.ArtifactSource, api.ArtifactImportConfig) (api.ImportedArtifact, error) {
+			return api.ImportedArtifact{}, errors.New("must not build")
 		},
 	}
 	// A bare repository URL has no commit pin; nothing mutable reaches Build.
@@ -514,7 +515,7 @@ func TestPrepareCLIArtifactImmutableSourceOnly(t *testing.T) {
 		"name": "owner-tool", "source": "https://github.com/example/tool", "binary": "/usr/local/bin/tool",
 		"tools": []any{map[string]any{"name": "run", "effect": "read"}},
 	}
-	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "art-2"}); !errors.Is(err, ErrInvalid) {
+	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "art-2"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("mutable source admitted: %v", err)
 	}
 	// The direct-command fields must not mix with the artifact shape.
@@ -522,25 +523,25 @@ func TestPrepareCLIArtifactImmutableSourceOnly(t *testing.T) {
 		"name": "owner-tool", "source": githubCommitURL(), "binary": "/usr/local/bin/tool", "command": "rg",
 		"tools": []any{map[string]any{"name": "run", "effect": "read"}},
 	}
-	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "art-3"}); !errors.Is(err, ErrInvalid) {
+	if _, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": spec, "request_key": "art-3"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("command+artifact mix admitted: %v", err)
 	}
 }
 
 func TestPrepareCLIArtifactHappyPath(t *testing.T) {
 	fix := controlCLIFixture(t, true)
-	var gotSource ArtifactSource
+	var gotSource api.ArtifactSource
 	fix.control.CLIArtifacts = &CLIArtifactPipeline{
-		Build: func(_ context.Context, source ArtifactSource, config ArtifactImportConfig) (ImportedArtifact, error) {
+		Build: func(_ context.Context, source api.ArtifactSource, config api.ArtifactImportConfig) (api.ImportedArtifact, error) {
 			gotSource = source
-			if config.Execution.MaxPIDs != 128 || config.Workload.Class != PerUser {
+			if config.Execution.MaxPIDs != 128 || config.Workload.Class != api.PerUser {
 				t.Fatalf("import config not bounded: %+v", config)
 			}
-			return ImportedArtifact{
-				Definition: ToolDefinition{Source: DefinitionSource{Image: "hermes-cli-artifact/owner-tool", RecipeDigest: "sha256:" + strings.Repeat("4", 64), ReviewDigest: "sha256:" + strings.Repeat("5", 64)}},
-				Artifact: StoredOCIArtifact{
+			return api.ImportedArtifact{
+				Definition: api.ToolDefinition{Source: api.DefinitionSource{Image: "hermes-cli-artifact/owner-tool", RecipeDigest: "sha256:" + strings.Repeat("4", 64), ReviewDigest: "sha256:" + strings.Repeat("5", 64)}},
+				Artifact: api.StoredOCIArtifact{
 					ArchiveDigest: "sha256:" + strings.Repeat("1", 64),
-					Evidence:      OCIArtifactEvidence{ImageManifestDigest: "sha256:" + strings.Repeat("9", 64), ProvenanceDigest: "sha256:" + strings.Repeat("2", 64), SBOMDigest: "sha256:" + strings.Repeat("3", 64)},
+					Evidence:      api.OCIArtifactEvidence{ImageManifestDigest: "sha256:" + strings.Repeat("9", 64), ProvenanceDigest: "sha256:" + strings.Repeat("2", 64), SBOMDigest: "sha256:" + strings.Repeat("3", 64)},
 				},
 			}, nil
 		},
@@ -574,10 +575,10 @@ func TestPrepareCLIArtifactHappyPath(t *testing.T) {
 		t.Fatalf("provenance chain incomplete: %+v", definition.Source)
 	}
 	pub := fix.store.publicationFor(definition)
-	if pub.Visibility != PublicationUser || pub.OwnerPrincipalID != "alice" {
+	if pub.Visibility != api.PublicationUser || pub.OwnerPrincipalID != "alice" {
 		t.Fatalf("publication=%+v", pub)
 	}
-	if onboarding.Phase != PhaseAwaitingConfirm && onboarding.Phase != PhaseAwaitingCreds {
+	if onboarding.Phase != api.PhaseAwaitingConfirm && onboarding.Phase != api.PhaseAwaitingCreds {
 		t.Fatalf("onboarding phase=%s", onboarding.Phase)
 	}
 }
@@ -585,26 +586,26 @@ func TestPrepareCLIArtifactHappyPath(t *testing.T) {
 func TestCLIRunnerFailsClosedWithoutController(t *testing.T) {
 	root := t.TempDir()
 	definition := testCLIDefinition("rg", nil)
-	definition.Workload.Class = PerUser
+	definition.Workload.Class = api.PerUser
 	effective := cliCallEffective(definition)
 	// No exec channel wired: the runner denies rather than running locally.
-	runner := CLIRunner{Root: root}
-	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	runner := api.CLIRunner{Root: root}
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("controller-less CLI call ran: %v", err)
 	}
 	// A non-CLI definition never reaches the exec channel.
-	runner.Exec = func(context.Context, cliExecRequest) (cliExecResponse, error) {
+	runner.Exec = func(context.Context, api.CliExecRequest) (api.CliExecResponse, error) {
 		t.Fatal("exec reached for a remote definition")
-		return cliExecResponse{}, nil
+		return api.CliExecResponse{}, nil
 	}
-	if _, err := runner.Call(context.Background(), EffectiveBinding{Definition: remoteDefinition()}, remoteDefinition().Tools[0], nil); !errors.Is(err, ErrInvalid) {
+	if _, err := runner.Call(context.Background(), api.EffectiveBinding{Definition: remoteDefinition()}, remoteDefinition().Tools[0], nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("remote transport reached CLI runner: %v", err)
 	}
 	// Controller-side failures stay isolation errors.
-	runner.Exec = func(context.Context, cliExecRequest) (cliExecResponse, error) {
-		return cliExecResponse{}, errors.New("controller refused")
+	runner.Exec = func(context.Context, api.CliExecRequest) (api.CliExecResponse, error) {
+		return api.CliExecResponse{}, errors.New("controller refused")
 	}
-	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("controller failure surfaced untyped: %v", err)
 	}
 }
@@ -627,7 +628,7 @@ func TestOwnerCLIArgumentsStayTyped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err := cliArguments(nil, definition.Tools[0], map[string]any{"pattern": "x; rm -rf /", "context": float64(3)})
+	args, err := api.CliArguments(nil, definition.Tools[0], map[string]any{"pattern": "x; rm -rf /", "context": float64(3)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,10 +636,10 @@ func TestOwnerCLIArgumentsStayTyped(t *testing.T) {
 	if !strings.Contains(joined, "--regexp\x00x; rm -rf /") || !strings.Contains(joined, "--context\x003") {
 		t.Fatalf("typed args not rendered as flag/value pairs: %v", args)
 	}
-	if _, err := cliArguments(nil, definition.Tools[0], map[string]any{"context": "3"}); err == nil {
+	if _, err := api.CliArguments(nil, definition.Tools[0], map[string]any{"context": "3"}); err == nil {
 		t.Fatal("string integer coerced")
 	}
-	if _, err := cliArguments(nil, definition.Tools[0], nil); err == nil {
+	if _, err := api.CliArguments(nil, definition.Tools[0], nil); err == nil {
 		t.Fatal("missing required argument accepted")
 	}
 }
@@ -648,7 +649,7 @@ func TestCLIAllowlistParsesCommandNames(t *testing.T) {
 	// dropped so a malformed env cannot widen registration.
 	junk := filepath.Join(t.TempDir(), "cli") + "/"
 	t.Setenv("HUB_CLI_ALLOWLIST", "git, rg , "+junk+",bad name!,")
-	allow := CLIAllowlistFromEnv()
+	allow := api.CLIAllowlistFromEnv()
 	for _, entry := range []string{"git", "rg"} {
 		if !allow[entry] {
 			t.Fatalf("missing allowlist entry %q in %v", entry, allow)
@@ -658,11 +659,11 @@ func TestCLIAllowlistParsesCommandNames(t *testing.T) {
 		t.Fatalf("path/junk entries leaked: %v", allow)
 	}
 	t.Setenv("HUB_CLI_ALLOWLIST", "")
-	if len(CLIAllowlistFromEnv()) != 0 {
+	if len(api.CLIAllowlistFromEnv()) != 0 {
 		t.Fatal("empty allowlist admitted entries")
 	}
 	t.Setenv("HUB_CLI_ALLOWLIST", "bad name!")
-	if len(CLIAllowlistFromEnv()) != 0 {
+	if len(api.CLIAllowlistFromEnv()) != 0 {
 		t.Fatal("junk-only allowlist admitted entries")
 	}
 }
@@ -674,12 +675,12 @@ func TestCLIArtifactPipelineFromEnv(t *testing.T) {
 		t.Fatalf("pipeline=%+v err=%v", pipeline, err)
 	}
 	// Both source kinds dispatch through the shared Build closure.
-	config := ArtifactImportConfig{DefinitionID: "rg", Version: "1.0.0", Entrypoint: []string{"/usr/local/bin/rg"}}
-	release := ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0"}
-	if _, err := pipeline.Build(context.Background(), release, config); !errors.Is(err, ErrInvalid) {
+	config := api.ArtifactImportConfig{DefinitionID: "rg", Version: "1.0.0", Entrypoint: []string{"/usr/local/bin/rg"}}
+	release := api.ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0"}
+	if _, err := pipeline.Build(context.Background(), release, config); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("release dispatch: %v", err)
 	}
-	if _, err := pipeline.Build(context.Background(), ArtifactSource{Repository: "local"}, config); !errors.Is(err, ErrInvalid) {
+	if _, err := pipeline.Build(context.Background(), api.ArtifactSource{Repository: "local"}, config); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("repository dispatch: %v", err)
 	}
 }
@@ -691,15 +692,15 @@ func TestCLIArtifactSourcePinning(t *testing.T) {
 		t.Fatalf("pinned source=%+v err=%v", source, err)
 	}
 	// A bare repository only resolves through the pinned resolver.
-	c.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
-		return ArtifactSource{Repository: raw, CommitSHA: strings.Repeat("b", 40)}, nil
+	c.SourceResolver = func(_ context.Context, raw string) (api.ArtifactSource, error) {
+		return api.ArtifactSource{Repository: raw, CommitSHA: strings.Repeat("b", 40)}, nil
 	}
 	source, err = c.cliArtifactSource(context.Background(), map[string]any{"source": "https://github.com/example/tool"})
 	if err != nil || source.CommitSHA != strings.Repeat("b", 40) {
 		t.Fatalf("resolved source=%+v err=%v", source, err)
 	}
 	c.SourceResolver = nil
-	if _, err := c.cliArtifactSource(context.Background(), map[string]any{"source": "https://github.com/example/tool"}); !errors.Is(err, ErrInvalid) {
+	if _, err := c.cliArtifactSource(context.Background(), map[string]any{"source": "https://github.com/example/tool"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("bare URL without resolver admitted: %v", err)
 	}
 }
@@ -709,11 +710,11 @@ func TestPrepareCLIArtifactSyncAndInFlight(t *testing.T) {
 	fix.control.PrepareSyncWindow = -1 // synchronous finish: no background continuation
 	var builds int
 	fix.control.CLIArtifacts = &CLIArtifactPipeline{
-		Build: func(context.Context, ArtifactSource, ArtifactImportConfig) (ImportedArtifact, error) {
+		Build: func(context.Context, api.ArtifactSource, api.ArtifactImportConfig) (api.ImportedArtifact, error) {
 			builds++
-			return ImportedArtifact{
-				Definition: ToolDefinition{Source: DefinitionSource{Image: "hermes-cli-artifact/owner-tool", RecipeDigest: "sha256:" + strings.Repeat("4", 64), ReviewDigest: "sha256:" + strings.Repeat("5", 64)}},
-				Artifact:   StoredOCIArtifact{ArchiveDigest: "sha256:" + strings.Repeat("1", 64), Evidence: OCIArtifactEvidence{ImageManifestDigest: "sha256:" + strings.Repeat("9", 64)}},
+			return api.ImportedArtifact{
+				Definition: api.ToolDefinition{Source: api.DefinitionSource{Image: "hermes-cli-artifact/owner-tool", RecipeDigest: "sha256:" + strings.Repeat("4", 64), ReviewDigest: "sha256:" + strings.Repeat("5", 64)}},
+				Artifact:   api.StoredOCIArtifact{ArchiveDigest: "sha256:" + strings.Repeat("1", 64), Evidence: api.OCIArtifactEvidence{ImageManifestDigest: "sha256:" + strings.Repeat("9", 64)}},
 			}, nil
 		},
 	}
@@ -730,15 +731,15 @@ func TestPrepareCLIArtifactSyncAndInFlight(t *testing.T) {
 		t.Fatalf("builds=%d", builds)
 	}
 	onboarding := mustOnboarding(t, fix.store, body["onboarding_id"].(string))
-	if onboarding.Phase != PhaseAwaitingConfirm {
+	if onboarding.Phase != api.PhaseAwaitingConfirm {
 		t.Fatalf("phase=%s", onboarding.Phase)
 	}
 	// A preparing stub for the same request key reports in-flight without a
 	// second build.
-	stub := Onboarding{
-		Schema: SchemaVersion, OnboardingID: deterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "dup2"),
+	stub := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "dup2"),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: OnboardingSelfInstall, Phase: PhasePreparing, DefinitionID: "owner-tool", DefinitionVersion: "1.0.0",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, DefinitionID: "owner-tool", DefinitionVersion: "1.0.0",
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567",
 		IdempotencyKey: "dup2", Revision: 1, CreatedAt: fix.control.now(),
 	}
@@ -749,7 +750,7 @@ func TestPrepareCLIArtifactSyncAndInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if builds != 1 || body["phase"] != PhasePreparing {
+	if builds != 1 || body["phase"] != api.PhasePreparing {
 		t.Fatalf("in-flight prepare rebuilt: builds=%d body=%v", builds, body)
 	}
 }
@@ -757,7 +758,7 @@ func TestPrepareCLIArtifactSyncAndInFlight(t *testing.T) {
 func TestCLIExecFromEnvEndToEnd(t *testing.T) {
 	// The runner posts the exec request to /cli-exec and accepts the bounded
 	// response; the endpoint derives from the shared admission endpoint.
-	var got cliExecRequest
+	var got api.CliExecRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/cli-exec" || r.Header.Get("Authorization") != "Bearer "+"tok-tok-tok-tok-tok-tok-tok-toktoktok" {
 			w.WriteHeader(http.StatusForbidden)
@@ -767,8 +768,8 @@ func TestCLIExecFromEnvEndToEnd(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(cliExecResponse{
-			Receipt: AdmissionReceipt{
+		_ = json.NewEncoder(w).Encode(api.CliExecResponse{
+			Receipt: api.AdmissionReceipt{
 				WorkloadID: got.Plan.WorkloadID, State: "running", Enforced: true,
 				Isolation: []string{"filesystem", "network", "pid"}, Execution: got.Plan.Execution,
 				CellID: "cli-1", Runtime: "runc",
@@ -779,13 +780,13 @@ func TestCLIExecFromEnvEndToEnd(t *testing.T) {
 	defer server.Close()
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", server.URL+"/admit")
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_TOKEN", "tok-tok-tok-tok-tok-tok-tok-toktoktok")
-	execFn, err := CLIExecFromEnv()
+	execFn, err := api.CLIExecFromEnv()
 	if err != nil || execFn == nil {
 		t.Fatalf("exec=%v err=%v", execFn, err)
 	}
-	runner := CLIRunner{Root: t.TempDir(), Exec: execFn}
+	runner := api.CLIRunner{Root: t.TempDir(), Exec: execFn}
 	effective := cliCallEffective(boundedCLIDefinition())
-	ctx := withCallCorrelation(context.Background(), callCorrelation{JobID: "job-1"})
+	ctx := api.WithCallCorrelation(context.Background(), api.CallCorrelation{JobID: "job-1"})
 	result, err := runner.Call(ctx, effective, effective.Definition.Tools[0], nil)
 	if err != nil || result.Text != "listed" {
 		t.Fatalf("call result=%+v err=%v", result, err)
@@ -798,23 +799,23 @@ func TestCLIExecFromEnvEndToEnd(t *testing.T) {
 	}
 	// A controller denial surfaces as an isolation error, not a result.
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_TOKEN", "wrong-token-wrong-token-wrong-t")
-	if execFn, err = CLIExecFromEnv(); err != nil || execFn == nil {
+	if execFn, err = api.CLIExecFromEnv(); err != nil || execFn == nil {
 		t.Fatalf("exec=%v err=%v", execFn, err)
 	}
 	runner.Exec = execFn
-	if _, err := runner.Call(ctx, effective, effective.Definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	if _, err := runner.Call(ctx, effective, effective.Definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("denied exec returned: %v", err)
 	}
 	// No endpoint configured → nil channel → runner fails closed.
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
-	execFn, err = CLIExecFromEnv()
+	execFn, err = api.CLIExecFromEnv()
 	if err != nil || execFn != nil {
 		t.Fatalf("endpoint-less exec=%v err=%v", execFn, err)
 	}
 }
 
 func TestCLIReleaseFromEnvEndToEnd(t *testing.T) {
-	var got cliReleaseRequest
+	var got api.CliReleaseRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/cli-release" || r.Header.Get("Authorization") != "Bearer "+"tok-tok-tok-tok-tok-tok-tok-toktoktok" {
 			w.WriteHeader(http.StatusForbidden)
@@ -829,19 +830,19 @@ func TestCLIReleaseFromEnvEndToEnd(t *testing.T) {
 	defer server.Close()
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", server.URL+"/admit")
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_TOKEN", "tok-tok-tok-tok-tok-tok-tok-toktoktok")
-	release, err := CLIReleaseFromEnv()
+	release, err := api.CLIReleaseFromEnv()
 	if err != nil || release == nil {
 		t.Fatalf("nil release channel, err=%v", err)
 	}
-	if err := release(context.Background(), cliReleaseRequest{PrincipalID: "alice", BindingID: "bind-1", Reason: "binding-release"}); err != nil {
+	if err := release(context.Background(), api.CliReleaseRequest{PrincipalID: "alice", BindingID: "bind-1", Reason: "binding-release"}); err != nil {
 		t.Fatalf("release denied: %v", err)
 	}
 	if got.PrincipalID != "alice" || got.BindingID != "bind-1" || got.Reason == "" {
 		t.Fatalf("release request=%+v", got)
 	}
 	// The job selector travels too: job-end kills only that job's task cells.
-	got = cliReleaseRequest{}
-	if err := release(context.Background(), cliReleaseRequest{PrincipalID: "alice", JobID: "job-9", Reason: "job-end"}); err != nil {
+	got = api.CliReleaseRequest{}
+	if err := release(context.Background(), api.CliReleaseRequest{PrincipalID: "alice", JobID: "job-9", Reason: "job-end"}); err != nil {
 		t.Fatalf("job release denied: %v", err)
 	}
 	if got.PrincipalID != "alice" || got.JobID != "job-9" || got.BindingID != "" || got.Reason != "job-end" {
@@ -853,19 +854,19 @@ func TestCLIPositionalArgument(t *testing.T) {
 	// A positional operand renders the bare value after the fixed argv and is
 	// gated by its mandatory pattern; the catalog git ls-remote uses it for
 	// the repository URL.
-	gitDef, ok := func() (ToolDefinition, bool) {
-		for _, d := range CLICatalogDefinitions() {
+	gitDef, ok := func() (api.ToolDefinition, bool) {
+		for _, d := range api.CLICatalogDefinitions() {
 			if d.DefinitionID == "cli-git-ls-remote" {
 				return d, true
 			}
 		}
-		return ToolDefinition{}, false
+		return api.ToolDefinition{}, false
 	}()
 	if !ok {
 		t.Fatal("cli-git-ls-remote catalog definition missing")
 	}
 	git := gitDef.Tools[0]
-	args, err := cliArguments(gitDef.Source.Args, git, map[string]any{"repository": "https://github.com/BurntSushi/ripgrep"})
+	args, err := api.CliArguments(gitDef.Source.Args, git, map[string]any{"repository": "https://github.com/BurntSushi/ripgrep"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +878,7 @@ func TestCLIPositionalArgument(t *testing.T) {
 		"https://evil.example.com/x", "file:///etc/passwd", "ssh://git@github.com/x/y",
 		"--upload-pack=touch /tmp/pwned", "-oProxyCommand=id", "https://github.com",
 	} {
-		if _, err := cliArguments(nil, git, map[string]any{"repository": bad}); !errors.Is(err, ErrUnauthorized) {
+		if _, err := api.CliArguments(nil, git, map[string]any{"repository": bad}); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("repository %q accepted", bad)
 		}
 	}
@@ -886,31 +887,31 @@ func TestCLIPositionalArgument(t *testing.T) {
 func TestCLIPositionalArgumentValidation(t *testing.T) {
 	// Definition validation: positional operands must carry a pattern, and a
 	// pattern only makes sense on string arguments.
-	base := func() ToolDefinition {
-		return ToolDefinition{Schema: SchemaVersion, DefinitionID: "d", Version: "1.0.0", Transport: BoundedCLI,
-			Source:    DefinitionSource{Command: "git", Args: []string{"ls-remote"}},
-			Tools:     []ToolSpec{{Name: "ls-remote", Description: "d", Effect: ReadEffect, CapabilityID: "cli.git", Uses: []CapabilityUse{{Action: "read", Resource: "remotes"}}}},
-			Workload:  WorkloadPolicy{Class: PerUser, WorkspaceScope: "none", Rationale: "r"},
-			Execution: ExecutionPolicy{TimeoutSeconds: 10, OutputBytes: 1024, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"github.com"}},
-			Health:    HealthProbe{Kind: "exec", Value: "git", TimeoutSeconds: 5}}
+	base := func() api.ToolDefinition {
+		return api.ToolDefinition{Schema: api.SchemaVersion, DefinitionID: "d", Version: "1.0.0", Transport: api.BoundedCLI,
+			Source:    api.DefinitionSource{Command: "git", Args: []string{"ls-remote"}},
+			Tools:     []api.ToolSpec{{Name: "ls-remote", Description: "d", Effect: api.ReadEffect, CapabilityID: "cli.git", Uses: []api.CapabilityUse{{Action: "read", Resource: "remotes"}}}},
+			Workload:  api.WorkloadPolicy{Class: api.PerUser, WorkspaceScope: "none", Rationale: "r"},
+			Execution: api.ExecutionPolicy{TimeoutSeconds: 10, OutputBytes: 1024, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"github.com"}},
+			Health:    api.HealthProbe{Kind: "exec", Value: "git", TimeoutSeconds: 5}}
 	}
 	d := base()
-	d.Tools[0].Arguments = []CLIArgument{{Name: "repository", Type: "string", Required: true}}
+	d.Tools[0].Arguments = []api.CLIArgument{{Name: "repository", Type: "string", Required: true}}
 	if err := d.Validate(); err == nil {
 		t.Fatal("patternless positional operand validated")
 	}
 	d = base()
-	d.Tools[0].Arguments = []CLIArgument{{Name: "repository", Type: "integer", Required: true, Pattern: "^x$"}}
+	d.Tools[0].Arguments = []api.CLIArgument{{Name: "repository", Type: "integer", Required: true, Pattern: "^x$"}}
 	if err := d.Validate(); err == nil {
 		t.Fatal("non-string patterned argument validated")
 	}
 	d = base()
-	d.Tools[0].Arguments = []CLIArgument{{Name: "repository", Type: "string", Required: true, Pattern: "^(unclosed$"}}
+	d.Tools[0].Arguments = []api.CLIArgument{{Name: "repository", Type: "string", Required: true, Pattern: "^(unclosed$"}}
 	if err := d.Validate(); err == nil {
 		t.Fatal("uncompilable pattern validated")
 	}
 	d = base()
-	d.Tools[0].Arguments = []CLIArgument{{Name: "repository", Type: "string", Required: true, Pattern: `^https://github\.com/`}}
+	d.Tools[0].Arguments = []api.CLIArgument{{Name: "repository", Type: "string", Required: true, Pattern: `^https://github\.com/`}}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("patterned positional rejected: %v", err)
 	}

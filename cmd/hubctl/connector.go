@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
 	"net/http"
@@ -45,7 +46,7 @@ func runConnector(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		var config toolhub.LocalControllerConfig
+		var config api.LocalControllerConfig
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(&config) != nil || decoder.Decode(new(any)) != io.EOF {
@@ -58,7 +59,7 @@ func runConnector(ctx context.Context, args []string) error {
 				return err
 			}
 		}
-		return toolhub.RunLocalController(ctx, config, *listen, token)
+		return api.RunLocalController(ctx, config, *listen, token)
 	}
 	if len(args) > 0 && args[0] == "generic-controller" {
 		f := flag.NewFlagSet("generic-controller", flag.ContinueOnError)
@@ -110,7 +111,7 @@ func runConnector(ctx context.Context, args []string) error {
 		// The definitions are compiled into this binary and reviewed with the
 		// release; registering them into the protected store is an explicit
 		// operator act, identical for a fresh space and an upgrade.
-		for _, definition := range toolhub.CLICatalogDefinitions() {
+		for _, definition := range api.CLICatalogDefinitions() {
 			if err := registry.RegisterDefinition(definition); err != nil {
 				return err
 			}
@@ -126,7 +127,7 @@ func runConnector(ctx context.Context, args []string) error {
 			}
 		}
 		ids := make([]string, 0, 2)
-		for _, definition := range toolhub.CLICatalogDefinitions() {
+		for _, definition := range api.CLICatalogDefinitions() {
 			ids = append(ids, definition.DefinitionID+"@"+definition.Version)
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"catalog_cli": ids})
@@ -218,7 +219,7 @@ func runConnector(ctx context.Context, args []string) error {
 		return nil
 	}
 	if args[0] == "call" {
-		admission, err := toolhub.ControllerAdmissionVerifierFromEnv()
+		admission, err := api.ControllerAdmissionVerifierFromEnv()
 		if err != nil {
 			return err
 		}
@@ -230,17 +231,17 @@ func runConnector(ctx context.Context, args []string) error {
 		if json.Unmarshal([]byte(raw), &arguments) != nil {
 			return fmt.Errorf("invalid tool JSON")
 		}
-		if err := toolhub.RejectAuthorityArguments(arguments); err != nil {
+		if err := api.RejectAuthorityArguments(arguments); err != nil {
 			return err
 		}
 		ledger, err := audit.Open(filepath.Join(filepath.Dir(*secretPath), "audit.jsonl"))
 		if err != nil {
 			return err
 		}
-		gateway := &toolhub.Gateway{Store: registry, Backend: toolhub.RoutingBackend{Provider: toolhub.PersonalProviderBackend{}, MCP: toolhub.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}},
-			Injector: func(_ context.Context, e toolhub.EffectiveBinding) (toolhub.CredentialInjection, error) {
-				env, err := toolhub.DecryptAuthorized(backend, e)
-				return toolhub.CredentialInjection{Environment: env}, err
+		gateway := &toolhub.Gateway{Store: registry, Backend: api.RoutingBackend{Provider: api.PersonalProviderBackend{}, MCP: api.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}},
+			Injector: func(_ context.Context, e api.EffectiveBinding) (api.CredentialInjection, error) {
+				env, err := api.DecryptAuthorized(backend, e)
+				return api.CredentialInjection{Environment: env}, err
 			},
 			AuditWrite: func(_ string, fields map[string]string) error {
 				event := audit.NewEvent("tool-call", auth.PrincipalID, fields["outcome"])
@@ -283,9 +284,9 @@ func runConnector(ctx context.Context, args []string) error {
 		redirect := "http://" + listener.Addr().String() + "/callback"
 		broker := oauth.NewBroker(backend, []string{redirect})
 		broker.Clients[*provider] = oauth.ClientCredential{ID: client["CLIENT_ID"], Secret: client["CLIENT_SECRET"], BasicAuth: *provider == "slack"}
-		scope := toolhub.CalendarReadScope
+		scope := api.CalendarReadScope
 		if *write {
-			scope = toolhub.CalendarWriteScope
+			scope = api.CalendarWriteScope
 		}
 		scopes := []string{"openid", scope}
 		if strings.Contains(*expected, "@") {
@@ -295,7 +296,7 @@ func runConnector(ctx context.Context, args []string) error {
 			if *provider != "google" || *write {
 				return fmt.Errorf("official Workspace MCP currently requires a Google read grant; Calendar writes use the verified REST grant")
 			}
-			grants, err := toolhub.GoogleWorkspaceScopes(*product)
+			grants, err := api.GoogleWorkspaceScopes(*product)
 			if err != nil {
 				return err
 			}
@@ -306,7 +307,7 @@ func runConnector(ctx context.Context, args []string) error {
 			if *team == "" {
 				return fmt.Errorf("slack connect requires --workspace")
 			}
-			scopes = toolhub.SlackScopes(*write)
+			scopes = api.SlackScopes(*write)
 			accessType, prompt = "", ""
 		}
 		start, err := broker.StartAuth(oauth.AuthRequest{Principal: *user, Context: *contextID, Connection: *connectionID, Provider: *provider, Redirect: redirect, Scopes: scopes, AccessType: accessType, Prompt: prompt})
@@ -373,7 +374,7 @@ func runConnector(ctx context.Context, args []string) error {
 	}
 	// Serialize token lifecycle across CLI processes. Connect snapshot saves
 	// separately reject stale writers at the registry boundary.
-	lockPath := *registryPath + ".connection-" + toolhub.CredentialReferenceID(*connectionID, 0) + ".lock"
+	lockPath := *registryPath + ".connection-" + api.CredentialReferenceID(*connectionID, 0) + ".lock"
 	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("symlink lifecycle lock denied")
 	}
@@ -402,7 +403,7 @@ func runConnector(ctx context.Context, args []string) error {
 	case "revoke":
 		// Cut authorization before contacting the provider; an outage cannot
 		// leave a locally revoked connection usable.
-		if err := registry.SetConnectionStatus(c.ConnectionID, toolhub.RevokedStatus); err != nil {
+		if err := registry.SetConnectionStatus(c.ConnectionID, api.RevokedStatus); err != nil {
 			return err
 		}
 		if err := registry.Save(*registryPath); err != nil {
@@ -420,7 +421,7 @@ func runConnector(ctx context.Context, args []string) error {
 			return nil
 		}
 		if connectionProvider == "slack" {
-			if err := (toolhub.SlackBackend{}).Revoke(ctx, values["ACCESS_TOKEN"]); err != nil {
+			if err := (api.SlackBackend{}).Revoke(ctx, values["ACCESS_TOKEN"]); err != nil {
 				return fmt.Errorf("locally revoked; slack provider cleanup failed")
 			}
 			fmt.Println("revoked")
@@ -447,8 +448,8 @@ func runConnector(ctx context.Context, args []string) error {
 		if connectionProvider == "telegram" {
 			return fmt.Errorf("telegram sessions do not use OAuth refresh; reconnect with a new protected session input")
 		}
-		if c.Status != toolhub.ActiveStatus {
-			return toolhub.ErrRevoked
+		if c.Status != api.ActiveStatus {
+			return api.ErrRevoked
 		}
 		if *clientFile == "" {
 			return fmt.Errorf("refresh requires --client-file")
@@ -479,7 +480,7 @@ func connectTelegram(ctx context.Context, registry *toolhub.Store, backend creds
 	if err != nil || id <= 0 {
 		return fmt.Errorf("telegram connect requires --account numeric user ID")
 	}
-	if toolhub.ValidateBackendEndpoint(endpoint) != nil || !filepath.IsAbs(os.Getenv("HUB_STATE")) {
+	if api.ValidateBackendEndpoint(endpoint) != nil || !filepath.IsAbs(os.Getenv("HUB_STATE")) {
 		return fmt.Errorf("telegram requires private --endpoint and absolute HUB_STATE workload root")
 	}
 	raw, err := readSecretInput(input)
@@ -504,15 +505,15 @@ func connectTelegram(ctx context.Context, registry *toolhub.Store, backend creds
 	if err != nil {
 		return err
 	}
-	var deployment toolhub.ToolDefinition
+	var deployment api.ToolDefinition
 	if json.Unmarshal([]byte(deploymentRaw), &deployment) != nil {
 		return fmt.Errorf("invalid deployment manifest")
 	}
-	d, err := toolhub.TelegramDefinition(deployment, write)
+	d, err := api.TelegramDefinition(deployment, write)
 	if err != nil {
 		return err
 	}
-	admission, err := toolhub.ControllerAdmissionVerifierFromEnv()
+	admission, err := api.ControllerAdmissionVerifierFromEnv()
 	if err != nil {
 		return err
 	}
@@ -536,11 +537,11 @@ func connectTelegram(ctx context.Context, registry *toolhub.Store, backend creds
 		return err
 	}
 	keys := []string{"TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING", "TELEGRAM_ACCOUNT_ID", "TELEGRAM_WRITE"}
-	ref := toolhub.CredentialReference{Schema: 1, CredentialRefID: toolhub.CredentialReferenceID(connection, 1), ConnectionID: connection, Revision: 1, Backend: backend.Name(), Locator: locator, Keys: keys, Status: toolhub.ActiveStatus}
+	ref := api.CredentialReference{Schema: 1, CredentialRefID: api.CredentialReferenceID(connection, 1), ConnectionID: connection, Revision: 1, Backend: backend.Name(), Locator: locator, Keys: keys, Status: api.ActiveStatus}
 	if err := registry.PutCredentialReference(ref); err != nil {
 		return err
 	}
-	if err := registry.PutConnection(toolhub.Connection{Schema: 1, ConnectionID: connection, Owner: toolhub.OwnerRef{Type: toolhub.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"telegram_account": expected, "mcp_endpoint": endpoint}}); err != nil {
+	if err := registry.PutConnection(api.Connection{Schema: 1, ConnectionID: connection, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"telegram_account": expected, "mcp_endpoint": endpoint}}); err != nil {
 		return err
 	}
 	binding, err := registry.Enable(auth, d.DefinitionID, d.Version)
@@ -551,7 +552,7 @@ func connectTelegram(ctx context.Context, registry *toolhub.Store, backend creds
 	if err != nil {
 		return err
 	}
-	result, err := (toolhub.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}).CallEnv(ctx, effective, toolhub.ToolSpec{Name: "get_account", Effect: toolhub.ReadEffect}, nil, values)
+	result, err := (api.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}).CallEnv(ctx, effective, api.ToolSpec{Name: "get_account", Effect: api.ReadEffect}, nil, values)
 	if err != nil || result.IsError {
 		return fmt.Errorf("telegram account verification failed")
 	}
@@ -601,16 +602,16 @@ func bindGoogle(ctx context.Context, registry *toolhub.Store, backend credstore.
 	if err != nil || len(raw) > 65536 || resp.StatusCode != 200 || json.Unmarshal(raw, &account) != nil || account.Sub == "" || (account.Sub != expected && (!account.Verified || !strings.EqualFold(account.Email, expected))) {
 		return fmt.Errorf("google account mismatch")
 	}
-	scope := toolhub.CalendarReadScope
+	scope := api.CalendarReadScope
 	if write {
-		scope = toolhub.CalendarWriteScope
+		scope = api.CalendarWriteScope
 	}
 	if (len(products) == 0 || products[0] == "") && !strings.Contains(" "+values["OAUTH_SCOPE"]+" ", " "+scope+" ") {
 		return fmt.Errorf("google scope not granted")
 	}
-	d := toolhub.CalendarDefinition(write)
+	d := api.CalendarDefinition(write)
 	if len(products) > 0 && products[0] != "" {
-		grants, err := toolhub.GoogleWorkspaceScopes(products[0])
+		grants, err := api.GoogleWorkspaceScopes(products[0])
 		if err != nil || write {
 			return fmt.Errorf("invalid Workspace grant")
 		}
@@ -619,7 +620,7 @@ func bindGoogle(ctx context.Context, registry *toolhub.Store, backend credstore.
 				return fmt.Errorf("workspace scope not granted")
 			}
 		}
-		d, err = toolhub.DiscoverGoogleWorkspace(ctx, nil, products[0], values["ACCESS_TOKEN"])
+		d, err = api.DiscoverGoogleWorkspace(ctx, nil, products[0], values["ACCESS_TOKEN"])
 		if err != nil {
 			return err
 		}
@@ -627,11 +628,11 @@ func bindGoogle(ctx context.Context, registry *toolhub.Store, backend credstore.
 	if err := registry.RegisterDefinition(d); err != nil {
 		return err
 	}
-	ref := toolhub.CredentialReference{Schema: toolhub.SchemaVersion, CredentialRefID: toolhub.CredentialReferenceID(connection, 1), ConnectionID: connection, Revision: 1, Backend: backend.Name(), Locator: locator, Keys: []string{"ACCESS_TOKEN", "OAUTH_SCOPE"}, Status: toolhub.ActiveStatus}
+	ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connection, 1), ConnectionID: connection, Revision: 1, Backend: backend.Name(), Locator: locator, Keys: []string{"ACCESS_TOKEN", "OAUTH_SCOPE"}, Status: api.ActiveStatus}
 	if err := registry.PutCredentialReference(ref); err != nil {
 		return err
 	}
-	if err := registry.PutConnection(toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: connection, Owner: toolhub.OwnerRef{Type: toolhub.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"google_sub": account.Sub}}); err != nil {
+	if err := registry.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connection, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"google_sub": account.Sub}}); err != nil {
 		return err
 	}
 	if _, err := registry.Enable(auth, d.DefinitionID, d.Version); err != nil {
@@ -655,23 +656,23 @@ func bindSlack(ctx context.Context, registry *toolhub.Store, backend credstore.B
 	if values["OAUTH_TEAM"] != team || values["OAUTH_USER"] != user {
 		return fmt.Errorf("slack OAuth identity mismatch")
 	}
-	if err := (toolhub.SlackBackend{}).VerifyAccount(ctx, values["ACCESS_TOKEN"], team, user); err != nil {
+	if err := (api.SlackBackend{}).VerifyAccount(ctx, values["ACCESS_TOKEN"], team, user); err != nil {
 		return err
 	}
-	for _, scope := range toolhub.SlackScopes(write) {
+	for _, scope := range api.SlackScopes(write) {
 		if !slices.Contains(strings.Fields(strings.ReplaceAll(values["OAUTH_SCOPE"], ",", " ")), scope) {
 			return fmt.Errorf("slack scope not granted")
 		}
 	}
-	d := toolhub.SlackDefinition(write)
+	d := api.SlackDefinition(write)
 	if err := registry.RegisterDefinition(d); err != nil {
 		return err
 	}
-	ref := toolhub.CredentialReference{Schema: 1, CredentialRefID: toolhub.CredentialReferenceID(connection, 1), ConnectionID: connection, Revision: 1, Backend: backend.Name(), Locator: locator, Keys: []string{"ACCESS_TOKEN", "OAUTH_SCOPE"}, Status: toolhub.ActiveStatus}
+	ref := api.CredentialReference{Schema: 1, CredentialRefID: api.CredentialReferenceID(connection, 1), ConnectionID: connection, Revision: 1, Backend: backend.Name(), Locator: locator, Keys: []string{"ACCESS_TOKEN", "OAUTH_SCOPE"}, Status: api.ActiveStatus}
 	if err := registry.PutCredentialReference(ref); err != nil {
 		return err
 	}
-	if err := registry.PutConnection(toolhub.Connection{Schema: 1, ConnectionID: connection, Owner: toolhub.OwnerRef{Type: toolhub.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"slack_team": team, "slack_user": user}}); err != nil {
+	if err := registry.PutConnection(api.Connection{Schema: 1, ConnectionID: connection, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"slack_team": team, "slack_user": user}}); err != nil {
 		return err
 	}
 	if _, err := registry.Enable(auth, d.DefinitionID, d.Version); err != nil {

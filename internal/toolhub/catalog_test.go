@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,7 @@ func TestManifestCatalogAndEffectiveBindingLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries, err = store.Catalog(auth)
-	if err != nil || entries[0].Enabled || entries[0].Status != string(DisabledStatus) {
+	if err != nil || entries[0].Enabled || entries[0].Status != string(api.DisabledStatus) {
 		t.Fatalf("disabled catalog=%+v err=%v", entries, err)
 	}
 	if _, err := store.Enable(auth, binding.DefinitionID, binding.DefinitionVersion); err != nil {
@@ -30,7 +31,7 @@ func TestManifestCatalogAndEffectiveBindingLifecycle(t *testing.T) {
 	}
 	foreign := auth
 	foreign.PrincipalID = "bob"
-	if _, err := store.Enable(foreign, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Enable(foreign, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("foreign owner accepted: %v", err)
 	}
 }
@@ -38,14 +39,14 @@ func TestManifestCatalogAndEffectiveBindingLifecycle(t *testing.T) {
 func TestProjectionRevisionReconnectIsMonotonicAndQuiet(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	var callbacks atomic.Int32
-	controller := &ReconnectController{Store: store, Auth: auth, OnChange: func(ProjectionChange) error { callbacks.Add(1); return nil }}
+	controller := &ReconnectController{Store: store, Auth: auth, OnChange: func(api.ProjectionChange) error { callbacks.Add(1); return nil }}
 	if _, changed, err := controller.Reconcile(); err != nil || !changed {
 		t.Fatalf("initial reconcile changed=%v err=%v", changed, err)
 	}
 	if _, changed, err := controller.Reconcile(); err != nil || changed {
 		t.Fatalf("unchanged projection changed=%v err=%v", changed, err)
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	change, changed, err := controller.Reconcile()
@@ -60,7 +61,7 @@ func TestProjectionRevisionReconnectIsMonotonicAndQuiet(t *testing.T) {
 func TestReconnectControllerRetriesFailedNotification(t *testing.T) {
 	store, auth, _ := seededStore(t)
 	var calls atomic.Int32
-	controller := &ReconnectController{Store: store, Auth: auth, OnChange: func(ProjectionChange) error {
+	controller := &ReconnectController{Store: store, Auth: auth, OnChange: func(api.ProjectionChange) error {
 		if calls.Add(1) == 1 {
 			return errors.New("transport unavailable")
 		}
@@ -81,21 +82,21 @@ func TestManifestCatalogReportsMissingCredentialsAndStaleConnection(t *testing.T
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := store.Catalog(auth)
 	if err != nil || len(entries) != 1 || entries[0].Status != "missing-connection" || len(entries[0].MissingCredentials) != 1 {
 		t.Fatalf("missing credential catalog=%+v err=%v", entries, err)
 	}
-	if _, err := store.Enable(auth, definition.DefinitionID, definition.Version); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Enable(auth, definition.DefinitionID, definition.Version); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("missing connection enabled: %v", err)
 	}
-	if _, err := store.Enable(auth, "missing", "1.0.0"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Enable(auth, "missing", "1.0.0"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("missing manifest enabled: %v", err)
 	}
 	store, auth, binding := seededStore(t)
-	if err := store.SetConnectionStatus(binding.ConnectionID, DisabledStatus); err != nil {
+	if err := store.SetConnectionStatus(binding.ConnectionID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	entries, err = store.Catalog(auth)
@@ -105,25 +106,25 @@ func TestManifestCatalogReportsMissingCredentialsAndStaleConnection(t *testing.T
 }
 
 func TestReconnectControllerRequiresStoreAndCallback(t *testing.T) {
-	if _, _, err := (&ReconnectController{}).Reconcile(); !errors.Is(err, ErrInvalid) {
+	if _, _, err := (&ReconnectController{}).Reconcile(); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("invalid reconnect controller error=%v", err)
 	}
 	store, auth, binding := seededStore(t)
-	if err := store.SetBindingStatus(binding.ToolBindingID, RevokedStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.RevokedStatus); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Enable(auth, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, ErrRevoked) {
+	if _, err := store.Enable(auth, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, api.ErrRevoked) {
 		t.Fatalf("revoked binding re-enabled: %v", err)
 	}
 	badAuth := auth
 	badAuth.PolicyVersion = ""
-	if _, err := store.ProjectionRevision(badAuth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.ProjectionRevision(badAuth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid projection identity accepted: %v", err)
 	}
-	if err := store.Disable(auth, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, ErrRevoked) {
+	if err := store.Disable(auth, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, api.ErrRevoked) {
 		t.Fatalf("revoked binding disabled: %v", err)
 	}
-	controller := &ReconnectController{Store: store, Auth: auth, OnChange: func(ProjectionChange) error { return errors.New("reconnect failed") }}
+	controller := &ReconnectController{Store: store, Auth: auth, OnChange: func(api.ProjectionChange) error { return errors.New("reconnect failed") }}
 	if _, changed, err := controller.Reconcile(); !changed || err == nil {
 		t.Fatalf("reconnect callback error changed=%v err=%v", changed, err)
 	}
@@ -141,15 +142,15 @@ func TestEnableBuildsBindingFromExactOwnerConnection(t *testing.T) {
 	}
 	foreign := auth
 	foreign.PrincipalID = "bob"
-	if _, err := store.Enable(foreign, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Enable(foreign, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("foreign connection selected: %v", err)
 	}
 	badAuth := auth
 	badAuth.ContextID = ""
-	if _, err := store.Catalog(badAuth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Catalog(badAuth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid catalog identity accepted: %v", err)
 	}
-	if err := store.SetConnectionStatus(binding.ConnectionID, Status("invalid")); !errors.Is(err, ErrInvalid) {
+	if err := store.SetConnectionStatus(binding.ConnectionID, api.Status("invalid")); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("invalid connection status accepted: %v", err)
 	}
 }
@@ -160,7 +161,7 @@ func TestEnableSupersedesSiblingVersionsAndPolicies(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
@@ -179,7 +180,7 @@ func TestEnableSupersedesSiblingVersionsAndPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.bindings[first.ToolBindingID].Status != DisabledStatus {
+	if store.bindings[first.ToolBindingID].Status != api.DisabledStatus {
 		t.Fatalf("superseded binding status=%s", store.bindings[first.ToolBindingID].Status)
 	}
 	tools, err := store.ListProjectedTools(newer)
@@ -192,10 +193,10 @@ func TestEnableSupersedesSiblingVersionsAndPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reactivated.ToolBindingID != first.ToolBindingID || store.bindings[first.ToolBindingID].Status != ActiveStatus {
+	if reactivated.ToolBindingID != first.ToolBindingID || store.bindings[first.ToolBindingID].Status != api.ActiveStatus {
 		t.Fatalf("reactivated=%+v status=%s", reactivated, store.bindings[first.ToolBindingID].Status)
 	}
-	if store.bindings[second.ToolBindingID].Status != DisabledStatus {
+	if store.bindings[second.ToolBindingID].Status != api.DisabledStatus {
 		t.Fatalf("downgrade kept newer binding status=%s", store.bindings[second.ToolBindingID].Status)
 	}
 	tools, err = store.ListProjectedTools(auth)
@@ -210,13 +211,13 @@ func TestEnableReadyAdmitsBeforePublishingProjection(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
 	var admitted bool
-	binding, err := store.EnableReady(context.Background(), auth, definition.DefinitionID, definition.Version, func(_ context.Context, effective EffectiveBinding) error {
-		admitted = effective.Binding.Status == ActiveStatus && effective.WorkloadID != ""
+	binding, err := store.EnableReady(context.Background(), auth, definition.DefinitionID, definition.Version, func(_ context.Context, effective api.EffectiveBinding) error {
+		admitted = effective.Binding.Status == api.ActiveStatus && effective.WorkloadID != ""
 		return nil
 	})
 	if err != nil || !admitted || binding.ToolBindingID == "" {
@@ -229,7 +230,7 @@ func TestEnableReadyAdmitsBeforePublishingProjection(t *testing.T) {
 	if err := failed.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := failed.EnableReady(context.Background(), auth, definition.DefinitionID, definition.Version, func(context.Context, EffectiveBinding) error { return errors.New("not ready") }); err == nil {
+	if _, err := failed.EnableReady(context.Background(), auth, definition.DefinitionID, definition.Version, func(context.Context, api.EffectiveBinding) error { return errors.New("not ready") }); err == nil {
 		t.Fatal("failed readiness published")
 	}
 	if revision, _ := failed.ProjectionRevision(auth); revision != 0 {
@@ -243,8 +244,8 @@ func TestEnableReadyAdmitsBeforePublishingProjection(t *testing.T) {
 func TestEnableReadyRechecksExistingBindingAndRollsBack(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	called := false
-	if _, err := store.EnableReady(context.Background(), auth, binding.DefinitionID, binding.DefinitionVersion, func(_ context.Context, effective EffectiveBinding) error {
-		called = effective.Binding.Status == ActiveStatus
+	if _, err := store.EnableReady(context.Background(), auth, binding.DefinitionID, binding.DefinitionVersion, func(_ context.Context, effective api.EffectiveBinding) error {
+		called = effective.Binding.Status == api.ActiveStatus
 		return nil
 	}); err != nil || !called {
 		t.Fatalf("active readiness called=%v err=%v", called, err)
@@ -252,11 +253,11 @@ func TestEnableReadyRechecksExistingBindingAndRollsBack(t *testing.T) {
 	if err := store.Disable(auth, binding.DefinitionID, binding.DefinitionVersion); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.EnableReady(context.Background(), auth, binding.DefinitionID, binding.DefinitionVersion, func(context.Context, EffectiveBinding) error { return errors.New("not ready") }); err == nil {
+	if _, err := store.EnableReady(context.Background(), auth, binding.DefinitionID, binding.DefinitionVersion, func(context.Context, api.EffectiveBinding) error { return errors.New("not ready") }); err == nil {
 		t.Fatal("existing failed readiness accepted")
 	}
 	current, err := store.binding(binding.ToolBindingID)
-	if err != nil || current.Status != DisabledStatus {
+	if err != nil || current.Status != api.DisabledStatus {
 		t.Fatalf("failed readiness changed status=%+v err=%v", current, err)
 	}
 }
@@ -265,10 +266,10 @@ func TestDisableCannotFindForeignBinding(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	foreign := auth
 	foreign.PrincipalID = "bob"
-	if err := store.Disable(foreign, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, ErrNotFound) {
+	if err := store.Disable(foreign, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("foreign binding disabled: %v", err)
 	}
-	if err := store.Disable(auth, "missing", "1.0.0"); !errors.Is(err, ErrNotFound) {
+	if err := store.Disable(auth, "missing", "1.0.0"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("missing manifest disabled: %v", err)
 	}
 }
@@ -307,15 +308,15 @@ func TestEnableRejectsAmbiguousOwnerConnections(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	delete(store.bindings, binding.ToolBindingID)
 	secondID := "google-alt"
-	credential := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID(secondID, 1), ConnectionID: secondID, Revision: 1, Backend: "local", Locator: "local://alice/google/alt", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus}
+	credential := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(secondID, 1), ConnectionID: secondID, Revision: 1, Backend: "local", Locator: "local://alice/google/alt", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
 	if err := store.PutCredentialReference(credential); err != nil {
 		t.Fatal(err)
 	}
-	connection := Connection{Schema: SchemaVersion, ConnectionID: secondID, Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: "google-work", CredentialRefID: credential.CredentialRefID, Revision: 1, Status: ActiveStatus}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: secondID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: "google-work", CredentialRefID: credential.CredentialRefID, Revision: 1, Status: api.ActiveStatus}
 	if err := store.PutConnection(connection); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Enable(auth, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Enable(auth, binding.DefinitionID, binding.DefinitionVersion); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("ambiguous owner connection accepted: %v", err)
 	}
 }
@@ -324,9 +325,9 @@ func TestReconnectMarkerIsWrittenOncePerRevision(t *testing.T) {
 	dir := t.TempDir()
 	store, auth, binding := seededStore(t)
 	var calls atomic.Int32
-	store.Reconnect = &ReconnectController{Store: store, Auth: auth, OnChange: func(change ProjectionChange) error {
+	store.Reconnect = &ReconnectController{Store: store, Auth: auth, OnChange: func(change api.ProjectionChange) error {
 		calls.Add(1)
-		return WriteReconnectMarker(dir, change)
+		return api.WriteReconnectMarker(dir, change)
 	}}
 	if err := store.Disable(auth, binding.DefinitionID, binding.DefinitionVersion); err != nil {
 		t.Fatal(err)
@@ -334,25 +335,25 @@ func TestReconnectMarkerIsWrittenOncePerRevision(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("reconnect callbacks=%d", calls.Load())
 	}
-	body, err := os.ReadFile(filepath.Join(dir, ReconnectMarkerName))
+	body, err := os.ReadFile(filepath.Join(dir, api.ReconnectMarkerName))
 	if err != nil || !strings.Contains(string(body), `"revision"`) || strings.Contains(string(body), "GOOGLE_TOKEN") || strings.Contains(string(body), "local://") {
 		t.Fatalf("reconnect marker leaked or missing: %s err=%v", body, err)
 	}
-	if err := WriteReconnectMarker("", ProjectionChange{Revision: 1}); !errors.Is(err, ErrInvalid) {
+	if err := api.WriteReconnectMarker("", api.ProjectionChange{Revision: 1}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("empty marker directory accepted: %v", err)
 	}
 	file := filepath.Join(dir, "not-a-dir")
 	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteReconnectMarker(file, ProjectionChange{Revision: 1, Reason: "x"}); !errors.Is(err, ErrInvalid) {
+	if err := api.WriteReconnectMarker(file, api.ProjectionChange{Revision: 1, Reason: "x"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("file reconnect directory accepted: %v", err)
 	}
 }
 
 func TestPersistAndNotifySurfacesReconnectError(t *testing.T) {
 	store, auth, binding := seededStore(t)
-	store.Reconnect = &ReconnectController{Store: store, Auth: auth, OnChange: func(ProjectionChange) error {
+	store.Reconnect = &ReconnectController{Store: store, Auth: auth, OnChange: func(api.ProjectionChange) error {
 		return errors.New("reconnect failed")
 	}}
 	if err := store.Disable(auth, binding.DefinitionID, binding.DefinitionVersion); err == nil {
@@ -370,7 +371,7 @@ func TestReloadMissingStoreFailsClosed(t *testing.T) {
 
 func TestAuthorizeProjectedRejectsNilAdmit(t *testing.T) {
 	store, auth, _ := seededStore(t)
-	if err := store.AuthorizeProjected(auth, ProjectedToolName("google-work", "1.0.0", "search"), nil); !errors.Is(err, ErrInvalid) {
+	if err := store.AuthorizeProjected(auth, api.ProjectedToolName("google-work", "1.0.0", "search"), nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("nil admit error=%v", err)
 	}
 }
@@ -410,28 +411,28 @@ func TestReloadUnchangedSnapshotPreservesPendingMutation(t *testing.T) {
 
 func TestSelfInstallDeniedByDefaultAndRevocable(t *testing.T) {
 	store := NewStore()
-	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, ErrUnauthorized) {
+	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("self-install allowed without a grant: %v", err)
 	}
-	grant := OperatorGrant(GrantSelfInstall, "alice", "", "")
+	grant := api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")
 	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RequireSelfInstall(aliceAuth()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RequireSelfInstall(bobAuth()); !errors.Is(err, ErrUnauthorized) {
+	if err := store.RequireSelfInstall(bobAuth()); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("another principal inherited self-install: %v", err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantSelfInstall, "bob", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantSelfInstall, "bob", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	grant.Status = RevokedStatus
+	grant.Status = api.RevokedStatus
 	grant.Revision++
 	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, ErrUnauthorized) {
+	if err := store.RequireSelfInstall(aliceAuth()); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("revoked self-install grant allowed: %v", err)
 	}
 	if err := store.RequireSelfInstall(bobAuth()); err != nil {

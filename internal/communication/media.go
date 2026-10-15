@@ -329,7 +329,7 @@ func (c HTTPTranscriber) Transcribe(ctx context.Context, path, mime string) (str
 	}
 	text := strings.TrimSpace(string(payload))
 	if err := json.Unmarshal(payload, &parsed); err == nil && parsed.Text != "" {
-		text = parsed.Text
+		text = strings.TrimSpace(parsed.Text)
 	}
 	if text == "" {
 		return "", errors.New("empty transcript")

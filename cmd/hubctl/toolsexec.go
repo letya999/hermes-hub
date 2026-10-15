@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // tools-exec is the private per-call agent-tools executor. The ToolHub
@@ -36,22 +36,22 @@ func openExecTools() (*agenttools.Tools, error) {
 
 // execRequest dispatches one admitted request through the shared Tools
 // instance; per-request timeout comes from the admitted frame.
-func execRequest(ctx context.Context, t *agenttools.Tools, request toolhub.AgentExecRequest) toolhub.AgentExecResult {
+func execRequest(ctx context.Context, t *agenttools.Tools, request api.AgentExecRequest) api.AgentExecResult {
 	if request.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
 		defer cancel()
 	}
 	out, callErr := t.ExecCall(ctx, request.Tool, request.Arguments, request.Scopes)
-	result := toolhub.AgentExecResult{Result: out}
+	result := api.AgentExecResult{Result: out}
 	if callErr != nil {
-		result = toolhub.AgentExecResult{Error: callErr.Error()}
+		result = api.AgentExecResult{Error: callErr.Error()}
 	}
 	return result
 }
 
 func runToolsExec(ctx context.Context) error {
-	var request toolhub.AgentExecRequest
+	var request api.AgentExecRequest
 	if err := json.NewDecoder(io.LimitReader(os.Stdin, toolsExecMaxRequest)).Decode(&request); err != nil {
 		return fmt.Errorf("tools-exec request: %w", err)
 	}

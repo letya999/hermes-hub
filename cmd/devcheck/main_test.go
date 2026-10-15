@@ -19,6 +19,22 @@ func TestRunCoverageAndValidation(t *testing.T) {
 			t.Fatalf("accepted %#v", args)
 		}
 	}
+	called := false
+	old := coverAll
+	coverAll = func(name string, minimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
+		called = true
+		if name != profile || minimum != 85 {
+			t.Fatalf("coverAll(%q, %v)", name, minimum)
+		}
+		return 99, nil
+	}
+	t.Cleanup(func() { coverAll = old })
+	if err := run([]string{"covergo", profile, "85"}); err != nil || !called {
+		t.Fatalf("covergo: err=%v called=%v", err, called)
+	}
+	if err := run([]string{"covergo", profile, "bad"}); err == nil {
+		t.Fatal("covergo accepted invalid minimum")
+	}
 	if err := run([]string{"hermes-contract", "test-image"}); err == nil {
 		t.Fatal("integration-only Hermes contract accepted without build tag")
 	}

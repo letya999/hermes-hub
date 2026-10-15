@@ -10,12 +10,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // ScratchWorkloadCanary proves the disposable executor's isolation on real
@@ -40,7 +39,7 @@ func ScratchWorkloadCanary(ctx context.Context, image string) error {
 		`echo "$((6*7))" > "$OUTPUTS/result.txt"`,
 		`echo HOSTILE-DONE`,
 	}, "; ")
-	request, err := json.Marshal(toolhub.ScratchExecRequest{Command: script, TimeoutSeconds: 120})
+	request, err := json.Marshal(api.ScratchExecRequest{Command: script, TimeoutSeconds: 120})
 	if err != nil {
 		return err
 	}
@@ -57,7 +56,7 @@ func ScratchWorkloadCanary(ctx context.Context, image string) error {
 	if err != nil {
 		return fmt.Errorf("scratch workload run: %w: %s", err, out)
 	}
-	var result toolhub.ScratchExecResult
+	var result api.ScratchExecResult
 	if err := json.Unmarshal(bytes.TrimSpace(out), &result); err != nil {
 		return fmt.Errorf("scratch workload result: %w: %s", err, out)
 	}

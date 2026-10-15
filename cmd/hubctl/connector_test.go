@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,12 +70,12 @@ func TestConnectorRejectedInputsAndAccountCleanup(t *testing.T) {
 		body, scope string
 		write       bool
 	}{
-		{403, `{}`, toolhub.CalendarReadScope, false},
-		{200, `bad`, toolhub.CalendarReadScope, false},
-		{200, `{"sub":"bob"}`, toolhub.CalendarReadScope, false},
+		{403, `{}`, api.CalendarReadScope, false},
+		{200, `bad`, api.CalendarReadScope, false},
+		{200, `{"sub":"bob"}`, api.CalendarReadScope, false},
 		{200, `{"sub":"subject1"}`, "openid", false},
-		{200, strings.Repeat("x", 65537), toolhub.CalendarReadScope, false},
-		{200, `{"sub":"subject1"}`, toolhub.CalendarWriteScope, true},
+		{200, strings.Repeat("x", 65537), api.CalendarReadScope, false},
+		{200, `{"sub":"subject1"}`, api.CalendarWriteScope, true},
 	} {
 		fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(test.status)
@@ -198,7 +199,7 @@ func TestConnectorCLIConnectCallRefreshRevoke(t *testing.T) {
 	for _, op := range []string{"status", "call", "refresh", "revoke"} {
 		extra := []string{}
 		if op == "call" {
-			extra = []string{"--tool", toolhub.ProjectedToolName("google-calendar-read", "1.0.0", "list"), "--from-file", input}
+			extra = []string{"--tool", api.ProjectedToolName("google-calendar-read", "1.0.0", "list"), "--from-file", input}
 		}
 		if op == "refresh" {
 			extra = []string{"--client-file", clientFile}
@@ -229,12 +230,12 @@ func TestConnectorCatalogCLIRegistersShippedDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, definition := range toolhub.CLICatalogDefinitions() {
+	for _, definition := range api.CLICatalogDefinitions() {
 		got, err := registry.Definition(definition.DefinitionID, definition.Version)
 		if err != nil {
 			t.Fatalf("%s: %v", definition.DefinitionID, err)
 		}
-		if got.Transport != toolhub.BoundedCLI || got.Source.Command != definition.Source.Command {
+		if got.Transport != api.BoundedCLI || got.Source.Command != definition.Source.Command {
 			t.Fatalf("%s persisted as %+v", definition.DefinitionID, got)
 		}
 	}

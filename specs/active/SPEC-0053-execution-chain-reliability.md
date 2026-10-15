@@ -3,7 +3,7 @@
 Frozen: 2026-10-13, after the owner's approval of the M19 plan. Supplements SPEC-0012,
 SPEC-0014, SPEC-0015, SPEC-0016, SPEC-0019, SPEC-0031, SPEC-0037 and SPEC-0049
 without rewriting their history. Design: [ADR-0036](../../docs/adr/ADR-0036-execution-chain-reliability.md).
-Research and prior art: [CHG-0092 research](../../.work/in-progress/CHG-0092-chain-stop-the-bleeding/research.md).
+Research and prior art: [CHG-0092 research](../../.work/done/CHG-0092-chain-stop-the-bleeding/research.md).
 
 Requirement IDs (`R<stage>.<n>`) and acceptance IDs (`A<stage>.<n>`) are referenced
 by the CHG plans, tests and GitHub issues of milestone M19. A requirement is met only

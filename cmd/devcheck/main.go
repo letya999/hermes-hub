@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/letya999/hermes-hub/internal/devcheck"
 )
@@ -17,6 +19,8 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+var coverAll = devcheck.CoverAll
 
 func run(args []string) error {
 	var err error
@@ -33,6 +37,31 @@ func run(args []string) error {
 			err = checkErr
 		} else {
 			fmt.Printf("Go statement coverage: %.2f%%\n", actual)
+		}
+	case len(args) == 3 && args[0] == "covergo":
+		minimum, parseErr := strconv.ParseFloat(args[2], 64)
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			actual, checkErr := coverAll(args[1], minimum,
+				func() ([]string, error) {
+					listed, listErr := exec.Command("go", "list", "./...").Output()
+					if listErr != nil {
+						return nil, listErr
+					}
+					return strings.Fields(string(listed)), nil
+				},
+				func(pkg, out string) error {
+					test := exec.Command("go", "test", "-race", "-shuffle=on", "-count=1", "-coverpkg=./...", "-coverprofile="+out, pkg)
+					test.Stdout = os.Stdout
+					test.Stderr = os.Stderr
+					return test.Run()
+				})
+			if checkErr != nil {
+				err = checkErr
+			} else {
+				fmt.Printf("Go statement coverage: %.2f%%\n", actual)
+			}
 		}
 	case len(args) == 2 && args[0] == "docker-smoke":
 		err = devcheck.DockerSmoke(context.Background(), args[1])
@@ -78,7 +107,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
+		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|covergo FILE MINIMUM|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
 	}
 	return err
 }

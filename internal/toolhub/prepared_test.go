@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,8 +14,29 @@ import (
 	"time"
 )
 
+// SPEC-0054 R5.6: the personal-telegram prepared entry carries the four
+// event tools the hub's event subscriptions poll and requeue through.
+func TestPreparedTelegramEventTools(t *testing.T) {
+	entries, err := api.PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.ID != "telegram" {
+			continue
+		}
+		for _, name := range []string{"wait_for_new_message", "wait_for_settled_message", "requeue_event", "incoming_feed_status"} {
+			if !slices.Contains(entry.ReadTools, name) {
+				t.Fatalf("telegram read_tools missing %s: %v", name, entry.ReadTools)
+			}
+		}
+		return
+	}
+	t.Fatal("telegram entry missing")
+}
+
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
-	entries, err := PreparedCatalog()
+	entries, err := api.PreparedCatalog()
 	if err != nil || len(entries) != 11 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
@@ -56,62 +78,62 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 					files["Dockerfile"] = "FROM untrusted:latest\n" + directive + "\nENTRYPOINT [\"/usr/local/bin/txttsql-mcp\"]\nCMD [\"--config\",\"/app/config.toml\"]\n"
 				}
 				context := languageContext(t, files)
-				if _, err := (RecipeResolver{}).Resolve(t.Context(), entry.Source, context); err != nil {
+				if _, err := (api.RecipeResolver{}).Resolve(t.Context(), entry.Source, context); err != nil {
 					t.Fatal(err)
 				}
-				inferred, _, err := GenerateArtifactRecipe(context, "", "", nil)
+				inferred, _, err := api.GenerateArtifactRecipe(context, "", "", nil)
 				if err != nil || len(inferred.Entrypoint) > len(entry.Entrypoint) || !slices.Equal(inferred.Entrypoint, entry.Entrypoint[:len(inferred.Entrypoint)]) {
 					t.Fatalf("inferred entrypoint %v %v", inferred.Entrypoint, err)
 				}
-				recipe, generated, err := GenerateArtifactRecipe(context, "", "", entry.Entrypoint, entry.PythonExtras...)
+				recipe, generated, err := api.GenerateArtifactRecipe(context, "", "", entry.Entrypoint, entry.PythonExtras...)
 				if err != nil || !slices.Equal(recipe.Entrypoint, entry.Entrypoint) {
 					t.Fatalf("recipe %v %v", recipe.Entrypoint, err)
 				}
-				built, err := readRecipeContext(generated, 64<<20)
+				built, err := api.ReadRecipeContext(generated, 64<<20)
 				if err != nil || strings.Contains(string(built[recipe.Dockerfile]), "untrusted") {
 					t.Fatal("upstream Dockerfile became authority", err)
 				}
 			}
-			if _, matched, err := preparedForSource(entry.Source); err != nil || !matched {
+			if _, matched, err := api.PreparedForSource(entry.Source); err != nil || !matched {
 				t.Fatal("missing exact overlay", err)
 			}
 			other := entry.Source
 			other.CommitSHA = strings.Repeat("0", 40)
-			if _, matched, _ := preparedForSource(other); matched {
+			if _, matched, _ := api.PreparedForSource(other); matched {
 				t.Fatal("overlay accepted unreviewed revision")
 			}
 		})
 	}
-	for _, raw := range []string{"null trailing", `[{"unknown":true}]`, string(preparedCatalogJSON) + " {}"} {
-		if _, err := parsePreparedCatalog([]byte(raw)); err == nil {
+	for _, raw := range []string{"null trailing", `[{"unknown":true}]`, string(api.PreparedCatalogJSON) + " {}"} {
+		if _, err := api.ParsePreparedCatalog([]byte(raw)); err == nil {
 			t.Fatal("accepted malformed catalog")
 		}
 	}
 	duplicate := append(entries, entries[0])
 	encoded, _ := json.Marshal(duplicate)
-	if _, err := parsePreparedCatalog(encoded); err == nil {
+	if _, err := api.ParsePreparedCatalog(encoded); err == nil {
 		t.Fatal("accepted duplicate")
 	}
 	entries[0].ProbeTool = "unreviewed-write"
 	encoded, _ = json.Marshal(entries)
-	if _, err := parsePreparedCatalog(encoded); err == nil {
+	if _, err := api.ParsePreparedCatalog(encoded); err == nil {
 		t.Fatal("accepted unreviewed provider probe")
 	}
 }
 
 func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
-	entries, _ := PreparedCatalog()
+	entries, _ := api.PreparedCatalog()
 	source := entries[0].Source
-	c := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []RecipeCatalog{
-		testRecipeCatalogFunc(func(context.Context, RecipeLookup) ([]RecipeCandidate, error) {
+	c := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{
+		testRecipeCatalogFunc(func(context.Context, api.RecipeLookup) ([]api.RecipeCandidate, error) {
 			return nil, errors.New("registry unavailable")
 		}),
-		testRecipeCatalogFunc(func(context.Context, RecipeLookup) ([]RecipeCandidate, error) {
-			var out []RecipeCandidate
+		testRecipeCatalogFunc(func(context.Context, api.RecipeLookup) ([]api.RecipeCandidate, error) {
+			var out []api.RecipeCandidate
 			for i := 0; i < 7; i++ {
-				out = append(out, RecipeCandidate{Repository: source.Repository, CommitSHA: source.CommitSHA, Launch: LaunchRecipe{Artifact: fmt.Sprintf("registry.example/mcp-%d", i), Digest: "sha256:" + strings.Repeat("a", 64), Entrypoint: []string{"mcp"}, Transport: ContainerMCP}})
+				out = append(out, api.RecipeCandidate{Repository: source.Repository, CommitSHA: source.CommitSHA, Launch: api.LaunchRecipe{Artifact: fmt.Sprintf("registry.example/mcp-%d", i), Digest: "sha256:" + strings.Repeat("a", 64), Entrypoint: []string{"mcp"}, Transport: api.ContainerMCP}})
 			}
-			return append(out, out[0], RecipeCandidate{Repository: "https://github.com/other/repo"}), nil
+			return append(out, out[0], api.RecipeCandidate{Repository: "https://github.com/other/repo"}), nil
 		}),
 	}}
 	grantTestControlOperations(t, c.Store, "alice", "discover", "prepare_source")
@@ -119,27 +141,27 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	choices := body["candidates"].([]DiscoveryCandidate)
+	choices := body["candidates"].([]api.DiscoveryCandidate)
 	if len(choices) != 5 || choices[0].PreparedID != "notion" || choices[1].Status != "requires-preflight" {
 		t.Fatalf("bounded preference lost: %+v", choices)
 	}
 	if len(c.Store.onboardings) != 0 || len(c.Store.bindings) != 0 || len(c.Store.connections) != 0 {
 		t.Fatal("discovery mutated install state")
 	}
-	if err := putGrant(t, c.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, c.Store, api.OperatorGrant(api.GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	resolved := false
 	reviewed := false
-	var selectedRecipe *RecipeCandidate
-	c.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+	var selectedRecipe *api.RecipeCandidate
+	c.SourceResolver = func(_ context.Context, raw string) (api.ArtifactSource, error) {
 		resolved = raw == source.Repository
 		return source, nil
 	}
-	c.Reviewer = func(_ context.Context, selected ArtifactSource, recipe *RecipeCandidate) (SourceReview, error) {
+	c.Reviewer = func(_ context.Context, selected api.ArtifactSource, recipe *api.RecipeCandidate) (api.SourceReview, error) {
 		reviewed = selected == source
 		selectedRecipe = recipe
-		return SourceReview{}, errors.New("test stops at generic reviewer")
+		return api.SourceReview{}, errors.New("test stops at generic reviewer")
 	}
 	if _, err := c.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"candidate_id": choices[0].ID}); err == nil || !reviewed || resolved {
 		t.Fatal("selection did not preserve the prepared exact commit", err)
@@ -150,7 +172,7 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 	if _, err := c.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"candidate_id": choices[1].ID}); err == nil || selectedRecipe == nil || selectedRecipe.Launch.Artifact != choices[1].Artifact || selectedRecipe.Launch.Digest != choices[1].Digest {
 		t.Fatal("selected registry artifact was lost before source review", err)
 	}
-	if _, err := c.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": choices[0].ID, "source": source.Repository}); !errors.Is(err, ErrInvalid) {
+	if _, err := c.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": choices[0].ID, "source": source.Repository}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal("ambiguous selector accepted")
 	}
 	catalogs := c.RecipeCatalogs
@@ -163,21 +185,21 @@ func TestDiscoveryAlternativesAndSelectionUseGenericLifecycle(t *testing.T) {
 	if body, err := c.discover(t.Context(), aliceAuth(), "notion"); err != nil || len(body["warnings"].([]string)) != 1 {
 		t.Fatal("unavailable registry hid bundle", err)
 	}
-	for len(c.discoveryChoices) < 512 {
-		c.discoveryChoices[fmt.Sprint(len(c.discoveryChoices))] = discoverySelection{Expires: time.Now().Add(time.Hour)}
+	for len(c.discovery.choices) < 512 {
+		c.discovery.choices[fmt.Sprint(len(c.discovery.choices))] = discoverySelection{Expires: time.Now().Add(time.Hour)}
 	}
-	if _, err := c.discover(t.Context(), aliceAuth(), "notion"); !errors.Is(err, ErrInvalid) {
+	if _, err := c.discover(t.Context(), aliceAuth(), "notion"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal("unbounded selection cache", err)
 	}
 }
 
 func TestPreparedOverlayOverridesStaleAlias(t *testing.T) {
-	entries, _ := PreparedCatalog()
+	entries, _ := api.PreparedCatalog()
 	for _, entry := range entries {
 		if entry.ID != "gitlab" {
 			continue
 		}
-		connection := entry.overlay(ConnectionRecipe{Fields: []ConnectionField{{Name: "GITLAB_TOKEN", Required: true, Secret: true, Type: "token", Delivery: "env"}}})
+		connection := entry.Overlay(api.ConnectionRecipe{Fields: []api.ConnectionField{{Name: "GITLAB_TOKEN", Required: true, Secret: true, Type: "token", Delivery: "env"}}})
 		for _, field := range connection.Fields {
 			if field.Name == "GITLAB_TOKEN" && field.Required {
 				t.Fatal("stale alias still required")
@@ -196,7 +218,7 @@ func TestDiscoverySelectionIsBoundedReadOnlyAndOwnerScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	choices := body["candidates"].([]DiscoveryCandidate)
+	choices := body["candidates"].([]api.DiscoveryCandidate)
 	if len(choices) != 1 || choices[0].PreparedID != "notion" || choices[0].ID == "" {
 		t.Fatalf("choices %+v", choices)
 	}
@@ -205,14 +227,14 @@ func TestDiscoverySelectionIsBoundedReadOnlyAndOwnerScoped(t *testing.T) {
 	}
 	other := aliceAuth()
 	other.PrincipalID = "bob"
-	if _, err := c.selectedRepository(other, choices[0].ID); !errors.Is(err, ErrUnauthorized) {
+	if _, err := c.selectedRepository(other, choices[0].ID); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatal("cross-owner selection", err)
 	}
 	now = now.Add(11 * time.Minute)
-	if _, err := c.selectedRepository(aliceAuth(), choices[0].ID); !errors.Is(err, ErrUnauthorized) {
+	if _, err := c.selectedRepository(aliceAuth(), choices[0].ID); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatal("expired selection", err)
 	}
-	if _, err := c.discover(t.Context(), aliceAuth(), ""); !errors.Is(err, ErrInvalid) {
+	if _, err := c.discover(t.Context(), aliceAuth(), ""); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal(err)
 	}
 	if _, err := c.discover(t.Context(), aliceAuth(), "no-such-mcp"); err != nil {
@@ -236,34 +258,34 @@ func TestRegistryNameSearchWithoutPreparedEntryUsesGenericSelection(t *testing.T
 		}
 	}))
 	defer server.Close()
-	control := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []RecipeCatalog{
-		MCPRegistryCatalog{Endpoint: server.URL + "/v0.1/servers", Client: server.Client()},
-		DockerMCPCatalog{Endpoint: server.URL + "/catalog.json", Client: server.Client()},
+	control := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{
+		api.MCPRegistryCatalog{Endpoint: server.URL + "/v0.1/servers", Client: server.Client()},
+		api.DockerMCPCatalog{Endpoint: server.URL + "/catalog.json", Client: server.Client()},
 	}}
 	body, err := control.discover(t.Context(), aliceAuth(), "weather")
 	if err != nil {
 		t.Fatal(err)
 	}
-	choices := body["candidates"].([]DiscoveryCandidate)
+	choices := body["candidates"].([]api.DiscoveryCandidate)
 	if len(choices) != 2 || choices[0].PreparedID != "" || choices[1].PreparedID != "" {
 		t.Fatalf("name-only registry results=%+v", choices)
 	}
 	if len(control.Store.onboardings) != 0 || len(control.Store.bindings) != 0 {
 		t.Fatal("registry discovery installed a connector")
 	}
-	if err := putGrant(t, control.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, control.Store, api.OperatorGrant(api.GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
-	var reviewed ArtifactSource
-	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+	var reviewed api.ArtifactSource
+	control.SourceResolver = func(_ context.Context, raw string) (api.ArtifactSource, error) {
 		if raw != "https://github.com/acme/weather-mcp" {
-			return ArtifactSource{}, ErrInvalid
+			return api.ArtifactSource{}, api.ErrInvalid
 		}
-		return ArtifactSource{Repository: raw, CommitSHA: commit}, nil
+		return api.ArtifactSource{Repository: raw, CommitSHA: commit}, nil
 	}
-	control.Reviewer = func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+	control.Reviewer = func(_ context.Context, source api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {
 		reviewed = source
-		return SourceReview{}, errors.New("stopped at generic reviewer")
+		return api.SourceReview{}, errors.New("stopped at generic reviewer")
 	}
 	for _, candidate := range choices {
 		if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID, "request_key": candidate.ID}); err == nil {
@@ -289,15 +311,15 @@ func TestDiscoveryKeepsPreparedFirstAndUsesGitHubOnlyAsFallback(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []RecipeCatalog{
-		MCPRegistryCatalog{Endpoint: server.URL + "/registry", Client: server.Client()},
-		GitHubSearchCatalog{Endpoint: server.URL, Client: server.Client()},
+	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{
+		api.MCPRegistryCatalog{Endpoint: server.URL + "/registry", Client: server.Client()},
+		api.GitHubSearchCatalog{Endpoint: server.URL, Client: server.Client()},
 	}}
 	result, err := control.discover(t.Context(), aliceAuth(), "notion")
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates := result["candidates"].([]DiscoveryCandidate)
+	candidates := result["candidates"].([]api.DiscoveryCandidate)
 	warnings := result["warnings"].([]string)
 	if len(candidates) != 2 || candidates[0].PreparedID != "notion" || candidates[1].Status != "github-source" || githubCalls != 1 || len(warnings) != 2 {
 		t.Fatalf("fallback order and adapter isolation: candidates=%+v warnings=%v calls=%d", candidates, warnings, githubCalls)
@@ -308,7 +330,7 @@ func TestDiscoveryKeepsPreparedFirstAndUsesGitHubOnlyAsFallback(t *testing.T) {
 }
 
 func TestBareRepositoryURLSelectsPreparedPinnedCommit(t *testing.T) {
-	entries, err := PreparedCatalog()
+	entries, err := api.PreparedCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,20 +339,20 @@ func TestBareRepositoryURLSelectsPreparedPinnedCommit(t *testing.T) {
 		t.Fatalf("fixture entry moved: %+v", prepared.Source)
 	}
 	control := &ControlPlane{Store: NewStore(), Now: time.Now}
-	if err := putGrant(t, control.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, control.Store, api.OperatorGrant(api.GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
-	drifted := ArtifactSource{Repository: prepared.Source.Repository, CommitSHA: strings.Repeat("f", 40)}
-	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+	drifted := api.ArtifactSource{Repository: prepared.Source.Repository, CommitSHA: strings.Repeat("f", 40)}
+	control.SourceResolver = func(_ context.Context, raw string) (api.ArtifactSource, error) {
 		if raw != prepared.Source.Repository {
 			t.Fatalf("unexpected resolver input: %s", raw)
 		}
 		return drifted, nil
 	}
-	var reviewed ArtifactSource
-	control.Reviewer = func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+	var reviewed api.ArtifactSource
+	control.Reviewer = func(_ context.Context, source api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {
 		reviewed = source
-		return SourceReview{}, errors.New("stopped at reviewer")
+		return api.SourceReview{}, errors.New("stopped at reviewer")
 	}
 	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"source": prepared.Source.Repository}); err == nil {
 		t.Fatal("test reviewer was bypassed")
@@ -338,7 +360,7 @@ func TestBareRepositoryURLSelectsPreparedPinnedCommit(t *testing.T) {
 	if reviewed != prepared.Source {
 		t.Fatalf("bare URL drifted to unreviewed commit: %+v", reviewed)
 	}
-	reviewed = ArtifactSource{}
+	reviewed = api.ArtifactSource{}
 	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"source": prepared.Source.Repository + "/commit/" + drifted.CommitSHA}); err == nil {
 		t.Fatal("test reviewer was bypassed")
 	}
@@ -353,55 +375,55 @@ func TestRegistrySelectionPinsMutableRepositoryAndPreservesSubfolder(t *testing.
 		_, _ = w.Write([]byte(`{"servers":[{"server":{"name":"weather","repository":{"url":"https://github.com/acme/weather","subfolder":"servers/weather"}}}]}`))
 	}))
 	defer server.Close()
-	control := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []RecipeCatalog{MCPRegistryCatalog{Endpoint: server.URL, Client: server.Client()}}}
+	control := &ControlPlane{Store: NewStore(), Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{api.MCPRegistryCatalog{Endpoint: server.URL, Client: server.Client()}}}
 	result, err := control.discover(t.Context(), aliceAuth(), "weather")
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate := result["candidates"].([]DiscoveryCandidate)[0]
+	candidate := result["candidates"].([]api.DiscoveryCandidate)[0]
 	if candidate.Source.Subfolder != "servers/weather" {
 		t.Fatalf("registry subfolder lost: %+v", candidate.Source)
 	}
-	if err := putGrant(t, control.Store, OperatorGrant(GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
+	if err := putGrant(t, control.Store, api.OperatorGrant(api.GrantSelfInstall, aliceAuth().PrincipalID, "", "")); err != nil {
 		t.Fatal(err)
 	}
-	control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+	control.SourceResolver = func(_ context.Context, raw string) (api.ArtifactSource, error) {
 		if raw != "https://github.com/acme/weather" {
 			t.Fatalf("model-controlled source reached resolver: %s", raw)
 		}
-		return ArtifactSource{Repository: raw, CommitSHA: commit}, nil
+		return api.ArtifactSource{Repository: raw, CommitSHA: commit}, nil
 	}
-	control.Reviewer = func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+	control.Reviewer = func(_ context.Context, source api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {
 		if source.CommitSHA != commit || source.Subfolder != "servers/weather" {
 			t.Fatalf("selected source changed before review: %+v", source)
 		}
-		return SourceReview{}, errors.New("stopped at reviewer")
+		return api.SourceReview{}, errors.New("stopped at reviewer")
 	}
 	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID}); err == nil {
 		t.Fatal("selection skipped source review")
 	}
-	control.SourceResolver = func(context.Context, string) (ArtifactSource, error) {
-		return ArtifactSource{Repository: "https://github.com/foreign/weather", CommitSHA: commit}, nil
+	control.SourceResolver = func(context.Context, string) (api.ArtifactSource, error) {
+		return api.ArtifactSource{Repository: "https://github.com/foreign/weather", CommitSHA: commit}, nil
 	}
-	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID}); !errors.Is(err, ErrStale) {
+	if _, err := control.prepareSource(t.Context(), aliceAuth(), map[string]any{"candidate_id": candidate.ID}); !errors.Is(err, api.ErrStale) {
 		t.Fatalf("registry source drift was accepted: %v", err)
 	}
 }
 
 func TestPreparedPreflightNetworkAppliesToDeclaringEntryOnly(t *testing.T) {
-	entries, err := PreparedCatalog()
+	entries, err := api.PreparedCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
-	originalLoader, originalList := storedArtifactLoader, localMCPToolList
-	defer func() { storedArtifactLoader, localMCPToolList = originalLoader, originalList }()
-	storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+	originalLoader, originalList := api.StoredArtifactLoader, api.LocalMCPToolList
+	defer func() { api.StoredArtifactLoader, api.LocalMCPToolList = originalLoader, originalList }()
+	api.StoredArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
 		return "loaded", nil
 	}
 	allowNetwork := false
-	localMCPToolList = func(ctx context.Context, _ ImportedArtifact) ([]ToolSpec, error) {
-		allowNetwork = probeOptionsFrom(ctx).allowNetwork
-		return []ToolSpec{{Name: "read", Effect: ReadEffect}}, nil
+	api.LocalMCPToolList = func(ctx context.Context, _ api.ImportedArtifact) ([]api.ToolSpec, error) {
+		allowNetwork = api.ProbeOptionsFrom(ctx).AllowNetwork
+		return []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}}, nil
 	}
 	declared := 0
 	for _, entry := range entries {
@@ -409,14 +431,14 @@ func TestPreparedPreflightNetworkAppliesToDeclaringEntryOnly(t *testing.T) {
 		definition.Source.Repository = entry.Source.Repository
 		definition.Source.CommitSHA = entry.Source.CommitSHA
 		definition.Source.Subfolder = entry.Source.Subfolder
-		packet := ImportedArtifact{Definition: definition, Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
+		packet := api.ImportedArtifact{Definition: definition, Artifact: api.StoredOCIArtifact{ArchiveDigest: "sha256:" + repeatHex('a')}}
 		if entry.AuthBeforeToolsList {
-			if _, _, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir()); !errors.Is(err, ErrIsolation) {
+			if _, _, err := api.PreflightImportedArtifact(context.Background(), packet, t.TempDir()); !errors.Is(err, api.ErrIsolation) {
 				t.Fatalf("%s must defer tools/list until protected login: %v", entry.ID, err)
 			}
 			continue
 		}
-		if _, _, err := PreflightImportedArtifact(context.Background(), packet, t.TempDir()); err != nil {
+		if _, _, err := api.PreflightImportedArtifact(context.Background(), packet, t.TempDir()); err != nil {
 			t.Fatalf("%s preflight: %v", entry.ID, err)
 		}
 		if allowNetwork != entry.PreflightNetwork {

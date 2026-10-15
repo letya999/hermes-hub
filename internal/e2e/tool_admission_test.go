@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,13 +15,12 @@ import (
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestAdmissionUsesOnlyExactOwnerRuntimeTokenAndActualToolList(t *testing.T) {
 	definition := agenttools.HubToolsDefinition()
-	projected := toolhub.ProjectedToolName(definition.DefinitionID, definition.Version, "routine_list")
+	projected := api.ProjectedToolName(definition.DefinitionID, definition.Version, "routine_list")
 	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 	server.AddTool(&mcp.Tool{Name: projected, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t.Fatal("preflight invoked a tool")

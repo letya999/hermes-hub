@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 func TestCoreScopeKeepsLocalToolsAndCredentialFreeInstalls(t *testing.T) {
@@ -48,12 +48,12 @@ func TestRegistryCoversReviewedToolInventory(t *testing.T) {
 			t.Errorf("reviewed tool has no acceptance case: %s", tool.Name)
 		}
 	}
-	for _, op := range append(append([]string{}, toolhub.ControlOperations...), "invoke") {
+	for _, op := range append(append([]string{}, api.ControlOperations...), "invoke") {
 		if !found["toolhub:"+op] {
 			t.Errorf("control operation has no acceptance case: %s", op)
 		}
 	}
-	for _, section := range toolhub.SeedInventory() {
+	for _, section := range api.SeedInventory() {
 		if strings.HasPrefix(section.ID, "native:") && !found[section.ID] {
 			t.Errorf("native capability has no acceptance case: %s", section.ID)
 		}

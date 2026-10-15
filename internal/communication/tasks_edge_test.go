@@ -287,26 +287,26 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := g.newTaskCommand(user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
+	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
 		t.Fatalf("invalid name accepted: %q", got)
 	}
 	// A nameless /new creates an auto-named session.
-	if got := g.newTaskCommand(user, 11, 0, "/new"); !strings.Contains(got, "создана") {
+	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new"); !strings.Contains(got, "создана") {
 		t.Fatalf("auto create wrong: %q", got)
 	}
-	if got := g.newTaskCommand(user, 11, 0, "/new alpha"); !strings.Contains(got, "создана") {
+	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new alpha"); !strings.Contains(got, "создана") {
 		t.Fatalf("create=%q", got)
 	}
-	if got := g.newTaskCommand(user, 11, 0, "/new alpha"); !strings.Contains(got, "уже есть") {
+	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new alpha"); !strings.Contains(got, "уже есть") {
 		t.Fatalf("reuse=%q", got)
 	}
-	if got := g.useCommand(user, 11, "/use"); !strings.Contains(got, "/use <id|имя|default>") {
+	if got := g.useCommand(context.Background(), user, 11, "/use"); !strings.Contains(got, "/use <id|имя|default>") {
 		t.Fatalf("use hint=%q", got)
 	}
-	if got := g.useCommand(user, 11, "/use missing-task"); !strings.Contains(got, "не найдена") {
+	if got := g.useCommand(context.Background(), user, 11, "/use missing-task"); !strings.Contains(got, "не найдена") {
 		t.Fatalf("use missing=%q", got)
 	}
-	if got := g.deleteCommand(user, 11, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
+	if got, _ := g.deleteCommand(context.Background(), user, 11, 0, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
 		t.Fatalf("default delete=%q", got)
 	}
 

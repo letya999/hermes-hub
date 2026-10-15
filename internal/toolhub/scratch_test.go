@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,21 +40,21 @@ func scratchTar(t *testing.T, files map[string]string) string {
 // member goes through the create-only write channel under <path>/exports/.
 func TestApplyExportsFenceAndWrites(t *testing.T) {
 	var written []string
-	apply := func(_ context.Context, _ EffectiveBinding, request AgentExecRequest) (AgentExecResult, error) {
+	apply := func(_ context.Context, _ api.EffectiveBinding, request api.AgentExecRequest) (api.AgentExecResult, error) {
 		path, _ := request.Arguments["path"].(string)
 		written = append(written, path)
-		return AgentExecResult{Result: map[string]any{"path": path, "revision": 1}}, nil
+		return api.AgentExecResult{Result: map[string]any{"path": path, "revision": 1}}, nil
 	}
-	request := AgentExecRequest{Scopes: []CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}}
-	effective := EffectiveBinding{}
-	if _, _, err := applyExports(context.Background(), apply, nil, effective, request, "docs", scratchTar(t, map[string]string{"a.txt": "x"})); !errors.Is(err, ErrIsolation) {
+	request := api.AgentExecRequest{Scopes: []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}}
+	effective := api.EffectiveBinding{}
+	if _, _, err := api.ApplyExports(context.Background(), apply, nil, effective, request, "docs", scratchTar(t, map[string]string{"a.txt": "x"})); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("export without fence must fail closed: %v", err)
 	}
 	deny := errors.New("stale revision")
-	if _, _, err := applyExports(context.Background(), apply, func(context.Context, EffectiveBinding) error { return deny }, effective, request, "docs", scratchTar(t, map[string]string{"a.txt": "x"})); !errors.Is(err, deny) {
+	if _, _, err := api.ApplyExports(context.Background(), apply, func(context.Context, api.EffectiveBinding) error { return deny }, effective, request, "docs", scratchTar(t, map[string]string{"a.txt": "x"})); !errors.Is(err, deny) {
 		t.Fatalf("fence denial must stop the export: %v", err)
 	}
-	applied, skipped, err := applyExports(context.Background(), apply, func(context.Context, EffectiveBinding) error { return nil }, effective, request, "docs", scratchTar(t, map[string]string{"out.txt": "data", "sub/plan.md": "p"}))
+	applied, skipped, err := api.ApplyExports(context.Background(), apply, func(context.Context, api.EffectiveBinding) error { return nil }, effective, request, "docs", scratchTar(t, map[string]string{"out.txt": "data", "sub/plan.md": "p"}))
 	if err != nil || len(applied) != 2 || len(skipped) != 0 {
 		t.Fatalf("export failed: %v applied=%v skipped=%v", err, applied, skipped)
 	}
@@ -74,17 +75,17 @@ func TestApplyExportsFenceAndWrites(t *testing.T) {
 	_, _ = writer.Write([]byte("y"))
 	_ = writer.Close()
 	written = nil
-	applied, skipped, err = applyExports(context.Background(), apply, func(context.Context, EffectiveBinding) error { return nil }, effective, request, "docs", base64.StdEncoding.EncodeToString(raw.Bytes()))
+	applied, skipped, err = api.ApplyExports(context.Background(), apply, func(context.Context, api.EffectiveBinding) error { return nil }, effective, request, "docs", base64.StdEncoding.EncodeToString(raw.Bytes()))
 	if err != nil || len(applied) != 1 || len(skipped) != 2 {
 		t.Fatalf("hostile members must be skipped: %v applied=%v skipped=%v", err, applied, skipped)
 	}
 	// A channel-level file_write error (revision conflict, existing file)
 	// skips that member instead of failing the batch or overwriting.
 	written = nil
-	apply = func(context.Context, EffectiveBinding, AgentExecRequest) (AgentExecResult, error) {
-		return AgentExecResult{Error: "path already exists"}, nil
+	apply = func(context.Context, api.EffectiveBinding, api.AgentExecRequest) (api.AgentExecResult, error) {
+		return api.AgentExecResult{Error: "path already exists"}, nil
 	}
-	if applied, skipped, err = applyExports(context.Background(), apply, func(context.Context, EffectiveBinding) error { return nil }, effective, request, "docs", scratchTar(t, map[string]string{"dup.txt": "x"})); err != nil || len(applied) != 0 || len(skipped) != 1 {
+	if applied, skipped, err = api.ApplyExports(context.Background(), apply, func(context.Context, api.EffectiveBinding) error { return nil }, effective, request, "docs", scratchTar(t, map[string]string{"dup.txt": "x"})); err != nil || len(applied) != 0 || len(skipped) != 1 {
 		t.Fatalf("existing target must skip, not overwrite: %v %v %v", err, applied, skipped)
 	}
 }
@@ -98,19 +99,19 @@ func TestReverifyEffective(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
-	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
-	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: api.PerUser, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
 	if err := s.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
-	rule := CapabilityRule{CapabilityID: "files", ImplementationDigest: DefinitionDigest(definition), Action: "read", Resource: "files", PathPrefix: "docs", Limits: CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
-	policy := CapabilityPolicy{Schema: SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice"}, Revision: 1,
-		IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "test", Status: ActiveStatus, Ceiling: []CapabilityRule{rule}, Defaults: []CapabilityRule{rule}}
-	profile := CapabilityProfile{Schema: SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
+	rule := api.CapabilityRule{CapabilityID: "files", ImplementationDigest: api.DefinitionDigest(definition), Action: "read", Resource: "files", PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice"}, Revision: 1,
+		IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "test", Status: api.ActiveStatus, Ceiling: []api.CapabilityRule{rule}, Defaults: []api.CapabilityRule{rule}}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
-		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "test", Status: ActiveStatus,
-		Selections: []CapabilitySelection{{CapabilityID: "files", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: DefinitionDigest(definition),
+		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "test", Status: api.ActiveStatus,
+		Selections: []api.CapabilitySelection{{CapabilityID: "files", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: api.DefinitionDigest(definition),
 			ToolName: "file_read", Name: "workspace_read"}}}
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
@@ -145,7 +146,7 @@ func TestReverifyEffective(t *testing.T) {
 	// A revoked binding fails even before revision comparisons. Bindings are
 	// immutable through PutBinding; revocation lands via the revoke path —
 	// simulate its store-level effect directly.
-	binding.Status = RevokedStatus
+	binding.Status = api.RevokedStatus
 	s.mu.Lock()
 	s.bindings[binding.ToolBindingID] = binding
 	s.mu.Unlock()
@@ -160,14 +161,14 @@ func TestReverifyEffectiveUnmanaged(t *testing.T) {
 	if err := s.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: "policy-1", WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
-	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: "policy-1", WorkloadClass: api.PerUser, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
 	if err := s.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
 	// Unmanaged admissions carry no capability profile/policy: binding
 	// freshness is the whole authority the export fence may recheck.
-	effective := EffectiveBinding{Binding: binding, Definition: definition}
+	effective := api.EffectiveBinding{Binding: binding, Definition: definition}
 	if err := s.ReverifyEffective(effective); err != nil {
 		t.Fatalf("unmanaged effective must verify on binding freshness alone: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestReverifyEffectiveUnmanaged(t *testing.T) {
 		t.Fatal("half-populated capability identity passed the export fence")
 	}
 	effective.CapabilityPolicyID = ""
-	binding.Status = RevokedStatus
+	binding.Status = api.RevokedStatus
 	s.mu.Lock()
 	s.bindings[binding.ToolBindingID] = binding
 	s.mu.Unlock()
@@ -248,17 +249,17 @@ func TestScratchDockerHelper(t *testing.T) {
 			os.Stdout.Write(buf.Bytes())
 			os.Exit(0)
 		}
-		var request AgentExecRequest
+		var request api.AgentExecRequest
 		_ = json.NewDecoder(os.Stdin).Decode(&request)
-		_ = json.NewEncoder(os.Stdout).Encode(AgentExecResult{Result: map[string]any{"path": request.Arguments["path"], "revision": 1}})
+		_ = json.NewEncoder(os.Stdout).Encode(api.AgentExecResult{Result: map[string]any{"path": request.Arguments["path"], "revision": 1}})
 	case "run":
-		var request ScratchExecRequest
+		var request api.ScratchExecRequest
 		_ = json.NewDecoder(os.Stdin).Decode(&request)
 		if request.Command == "junk" {
 			fmt.Println("not-json")
 			os.Exit(0)
 		}
-		result := ScratchExecResult{ExitCode: 0, Stdout: "ran:" + request.Command, Stopped: true}
+		result := api.ScratchExecResult{ExitCode: 0, Stdout: "ran:" + request.Command, Stopped: true}
 		if request.Command == "export" {
 			result.ExportTar = func() string {
 				var buf bytes.Buffer
@@ -280,21 +281,21 @@ func TestScratchDockerHelper(t *testing.T) {
 	os.Exit(0)
 }
 
-func fakeScratch(t *testing.T) ([]string, string, ScratchExecFunc) {
+func fakeScratch(t *testing.T) ([]string, string, api.ScratchExecFunc) {
 	t.Helper()
 	state := t.TempDir()
 	t.Setenv("FAKE_DOCKER", "1")
 	t.Setenv("FAKE_DOCKER_STATE", state)
 	docker := []string{os.Args[0], "-test.run=TestScratchDockerHelper", "--"}
-	apply := func(_ context.Context, _ EffectiveBinding, request AgentExecRequest) (AgentExecResult, error) {
-		return AgentExecResult{Result: map[string]any{"path": request.Arguments["path"], "revision": 1}}, nil
+	apply := func(_ context.Context, _ api.EffectiveBinding, request api.AgentExecRequest) (api.AgentExecResult, error) {
+		return api.AgentExecResult{Result: map[string]any{"path": request.Arguments["path"], "revision": 1}}, nil
 	}
-	exec := DockerScratchExec(docker, func(EffectiveBinding) (string, error) { return "runtime-1", nil }, apply)
+	exec := api.DockerScratchExec(docker, func(api.EffectiveBinding) (string, error) { return "runtime-1", nil }, apply)
 	return docker, state, exec
 }
 
-func scratchRequest(command string) AgentExecRequest {
-	return AgentExecRequest{Arguments: map[string]any{"command": command, "path": "docs"}, Scopes: []CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}}
+func scratchRequest(command string) api.AgentExecRequest {
+	return api.AgentExecRequest{Arguments: map[string]any{"command": command, "path": "docs"}, Scopes: []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}}
 }
 
 func dockerLog(t *testing.T, state string) []string {
@@ -310,8 +311,8 @@ func dockerLog(t *testing.T, state string) []string {
 // inspect-confirmed, in that order, with the hardened container spec.
 func TestDockerScratchExecHappyPath(t *testing.T) {
 	_, state, exec := fakeScratch(t)
-	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-happy"}}
-	out, err := exec(context.Background(), effective, scratchRequest("export"), func(context.Context, EffectiveBinding) error { return nil })
+	effective := api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-happy"}}
+	out, err := exec(context.Background(), effective, scratchRequest("export"), func(context.Context, api.EffectiveBinding) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +326,7 @@ func TestDockerScratchExecHappyPath(t *testing.T) {
 	}
 	log := dockerLog(t, state)
 	// The apply channel is a stub func here; production wires it to
-	// `docker exec <runtime> hubctl tools-exec` (DockerAgentExec), covered by
+	// `docker exec <runtime> hubctl tools-exec` (dockeragentexec), covered by
 	// the supervisor canary. The docker-side contract is
 	// inspect → pack → run → rm → inspect-confirm.
 	order := []string{"inspect", "exec", "run", "rm", "inspect"}
@@ -357,20 +358,20 @@ func TestDockerScratchExecHappyPath(t *testing.T) {
 // quarantined until docker inspect confirms the workload is gone.
 func TestDockerScratchExecUnconfirmedStop(t *testing.T) {
 	_, state, exec := fakeScratch(t)
-	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-stuck"}}
-	ok := func(context.Context, EffectiveBinding) error { return nil }
+	effective := api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-stuck"}}
+	ok := func(context.Context, api.EffectiveBinding) error { return nil }
 	if err := os.WriteFile(filepath.Join(state, "neverdie"), []byte("1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, ErrIsolation) {
+	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("unconfirmed stop must not report success: %v", err)
 	}
 	// The quarantined binding denies every replacement lease while the
 	// executor may still be live.
-	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, ErrIsolation) {
+	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("quarantined binding issued a replacement lease: %v", err)
 	}
-	other := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-clean"}}
+	other := api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-clean"}}
 	if _, err := exec(context.Background(), other, scratchRequest("run"), ok); err != nil {
 		t.Fatalf("quarantine leaked to another binding: %v", err)
 	}
@@ -388,29 +389,29 @@ func TestDockerScratchExecUnconfirmedStop(t *testing.T) {
 func TestDockerScratchExecDurableLease(t *testing.T) {
 	_, state, exec := fakeScratch(t)
 	leaseFile := filepath.Join(state, "executor-leases.json")
-	if err := SetScratchLeasePath(leaseFile); err != nil {
+	if err := api.SetScratchLeasePath(leaseFile); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		scratchLeaseMu.Lock()
-		scratchLeasePath = ""
-		scratchLeaseMu.Unlock()
+		api.ScratchLeaseMu.Lock()
+		api.ScratchLeasePath = ""
+		api.ScratchLeaseMu.Unlock()
 	}()
-	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-lease"}}
-	ok := func(context.Context, EffectiveBinding) error { return nil }
+	effective := api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-lease"}}
+	ok := func(context.Context, api.EffectiveBinding) error { return nil }
 	if err := os.WriteFile(filepath.Join(state, "neverdie"), []byte("1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, ErrIsolation) {
+	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("unconfirmed stop must not report success: %v", err)
 	}
 	// Simulate a restart: the in-memory map loses the entry, the lease file
 	// still has it, and reloading the file must restore the quarantine.
-	scratchPending.Delete("bind-lease")
-	if err := SetScratchLeasePath(leaseFile); err != nil {
+	api.ScratchPending.Delete("bind-lease")
+	if err := api.SetScratchLeasePath(leaseFile); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, ErrIsolation) {
+	if _, err := exec(context.Background(), effective, scratchRequest("run"), ok); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("restarted ToolHub re-issued a quarantined lease: %v", err)
 	}
 	if err := os.Remove(filepath.Join(state, "neverdie")); err != nil {
@@ -432,8 +433,8 @@ func TestDockerScratchExecDurableLease(t *testing.T) {
 // exports are reported, never applied.
 func TestDockerScratchExecExportFence(t *testing.T) {
 	_, state, exec := fakeScratch(t)
-	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-fence"}}
-	out, err := exec(context.Background(), effective, scratchRequest("export"), func(context.Context, EffectiveBinding) error {
+	effective := api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-fence"}}
+	out, err := exec(context.Background(), effective, scratchRequest("export"), func(context.Context, api.EffectiveBinding) error {
 		return errors.New("capability policy changed")
 	})
 	if err != nil {
@@ -453,21 +454,21 @@ func TestDockerScratchExecExportFence(t *testing.T) {
 
 // Failure plumbing: every channel error surfaces, never a silent success.
 func TestDockerScratchExecFailures(t *testing.T) {
-	ok := func(context.Context, EffectiveBinding) error { return nil }
-	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-fail"}}
-	exec := func(state string) ScratchExecFunc {
+	ok := func(context.Context, api.EffectiveBinding) error { return nil }
+	effective := api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-fail"}}
+	exec := func(state string) api.ScratchExecFunc {
 		t.Helper()
 		docker := []string{os.Args[0], "-test.run=TestScratchDockerHelper", "--"}
-		return DockerScratchExec(docker, func(EffectiveBinding) (string, error) { return "runtime-1", nil },
-			func(context.Context, EffectiveBinding, AgentExecRequest) (AgentExecResult, error) {
-				return AgentExecResult{}, nil
+		return api.DockerScratchExec(docker, func(api.EffectiveBinding) (string, error) { return "runtime-1", nil },
+			func(context.Context, api.EffectiveBinding, api.AgentExecRequest) (api.AgentExecResult, error) {
+				return api.AgentExecResult{}, nil
 			})
 	}
 	// Bad arguments are rejected before any docker call.
-	if _, err := exec(t.TempDir())(context.Background(), effective, AgentExecRequest{Arguments: map[string]any{"command": "", "path": "docs"}}, ok); !errors.Is(err, ErrInvalid) {
+	if _, err := exec(t.TempDir())(context.Background(), effective, api.AgentExecRequest{Arguments: map[string]any{"command": "", "path": "docs"}}, ok); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("empty command reached the executor: %v", err)
 	}
-	if _, err := exec(t.TempDir())(context.Background(), effective, AgentExecRequest{Arguments: map[string]any{"command": "x", "path": "../up"}}, ok); !errors.Is(err, ErrInvalid) {
+	if _, err := exec(t.TempDir())(context.Background(), effective, api.AgentExecRequest{Arguments: map[string]any{"command": "x", "path": "../up"}}, ok); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("traversal path reached the executor: %v", err)
 	}
 	state := t.TempDir()
@@ -485,12 +486,12 @@ func TestDockerScratchExecFailures(t *testing.T) {
 	}
 	// Run failure: the container is still rm -f'd and confirmed gone.
 	t.Setenv("FAKE_DOCKER_FAIL", "run")
-	if _, err := exec(state)(context.Background(), EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-runfail"}}, scratchRequest("run"), ok); err == nil || !strings.Contains(err.Error(), "execution failed") {
+	if _, err := exec(state)(context.Background(), api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-runfail"}}, scratchRequest("run"), ok); err == nil || !strings.Contains(err.Error(), "execution failed") {
 		t.Fatalf("run failure must surface: %v", err)
 	}
 	t.Setenv("FAKE_DOCKER_FAIL", "")
 	// An unparseable sandbox result is an error, not a silent empty result.
-	if _, err := exec(state)(context.Background(), EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-junk"}}, scratchRequest("junk"), ok); err == nil || !strings.Contains(err.Error(), "unparseable") {
+	if _, err := exec(state)(context.Background(), api.EffectiveBinding{Binding: api.ToolBinding{ToolBindingID: "bind-junk"}}, scratchRequest("junk"), ok); err == nil || !strings.Contains(err.Error(), "unparseable") {
 		t.Fatalf("garbage result must surface: %v", err)
 	}
 }
@@ -501,8 +502,8 @@ func TestDockerAgentExecChannel(t *testing.T) {
 	t.Setenv("FAKE_DOCKER", "1")
 	t.Setenv("FAKE_DOCKER_STATE", state)
 	docker := []string{os.Args[0], "-test.run=TestScratchDockerHelper", "--"}
-	exec := DockerAgentExec(docker, func(EffectiveBinding) (string, error) { return "runtime-1", nil })
-	out, err := exec(context.Background(), EffectiveBinding{}, AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}})
+	exec := api.DockerAgentExec(docker, func(api.EffectiveBinding) (string, error) { return "runtime-1", nil })
+	out, err := exec(context.Background(), api.EffectiveBinding{}, api.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,25 +516,25 @@ func TestDockerAgentExecChannel(t *testing.T) {
 		t.Fatalf("executor channel wrong: %v", log)
 	}
 	t.Setenv("FAKE_DOCKER_FAIL", "exec")
-	if _, err := exec(context.Background(), EffectiveBinding{}, AgentExecRequest{Tool: "x"}); err == nil || !strings.Contains(err.Error(), "executor failed") {
+	if _, err := exec(context.Background(), api.EffectiveBinding{}, api.AgentExecRequest{Tool: "x"}); err == nil || !strings.Contains(err.Error(), "executor failed") {
 		t.Fatalf("channel failure must surface: %v", err)
 	}
 }
 
 func TestFixedAgentContainerAndGroupValidation(t *testing.T) {
-	if _, err := FixedAgentContainer("")(EffectiveBinding{}); !errors.Is(err, ErrIsolation) {
+	if _, err := api.FixedAgentContainer("")(api.EffectiveBinding{}); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("empty container must fail closed: %v", err)
 	}
-	if name, err := FixedAgentContainer("runtime-9")(EffectiveBinding{}); err != nil || name != "runtime-9" {
+	if name, err := api.FixedAgentContainer("runtime-9")(api.EffectiveBinding{}); err != nil || name != "runtime-9" {
 		t.Fatalf("fixed container resolve: %s %v", name, err)
 	}
-	valid := CapabilityGroup{GroupID: "readers", Revision: 1, Members: []CapabilityRule{{CapabilityID: "files", ImplementationDigest: DefinitionDigest(agentDefinition()), Action: "read", Resource: "files", PathPrefix: "docs", Limits: CapabilityLimits{OutputBytes: 1024, TimeoutSeconds: 10}}}}
-	if err := ValidateCapabilityGroup(valid); err != nil {
+	valid := api.CapabilityGroup{GroupID: "readers", Revision: 1, Members: []api.CapabilityRule{{CapabilityID: "files", ImplementationDigest: api.DefinitionDigest(agentDefinition()), Action: "read", Resource: "files", PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 1024, TimeoutSeconds: 10}}}}
+	if err := api.ValidateCapabilityGroup(valid); err != nil {
 		t.Fatalf("valid group rejected: %v", err)
 	}
 	invalid := valid
 	invalid.GroupID = ""
-	if err := ValidateCapabilityGroup(invalid); err == nil {
+	if err := api.ValidateCapabilityGroup(invalid); err == nil {
 		t.Fatal("invalid group accepted")
 	}
 }
@@ -541,9 +542,9 @@ func TestFixedAgentContainerAndGroupValidation(t *testing.T) {
 // A sandboxed tool may only live on the agent-tools transport.
 func TestSandboxedTransportGate(t *testing.T) {
 	definition := agentDefinition()
-	definition.Transport = RemoteMCP
+	definition.Transport = api.RemoteMCP
 	definition.Tools[0].Sandboxed = true
-	definition.Source = DefinitionSource{Command: "x"}
+	definition.Source = api.DefinitionSource{Command: "x"}
 	if err := definition.Validate(); err == nil {
 		t.Fatal("sandboxed tool survived on a remote transport")
 	}
@@ -553,13 +554,13 @@ func TestSandboxedTransportGate(t *testing.T) {
 		t.Fatalf("sandboxed agent-tools spec must validate: %v", err)
 	}
 	// Sandboxed dispatches to Scratch, never Exec; missing scratch fails closed.
-	e := EffectiveBinding{Definition: definition}
+	e := api.EffectiveBinding{Definition: definition}
 	execRan := false
-	backend := AgentExecBackend{Exec: func(context.Context, EffectiveBinding, AgentExecRequest) (AgentExecResult, error) {
+	backend := api.AgentExecBackend{Exec: func(context.Context, api.EffectiveBinding, api.AgentExecRequest) (api.AgentExecResult, error) {
 		execRan = true
-		return AgentExecResult{}, nil
+		return api.AgentExecResult{}, nil
 	}}
-	if _, err := backend.CallEnv(context.Background(), e, definition.Tools[0], nil, nil); !errors.Is(err, ErrIsolation) || execRan {
+	if _, err := backend.CallEnv(context.Background(), e, definition.Tools[0], nil, nil); !errors.Is(err, api.ErrIsolation) || execRan {
 		t.Fatalf("sandboxed call hit the in-runtime executor: %v", err)
 	}
 }
@@ -567,7 +568,7 @@ func TestSandboxedTransportGate(t *testing.T) {
 // Binding validation rejects each malformed identity/credential combination
 // before a record can reach the store.
 func TestToolBindingValidateBranches(t *testing.T) {
-	valid := ToolBinding{Schema: SchemaVersion, ToolBindingID: DeterministicBindingID("p", "c", "r", "d", "1.0.0", "", ""), PrincipalID: "p", ContextID: "c", RuntimeID: "r", DefinitionID: "d", DefinitionVersion: "1.0.0", PolicyVersion: "policy-1", WorkloadClass: PerUser, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	valid := api.ToolBinding{Schema: api.SchemaVersion, ToolBindingID: api.DeterministicBindingID("p", "c", "r", "d", "1.0.0", "", ""), PrincipalID: "p", ContextID: "c", RuntimeID: "r", DefinitionID: "d", DefinitionVersion: "1.0.0", PolicyVersion: "policy-1", WorkloadClass: api.PerUser, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid binding rejected: %v", err)
 	}
@@ -598,7 +599,7 @@ func TestToolBindingValidateBranches(t *testing.T) {
 		t.Fatal("invalid connection id accepted")
 	}
 	bad = valid
-	bad.ConnectionID = DeterministicBindingID("p", "c", "r", "d", "1.0.0", "x", "")
+	bad.ConnectionID = api.DeterministicBindingID("p", "c", "r", "d", "1.0.0", "x", "")
 	bad.ConnectionRevision = 0
 	if err := bad.Validate(); err == nil {
 		t.Fatal("zero connection revision accepted")
@@ -633,16 +634,16 @@ func TestAgentBackendFromEnv(t *testing.T) {
 }
 
 func TestListenHelpers(t *testing.T) {
-	if got := formOriginForListen("127.0.0.1:9000"); got != "http://127.0.0.1:9000" {
+	if got := api.FormOriginForListen("127.0.0.1:9000"); got != "http://127.0.0.1:9000" {
 		t.Fatal(got)
 	}
-	if got := formOriginForListen("0.0.0.0:9000/"); got != "http://127.0.0.1:9000" {
+	if got := api.FormOriginForListen("0.0.0.0:9000/"); got != "http://127.0.0.1:9000" {
 		t.Fatal(got)
 	}
-	if got := formOriginForListen(""); got != "http://127.0.0.1" {
+	if got := api.FormOriginForListen(""); got != "http://127.0.0.1" {
 		t.Fatal(got)
 	}
-	if got := formOriginForListen("https://hub.example/x/"); got != "https://hub.example/x" {
+	if got := api.FormOriginForListen("https://hub.example/x/"); got != "https://hub.example/x" {
 		t.Fatal(got)
 	}
 	if !nonLoopbackListen("0.0.0.0:9000") || nonLoopbackListen("127.0.0.1:9000") || nonLoopbackListen("bad") {
@@ -651,34 +652,34 @@ func TestListenHelpers(t *testing.T) {
 	if !nonLoopbackListen(":9000") || nonLoopbackListen("localhost:9000") {
 		t.Fatal("nonLoopbackListen host-edge misclassified")
 	}
-	if hostOfURL("::::") != "" || hostOfURL("https://EXAMPLE.com:8443/x") != "example.com" {
+	if api.HostOfURL("::::") != "" || api.HostOfURL("https://EXAMPLE.com:8443/x") != "example.com" {
 		t.Fatal("hostOfURL")
 	}
-	if !hasMountSource([]Mount{{Source: "a"}}, "a") || hasMountSource([]Mount{{Source: "a"}}, "b") {
+	if !api.HasMountSource([]api.Mount{{Source: "a"}}, "a") || api.HasMountSource([]api.Mount{{Source: "a"}}, "b") {
 		t.Fatal("hasMountSource")
 	}
-	if envOr("DEVCHECK_TEST_MISSING_ENV", "fallback") != "fallback" {
+	if api.EnvOr("DEVCHECK_TEST_MISSING_ENV", "fallback") != "fallback" {
 		t.Fatal("envOr fallback")
 	}
 	t.Setenv("DEVCHECK_TEST_SET_ENV", "value")
-	if envOr("DEVCHECK_TEST_SET_ENV", "fallback") != "value" {
+	if api.EnvOr("DEVCHECK_TEST_SET_ENV", "fallback") != "value" {
 		t.Fatal("envOr set")
 	}
 }
 
 func TestTinyHelpers(t *testing.T) {
 	long := strings.Repeat("x", 300)
-	if got := shortErr([]byte(long)); len(got) != 200 {
+	if got := api.ShortErr([]byte(long)); len(got) != 200 {
 		t.Fatal("shortErr did not truncate")
 	}
 	env := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
-	if !(OwnerRef{Type: PrincipalOwner, ID: env.PrincipalID}).Matches(env) {
+	if !(api.OwnerRef{Type: api.PrincipalOwner, ID: env.PrincipalID}).Matches(env) {
 		t.Fatal("principal owner mismatch")
 	}
-	if !(OwnerRef{Type: ContextOwner, ID: env.ContextID}).Matches(env) {
+	if !(api.OwnerRef{Type: api.ContextOwner, ID: env.ContextID}).Matches(env) {
 		t.Fatal("context owner mismatch")
 	}
-	if (OwnerRef{Type: "other", ID: env.ContextID}).Matches(env) {
+	if (api.OwnerRef{Type: "other", ID: env.ContextID}).Matches(env) {
 		t.Fatal("unknown owner type matched")
 	}
 }
@@ -705,10 +706,10 @@ func TestReverifyEffectiveQueuedWriter(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond)
 	errCh := make(chan error, 1)
-	go func() { errCh <- s.ReverifyEffective(EffectiveBinding{}) }()
+	go func() { errCh <- s.ReverifyEffective(api.EffectiveBinding{}) }()
 	select {
 	case err := <-errCh:
-		if !errors.Is(err, ErrUnauthorized) {
+		if !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("contended recheck must fail closed, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -721,12 +722,12 @@ func TestReverifyEffectiveQueuedWriter(t *testing.T) {
 
 func TestScratchBinaryExportUsesLosslessPrivateTransport(t *testing.T) {
 	data := string([]byte{0x89, 'P', 'N', 'G', 0, 0xff})
-	apply := func(_ context.Context, _ EffectiveBinding, request AgentExecRequest) (AgentExecResult, error) {
+	apply := func(_ context.Context, _ api.EffectiveBinding, request api.AgentExecRequest) (api.AgentExecResult, error) {
 		wire, err := json.Marshal(request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var decoded AgentExecRequest
+		var decoded api.AgentExecRequest
 		if err := json.Unmarshal(wire, &decoded); err != nil {
 			t.Fatal(err)
 		}
@@ -738,9 +739,9 @@ func TestScratchBinaryExportUsesLosslessPrivateTransport(t *testing.T) {
 		if err != nil || string(body) != data || decoded.Arguments["text"] != nil {
 			t.Fatal("export bytes changed", err)
 		}
-		return AgentExecResult{}, nil
+		return api.AgentExecResult{}, nil
 	}
-	applied, skipped, err := applyExports(context.Background(), apply, func(context.Context, EffectiveBinding) error { return nil }, EffectiveBinding{}, AgentExecRequest{}, "docs", scratchTar(t, map[string]string{"proof.png": data}))
+	applied, skipped, err := api.ApplyExports(context.Background(), apply, func(context.Context, api.EffectiveBinding) error { return nil }, api.EffectiveBinding{}, api.AgentExecRequest{}, "docs", scratchTar(t, map[string]string{"proof.png": data}))
 	if err != nil || len(applied) != 1 || len(skipped) != 0 {
 		t.Fatal(applied, skipped, err)
 	}

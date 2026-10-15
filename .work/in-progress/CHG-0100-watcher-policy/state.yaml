@@ -1,0 +1,38 @@
+schema: 1
+change: CHG-0100
+title: Watcher notification policy
+status: in_progress
+branch: feat/m13-proactive-automation
+updated: 2026-10-14
+phase: implementation
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R2.1, R2.2, R2.3]
+depends_on: [CHG-0099]
+github_milestone: M12 — Proactive Automation
+github_issue: 248
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S2.1-quiet-window: green
+  S2.2-daily-cap: green
+  S2.3-agent-escalation: green
+validation:
+  documents: updated
+  just_check: not_run
+  docker_check: not_run
+  red_team: recorded
+  live_acceptance: not_started
+evidence:
+  - "quiet_from/quiet_to + Delivery.not_before; ClaimDelivery skips deferred entries (bounded 256-file scan); digest delivery defers too"
+  - "daily_limit 0..32 + WatchState.notify_day/notify_count; over-cap occurrence settles capped, baseline still advances"
+  - "notify_mode=agent enqueues untrusted-evidence job via enqueueLocked; rejected on non-probing kinds"
+  - "tests: TestQuietHoursDeferDelivery, TestQuietOvernightWraps, TestQuietValidation, TestDigestRespectsQuietWindow, TestDailyLimitCaps, TestDailyLimitValidation, TestAgentEscalationOnChange, TestAgentModeRejectedOnReminder, TestRoutineCreateForwardsPolicyFields"
+  - "go test ./internal/communication — ok 32.8s; go test ./internal/agenttools — ok"
+remaining:
+  - "issue #248 evidence comment (after PR)"
+  - "live acceptance A4 on dev stack"
+  - "just check at milestone close"
+limitations:
+  - "quiet window defers delivery but the agent-escalation job itself is not deferred (the agent's reply rides the normal run-delivery path)"
+  - "ClaimDelivery scan is bounded at 256 pending entries per call; a larger deferred backlog drains over subsequent ticks"

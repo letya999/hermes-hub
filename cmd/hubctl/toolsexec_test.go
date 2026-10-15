@@ -4,15 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
-func runToolsExecOnce(t *testing.T, ctx context.Context, request toolhub.AgentExecRequest) toolhub.AgentExecResult {
+func runToolsExecOnce(t *testing.T, ctx context.Context, request api.AgentExecRequest) api.AgentExecResult {
 	t.Helper()
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -31,7 +30,7 @@ func runToolsExecOnce(t *testing.T, ctx context.Context, request toolhub.AgentEx
 	out := captureOutput(t, func() error { return run(ctx, []string{"tools-exec"}) })
 	os.Stdin = old
 	_ = in.Close()
-	var result toolhub.AgentExecResult
+	var result api.AgentExecResult
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("executor emitted no bounded JSON result: %q", out)
 	}
@@ -52,8 +51,8 @@ func TestToolsExecAdmitsScopedCall(t *testing.T) {
 	}
 	t.Setenv("HUB_WORKSPACE", workspace)
 
-	scopes := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
-	result := runToolsExecOnce(t, ctx, toolhub.AgentExecRequest{
+	scopes := []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	result := runToolsExecOnce(t, ctx, api.AgentExecRequest{
 		Tool:      "file_read",
 		Arguments: map[string]any{"path": "docs/a.txt"},
 		Scopes:    scopes,
@@ -68,7 +67,7 @@ func TestToolsExecAdmitsScopedCall(t *testing.T) {
 	// The request is the only authority input: a traversal is denied at the
 	// executor's os.Root boundary even though it arrived on the private
 	// channel.
-	denied := runToolsExecOnce(t, ctx, toolhub.AgentExecRequest{
+	denied := runToolsExecOnce(t, ctx, api.AgentExecRequest{
 		Tool:      "file_read",
 		Arguments: map[string]any{"path": "../secret.txt"},
 		Scopes:    scopes,
@@ -76,7 +75,7 @@ func TestToolsExecAdmitsScopedCall(t *testing.T) {
 	if denied.Error == "" {
 		t.Fatalf("traversal reached the workspace: %+v", denied.Result)
 	}
-	unknown := runToolsExecOnce(t, ctx, toolhub.AgentExecRequest{Tool: "grant_admin", Arguments: map[string]any{}})
+	unknown := runToolsExecOnce(t, ctx, api.AgentExecRequest{Tool: "grant_admin", Arguments: map[string]any{}})
 	if unknown.Error == "" {
 		t.Fatal("unknown tool executed")
 	}
@@ -95,11 +94,11 @@ func TestToolsDaemonServesFramedCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_WORKSPACE", workspace)
-	scopes := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
-	frames := []toolhub.AgentExecFrame{
-		{ID: 1, AgentExecRequest: toolhub.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
-		{ID: 2, AgentExecRequest: toolhub.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "../secret.txt"}, Scopes: scopes}},
-		{ID: 3, AgentExecRequest: toolhub.AgentExecRequest{Tool: "file_list", Arguments: map[string]any{"path": "docs"}, Scopes: scopes}},
+	scopes := []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	frames := []api.AgentExecFrame{
+		{ID: 1, AgentExecRequest: api.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
+		{ID: 2, AgentExecRequest: api.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "../secret.txt"}, Scopes: scopes}},
+		{ID: 3, AgentExecRequest: api.AgentExecRequest{Tool: "file_list", Arguments: map[string]any{"path": "docs"}, Scopes: scopes}},
 	}
 	var input bytes.Buffer
 	for _, frame := range frames {
@@ -120,9 +119,9 @@ func TestToolsDaemonServesFramedCalls(t *testing.T) {
 	out := captureOutput(t, func() error { return run(ctx, []string{"tools-daemon"}) })
 	os.Stdin = old
 	_ = in.Close()
-	replies := map[uint64]toolhub.AgentExecResult{}
+	replies := map[uint64]api.AgentExecResult{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		var reply toolhub.AgentExecReply
+		var reply api.AgentExecReply
 		if err := json.Unmarshal([]byte(line), &reply); err != nil {
 			t.Fatalf("daemon emitted a non-frame line: %q", line)
 		}
@@ -154,12 +153,12 @@ func TestToolsDaemonIgnoresUnknownCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_WORKSPACE", workspace)
-	scopes := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
-	frames := []toolhub.AgentExecFrame{
-		{ID: 1, AgentExecRequest: toolhub.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
+	scopes := []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "docs"}}
+	frames := []api.AgentExecFrame{
+		{ID: 1, AgentExecRequest: api.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
 		{ID: 99, Cancel: true},
 		{ID: 2, Cancel: true},
-		{ID: 2, AgentExecRequest: toolhub.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
+		{ID: 2, AgentExecRequest: api.AgentExecRequest{Tool: "file_read", Arguments: map[string]any{"path": "docs/a.txt"}, Scopes: scopes}},
 	}
 	var input bytes.Buffer
 	for _, frame := range frames {
@@ -180,9 +179,9 @@ func TestToolsDaemonIgnoresUnknownCancel(t *testing.T) {
 	out := captureOutput(t, func() error { return run(ctx, []string{"tools-daemon"}) })
 	os.Stdin = old
 	_ = in.Close()
-	replies := map[uint64]toolhub.AgentExecResult{}
+	replies := map[uint64]api.AgentExecResult{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		var reply toolhub.AgentExecReply
+		var reply api.AgentExecReply
 		if err := json.Unmarshal([]byte(line), &reply); err != nil {
 			t.Fatalf("daemon emitted a non-frame line: %q", line)
 		}

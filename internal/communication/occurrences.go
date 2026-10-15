@@ -29,7 +29,11 @@ type RoutineOccurrence struct {
 	// JobKind mirrors the schedule kind. "reminder" occurrences deliver their
 	// text through the outbox directly — no ordinary job, no runtime, no model.
 	JobKind string `json:"job_kind,omitempty"`
-	State   string `json:"state"`
+	// RetryCount counts probe-error retries (check kind, SPEC-0054 R1.1) and
+	// RetryAfter holds them back until the backoff deadline passes.
+	RetryCount int       `json:"retry_count,omitempty"`
+	RetryAfter time.Time `json:"retry_after,omitempty"`
+	State      string    `json:"state"`
 }
 
 func OccurrenceID(o RoutineOccurrence) string { return occurrenceID(o) }
@@ -148,10 +152,10 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 			o.State = "blocked"
 		} else if o.JobKind == "script" {
 			o.State = "scripting"
-		} else if o.JobKind == "watcher" || o.JobKind == "check" {
+		} else if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" {
 			// Probing runs outside the lock in ProbeDueOccurrences.
 			o.State = "probing"
-		} else if o.JobKind == "digest" {
+		} else if o.JobKind == "digest" || o.JobKind == "brief" {
 			pendingProbe := false
 			for _, source := range occurrences {
 				if (source.State == "pending" || source.State == "probing") && (source.JobKind == "watcher" || source.JobKind == "check") && source.Job.PrincipalID == o.Job.PrincipalID && source.Job.ContextID == o.Job.ContextID && !source.DueAt.After(now) {
@@ -167,7 +171,11 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 				continue
 			}
 
-			if err := s.dispatchDigestLocked(o, now, authorize); err != nil {
+			if o.JobKind == "brief" {
+				if err := s.dispatchBriefLocked(o, now, authorize); err != nil {
+					return err
+				}
+			} else if err := s.dispatchDigestLocked(o, now, authorize); err != nil {
 				return err
 			}
 			o.State = "dispatched"
@@ -213,7 +221,9 @@ func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
 		func() error { return g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence) },
 		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
 		func() error { return g.spool.RunDueScripts(ctx, now, g.authorizeOccurrence, g.runIsolatedScript) },
-		func() error { return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch) },
+		func() error {
+			return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch, g.toolCallProbe)
+		},
 		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
 	}
 	for i, step := range steps {

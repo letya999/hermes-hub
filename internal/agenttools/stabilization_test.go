@@ -4,7 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +17,7 @@ func TestM10ScopedArchiveAndEverySource(t *testing.T) {
 	v := fixture(t)
 	write(t, v, "docs/a.txt", "allowed")
 	write(t, v, "secret.txt", "private")
-	scopes := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "docs"}}
+	scopes := []api.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "docs"}}
 	out, err := v.ExecCall(context.Background(), "archive_create", map[string]any{"path": "artifacts/one.zip", "paths": []string{"docs/a.txt"}}, scopes)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestM10SeparateArchiveOutputScopeAndArrayBoundaries(t *testing.T) {
 	if err := v.Workspace.MkdirAll("artifacts/exports", 0700); err != nil {
 		t.Fatal(err)
 	}
-	scopes := []toolhub.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "docs"}, {Resource: "artifacts", PathArgument: "path", PathPrefix: "artifacts/exports"}}
+	scopes := []api.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "docs"}, {Resource: "artifacts", PathArgument: "path", PathPrefix: "artifacts/exports"}}
 	out, err := v.ExecCall(context.Background(), "archive_create", map[string]any{"path": "artifacts/exports/one.zip", "paths": []string{"docs/a.txt"}}, scopes)
 	if err != nil || out.(map[string]any)["path"] != "artifacts/exports/one.zip" {
 		t.Fatalf("separate roots=%v %v", out, err)
@@ -109,17 +109,17 @@ func TestM10SeparateArchiveOutputScopeAndArrayBoundaries(t *testing.T) {
 	}
 	for _, test := range []struct {
 		args   map[string]any
-		scopes []toolhub.CapabilityScope
+		scopes []api.CapabilityScope
 	}{
 		{map[string]any{"path": "artifacts/exports/two.zip"}, scopes},
-		{map[string]any{"path": "artifacts/exports/two.zip", "paths": []string{"docs/a.txt"}}, append(scopes, toolhub.CapabilityScope{Resource: "files", PathArgument: "paths", PathPrefix: "other"})},
-		{map[string]any{"path": "artifacts/exports/two.zip", "paths": []string{"docs/a.txt"}}, []toolhub.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "missing"}}},
+		{map[string]any{"path": "artifacts/exports/two.zip", "paths": []string{"docs/a.txt"}}, append(scopes, api.CapabilityScope{Resource: "files", PathArgument: "paths", PathPrefix: "other"})},
+		{map[string]any{"path": "artifacts/exports/two.zip", "paths": []string{"docs/a.txt"}}, []api.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "missing"}}},
 	} {
 		if _, err = v.ExecCall(context.Background(), "archive_create", test.args, test.scopes); err == nil {
 			t.Fatal("invalid array scope accepted")
 		}
 	}
-	if _, err = v.ExecCall(context.Background(), "images_inspect", map[string]any{"paths": []string{"docs/a.txt"}}, []toolhub.CapabilityScope{{Resource: "images", PathArgument: "paths", PathPrefix: "docs"}}); err == nil {
+	if _, err = v.ExecCall(context.Background(), "images_inspect", map[string]any{"paths": []string{"docs/a.txt"}}, []api.CapabilityScope{{Resource: "images", PathArgument: "paths", PathPrefix: "docs"}}); err == nil {
 		t.Fatal("non-image accepted")
 	}
 	if _, err = v.ExecCall(context.Background(), "archive_create", map[string]any{"path": "artifacts/exports/one.zip", "paths": []string{"docs/a.txt"}}, scopes); err == nil {
@@ -141,10 +141,10 @@ func TestM10ScopeDirectoryCannotAliasUnadmittedDirectory(t *testing.T) {
 	if err := os.Symlink(filepath.Join(v.Workspace.Name(), "private"), filepath.Join(v.Workspace.Name(), "alias")); err != nil {
 		t.Skip("symlink creation unavailable on this host")
 	}
-	if _, err := v.ExecCall(context.Background(), "file_read", map[string]any{"path": "alias/secret.txt"}, []toolhub.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "alias"}}); err == nil {
+	if _, err := v.ExecCall(context.Background(), "file_read", map[string]any{"path": "alias/secret.txt"}, []api.CapabilityScope{{Resource: "files", PathArgument: "path", PathPrefix: "alias"}}); err == nil {
 		t.Fatal("scope symlink exposed private directory")
 	}
-	if _, err := v.ExecCall(context.Background(), "archive_create", map[string]any{"path": "artifacts/leak.zip", "paths": []string{"alias/secret.txt"}}, []toolhub.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "alias"}}); err == nil {
+	if _, err := v.ExecCall(context.Background(), "archive_create", map[string]any{"path": "artifacts/leak.zip", "paths": []string{"alias/secret.txt"}}, []api.CapabilityScope{{Resource: "files", PathArgument: "paths", PathPrefix: "alias"}}); err == nil {
 		t.Fatal("archive read through a scope alias")
 	}
 }

@@ -3,13 +3,13 @@ package stack
 import (
 	_ "embed"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
 )
 
@@ -522,9 +522,9 @@ func rawMCPServers(s Settings) M {
 	managed := s.CapabilityMode == "managed"
 	// The whole declaration surface is one governance section: user_mcp on a
 	// personal space, org_mcp for the merged organization catalog.
-	section := toolhub.SectionUserMCP
+	section := api.SectionUserMCP
 	if s.OrgScoped() {
-		section = toolhub.SectionOrgMCP
+		section = api.SectionOrgMCP
 	}
 	if !s.govAllows(section) {
 		return servers

@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 )
 
@@ -19,22 +20,22 @@ func LoadStaged(path string) (*Store, error) {
 
 // OwnedConnection is the protected host lifecycle lookup. Model calls must
 // instead use AuthorizeProjected and cannot supply a credential selector.
-func (s *Store) OwnedConnection(auth identity.Envelope, id string) (Connection, CredentialReference, error) {
+func (s *Store) OwnedConnection(auth identity.Envelope, id string) (api.Connection, api.CredentialReference, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return Connection{}, CredentialReference{}, ErrUnauthorized
+		return api.Connection{}, api.CredentialReference{}, api.ErrUnauthorized
 	}
 	if err := s.Reload(); err != nil {
-		return Connection{}, CredentialReference{}, err
+		return api.Connection{}, api.CredentialReference{}, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c, ok := s.connections[id]
 	if !ok || !c.Owner.Matches(auth) {
-		return Connection{}, CredentialReference{}, ErrUnauthorized
+		return api.Connection{}, api.CredentialReference{}, api.ErrUnauthorized
 	}
 	r, ok := s.credentials[c.CredentialRefID]
 	if !ok || r.ConnectionID != id {
-		return Connection{}, CredentialReference{}, ErrInvalid
+		return api.Connection{}, api.CredentialReference{}, api.ErrInvalid
 	}
 	c.Metadata = maps.Clone(c.Metadata)
 	r.Keys = append([]string(nil), r.Keys...)

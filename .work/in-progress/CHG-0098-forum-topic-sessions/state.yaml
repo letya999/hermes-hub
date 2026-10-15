@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0098
+title: Forum topic per session (issue #220)
+status: in_progress
+branch: feat/m12-telegram-channel-ux
+base: dev
+updated: 2026-10-14
+phase: implementation
+github_issue: 220
+slices:
+  - S1: /new creates and binds a bot-owned forum topic; fallback to inbound topic
+  - S2: auto-title adoption renames the forum topic (editForumTopic)
+  - S3: create failure falls back to inbound-topic binding
+  - S4: /delete deletes the session's forum topic; confirmation reroutes to root
+  - S5: RebindTaskTopic collision guard
+  - S6: forum_topic_created binds a session named exactly like the topic
+  - S7: forum_topic_edited renames the bound session; late created fixes
+    the topic-<id> placeholder; foreign service messages are ignored
+validation:
+  - go test ./internal/communication/ — green
+  - just check — green (coverage 85.29%)
+  - just docker-check — failed on transient deb.debian.org outage mid-build, not code
+  - hubctl up --user local --env dev — green (twice); stack recreated,
+    communication-hub binary contains forum service handlers, logs clean
+notes:
+  - committed as 5f27c0d on feat/m12-telegram-channel-ux; deployed to
+    spaces/local dev stack via hubctl up
+  - live group acceptance pending owner action (forum group + bot admin)
+  - close/reopenForumTopic deliberately absent: no archive/restore command surface yet (#217)

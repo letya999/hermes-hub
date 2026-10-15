@@ -6,11 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os"
 	"sync"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // tools-daemon is the persistent private agent-tools executor: the ToolHub
@@ -47,7 +46,7 @@ func runToolsDaemon(ctx context.Context) error {
 			return errors.New("tools-daemon frame exceeds bound")
 		}
 		if len(line) > 0 {
-			var frame toolhub.AgentExecFrame
+			var frame api.AgentExecFrame
 			if jsonErr := json.Unmarshal(line, &frame); jsonErr != nil {
 				return fmt.Errorf("tools-daemon frame: %w", jsonErr)
 			}
@@ -76,7 +75,7 @@ func runToolsDaemon(ctx context.Context) error {
 							delete(calls, frame.ID)
 							callsMu.Unlock()
 						}()
-						reply := toolhub.AgentExecReply{ID: frame.ID, AgentExecResult: execRequest(callCtx, t, frame.AgentExecRequest)}
+						reply := api.AgentExecReply{ID: frame.ID, AgentExecResult: execRequest(callCtx, t, frame.AgentExecRequest)}
 						writeMu.Lock()
 						_ = encoder.Encode(reply)
 						writeMu.Unlock()
@@ -86,7 +85,7 @@ func runToolsDaemon(ctx context.Context) error {
 					delete(calls, frame.ID)
 					callsMu.Unlock()
 					cancel()
-					reply := toolhub.AgentExecReply{ID: frame.ID, AgentExecResult: toolhub.AgentExecResult{Error: "tools-daemon busy"}}
+					reply := api.AgentExecReply{ID: frame.ID, AgentExecResult: api.AgentExecResult{Error: "tools-daemon busy"}}
 					writeMu.Lock()
 					_ = encoder.Encode(reply)
 					writeMu.Unlock()

@@ -3,12 +3,11 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"slices"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // This file applies the hub-owned tool-governance document (issue 139) to one
@@ -35,7 +34,7 @@ import (
 type toolGovernance struct {
 	path      string
 	revision  uint64
-	decisions map[string]toolhub.PolicyDecision
+	decisions map[string]api.PolicyDecision
 	forceRO   map[string]bool
 }
 
@@ -88,9 +87,9 @@ func (s Settings) sectionForEntry(name string, e ToolEntry) string {
 		return "hub:" + name
 	case ToolViaMCPRaw:
 		if s.OrgScoped() {
-			return toolhub.SectionOrgMCP
+			return api.SectionOrgMCP
 		}
-		return toolhub.SectionUserMCP
+		return api.SectionUserMCP
 	default:
 		return ""
 	}
@@ -104,7 +103,7 @@ func implicitToolsetSections(s Settings) []string {
 	if s.CapabilityMode == "managed" {
 		return nil
 	}
-	out := []string{toolhub.SectionHubTools}
+	out := []string{api.SectionHubTools}
 	for _, name := range []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"} {
 		out = append(out, "native:"+name)
 	}
@@ -121,14 +120,14 @@ func implicitToolsetSections(s Settings) []string {
 // emissions (terminal in the unmanaged base list) are not preserved: the
 // restrictive default is the point, and the host re-admits them by rule or
 // grant.
-func (s Settings) denyDefaultSelections(g *toolhub.Governance) []string {
+func (s Settings) denyDefaultSelections(g *api.Governance) []string {
 	preserve := []string{}
 	for name, entry := range s.Tools {
 		if !entry.enabled() {
 			continue
 		}
 		section, ok := g.Section(s.sectionForEntry(name, entry))
-		if ok && section.Default == toolhub.RuleDeny && section.ID != toolhub.SectionUserMCP {
+		if ok && section.Default == api.RuleDeny && section.ID != api.SectionUserMCP {
 			preserve = append(preserve, section.ID)
 		}
 	}
@@ -150,8 +149,8 @@ func applyGovernance(s *Settings) error {
 		return fmt.Errorf("tool governance: %w", err)
 	}
 	view := &toolGovernance{path: path, revision: g.Revision,
-		decisions: map[string]toolhub.PolicyDecision{}, forceRO: map[string]bool{}}
-	evaluate := func(sectionID string) toolhub.PolicyDecision {
+		decisions: map[string]api.PolicyDecision{}, forceRO: map[string]bool{}}
+	evaluate := func(sectionID string) api.PolicyDecision {
 		if _, seen := view.decisions[sectionID]; seen {
 			return view.decisions[sectionID]
 		}
@@ -172,8 +171,8 @@ func applyGovernance(s *Settings) error {
 		sectionID := s.sectionForEntry(name, entry)
 		decision := evaluate(sectionID)
 		switch decision.Effect {
-		case toolhub.RuleAllow:
-		case toolhub.RuleCapRead:
+		case api.RuleAllow:
+		case api.RuleCapRead:
 			switch entry.Via {
 			case ToolViaToolHub:
 				view.forceRO[name] = true
@@ -195,7 +194,7 @@ func applyGovernance(s *Settings) error {
 	}
 	// User-declared MCP servers are the user_mcp section: denied by default.
 	if !s.OrgScoped() && len(s.MCP) > 0 {
-		if decision := evaluate(toolhub.SectionUserMCP); !decision.Allowed() {
+		if decision := evaluate(api.SectionUserMCP); !decision.Allowed() {
 			names := make([]string, 0, len(s.MCP))
 			for name := range s.MCP {
 				names = append(names, name)
@@ -206,8 +205,8 @@ func applyGovernance(s *Settings) error {
 	}
 	// The merged organization catalog is the org_mcp section.
 	if s.OrgScoped() && len(s.MCP) > 0 {
-		if decision := evaluate(toolhub.SectionOrgMCP); !decision.Allowed() {
-			return fmt.Errorf("organization MCP catalog (%s) denied by tool governance (%s): %s", toolhub.SectionOrgMCP, decision.Via, decision.Reason)
+		if decision := evaluate(api.SectionOrgMCP); !decision.Allowed() {
+			return fmt.Errorf("organization MCP catalog (%s) denied by tool governance (%s): %s", api.SectionOrgMCP, decision.Via, decision.Reason)
 		}
 	}
 	// Implicit platform emissions are recorded for render-time filtering.
@@ -218,23 +217,23 @@ func applyGovernance(s *Settings) error {
 	return nil
 }
 
-func loadGovernanceForSpace(path string, s *Settings) (*toolhub.Governance, error) {
+func loadGovernanceForSpace(path string, s *Settings) (*api.Governance, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		// First render seeds the shared document, preserving the space's own
 		// already-selected deny-default sections as recorded migration allows.
-		seed := toolhub.NewGovernance()
+		seed := api.NewGovernance()
 		preserve := s.denyDefaultSelections(seed)
-		return toolhub.LoadOrSeedGovernance(path, s.User, preserve, time.Now())
+		return api.LoadOrSeedGovernance(path, s.User, preserve, time.Now())
 	}
-	return toolhub.LoadGovernance(path)
+	return api.LoadGovernance(path)
 }
 
 // govDecision answers for render consumers; a Settings that never passed
 // through Read (tests, internal construction) carries no view and no
 // filtering — the governance boundary is the load path.
-func (s Settings) govDecision(sectionID string) (toolhub.PolicyDecision, bool) {
+func (s Settings) govDecision(sectionID string) (api.PolicyDecision, bool) {
 	if s.gov == nil {
-		return toolhub.PolicyDecision{}, false
+		return api.PolicyDecision{}, false
 	}
 	decision, ok := s.gov.decisions[sectionID]
 	return decision, ok
@@ -254,13 +253,13 @@ func (s Settings) govForcedRO(name string) bool {
 // toolPolicySnapshot compiles the governance view into the executor contract.
 // DenyAll follows the hub:tools decision: when the whole executor surface is
 // denied the private exec channel refuses every call too.
-func (s Settings) toolPolicySnapshot() toolhub.ToolPolicySnapshot {
-	snapshot := toolhub.ToolPolicySnapshot{Schema: 1, Principal: s.User}
+func (s Settings) toolPolicySnapshot() api.ToolPolicySnapshot {
+	snapshot := api.ToolPolicySnapshot{Schema: 1, Principal: s.User}
 	if s.gov == nil {
 		return snapshot
 	}
 	snapshot.Revision = s.gov.revision
-	if decision, ok := s.govDecision(toolhub.SectionHubTools); ok && !decision.Allowed() {
+	if decision, ok := s.govDecision(api.SectionHubTools); ok && !decision.Allowed() {
 		snapshot.DenyAll = true
 	}
 	deny, readOnly := map[string]bool{}, map[string]bool{}
@@ -276,7 +275,7 @@ func (s Settings) toolPolicySnapshot() toolhub.ToolPolicySnapshot {
 		switch {
 		case !decision.Allowed():
 			deny[capability] = true
-		case decision.Effect == toolhub.RuleCapRead || entry.Access == ToolAccessRO:
+		case decision.Effect == api.RuleCapRead || entry.Access == ToolAccessRO:
 			readOnly[capability] = true
 		}
 	}

@@ -3,125 +3,25 @@ package toolhub
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"slices"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-type DiscoveryCandidate struct {
-	ID          string            `json:"candidate_id"`
-	Name        string            `json:"name"`
-	Source      ArtifactSource    `json:"source"`
-	PreparedID  string            `json:"prepared_id,omitempty"`
-	Artifact    string            `json:"artifact,omitempty"`
-	Digest      string            `json:"digest,omitempty"`
-	Credentials []ConnectionField `json:"credentials,omitempty"`
-	Evidence    []RecipeEvidence  `json:"evidence,omitempty"`
-	Reason      string            `json:"reason"`
-	Status      string            `json:"status"`
-	Runbook     string            `json:"runbook,omitempty"`
-	Handoff     string            `json:"handoff,omitempty"`
-	recipe      *RecipeCandidate
-}
-
 type discoverySelection struct {
-	Candidate DiscoveryCandidate
+	Candidate api.DiscoveryCandidate
 	Owner     identity.Envelope
 	Expires   time.Time
 }
 
-// SourceSearchCatalog may suggest repository URLs without installation
-// authority. prepare_source still pins and reviews the selected repository.
-type SourceSearchCatalog interface {
-	SearchSources(context.Context, string) ([]DiscoveryCandidate, error)
-}
-
-func searchCatalogSources(ctx context.Context, catalogs []RecipeCatalog, query string, fallback bool) ([]DiscoveryCandidate, []string) {
-	results := make([][]DiscoveryCandidate, len(catalogs))
-	warnings := make([]string, len(catalogs))
-	var pending sync.WaitGroup
-	for i, catalog := range catalogs {
-		_, isFallback := catalog.(GitHubSearchCatalog)
-		if isFallback != fallback {
-			continue
-		}
-		searcher, ok := catalog.(SourceSearchCatalog)
-		if !ok {
-			continue
-		}
-		pending.Add(1)
-		go func(i int, searcher SourceSearchCatalog) {
-			defer pending.Done()
-			if found, err := searcher.SearchSources(ctx, query); err == nil && len(found) <= 32 {
-				results[i] = found
-			} else {
-				warnings[i] = fmt.Sprintf("%T search unavailable", catalogs[i])
-			}
-		}(i, searcher)
-	}
-	pending.Wait()
-	var found []DiscoveryCandidate
-	for _, result := range results {
-		found = append(found, result...)
-	}
-	slices.SortFunc(found, func(a, b DiscoveryCandidate) int {
-		if rank := discoverySourceRank(a) - discoverySourceRank(b); rank != 0 {
-			return rank
-		}
-		return strings.Compare(a.Source.Repository+"@"+a.Source.CommitSHA, b.Source.Repository+"@"+b.Source.CommitSHA)
-	})
-	return found, slices.DeleteFunc(warnings, func(warning string) bool { return warning == "" })
-}
-
-func discoverySourceRank(candidate DiscoveryCandidate) int {
-	if len(candidate.Evidence) == 0 {
-		return 9
-	}
-	switch candidate.Evidence[0].Source {
-	case "mcp-registry":
-		return 0
-	case "toolhive":
-		return 1
-	case "docker-mcp":
-		return 2
-	case "smithery":
-		return 3
-	default:
-		return 9
-	}
-}
-
-func appendDiscovered(candidates []DiscoveryCandidate, found []DiscoveryCandidate) []DiscoveryCandidate {
-	seen := map[string]int{}
-	for i, candidate := range candidates {
-		seen[strings.ToLower(candidate.Source.Repository+"/"+candidate.Source.Subfolder)] = i
-	}
-	for _, candidate := range found {
-		if candidate.Name == "" || len(candidate.Name) > 120 || strings.ContainsAny(candidate.Name, "\x00\r\n") {
-			continue
-		}
-		if candidate.Source.CommitSHA == "" {
-			if _, err := parseGitHubRepository(candidate.Source.Repository); err != nil || !validGitHubSubfolder(candidate.Source.Subfolder) {
-				continue
-			}
-		} else if _, err := candidate.Source.ArchiveURL(); err != nil {
-			continue
-		}
-		key := strings.ToLower(candidate.Source.Repository + "/" + candidate.Source.Subfolder)
-		if i, ok := seen[key]; ok {
-			candidates[i].Evidence = append(candidates[i].Evidence, candidate.Evidence...)
-			continue
-		}
-		if len(candidates) == 5 {
-			break
-		}
-		seen[key] = len(candidates)
-		candidates = append(candidates, candidate)
-	}
-	return candidates
+// discoverySelections holds pending candidate picks behind their own lock;
+// expiry and lookup never share the admission mutex.
+type discoverySelections struct {
+	mu      sync.Mutex
+	choices map[string]discoverySelection
 }
 
 // discover never prepares, builds, enrolls credentials or creates a binding.
@@ -130,17 +30,17 @@ func appendDiscovered(candidates []DiscoveryCandidate, found []DiscoveryCandidat
 func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, query string) (map[string]any, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" || len(query) > 256 || strings.ContainsAny(query, "\x00\r\n") {
-		return nil, fmt.Errorf("%w: bounded discovery query required", ErrInvalid)
+		return nil, fmt.Errorf("%w: bounded discovery query required", api.ErrInvalid)
 	}
-	entries, err := PreparedCatalog()
+	entries, err := api.PreparedCatalog()
 	if err != nil {
 		return nil, err
 	}
-	blocked, err := BlockedCatalog()
+	blocked, err := api.BlockedCatalog()
 	if err != nil {
 		return nil, err
 	}
-	var candidates []DiscoveryCandidate
+	var candidates []api.DiscoveryCandidate
 	for _, entry := range entries {
 		if !strings.Contains(strings.ToLower(entry.ID+" "+strings.Join(entry.Aliases, " ")+" "+entry.Name+" "+entry.Source.Repository), query) {
 			continue
@@ -151,25 +51,25 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 				preparedID = alias
 			}
 		}
-		candidates = append(candidates, DiscoveryCandidate{Name: entry.Name, Source: entry.Source, PreparedID: preparedID, Credentials: entry.Connection.Fields,
+		candidates = append(candidates, api.DiscoveryCandidate{Name: entry.Name, Source: entry.Source, PreparedID: preparedID, Credentials: entry.Connection.Fields,
 			Reason: "Reviewed exact-source entry; generic build, Broker and live validation required", Status: "prepared", Runbook: entry.Runbook, Handoff: entry.Handoff})
 	}
 	for _, entry := range blocked {
 		if strings.Contains(strings.ToLower(entry.ID+" "+entry.Name), query) {
-			candidates = append(candidates, DiscoveryCandidate{Name: entry.Name, PreparedID: entry.ID, Reason: entry.Reason, Status: "blocked", Runbook: entry.Runbook, Handoff: entry.Handoff})
+			candidates = append(candidates, api.DiscoveryCandidate{Name: entry.Name, PreparedID: entry.ID, Reason: entry.Reason, Status: "blocked", Runbook: entry.Runbook, Handoff: entry.Handoff})
 		}
 	}
-	slices.SortFunc(candidates, func(a, b DiscoveryCandidate) int { return strings.Compare(a.PreparedID, b.PreparedID) })
+	slices.SortFunc(candidates, func(a, b api.DiscoveryCandidate) int { return strings.Compare(a.PreparedID, b.PreparedID) })
 	if len(candidates) > 5 {
 		candidates = candidates[:5]
 	}
 	var warnings []string
 	if len(candidates) > 0 && candidates[0].Status == "prepared" && len(c.RecipeCatalogs) > 0 {
-		lookup, _ := recipeLookup(candidates[0].Source)
+		lookup, _ := api.LookupRecipe(candidates[0].Source)
 		lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		alternatives := lookupCatalogs(lookupCtx, c.RecipeCatalogs, lookup)
-		slices.SortFunc(alternatives, func(a, b RecipeCandidate) int {
+		alternatives := api.LookupCatalogs(lookupCtx, c.RecipeCatalogs, lookup)
+		slices.SortFunc(alternatives, func(a, b api.RecipeCandidate) int {
 			return strings.Compare(a.Launch.Artifact+"@"+a.Launch.Digest, b.Launch.Artifact+"@"+b.Launch.Digest)
 		})
 		seen := map[string]bool{}
@@ -178,21 +78,21 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 			if len(candidates) == 5 {
 				break
 			}
-			if !candidateMatches(alternative, candidates[0].Source) || seen[key] {
+			if !api.CandidateMatches(alternative, candidates[0].Source) || seen[key] {
 				continue
 			}
 			seen[key] = true
 			status := "metadata-only"
-			if launchReady(alternative.Launch) {
+			if api.LaunchReady(alternative.Launch) {
 				status = "requires-preflight"
 			}
 			candidate := alternative
-			var selectedRecipe *RecipeCandidate
-			if status == "requires-preflight" && alternative.Launch.Transport == ContainerMCP {
+			var selectedRecipe *api.RecipeCandidate
+			if status == "requires-preflight" && alternative.Launch.Transport == api.ContainerMCP {
 				selectedRecipe = &candidate
 			}
-			candidates = append(candidates, DiscoveryCandidate{Name: lookup.Name, Source: candidates[0].Source, Artifact: alternative.Launch.Artifact, Digest: alternative.Launch.Digest,
-				Credentials: alternative.Connection.Fields, Evidence: alternative.Evidence, Reason: "Matching registry metadata; OCI proof is rechecked on selection", Status: status, recipe: selectedRecipe})
+			candidates = append(candidates, api.DiscoveryCandidate{Name: lookup.Name, Source: candidates[0].Source, Artifact: alternative.Launch.Artifact, Digest: alternative.Launch.Digest,
+				Credentials: alternative.Connection.Fields, Evidence: alternative.Evidence, Reason: "Matching registry metadata; OCI proof is rechecked on selection", Status: status, Recipe: selectedRecipe})
 		}
 		if len(alternatives) == 0 {
 			warnings = append(warnings, "Enabled registries returned no matching exact-source alternatives; prepared source remains available")
@@ -201,13 +101,13 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 	if len(c.RecipeCatalogs) > 0 && len(candidates) < 5 {
 		lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		found, searchWarnings := searchCatalogSources(lookupCtx, c.RecipeCatalogs, query, false)
+		found, searchWarnings := api.SearchCatalogSources(lookupCtx, c.RecipeCatalogs, query, false)
 		warnings = append(warnings, searchWarnings...)
-		candidates = appendDiscovered(candidates, found)
+		candidates = api.AppendDiscovered(candidates, found)
 		if len(candidates) < 5 {
-			found, searchWarnings = searchCatalogSources(lookupCtx, c.RecipeCatalogs, query, true)
+			found, searchWarnings = api.SearchCatalogSources(lookupCtx, c.RecipeCatalogs, query, true)
 			warnings = append(warnings, searchWarnings...)
-			candidates = appendDiscovered(candidates, found)
+			candidates = api.AppendDiscovered(candidates, found)
 		}
 	}
 	if len(candidates) == 0 {
@@ -216,48 +116,37 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 	if len(warnings) > 4 {
 		warnings = warnings[:4]
 	}
-	c.discoveryMu.Lock()
-	defer c.discoveryMu.Unlock()
-	if c.discoveryChoices == nil {
-		c.discoveryChoices = map[string]discoverySelection{}
+	c.discovery.mu.Lock()
+	defer c.discovery.mu.Unlock()
+	if c.discovery.choices == nil {
+		c.discovery.choices = map[string]discoverySelection{}
 	}
-	for id, choice := range c.discoveryChoices {
+	for id, choice := range c.discovery.choices {
 		if !c.now().Before(choice.Expires) {
-			delete(c.discoveryChoices, id)
+			delete(c.discovery.choices, id)
 		}
 	}
-	if len(c.discoveryChoices)+len(candidates) > 512 {
-		return nil, fmt.Errorf("%w: discovery capacity reached; retry after expiry", ErrInvalid)
+	if len(c.discovery.choices)+len(candidates) > 512 {
+		return nil, fmt.Errorf("%w: discovery capacity reached; retry after expiry", api.ErrInvalid)
 	}
 	for i := range candidates {
 		if candidates[i].Status == "blocked" {
 			continue
 		}
-		candidates[i].ID = randomNonce()
-		c.discoveryChoices[candidates[i].ID] = discoverySelection{Candidate: candidates[i], Owner: auth, Expires: c.now().Add(c.ttl())}
+		candidates[i].ID = api.RandomNonce()
+		c.discovery.choices[candidates[i].ID] = discoverySelection{Candidate: candidates[i], Owner: auth, Expires: c.now().Add(c.ttl())}
 	}
 	return map[string]any{"candidates": candidates, "warnings": warnings}, nil
 }
 
-func (c *ControlPlane) selectedCandidate(auth identity.Envelope, id string) (DiscoveryCandidate, error) {
-	c.discoveryMu.Lock()
-	defer c.discoveryMu.Unlock()
-	choice, ok := c.discoveryChoices[id]
+func (c *ControlPlane) selectedCandidate(auth identity.Envelope, id string) (api.DiscoveryCandidate, error) {
+	c.discovery.mu.Lock()
+	defer c.discovery.mu.Unlock()
+	choice, ok := c.discovery.choices[id]
 	if !ok || !c.now().Before(choice.Expires) || choice.Owner.PrincipalID != auth.PrincipalID || choice.Owner.ContextID != auth.ContextID || choice.Owner.RuntimeID != auth.RuntimeID || choice.Owner.PolicyVersion != auth.PolicyVersion {
-		return DiscoveryCandidate{}, fmt.Errorf("%w: discovery selection expired or unavailable", ErrUnauthorized)
+		return api.DiscoveryCandidate{}, fmt.Errorf("%w: discovery selection expired or unavailable", api.ErrUnauthorized)
 	}
 	return choice.Candidate, nil
-}
-
-func (candidate DiscoveryCandidate) sourceURL() string {
-	source := candidate.Source
-	if source.CommitSHA == "" {
-		return source.Repository
-	}
-	if source.Subfolder != "" {
-		return source.Repository + "/tree/" + source.CommitSHA + "/" + source.Subfolder
-	}
-	return source.Repository + "/commit/" + source.CommitSHA
 }
 
 func (c *ControlPlane) selectedRepository(auth identity.Envelope, id string) (string, error) {
@@ -265,5 +154,5 @@ func (c *ControlPlane) selectedRepository(auth identity.Envelope, id string) (st
 	if err != nil {
 		return "", err
 	}
-	return candidate.sourceURL(), nil
+	return candidate.SourceURL(), nil
 }

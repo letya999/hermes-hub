@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestRoutineRejectsUnresolvedConfiguration(t *testing.T) {
@@ -217,6 +219,184 @@ func TestRoutineCreateKindIsOptionalInCatalog(t *testing.T) {
 		return
 	}
 	t.Fatal("routine_create missing from catalog")
+}
+
+// Watcher policy fields ride the same create payload so an agent can set a
+// quiet window, a daily cap and check retries without a second endpoint.
+func TestRoutineCreateForwardsPolicyFields(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"quiet-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "quiet-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch", Kind: "watcher", URL: "https://example.com/q", QuietFrom: "22:00", QuietTo: "07:00", DailyLimit: 4, MaxRetries: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if request["quiet_from"] != "22:00" || request["quiet_to"] != "07:00" {
+		t.Fatalf("quiet window lost: %v", request)
+	}
+	if request["daily_limit"] != float64(4) || request["max_retries"] != float64(5) {
+		t.Fatalf("limit fields lost: %v", request)
+	}
+}
+
+// An mcp_tool probe names one projected read tool instead of a URL; the
+// create payload must carry kind + tool so the hub can validate it.
+func TestRoutineCreateForwardsMCPTool(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"conn-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "conn-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch connector", Kind: "watcher", ProbeKind: "mcp_tool", Tool: "hub-google-work-search-abc"}); err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := request["probe"].(map[string]any)
+	if !ok || probe["kind"] != "mcp_tool" || probe["tool"] != "hub-google-work-search-abc" {
+		t.Fatalf("mcp_tool probe lost: %v", request)
+	}
+}
+
+// watch_subscribe is an event-subscription routine: the create payload must
+// carry job_kind=event, an mcp_tool probe with parsed JSON args, and the
+// requested sink — the agent never constructs the probe envelope itself.
+func TestWatchSubscribeCreatesEventSchedule(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"mail-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "watch_subscribe", Input{ID: "mail-watch", Timezone: "UTC", Expression: "*/5 * * * *", Text: "new mail", Tool: "hub-mail-events-abc", Sink: "agent", Args: `{"folder":"INBOX"}`}); err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := request["probe"].(map[string]any)
+	if request["job_kind"] != "event" || request["sink"] != "agent" || !ok || probe["kind"] != "mcp_tool" || probe["tool"] != "hub-mail-events-abc" {
+		t.Fatalf("event subscription payload lost: %v", request)
+	}
+	args, _ := probe["args"].(map[string]any)
+	if args["folder"] != "INBOX" {
+		t.Fatalf("tool args not forwarded: %v", probe)
+	}
+	// A non-JSON args string must be rejected before reaching the hub.
+	request = nil
+	if _, err := v.Routine(context.Background(), "watch_subscribe", Input{ID: "mail-watch2", Timezone: "UTC", Expression: "*/5 * * * *", Text: "new mail", Tool: "hub-mail-events-abc", Args: `{oops`}); err == nil {
+		t.Fatal("malformed args JSON accepted")
+	}
+	if request != nil {
+		t.Fatal("malformed args reached the hub")
+	}
+}
+
+// watch_subscribe forwards delivery=stream so the hub supervises a bounded
+// wait-loop instead of polling on the cron cadence (CHG-0104).
+func TestWatchSubscribeForwardsDelivery(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"dm-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "watch_subscribe", Input{ID: "dm-watch", Timezone: "UTC", Expression: "* * * * *", Text: "Daniil DMs", Tool: "hub-tg-wait_for_settled_message-a", Delivery: "stream", Sink: "agent", Args: `{"chat_id":"@daniil_x"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if request["delivery"] != "stream" {
+		t.Fatalf("delivery mode lost: %v", request)
+	}
+}
+
+// watch_list/pause/delete operate only on event-kind routines: a reminder id
+// must not be pausable through the watch surface.
+func TestWatchOpsFilterEventKind(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"schedule_id": "mail-watch", "job_kind": "event"},
+				{"schedule_id": "standup", "job_kind": "reminder"},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	ctx := context.Background()
+	out, err := v.Routine(ctx, "watch_list", Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _ := json.Marshal(out["result"])
+	if !strings.Contains(string(result), "mail-watch") || strings.Contains(string(result), "standup") {
+		t.Fatalf("watch_list not filtered: %s", result)
+	}
+	if _, err := v.Routine(ctx, "watch_pause", Input{ID: "standup"}); err == nil {
+		t.Fatal("watch_pause accepted a non-event routine")
+	}
+	if _, err := v.Routine(ctx, "watch_delete", Input{ID: "mail-watch"}); err != nil {
+		t.Fatalf("watch_delete on an event routine failed: %v", err)
+	}
+}
+
+// The call dispatcher routes watch_* names into the routine transport.
+func TestWatchToolsDispatch(t *testing.T) {
+	v := fixture(t)
+	for _, name := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_delete"} {
+		_, err := v.call(context.Background(), name, Input{}, nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "routines require HUB_COMMUNICATION_CONTROL_URL") {
+			t.Fatalf("%s not dispatched to Routine: %v", name, err)
+		}
+	}
+}
+
+// The MCP server actually publishes the watch tools alongside routines.
+func TestWatchToolsPublished(t *testing.T) {
+	t.Setenv("HUB_HH_ENABLED", "false")
+	client, closeAll := connectHub(t, fixture(t))
+	defer closeAll()
+	list, err := client.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tool := range list.Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_delete"} {
+		if !names[want] {
+			t.Fatalf("%s not published on the MCP server", want)
+		}
+	}
+}
+
+// All four watch tools are declared in the capability catalog.
+func TestWatchToolsInCatalog(t *testing.T) {
+	names := map[string]bool{}
+	for _, spec := range HubToolsDefinition().Tools {
+		names[spec.Name] = true
+	}
+	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_delete"} {
+		if !names[want] {
+			t.Fatalf("%s missing from catalog", want)
+		}
+	}
 }
 
 func TestCredentialFormCallCommunicationHub(t *testing.T) {

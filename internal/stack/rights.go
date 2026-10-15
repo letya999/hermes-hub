@@ -2,7 +2,7 @@ package stack
 
 import (
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // settingsFieldRights classifies every Settings field for the policy hash
@@ -77,34 +77,34 @@ type mcpRights struct {
 // rightsView is the canonical rights-bearing subset of Settings hashed into
 // HUB_POLICY_VERSION. Field names pair with settingsFieldRights.
 type rightsView struct {
-	CapabilityMode        string                            `json:"capability_mode,omitempty"`
-	CapabilityProfileID   string                            `json:"capability_profile_id,omitempty"`
-	CapabilityGeneration  uint64                            `json:"capability_generation,omitempty"`
-	CLIRegistries         []string                          `json:"cli_registries,omitempty"`
-	CLIToolboxes          map[string][]string               `json:"cli_toolboxes,omitempty"`
-	Tools                 map[string]ToolEntry              `json:"tools,omitempty"`
-	Ingress               []string                          `json:"ingress,omitempty"`
-	TelegramAuth          bool                              `json:"telegram_auth,omitempty"`
-	Workspace             Workspace                         `json:"workspace"`
-	MCP                   map[string]mcpRights              `json:"mcp,omitempty"`
-	Hooks                 map[string]any                    `json:"hooks,omitempty"`
-	Memory                bool                              `json:"memory,omitempty"`
-	Honcho                bool                              `json:"honcho,omitempty"`
-	HonchoURL             string                            `json:"honcho_url,omitempty"`
-	GlobalSkillsDir       string                            `json:"global_skills_dir,omitempty"`
-	Organization          string                            `json:"organization,omitempty"`
-	OrganizationDir       string                            `json:"organization_dir,omitempty"`
-	OrganizationDocsDir   string                            `json:"organization_docs_dir,omitempty"`
-	OrganizationSkillsDir string                            `json:"organization_skills_dir,omitempty"`
-	OrganizationRole      string                            `json:"organization_role,omitempty"`
-	OrgActions            []string                          `json:"org_actions,omitempty"`
-	GoogleEmail           string                            `json:"google_email,omitempty"`
-	GitLabHost            string                            `json:"gitlab_host,omitempty"`
-	DesktopURL            string                            `json:"desktop_url,omitempty"`
-	DraftsURL             string                            `json:"drafts_url,omitempty"`
-	ImageGen              media.ImageGen                    `json:"image_gen"`
-	Web                   WebSettings                       `json:"web"`
-	Governance            map[string]toolhub.PolicyDecision `json:"governance,omitempty"`
+	CapabilityMode        string                        `json:"capability_mode,omitempty"`
+	CapabilityProfileID   string                        `json:"capability_profile_id,omitempty"`
+	CapabilityGeneration  uint64                        `json:"capability_generation,omitempty"`
+	CLIRegistries         []string                      `json:"cli_registries,omitempty"`
+	CLIToolboxes          map[string][]string           `json:"cli_toolboxes,omitempty"`
+	Tools                 map[string]ToolEntry          `json:"tools,omitempty"`
+	Ingress               []string                      `json:"ingress,omitempty"`
+	TelegramAuth          bool                          `json:"telegram_auth,omitempty"`
+	Workspace             Workspace                     `json:"workspace"`
+	MCP                   map[string]mcpRights          `json:"mcp,omitempty"`
+	Hooks                 map[string]any                `json:"hooks,omitempty"`
+	Memory                bool                          `json:"memory,omitempty"`
+	Honcho                bool                          `json:"honcho,omitempty"`
+	HonchoURL             string                        `json:"honcho_url,omitempty"`
+	GlobalSkillsDir       string                        `json:"global_skills_dir,omitempty"`
+	Organization          string                        `json:"organization,omitempty"`
+	OrganizationDir       string                        `json:"organization_dir,omitempty"`
+	OrganizationDocsDir   string                        `json:"organization_docs_dir,omitempty"`
+	OrganizationSkillsDir string                        `json:"organization_skills_dir,omitempty"`
+	OrganizationRole      string                        `json:"organization_role,omitempty"`
+	OrgActions            []string                      `json:"org_actions,omitempty"`
+	GoogleEmail           string                        `json:"google_email,omitempty"`
+	GitLabHost            string                        `json:"gitlab_host,omitempty"`
+	DesktopURL            string                        `json:"desktop_url,omitempty"`
+	DraftsURL             string                        `json:"drafts_url,omitempty"`
+	ImageGen              media.ImageGen                `json:"image_gen"`
+	Web                   WebSettings                   `json:"web"`
+	Governance            map[string]api.PolicyDecision `json:"governance,omitempty"`
 }
 
 func rightsProjection(s Settings) rightsView {

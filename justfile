@@ -20,8 +20,7 @@ config-check:
     go test -tags integration -run TestDeploymentConfigurationContract -count=1 ./internal/stack
 
 go-check:
-    go test -race -shuffle=on -count=1 "-coverprofile=coverage.out" ./...
-    go run ./cmd/devcheck coverage coverage.out 85
+    go run ./cmd/devcheck covergo coverage.out 85
 
 lint:
     go run ./cmd/devcheck format

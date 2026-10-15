@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,7 +24,7 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 		}
 		if grant {
 			grantTestControlOperations(t, store, principal, "prepare_source", "status", "confirm", "enable", "revoke")
-			if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, principal, "", "")); err != nil {
+			if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, principal, "", "")); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -36,8 +37,8 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler, err := NewEndpointHandler(EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-			return BackendResult{Text: "ok"}, nil
+		handler, err := NewEndpointHandler(EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
 		}), Listen: "127.0.0.1:0"}, loaded)
 		if err != nil {
 			t.Fatal(err)
@@ -68,7 +69,7 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 		enabled, err := callControl(t, session, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-		if err != nil || enabled["binding_id"] == "" || enabled["phase"] != PhaseEnabled {
+		if err != nil || enabled["binding_id"] == "" || enabled["phase"] != api.PhaseEnabled {
 			t.Fatalf("enable=%v err=%v", enabled, err)
 		}
 		if _, err := callControl(t, session, "prepare_source", map[string]any{"user_id": "other", "definition_id": definition.DefinitionID, "version": definition.Version}); err == nil {
@@ -77,7 +78,7 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 		if _, err := callControl(t, session, "revoke", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 			t.Fatal(err)
 		}
-		name := ProjectedToolName(definition.DefinitionID, definition.Version, "search")
+		name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "search")
 		if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "x"}}); err == nil {
 			t.Fatal("revoked call admitted on launched handler")
 		}

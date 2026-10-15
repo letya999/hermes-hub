@@ -26,6 +26,12 @@ type WatchProbe struct {
 	Kind  string `json:"kind,omitempty"`
 	URL   string `json:"url"`
 	Regex string `json:"regex,omitempty"`
+	// Tool names one projected read ToolHub tool when kind=mcp_tool; Args is
+	// its verbatim argument object (bounded JSON). RequeueTool reserves the
+	// event-subscription requeue hook for stage 5.
+	Tool        string         `json:"tool,omitempty"`
+	Args        map[string]any `json:"args,omitempty"`
+	RequeueTool string         `json:"requeue_tool,omitempty"`
 }
 
 type Schedule struct {
@@ -66,9 +72,27 @@ type Schedule struct {
 	// success clears it so the next failure notifies again.
 	LastFailureSHA256 string        `json:"last_failure_sha256,omitempty"`
 	CatchUpWindow     time.Duration `json:"catch_up_window_ns"`
-	NativeCronRef     string        `json:"native_cron_ref,omitempty"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
+	// MaxRetries bounds probe-error retries for check occurrences (SPEC-0054
+	// R1.1): 0 means the default 3, values above 8 are rejected.
+	MaxRetries int `json:"max_retries,omitempty"`
+	// QuietFrom/QuietTo bound an owner-timezone HH:MM window in which
+	// owner-facing deliveries are deferred to the window end (SPEC-0054 R2.1);
+	// both-or-neither, overnight wraps.
+	QuietFrom string `json:"quiet_from,omitempty"`
+	QuietTo   string `json:"quiet_to,omitempty"`
+	// DailyLimit caps owner-facing notifications per owner-timezone day
+	// (SPEC-0054 R2.2): 0 is unlimited, 32 the bound.
+	DailyLimit int `json:"daily_limit,omitempty"`
+	// Sink routes event-subscription output: "notify" fans events out to the
+	// outbox (default), "agent" bundles them into one untrusted-evidence job.
+	Sink string `json:"sink,omitempty"`
+	// Delivery selects how an event subscription is fed: empty/"poll" fires
+	// one occurrence per cron tick, "stream" runs a hub-owned bounded
+	// long-poll loop against the probe tool instead (no occurrences).
+	Delivery      string    `json:"delivery,omitempty"`
+	NativeCronRef string    `json:"native_cron_ref,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type ScheduleCreation struct {
@@ -409,7 +433,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		if err != nil {
 			return err
 		}
-		if now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) {
+		if now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) || item.Delivery == "stream" {
 			continue
 		}
 		loc, err := time.LoadLocation(item.Timezone)
@@ -511,6 +535,38 @@ func resolveRelativeReminder(in Schedule, now time.Time) (Schedule, error) {
 	return in, nil
 }
 
+var probeToolPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+
+// validMCPProbe bounds a tool-call probe (SPEC-0054 R3.2): a named projected
+// tool and no URL — credentials stay inside the ToolHub workload so the
+// probe never carries a source address.
+func validMCPProbe(probe *WatchProbe) error {
+	if probe == nil || !probeToolPattern.MatchString(probe.Tool) {
+		return errors.New("mcp_tool probe needs a projected tool name")
+	}
+	if probe.URL != "" {
+		return errors.New("mcp_tool probe takes no url")
+	}
+	if probe.RequeueTool != "" && !probeToolPattern.MatchString(probe.RequeueTool) {
+		return errors.New("invalid requeue tool name")
+	}
+	if probe.Args != nil {
+		b, err := json.Marshal(probe.Args)
+		if err != nil || len(b) > 8*1024 {
+			return errors.New("probe args exceed bounds")
+		}
+	}
+	return nil
+}
+
+// validTaskProbe reports whether url is a hub-internal task predicate
+// (task:<id>) — a verified source the probe resolves without any fetch
+// (SPEC-0054 R1.3).
+func validTaskProbe(url string) bool {
+	id := strings.TrimPrefix(url, "task:")
+	return id != url && id != "" && len(id) <= 80 && spoolIDPattern.MatchString(id)
+}
+
 func normalizeScheduleDraft(in Schedule) Schedule {
 	if in.Probe != nil {
 		probe := *in.Probe
@@ -527,42 +583,64 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if len(in.ScheduleID) > 80 || !spoolIDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
-	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" {
+	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" && in.JobKind != "brief" && in.JobKind != "event" {
 		return errors.New("invalid job kind")
 	}
 	if in.JobKind == "check" && in.Expect != "changed" && in.Expect != "unchanged" && (!strings.HasPrefix(in.Expect, "equals:") || len(in.Expect) <= len("equals:") || len(in.Expect) > 1024) {
 		return errors.New("invalid check expect")
 	}
+	if in.JobKind == "brief" && in.Probe != nil {
+		return errors.New("a brief aggregates sources and carries no probe")
+	}
+	if in.MaxRetries != 0 && (in.JobKind != "check" || in.MaxRetries < 0 || in.MaxRetries > 8) {
+		return errors.New("max_retries is a check bound between 0 and 8")
+	}
 	if in.JobKind == "check" {
 		if in.Probe == nil {
 			return errors.New("check needs a probe")
 		}
-		u, err := url.Parse(in.Probe.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
-			return errors.New("check probe must be http(s)")
-		}
-		if in.Probe.Regex != "" {
-			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
-				return errors.New("check probe regex does not compile")
+		if in.Probe.Kind == "mcp_tool" {
+			if err := validMCPProbe(in.Probe); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(in.Probe.URL, "task:") {
+			if !validTaskProbe(in.Probe.URL) {
+				return errors.New("invalid task probe")
+			}
+		} else {
+			u, err := url.Parse(in.Probe.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+				return errors.New("check probe must be http(s)")
+			}
+			if in.Probe.Regex != "" {
+				if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+					return errors.New("check probe regex does not compile")
+				}
 			}
 		}
 	}
-	if in.JobKind == "watcher" {
+	if in.JobKind == "watcher" || in.JobKind == "event" {
 		if in.Probe == nil {
 			return errors.New("watcher needs a probe")
 		}
-		u, err := url.Parse(in.Probe.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
-			return errors.New("watch probe must be a plain http(s) url")
-		}
-		if in.Probe.Regex != "" {
-			if _, err := regexp.Compile(in.Probe.Regex); err != nil {
-				return errors.New("watch probe regex does not compile")
+		if in.Probe.Kind == "mcp_tool" {
+			if err := validMCPProbe(in.Probe); err != nil {
+				return err
+			}
+		} else {
+			u, err := url.Parse(in.Probe.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+				return errors.New("watch probe must be a plain http(s) url")
+			}
+			if in.Probe.Regex != "" {
+				if _, err := regexp.Compile(in.Probe.Regex); err != nil {
+					return errors.New("watch probe regex does not compile")
+				}
 			}
 		}
 	}
-	if len(in.SourceIDs) > 128 || (len(in.SourceIDs) > 0 && in.JobKind != "digest") {
-		return errors.New("source_ids require a digest and at most 128 sources")
+	if len(in.SourceIDs) > 128 || (len(in.SourceIDs) > 0 && in.JobKind != "digest" && in.JobKind != "brief") {
+		return errors.New("source_ids require a digest or brief and at most 128 sources")
 	}
 	seenSources := map[string]bool{}
 	for _, id := range in.SourceIDs {
@@ -571,14 +649,42 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		}
 		seenSources[id] = true
 	}
-	if in.NotifyMode != "" && in.NotifyMode != "immediate" && in.NotifyMode != "digest" {
+	if in.NotifyMode != "" && in.NotifyMode != "immediate" && in.NotifyMode != "digest" && in.NotifyMode != "agent" {
 		return errors.New("invalid notify mode")
+	}
+	if in.NotifyMode == "agent" && in.JobKind != "watcher" && in.JobKind != "check" {
+		return errors.New("agent escalation requires a watcher or check")
+	}
+	if (in.QuietFrom == "") != (in.QuietTo == "") {
+		return errors.New("quiet window needs both bounds")
+	}
+	if in.QuietFrom != "" {
+		from, err1 := time.Parse("15:04", in.QuietFrom)
+		to, err2 := time.Parse("15:04", in.QuietTo)
+		if err1 != nil || err2 != nil || from.Equal(to) {
+			return errors.New("invalid quiet window")
+		}
+	}
+	if in.DailyLimit < 0 || in.DailyLimit > 32 {
+		return errors.New("daily_limit must be 0..32")
+	}
+	if in.Sink != "" && in.Sink != "notify" && in.Sink != "agent" {
+		return errors.New("invalid event sink")
+	}
+	if in.Sink != "" && in.JobKind != "event" {
+		return errors.New("sink requires an event schedule")
+	}
+	if in.Delivery != "" && in.Delivery != "poll" && in.Delivery != "stream" {
+		return errors.New("invalid event delivery")
+	}
+	if in.Delivery == "stream" && (in.JobKind != "event" || in.Probe == nil || in.Probe.Kind != "mcp_tool") {
+		return errors.New("stream delivery needs an event schedule with an mcp_tool probe")
 	}
 	if in.Probe != nil {
 		if len(in.Probe.URL) > 2048 {
 			return errors.New("probe URL exceeds limit")
 		}
-		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" {
+		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" {
 			return errors.New("invalid probe kind")
 		}
 		if in.Probe.Regex != "" {

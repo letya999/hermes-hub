@@ -5,6 +5,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"os"
 	"testing"
@@ -15,12 +16,12 @@ func TestRealMCPRegistryNameSearch(t *testing.T) {
 	if os.Getenv("HUB_REAL_REGISTRY_SEARCH") != "1" {
 		t.Skip("set HUB_REAL_REGISTRY_SEARCH=1 for public MCP Registry name search")
 	}
-	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []RecipeCatalog{MCPRegistryCatalog{Endpoint: officialMCPRegistryURL}}}
+	control := &ControlPlane{Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{api.MCPRegistryCatalog{Endpoint: "https://registry.modelcontextprotocol.io/v0.1/servers"}}}
 	result, err := control.discover(t.Context(), aliceAuth(), "weather")
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates := result["candidates"].([]DiscoveryCandidate)
+	candidates := result["candidates"].([]api.DiscoveryCandidate)
 	if len(candidates) == 0 || len(candidates) > 5 {
 		t.Fatalf("public Registry returned %d usable source candidates", len(candidates))
 	}
@@ -38,7 +39,7 @@ func TestRealToolHiveNameSearch(t *testing.T) {
 	if os.Getenv("HUB_REAL_REGISTRY_SEARCH") != "1" {
 		t.Skip("set HUB_REAL_REGISTRY_SEARCH=1 for public ToolHive catalog search")
 	}
-	results, err := (ToolHiveCatalog{}).SearchSources(t.Context(), "grafana")
+	results, err := (api.ToolHiveCatalog{}).SearchSources(t.Context(), "grafana")
 	if err != nil || len(results) == 0 || len(results) > 32 {
 		t.Fatalf("ToolHive catalog search: %d results, %v", len(results), err)
 	}
@@ -54,7 +55,7 @@ func TestRealGitHubFallbackNameSearch(t *testing.T) {
 	if os.Getenv("HUB_REAL_REGISTRY_SEARCH") != "1" {
 		t.Skip("set HUB_REAL_REGISTRY_SEARCH=1 for public GitHub fallback search")
 	}
-	results, err := (GitHubSearchCatalog{}).SearchSources(t.Context(), "grafana")
+	results, err := (api.GitHubSearchCatalog{}).SearchSources(t.Context(), "grafana")
 	if err != nil || len(results) == 0 || len(results) > 16 {
 		t.Fatalf("GitHub fallback search: %d results, %v", len(results), err)
 	}
@@ -75,14 +76,14 @@ func TestRealPublishedDockerCatalogImageHasExactOCIProof(t *testing.T) {
 		commit     = "82064568802e542c3924560aef2cb421b4ce436c"
 		image      = "mcp/sequentialthinking@sha256:cd3174b2ecf37738654cf7671fb1b719a225c40a78274817da00c4241f465e5f"
 	)
-	lookup := RecipeLookup{Repository: repository, Subfolder: subfolder, CommitSHA: commit}
-	candidate := RecipeCandidate{Repository: repository, Subfolder: subfolder, CommitSHA: commit, Launch: LaunchRecipe{Transport: ContainerMCP, Artifact: image}}
-	if proof, err := inspectPublishedOCI(context.Background(), &http.Client{}, image); err != nil {
+	lookup := api.RecipeLookup{Repository: repository, Subfolder: subfolder, CommitSHA: commit}
+	candidate := api.RecipeCandidate{Repository: repository, Subfolder: subfolder, CommitSHA: commit, Launch: api.LaunchRecipe{Transport: api.ContainerMCP, Artifact: image}}
+	if proof, err := api.InspectPublishedOCI(context.Background(), &http.Client{}, image); err != nil {
 		t.Fatalf("public OCI proof: %v", err)
 	} else if proof.Source != repository || proof.Revision != commit {
 		t.Fatalf("public OCI provenance: %+v", proof)
 	}
-	completed, ok := completeRecipeCandidate(context.Background(), &http.Client{}, candidate, lookup)
+	completed, ok := api.CompleteRecipeCandidate(context.Background(), &http.Client{}, candidate, lookup)
 	if !ok {
 		t.Fatal("public Docker MCP catalog image failed exact OCI correlation")
 	}
@@ -100,8 +101,8 @@ func TestRealDockerHubCatalogFindsPublishedMCP(t *testing.T) {
 		subfolder  = "src/sequentialthinking"
 		commit     = "82064568802e542c3924560aef2cb421b4ce436c"
 	)
-	lookup := RecipeLookup{Repository: repository, Subfolder: subfolder, CommitSHA: commit, Owner: "modelcontextprotocol", Name: "sequentialthinking"}
-	candidates, err := (DockerHubCatalog{}).Lookup(context.Background(), lookup)
+	lookup := api.RecipeLookup{Repository: repository, Subfolder: subfolder, CommitSHA: commit, Owner: "modelcontextprotocol", Name: "sequentialthinking"}
+	candidates, err := (api.DockerHubCatalog{}).Lookup(context.Background(), lookup)
 	if err != nil || len(candidates) != 1 {
 		t.Fatalf("public Docker Hub lookup: %#v %v", candidates, err)
 	}
@@ -114,7 +115,7 @@ func TestRealSmitheryPublicConnectionSchema(t *testing.T) {
 	if os.Getenv("HUB_REAL_SMITHERY") != "1" {
 		t.Skip("set HUB_REAL_SMITHERY=1 for the public Smithery schema acceptance")
 	}
-	body, _, err := fetchCatalogJSON(context.Background(), &http.Client{}, smitheryAPIURL+"/servers/brave", nil, 8<<20)
+	body, _, err := api.FetchCatalogJSON(context.Background(), &http.Client{}, "https://api.smithery.ai/servers/brave", nil, 8<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestRealSmitheryPublicConnectionSchema(t *testing.T) {
 	if !ok {
 		t.Fatalf("Smithery connection malformed: %#v", connections[0])
 	}
-	recipe := connectionFromSchema(connection["configSchema"], "smithery")
+	recipe := api.ConnectionFromSchema(connection["configSchema"], "smithery")
 	if len(recipe.Fields) == 0 || recipe.Fields[0].Name != "BRAVE_API_KEY" || recipe.Fields[0].Target != "braveApiKey" || !recipe.Fields[0].Secret {
 		t.Fatalf("Smithery connection recipe: %+v", recipe)
 	}
@@ -146,8 +147,8 @@ func TestRealGHCRImageHintIsVerified(t *testing.T) {
 		image      = "ghcr.io/stacklok/dockyard/npx/server-sequential-thinking:2026.8.31"
 		digest     = "sha256:ce5f033bfdb04c95c0873fa8c98ebcd50e41ebe03155077bab602072136e6efb"
 	)
-	lookup := RecipeLookup{Repository: repository, CommitSHA: commit, Owner: "stacklok", Name: "dockyard", ImageHints: []string{image}, VersionHints: []string{"2026.8.31"}}
-	candidates, err := (GitHubPackagesCatalog{}).Lookup(context.Background(), lookup)
+	lookup := api.RecipeLookup{Repository: repository, CommitSHA: commit, Owner: "stacklok", Name: "dockyard", ImageHints: []string{image}, VersionHints: []string{"2026.8.31"}}
+	candidates, err := (api.GitHubPackagesCatalog{}).Lookup(context.Background(), lookup)
 	if err != nil || len(candidates) != 1 || candidates[0].Launch.Digest != digest {
 		t.Fatalf("public GHCR lookup: %#v %v", candidates, err)
 	}

@@ -4,7 +4,7 @@ last_verified: 2026-10-07
 ---
 # Prepared connectors
 
-The reviewed [catalog](../internal/toolhub/prepared/catalog.json) records exact
+The reviewed [catalog](../internal/toolhub/api/prepared/catalog.json) records exact
 commits, licenses, inferred entrypoints, credential overlays, Broker contracts,
 runtime settings, egress, read tools and user handoffs. New entries require data,
 not provider branches. `context_sources` merges another exact-pinned GitHub
@@ -17,9 +17,9 @@ the definition and bound into the review digest. A reviewed entry may declare
 probe then runs with egress and placeholder credentials, matching what the
 credentialed probe already does. Unprepared sources keep `--network none`.
 Live evidence is tracked in
-[CHG-0036](../.work/in-progress/CHG-0036-repository-driven-toolhub/plan.md).
+[CHG-0036](../.work/done/CHG-0036-repository-driven-toolhub/plan.md).
 
-Reviewed Broker contracts ship in `internal/toolhub/prepared/contracts/` and
+Reviewed Broker contracts ship in `internal/toolhub/api/prepared/contracts/` and
 are validated with their prepared entries. Provision them into the Broker's
 configured contracts directory before enrollment; the Broker control API does
 not expose contract registration. Missing contracts are deployment errors,
@@ -209,6 +209,21 @@ Handoff: “Install the pinned `letya999/telegram-mcp` personal connector with
 `prepare_source`. I will enter API ID, API hash, a separate StringSession and
 expected user ID only in the protected form. Verify `list_accounts` and a
 bounded history read; leave sends and deletes disabled.”
+
+The read set also carries four event tools for hub event subscriptions:
+`wait_for_new_message` and `wait_for_settled_message` return a bounded batch
+of new events for one poll, `requeue_event` puts one dropped event back by
+its id only, and `incoming_feed_status` reports feed health. An event
+subscription (`watch_subscribe`) polls one of these projected read tools at
+its own schedule cadence through ToolHub's read-only `/v1/tool-call`; the
+hub deduplicates event ids in its durable seen-set, fans out deliveries or
+one bundled agent job, and marks the subscription degraded on a connector
+auth failure. With `delivery=stream` the hub keeps one bounded wait call
+outstanding per live subscription, so `wait_for_settled_message`-class
+tools deliver settled bursts in seconds without a persistent workload;
+otherwise the source is polled at the subscription's cadence. There is
+still no always-on push ingress, and `requeue_event` receives only the
+event id or chat id, never owner content.
 
 ## Blocked bundle entries
 

@@ -1,121 +1,44 @@
 package toolhub
 
-// This is the deliberately small generic adapter. ToolHive remains the
-// workload manager; this process only turns an approved plan into a bounded
-// ToolHive invocation and checks Docker's returned profile before admission.
-
 import (
-	"bytes"
 	"context"
-	"crypto/subtle"
-	"encoding/json"
-	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/identity"
 )
 
+// This is the deliberately small generic adapter. ToolHive remains the
+// workload manager; this process only turns an approved plan into a bounded
+// ToolHive invocation and checks Docker's returned profile before admission.
+
 type GenericControllerConfig struct {
-	StateRoot           string          `json:"state_root"`
-	ToolHiveBinary      string          `json:"toolhive_binary"`
-	SeccompProfile      string          `json:"seccomp_profile"`
-	DockerFallback      bool            `json:"docker_fallback,omitempty"`
-	BridgeBinary        string          `json:"bridge_binary,omitempty"`
-	CredentialMountRoot string          `json:"credential_mount_root,omitempty"`
-	Definition          ToolDefinition  `json:"definition"`
-	DynamicDefinitions  bool            `json:"dynamic_definitions,omitempty"`
-	Budget              *WorkloadBudget `json:"-"`
-	MaxActive           int             `json:"max_active"`
-	IdleTTLSeconds      int             `json:"idle_ttl_seconds"`
+	StateRoot           string              `json:"state_root"`
+	ToolHiveBinary      string              `json:"toolhive_binary"`
+	SeccompProfile      string              `json:"seccomp_profile"`
+	DockerFallback      bool                `json:"docker_fallback,omitempty"`
+	BridgeBinary        string              `json:"bridge_binary,omitempty"`
+	CredentialMountRoot string              `json:"credential_mount_root,omitempty"`
+	Definition          api.ToolDefinition  `json:"definition"`
+	DynamicDefinitions  bool                `json:"dynamic_definitions,omitempty"`
+	Budget              *api.WorkloadBudget `json:"-"`
+	MaxActive           int                 `json:"max_active"`
+	IdleTTLSeconds      int                 `json:"idle_ttl_seconds"`
 	// CLI configures bounded-cli admission: the executor container the
 	// process lands in is inspected per call and only approved plans are
 	// admitted. Nil disables the CLI path entirely.
-	CLI *CLIControllerConfig `json:"cli,omitempty"`
-}
-
-// CLIControllerConfig is the operator-approved envelope for bounded-cli cell
-// execution. Every admitted call runs in a sibling container the controller
-// creates, inspects and destroys; nothing here is model-supplied.
-type CLIControllerConfig struct {
-	AllowPackageInstall bool `json:"allow_package_install,omitempty"`
-	// ToolsImage is the digest-pinned image catalog commands run on.
-	ToolsImage string `json:"tools_image"`
-	// CellInit is the host path of the statically-linked cellinit helper;
-	// it is copied into the state root and bind-mounted read-only as the
-	// cell's PID 1 and canary agent.
-	CellInit string `json:"cell_init"`
-	// ProxyImage is the digest-pinned egress proxy image; required when any
-	// admitted plan declares non-loopback egress or brokered credentials.
-	ProxyImage string `json:"proxy_image,omitempty"`
-	// Runtime selects the OCI runtime tier: empty or "runc" (default),
-	// "runsc" or "kata"; the daemon must list the runtime before a cell
-	// may start on it.
-	Runtime string `json:"runtime,omitempty"`
-	// PerPrincipalUID maps each principal to a stable cell uid (20000+) so
-	// files a read-write cell leaves in a workspace carry a per-principal
-	// owner instead of the shared cli uid.
-	PerPrincipalUID bool `json:"per_principal_uid,omitempty"`
-	// SpacesRoot is the host root for principal workspaces; required when a
-	// definition requests a principal-scoped workspace bind.
-	SpacesRoot string `json:"spaces_root,omitempty"`
-	// Environment names the managed deployment tier (dev/prod). When set and
-	// <spaces_root>/<principal>/managed/<environment>/workspace exists, the
-	// principal scope binds that managed workspace; otherwise it falls back
-	// to <spaces_root>/<principal>/workspace for unmanaged principals.
-	Environment string `json:"environment,omitempty"`
-	// AllowedEgress is the union of egress hosts any CLI plan may declare.
-	// Cells with non-loopback egress get a per-cell internal network plus a
-	// CONNECT-allowlisted Squid proxy; all other cells are network none.
-	AllowedEgress []string `json:"allowed_egress"`
-	// Ceiling bounds every admitted execution policy; the plan may be
-	// stricter but never looser.
-	Ceiling ExecutionPolicy `json:"ceiling"`
-	// Approved are the immutable CLI plans the controller will attest:
-	// definition id+version, command, optional image+digest and the exact
-	// execution policy.
-	Approved []CLIApproval `json:"approved"`
-	// UserCommands admits owner-registered catalog command plans: the bare
-	// command name must be listed and the policy must fit Ceiling. Entries
-	// are reviewed for exec-capability (hooks, preprocessors, subcommands
-	// that spawn binaries); a binary that can run other code never belongs
-	// here. Image-carrying artifact plans are never admitted this way.
-	UserCommands []string `json:"user_commands,omitempty"`
-	// Toolboxes are operator-pinned toolsets for toolbox-lifecycle cells:
-	// name -> digest-pinned member images mounted read-only at /tools/<i>.
-	Toolboxes map[string][]string `json:"toolboxes,omitempty"`
-	// PoolSize caps live cells (idle + claimed) per stateless pool key;
-	// callers past the cap wait up to PoolClaimWaitSeconds then fail closed.
-	PoolSize             int `json:"pool_size,omitempty"`
-	PoolClaimWaitSeconds int `json:"pool_claim_wait_seconds,omitempty"`
-	// WarmMaxAgeSeconds and WarmMaxReuse bound warm-cell reuse; a cell past
-	// either limit is rotated before another exec claims it.
-	WarmMaxAgeSeconds int `json:"warm_max_age_seconds,omitempty"`
-	WarmMaxReuse      int `json:"warm_max_reuse,omitempty"`
-}
-
-// CLIApproval pins one admitted bounded-cli plan shape.
-type CLIApproval struct {
-	DefinitionID      string          `json:"definition_id"`
-	DefinitionVersion string          `json:"definition_version"`
-	Command           string          `json:"command"`
-	Image             string          `json:"image,omitempty"`
-	Digest            string          `json:"digest,omitempty"`
-	Execution         ExecutionPolicy `json:"execution"`
+	CLI *api.CLIControllerConfig `json:"cli,omitempty"`
 }
 
 type genericWorkload struct {
-	plan           controllerPlan
+	plan           api.ControllerPlan
 	endpoint       string
 	proxyName      string
 	proxyVol       string
@@ -138,7 +61,7 @@ type genericController struct {
 	// code; `docker exec` needs the tool's own exit status, which the
 	// output-only command seam cannot carry.
 	commandExit func(context.Context, io.Writer, string, ...string) (int, error)
-	scope       *dockerScope
+	scope       *api.DockerScope
 	mu          sync.Mutex // ponytail: one controller lock; split only after measured contention.
 	workloads   map[string]genericWorkload
 	registry    *cellRegistry
@@ -159,14 +82,14 @@ func (c *genericController) docker(ctx context.Context, args ...string) ([]byte,
 	if c.scope == nil {
 		return c.command(ctx, "docker", args...)
 	}
-	return c.scope.runScoped(ctx, c.command, "docker", args...)
+	return c.scope.RunScoped(ctx, c.command, "docker", args...)
 }
 
 func (c *genericController) toolhive(ctx context.Context, args ...string) ([]byte, error) {
 	if c.scope == nil {
 		return c.command(ctx, c.config.ToolHiveBinary, args...)
 	}
-	return c.scope.runScoped(ctx, c.command, c.config.ToolHiveBinary, args...)
+	return c.scope.RunScoped(ctx, c.command, c.config.ToolHiveBinary, args...)
 }
 
 // scopeLabel is the hermes-hub.scope marker stamped on every object the
@@ -176,7 +99,7 @@ func (c *genericController) scopeLabel() string {
 	if c.scope == nil {
 		return ""
 	}
-	return "hermes-hub.scope=" + c.scope.project
+	return "hermes-hub.scope=" + c.scope.Project
 }
 
 func (c *genericController) scopeLabelArgs() []string {
@@ -228,18 +151,18 @@ type genericMount struct {
 
 func newGenericController(config GenericControllerConfig) (*genericController, error) {
 	if !filepath.IsAbs(config.StateRoot) || !filepath.IsAbs(config.ToolHiveBinary) || !filepath.IsAbs(config.SeccompProfile) {
-		return nil, fmt.Errorf("%w: generic controller paths", ErrInvalid)
+		return nil, fmt.Errorf("%w: generic controller paths", api.ErrInvalid)
 	}
 	if config.BridgeBinary != "" {
-		if err := ValidateLinuxBridgeBinary(config.BridgeBinary); err != nil {
+		if err := api.ValidateLinuxBridgeBinary(config.BridgeBinary); err != nil {
 			return nil, err
 		}
 	}
 	if config.Budget == nil {
 		if config.MaxActive < 1 || config.IdleTTLSeconds < 1 {
-			return nil, fmt.Errorf("%w: generic controller budget", ErrInvalid)
+			return nil, fmt.Errorf("%w: generic controller budget", api.ErrInvalid)
 		}
-		budget, err := NewWorkloadBudget(config.MaxActive, time.Duration(config.IdleTTLSeconds)*time.Second)
+		budget, err := api.NewWorkloadBudget(config.MaxActive, time.Duration(config.IdleTTLSeconds)*time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -249,8 +172,8 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	config.ToolHiveBinary = filepath.Clean(config.ToolHiveBinary)
 	config.SeccompProfile = filepath.Clean(config.SeccompProfile)
 	if config.CredentialMountRoot != "" {
-		if !filepath.IsAbs(config.CredentialMountRoot) || noSymlinkPath(config.CredentialMountRoot) != nil {
-			return nil, ErrIsolation
+		if !filepath.IsAbs(config.CredentialMountRoot) || api.NoSymlinkPath(config.CredentialMountRoot) != nil {
+			return nil, api.ErrIsolation
 		}
 		config.CredentialMountRoot = filepath.Clean(config.CredentialMountRoot)
 	}
@@ -262,126 +185,18 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 			return nil, err
 		}
 	}
-	if err := validateCLIConfig(config.CLI); err != nil {
+	if err := api.ValidateCLIConfig(config.CLI); err != nil {
 		return nil, err
 	}
-	if noSymlinkPath(config.StateRoot) != nil || noSymlinkPath(config.SeccompProfile) != nil {
-		return nil, ErrIsolation
+	if api.NoSymlinkPath(config.StateRoot) != nil || api.NoSymlinkPath(config.SeccompProfile) != nil {
+		return nil, api.ErrIsolation
 	}
-	controller := &genericController{config: config, command: localCommand, commandEnv: isolatedCommandEnv, commandExit: localCommandExit, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
-	controller.scope = newDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
+	controller := &genericController{config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
+	controller.scope = api.NewDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
 	return controller, nil
 }
 
-// isolatedCommandEnv prevents the trusted ToolHive control process from
-// inheriting arbitrary host credentials. Only Docker locality and the OS
-// runtime essentials cross the controller boundary; per-workload secret refs
-// are appended explicitly by the caller.
-func isolatedToolHiveEnviron(extra map[string]string) []string {
-	overridden := map[string]bool{}
-	for key := range extra {
-		overridden[strings.ToUpper(key)] = true
-	}
-	allowed := []string{"PATH", "SystemRoot", "WINDIR", "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "DOCKER_HOST", "DOCKER_CONTEXT"}
-	env := make([]string, 0, len(allowed)+len(extra))
-	for _, key := range allowed {
-		if overridden[strings.ToUpper(key)] {
-			continue
-		}
-		if value, ok := os.LookupEnv(key); ok {
-			env = append(env, key+"="+value)
-		}
-	}
-	for key, value := range extra {
-		env = append(env, key+"="+value)
-	}
-	return env
-}
-
-func isolatedCommandEnv(ctx context.Context, env map[string]string, binary string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- binary and args are fixed by the reviewed controller plan.
-	cmd.Env = isolatedToolHiveEnviron(env)
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &output
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("isolated ToolHive command failed: %w: %s", err, strings.TrimSpace(output.String()))
-	}
-	return output.Bytes(), nil
-}
-
-// localCommandExit runs one controller-spawned binary, streaming combined
-// output into the sink, and returns the process exit code so `docker exec`
-// surfaces the tool's own status rather than a flattened error.
-func localCommandExit(ctx context.Context, sink io.Writer, binary string, args ...string) (int, error) {
-	cmd := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- binary and args are fixed by the reviewed controller plan.
-	cmd.Env = isolatedToolHiveEnviron(nil)
-	if sink != nil {
-		cmd.Stdout, cmd.Stderr = sink, sink
-	}
-	err := cmd.Run()
-	if err == nil {
-		return 0, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), nil
-	}
-	return -1, err
-}
-
-func localCommandEnv(ctx context.Context, env map[string]string, binary string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- binary and args are fixed by the reviewed controller plan.
-	cmd.Env = os.Environ()
-	for key, value := range env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, io.Discard
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("local workload command failed: %w", err)
-	}
-	return output.Bytes(), nil
-}
-
-func readGenericSecrets(path string, definition ToolDefinition) (map[string]string, error) {
-	if path == "" {
-		return nil, nil
-	}
-	if filepath.Ext(path) != ".env" || noSymlinkPath(path) != nil {
-		return nil, ErrIsolation
-	}
-	body, err := os.ReadFile(path) // #nosec G304 -- path is the controller-owned workload file.
-	if err != nil {
-		return nil, err
-	}
-	allowed := map[string]bool{}
-	for _, name := range definition.Environment {
-		allowed[name] = true
-	}
-	for _, input := range definition.Credentials {
-		allowed[input.Name] = true
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(body), "\n") {
-		if line == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok || !allowed[key] || strings.ContainsAny(key, "\r\n") || strings.ContainsAny(value, "\r\n") || value == "" {
-			return nil, ErrIsolation
-		}
-		if _, exists := values[key]; exists {
-			return nil, ErrIsolation
-		}
-		values[key] = value
-	}
-	if !definition.credentialsSatisfied(func(name string) bool { return values[name] != "" }) {
-		return nil, fmt.Errorf("%w: required runtime credential missing", ErrUnauthorized)
-	}
-	return values, nil
-}
-
-func (c *genericController) validatePlan(plan controllerPlan) error {
+func (c *genericController) validatePlan(plan api.ControllerPlan) error {
 	definition := c.config.Definition
 	if c.config.DynamicDefinitions {
 		definition = plan.Definition
@@ -389,22 +204,22 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 	if err := validateGenericDefinition(definition); err != nil {
 		return err
 	}
-	if !identity.ValidID(plan.WorkloadID) || plan.DefinitionID != definition.DefinitionID || plan.DefinitionVersion != definition.Version || plan.Image != definition.Source.Image || plan.Digest != definition.Source.Digest || plan.ToolHiveVersion != definition.Workload.ToolHiveVersion || !equalStrings(plan.SidecarImages, definition.Workload.SidecarImages) || !reflectExecution(plan.Execution, definition.Execution) {
-		return fmt.Errorf("%w: generic plan drift", ErrStale)
+	if !identity.ValidID(plan.WorkloadID) || plan.DefinitionID != definition.DefinitionID || plan.DefinitionVersion != definition.Version || plan.Image != definition.Source.Image || plan.Digest != definition.Source.Digest || plan.ToolHiveVersion != definition.Workload.ToolHiveVersion || !api.EqualStrings(plan.SidecarImages, definition.Workload.SidecarImages) || !api.ReflectExecution(plan.Execution, definition.Execution) {
+		return fmt.Errorf("%w: generic plan drift", api.ErrStale)
 	}
 	if plan.WorkspacePath != "" {
 		path, err := filepath.Abs(plan.WorkspacePath)
-		if err != nil || !containedPath(c.config.StateRoot, path) || noSymlinkPath(path) != nil {
-			return ErrIsolation
+		if err != nil || !api.ContainedPath(c.config.StateRoot, path) || api.NoSymlinkPath(path) != nil {
+			return api.ErrIsolation
 		}
 	}
 	if len(plan.Execution.Mounts) != 0 {
 		if !c.config.DockerFallback {
-			return fmt.Errorf("%w: generic host state mounts are not enabled", ErrIsolation)
+			return fmt.Errorf("%w: generic host state mounts are not enabled", api.ErrIsolation)
 		}
 		for _, mount := range plan.Execution.Mounts {
 			if mount.Source != "connection-state" && mount.Source != "job-state" {
-				return fmt.Errorf("%w: generic mount source is not a named state volume", ErrIsolation)
+				return fmt.Errorf("%w: generic mount source is not a named state volume", api.ErrIsolation)
 			}
 		}
 	}
@@ -413,7 +228,7 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 		// network namespace; the stock ToolHive path has no forwarder, so
 		// refusing here is the difference between a bounded relay and a
 		// silently unmet connectivity promise.
-		return fmt.Errorf("%w: tcp forwards require the Docker fallback companion", ErrIsolation)
+		return fmt.Errorf("%w: tcp forwards require the Docker fallback companion", api.ErrIsolation)
 	}
 	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
 		return err
@@ -421,692 +236,36 @@ func (c *genericController) validatePlan(plan controllerPlan) error {
 	return nil
 }
 
-func (c *genericController) validateCredentialMounts(mounts []Mount) error {
+func (c *genericController) validateCredentialMounts(mounts []api.Mount) error {
 	if len(mounts) == 0 {
 		return nil
 	}
 	if c.config.CredentialMountRoot == "" || len(mounts) > 16 {
-		return fmt.Errorf("%w: credential mount root is not configured", ErrIsolation)
+		return fmt.Errorf("%w: credential mount root is not configured", api.ErrIsolation)
 	}
 	for _, mount := range mounts {
-		if !filepath.IsAbs(mount.Source) || !validContainerMountTarget(mount.Target) || !containedPath(c.config.CredentialMountRoot, mount.Source) || noSymlinkPath(mount.Source) != nil {
-			return fmt.Errorf("%w: unsafe credential mount", ErrIsolation)
+		if !filepath.IsAbs(mount.Source) || !api.ValidContainerMountTarget(mount.Target) || !api.ContainedPath(c.config.CredentialMountRoot, mount.Source) || api.NoSymlinkPath(mount.Source) != nil {
+			return fmt.Errorf("%w: unsafe credential mount", api.ErrIsolation)
 		}
 		info, err := os.Stat(mount.Source)
 		if err != nil || (mount.ReadOnly && !info.Mode().IsRegular()) || (!mount.ReadOnly && (!info.IsDir() || filepath.Base(mount.Source) != "state" || filepath.Dir(mount.Source) == filepath.Clean(c.config.CredentialMountRoot))) {
-			return fmt.Errorf("%w: credential mount must be a read-only file or lease state directory", ErrIsolation)
+			return fmt.Errorf("%w: credential mount must be a read-only file or lease state directory", api.ErrIsolation)
 		}
 	}
 	return nil
 }
 
-func validContainerMountTarget(target string) bool {
-	return strings.HasPrefix(target, "/") && target != "/" && !strings.ContainsAny(target, "\x00\r\n") && filepath.ToSlash(filepath.Clean(target)) == target
-}
-
-func validateGenericDefinition(definition ToolDefinition) error {
-	if err := ValidateTrustedArtifactDefinition(definition); err != nil {
+func validateGenericDefinition(definition api.ToolDefinition) error {
+	if err := api.ValidateTrustedArtifactDefinition(definition); err != nil {
 		return err
 	}
-	if definition.Transport != ContainerMCP || len(definition.Workload.SidecarImages) != 1 {
-		return fmt.Errorf("%w: generic controller requires one ContainerMCP proxy image", ErrInvalid)
+	if definition.Transport != api.ContainerMCP || len(definition.Workload.SidecarImages) != 1 {
+		return fmt.Errorf("%w: generic controller requires one ContainerMCP proxy image", api.ErrInvalid)
 	}
-	if definition.Workload.Class == Shared && len(definition.Credentials) != 0 {
-		return fmt.Errorf("%w: shared generic MCP cannot retain credentials", ErrUnauthorized)
+	if definition.Workload.Class == api.Shared && len(definition.Credentials) != 0 {
+		return fmt.Errorf("%w: shared generic MCP cannot retain credentials", api.ErrUnauthorized)
 	}
 	return nil
-}
-
-func (c *genericController) handler(token string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if r.URL.Path == "/release" {
-			var release controllerRelease
-			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-			decoder.DisallowUnknownFields()
-			if decoder.Decode(&release) != nil || !identity.ValidID(release.WorkloadID) {
-				http.Error(w, "invalid release", http.StatusForbidden)
-				return
-			}
-			c.mu.Lock()
-			if workload, ok := c.workloads[release.WorkloadID]; ok {
-				if err := c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful); err != nil {
-					c.mu.Unlock()
-					http.Error(w, "workload release failed", http.StatusServiceUnavailable)
-					return
-				}
-				delete(c.workloads, release.WorkloadID)
-				c.config.Budget.Release(release.WorkloadID)
-			}
-			c.mu.Unlock()
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.URL.Path == "/cli-metrics" {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(c.cellMetricsSnapshot())
-			return
-		}
-		if r.URL.Path == "/cli-release" {
-			var release cliReleaseRequest
-			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-			decoder.DisallowUnknownFields()
-			if decoder.Decode(&release) != nil {
-				http.Error(w, "invalid cli release", http.StatusForbidden)
-				return
-			}
-			c.releaseCells(r.Context(), release)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.URL.Path == "/cli-exec" {
-			var request cliExecRequest
-			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
-			decoder.DisallowUnknownFields()
-			if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
-				http.Error(w, "invalid cli request", http.StatusForbidden)
-				return
-			}
-			response, err := c.execCLI(r.Context(), request)
-			if err != nil {
-				status := http.StatusForbidden
-				if !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrUnauthorized) {
-					status = http.StatusServiceUnavailable
-				}
-				http.Error(w, "cli exec denied: "+publicPrepareError(err), status)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(response)
-			return
-		}
-		if r.URL.Path != "/admit" {
-			http.NotFound(w, r)
-			return
-		}
-		var plan controllerPlan
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
-		decoder.DisallowUnknownFields()
-		if decoder.Decode(&plan) != nil || decoder.Decode(new(any)) != io.EOF {
-			http.Error(w, "invalid plan", http.StatusForbidden)
-			return
-		}
-		if plan.Command != "" {
-			// Bounded-cli plans moved to /cli-exec: the controller now
-			// creates the sandbox cell rather than attesting this executor.
-			http.Error(w, "unapproved plan: bounded-cli executes through /cli-exec", http.StatusForbidden)
-			return
-		}
-		if err := c.validatePlan(plan); err != nil {
-			http.Error(w, "unapproved plan: "+publicPrepareError(err), http.StatusForbidden)
-			return
-		}
-		if !c.config.DynamicDefinitions {
-			plan.Definition = c.config.Definition
-		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if workload, ok := c.workloads[plan.WorkloadID]; ok {
-			if workload.plan.WorkspacePath != plan.WorkspacePath {
-				http.Error(w, "workload identity conflict", http.StatusForbidden)
-				return
-			}
-			_ = c.config.Budget.Touch(plan.WorkloadID)
-			writeGenericReceipt(w, workload)
-			return
-		}
-		if err := c.config.Budget.Acquire(r.Context(), plan.WorkloadID); err != nil {
-			http.Error(w, "workload budget unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		workload, err := c.start(r.Context(), plan)
-		if err != nil {
-			c.config.Budget.Release(plan.WorkloadID)
-			http.Error(w, "workload enforcement unavailable: "+err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		c.workloads[plan.WorkloadID] = workload
-		writeGenericReceipt(w, workload)
-	})
-}
-
-func writeGenericReceipt(w http.ResponseWriter, workload genericWorkload) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(AdmissionReceipt{WorkloadID: workload.plan.WorkloadID, State: "running", Enforced: true, Endpoint: workload.endpoint, ImageDigest: workload.plan.Digest, SidecarImages: workload.plan.SidecarImages, Execution: workload.plan.Execution})
-}
-
-func (c *genericController) start(ctx context.Context, plan controllerPlan) (genericWorkload, error) {
-	if _, err := c.toolhive(ctx, "version"); err != nil {
-		return genericWorkload{}, err
-	}
-	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
-		return genericWorkload{}, err
-	}
-	if len(plan.Execution.Mounts) != 0 && !c.config.DockerFallback {
-		return genericWorkload{}, fmt.Errorf("%w: generic host state mounts are not enabled", ErrIsolation)
-	}
-	if len(plan.Execution.TCPForwards) != 0 && !c.config.DockerFallback {
-		return genericWorkload{}, fmt.Errorf("%w: tcp forwards require the Docker fallback companion", ErrIsolation)
-	}
-	help, err := c.toolhive(ctx, "run", "--help")
-	if err != nil {
-		return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", ErrIsolation)
-	}
-	if !toolHiveSupportsRuntime(string(help)) {
-		if !c.config.DockerFallback {
-			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the required create-time profile", ErrIsolation)
-		}
-		return c.startDockerRemoteFallback(ctx, plan)
-	}
-	if len(plan.CredentialMounts) > 0 && !strings.Contains(string(help), "--volume") {
-		if !c.config.DockerFallback {
-			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express credential mounts", ErrIsolation)
-		}
-		return c.startDockerRemoteFallback(ctx, plan)
-	}
-	port, err := reserveLoopbackPort()
-	if err != nil {
-		return genericWorkload{}, err
-	}
-	network := "hermes-" + plan.WorkloadID
-	proxyName := plan.WorkloadID + "-egress"
-	proxyVol := proxyName + "-config"
-	started := false
-	defer func() {
-		if started {
-			return
-		}
-		_, _ = c.toolhive(ctx, "rm", plan.WorkloadID)
-		_, _ = c.docker(ctx, "rm", "--force", plan.WorkloadID, proxyName)
-		_, _ = c.docker(ctx, "network", "rm", network)
-		_, _ = c.docker(ctx, "volume", "rm", proxyVol)
-	}()
-	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), network)...)...); err != nil {
-		return genericWorkload{}, err
-	}
-	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), proxyVol)...)...); err != nil {
-		return genericWorkload{}, err
-	}
-	proxyConfig, err := genericProxyConfig(plan.Execution.Egress)
-	if err != nil {
-		return genericWorkload{}, err
-	}
-	// docker cp preserves the source mode; the allowlist holds no secrets.
-	fileName, err := writeWorldReadableTemp(c.config.StateRoot, ".proxy-*", proxyConfig)
-	if err != nil {
-		return genericWorkload{}, err
-	}
-	defer os.Remove(fileName)
-	limits := []string{"--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs)}
-	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.scopeLabelArgs()...)
-	args = append(append(args, limits...), plan.SidecarImages[0])
-	if _, err := c.docker(ctx, args...); err != nil {
-		return genericWorkload{}, err
-	}
-	if _, err := c.docker(ctx, "cp", fileName, proxyName+":/etc/squid/squid.conf"); err != nil {
-		return genericWorkload{}, err
-	}
-	if _, err := c.docker(ctx, "network", "connect", "bridge", proxyName); err != nil {
-		return genericWorkload{}, err
-	}
-	if _, err := c.docker(ctx, "start", proxyName); err != nil {
-		return genericWorkload{}, err
-	}
-	if err := c.waitProxyListen(ctx, proxyName); err != nil {
-		return genericWorkload{}, err
-	}
-	ip, err := c.proxyIP(ctx, proxyName, network)
-	if err != nil {
-		return genericWorkload{}, err
-	}
-	toolArgs := []string{"run", "--name", plan.WorkloadID, "--host", "127.0.0.1", "--proxy-port", strconv.Itoa(port), "--transport", "stdio", "--proxy-mode", "streamable-http", "--permission-profile", "none", "--network", network, "--isolate-network=false", "--read-only", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--security-opt", "no-new-privileges=true", "--cap-drop", "ALL", "--user", "10001:10001", "--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs), "--timeout", strconv.Itoa(plan.Execution.TimeoutSeconds), "--output-limit", strconv.Itoa(plan.Execution.OutputBytes), "--env", "HTTP_PROXY=http://" + ip + ":3128", "--env", "HTTPS_PROXY=http://" + ip + ":3128"}
-	var secretValues map[string]string
-	if plan.WorkspacePath != "" {
-		secretPath := filepath.Join(plan.WorkspacePath, "credentials.env")
-		if _, statErr := os.Lstat(secretPath); statErr == nil {
-			secretValues, err = readGenericSecrets(secretPath, plan.Definition)
-			if err != nil {
-				return genericWorkload{}, err
-			}
-		} else if !os.IsNotExist(statErr) {
-			return genericWorkload{}, ErrIsolation
-		}
-	}
-	commandEnv := map[string]string{}
-	if len(secretValues) > 0 {
-		commandEnv["TOOLHIVE_SECRETS_PROVIDER"] = "environment"
-	}
-	for key, value := range secretValues {
-		ref := "HERMES_" + strings.ToUpper(plan.WorkloadID) + "_" + key
-		ref = strings.NewReplacer("-", "_", ".", "_").Replace(ref)
-		commandEnv["TOOLHIVE_SECRET_"+ref] = value
-		toolArgs = append(toolArgs, "--secret", ref+",target="+key)
-	}
-	for _, tool := range plan.Definition.Tools {
-		toolArgs = append(toolArgs, "--tools", tool.Name)
-	}
-	for _, mount := range plan.CredentialMounts {
-		mode := ":ro"
-		if !mount.ReadOnly {
-			mode = ":rw"
-		}
-		toolArgs = append(toolArgs, "--volume", dockerBindSource(mount.Source)+":"+mount.Target+mode)
-	}
-	toolArgs = append(toolArgs, runtimeEnvironmentArgs(plan.Definition)...)
-	toolArgs = append(toolArgs, proxyEnvironmentArgs(plan.Definition, "http://"+ip+":3128")...)
-	imageRef, err := c.resolveArtifactImage(ctx, plan)
-	if err != nil {
-		return genericWorkload{}, err
-	}
-	toolArgs = append(toolArgs, imageRef)
-	if _, err := c.commandEnv(ctx, commandEnv, c.config.ToolHiveBinary, toolArgs...); err != nil {
-		return genericWorkload{}, err
-	}
-	// ToolHive cannot stamp hub labels; the spawned name registers as owned
-	// so later scope-checked inspect/rm see it as ours.
-	if c.scope != nil {
-		c.scope.register(plan.WorkloadID)
-	}
-	if err := waitLocalWorkload(ctx, func() error {
-		_, err := c.docker(ctx, "inspect", plan.WorkloadID)
-		return err
-	}); err != nil {
-		return genericWorkload{}, err
-	}
-	workload := genericWorkload{plan: plan, endpoint: "http://127.0.0.1:" + strconv.Itoa(port) + DefaultEndpointPath, proxyName: proxyName, proxyVol: proxyVol, imageRef: imageRef}
-	if _, err := c.inspect(ctx, workload); err != nil {
-		return genericWorkload{}, err
-	}
-	started = true
-	return workload, nil
-}
-
-func reserveLoopbackPort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer listener.Close() // ponytail: Docker takes the port immediately; a longer lease needs a port registry.
-	return listener.Addr().(*net.TCPAddr).Port, nil
-}
-
-func toolHiveSupportsRuntime(help string) bool {
-	for _, flag := range []string{"--read-only", "--security-opt", "--cpus", "--memory", "--pids-limit", "--cap-drop", "--user", "--timeout", "--output-limit"} {
-		if !strings.Contains(help, flag) {
-			return false
-		}
-	}
-	return true
-}
-
-// proxyListenTimeout bounds the post-start wait for squid to bind its port;
-// tests shrink it to exercise the failure path.
-var proxyListenTimeout = 10 * time.Second
-
-// waitProxyListen holds callers until squid has bound its port: docker start
-// returns before the daemon finishes its init, and a workload that connects in
-// that window sees connection refused instead of a proxy. The probe runs inside
-// the proxy container because the internal cell network is unreachable from the
-// controller; procfs needs no extra tools in the slim image.
-func (c *genericController) waitProxyListen(ctx context.Context, name string) error {
-	deadline := time.Now().Add(proxyListenTimeout)
-	for {
-		// 3128 = 0x0C38 in the procfs local_address column.
-		if _, err := c.docker(ctx, "exec", name, "grep", "-q", ":0C38", "/proc/net/tcp", "/proc/net/tcp6"); err == nil {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%w: egress proxy not listening", ErrIsolation)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-}
-
-func (c *genericController) proxyIP(ctx context.Context, name, network string) (string, error) {
-	body, err := c.docker(ctx, "inspect", name, "--format", "{{json .NetworkSettings.Networks}}")
-	if err != nil {
-		return "", err
-	}
-	var networks map[string]struct{ IPAddress string }
-	if json.Unmarshal(body, &networks) != nil {
-		return "", ErrIsolation
-	}
-	ip := strings.TrimSpace(networks[network].IPAddress)
-	parsed := net.ParseIP(ip)
-	if parsed == nil || !parsed.IsPrivate() {
-		return "", ErrIsolation
-	}
-	return ip, nil
-}
-
-func (c *genericController) inspect(ctx context.Context, workload genericWorkload) (AdmissionReceipt, error) {
-	inspectArgs := []string{"inspect", workload.plan.WorkloadID, workload.proxyName}
-	if workload.dockerFallback {
-		inspectArgs = append(inspectArgs, workload.relayName)
-	}
-	body, err := c.docker(ctx, inspectArgs...)
-	if err != nil {
-		return AdmissionReceipt{}, err
-	}
-	var containers []genericContainer
-	expectedContainers := 2
-	if workload.dockerFallback {
-		expectedContainers = 3
-	}
-	if json.Unmarshal(body, &containers) != nil || len(containers) != expectedContainers {
-		return AdmissionReceipt{}, ErrIsolation
-	}
-	network := "hermes-" + workload.plan.WorkloadID
-	for i, container := range containers {
-		if problem := genericProfileProblem(container, network, c.config.SeccompProfile, workload.plan.Execution); problem != "" {
-			return AdmissionReceipt{}, fmt.Errorf("%w: generic runtime profile container %d: %s", ErrIsolation, i, problem)
-		}
-		credentialMountOK := credentialMountsOK(container.Mounts, workload.plan.CredentialMounts)
-		bridgeMountOK := !workload.dockerFallback && credentialMountOK
-		if workload.dockerFallback {
-			bridgeMountOK = fallbackBridgeMountsOK(container.Mounts, workload)
-		}
-		if i == 0 && (!artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef) || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || (!workload.dockerFallback && !credentialMountOK) || (workload.dockerFallback && !bridgeMountOK) || len(container.NetworkSettings.Networks) != 1) {
-			mounts := make([]string, 0, len(container.Mounts))
-			for _, mount := range container.Mounts {
-				mounts = append(mounts, mount.Type+":"+mount.Destination+":"+strconv.FormatBool(mount.RW))
-			}
-			return AdmissionReceipt{}, fmt.Errorf("%w: MCP container image=%t user=%t credentials=%t bridge=%t mounts=%v expected=%d networks=%d", ErrIsolation, artifactImageMatches(container.Config.Image, workload.plan, workload.imageRef), container.Config.User != "" && container.Config.User != "0" && container.Config.User != "0:0", credentialMountOK, bridgeMountOK, mounts, len(workload.stateVols)+len(workload.plan.CredentialMounts)+1, len(container.NetworkSettings.Networks))
-		}
-		if i == 1 && (len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.proxyVol && container.Mounts[0].Source != workload.proxyVol) || container.Mounts[0].Destination != "/etc/squid" || len(container.NetworkSettings.Networks) != 2 || container.Image == "") {
-			return AdmissionReceipt{}, fmt.Errorf("%w: egress proxy identity or mounts", ErrIsolation)
-		}
-		if i == 2 && workload.dockerFallback && (container.Config.Image != workload.plan.SidecarImages[0] || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" || (container.Mounts[0].Name != workload.relayVol && container.Mounts[0].Source != workload.relayVol) || container.Mounts[0].Destination != "/hermes-relay" || container.Mounts[0].RW || len(container.NetworkSettings.Networks) != 2 || !envHasBridgeToken(container.Config.Env)) {
-			return AdmissionReceipt{}, fmt.Errorf("%w: relay identity or mounts", ErrIsolation)
-		}
-		if workload.dockerFallback && i == 0 && envContainsForwardingSecret(container.Config.Env) {
-			return AdmissionReceipt{}, fmt.Errorf("%w: MCP container received a forwarding secret", ErrIsolation)
-		}
-	}
-	return AdmissionReceipt{WorkloadID: workload.plan.WorkloadID, State: "running", Enforced: true, Endpoint: workload.endpoint, ImageDigest: workload.plan.Digest, SidecarImages: workload.plan.SidecarImages, Execution: workload.plan.Execution}, nil
-}
-
-func credentialMountsOK(actual []genericMount, declared []Mount) bool {
-	if len(actual) != len(declared) {
-		return false
-	}
-	for _, mount := range actual {
-		if mount.Type != "bind" {
-			return false
-		}
-		matched := false
-		for _, want := range declared {
-			if mount.Source == dockerBindSource(want.Source) && mount.Destination == want.Target && mount.RW != want.ReadOnly {
-				if matched {
-					return false
-				}
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-	return true
-}
-
-func genericProfileProblem(container genericContainer, network, seccomp string, execution ExecutionPolicy) string {
-	checks := []struct {
-		failed bool
-		name   string
-	}{
-		{!container.State.Running, fmt.Sprintf("not-running(exit=%d)", container.State.ExitCode)},
-		{container.HostConfig.Privileged, "privileged"},
-		{!container.HostConfig.ReadonlyRootfs, "writable-root"},
-		{container.HostConfig.NetworkMode != network, "network"},
-		{container.HostConfig.PidMode != "", "pid-mode"},
-		{len(container.HostConfig.CapAdd) != 0, "cap-add"},
-		{len(container.HostConfig.CapDrop) != 1 || container.HostConfig.CapDrop[0] != "ALL", "cap-drop"},
-		{!contains(container.HostConfig.SecurityOpt, "no-new-privileges=true"), "no-new-privileges"},
-		{!securityOptHasSeccomp(container.HostConfig.SecurityOpt, seccomp), "seccomp"},
-		{container.HostConfig.NanoCpus != int64(execution.CPUMillis)*1000000, "cpu"},
-		{container.HostConfig.Memory != int64(execution.MemoryMiB)*1048576, "memory"},
-		{container.HostConfig.PidsLimit != int64(execution.MaxPIDs), "pids"},
-	}
-	for _, check := range checks {
-		if check.failed {
-			return check.name
-		}
-	}
-	return ""
-}
-
-func fallbackBridgeMountsOK(mounts []genericMount, workload genericWorkload) bool {
-	if len(mounts) != len(workload.stateVols)+len(workload.plan.CredentialMounts)+1 {
-		return false
-	}
-	bridge := false
-	states := make([]bool, len(workload.stateVols))
-	for _, mount := range mounts {
-		if mount.Type != "volume" {
-			if mount.Type != "bind" {
-				return false
-			}
-			matched := false
-			for _, declared := range workload.plan.CredentialMounts {
-				if mount.Source == dockerBindSource(declared.Source) && mount.Destination == declared.Target && mount.RW != declared.ReadOnly {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return false
-			}
-			continue
-		}
-		if mount.Destination == "/hermes-bridge" {
-			if bridge || mount.RW || (mount.Name != workload.bridgeVol && mount.Source != workload.bridgeVol) {
-				return false
-			}
-			bridge = true
-			continue
-		}
-		matched := false
-		for i, declared := range workload.plan.Execution.Mounts {
-			if mount.Destination == declared.Target && (mount.Name == workload.stateVols[i] || mount.Source == workload.stateVols[i]) && mount.RW != declared.ReadOnly {
-				if states[i] {
-					return false
-				}
-				states[i], matched = true, true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-	if !bridge {
-		return false
-	}
-	for _, present := range states {
-		if !present {
-			return false
-		}
-	}
-	return true
-}
-
-func (c *genericController) CleanupIdle(ctx context.Context, now time.Time) []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	ids := c.config.Budget.CleanupIdle(now)
-	for _, id := range ids {
-		workload, ok := c.workloads[id]
-		if !ok {
-			continue
-		}
-		if err := c.removeWorkload(ctx, workload, workload.plan.Definition.Workload.Stateful); err != nil {
-			continue
-		}
-		delete(c.workloads, id)
-	}
-	return ids
-}
-
-func (c *genericController) removeWorkload(ctx context.Context, workload genericWorkload, keepState bool) error {
-	if workload.remoteName != "" {
-		if workload.remoteState != "" {
-			_, _ = c.commandEnv(ctx, fallbackToolHiveEnv(workload.remoteState, nil), c.config.ToolHiveBinary, "rm", workload.remoteName)
-		} else {
-			_, _ = c.toolhive(ctx, "rm", workload.remoteName)
-		}
-	}
-	names := []string{workload.plan.WorkloadID, workload.proxyName}
-	if workload.relayName != "" {
-		names = append(names, workload.relayName)
-	}
-	if _, err := c.docker(ctx, append([]string{"rm", "--force"}, names...)...); err != nil {
-		return err
-	}
-	_, _ = c.docker(ctx, "network", "rm", "hermes-"+workload.plan.WorkloadID)
-	_, _ = c.docker(ctx, "volume", "rm", workload.proxyVol)
-	if workload.bridgeVol != "" {
-		_, _ = c.docker(ctx, "volume", "rm", workload.bridgeVol)
-	}
-	if workload.relayVol != "" {
-		_, _ = c.docker(ctx, "volume", "rm", workload.relayVol)
-	}
-	if !keepState {
-		for _, volume := range workload.stateVols {
-			_, _ = c.docker(ctx, "volume", "rm", volume)
-		}
-	}
-	if workload.remoteState != "" {
-		_ = os.RemoveAll(workload.remoteState)
-	}
-	return nil
-}
-
-func envContainsForwardingSecret(env []string) bool {
-	for _, value := range env {
-		upper := strings.ToUpper(value)
-		if strings.HasPrefix(upper, "HERMES_BRIDGE_TOKEN=") || strings.Contains(upper, "TOOLHIVE_SECRET") || strings.Contains(upper, "BRIDGE_AUTH=") {
-			return true
-		}
-	}
-	return false
-}
-
-func envHasBridgeToken(env []string) bool {
-	for _, value := range env {
-		if strings.HasPrefix(value, "HERMES_BRIDGE_TOKEN=") && len(strings.TrimPrefix(value, "HERMES_BRIDGE_TOKEN=")) >= 32 {
-			return true
-		}
-	}
-	return false
-}
-
-func genericProxyConfig(egress []string) (string, error) {
-	if len(egress) == 0 || len(egress) > 32 {
-		return "", ErrIsolation
-	}
-	var lines []string
-	for i, host := range egress {
-		host = strings.ToLower(strings.TrimSpace(host))
-		if host == "" || strings.ContainsAny(host, "\r\n") {
-			return "", ErrIsolation
-		}
-		if strings.Contains(host, "/") {
-			lines = append(lines, fmt.Sprintf("acl hermes_%d dst %s", i, host))
-		} else {
-			hostOnly, port, ok := strings.Cut(host, ":")
-			if !ok {
-				hostOnly, port = host, "443"
-			}
-			// Squid dstdomain matches an apex exactly; the ".host" form also
-			// covers subdomains, which is what a reviewed host means — an API
-			// answered by team.slack.com must not be denied by "slack.com".
-			// The registrable owner controls every subdomain, so the trust
-			// boundary is unchanged. IP literals keep exact dstdomain form.
-			if strings.Contains(hostOnly, ".") && net.ParseIP(hostOnly) == nil && !strings.HasPrefix(hostOnly, ".") {
-				hostOnly = "." + hostOnly
-			}
-			if strings.Contains(hostOnly, ".") || hostOnly == "localhost" {
-				lines = append(lines, fmt.Sprintf("acl hermes_%d dstdomain %s", i, hostOnly))
-			} else {
-				return "", ErrIsolation
-			}
-			lines = append(lines, fmt.Sprintf("acl hermes_port_%d port %s", i, port))
-		}
-	}
-	for i := range egress {
-		if strings.Contains(egress[i], "/") {
-			lines = append(lines, fmt.Sprintf("http_access allow connect hermes_%d", i))
-		} else {
-			lines = append(lines, fmt.Sprintf("http_access allow connect hermes_%d hermes_port_%d", i, i))
-		}
-	}
-	return "http_port 3128\nacl connect method CONNECT\n" + strings.Join(lines, "\n") + "\nhttp_access deny all\ncache deny all\naccess_log none\ncache_log /dev/stderr\npid_filename /tmp/squid.pid\n", nil
-}
-
-func equalStrings(a, b []string) bool { return strings.Join(a, "\x00") == strings.Join(b, "\x00") }
-func reflectExecution(a, b ExecutionPolicy) bool {
-	return a.TimeoutSeconds == b.TimeoutSeconds && a.OutputBytes == b.OutputBytes && a.CPUMillis == b.CPUMillis && a.MemoryMiB == b.MemoryMiB && a.MaxPIDs == b.MaxPIDs && equalStrings(a.Egress, b.Egress) && reflectTCPForwards(a.TCPForwards, b.TCPForwards) && reflectMounts(a.Mounts, b.Mounts)
-}
-func reflectTCPForwards(a, b []TCPForward) bool {
-	return len(a) == len(b) && func() bool {
-		for i := range a {
-			if a[i] != b[i] {
-				return false
-			}
-		}
-		return true
-	}()
-}
-func reflectMounts(a, b []Mount) bool {
-	return len(a) == len(b) && func() bool {
-		for i := range a {
-			if a[i] != b[i] {
-				return false
-			}
-		}
-		return true
-	}()
-}
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func securityOptHasSeccomp(values []string, profilePath string) bool {
-	if contains(values, "seccomp="+profilePath) {
-		return true
-	}
-	body, err := os.ReadFile(profilePath) // #nosec G304 -- absolute operator-owned profile validated before use.
-	if err != nil {
-		return false
-	}
-	var expected any
-	if json.Unmarshal(body, &expected) != nil {
-		return false
-	}
-	for _, value := range values {
-		if !strings.HasPrefix(value, "seccomp=") {
-			continue
-		}
-		var actual any
-		if json.Unmarshal([]byte(strings.TrimPrefix(value, "seccomp=")), &actual) == nil && reflect.DeepEqual(actual, expected) {
-			return true
-		}
-	}
-	return false
 }
 
 // RunGenericController starts the admission endpoint. ToolHive and Docker are

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"io/fs"
 	"net"
@@ -94,15 +95,15 @@ func runChaosService(t *testing.T, configPath, role string) {
 		t.Fatal(gateway.Run(context.Background()))
 	case "toolhub":
 		auth := identity.TelegramEnvelope(cfg.Principal, 21, cfg.Principal, cfg.Policy)
-		definition := gatewayProbeDefinition("chaos-counter", toolhub.RemoteMCP, "read", toolhub.Shared, false, "https://fixture.invalid/mcp", "")
-		connection := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: "chaos-connection", Owner: toolhub.OwnerRef{Type: toolhub.ContextOwner, ID: auth.ContextID}, DefinitionID: definition.DefinitionID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": cfg.BackendURL}}
+		definition := gatewayProbeDefinition("chaos-counter", api.RemoteMCP, "read", api.Shared, false, "https://fixture.invalid/mcp", "")
+		connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "chaos-connection", Owner: api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}, DefinitionID: definition.DefinitionID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": cfg.BackendURL}}
 		store := toolhub.NewStore()
 		for _, put := range []func() error{func() error { return store.RegisterDefinition(definition) }, func() error { return store.PutConnection(connection) }, func() error { return store.PutBinding(gatewayProbeBinding(auth, definition, connection)) }} {
 			if err := put(); err != nil {
 				t.Fatal(err)
 			}
 		}
-		gateway := &toolhub.Gateway{Store: store, Backend: toolhub.MCPBackend{}, Tokens: map[string]identity.Envelope{cfg.Token: auth}, DisableLocalhostProtection: true}
+		gateway := &toolhub.Gateway{Store: store, Backend: api.MCPBackend{}, Tokens: map[string]identity.Envelope{cfg.Token: auth}, DisableLocalhostProtection: true}
 		handler, err := gateway.Handler()
 		if err != nil {
 			t.Fatal(err)
@@ -167,7 +168,7 @@ func runChaosCase(t *testing.T, repo, linuxBinary, imageName, target, phase stri
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	defer unblock()
 	var modelCalls atomic.Int32
-	provider, providerURL, err := nativeToolHubProvider(toolhub.ProjectedToolName("chaos-counter", "1.0.0", "read"), &modelCalls, entered, release)
+	provider, providerURL, err := nativeToolHubProvider(api.ProjectedToolName("chaos-counter", "1.0.0", "read"), &modelCalls, entered, release)
 	if err != nil {
 		t.Fatal(err)
 	}

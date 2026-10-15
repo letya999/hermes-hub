@@ -6,6 +6,7 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0041](ADR-0041-proactive-automation.md) | Accepted: proactive automation on the occurrence pipeline — bounded follow-up retry, quiet/cap/escalation policy, control-plane tool calls, owner brief, event subscriptions (M12) |
 | [ADR-0040](ADR-0040-single-stack-supervisor.md) | Accepted direction: one Compose supervisor using the existing control image; deployment acceptance pending |
 | [ADR-0039](ADR-0039-hermes-pin-raise.md) | Proposed: conditional Hermes pin raise once upstream merges the MCP breaker fix (D12c) |
 | [ADR-0038](ADR-0038-embedded-store.md) | Proposed: embedded single-writer store gated on measured post-deploy latency (D12b) |
