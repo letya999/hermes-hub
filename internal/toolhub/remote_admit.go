@@ -77,6 +77,10 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	probe, err := api.ProbeRemoteMCP(ctx, draft, nil)
 	if err != nil {
 		if probe.AuthNeeded {
+			body, advertised, oauthErr := c.prepareRemoteOAuth(auth, draft, onboardingID, requestKey, allowlist)
+			if advertised {
+				return body, oauthErr
+			}
 			return nil, fmt.Errorf("%w: remote endpoint requires credentials; resubmit prepare_source with a credentials list", api.ErrUnauthorized)
 		}
 		return nil, err

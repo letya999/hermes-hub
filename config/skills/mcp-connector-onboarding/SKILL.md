@@ -34,6 +34,10 @@ self-install request, not a request for package-management instructions.
   flow. `awaiting-credentials` means call `required_credentials` and send the form URL.
   It does not mean the install failed, and it is not permission to use the terminal,
   `npx`, or `config.yaml`.
+- A remote endpoint that advertises OAuth lands in `awaiting-oauth`: `status` returns
+  `authorization_url`. Send that link, wait for the owner to sign in, then continue
+  with `confirm`/`enable`. The minted token refreshes itself on later calls — never
+  ask the owner to paste a token or re-onboard after expiry.
 - On a follow-up without the original URL or `onboarding_id`, call `status` with the
   connector's `definition_id` (for example `notion-mcp-server`). ToolHub resolves the
   latest onboarding for this user. If it is awaiting credentials, call

@@ -425,6 +425,13 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	if onboarding.CredentialOwner != "" && onboarding.CredentialOwner != auth.PrincipalID {
 		connection.Metadata = map[string]string{"credential_owner": onboarding.CredentialOwner}
 	}
+	if onboarding.OAuthProvider != "" {
+		if connection.Metadata == nil {
+			connection.Metadata = map[string]string{}
+		}
+		connection.Metadata["oauth_provider"] = onboarding.OAuthProvider
+		connection.Metadata["oauth_connection"] = onboarding.OnboardingID
+	}
 	if err := c.Store.PutConnection(connection); err != nil {
 		return api.ToolBinding{}, err
 	}

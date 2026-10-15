@@ -159,6 +159,11 @@ func ParseServerManifest(data []byte, name string, source ArtifactSource) (Launc
 			connection = mergeConnection(connection, ConnectionAlternatives(pkg))
 		}
 	}
+	if remotes, ok := document["remotes"].([]any); ok && len(remotes) > 1 {
+		// Two remote endpoints is a choice the manifest never made; picking
+		// one silently would be guessing a different server than reviewed.
+		return LaunchRecipe{}, ConnectionRecipe{}, false, fmt.Errorf("%w: server manifest advertises %d remotes", ErrAmbiguousEntrypoint, len(remotes))
+	}
 	if remotes, ok := document["remotes"].([]any); ok && len(remotes) == 1 {
 		if remote, ok := remotes[0].(map[string]any); ok {
 			if endpoint := firstString(remote, "url", "endpoint"); endpoint != "" {
@@ -263,7 +268,86 @@ func ParseMCPBManifest(data []byte, name string) (LaunchRecipe, ConnectionRecipe
 	launch.Args = StringArray(document["args"])
 	launch.Evidence = []RecipeEvidence{{Source: "mcpb", Path: name, Detail: "MCPB manifest metadata"}}
 	connection := mergeConnection(ConnectionFromMap(document, "environment", "env"), ConnectionFromMap(document, "config", "configSchema"))
-	return launch, mergeConnection(connection, ConnectionAlternatives(document)), nil
+	connection = mergeConnection(connection, ConnectionAlternatives(document))
+	if server, ok := document["server"].(map[string]any); ok {
+		var err error
+		launch, connection, err = mcpbServerContract(document, server, launch, connection)
+		if err != nil {
+			return LaunchRecipe{}, ConnectionRecipe{}, err
+		}
+	}
+	return launch, connection, nil
+}
+
+// mcpbServerContract reads the official MCPB server block: mcp_config argv
+// becomes the entrypoint with ${__dirname} resolved to the container install
+// dir, literal env lands on LaunchRecipe.Environment, and ${user_config.*}
+// references in env project the user_config contract onto connection fields.
+// A user_config reference inside args is refused — secrets never ride argv.
+func mcpbServerContract(document, server map[string]any, launch LaunchRecipe, connection ConnectionRecipe) (LaunchRecipe, ConnectionRecipe, error) {
+	userConfig, _ := document["user_config"].(map[string]any)
+	config, _ := server["mcp_config"].(map[string]any)
+	command := firstString(config, "command")
+	if command == "" {
+		command = firstString(server, "command")
+	}
+	args := StringArray(config["args"])
+	if len(args) == 0 && len(config) == 0 {
+		if ep := firstString(server, "entry_point", "entrypoint"); ep != "" {
+			args = []string{ep}
+		}
+	}
+	if command != "" {
+		if !ValidCommand(command) || strings.ContainsAny(command, ";&|`$()") {
+			return LaunchRecipe{}, ConnectionRecipe{}, fmt.Errorf("%w: unsafe MCPB mcp_config command", ErrInvalid)
+		}
+		launch.Entrypoint = []string{command}
+		launch.Args = nil
+	}
+	for i, arg := range args {
+		if strings.Contains(arg, "${user_config.") {
+			return LaunchRecipe{}, ConnectionRecipe{}, fmt.Errorf("%w: MCPB user_config references in args would put secrets on argv", ErrUnsupportedCredentialContract)
+		}
+		args[i] = strings.ReplaceAll(arg, "${__dirname}", "/app")
+	}
+	launch.Args = append(launch.Args, args...)
+	if len(launch.Entrypoint) > 0 {
+		launch.Transport = ContainerMCP
+	}
+	for envName, rawValue := range configMap(config["env"]) {
+		value, _ := rawValue.(string)
+		name := EnvKey(envName)
+		if name == "" {
+			continue
+		}
+		if key := mcpbUserConfigKey(value); key != "" {
+			entry, _ := userConfig[key].(map[string]any)
+			connection.Fields = append(connection.Fields, ConnectionField{
+				Name: name, Type: ConnectionType(name), Delivery: "env", Target: name,
+				Secret:   entry["sensitive"] == true || SecretName(name),
+				Required: entry["required"] == true,
+			})
+			continue
+		}
+		if launch.Environment == nil {
+			launch.Environment = map[string]string{}
+		}
+		launch.Environment[name] = strings.ReplaceAll(value, "${__dirname}", "/app")
+	}
+	return launch, connection, nil
+}
+
+func configMap(raw any) map[string]any {
+	m, _ := raw.(map[string]any)
+	return m
+}
+
+func mcpbUserConfigKey(value string) string {
+	rest, ok := strings.CutPrefix(strings.TrimSuffix(value, "}"), "${user_config.")
+	if !ok || !strings.HasSuffix(value, "}") {
+		return ""
+	}
+	return rest
 }
 
 func ParseDocumentationCredentials(data []byte, name string) ConnectionRecipe {

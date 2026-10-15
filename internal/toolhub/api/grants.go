@@ -126,7 +126,11 @@ type Onboarding struct {
 	BrokerContractRevision   int       `json:"broker_contract_revision,omitempty"`
 	BrokerAuthorizationURL   string    `json:"broker_authorization_url,omitempty"`
 	ProviderAuthorizationURL string    `json:"provider_authorization_url,omitempty"`
-	SupersededBy             string    `json:"superseded_by,omitempty"`
+	// OAuthProvider names the broker slot that minted this onboarding's
+	// credential. Set only for OAuth-managed connections so the call path
+	// knows a rejected call may be refreshed and retried once.
+	OAuthProvider string `json:"oauth_provider,omitempty"`
+	SupersededBy  string `json:"superseded_by,omitempty"`
 	// AdmissionPending means tools/list has not run because the server named
 	// required secrets and exited first. The definition is a draft until the
 	// protected form is submitted and the probe succeeds.

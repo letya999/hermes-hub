@@ -157,6 +157,9 @@ func ImportCLIArtifact(ctx context.Context, source api.ArtifactSource, config ap
 // file), and wraps the binary in a scratch image through the restricted
 // build. The mutable tag is recorded, never trusted.
 func ImportCLIReleaseArtifact(ctx context.Context, source api.ArtifactSource, config api.ArtifactImportConfig, build api.RestrictedBuildConfig, client *http.Client, apiBase string) (api.ImportedArtifact, error) {
+	if strings.HasSuffix(strings.ToLower(source.Asset), ".mcpb") {
+		return ImportMCPBReleaseArtifact(ctx, source, config, build, client, apiBase)
+	}
 	if source.Tag == "" || source.Asset == "" {
 		return api.ImportedArtifact{}, fmt.Errorf("%w: github-release source requires tag and asset", api.ErrInvalid)
 	}
@@ -215,6 +218,76 @@ func ImportCLIReleaseArtifact(ctx context.Context, source api.ArtifactSource, co
 	return api.ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}, nil
 }
 
+// ImportMCPBReleaseArtifact fetches a .mcpb release asset through the same
+// sha256-pinned path as a binary release, unpacks the bundle, and builds the
+// manifest's mcp_config launch into a container-mcp image. The definition
+// carries the manifest's credential contract and static env.
+func ImportMCPBReleaseArtifact(ctx context.Context, source api.ArtifactSource, config api.ArtifactImportConfig, build api.RestrictedBuildConfig, client *http.Client, apiBase string) (api.ImportedArtifact, error) {
+	if source.Tag == "" || source.Asset == "" {
+		return api.ImportedArtifact{}, fmt.Errorf("%w: mcpb source requires tag and asset", api.ErrInvalid)
+	}
+	config = api.NormalizeArtifactImportConfig(config)
+	if !api.ValidCommand(config.Image) || strings.Contains(config.Image, "@") {
+		return api.ImportedArtifact{}, fmt.Errorf("%w: local immutable image name required", api.ErrInvalid)
+	}
+	payload, assetName, assetDigest, resolvedTag, _, err := api.FetchReleaseBinary(ctx, source, client, apiBase, "")
+	if err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	files, err := api.ExtractMCPBBundle(payload)
+	if err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	launch, connection, err := api.ParseMCPBManifest(files["manifest.json"], "manifest.json")
+	if err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	recipe, contextBytes, err := api.GenerateMCPBRecipe(files)
+	if err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	artifact, err := api.BuildRestrictedOCI(ctx, recipe, contextBytes, build)
+	if err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	if _, err := api.LoadStoredOCIArtifact(ctx, build.ArtifactDirectory, artifact.ArchiveDigest, config.Image, build.MaxArtifactBytes); err != nil {
+		return api.ImportedArtifact{}, fmt.Errorf("%w: local artifact materialization failed", err)
+	}
+	recipeDigest, err := api.RecipeDigest(recipe)
+	if err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	reviewSource := source
+	reviewSource.Tag = resolvedTag
+	reviewSource.Asset = assetName
+	reviewSource.AssetDigest = assetDigest
+	reviewDigest, err := api.ReviewDigest(reviewSource, recipe, artifact, config)
+	if err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	argv := append([]string{}, launch.Entrypoint...)
+	argv = append(argv, launch.Args...)
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version,
+		Transport: api.ContainerMCP,
+		Source: api.DefinitionSource{
+			Image: config.Image, Digest: artifact.Evidence.ImageManifestDigest,
+			Command: api.FirstArg(argv), Args: api.RemainingArgs(argv),
+			Repository: source.Repository,
+			ReleaseTag: resolvedTag, ReleaseAsset: assetName, AssetDigest: assetDigest,
+			ArchiveDigest: artifact.ArchiveDigest, ProvenanceDigest: artifact.Evidence.ProvenanceDigest,
+			SBOMDigest: artifact.Evidence.SBOMDigest, RecipeDigest: recipeDigest, ReviewDigest: reviewDigest,
+		},
+		Tools: append([]api.ToolSpec(nil), config.Tools...), Credentials: connection.CredentialInputs(),
+		RuntimeEnvironment: launch.Environment, Workload: config.Workload, Execution: config.Execution,
+		Health: api.HealthProbe{Kind: "exec", Value: argv[0], TimeoutSeconds: 5},
+	}
+	if err := definition.Validate(); err != nil {
+		return api.ImportedArtifact{}, err
+	}
+	return api.ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}, nil
+}
+
 // prepareCLIArtifact onboards an owner CLI from an immutable source. The
 // restricted build produces verified OCI evidence; the digest-pinned image
 // becomes the definition's artifact, and the standard confirm/enable
@@ -225,8 +298,9 @@ func (c *ControlPlane) prepareCLIArtifact(ctx context.Context, auth identity.Env
 	}
 	name := api.ArgString(spec, "name")
 	binary := api.ArgString(spec, "binary")
-	// binary is the guest path inside the built image; slash semantics.
-	if !identity.ValidID(name) || !api.ValidGuestBinaryPath(binary) {
+	// binary is the guest path inside the built image; slash semantics. A
+	// .mcpb asset carries its own manifest-declared launch instead.
+	if !identity.ValidID(name) || (!api.ValidGuestBinaryPath(binary) && !strings.HasSuffix(strings.ToLower(api.ArgString(spec, "asset")), ".mcpb")) {
 		return nil, fmt.Errorf("%w: cli artifact name and binary are required", api.ErrInvalid)
 	}
 	if api.ArgString(spec, "command") != "" {
@@ -352,8 +426,31 @@ func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Enve
 	}
 	health := config.Health
 	health.Value = entrypoint[0]
+	// The import path owns the transport: bounded-cli for binaries, but a
+	// .mcpb bundle registers as container-mcp with the manifest's own
+	// credential contract, workload policy and runtime env.
+	transport := imported.Definition.Transport
+	if transport == "" {
+		transport = api.BoundedCLI
+	}
+	credentials := config.Credentials
+	if len(imported.Definition.Credentials) > 0 {
+		credentials = imported.Definition.Credentials
+	}
+	workload := config.Workload
+	if imported.Definition.Workload.Class != "" {
+		workload = imported.Definition.Workload
+	}
+	execution := config.Execution
+	if len(imported.Definition.Execution.Egress) > 0 {
+		execution = imported.Definition.Execution
+	}
+	runtimeEnv := config.RuntimeEnvironment
+	if len(imported.Definition.RuntimeEnvironment) > 0 {
+		runtimeEnv = imported.Definition.RuntimeEnvironment
+	}
 	definition := api.ToolDefinition{
-		Schema: api.SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version, Transport: api.BoundedCLI,
+		Schema: api.SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version, Transport: transport,
 		Source: api.DefinitionSource{
 			Image: imported.Definition.Source.Image, Digest: imported.Artifact.Evidence.ImageManifestDigest,
 			Command: api.FirstArg(entrypoint), Args: append(api.RemainingArgs(entrypoint), fixedArgs...),
@@ -366,8 +463,8 @@ func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Enve
 			SBOMDigest: imported.Artifact.Evidence.SBOMDigest, RecipeDigest: imported.Definition.Source.RecipeDigest,
 			ReviewDigest: imported.Definition.Source.ReviewDigest, ContextSources: append([]api.ArtifactOverlay(nil), imported.Definition.Source.ContextSources...),
 		},
-		Tools: append([]api.ToolSpec(nil), config.Tools...), Credentials: append([]api.CredentialInput(nil), config.Credentials...),
-		RuntimeEnvironment: config.RuntimeEnvironment, Workload: config.Workload, Execution: config.Execution, Health: health,
+		Tools: append([]api.ToolSpec(nil), config.Tools...), Credentials: append([]api.CredentialInput(nil), credentials...),
+		RuntimeEnvironment: runtimeEnv, Workload: workload, Execution: execution, Health: health,
 	}
 	if err := c.registerAdmittedDefinition(&definition, auth.PrincipalID); err != nil {
 		return failPrepare(err)

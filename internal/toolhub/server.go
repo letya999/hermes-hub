@@ -257,6 +257,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		return api.AdmitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
+	gateway.OAuthRefresh = remoteOAuthRefresh(secrets, control.OAuth)
 	control.Injector = gateway.Injector
 	control.PrepareDone = gateway.notifyPrepareDone
 	control.Governance = gateway.Governance

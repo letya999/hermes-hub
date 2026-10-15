@@ -11,19 +11,22 @@ import (
 // plan only: Resolver never executes its command, image, compose file or
 // healthcheck.
 type LaunchRecipe struct {
-	Artifact   string           `json:"artifact,omitempty"`
-	Version    string           `json:"version,omitempty"`
-	Digest     string           `json:"digest,omitempty"`
-	Transport  Transport        `json:"transport"`
-	Endpoint   string           `json:"endpoint,omitempty"`
-	Entrypoint []string         `json:"entrypoint,omitempty"`
-	Args       []string         `json:"args,omitempty"`
-	Network    []string         `json:"network,omitempty"`
-	Mounts     []Mount          `json:"mounts,omitempty"`
-	State      string           `json:"state,omitempty"`
-	Health     HealthProbe      `json:"health,omitempty"`
-	Sidecars   []string         `json:"sidecars,omitempty"`
-	Evidence   []RecipeEvidence `json:"evidence,omitempty"`
+	Artifact   string    `json:"artifact,omitempty"`
+	Version    string    `json:"version,omitempty"`
+	Digest     string    `json:"digest,omitempty"`
+	Transport  Transport `json:"transport"`
+	Endpoint   string    `json:"endpoint,omitempty"`
+	Entrypoint []string  `json:"entrypoint,omitempty"`
+	Args       []string  `json:"args,omitempty"`
+	Network    []string  `json:"network,omitempty"`
+	Mounts     []Mount   `json:"mounts,omitempty"`
+	// Environment carries reviewed static env (e.g. MCPB mcp_config.env
+	// literals); credential placeholders never land here.
+	Environment map[string]string `json:"environment,omitempty"`
+	State       string            `json:"state,omitempty"`
+	Health      HealthProbe       `json:"health,omitempty"`
+	Sidecars    []string          `json:"sidecars,omitempty"`
+	Evidence    []RecipeEvidence  `json:"evidence,omitempty"`
 }
 
 type ConnectionField struct {
