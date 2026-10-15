@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
@@ -115,23 +116,41 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 	s.deliverPolls.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	name, err := firstJSON(filepath.Join(s.root, "outbox", "pending"))
-	if err != nil || name == "" {
-		return nil, err
-	}
-	from, to := filepath.Join(s.root, "outbox", "pending", name), filepath.Join(s.root, "outbox", "sending", name)
-	if err := os.Rename(from, to); err != nil {
-		return nil, err
-	}
-	b, err := os.ReadFile(to)
+	pending := filepath.Join(s.root, "outbox", "pending")
+	entries, err := os.ReadDir(pending)
 	if err != nil {
 		return nil, err
 	}
-	var d Delivery
-	if err := json.Unmarshal(b, &d); err != nil {
-		return nil, err
+	names := []string{}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			names = append(names, entry.Name())
+		}
 	}
-	return &d, nil
+	sort.Strings(names)
+	// Quiet-window deliveries stay durable in pending until not_before; a
+	// bounded scan keeps a deferred backlog from stalling the claim loop.
+	for i, name := range names {
+		if i >= 256 {
+			break
+		}
+		b, err := os.ReadFile(filepath.Join(pending, name))
+		if err != nil {
+			return nil, err
+		}
+		var d Delivery
+		if err := json.Unmarshal(b, &d); err != nil {
+			return nil, err
+		}
+		if d.NotBefore.After(time.Now().UTC()) {
+			continue
+		}
+		if err := os.Rename(filepath.Join(pending, name), filepath.Join(s.root, "outbox", "sending", name)); err != nil {
+			return nil, err
+		}
+		return &d, nil
+	}
+	return nil, nil
 }
 
 func (s *Spool) CompleteDelivery(id string) error {

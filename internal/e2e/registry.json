@@ -1805,5 +1805,57 @@
     "prerequisites": "Точный разрешённый test account/profile; отдельные fixture resources; без business mutations",
     "level": "agent-e2e",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
+  },
+  {
+    "id": "E2E-140",
+    "surface": "hub",
+    "name": "watch_subscribe",
+    "title": "watch_subscribe",
+    "action": "Через watch_subscribe подписаться на события тестового коннектора и проверить созданную event-рутину.",
+    "expected": "Создан schedule с job_kind=event, mcp_tool probe и выбранным sink; только свой ID.",
+    "package": "agenttools",
+    "test": "TestWatchSubscribeCreatesEventSchedule",
+    "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
+    "level": "contract",
+    "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
+  },
+  {
+    "id": "E2E-141",
+    "surface": "hub",
+    "name": "watch_list",
+    "title": "watch_list",
+    "action": "Через watch_list получить только event-подписки владельца.",
+    "expected": "Список содержит только job_kind=event подписки владельца; чужие и другие виды рутин не входят.",
+    "package": "agenttools",
+    "test": "TestWatchOpsFilterEventKind",
+    "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
+    "level": "contract",
+    "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
+  },
+  {
+    "id": "E2E-142",
+    "surface": "hub",
+    "name": "watch_pause",
+    "title": "watch_pause",
+    "action": "Через watch_pause приостановить свою event-подписку; попытка на другой вид рутины отклоняется.",
+    "expected": "Event-подписка приостановлена; reminder/watcher id через watch_pause отклонён.",
+    "package": "agenttools",
+    "test": "TestWatchOpsFilterEventKind",
+    "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
+    "level": "contract",
+    "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
+  },
+  {
+    "id": "E2E-143",
+    "surface": "hub",
+    "name": "watch_delete",
+    "title": "watch_delete",
+    "action": "Через watch_delete удалить свою event-подписку; повторного срабатывания нет.",
+    "expected": "Event-подписка удалена; не-event id через watch_delete отклонён.",
+    "package": "agenttools",
+    "test": "TestWatchOpsFilterEventKind",
+    "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
+    "level": "contract",
+    "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
   }
 ]

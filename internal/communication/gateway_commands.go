@@ -24,6 +24,7 @@ var botCommandInventory = []struct {
 	{"usage", "Журнал расхода: /usage [day|week|month|session]"},
 	{"connectors", "Подключения и коннекторы ToolHub"},
 	{"connections", "Подключения и коннекторы ToolHub"},
+	{"watches", "Подписки на события коннекторов"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
 	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
 	{"stop", "Остановить выполнение текущей сессии"},

@@ -172,10 +172,30 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			// The follow-up predicate is anchored at creation: probe once,
 			// seed the baseline, then create — a dead source must not
 			// become a silently-skipping schedule.
-			body, err := g.fetchWatch(r.Context(), in.Probe.URL)
-			if err != nil {
-				http.Error(w, "check source unreachable", http.StatusBadGateway)
-				return
+			var body []byte
+			if in.Probe.Kind == "mcp_tool" {
+				var err error
+				body, err = g.toolCallProbe(r.Context(), caller.PrincipalID, in.Probe)
+				if err != nil {
+					http.Error(w, "check source unreachable", http.StatusBadGateway)
+					return
+				}
+			} else if strings.HasPrefix(in.Probe.URL, "task:") {
+				g.spool.mu.Lock()
+				state, taskErr := g.spool.taskProbeValueLocked(caller.PrincipalID, strings.TrimPrefix(in.Probe.URL, "task:"))
+				g.spool.mu.Unlock()
+				if taskErr != nil {
+					http.Error(w, "check task unreadable", http.StatusBadGateway)
+					return
+				}
+				body = []byte(state)
+			} else {
+				var err error
+				body, err = g.fetchWatch(r.Context(), in.Probe.URL)
+				if err != nil {
+					http.Error(w, "check source unreachable", http.StatusBadGateway)
+					return
+				}
 			}
 			value, err := probeValue(in.Probe, body)
 			if err != nil {

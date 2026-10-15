@@ -14,6 +14,27 @@ import (
 	"time"
 )
 
+// SPEC-0054 R5.6: the personal-telegram prepared entry carries the four
+// event tools the hub's event subscriptions poll and requeue through.
+func TestPreparedTelegramEventTools(t *testing.T) {
+	entries, err := api.PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.ID != "telegram" {
+			continue
+		}
+		for _, name := range []string{"wait_for_new_message", "wait_for_settled_message", "requeue_event", "incoming_feed_status"} {
+			if !slices.Contains(entry.ReadTools, name) {
+				t.Fatalf("telegram read_tools missing %s: %v", name, entry.ReadTools)
+			}
+		}
+		return
+	}
+	t.Fatal("telegram entry missing")
+}
+
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := api.PreparedCatalog()
 	if err != nil || len(entries) != 11 {

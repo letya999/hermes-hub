@@ -16,12 +16,16 @@ import (
 )
 
 var routineDescriptions = map[string]string{
-	"routine_create": "Create an owner-scoped routine. kind=reminder delivers exact text directly; expression after:180s resolves a three-minute delay once on the server; display the returned deadline. Reuse the same schedule ID after an uncertain create and inspect its saved status; never silently replace a delivered routine. kind=watcher polls a public url and optional regex first capture group: first successful baseline is silent, unchanged values are silent, changes include bounded old/new values; errors preserve baseline. kind=check tests expect (changed|unchanged|equals:value); kind=script runs bounded Starlark; kind=digest aggregates changed watches. Watcher, check, script, reminder and digest never wake an agent or invoke a model at firing.",
-	"routine_list":   "List owned routines and their current delivery state; observe the same schedule ID after an uncertain create before proposing another routine.",
-	"routine_update": "Update an owned routine schedule or text. Use an absolute once:RFC3339 expression or cron; after: is creation-only.",
-	"routine_snooze": "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
-	"routine_pause":  "Pause an owned routine; already queued occurrences recheck its state before execution.",
-	"routine_delete": "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
+	"routine_create":  "Create an owner-scoped routine. kind=reminder delivers exact text; expression after:180s resolves once on the server; show the returned deadline. kind=watcher polls a public url plus optional regex capture, or probe_kind=mcp_tool with a tool name for a projected read-only connector tool: baseline and unchanged values are silent, changes include bounded old/new values; errors preserve baseline. kind=check tests expect (changed|unchanged|equals:value) against a url or task:<task_id>, retrying a failed probe up to max_retries times (default 3); kind=script runs bounded Starlark; kind=digest aggregates changed watches; kind=brief composes changed sources and open tasks into one model brief. quiet_from/quiet_to set an HH:MM owner-timezone deferral; daily_limit (0..32) caps same-day notifications. notify_mode=digest feeds the digest; notify_mode=agent escalates a real change as untrusted evidence. Deterministic kinds never wake an agent or invoke a model at firing.",
+	"routine_list":    "List owned routines and their current delivery state; observe the same schedule ID after an uncertain create before proposing another routine.",
+	"routine_update":  "Update an owned routine schedule or text. Use an absolute once:RFC3339 expression or cron; after: is creation-only.",
+	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
+	"routine_pause":   "Pause an owned routine; already queued occurrences recheck its state before execution.",
+	"routine_delete":  "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
+	"watch_subscribe": "Subscribe to connector events via one projected read tool (args is a JSON object string). sink=notify sends one message per new event; sink=agent wakes the agent with the events bundled as untrusted evidence. delivery=stream keeps a bounded wait-call outstanding for near-instant batches instead of polling on the cron cadence — use it for wait-style tools like a connector's message wait. Dedup is durable; a connector auth failure marks the watch degraded.",
+	"watch_list":      "List owned event subscriptions only — reminders, watchers and other routines are not included.",
+	"watch_pause":     "Pause one owned event subscription by schedule id.",
+	"watch_delete":    "Delete one owned event subscription by schedule id; this does not recall messages already sent.",
 }
 
 func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any, error) {
@@ -37,9 +41,60 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 	}
 	var method, path string
 	var payload any
+	if op == "watch_list" || op == "watch_pause" || op == "watch_delete" {
+		// Watch ops are scoped to event-kind routines; pause/delete verify
+		// the target kind before mutating (SPEC-0054 R5.5).
+		items, err := t.routineItems(ctx, principal)
+		if err != nil {
+			return nil, err
+		}
+		var events []map[string]any
+		isEvent := false
+		for _, item := range items {
+			if fmt.Sprint(item["job_kind"]) != "event" {
+				continue
+			}
+			events = append(events, item)
+			if fmt.Sprint(item["schedule_id"]) == r.ID {
+				isEvent = true
+			}
+		}
+		if op == "watch_list" {
+			return map[string]any{"status": "ok", "result": events}, nil
+		}
+		if !isEvent {
+			return nil, errors.New("not an event subscription")
+		}
+		if op == "watch_pause" {
+			method, path = http.MethodPost, "/v1/routines/"+r.ID+"/pause"
+		} else {
+			method, path = http.MethodDelete, "/v1/routines/"+r.ID
+		}
+	}
 	switch op {
+	case "watch_list", "watch_pause", "watch_delete":
+		// Resolved above: watch_list already returned, pause/delete paths set.
 	case "routine_list":
 		method, path = http.MethodGet, "/v1/routines"
+	case "watch_subscribe":
+		method, path = http.MethodPost, "/v1/routines"
+		var args map[string]any
+		if r.Args != "" {
+			if err := json.Unmarshal([]byte(r.Args), &args); err != nil {
+				return nil, errors.New("watch args must be a JSON object")
+			}
+		}
+		create := map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": "event", "probe": map[string]any{"kind": "mcp_tool", "tool": r.Tool}}
+		if len(args) > 0 {
+			create["probe"].(map[string]any)["args"] = args
+		}
+		if r.Sink != "" {
+			create["sink"] = r.Sink
+		}
+		if r.Delivery != "" {
+			create["delivery"] = r.Delivery
+		}
+		payload = create
 	case "routine_create":
 		method, path = http.MethodPost, "/v1/routines"
 		kind := r.Kind
@@ -60,13 +115,23 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		create := map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": kind}
 		if kind == "watcher" || kind == "check" {
-			create["probe"] = map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex}
+			create["probe"] = map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex, "tool": r.Tool}
 		}
 		if kind == "check" {
 			create["expect"] = r.Expect
 		}
 		if r.NotifyMode != "" {
 			create["notify_mode"] = r.NotifyMode
+		}
+		if r.QuietFrom != "" {
+			create["quiet_from"] = r.QuietFrom
+			create["quiet_to"] = r.QuietTo
+		}
+		if r.DailyLimit > 0 {
+			create["daily_limit"] = r.DailyLimit
+		}
+		if r.MaxRetries > 0 {
+			create["max_retries"] = r.MaxRetries
 		}
 		if len(r.SourceIDs) > 0 {
 			create["source_ids"] = r.SourceIDs
@@ -131,4 +196,38 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 	}
 	return out, nil
+}
+
+// routineItems lists the principal's routines for the watch tools' kind
+// check; a non-2xx or undecodable answer is an error, never an empty list.
+func (t *Tools) routineItems(ctx context.Context, principal string) ([]map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(t.CommunicationURL, "/")+"/v1/routines", nil)
+	if err != nil {
+		return nil, err
+	}
+	if t.CommunicationAuth != "" {
+		req.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
+	}
+	req.Header.Set("X-Hub-Principal", principal)
+	client := t.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("routine hub rejected the request")
+	}
+	var items []map[string]any
+	if json.Unmarshal(raw, &items) != nil {
+		return nil, errors.New("routine list undecodable")
+	}
+	return items, nil
 }

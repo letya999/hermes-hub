@@ -238,6 +238,80 @@ owning context. Hermes performs the agent run but does not remain alive merely t
 a clock. Existing native Hermes cron is migrated explicitly or pins that context on
 until migration; dual scheduling is forbidden.
 
+Deterministic routine kinds (reminder, watcher, check, digest, script) never start a
+runtime or call a model at fire time: reminder text goes straight to the outbox,
+watcher/check occurrences run one bounded probe, digest aggregates owner watch states
+into one message. After downtime an occurrence inside its `catch_up_window` (default
+one hour) still fires; outside it settles `missed`. A `check` whose probe errors
+re-probes at most `max_retries` times (default three, `retry_after` backoff) before
+settling `failed` — an unverifiable predicate never reads as false. `task:<id>`
+probes verify the owner's own task state without a fetch. Deliveries re-validate the
+occurrence and owner before sending, and a transport answer lost mid-send leaves the
+delivery failed/uncertain rather than claimed sent.
+
+Watcher, check and digest deliveries respect the owner's notification policy:
+`quiet_from`/`quiet_to` set an owner-timezone HH:MM window inside which the outbox
+entry stays pending until the window end; `daily_limit` (0..32) caps same-day
+watcher/check notifications — an over-cap occurrence settles `capped` while its
+baseline still advances. `notify_mode=digest` feeds the daily digest;
+`notify_mode=agent` escalates only a real change as an untrusted-evidence job
+through ordinary idempotent admission — never on reminder, script or digest kinds.
+
+A `mcp_tool` probe polls the owner's connectors without a public URL: ToolHub
+exposes `POST /v1/tool-call` for the control plane (owner-pinned credential,
+`X-Hub-Principal`, read-effect tools only, bounded arguments and response), and
+the probe compares the returned text like any other watch value. An `is_error`
+tool result is a probe error, not a value — the occurrence retries/settles
+through the same policy path. This keeps connector state verifiable without
+publishing credentials or letting model output stand in for evidence.
+
+A `brief` routine is the one deterministic kind that may wake the agent: it
+assembles an authorized snapshot — the owner's watch sources changed since
+its cursor, sources named unavailable (never "no changes"), and open tasks —
+into bounded lines. An empty slot delivers a fixed "nothing new" message with
+no model call. A non-empty slot admits one routine-conversation job whose
+text carries the snapshot flagged untrusted; the durable cursor prevents
+re-reporting and the job file dedups crash replay.
+
+An `event` routine is a hub-owned subscription to a connector's event feed:
+each occurrence probes one projected read tool (usually `mcp_tool`) and the
+deterministic extractor turns the result into discrete events — `{events:[…]}`
+or a bare array items keyed by `id`/`event_id`/`message_id` else a stable
+content hash; any other value is one event keyed by its hash. The durable
+`spool/events/<id>.json` state holds a bounded 512-entry seen-set (FIFO),
+last success/error, a `degraded` flag set by 401/403-shaped connector
+errors, and an `overflow` counter. `sink=notify` (default) fans out one
+deterministically-id'd outbox delivery per unseen event under the same
+quiet-window and daily-cap policy; `sink=agent` admits one job bundling the
+new events flagged untrusted, bounded to 8 KiB with the rest left unseen for
+the next occurrence. An event the sink cannot admit stays unseen, increments
+`overflow`, and is best-effort requeued to the connector by id only through
+`requeue_tool`. `watch_subscribe`/`watch_list`/`watch_pause`/`watch_delete`
+are the agent surface — create goes through the ordinary routine path with
+`job_kind=event`, the others operate only on event-kind schedules — and
+`/watches` is the owner-facing listing (id, source, sink, last success/error,
+degraded, overflow).
+
+An event schedule can opt into `delivery=stream` (event kind plus an
+`mcp_tool` probe only). Stream schedules produce no occurrences —
+`TickSchedules` skips them and the expression stays as a dormant cadence.
+Instead the gateway's stream supervisor keeps one `streamPoll` goroutine per
+live stream schedule, reconciled every two seconds: each round re-reads the
+schedule (pause, snooze, delete or a lost grant stops the loop on live
+durable state), issues one bounded wait-call through the same read-only
+`/v1/tool-call` path under a 30s budget, and settles the returned batch
+through the identical durable pipeline — authorization, extractor, seen-set
+dedup, sink fanout and requeue all reuse the poll-mode machinery. A healthy
+round loops straight into the next wait call, so a connector wait tool like
+`wait_for_settled_message` keeps an outstanding call and batches arrive in
+seconds, not a cron minute; a blocked round (probe error, lost
+authorization, malformed body) paces with 1s-to-30s exponential backoff.
+When the subscriber gives no wait bound the hub injects one inside the call
+budget (`max_wait_ms`/`timeout` on wait-style tool names); explicit bounds
+are honored. There is still no persistent connector workload or push
+ingress — the loop is repeated bounded requests, not an open stream — but
+the connector's own pending-event state makes the gap lossless.
+
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
 OAuth and Hermes state stay in that user's named volumes. Organization documents are

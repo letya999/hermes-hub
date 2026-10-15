@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0054](active/SPEC-0054-proactive-automation.md) | Frozen: verified follow-ups, watcher notification policy, control-plane tool calls, owner brief and event subscriptions (M12) |
 | [SPEC-0053](active/SPEC-0053-execution-chain-reliability.md) | Frozen: M19 execution chain SLOs, stop-loss, tool surface, latency, recovery and visibility requirements |
 | [SPEC-0052](active/SPEC-0052-telegram-operation-contracts.md) | Draft: Telegram image, watcher, reminder, approval and exact-file acceptance; albums are a subsequent slice |
 | [SPEC-0051](active/SPEC-0051-deployment-contracts.md) | Frozen: environment, provider and Docker deployment contracts |

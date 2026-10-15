@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -62,6 +64,63 @@ func (g *Gateway) connectionsCommand(user User, sender int64) string {
 		lines = append(lines, "- "+connectorLine(t.DefinitionID, kind[t.DefinitionID], names))
 	}
 	return answer + strings.Join(lines, "\n")
+}
+
+// watchesCommand answers /watches: the caller's event subscriptions with
+// source, sink, last success/error and degraded state — owner-scoped via
+// ListSchedules, so a sibling's subscriptions never render (SPEC-0054 R5.5).
+func (g *Gateway) watchesCommand(user User, sender int64) string {
+	items, err := g.spool.ListSchedules(user.envelope(sender))
+	if err != nil {
+		return "Список подписок недоступен."
+	}
+	lines := []string{"Подписки на события:"}
+	count := 0
+	for _, item := range items {
+		if item.JobKind != "event" {
+			continue
+		}
+		count++
+		source := "-"
+		if item.Probe != nil {
+			if item.Probe.Tool != "" {
+				source = item.Probe.Tool
+			} else {
+				source = item.Probe.URL
+			}
+		}
+		sink := item.Sink
+		if sink == "" {
+			sink = "notify"
+		}
+		line := item.ScheduleID + " — " + item.Input + ", " + source + ", sink " + sink
+		if item.Delivery == "stream" {
+			line += ", stream"
+		}
+		st, err := g.spool.EventStateOf(item.ScheduleID)
+		if err == nil {
+			if !st.LastSuccess.IsZero() {
+				line += ", ok " + st.LastSuccess.UTC().Format(time.RFC3339)
+			}
+			if st.LastError != "" {
+				line += ", err " + st.LastError
+			}
+			if st.Degraded {
+				line += ", degraded"
+			}
+			if st.Overflow > 0 {
+				line += ", overflow " + strconv.Itoa(st.Overflow)
+			}
+		}
+		if item.Paused || !item.Enabled {
+			line += ", пауза"
+		}
+		lines = append(lines, line)
+	}
+	if count == 0 {
+		lines = append(lines, "Пока нет.")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // connectorLine renders one ToolHub connector compactly: the hashed projected
@@ -178,6 +237,68 @@ func (g *Gateway) toolHubCredential(userID string) (token, principalHeader strin
 		}
 	}
 	return "", ""
+}
+
+// toolCallProbe is the mcp_tool probe fetch (SPEC-0054 R3.2): one bounded
+// POST to ToolHub's read-only /v1/tool-call under the owner's pinned
+// credential. An is_error result is a probe error — unknown, never a
+// compared value; a missing ToolHub config fails the probe, not the hub.
+func (g *Gateway) toolCallProbe(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
+	return g.toolCallProbeWithin(ctx, principalID, probe, 15*time.Second)
+}
+
+// toolCallProbeWithin is the bounded probe call; stream subscriptions pass a
+// larger budget so connector wait-tools can hold the call near a batch.
+func (g *Gateway) toolCallProbeWithin(ctx context.Context, principalID string, probe *WatchProbe, budget time.Duration) ([]byte, error) {
+	base := strings.TrimRight(strings.TrimSpace(g.config.ToolHubURL), "/")
+	if base == "" {
+		return nil, errors.New("tool hub unconfigured")
+	}
+	token, header := g.toolHubCredential(principalID)
+	if token == "" {
+		return nil, errors.New("tool hub credential unavailable")
+	}
+	body, err := json.Marshal(map[string]any{"tool": probe.Tool, "arguments": probe.Args})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/tool-call", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if header != "" {
+		req.Header.Set("X-Hub-Principal", header)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > 256*1024 {
+		return nil, errors.New("tool probe response exceeds size limit")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tool probe status %d", resp.StatusCode)
+	}
+	var out struct {
+		Text    string `json:"text"`
+		IsError bool   `json:"is_error"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, errors.New("invalid tool probe response")
+	}
+	if out.IsError {
+		return nil, errors.New("tool probe failed")
+	}
+	return []byte(out.Text), nil
 }
 
 // toolHubJobDone notifies ToolHub that a job reached a terminal status so

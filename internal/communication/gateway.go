@@ -235,6 +235,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	controlDone := make(chan struct{})
 	proactiveDone := make(chan struct{})
 	progressDone := make(chan struct{})
+	streamDone := g.startStreamLoops(workerCtx)
 	canaryDone := make(chan struct{})
 	go func() {
 		defer close(canaryDone)
@@ -281,6 +282,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-controlDone
 		<-proactiveDone
 		<-progressDone
+		<-streamDone
 		<-canaryDone
 		g.usageWG.Wait()
 	}()
@@ -570,6 +572,8 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			return reply("Измеряю расход и квоту…")
 		case "connections", "connection", "connectors":
 			return reply(g.connectionsCommand(user, message.From.ID))
+		case "watches":
+			return reply(g.watchesCommand(user, message.From.ID))
 		case "help":
 			return reply(commandHelp())
 		default:

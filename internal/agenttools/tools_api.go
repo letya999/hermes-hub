@@ -136,7 +136,8 @@ func (t *Tools) Server() *mcp.Server {
 	add("service_catalog", "List available connectors, required env key names, current status and whether the service is host-managed. Never returns secrets.")
 	add("service_enable", "After a direct owner request, enable one self-service catalog feature. A public GitHub repository is not a feature name: do not install it here, in the terminal, or in config.yaml. If credentials are missing, always returns input=protected-form with form_url; never ask the owner for KEY=value in chat.")
 	add("service_disable", "After a direct owner request, disable one ToolHub binding without deleting its historical owner or credential metadata.")
-	for _, op := range []string{"routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete"} {
+	for _, op := range []string{"routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete",
+		"watch_subscribe", "watch_list", "watch_pause", "watch_delete"} {
 		add(op, routineDescriptions[op])
 	}
 	add("document_extract", "Extract text from one workspace document. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. Unsupported: doc, docx, xls, ppt, odt, rtf, epub, pages. This does not update the file.")

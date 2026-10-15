@@ -63,6 +63,9 @@ type Delivery struct {
 	SlackThread  string `json:"slack_thread,omitempty"`
 	Text         string `json:"text"`
 	Format       string `json:"format,omitempty"`
+	// NotBefore defers quiet-window deliveries: the entry stays durable in
+	// pending until the schedule's quiet window ends (SPEC-0054 R2.1).
+	NotBefore time.Time `json:"not_before,omitempty"`
 	// PartCount/SentParts persist multi-part progress so a mid-sequence failure
 	// leaves an uncertain delivery with an exact sent boundary; SourceSent marks
 	// the optional raw-source document part of the same ordered sequence.

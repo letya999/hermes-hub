@@ -90,7 +90,8 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.SettingsGet(r)
 	case "settings_set":
 		return t.SettingsSet(r)
-	case "routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete":
+	case "routine_create", "routine_list", "routine_update", "routine_pause", "routine_snooze", "routine_delete",
+		"watch_subscribe", "watch_list", "watch_pause", "watch_delete":
 		return t.Routine(ctx, name, r)
 	case "document_extract":
 		return session().Extract(ctx, r.Path)
