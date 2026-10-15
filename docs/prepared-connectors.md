@@ -17,7 +17,7 @@ the definition and bound into the review digest. A reviewed entry may declare
 probe then runs with egress and placeholder credentials, matching what the
 credentialed probe already does. Unprepared sources keep `--network none`.
 Live evidence is tracked in
-[CHG-0036](../.work/in-progress/CHG-0036-repository-driven-toolhub/plan.md).
+[CHG-0036](../.work/done/CHG-0036-repository-driven-toolhub/plan.md).
 
 Reviewed Broker contracts ship in `internal/toolhub/api/prepared/contracts/` and
 are validated with their prepared entries. Provision them into the Broker's

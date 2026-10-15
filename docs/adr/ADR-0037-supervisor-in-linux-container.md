@@ -8,7 +8,7 @@ Status: proposed, 2026-10-14. No implementation before owner acceptance.
 
 Requirements: [SPEC-0053](../../specs/active/SPEC-0053-execution-chain-reliability.md) R4.
 Origin: [ADR-0036](ADR-0036-execution-chain-reliability.md) D12a,
-[CHG-0096](../../.work/in-progress/CHG-0096-control-plane-simplification/plan.md) P4a.
+[CHG-0096](../../.work/done/CHG-0096-control-plane-simplification/plan.md) P4a.
 
 ## Context and measured evidence
 

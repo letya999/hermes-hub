@@ -35,4 +35,4 @@ task only after a container canary and restart pass. Rollback stops the containe
 writer before restoring host selection and its task.
 
 Implementation and live acceptance are tracked in
-[CHG-0097](../../.work/in-progress/CHG-0097-single-stack-supervisor/plan.md).
+[CHG-0097](../../.work/done/CHG-0097-single-stack-supervisor/plan.md).

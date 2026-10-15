@@ -10,7 +10,7 @@ owner's sign-off recorded in CHG-0096 state.
 
 Requirements: [SPEC-0053](../../specs/active/SPEC-0053-execution-chain-reliability.md) R4.
 Origin: [ADR-0036](ADR-0036-execution-chain-reliability.md) D12c,
-[CHG-0093](../../.work/in-progress/CHG-0093-tool-surface-integrity/state.yaml) S1.5.
+[CHG-0093](../../.work/done/CHG-0093-tool-surface-integrity/state.yaml) S1.5.
 
 ## Context and measured evidence
 

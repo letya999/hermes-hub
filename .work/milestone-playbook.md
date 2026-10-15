@@ -4,7 +4,7 @@ How to plan and deliver a milestone in this repository so that any agent (includ
 a smaller model) can implement it step by step. M19 is the reference example:
 [ADR-0036](../docs/adr/ADR-0036-execution-chain-reliability.md),
 [SPEC-0053](../specs/active/SPEC-0053-execution-chain-reliability.md),
-[CHG-0092](in-progress/CHG-0092-chain-stop-the-bleeding/plan.md).
+[CHG-0092](done/CHG-0092-chain-stop-the-bleeding/plan.md).
 
 ## 1. Prepare
 

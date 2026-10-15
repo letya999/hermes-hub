@@ -8,12 +8,12 @@ Status: accepted, 2026-10-13, by the owner's approval of the M19 plan. D1-D11 ar
 accepted for implementation. D12 lists proposals that each need their own ADR.
 
 Requirements: [SPEC-0053](../../specs/active/SPEC-0053-execution-chain-reliability.md).
-Execution: [CHG-0092](../../.work/in-progress/CHG-0092-chain-stop-the-bleeding/plan.md),
-[CHG-0093](../../.work/in-progress/CHG-0093-tool-surface-integrity/plan.md),
-[CHG-0094](../../.work/in-progress/CHG-0094-chain-latency/plan.md),
-[CHG-0095](../../.work/in-progress/CHG-0095-recovery-observability/plan.md),
-[CHG-0096](../../.work/in-progress/CHG-0096-control-plane-simplification/plan.md).
-Evidence and prior art: [research](../../.work/in-progress/CHG-0092-chain-stop-the-bleeding/research.md).
+Execution: [CHG-0092](../../.work/done/CHG-0092-chain-stop-the-bleeding/plan.md),
+[CHG-0093](../../.work/done/CHG-0093-tool-surface-integrity/plan.md),
+[CHG-0094](../../.work/done/CHG-0094-chain-latency/plan.md),
+[CHG-0095](../../.work/done/CHG-0095-recovery-observability/plan.md),
+[CHG-0096](../../.work/done/CHG-0096-control-plane-simplification/plan.md).
+Evidence and prior art: [research](../../.work/done/CHG-0092-chain-stop-the-bleeding/research.md).
 
 ## Context
 
