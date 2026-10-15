@@ -452,6 +452,11 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		if regErr := c.registerAdmittedDefinition(&admitted, onboarding.PrincipalID); regErr != nil {
 			return c.persistFailure(onboarding, credentialProbeFailure(regErr), regErr)
 		}
+		if admitted.Workload.Class == api.Shared {
+			if err := c.Store.PromoteToCatalog(admitted.DefinitionID, admitted.Version, onboarding.PrincipalID); err != nil {
+				return c.persistFailure(onboarding, credentialProbeFailure(err), err)
+			}
+		}
 		onboarding.Definition = &admitted
 		onboarding.DefinitionID = admitted.DefinitionID
 		onboarding.DefinitionVersion = admitted.Version

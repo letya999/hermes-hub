@@ -168,6 +168,11 @@ func (c *ControlPlane) completeRemoteOAuth(ctx context.Context, flow *preparedOA
 	if err := c.registerAdmittedDefinition(&admitted, onboarding.PrincipalID); err != nil {
 		return err
 	}
+	if admitted.Workload.Class == api.Shared {
+		if err := c.Store.PromoteToCatalog(admitted.DefinitionID, admitted.Version, onboarding.PrincipalID); err != nil {
+			return err
+		}
+	}
 	onboarding.Definition = &admitted
 	onboarding.DefinitionID = admitted.DefinitionID
 	onboarding.DefinitionVersion = admitted.Version
@@ -208,11 +213,6 @@ func remoteOAuthRefresh(secrets credstore.Backend, broker *oauth.Broker) func(co
 		if effective.Connection == nil || effective.Credential == nil {
 			return false, nil
 		}
-		provider := effective.Connection.Metadata["oauth_provider"]
-		oauthConnection := effective.Connection.Metadata["oauth_connection"]
-		if provider == "" || oauthConnection == "" {
-			return false, nil
-		}
 		owner := effective.Binding.PrincipalID
 		if effective.Connection.Owner.ID != "" {
 			owner = effective.Connection.Owner.ID
@@ -225,9 +225,13 @@ func remoteOAuthRefresh(secrets credstore.Backend, broker *oauth.Broker) func(co
 			return false, err
 		}
 		// Copy the keys this restore needs: the returned map may be shared
-		// with other readers, so it is never mutated or cleared in place.
+		// with other readers, so it is never mutated or cleared in place. The
+		// locator is authoritative — shared connections carry no metadata
+		// markers, so OAUTH_PROVIDER/OAUTH_CONNECTION come from the record.
 		values := map[string]string{
 			"REFRESH_TOKEN":       stored["REFRESH_TOKEN"],
+			"OAUTH_PROVIDER":      stored["OAUTH_PROVIDER"],
+			"OAUTH_CONNECTION":    stored["OAUTH_CONNECTION"],
 			"OAUTH_PROVIDER_DOC":  stored["OAUTH_PROVIDER_DOC"],
 			"OAUTH_CLIENT_ID":     stored["OAUTH_CLIENT_ID"],
 			"OAUTH_CLIENT_SECRET": stored["OAUTH_CLIENT_SECRET"],
@@ -237,7 +241,15 @@ func remoteOAuthRefresh(secrets credstore.Backend, broker *oauth.Broker) func(co
 				values[key] = ""
 			}
 		}()
-		if values["REFRESH_TOKEN"] == "" {
+		provider := values["OAUTH_PROVIDER"]
+		if provider == "" {
+			provider = effective.Connection.Metadata["oauth_provider"]
+		}
+		oauthConnection := values["OAUTH_CONNECTION"]
+		if oauthConnection == "" {
+			oauthConnection = effective.Connection.Metadata["oauth_connection"]
+		}
+		if values["REFRESH_TOKEN"] == "" || provider == "" || oauthConnection == "" {
 			return false, nil
 		}
 		if _, ok := broker.Provider(provider); !ok {

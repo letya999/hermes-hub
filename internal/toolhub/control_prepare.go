@@ -82,7 +82,16 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 		selected = choice.Recipe
 	}
 	if source != "" {
-		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, selected)
+		shared, err := sharedScope(args)
+		if err != nil {
+			return nil, err
+		}
+		if shared {
+			if err := c.Store.RequireControlOperation(auth, "install_shared"); err != nil {
+				return nil, err
+			}
+		}
+		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, selected, shared)
 	}
 	if definitionID != "" && version != "" {
 		return c.prepareCatalog(ctx, auth, definitionID, version, requestKey)
@@ -117,34 +126,34 @@ func (c *ControlPlane) prepareWindow() time.Duration {
 	return c.PrepareSyncWindow
 }
 
-func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate) (map[string]any, error) {
+func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate, shared bool) (map[string]any, error) {
 	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
 	if err != nil {
 		return nil, err
 	}
-	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey)
+	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey, shared)
 	if err != nil {
 		return nil, err
 	}
 	if inFlight {
 		return c.statusBody(preparing, false), nil
 	}
-	return c.finishSelfInstall(ctx, auth, preparing, source, requestKey, selected)
+	return c.finishSelfInstall(ctx, auth, preparing, source, requestKey, selected, shared)
 }
 
 // prepareSelfInstallAsync runs review+build under a detached context: a slow or
 // lost HTTP response no longer discards the work. The caller waits
 // PrepareSyncWindow for a completed result, then receives the durable
 // "preparing" record — the outcome is read via status afterwards.
-func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate) (map[string]any, error) {
+func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate, shared bool) (map[string]any, error) {
 	if window := c.prepareWindow(); window < 0 {
-		return c.prepareSelfInstall(ctx, auth, sourceURL, requestKey, selected)
+		return c.prepareSelfInstall(ctx, auth, sourceURL, requestKey, selected, shared)
 	}
 	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
 	if err != nil {
 		return nil, err
 	}
-	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey)
+	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey, shared)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +169,7 @@ func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identit
 	go func() {
 		defer stop()
 		api.DeliverPrepareEvent(background, auth, preparing, "prepare-started")
-		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected)
+		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected, shared)
 		latest := c.latestPrepareRecord(auth, preparing)
 		log.Printf("toolhub prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.Phase, err)
 		if c.PrepareDone != nil {
@@ -208,10 +217,13 @@ func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identi
 // prepare is running — callers must not spawn a second review+build. A stub
 // older than the background deadline belongs to a crashed prepare and is
 // overwritten to retry.
-func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.ArtifactSource, config api.ArtifactImportConfig, requestKey string) (api.Onboarding, bool, error) {
+func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.ArtifactSource, config api.ArtifactImportConfig, requestKey string, shared bool) (api.Onboarding, bool, error) {
 	idSeed := requestKey
 	if idSeed == "" {
 		idSeed = string(api.OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA + ":" + source.Tag + ":" + source.Asset + ":" + source.PackageRegistry + ":" + source.PackageName + ":" + source.PackageVersion
+	}
+	if shared {
+		idSeed += "|shared"
 	}
 	preparing := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
@@ -248,7 +260,7 @@ func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub api.Onbo
 	return latest
 }
 
-func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, requestKey string, selected *api.RecipeCandidate) (map[string]any, error) {
+func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, requestKey string, selected *api.RecipeCandidate, shared bool) (map[string]any, error) {
 	failPrepare := func(err error) (map[string]any, error) {
 		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == api.PhasePreparing {
 			latest.Phase = api.PhaseFailed
@@ -260,7 +272,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	}
 	review := api.SourceReview{}
 	var err error
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) {
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) {
 		review = api.SourceReview{Definition: existing, Permissions: api.ToolNames(existing), Effects: api.EffectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
@@ -284,6 +296,11 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	// the same id+version by an older pipeline (for example, without a broker
 	// contract binding). Bump the patch component until the key is free or the
 	// stored record is identical.
+	if shared {
+		review.Definition.Workload.Class = api.Shared
+		review.Definition.Workload.Sharable = true
+		review.Definition.Workload.Rationale = "operator-shared repository connector; catalog-visible, members bind one policy-owned connection and credential"
+	}
 	for i := 0; i < 100; i++ {
 		stored, lookupErr := c.Store.Definition(review.Definition.DefinitionID, review.Definition.Version)
 		if lookupErr != nil || api.DefinitionsEqual(stored, review.Definition) {
@@ -299,6 +316,11 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	}
 	if err := c.Store.PutPublication(api.DefinitionPublication{DefinitionID: review.Definition.DefinitionID, Version: review.Definition.Version, Visibility: api.PublicationUser, OwnerPrincipalID: auth.PrincipalID}); err != nil {
 		return failPrepare(err)
+	}
+	if shared {
+		if err := c.Store.PromoteToCatalog(review.Definition.DefinitionID, review.Definition.Version, auth.PrincipalID); err != nil {
+			return failPrepare(err)
+		}
 	}
 	onboarding, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, review.Definition, source.Repository, source.CommitSHA)
 	if err != nil {

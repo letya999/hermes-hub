@@ -16,7 +16,15 @@ import (
 // definition is published only after the endpoint proves itself under the
 // owner's own credential.
 func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope, endpoint string, args map[string]any) (map[string]any, error) {
-	if err := c.Store.RequireSelfInstall(auth); err != nil {
+	shared, err := sharedScope(args)
+	if err != nil {
+		return nil, err
+	}
+	if shared {
+		if err := c.Store.RequireControlOperation(auth, "install_shared"); err != nil {
+			return nil, err
+		}
+	} else if err := c.Store.RequireSelfInstall(auth); err != nil {
 		return nil, err
 	}
 	if err := api.ValidateRemoteMCPEndpoint(endpoint); err != nil {
@@ -36,6 +44,11 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	draft, err := api.RemoteDefinitionBase(endpoint, name, credentials)
 	if err != nil {
 		return nil, err
+	}
+	if shared {
+		draft.Workload.Class = api.Shared
+		draft.Workload.Sharable = true
+		draft.Workload.Rationale = "operator-shared remote MCP endpoint; catalog-visible, members bind one policy-owned connection and credential"
 	}
 	requestKey := api.ArgString(args, "request_key")
 	seed := requestKey
@@ -89,8 +102,18 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	if err != nil {
 		return nil, err
 	}
+	if shared {
+		definition.Workload.Class = api.Shared
+		definition.Workload.Sharable = true
+		definition.Workload.Rationale = draft.Workload.Rationale
+	}
 	if err := c.registerAdmittedDefinition(&definition, auth.PrincipalID); err != nil {
 		return nil, err
+	}
+	if shared {
+		if err := c.Store.PromoteToCatalog(definition.DefinitionID, definition.Version, auth.PrincipalID); err != nil {
+			return nil, err
+		}
 	}
 	onboarding, err := c.newOnboarding(auth, api.OnboardingRemote, requestKey, definition, definition.Source.URL, "")
 	if err != nil {
@@ -105,6 +128,20 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil
+}
+
+// sharedScope admits "owner" (default) or "shared" — the same contract the
+// cli spec uses. Shared connectors are catalog-visible and bind every member
+// to the policy-owned connection and credential.
+func sharedScope(args map[string]any) (bool, error) {
+	switch api.ArgString(args, "scope") {
+	case "", "owner":
+		return false, nil
+	case "shared":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: scope must be owner or shared", api.ErrInvalid)
+	}
 }
 
 // admitRemoteDefinition re-probes a credentialed remote endpoint with the

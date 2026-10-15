@@ -363,7 +363,7 @@ func (c *ControlPlane) prepareCLIArtifact(ctx context.Context, auth identity.Env
 		Execution:          api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
 		Health:             api.HealthProbe{Kind: "exec", Value: binary, TimeoutSeconds: 5},
 	}
-	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey)
+	preparing, inFlight, err := c.ensurePreparing(auth, source, config, requestKey, shared)
 	if err != nil {
 		return nil, err
 	}

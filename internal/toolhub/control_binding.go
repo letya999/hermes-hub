@@ -451,6 +451,12 @@ func (c *ControlPlane) materializeSharedBinding(ctx context.Context, auth identi
 		return api.ToolBinding{}, err
 	}
 	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: policy.StoreOwner}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"credential_owner": policy.StoreOwner, "shared_policy": policy.PolicyID}}
+	if definition.Transport == api.RemoteMCP {
+		// A shared remote connection may hold an OAuth-managed token set: the
+		// marker lets the call path offer one bounded refresh-and-retry; the
+		// locator itself carries provider and connection ids.
+		connection.Metadata["oauth_provider"] = remoteOAuthProvider(definition)
+	}
 	if err := c.Store.PutConnection(connection); err != nil {
 		return api.ToolBinding{}, err
 	}

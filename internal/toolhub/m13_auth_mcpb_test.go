@@ -442,6 +442,169 @@ func TestRemoteOAuthRefreshConcurrentRestore(t *testing.T) {
 	wg.Wait()
 }
 
+// A remote endpoint may be declared shared at prepare time: scope=shared
+// requires the install_shared control grant and registers a Shared-class,
+// catalog-visible definition that a shared-credential policy can bind.
+func TestRemoteSharedScopeGate(t *testing.T) {
+	fixture := newRemoteMCPFixture(t, "")
+	fix := newRemoteControlFixture(t)
+	// carol holds every control operation except install_shared, plus the
+	// owner-side self-install grant: the shared gate must still deny.
+	carol := identity.TelegramEnvelope("carol", 9, "runtime", "policy-1")
+	for _, op := range api.ControlOperations {
+		if op != "install_shared" {
+			grantTestControlOperations(t, fix.store, "carol", op)
+		}
+	}
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "carol", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"remote_url": fixture.endpoint(), "scope": "shared"}
+	if _, err := fix.control.Invoke(context.Background(), carol, "prepare_source", args); err == nil {
+		t.Fatal("shared remote install without install_shared admitted")
+	}
+	if err := putGrant(t, fix.store, api.OperatorControlGrant("carol", "install_shared")); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := fix.control.Invoke(context.Background(), carol, "prepare_source", args)
+	if err != nil {
+		t.Fatalf("operator shared remote prepare denied: %v", err)
+	}
+	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
+	definition := onboarding.Definition
+	if definition == nil || definition.Workload.Class != api.Shared || !definition.Workload.Sharable {
+		t.Fatalf("definition workload=%+v, want shared+sharable", definition)
+	}
+	if pub := fix.store.publications[definitionKey(definition.DefinitionID, definition.Version)]; pub.Visibility != api.PublicationCatalog {
+		t.Fatalf("publication=%+v, want catalog", pub)
+	}
+}
+
+// scope=shared also applies to repository installs: the reviewed definition
+// promotes to a Shared-class catalog record a shared-credential policy can
+// bind — and the gate is install_shared, never self-install.
+func TestSourceSharedScopeGate(t *testing.T) {
+	fix := newControlFixture(t, fixtureReviewer(catalogReadDefinition()))
+	fix.control.SourceResolver = func(_ context.Context, raw string) (api.ArtifactSource, error) {
+		return api.ArtifactSource{Repository: raw, CommitSHA: "0123456789abcdef0123456789abcdef01234567"}, nil
+	}
+	carol := identity.TelegramEnvelope("carol", 9, "runtime", "policy-1")
+	for _, op := range api.ControlOperations {
+		if op != "install_shared" {
+			grantTestControlOperations(t, fix.store, "carol", op)
+		}
+	}
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "carol", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"source": "https://github.com/acme/widgets", "scope": "shared"}
+	if _, err := fix.control.Invoke(context.Background(), carol, "prepare_source", args); err == nil {
+		t.Fatal("shared repo install without install_shared admitted")
+	}
+	if err := putGrant(t, fix.store, api.OperatorControlGrant("carol", "install_shared")); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := fix.control.Invoke(context.Background(), carol, "prepare_source", args)
+	if err != nil {
+		t.Fatalf("operator shared repo prepare denied: %v", err)
+	}
+	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
+	stored, err := fix.store.Definition(onboarding.DefinitionID, onboarding.DefinitionVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Workload.Class != api.Shared || !stored.Workload.Sharable {
+		t.Fatalf("stored definition class=%s sharable=%v", stored.Workload.Class, stored.Workload.Sharable)
+	}
+	if pub := fix.store.publications[definitionKey(stored.DefinitionID, stored.Version)]; pub.Visibility != api.PublicationCatalog {
+		t.Fatalf("publication=%+v, want catalog", pub)
+	}
+}
+
+// A shared remote OAuth connector: alice signs in once under scope=shared,
+// the operator binds her token locator to a policy, bob enables the catalog
+// definition and calls it — and a mid-life token rotation refreshes through
+// alice's locator on bob's call, no re-onboarding.
+func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
+	fixture := newRemoteOAuthFixture(t)
+	fix := newRemoteControlFixture(t)
+	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
+	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth)
+	alice := fix.session(t, aliceToken)
+
+	args := map[string]any{"remote_url": fixture.endpoint(), "scope": "shared"}
+	if err := putGrant(t, fix.store, api.OperatorControlGrant("alice", "install_shared")); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := callControl(t, alice, "prepare_source", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _ := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	authURL, _ := url.Parse(status["authorization_url"].(string))
+	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	owner := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
+	if owner.Locator == "" {
+		t.Fatal("oauth onboarding stored no credential locator")
+	}
+	// Operator binds alice's token set to all members of the shared def.
+	policy := api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-remote", DefinitionID: owner.DefinitionID, Locator: owner.Locator, StoreOwner: "alice", Principals: []string{"alice", "bob"}, IssuedBy: "operator", Status: api.ActiveStatus}
+	if err := fix.store.PutSharedCredentialPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "bob", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	bob := fix.session(t, bobToken)
+	bprepared, err := callControl(t, bob, "prepare_source", map[string]any{"definition_id": owner.DefinitionID, "version": "1.0.0"})
+	if err != nil {
+		t.Fatalf("bob prepare: %v", err)
+	}
+	bobOnb := mustOnboarding(t, fix.store, bprepared["onboarding_id"].(string))
+	if err := fix.control.SubmitCredentials(bobOnb.OnboardingID, bobOnb.FormNonce, map[string]string{"ACCESS_TOKEN": "member-dummy"}); err != nil {
+		t.Fatalf("bob submit: %v", err)
+	}
+	bstatus, err := callControl(t, bob, "status", map[string]any{"onboarding_id": bobOnb.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callControl(t, bob, "confirm", map[string]any{"onboarding_id": bobOnb.OnboardingID, "nonce": bstatus["nonce"]}); err != nil {
+		t.Fatalf("bob confirm: %v", err)
+	}
+	if _, err := callControl(t, bob, "enable", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {
+		t.Fatalf("bob enable: %v", err)
+	}
+	listed, err := bob.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectedName := ""
+	for _, tool := range listed.Tools {
+		if strings.HasPrefix(tool.Name, "hub-remote-") {
+			projectedName = tool.Name
+		}
+	}
+	if projectedName == "" {
+		t.Fatal("shared remote tool not projected for member")
+	}
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+		t.Fatalf("bob invoke: %v", err)
+	}
+	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-1" {
+		t.Fatalf("endpoint saw %q for member call, want shared bearer", got)
+	}
+	// Rotation: bob's next call must refresh alice's locator and retry once.
+	fixture.accepted.Store("oauth-at-2")
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+		t.Fatalf("bob refresh-retry invoke: %v", err)
+	}
+	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-2" {
+		t.Fatalf("endpoint saw %q after member refresh, want rotated bearer", got)
+	}
+}
+
 // remoteOAuthFixture is one TLS server that is simultaneously the MCP
 // endpoint (401 until "Bearer oauth-at-1"), the protected-resource metadata
 // document and the authorization server (authorize/token/register).
