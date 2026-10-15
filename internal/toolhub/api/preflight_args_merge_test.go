@@ -135,7 +135,7 @@ func TestPreflightCredentialArgsContract(t *testing.T) {
 	if ProbeOptionsFrom(context.Background()).Values != nil {
 		t.Fatal("ambient probe options leaked")
 	}
-	if ProbeOptionsFrom(nil).Values != nil {
-		t.Fatal("nil ctx probe options")
+	if ProbeOptionsFrom(context.TODO()).Values != nil {
+		t.Fatal("unscoped ctx probe options")
 	}
 }

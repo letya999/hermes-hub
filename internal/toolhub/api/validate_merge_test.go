@@ -141,8 +141,12 @@ func TestToolBindingValidate(t *testing.T) {
 	if err := bad.Validate(); err != nil {
 		t.Fatalf("bound credential: %v", err)
 	}
-	if DeterministicBindingID("p", "c", "r", "d", "1.0.0", "conn", "cred") != DeterministicBindingID("p", "c", "r", "d", "1.0.0", "conn", "cred") {
+	first, second := DeterministicBindingID("p", "c", "r", "d", "1.0.0", "conn", "cred"), DeterministicBindingID("p", "c", "r", "d", "1.0.0", "conn", "cred")
+	if first != second {
 		t.Fatal("binding id not deterministic")
+	}
+	if first == DeterministicBindingID("p", "c", "r", "d", "1.0.0", "conn", "other") {
+		t.Fatal("binding id ignores credential")
 	}
 	if !strings.HasPrefix(ProjectedToolName("def-1", "1.0.0", "list items"), "hub-def-1-list-items-") {
 		t.Fatalf("projected name: %s", ProjectedToolName("def-1", "1.0.0", "list items"))

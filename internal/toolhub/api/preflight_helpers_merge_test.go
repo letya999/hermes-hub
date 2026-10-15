@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -72,7 +71,7 @@ func TestPreflightProbeHelpers(t *testing.T) {
 		t.Fatalf("nil list: %v", err)
 	}
 	// pull validation runs before docker
-	if err := PullPublishedImage(context.Background(), "bad name", "sha256:"+fmt.Sprint("x")); !errors.Is(err, ErrInvalid) {
+	if err := PullPublishedImage(context.Background(), "bad name", "sha256:x"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("pull name: %v", err)
 	}
 }
