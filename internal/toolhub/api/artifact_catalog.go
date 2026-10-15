@@ -183,13 +183,13 @@ func DiscoverOpenAPIEgress(contextBytes []byte) []string {
 	hosts := map[string]bool{}
 	for {
 		header, err := reader.Next()
-		if err == io.EOF {
+		if err != nil {
 			break
 		}
-		name := strings.ToLower(path.Base(header.Name))
-		if err != nil || header.Typeflag != tar.TypeReg || header.Size > 8<<20 {
+		if header.Typeflag != tar.TypeReg || header.Size > 8<<20 {
 			continue
 		}
+		name := strings.ToLower(path.Base(header.Name))
 		body, readErr := io.ReadAll(io.LimitReader(reader, 8<<20))
 		if readErr != nil {
 			continue
@@ -276,10 +276,10 @@ func DiscoverProxyEnvironment(contextBytes []byte) []string {
 	}
 	for {
 		header, err := reader.Next()
-		if err == io.EOF {
+		if err != nil {
 			break
 		}
-		if err != nil || header.Typeflag != tar.TypeReg || header.Size > 4<<20 {
+		if header.Typeflag != tar.TypeReg || header.Size > 4<<20 {
 			continue
 		}
 		if !proxyDiscoveryFilePath(header.Name) {

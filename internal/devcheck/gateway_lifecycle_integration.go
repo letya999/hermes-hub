@@ -25,7 +25,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // gatewayLifecycleSmoke uses the production Telegram adapter, worker, spool,

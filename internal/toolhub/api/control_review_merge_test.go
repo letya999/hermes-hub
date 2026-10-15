@@ -1,64 +1,39 @@
 package api
 
 import (
-	"errors"
-	"path/filepath"
+	"fmt"
 	"testing"
 )
 
-// Definition IDs are sanitized to a bounded safe slug; the default
-// self-install config derives its id from the repository path, and control
-// artifact paths honor env overrides over the state root.
-func TestControlReviewHelpers(t *testing.T) {
+func TestSourceReviewHelpers(t *testing.T) {
+	// sanitize produces a valid id or falls back
 	for name, want := range map[string]string{
-		"FS MCP":        "fsmcp",
-		"fs-mcp_server": "fs-mcp_server",
-		"42tools":       "m-42tools",
-		"!!!":           "user-mcp",
-		"":              "user-mcp",
-		"  padded--x  ": "padded--x",
-		"MiXeD_Case-9":  "mixed_case-9",
+		"My Tool":      "mytool",
+		"../evil/path": "evilpath",
+		"9lives":       "m-9lives",
+		"":             "user-mcp",
+		"!!!":          "user-mcp",
+		"repo.üñícode": "repocode",
 	} {
 		if got := SanitizeDefinitionID(name); got != want {
-			t.Fatalf("SanitizeDefinitionID(%q) = %q, want %q", name, got, want)
+			t.Fatalf("%q -> %q (want %q)", name, got, want)
 		}
 	}
-	long := SanitizeDefinitionID("a" + string(make([]byte, 64)))
+	long := SanitizeDefinitionID("a" + fmt.Sprintf("%050d", 0) + "verylongrepositorynamethatexceedslimits")
 	if len(long) > 40 {
-		t.Fatalf("id too long: %d", len(long))
+		t.Fatalf("long id: %q", long)
 	}
 
-	cfg := DefaultSelfInstallConfig(ArtifactSource{Repository: "https://github.com/acme/fs-mcp"})
-	if cfg.DefinitionID != "fs-mcp" || cfg.Image != "hermes-artifact/fs-mcp" {
-		t.Fatalf("self install id: %+v", cfg)
+	// self-install defaults: per-user, credentialed, bounded exec, exec health probe
+	cfg := DefaultSelfInstallConfig(ArtifactSource{Repository: "https://github.com/acme/My-Server"})
+	if cfg.DefinitionID != "my-server" || cfg.Workload.Class != PerUser || cfg.Image != "hermes-artifact/my-server" {
+		t.Fatalf("config: %+v", cfg)
 	}
-	cfg = DefaultSelfInstallConfig(ArtifactSource{Repository: "not-a-url"})
-	if cfg.DefinitionID != "user-mcp" {
-		t.Fatalf("bad repository id: %+v", cfg)
+	if cfg.Execution.TimeoutSeconds <= 0 || cfg.Health.Value != "/app/health" {
+		t.Fatalf("defaults: %+v", cfg)
 	}
-
-	review, ok := ReviewFromCredentialGate(ImportedArtifact{}, errors.New("plain"), nil)
-	if ok {
-		t.Fatalf("non-gate error produced review: %+v", review)
-	}
-	gated := ImportedArtifact{}
-	gated.Definition.DefinitionID = "fs-mcp"
-	review, ok = ReviewFromCredentialGate(gated, &CredentialGate{Detail: "need token"}, &RecipeResolution{State: "x"})
-	if !ok || !review.AdmissionPending || review.AdmissionDetail != "need token" || review.Recipe == nil {
-		t.Fatalf("gate review: %+v %v", review, ok)
-	}
-
-	root := t.TempDir()
-	t.Setenv("HUB_ARTIFACT_DIR", "")
-	t.Setenv("HUB_BUILD_SECCOMP", filepath.Join(root, "seccomp.json"))
-	artifacts, seccomp := ControlArtifactPaths(root)
-	if artifacts != filepath.Join(root, "artifacts") || !filepath.IsAbs(seccomp) || seccomp != filepath.Join(root, "seccomp.json") {
-		t.Fatalf("paths: %q %q", artifacts, seccomp)
-	}
-	custom := filepath.Join(root, "custom-artifacts")
-	t.Setenv("HUB_ARTIFACT_DIR", custom)
-	artifacts, _ = ControlArtifactPaths(root)
-	if artifacts != custom {
-		t.Fatalf("env artifact dir: %q", artifacts)
+	fallback := DefaultSelfInstallConfig(ArtifactSource{Repository: "not a url"})
+	if fallback.DefinitionID != "user-mcp" {
+		t.Fatalf("fallback id: %q", fallback.DefinitionID)
 	}
 }

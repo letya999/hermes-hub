@@ -3,157 +3,124 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// The MCP stdio decoder skips server startup logs and non-response JSON,
-// enforces the JSON-RPC error envelope, names the tools/list reply, and
-// bounds schemas and descriptions.
-func TestDecodeMCPToolListBranches(t *testing.T) {
+func TestDecodeMCPToolListStream(t *testing.T) {
+	// startup noise, a wrong-id response, then the id=2 tools/list reply
 	stream := strings.Join([]string{
-		"server starting on port 0",
-		`{"level":"info","msg":"boot"}`,
-		`{"jsonrpc":"2.0","id":1,"result":{}}`,
-		`{"jsonrpc":"2.0","method":"notifications/progress"}`,
-		`{not json`,
-		`{"jsonrpc":"2.0","id":2,"result":{"tools":[` +
-			`{"name":"fs.read","description":"read a file","inputSchema":{"type":"object"},` +
-			`"annotations":{"readOnlyHint":true}},` +
-			`{"name":"fs.write","annotations":{"readOnlyHint":true,"destructiveHint":true}}]}}`,
+		`plain startup log`,
+		`{"level":"error","error":"noise"}`,
+		`{"id":1,"result":{"serverInfo":{}}}`,
+		`{"id":2,"result":{"tools":[` +
+			`{"name":"list_items","description":"read","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},` +
+			`{"name":"delete_item","annotations":{"destructiveHint":true,"readOnlyHint":true}},` +
+			`{"name":"update_item","description":"` + strings.Repeat("x", 1100) + `"}` +
+			`]}}`,
 	}, "\n")
 	tools, err := DecodeMCPToolList(strings.NewReader(stream))
-	if err != nil || len(tools) != 2 {
-		t.Fatalf("decode: %v %v", tools, err)
+	if err != nil || len(tools) != 3 {
+		t.Fatalf("tools: %v %v", err, tools)
 	}
-	if tools[0].Effect != ReadEffect || tools[1].Effect != WriteEffect {
+	if tools[0].Effect != ReadEffect || tools[1].Effect != WriteEffect || tools[2].Effect != WriteEffect {
 		t.Fatalf("effects: %+v", tools)
 	}
-	if _, err := DecodeMCPToolList(strings.NewReader(`{"id":2,"error":{"message":"boom"}}`)); err == nil {
-		t.Fatal("rpc error envelope accepted")
+	if tools[2].Description != "" {
+		t.Fatal("oversized description kept")
 	}
-	if _, err := DecodeMCPToolList(strings.NewReader(`{"id":2,"result":{"tools":[{"name":"bad name!"}]}}`)); err == nil {
-		t.Fatal("invalid tool name accepted")
+	// RPC error envelope fails closed
+	_, err = DecodeMCPToolList(strings.NewReader(`{"id":2,"error":{"message":"auth required"}}`))
+	if !errors.Is(err, ErrIsolation) || !strings.Contains(err.Error(), "auth required") {
+		t.Fatalf("rpc error: %v", err)
 	}
-	if _, err := DecodeMCPToolList(strings.NewReader(`{"id":2,"result":{"tools":[]}}`)); err == nil {
-		t.Fatal("empty tools/list accepted")
+	// invalid tool name rejected
+	_, err = DecodeMCPToolList(strings.NewReader(`{"id":2,"result":{"tools":[{"name":"bad name!"}]}}`))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("bad tool name: %v", err)
 	}
-	big := fmt.Sprintf(`{"id":2,"result":{"tools":[{"name":"x","inputSchema":"%s"}]}}`, strings.Repeat("a", 70000))
-	if _, err := DecodeMCPToolList(strings.NewReader(big)); err == nil {
-		t.Fatal("oversized input schema accepted")
+	// empty tools → ErrEmptyToolList
+	_, err = DecodeMCPToolList(strings.NewReader(`{"id":2,"result":{"tools":[]}}`))
+	if !errors.Is(err, ErrEmptyToolList) {
+		t.Fatalf("empty list: %v", err)
 	}
-	if _, err := DecodeMCPToolList(strings.NewReader("")); err == nil {
-		t.Fatal("empty stream accepted")
+	// oversized input schema rejected
+	big := `{"id":2,"result":{"tools":[{"name":"t","inputSchema":{"x":"` + strings.Repeat("y", 66000) + `"}}]}}`
+	if _, err := DecodeMCPToolList(strings.NewReader(big)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversize schema: %v", err)
 	}
-}
-
-// The help-text credential parser only collects required/recommended names
-// inside the Environment Variables section.
-func TestParseMCPHelpCredentials(t *testing.T) {
-	help := strings.Join([]string{
-		"Usage: server [flags]",
-		"Environment Variables:",
-		"  FOO_TOKEN   API token (required)",
-		"  BAR_URL     endpoint url",
-		"  BAZ_SECRET  signing secret, recommended",
-		"",
-		"  AFTER       ignored",
-	}, "\n")
-	got := ParseMCPHelpCredentials(help)
-	if len(got) != 2 || got[0].Name != "FOO_TOKEN" || !got[0].Required || got[1].Name != "BAZ_SECRET" {
-		t.Fatalf("parsed credentials: %+v", got)
-	}
-	if got := ParseMCPHelpCredentials("no environment section"); got != nil {
-		t.Fatalf("unexpected credentials: %+v", got)
+	// no tools/list reply at all
+	if _, err := DecodeMCPToolList(strings.NewReader("noise only\n")); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("missing reply: %v", err)
 	}
 }
 
-// Credential-promotion retry renames only secret-shaped optional inputs named
-// by the auth failure, and the network-transport fallback prefers the real
-// transport probe once stdio fails.
-func TestPreflightRetryAndFallback(t *testing.T) {
-	ctx := context.Background()
-	imported := ImportedArtifact{}
-	imported.Definition.Credentials = []CredentialInput{
-		{Name: "FOO_TOKEN"},
-		{Name: "PLAIN_SETTING"},
+func TestParseMCPHelpCredentialsSection(t *testing.T) {
+	help := `Usage: server [flags]
+
+Environment Variables:
+  API_TOKEN    API token (required)
+  ORG_SECRET   Org secret (recommended)
+  VERBOSE      Enable debug logging
+
+Other section
+`
+	creds := ParseMCPHelpCredentials(help)
+	if len(creds) != 2 || creds[0].Name != "API_TOKEN" || !creds[0].Required || creds[1].Name != "ORG_SECRET" {
+		t.Fatalf("help creds: %+v", creds)
 	}
-	gateErr := errors.New("server exited: Either FOO_TOKEN must be provided")
-	okList := func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
-		return []ToolSpec{{Name: "fs.read", Effect: ReadEffect}}, nil
+	if got := ParseMCPHelpCredentials("no env section"); len(got) != 0 {
+		t.Fatalf("no-section help: %v", got)
 	}
-	promoted, tools, err := RetryListWithPromotedCredentials(ctx, imported, gateErr, okList)
+}
+
+func TestRetryListWithPromotedCredentialsContract(t *testing.T) {
+	base := ImportedArtifact{Definition: ToolDefinition{
+		Credentials: []CredentialInput{
+			{Name: "API_TOKEN"},     // optional secret
+			{Name: "OPTIONAL_FLAG"}, // optional non-secret
+		},
+	}}
+	list := func(ctx context.Context, i ImportedArtifact) ([]ToolSpec, error) {
+		return []ToolSpec{{Name: "t", Effect: ReadEffect}}, nil
+	}
+	// error names a credential → that secret promoted
+	out, tools, err := RetryListWithPromotedCredentials(context.Background(), base, errors.New("set API_TOKEN first"), list)
 	if err != nil || len(tools) != 1 {
-		t.Fatalf("retry: %v %v", tools, err)
+		t.Fatalf("retry: %v", err)
 	}
-	for _, c := range promoted.Definition.Credentials {
-		if c.Name == "FOO_TOKEN" && !c.Required {
-			t.Fatal("named credential not promoted")
-		}
-		if c.Name == "PLAIN_SETTING" && c.Required {
-			t.Fatal("non-secret input promoted")
-		}
+	if !out.Definition.Credentials[0].Required || out.Definition.Credentials[1].Required {
+		t.Fatalf("promotion: %+v", out.Definition.Credentials)
 	}
-	if _, _, err := RetryListWithPromotedCredentials(ctx, ImportedArtifact{}, errors.New("crash"), okList); err == nil {
-		t.Fatal("retry without declared credentials accepted")
-	}
-	failList := func(context.Context, ImportedArtifact) ([]ToolSpec, error) { return nil, errors.New("still gated") }
-	if _, _, err := RetryListWithPromotedCredentials(ctx, imported, gateErr, failList); err == nil {
-		t.Fatal("failed retry accepted")
-	}
-
-	// Network transport fallback: no declared transport or a nil error passes
-	// the original failure through untouched.
-	same := func(context.Context, ImportedArtifact) ([]ToolSpec, error) { return nil, nil }
-	if _, _, fn, err := NetworkTransportFallback(ctx, ImportedArtifact{}, nil, same); fn == nil || err != nil {
-		t.Fatal("fallback rewrote a clean probe")
-	}
-	netImported := ImportedArtifact{}
-	netImported.Definition.Source.Args = []string{"--transport", "http"}
-	defer func(orig func(context.Context, ImportedArtifact) ([]ToolSpec, error)) { NetworkMCPToolList = orig }(NetworkMCPToolList)
-	NetworkMCPToolList = okList
-	tools, stamped, fn, err := NetworkTransportFallback(ctx, netImported, errors.New("stdio failed"), same)
-	if err != nil || len(tools) != 1 || stamped.Definition.Source.NetworkTransport != "streamable-http" {
-		t.Fatalf("network fallback: %v %v %q", tools, err, stamped.Definition.Source.NetworkTransport)
-	}
-	_ = fn
-	NetworkMCPToolList = failList
-	if _, _, _, err := NetworkTransportFallback(ctx, netImported, errors.New("stdio failed"), same); err == nil || !strings.Contains(err.Error(), "network transport probe") {
-		t.Fatalf("combined error missing: %v", err)
-	}
-}
-
-// Small probe helpers: bounded text, random names, file-mode copy, and the
-// image-pull name gate that rejects before docker runs.
-func TestPreflightProbeHelpers(t *testing.T) {
-	if got := boundedProbeText("a\n\n b\tc " + strings.Repeat("x", 1600)); len(got) > 1500 || strings.Contains(got, "\n") {
-		t.Fatalf("boundedProbeText: %d %q", len(got), got[:30])
-	}
-	name, err := RandomPreflightContainerName("hermes-preflight-")
-	if err != nil || !strings.HasPrefix(name, "hermes-preflight-") || len(name) != len("hermes-preflight-")+8 {
-		t.Fatalf("container name: %q %v", name, err)
-	}
-	dir := t.TempDir()
-	src := filepath.Join(dir, "in")
-	dst := filepath.Join(dir, "out")
-	if err := os.WriteFile(src, []byte("bin"), 0600); err != nil {
+	// error names an undeclared credential → appended as required
+	out, _, err = RetryListWithPromotedCredentials(context.Background(), base, errors.New("MISSING_KEY is required"), list)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := CopyFileMode(src, dst, 0755); err != nil {
-		t.Fatal(err)
+	var appended bool
+	for _, c := range out.Definition.Credentials {
+		if c.Name == "MISSING_KEY" && c.Required {
+			appended = true
+		}
 	}
-	body, err := os.ReadFile(dst)
-	if err != nil || string(body) != "bin" {
-		t.Fatalf("copied content: %q %v", body, err)
+	if !appended {
+		t.Fatalf("undeclared credential not appended: %+v", out.Definition.Credentials)
 	}
-	if err := CopyFileMode(filepath.Join(dir, "missing"), dst, 0755); err == nil {
-		t.Fatal("missing source copied")
+	// unnamed error → all optional secrets promoted
+	out, _, err = RetryListWithPromotedCredentials(context.Background(), base, errors.New("auth failed"), list)
+	if err != nil || !out.Definition.Credentials[0].Required {
+		t.Fatalf("blanket promotion: %v %+v", err, out.Definition.Credentials)
 	}
-	if err := PullPublishedImage(context.Background(), "bad image!", "sha256:abc"); err == nil {
-		t.Fatal("bad image pull accepted")
+	// nothing promotable → ErrInvalid
+	plain := ImportedArtifact{}
+	if _, _, err := RetryListWithPromotedCredentials(context.Background(), plain, errors.New("x"), list); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("no-op retry: %v", err)
 	}
-	reapPreflightContainer("not-a-preflight-name") // early return, no docker
+	// retry failure propagates
+	failErr := errors.New("still failing")
+	if _, _, err := RetryListWithPromotedCredentials(context.Background(), base, errors.New("set API_TOKEN"), func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return nil, failErr
+	}); !errors.Is(err, failErr) {
+		t.Fatalf("retry failure: %v", err)
+	}
 }

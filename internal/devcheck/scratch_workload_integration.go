@@ -15,8 +15,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // ScratchWorkloadCanary proves the disposable executor's isolation on real
