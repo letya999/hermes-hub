@@ -288,7 +288,24 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.CapabilityMode == "managed" {
 		modelRelay := cloneMap(common)
 		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
-		modelRelay["environment"] = M{"HUB_MODEL_RELAY_MODEL": s.Model}
+		// Ordered fallback ladder: the space's cliproxy first, then the
+		// operator-declared hops. Hop secrets resolve as env names from the
+		// space's own secrets file — never as literals in compose.
+		cliproxyURL := "http://cliproxy:8317"
+		if s.Cliproxy == "dedicated" {
+			cliproxyURL = "http://cliproxy-" + s.User + ":8317"
+		}
+		ladder := "cliproxy=" + cliproxyURL
+		for _, f := range s.ModelFallbacks {
+			ladder += "," + f.Name + "=" + f.URL
+			if f.KeyEnv != "" {
+				ladder += "|" + f.KeyEnv
+			}
+		}
+		modelRelay["environment"] = M{"HUB_MODEL_RELAY_MODEL": s.Model, "HUB_MODEL_RELAY_UPSTREAMS": ladder}
+		if len(s.ModelFallbacks) > 0 {
+			modelRelay["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"}}
+		}
 		modelRelay["extra_hosts"] = []string{}
 		modelRelay["networks"] = []string{sharedNetworkName, managedAgentNetwork(s)}
 		services["model-relay"] = modelRelay
@@ -426,6 +443,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// confirmation code required by the stricter spec flow.
 		broker["environment"] = M{"BROKER_DIRECT_FORM": "1"}
 		services["credential-broker"] = broker
+	}
+
+	// cliproxy: dedicated gives a secondary space its own proxy instance,
+	// reachable as cliproxy-<user> on both networks — the space-local plain
+	// "cliproxy" name keeps resolving the shared infra instance.
+	if !infra && s.Cliproxy == "dedicated" {
+		cliproxy := cloneMap(common)
+		cliproxy["build"] = coreBuild
+		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
+		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
+		alias := []string{"cliproxy-" + s.User}
+		cliproxy["networks"] = M{"default": M{"aliases": alias}, sharedNetworkName: M{"aliases": alias}}
+		services["cliproxy"] = cliproxy
 	}
 
 	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
@@ -570,8 +600,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		mediaSvc := cloneMap(common)
 		mediaSvc["entrypoint"] = []string{"hub-media"}
 		mediaEnv := M{
-			"HUB_MEDIA_LISTEN":         "0.0.0.0:8090",
-			"HUB_MEDIA_ENGINE":         "${HUB_MEDIA_ENGINE:-remote}",
+			"HUB_MEDIA_LISTEN": "0.0.0.0:8090",
+			"HUB_MEDIA_ENGINE": "${HUB_MEDIA_ENGINE:-remote}",
+			// Multi-engine ladder and logical-model routes come from the
+			// deploy env; "command" is the local engine (HUB_MEDIA_COMMAND
+			// points at a mounted runner script).
+			"HUB_MEDIA_ENGINES":        "${HUB_MEDIA_ENGINES:-}",
+			"HUB_MEDIA_MODEL_ROUTES":   "${HUB_MEDIA_MODEL_ROUTES:-}",
+			"HUB_MEDIA_COMMAND":        "${HUB_MEDIA_COMMAND:-}",
 			"HUB_MEDIA_UPSTREAM":       "${HUB_MEDIA_UPSTREAM:-http://cliproxy:8317}",
 			"HUB_MEDIA_QUEUE_UPSTREAM": "${HUB_MEDIA_QUEUE_UPSTREAM:-}",
 			"HUB_MEDIA_IMAGE_MODEL":    "${HUB_MEDIA_IMAGE_MODEL:-gpt-image-2}",

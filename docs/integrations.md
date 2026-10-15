@@ -640,8 +640,15 @@ volume, short in-memory cache with the lease released right after
 materialization). The runtime env never contains `FAL_KEY`. Engines are
 `remote` (any
 OpenAI-compatible upstream such as CLIProxy, default upstream
-`http://cliproxy:8317`) and `fal` (`fal.run` images, `queue.fal.run` video
-jobs). Images answer synchronously; video submits return a job id for
+`http://cliproxy:8317`), `fal` (`fal.run` images, `queue.fal.run` video
+jobs) and `command` (a local runner: `HUB_MEDIA_COMMAND` reads the prompt on
+stdin, writes media bytes to stdout, model/kind/size arrive via
+`HUB_MEDIA_REQUEST_*` env — the self-hosted slot for wrapper scripts).
+`HUB_MEDIA_ENGINES` lists engines in fallback order and
+`HUB_MEDIA_MODEL_ROUTES` maps a logical model id to ordered
+`engine:provider_id` hops; every attempt is logged and a job persists the
+accepting engine's handle so restarts resume polling without resubmitting.
+Images answer synchronously; video submits return a job id for
 `media_fetch`, persist under `HUB_MEDIA_DATA`, resume provider polling after a
 restart and expire by `HUB_MEDIA_JOB_TTL`. Outside a stack the embedded
 direct-provider path stays as fallback and `FAL_KEY` enters the runtime env

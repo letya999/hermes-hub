@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -25,11 +28,20 @@ type GenEngine interface {
 }
 
 // AsyncEngine is an engine backed by a provider queue for long generations
-// (video). Submit returns a provider handle the job persists; Poll resumes
-// from that handle so a restart never pays for a second submission.
+// (video). Submit returns a durable handle — provider id plus the engine that
+// owns it — the job persists; Poll resumes from that handle so a restart
+// never pays for a second submission.
 type AsyncEngine interface {
-	Submit(ctx context.Context, req GenRequest) (remoteID string, err error)
-	Poll(ctx context.Context, remoteID, model string) (GenResult, bool, error)
+	Submit(ctx context.Context, req GenRequest) (SubmitHandle, error)
+	Poll(ctx context.Context, h SubmitHandle, model string) (GenResult, bool, error)
+}
+
+// SubmitHandle binds a provider queue id to the engine that accepted it; Model
+// is the provider-side id the poll URL needs (the job's logical name may differ).
+type SubmitHandle struct {
+	RemoteID string `json:"remote_id"`
+	Engine   string `json:"engine,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 type GenRequest struct {
@@ -47,13 +59,147 @@ type GenResult struct {
 	Mime string
 }
 
+// genRouter fans a logical model out to an ordered candidate list. A model in
+// Routes maps to explicit (engine, provider-id) hops; anything else tries the
+// engines in configured order with the requested id.
+type genRouter struct {
+	engines map[string]GenEngine
+	order   []string
+	routes  map[string][]RouteHop
+}
+
+func newGenRouter(engines map[string]GenEngine, order []string, routes map[string][]RouteHop) (*genRouter, error) {
+	return &genRouter{engines: engines, order: order, routes: routes}, nil
+}
+
+func (r *genRouter) hopsFor(model string) []RouteHop {
+	if hops, ok := r.routes[model]; ok {
+		return hops
+	}
+	hops := make([]RouteHop, 0, len(r.order))
+	for _, name := range r.order {
+		hops = append(hops, RouteHop{Engine: name, Model: model})
+	}
+	return hops
+}
+
+func (r *genRouter) Generate(ctx context.Context, req GenRequest) (GenResult, error) {
+	var last error
+	for _, hop := range r.hopsFor(req.Model) {
+		hopReq := req
+		hopReq.Model = hop.Model
+		out, err := r.engines[hop.Engine].Generate(ctx, hopReq)
+		if err == nil && len(out.Data) > 0 {
+			log.Printf("hub-media model=%s engine=%s status=ok", req.Model, hop.Engine)
+			return out, nil
+		}
+		log.Printf("hub-media model=%s engine=%s failed: %v", req.Model, hop.Engine, err)
+		last = err
+	}
+	return GenResult{}, fmt.Errorf("all media providers failed for %q (%v)", req.Model, last)
+}
+
+func (r *genRouter) Ready(ctx context.Context) bool {
+	for _, name := range r.order {
+		if r.engines[name].Ready(ctx) {
+			return true
+		}
+	}
+	return false
+}
+
+// Submit walks the hop list like Generate but skips engines without a queue:
+// a sync-only engine cannot accept a durable job. The returned handle records
+// which engine took the submission so Poll resumes there, not at the top of
+// the ladder.
+func (r *genRouter) Submit(ctx context.Context, req GenRequest) (SubmitHandle, error) {
+	var last error
+	for _, hop := range r.hopsFor(req.Model) {
+		eng, ok := r.engines[hop.Engine].(AsyncEngine)
+		if !ok {
+			log.Printf("hub-media model=%s engine=%s skipped: no async queue", req.Model, hop.Engine)
+			continue
+		}
+		hopReq := req
+		hopReq.Model = hop.Model
+		h, err := eng.Submit(ctx, hopReq)
+		if err != nil {
+			log.Printf("hub-media model=%s engine=%s submit failed: %v", req.Model, hop.Engine, err)
+			last = err
+			continue
+		}
+		h.Engine = hop.Engine
+		if h.Model == "" {
+			h.Model = hop.Model
+		}
+		log.Printf("hub-media model=%s engine=%s submit status=ok remote=%s", req.Model, hop.Engine, h.RemoteID)
+		return h, nil
+	}
+	return SubmitHandle{}, fmt.Errorf("no async media provider accepted %q (%v)", req.Model, last)
+}
+
+func (r *genRouter) Poll(ctx context.Context, h SubmitHandle, model string) (GenResult, bool, error) {
+	eng, ok := r.engines[h.Engine].(AsyncEngine)
+	if !ok {
+		return GenResult{}, false, fmt.Errorf("job engine %q is not a configured async provider", h.Engine)
+	}
+	pollModel := h.Model
+	if pollModel == "" {
+		pollModel = model
+	}
+	return eng.Poll(ctx, h, pollModel)
+}
+
+// commandGen is the local engine: HUB_MEDIA_COMMAND runs a script/binary that
+// reads the prompt on stdin and writes media bytes to stdout; model, kind and
+// size travel through env so prompts with spaces never touch argv. This is
+// how self-hosted generators (ComfyUI runners, diffusers scripts) plug in
+// without a provider SDK.
+type commandGen struct{ command string }
+
+func (e commandGen) Generate(ctx context.Context, req GenRequest) (GenResult, error) {
+	cmd := exec.CommandContext(ctx, e.command)
+	cmd.Env = append(os.Environ(),
+		"HUB_MEDIA_REQUEST_MODEL="+req.Model,
+		"HUB_MEDIA_REQUEST_KIND="+req.Kind,
+		"HUB_MEDIA_REQUEST_SIZE="+req.Size,
+	)
+	cmd.Stdin = strings.NewReader(req.Prompt)
+	out, err := cmd.Output()
+	if err != nil || len(out) == 0 {
+		return GenResult{}, errors.New("command engine failed")
+	}
+	return GenResult{Data: out, Mime: sniffMime(out)}, nil
+}
+
+func (e commandGen) Ready(context.Context) bool { return true }
+
 func genEngine(c Config) (GenEngine, error) {
+	names := c.Engines
+	if len(names) == 0 {
+		names = []string{c.Engine}
+	}
+	engines := make(map[string]GenEngine, len(names))
+	for _, name := range names {
+		eng, err := genEngineNamed(c, name)
+		if err != nil {
+			return nil, err
+		}
+		engines[name] = eng
+	}
+	if len(names) == 1 && len(c.Routes) == 0 {
+		return engines[names[0]], nil
+	}
+	return newGenRouter(engines, names, c.Routes)
+}
+
+func genEngineNamed(c Config, name string) (GenEngine, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resolve, err := c.mediaKeyResolver()
 	if err != nil {
 		return nil, err
 	}
-	switch c.Engine {
+	switch name {
 	case "remote":
 		if resolve == nil {
 			resolve = staticKey(firstNonEmpty(c.UpstreamKey, envOr("OPENAI_API_KEY", "")))
@@ -68,8 +214,13 @@ func genEngine(c Config) (GenEngine, error) {
 			queue = falQueueBase(c.Upstream)
 		}
 		return &falGen{base: c.Upstream, queue: queue, keyFor: resolve, client: client}, nil
+	case "command":
+		if strings.TrimSpace(c.Command) == "" {
+			return nil, errors.New("HUB_MEDIA_COMMAND is required for the command engine")
+		}
+		return commandGen{command: c.Command}, nil
 	}
-	return nil, fmt.Errorf("unknown media engine %q", c.Engine)
+	return nil, fmt.Errorf("unknown media engine %q", name)
 }
 
 func firstNonEmpty(values ...string) string {
@@ -366,54 +517,54 @@ func (e *falGen) fetchResult(ctx context.Context, raw string) (GenResult, error)
 	return GenResult{Data: data, Mime: mime}, nil
 }
 
-func (e *falGen) Submit(ctx context.Context, req GenRequest) (string, error) {
+func (e *falGen) Submit(ctx context.Context, req GenRequest) (SubmitHandle, error) {
 	key, err := e.apiKey(ctx)
 	if err != nil {
-		return "", err
+		return SubmitHandle{}, err
 	}
 	if e.queue == "" {
-		return "", errors.New("queue upstream is not configured")
+		return SubmitHandle{}, errors.New("queue upstream is not configured")
 	}
 	payload, err := json.Marshal(map[string]any{"prompt": req.Prompt})
 	if err != nil {
-		return "", err
+		return SubmitHandle{}, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(e.queue, "/")+"/"+req.Model, bytes.NewReader(payload))
 	if err != nil {
-		return "", err
+		return SubmitHandle{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Key "+key)
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
-		return "", err
+		return SubmitHandle{}, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return SubmitHandle{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fal queue submit HTTP %d", resp.StatusCode)
+		return SubmitHandle{}, fmt.Errorf("fal queue submit HTTP %d", resp.StatusCode)
 	}
 	var parsed struct {
 		RequestID string `json:"request_id"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.RequestID == "" {
-		return "", errors.New("fal queue returned no request id")
+		return SubmitHandle{}, errors.New("fal queue returned no request id")
 	}
-	return parsed.RequestID, nil
+	return SubmitHandle{RemoteID: parsed.RequestID}, nil
 }
 
 // Poll reads the queue status, then fetches the result document and finally
 // the media bytes once. statuses: IN_QUEUE, IN_PROGRESS, COMPLETED — anything
 // else is terminal.
-func (e *falGen) Poll(ctx context.Context, remoteID, model string) (GenResult, bool, error) {
+func (e *falGen) Poll(ctx context.Context, h SubmitHandle, model string) (GenResult, bool, error) {
 	key, err := e.apiKey(ctx)
 	if err != nil {
 		return GenResult{}, false, err
 	}
-	statusURL := strings.TrimRight(e.queue, "/") + "/" + model + "/requests/" + remoteID + "/status"
+	statusURL := strings.TrimRight(e.queue, "/") + "/" + model + "/requests/" + h.RemoteID + "/status"
 	var status struct {
 		Status string `json:"status"`
 	}
@@ -427,7 +578,7 @@ func (e *falGen) Poll(ctx context.Context, remoteID, model string) (GenResult, b
 	default:
 		return GenResult{}, false, fmt.Errorf("fal queue status %q", status.Status)
 	}
-	resultURL := strings.TrimRight(e.queue, "/") + "/" + model + "/requests/" + remoteID
+	resultURL := strings.TrimRight(e.queue, "/") + "/" + model + "/requests/" + h.RemoteID
 	var parsed struct {
 		Video *struct {
 			URL string `json:"url"`

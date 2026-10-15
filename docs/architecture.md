@@ -40,7 +40,14 @@ Managed Compose assigns each user/environment an internal agent network.
 Hermes reaches ToolHub and a per-user model relay there. The ToolHub relay
 exposes MCP plus the caller-scoped connector inventory used by readiness;
 the model relay forwards chat completions only for the selected model and
-returns only that model from CLIProxy's read-only catalog.
+returns only that model from CLIProxy's read-only catalog. The relay walks a
+deterministic upstream ladder (`HUB_MODEL_RELAY_UPSTREAMS`): the space's
+CLIProxy first, then operator-declared hops, cooling a hop down for a minute
+after a quota/auth/provider failure and logging every attempt as an audit
+receipt. `spaces/profiles.yaml` overlays model, model_url, cliproxy topology
+and fallback ladders per owner (default → named → the owner's own file), and
+`cliproxy: dedicated` renders a secondary space its own proxy instead of the
+shared infra one.
 CLIProxy, broker and sibling runtimes are not directly attached to the agent
 network. Managed launch requires supervised network lifecycle, immutable
 extension content and private executors.

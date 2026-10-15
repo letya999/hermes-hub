@@ -61,14 +61,20 @@ type Settings struct {
 	Organization    string               `yaml:"organization,omitempty"`
 	Model           string               `yaml:"model"`
 	ModelURL        string               `yaml:"model_url"`
-	Timezone        string               `yaml:"timezone"`
-	GoogleEmail     string               `yaml:"google_email"`
-	GitLabHost      string               `yaml:"gitlab_host"`
-	DesktopURL      string               `yaml:"desktop_url"`
-	DraftsURL       string               `yaml:"drafts_url"`
-	OAuthPort       int                  `yaml:"oauth_port"`
-	BrowserPort     int                  `yaml:"browser_port"`
-	SlackEventsPort int                  `yaml:"slack_events_port,omitempty"`
+	// Cliproxy selects the proxy topology: "shared" (default) resolves the
+	// infra space's instance; "dedicated" renders a cliproxy per space.
+	Cliproxy string `yaml:"cliproxy,omitempty"`
+	// ModelFallbacks are extra upstream hops after the configured cliproxy,
+	// rendered into the managed model-relay ladder.
+	ModelFallbacks  []ModelFallback `yaml:"model_fallbacks,omitempty"`
+	Timezone        string          `yaml:"timezone"`
+	GoogleEmail     string          `yaml:"google_email"`
+	GitLabHost      string          `yaml:"gitlab_host"`
+	DesktopURL      string          `yaml:"desktop_url"`
+	DraftsURL       string          `yaml:"drafts_url"`
+	OAuthPort       int             `yaml:"oauth_port"`
+	BrowserPort     int             `yaml:"browser_port"`
+	SlackEventsPort int             `yaml:"slack_events_port,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -100,6 +106,14 @@ func (s *Settings) DefaultGlobalSkillsDir(dir string) {
 		s.GlobalSkillsDir = dir
 		s.defaultGlobalSkills = true
 	}
+}
+
+// ModelFallback is one extra model upstream hop: the relay calls url with the
+// secret named by key_env when the preceding hops report quota exhaustion.
+type ModelFallback struct {
+	Name   string `yaml:"name"`
+	URL    string `yaml:"url"`
+	KeyEnv string `yaml:"key_env,omitempty"`
 }
 
 type Feature struct {
@@ -342,6 +356,35 @@ func (s Settings) Validate() error {
 	}
 	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
 		return fmt.Errorf("managed capability identity requires capability_mode managed")
+	}
+	switch s.Cliproxy {
+	case "", "shared":
+	case "dedicated":
+		if s.RendersInfra() {
+			return fmt.Errorf("cliproxy: dedicated cannot render on the infra space itself")
+		}
+	default:
+		return fmt.Errorf("cliproxy must be shared or dedicated")
+	}
+	if len(s.ModelFallbacks) > 0 {
+		if s.CapabilityMode != "managed" {
+			return fmt.Errorf("model_fallbacks require capability_mode: managed — unmanaged spaces point model_url directly")
+		}
+		seen := map[string]bool{}
+		envName := regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+		for _, f := range s.ModelFallbacks {
+			if !idPattern.MatchString(f.Name) || f.Name == "cliproxy" || seen[f.Name] {
+				return fmt.Errorf("model_fallbacks: invalid or duplicate hop name %q", f.Name)
+			}
+			seen[f.Name] = true
+			u, err := url.Parse(f.URL)
+			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "..") {
+				return fmt.Errorf("model_fallbacks: %q needs a fixed HTTP(S) base URL", f.Name)
+			}
+			if f.KeyEnv != "" && !envName.MatchString(f.KeyEnv) {
+				return fmt.Errorf("model_fallbacks: %q key_env is not an env name", f.Name)
+			}
+		}
 	}
 	if s.Schema < 1 || s.Schema > 3 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1..3 and profile a lowercase identifier")

@@ -1,0 +1,23 @@
+change: CHG-0105-m15-model-provider-layer
+milestone: M15 — Model & Provider Layer (#185, #131, #182)
+status: in-progress
+slices:
+  S1-relay-ladder: done
+  S2-settings-render: done
+  S3-profiles-overlay: done
+  S4-media-routes: done
+  S5-command-engine-async-handles: done
+  S6-docs-and-check: done
+just_check: green (86.33% own coverage; race+shuffle, vet, staticcheck, docs, actionlint, config contract)
+live_acceptance: unavailable (no deployed stack; Docker gates not run per owner request)
+notes: >
+  model-relay ladder: strict hop specs name=url|KEY_ENV, ordered fallback on
+  401/403/429/5xx/transport, 1min cooldown, /v1/hops, per-attempt audit logs,
+  X-Model-Hop. profiles.yaml default->named->owner overlay for
+  model/model_url/cliproxy/model_fallbacks; cliproxy:dedicated renders
+  cliproxy-<user> aliases on both networks for non-infra spaces. hub-media:
+  HUB_MEDIA_ENGINES + HUB_MEDIA_MODEL_ROUTES logical->engine:provider_id
+  routing, genRouter sync+async with per-hop receipts, command engine
+  (stdin prompt / stdout bytes / HUB_MEDIA_REQUEST_* env), SubmitHandle
+  {remote_id,engine,model} persisted on Job so restart resumes the accepting
+  engine without resubmit.
