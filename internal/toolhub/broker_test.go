@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,7 +80,7 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "broker-test", definition, "", "")
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-test", definition, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Phase != PhaseAwaitingConfirm || stored.Locator != "credential_1" {
+	if stored.Phase != api.PhaseAwaitingConfirm || stored.Locator != "credential_1" {
 		t.Fatalf("broker request did not become ready: %+v", stored)
 	}
 	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.ConfirmationNonce}); err != nil {
@@ -115,14 +116,14 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if err := injection.Cleanup(); err != nil {
 		t.Fatal(err)
 	}
-	reinstall, err := control.newOnboarding(auth, OnboardingCatalog, "reinstall", definition, "", "")
+	reinstall, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := control.ensureBrokerRequest(t.Context(), auth, &reinstall, definition); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 1 || reinstall.BrokerCredentialID != "credential_1" || reinstall.Phase != PhaseAwaitingConfirm {
+	if requests != 1 || reinstall.BrokerCredentialID != "credential_1" || reinstall.Phase != api.PhaseAwaitingConfirm {
 		t.Fatal("reinstall created new enrollment")
 	}
 	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": reinstall.ConfirmationNonce}); err != nil {
@@ -153,11 +154,11 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 
 func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	noop := brokerRuntimeInjector(nil, nil)
-	injection, err := noop(t.Context(), EffectiveBinding{})
+	injection, err := noop(t.Context(), api.EffectiveBinding{})
 	if err != nil || injection.Environment == nil || injection.Cleanup != nil {
 		t.Fatalf("non-broker binding: injection=%+v err=%v", injection, err)
 	}
-	effective := EffectiveBinding{Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1"}, WorkloadID: "workload_1"}
+	effective := api.EffectiveBinding{Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1"}, WorkloadID: "workload_1"}
 	for _, pair := range [][2]*credentialbroker.Config{{nil, nil}, {{}, nil}, {nil, {}}} {
 		if _, err := brokerRuntimeInjector(pair[0], pair[1])(t.Context(), effective); err == nil {
 			t.Fatal("incomplete broker runtime configuration accepted")
@@ -166,19 +167,19 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	if _, err := brokerRuntimeInjector(&credentialbroker.Config{}, &credentialbroker.Config{})(t.Context(), effective); err == nil {
 		t.Fatal("disabled broker runtime accepted")
 	}
-	local := func(context.Context, EffectiveBinding) (CredentialInjection, error) {
-		return CredentialInjection{Environment: map[string]string{"TOKEN": "local"}}, nil
+	local := func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
+		return api.CredentialInjection{Environment: map[string]string{"TOKEN": "local"}}, nil
 	}
-	broker := func(context.Context, EffectiveBinding) (CredentialInjection, error) {
-		return CredentialInjection{Environment: map[string]string{"TOKEN": "broker"}}, nil
+	broker := func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
+		return api.CredentialInjection{Environment: map[string]string{"TOKEN": "broker"}}, nil
 	}
-	localBinding := EffectiveBinding{Credential: &CredentialReference{Backend: "local"}}
-	brokerBinding := EffectiveBinding{Credential: &CredentialReference{Backend: "credential-broker"}}
-	credentialFreeBinding := EffectiveBinding{Definition: ToolDefinition{Credentials: nil}}
+	localBinding := api.EffectiveBinding{Credential: &api.CredentialReference{Backend: "local"}}
+	brokerBinding := api.EffectiveBinding{Credential: &api.CredentialReference{Backend: "credential-broker"}}
+	credentialFreeBinding := api.EffectiveBinding{Definition: api.ToolDefinition{Credentials: nil}}
 	for _, test := range []struct {
 		name string
-		fn   CredentialInjector
-		b    EffectiveBinding
+		fn   api.CredentialInjector
+		b    api.EffectiveBinding
 		want string
 	}{
 		{"both-local", mergeCredentialInjectors(local, broker, false), localBinding, "local"},
@@ -194,9 +195,9 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 			}
 		})
 	}
-	contractedLocal := EffectiveBinding{
-		Definition: ToolDefinition{CredentialContractID: "github-pat", Credentials: []CredentialInput{{Name: "TOKEN", Required: true}}},
-		Credential: &CredentialReference{Backend: "local"},
+	contractedLocal := api.EffectiveBinding{
+		Definition: api.ToolDefinition{CredentialContractID: "github-pat", Credentials: []api.CredentialInput{{Name: "TOKEN", Required: true}}},
+		Credential: &api.CredentialReference{Backend: "local"},
 	}
 	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), contractedLocal); err == nil {
 		t.Fatal("broker-only mode accepted a local reference for a contracted definition")
@@ -209,7 +210,7 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	if err != nil || len(injection.Environment) != 0 || injection.Cleanup != nil {
 		t.Fatalf("broker-only mode rejected a credential-free definition: injection=%+v err=%v", injection, err)
 	}
-	credentialRequiredWithoutRef := EffectiveBinding{Definition: ToolDefinition{Credentials: []CredentialInput{{Name: "TOKEN", Required: true}}}}
+	credentialRequiredWithoutRef := api.EffectiveBinding{Definition: api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "TOKEN", Required: true}}}}
 	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), credentialRequiredWithoutRef); err == nil {
 		t.Fatal("broker-only mode accepted a credential-free binding for a credentialed definition")
 	}
@@ -270,9 +271,9 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	effective := EffectiveBinding{
-		Binding:    ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
-		Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: []string{"TOKEN"}, BrokerEnv: map[string]string{"TOKEN": "TARGET"}},
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: []string{"TOKEN"}, BrokerEnv: map[string]string{"TOKEN": "TARGET"}},
 		WorkloadID: "workload_1",
 	}
 	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
@@ -360,17 +361,17 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	names := []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN", "CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"}
-	credentials := make([]CredentialInput, len(names))
+	credentials := make([]api.CredentialInput, len(names))
 	brokerEnv := map[string]string{}
 	for index, name := range names {
-		credentials[index] = CredentialInput{Name: name, Required: true}
+		credentials[index] = api.CredentialInput{Name: name, Required: true}
 		brokerEnv[name] = name
 	}
-	effective := EffectiveBinding{
-		Binding: ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
-		Definition: ToolDefinition{DefinitionID: "atlassian", Credentials: credentials,
+	effective := api.EffectiveBinding{
+		Binding: api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Definition: api.ToolDefinition{DefinitionID: "atlassian", Credentials: credentials,
 			CredentialGroups: [][]string{{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, {"CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"}}},
-		Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: names, BrokerEnv: brokerEnv},
+		Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: names, BrokerEnv: brokerEnv},
 		WorkloadID: "workload_1",
 	}
 	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
@@ -384,7 +385,7 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 	}
 	for _, incomplete := range []string{"partial", "empty"} {
 		mode = incomplete
-		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, ErrIsolation) {
+		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, api.ErrIsolation) {
 			t.Fatalf("incomplete alternative groups accepted (%s): %v", incomplete, err)
 		}
 	}
@@ -393,7 +394,7 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	auth := aliceAuth()
 	definition := remoteDefinition()
-	if err := (&ControlPlane{}).ensureBrokerRequest(t.Context(), auth, &Onboarding{}, definition); err != nil {
+	if err := (&ControlPlane{}).ensureBrokerRequest(t.Context(), auth, &api.Onboarding{}, definition); err != nil {
 		t.Fatal(err)
 	}
 	if err := (&ControlPlane{}).refreshBrokerRequest(t.Context(), auth, nil); err != nil {
@@ -401,7 +402,7 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	}
 	definition.CredentialContractID = ""
 	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: "https://broker.example"}}
-	if err := control.ensureBrokerRequest(t.Context(), auth, &Onboarding{}, definition); err == nil {
+	if err := control.ensureBrokerRequest(t.Context(), auth, &api.Onboarding{}, definition); err == nil {
 		t.Fatal("missing reviewed contract accepted")
 	}
 	store := NewStore()
@@ -410,11 +411,11 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	if err := store.RegisterDefinition(stored); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := Onboarding{
-		Schema: SchemaVersion, OnboardingID: "onboard_broker_status", PrincipalID: auth.PrincipalID,
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onboard_broker_status", PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: OnboardingCatalog, DefinitionID: "github-work", DefinitionVersion: "1.0.0",
-		Phase: PhaseAwaitingCreds, Required: []CredentialHint{{Name: "TOKEN", Type: "token"}},
+		Mode: api.OnboardingCatalog, DefinitionID: "github-work", DefinitionVersion: "1.0.0",
+		Phase: api.PhaseAwaitingCreds, Required: []api.CredentialHint{{Name: "TOKEN", Type: "token"}},
 		BrokerRequestID: "request_1", BrokerAuthorizationURL: "https://broker.example/connect/request_1",
 		Revision: 1, CreatedAt: time.Now(),
 	}
@@ -429,12 +430,12 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	if _, err := control.status(auth, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&ControlPlane{}).ensureBrokerGrant(t.Context(), auth, definition, onboarding, ToolBinding{}); err == nil {
+	if _, err := (&ControlPlane{}).ensureBrokerGrant(t.Context(), auth, definition, onboarding, api.ToolBinding{}); err == nil {
 		t.Fatal("missing broker configuration accepted")
 	}
 	onboarding.BrokerCredentialID = "credential_1"
 	control.Broker = &credentialbroker.Config{URL: "https://broker.example"}
-	if _, err := control.ensureBrokerGrant(t.Context(), auth, definition, onboarding, ToolBinding{WorkloadClass: PerJob}); err == nil {
+	if _, err := control.ensureBrokerGrant(t.Context(), auth, definition, onboarding, api.ToolBinding{WorkloadClass: api.PerJob}); err == nil {
 		t.Fatal("per-job broker grant accepted")
 	}
 }
@@ -442,26 +443,26 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 func TestCredentialBrokerContractValidation(t *testing.T) {
 	cases := []struct {
 		name string
-		edit func(*ToolDefinition)
+		edit func(*api.ToolDefinition)
 	}{
-		{"revision-without-contract", func(d *ToolDefinition) { d.CredentialContractRevision = 1 }},
-		{"invalid-contract-id", func(d *ToolDefinition) { d.CredentialContractID = "bad/id"; d.CredentialContractRevision = 1 }},
-		{"invalid-input-name", func(d *ToolDefinition) {
+		{"revision-without-contract", func(d *api.ToolDefinition) { d.CredentialContractRevision = 1 }},
+		{"invalid-contract-id", func(d *api.ToolDefinition) { d.CredentialContractID = "bad/id"; d.CredentialContractRevision = 1 }},
+		{"invalid-input-name", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 			d.CredentialContractEnv = map[string]string{"BAD-NAME": "TARGET"}
 		}},
-		{"unknown-input-name", func(d *ToolDefinition) {
+		{"unknown-input-name", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 			d.CredentialContractEnv = map[string]string{"OTHER_TOKEN": "TARGET"}
 		}},
-		{"invalid-target-name", func(d *ToolDefinition) {
+		{"invalid-target-name", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 			d.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "BAD-NAME"}
 		}},
-		{"missing-required-mapping", func(d *ToolDefinition) {
+		{"missing-required-mapping", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 		}},
@@ -515,7 +516,7 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "broker-regen", definition, "", "")
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-regen", definition, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +579,7 @@ func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
 	defer server.Close()
 
 	definition := remoteDefinition()
-	definition.Credentials = []CredentialInput{
+	definition.Credentials = []api.CredentialInput{
 		{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true},
 		{Name: "GITLAB_TOKEN", Required: true},
 		{Name: "GITLAB_API_URL"},
@@ -596,7 +597,7 @@ func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
 	}
 
 	bound := remoteDefinition()
-	bound.Credentials = []CredentialInput{
+	bound.Credentials = []api.CredentialInput{
 		{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true},
 		{Name: "GITLAB_TOKEN", Required: true},
 		{Name: "GITLAB_API_URL"},
@@ -668,7 +669,7 @@ func TestBindReviewedContractKeepsPinnedRevision(t *testing.T) {
 	}))
 	defer server.Close()
 	definition := remoteDefinition()
-	definition.Credentials = []CredentialInput{
+	definition.Credentials = []api.CredentialInput{
 		{Name: "JIRA_URL", Required: true}, {Name: "JIRA_USERNAME", Required: true}, {Name: "JIRA_API_TOKEN", Required: true},
 		{Name: "CONFLUENCE_URL", Required: true}, {Name: "CONFLUENCE_USERNAME", Required: true}, {Name: "CONFLUENCE_API_TOKEN", Required: true},
 	}
@@ -721,16 +722,16 @@ func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+	old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
 	if err := store.PutCredentialReference(old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error { return nil }}
-	onboarding := Onboarding{OnboardingID: "onboard-new", Locator: "credential_2", BrokerCredentialID: "credential_2", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	onboarding := api.Onboarding{OnboardingID: "onboard-new", Locator: "credential_2", BrokerCredentialID: "credential_2", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}}}
 	binding, err := control.materializeBinding(t.Context(), auth, onboarding, definition)
 	if err != nil {
 		t.Fatalf("broker rotation rejected: %v", err)
@@ -747,7 +748,7 @@ func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
 	if reference.Backend != "credential-broker" || reference.BrokerGrantID != "grant_2" || reference.BrokerEnv["GOOGLE_TOKEN"] != "GOOGLE_TOKEN" {
 		t.Fatalf("rotated reference lost broker fields: %+v", reference)
 	}
-	if store.credentials[old.CredentialRefID].Status != RevokedStatus {
+	if store.credentials[old.CredentialRefID].Status != api.RevokedStatus {
 		t.Fatal("previous credential reference was not revoked")
 	}
 }
@@ -794,16 +795,16 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 			if err := store.RegisterDefinition(definition); err != nil {
 				t.Fatal(err)
 			}
-			old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+			old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
 			if err := store.PutCredentialReference(old); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+			if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 				t.Fatal(err)
 			}
 			cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 			control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-			onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "reinstall", definition, "", "")
+			onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -811,12 +812,12 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "active" {
-				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Phase != PhaseAwaitingConfirm {
+				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Phase != api.PhaseAwaitingConfirm {
 					t.Fatalf("live credential was not reused: requests=%d onboarding=%+v", requests, onboarding)
 				}
 				return
 			}
-			if requests != 1 || onboarding.BrokerRequestID != "request_2" || onboarding.BrokerCredentialID == "credential_1" || onboarding.Phase == PhaseAwaitingConfirm {
+			if requests != 1 || onboarding.BrokerRequestID != "request_2" || onboarding.BrokerCredentialID == "credential_1" || onboarding.Phase == api.PhaseAwaitingConfirm {
 				t.Fatalf("revoked credential was reused: requests=%d onboarding=%+v", requests, onboarding)
 			}
 		})
@@ -869,22 +870,22 @@ func TestMaterializeBindingRegrantsForNewDefinitionVersion(t *testing.T) {
 	if err := store.RegisterDefinition(upgraded); err != nil {
 		t.Fatal(err)
 	}
-	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+	old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
 	if err := store.PutCredentialReference(old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: stale.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: stale.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: stale.DefinitionID, DefinitionVersion: stale.Version, ConnectionID: "conn-existing", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: stale.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
-	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: stale.DefinitionID, DefinitionVersion: stale.Version, ConnectionID: "conn-existing", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: stale.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error { return nil }}
-	onboarding := Onboarding{OnboardingID: "onboard-upgrade", Locator: "credential_1", BrokerCredentialID: "credential_1", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	onboarding := api.Onboarding{OnboardingID: "onboard-upgrade", Locator: "credential_1", BrokerCredentialID: "credential_1", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}}}
 	next, err := control.materializeBinding(t.Context(), auth, onboarding, upgraded)
 	if err != nil {
 		t.Fatalf("upgrade materialization rejected: %v", err)
@@ -917,24 +918,24 @@ func TestEnableAfterRevokeAllowsNewConnection(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-old", 1), ConnectionID: "conn-old", Revision: 1, Backend: credstore.BackendLocal, Locator: "old", Keys: []string{"GOOGLE_TOKEN"}, Status: RevokedStatus}
+	old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-old", 1), ConnectionID: "conn-old", Revision: 1, Backend: credstore.BackendLocal, Locator: "old", Keys: []string{"GOOGLE_TOKEN"}, Status: api.RevokedStatus}
 	if err := store.PutCredentialReference(old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-old", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: RevokedStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-old", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.RevokedStatus}); err != nil {
 		t.Fatal(err)
 	}
-	tombstone := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: "conn-old", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: RevokedStatus, Revision: 2}
-	tombstone.ToolBindingID = DeterministicBindingID(tombstone.PrincipalID, tombstone.ContextID, tombstone.RuntimeID, tombstone.DefinitionID, tombstone.DefinitionVersion, tombstone.ConnectionID, tombstone.CredentialRefID)
+	tombstone := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: "conn-old", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.RevokedStatus, Revision: 2}
+	tombstone.ToolBindingID = api.DeterministicBindingID(tombstone.PrincipalID, tombstone.ContextID, tombstone.RuntimeID, tombstone.DefinitionID, tombstone.DefinitionVersion, tombstone.ConnectionID, tombstone.CredentialRefID)
 	store.mu.Lock()
 	store.bindings[tombstone.ToolBindingID] = tombstone
 	store.mu.Unlock()
 
-	next := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-new", 1), ConnectionID: "conn-new", Revision: 1, Backend: credstore.BackendLocal, Locator: "new", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus}
+	next := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-new", 1), ConnectionID: "conn-new", Revision: 1, Backend: credstore.BackendLocal, Locator: "new", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
 	if err := store.PutCredentialReference(next); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-new", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: next.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-new", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: next.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
 	binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
@@ -965,7 +966,7 @@ func TestCredentialEgressHosts(t *testing.T) {
 		"PASSWORD_ENDPOINT": "db.example.com:5432",
 		"TOKEN_ENDPOINT":    "db.example.com:5432",
 	}
-	hosts := credentialEgressHosts(env)
+	hosts := api.CredentialEgressHosts(env)
 	want := map[string]bool{"gitlab.example.com": true, "self.host:8443": true, "db.internal.example.com:5432": true, "10.0.0.9:5432": true}
 	if len(hosts) != len(want) {
 		t.Fatalf("credentialEgressHosts=%v", hosts)
@@ -975,7 +976,7 @@ func TestCredentialEgressHosts(t *testing.T) {
 			t.Fatalf("unexpected egress host %q", host)
 		}
 	}
-	merged := mergeEgressHosts([]string{"gitlab.com", "GITLAB.EXAMPLE.COM"}, hosts)
+	merged := api.MergeEgressHosts([]string{"gitlab.com", "GITLAB.EXAMPLE.COM"}, hosts)
 	if len(merged) != 5 {
 		t.Fatalf("mergeEgressHosts did not dedupe: %v", merged)
 	}

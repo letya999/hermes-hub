@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,10 +32,10 @@ func TestControlGrantCLIAndRevocationRevision(t *testing.T) {
 	if err := runGrant(t.Context(), append(args, "--status", "revoked", "--revision", "2")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RequireControlOperation(auth, "status"); !errors.Is(err, toolhub.ErrUnauthorized) {
+	if err := store.RequireControlOperation(auth, "status"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("CLI revocation did not reach existing reader: %v", err)
 	}
-	if err := runGrant(t.Context(), args); !errors.Is(err, toolhub.ErrConflict) {
+	if err := runGrant(t.Context(), args); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale CLI revision resurrected grant: %v", err)
 	}
 }
@@ -53,7 +54,7 @@ func TestGrantWritesOperatorRecordAndRejectsModelIssuer(t *testing.T) {
 	if err := store.RequireSelfInstall(auth); err != nil {
 		t.Fatal(err)
 	}
-	bad := toolhub.Grant{Schema: toolhub.SchemaVersion, GrantID: "grant-model", Kind: toolhub.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "model", Status: toolhub.ActiveStatus, Revision: 1}
+	bad := api.Grant{Schema: api.SchemaVersion, GrantID: "grant-model", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "model", Status: api.ActiveStatus, Revision: 1}
 	if err := store.PutGrant(bad); err == nil {
 		t.Fatal("model-issued grant accepted")
 	}
@@ -137,7 +138,7 @@ func TestGrantCLIErrorPathsAndDefinitionKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
-	if err := store.RequireCatalogAccess(auth, toolhub.ToolDefinition{DefinitionID: "catalog-read", Version: "1.0.0"}); err != nil {
+	if err := store.RequireCatalogAccess(auth, api.ToolDefinition{DefinitionID: "catalog-read", Version: "1.0.0"}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,7 +23,7 @@ func TestParsePackageSource(t *testing.T) {
 		{"pypi:requests@2.32.3+local.1", "pypi", "requests", "2.32.3+local.1"},
 	}
 	for _, tc := range cases {
-		source, err := parsePackageSource(tc.raw)
+		source, err := api.ParsePackageSource(tc.raw)
 		if err != nil {
 			t.Fatalf("parse %q: %v", tc.raw, err)
 		}
@@ -43,7 +44,7 @@ func TestParsePackageSourceRejects(t *testing.T) {
 		"pypi:" + strings.Repeat("a", 200) + "@1.0", "go:mod@1.0",
 		"pypi:ruff@*", "npm:pkg@^1.0.0", "npm:pkg@>=1",
 	} {
-		if _, err := parsePackageSource(raw); !errors.Is(err, ErrInvalid) {
+		if _, err := api.ParsePackageSource(raw); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("source %q admitted: %v", raw, err)
 		}
 	}
@@ -51,7 +52,7 @@ func TestParsePackageSourceRejects(t *testing.T) {
 
 func TestResolvePackageVersion(t *testing.T) {
 	ctx := context.Background()
-	if v, err := resolvePackageVersion(ctx, ArtifactSource{PackageRegistry: "pypi", PackageName: "ruff", PackageVersion: "0.6.9"}, nil); err != nil || v != "0.6.9" {
+	if v, err := api.ResolvePackageVersion(ctx, api.ArtifactSource{PackageRegistry: "pypi", PackageName: "ruff", PackageVersion: "0.6.9"}, nil); err != nil || v != "0.6.9" {
 		t.Fatalf("explicit version: %q %v", v, err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,15 +64,15 @@ func TestResolvePackageVersion(t *testing.T) {
 		_, _ = w.Write([]byte(`{"version":"7.7.7"}`))
 	}))
 	defer server.Close()
-	oldPy, oldNpm := pypiMetadataURL, npmMetadataURL
-	pypiMetadataURL, npmMetadataURL = server.URL+"/pypi/%s", server.URL+"/npm/%s"
-	defer func() { pypiMetadataURL, npmMetadataURL = oldPy, oldNpm }()
+	oldPy, oldNpm := api.PypiMetadataURL, api.NpmMetadataURL
+	api.PypiMetadataURL, api.NpmMetadataURL = server.URL+"/pypi/%s", server.URL+"/npm/%s"
+	defer func() { api.PypiMetadataURL, api.NpmMetadataURL = oldPy, oldNpm }()
 
-	v, err := resolvePackageVersion(ctx, ArtifactSource{PackageRegistry: "pypi", PackageName: "ruff", PackageVersion: "latest"}, server.Client())
+	v, err := api.ResolvePackageVersion(ctx, api.ArtifactSource{PackageRegistry: "pypi", PackageName: "ruff", PackageVersion: "latest"}, server.Client())
 	if err != nil || v != "9.9.9" {
 		t.Fatalf("pypi latest: %q %v", v, err)
 	}
-	v, err = resolvePackageVersion(ctx, ArtifactSource{PackageRegistry: "npm", PackageName: "prettier", PackageVersion: "latest"}, server.Client())
+	v, err = api.ResolvePackageVersion(ctx, api.ArtifactSource{PackageRegistry: "npm", PackageName: "prettier", PackageVersion: "latest"}, server.Client())
 	if err != nil || v != "7.7.7" {
 		t.Fatalf("npm latest: %q %v", v, err)
 	}
@@ -82,19 +83,19 @@ func TestResolvePackageVersionRejectsGarbage(t *testing.T) {
 		_, _ = w.Write([]byte(`{"version":"1.0;evil"}`))
 	}))
 	defer server.Close()
-	old := npmMetadataURL
-	npmMetadataURL = server.URL + "/%s"
-	defer func() { npmMetadataURL = old }()
-	if _, err := resolvePackageVersion(context.Background(), ArtifactSource{PackageRegistry: "npm", PackageName: "p", PackageVersion: "latest"}, server.Client()); !errors.Is(err, ErrStale) {
+	old := api.NpmMetadataURL
+	api.NpmMetadataURL = server.URL + "/%s"
+	defer func() { api.NpmMetadataURL = old }()
+	if _, err := api.ResolvePackageVersion(context.Background(), api.ArtifactSource{PackageRegistry: "npm", PackageName: "p", PackageVersion: "latest"}, server.Client()); !errors.Is(err, api.ErrStale) {
 		t.Fatalf("garbage version admitted: %v", err)
 	}
-	if _, err := resolvePackageVersion(context.Background(), ArtifactSource{PackageRegistry: "cargo", PackageName: "p", PackageVersion: "latest"}, server.Client()); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ResolvePackageVersion(context.Background(), api.ArtifactSource{PackageRegistry: "cargo", PackageName: "p", PackageVersion: "latest"}, server.Client()); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("unknown registry admitted: %v", err)
 	}
 }
 
 func TestGenerateCLIPackageRecipe(t *testing.T) {
-	recipe, ctx, err := generateCLIPackageRecipe("pypi", "ruff", "0.6.9", "/usr/local/bin/ruff")
+	recipe, ctx, err := api.GenerateCLIPackageRecipe("pypi", "ruff", "0.6.9", "/usr/local/bin/ruff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,25 +109,25 @@ func TestGenerateCLIPackageRecipe(t *testing.T) {
 	if !strings.Contains(dockerfile, "pip install --no-cache-dir --disable-pip-version-check 'ruff==0.6.9'") || !strings.Contains(dockerfile, "USER 10001:10001") {
 		t.Fatalf("pypi dockerfile:\n%s", dockerfile)
 	}
-	recipe, ctx, err = generateCLIPackageRecipe("npm", "prettier", "3.3.3", "/usr/local/bin/prettier")
+	recipe, ctx, err = api.GenerateCLIPackageRecipe("npm", "prettier", "3.3.3", "/usr/local/bin/prettier")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(recipe.BaseImages[0], "node@sha256:") || !strings.Contains(string(ctx), "npm install --global --omit=dev 'prettier@3.3.3'") {
 		t.Fatalf("npm recipe: %+v\n%s", recipe, ctx)
 	}
-	if _, _, err := generateCLIPackageRecipe("cargo", "x", "1.0", "/usr/bin/x"); !errors.Is(err, ErrInvalid) {
+	if _, _, err := api.GenerateCLIPackageRecipe("cargo", "x", "1.0", "/usr/bin/x"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("unknown registry recipe admitted: %v", err)
 	}
-	if _, _, err := generateCLIPackageRecipe("pypi", "x", "1.0", "relative/path"); !errors.Is(err, ErrInvalid) {
+	if _, _, err := api.GenerateCLIPackageRecipe("pypi", "x", "1.0", "relative/path"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("bad binary path admitted: %v", err)
 	}
 }
 
 func TestDefinitionSourcePackageValidation(t *testing.T) {
-	valid := ToolDefinition{
-		Schema: SchemaVersion, DefinitionID: "pkg-tool", Version: "1.0.0", Transport: BoundedCLI,
-		Source: DefinitionSource{
+	valid := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "pkg-tool", Version: "1.0.0", Transport: api.BoundedCLI,
+		Source: api.DefinitionSource{
 			Image: "hermes-cli-artifact/pkg-tool", Digest: "sha256:" + strings.Repeat("1", 64),
 			Command:         "/usr/local/bin/ruff",
 			PackageRegistry: "pypi", PackageName: "ruff", PackageVersion: "0.6.9",
@@ -136,10 +137,10 @@ func TestDefinitionSourcePackageValidation(t *testing.T) {
 			RecipeDigest:     "sha256:" + strings.Repeat("5", 64),
 			ReviewDigest:     "sha256:" + strings.Repeat("6", 64),
 		},
-		Tools:     []ToolSpec{{Name: "lint", Description: "lint files", Effect: ReadEffect, CapabilityID: "cli.ruff", Uses: []CapabilityUse{{Action: "read", Resource: "files"}}}},
-		Workload:  WorkloadPolicy{Class: PerUser, WorkspaceScope: "none", Rationale: "registry package tool; per-binding workspace"},
-		Execution: ExecutionPolicy{TimeoutSeconds: 10, OutputBytes: 1024, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"pypi.org"}},
-		Health:    HealthProbe{Kind: "exec", Value: "/usr/local/bin/ruff", TimeoutSeconds: 5},
+		Tools:     []api.ToolSpec{{Name: "lint", Description: "lint files", Effect: api.ReadEffect, CapabilityID: "cli.ruff", Uses: []api.CapabilityUse{{Action: "read", Resource: "files"}}}},
+		Workload:  api.WorkloadPolicy{Class: api.PerUser, WorkspaceScope: "none", Rationale: "registry package tool; per-binding workspace"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 10, OutputBytes: 1024, CPUMillis: 1000, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"pypi.org"}},
+		Health:    api.HealthProbe{Kind: "exec", Value: "/usr/local/bin/ruff", TimeoutSeconds: 5},
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid package definition rejected: %v", err)
@@ -185,40 +186,40 @@ func TestCliArtifactSourcePackageDispatch(t *testing.T) {
 
 func TestImportCLIPackageArtifactValidation(t *testing.T) {
 	ctx := context.Background()
-	source := ArtifactSource{PackageRegistry: "pypi", PackageName: "ruff", PackageVersion: "0.6.9"}
-	config := ArtifactImportConfig{Image: "hermes-cli-artifact/ruff-check", Entrypoint: []string{"/usr/local/bin/ruff"}}
-	if _, err := ImportCLIPackageArtifact(ctx, ArtifactSource{}, config, RestrictedBuildConfig{}, nil); !errors.Is(err, ErrInvalid) {
+	source := api.ArtifactSource{PackageRegistry: "pypi", PackageName: "ruff", PackageVersion: "0.6.9"}
+	config := api.ArtifactImportConfig{Image: "hermes-cli-artifact/ruff-check", Entrypoint: []string{"/usr/local/bin/ruff"}}
+	if _, err := api.ImportCLIPackageArtifact(ctx, api.ArtifactSource{}, config, api.RestrictedBuildConfig{}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("missing package coordinates: %v", err)
 	}
 	bad := config
 	bad.Image = "registry.example.com/img@sha256:" + strings.Repeat("1", 64)
-	if _, err := ImportCLIPackageArtifact(ctx, source, bad, RestrictedBuildConfig{}, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ImportCLIPackageArtifact(ctx, source, bad, api.RestrictedBuildConfig{}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("digest-pinned local image admitted: %v", err)
 	}
 	bad = config
 	bad.BaseImage = "python"
-	if _, err := ImportCLIPackageArtifact(ctx, source, bad, RestrictedBuildConfig{}, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ImportCLIPackageArtifact(ctx, source, bad, api.RestrictedBuildConfig{}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("cli.base on a package source admitted: %v", err)
 	}
 	bad = config
 	bad.Entrypoint = nil
-	if _, err := ImportCLIPackageArtifact(ctx, source, bad, RestrictedBuildConfig{}, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ImportCLIPackageArtifact(ctx, source, bad, api.RestrictedBuildConfig{}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("missing entrypoint admitted: %v", err)
 	}
 	bad = config
 	bad.Entrypoint = []string{"relative/ruff"}
-	if _, err := ImportCLIPackageArtifact(ctx, source, bad, RestrictedBuildConfig{}, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ImportCLIPackageArtifact(ctx, source, bad, api.RestrictedBuildConfig{}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("relative entrypoint admitted: %v", err)
 	}
 	bad = config
 	bad.Entrypoint = []string{"/usr/bin/a", "/usr/bin/b"}
-	if _, err := ImportCLIPackageArtifact(ctx, source, bad, RestrictedBuildConfig{}, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ImportCLIPackageArtifact(ctx, source, bad, api.RestrictedBuildConfig{}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("multi entrypoint admitted: %v", err)
 	}
 }
 
 func TestPackageHTTPClientAndFetchErrors(t *testing.T) {
-	client := packageHTTPClient()
+	client := api.PackageHTTPClient()
 	check := client.CheckRedirect
 	mk := func(raw string) *http.Request {
 		req, err := http.NewRequest(http.MethodGet, raw, nil)
@@ -243,17 +244,17 @@ func TestPackageHTTPClientAndFetchErrors(t *testing.T) {
 	if err := check(mk("https://pypi.org/d"), via); err == nil {
 		t.Fatal("redirect chain over the bound admitted")
 	}
-	// fetchPackageJSON: non-200 and bad JSON are both errors.
+	// api.FetchPackageJSON: non-200 and bad JSON are both errors.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	defer server.Close()
 	var out map[string]any
-	if err := fetchPackageJSON(context.Background(), server.Client(), server.URL, &out); err == nil {
+	if err := api.FetchPackageJSON(context.Background(), server.Client(), server.URL, &out); err == nil {
 		t.Fatal("non-200 metadata accepted")
 	}
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("not-json")) })
-	if err := fetchPackageJSON(context.Background(), server.Client(), server.URL, &out); err == nil {
+	if err := api.FetchPackageJSON(context.Background(), server.Client(), server.URL, &out); err == nil {
 		t.Fatal("garbage metadata accepted")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,14 @@ import (
 // never leaves the proxy. Disabled entirely unless the operator sets
 // HUB_CLIPROXY_MGMT_URL and HUB_CLIPROXY_MGMT_KEY in the channel env file.
 const quotaCacheTTL = 5 * time.Minute
+
+// quotaTracker caches rendered /usage quota lines behind their own lock so
+// the fetch path never touches gateway state.
+type quotaTracker struct {
+	mu    sync.Mutex
+	cache []string
+	at    time.Time
+}
 
 type cliproxyAuthFile struct {
 	Provider  string `json:"provider"`
@@ -37,9 +46,9 @@ func (g *Gateway) quotaLines(ctx context.Context) []string {
 	if base == "" || key == "" {
 		return []string{"Лимиты подписки: источник не настроен на сервере."}
 	}
-	g.quotaMu.Lock()
-	cached, at := g.quotaCache, g.quotaAt
-	g.quotaMu.Unlock()
+	g.quota.mu.Lock()
+	cached, at := g.quota.cache, g.quota.at
+	g.quota.mu.Unlock()
 	if !at.IsZero() && g.now().Sub(at) < quotaCacheTTL {
 		return cached
 	}
@@ -47,9 +56,9 @@ func (g *Gateway) quotaLines(ctx context.Context) []string {
 	if err != nil {
 		lines = []string{"Лимиты подписки: недоступно (" + err.Error() + ")."}
 	}
-	g.quotaMu.Lock()
-	g.quotaCache, g.quotaAt = lines, g.now()
-	g.quotaMu.Unlock()
+	g.quota.mu.Lock()
+	g.quota.cache, g.quota.at = lines, g.now()
+	g.quota.mu.Unlock()
 	return lines
 }
 

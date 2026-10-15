@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"html"
 	"io"
 	"net/http"
@@ -20,32 +21,32 @@ import (
 // nonce alone over MCP cannot activate anything.
 func (c *ControlPlane) grantRequest(auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	if c.Governance == nil {
-		return nil, fmt.Errorf("%w: tool governance is not configured", ErrInvalid)
+		return nil, fmt.Errorf("%w: tool governance is not configured", api.ErrInvalid)
 	}
-	section := argString(args, "section")
+	section := api.ArgString(args, "section")
 	if section == "" {
-		section = SectionUserMCP
+		section = api.SectionUserMCP
 	}
-	if !sectionIDPattern.MatchString(section) {
-		return nil, fmt.Errorf("%w: section", ErrInvalid)
+	if !api.SectionIDPattern.MatchString(section) {
+		return nil, fmt.Errorf("%w: section", api.ErrInvalid)
 	}
-	grantID := argString(args, "grant_id")
-	var granted ToolGrant
-	err := c.Governance.Update(c.now(), func(doc *Governance) error {
+	grantID := api.ArgString(args, "grant_id")
+	var granted api.ToolGrant
+	err := c.Governance.Update(c.now(), func(doc *api.Governance) error {
 		pending := doc.PendingToolGrants(auth.PrincipalID, section, c.now())
 		if grantID != "" {
 			pending = nil
 			for _, g := range doc.Grants {
 				if g.GrantID == grantID {
 					if g.PrincipalID != auth.PrincipalID || g.Section != section {
-						return fmt.Errorf("%w: grant belongs to another principal or section", ErrUnauthorized)
+						return fmt.Errorf("%w: grant belongs to another principal or section", api.ErrUnauthorized)
 					}
 					pending = append(pending, g)
 				}
 			}
 		}
 		if len(pending) == 0 {
-			return fmt.Errorf("%w: no pending grant for section %s — the host creates grants with hubctl governance", ErrNotFound, section)
+			return fmt.Errorf("%w: no pending grant for section %s — the host creates grants with hubctl governance", api.ErrNotFound, section)
 		}
 		stamped, err := doc.RequestToolGrant(auth.PrincipalID, pending[0].GrantID, c.now())
 		if err != nil {
@@ -93,7 +94,7 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "governance unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	var grant *ToolGrant
+	var grant *api.ToolGrant
 	for i := range doc.Grants {
 		if doc.Grants[i].GrantID == grantID {
 			grant = &doc.Grants[i]
@@ -106,7 +107,7 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce := r.URL.Query().Get("nonce")
 	if r.Method == http.MethodGet {
-		if grant.Status != GrantPending || grant.RequestNonce == "" || nonce != grant.RequestNonce ||
+		if grant.Status != api.GrantPending || grant.RequestNonce == "" || nonce != grant.RequestNonce ||
 			grant.RequestExpires.IsZero() || g.Control.now().After(grant.RequestExpires) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -130,12 +131,12 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 		nonce = r.Form.Get("nonce")
 	}
 	var acknowledged bool
-	updateErr := g.Control.Governance.Update(g.Control.now(), func(doc *Governance) error {
+	updateErr := g.Control.Governance.Update(g.Control.now(), func(doc *api.Governance) error {
 		current, err := doc.AcknowledgeToolGrant(grant.PrincipalID, grantID, nonce, g.Control.now())
 		if err != nil {
 			return err
 		}
-		acknowledged = current.Status == GrantActive
+		acknowledged = current.Status == api.GrantActive
 		return nil
 	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -148,7 +149,7 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, credentialResultPage("Grant activated", "The tool access grant is active until its expiry. Return to the conversation."))
 }
 
-func grantAckPage(grant *ToolGrant, nonce string) string {
+func grantAckPage(grant *api.ToolGrant, nonce string) string {
 	return `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tool access grant</title><style>
 :root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:26px}p,dl{color:#52606d;line-height:1.6}dt{font-weight:650;color:#17202a}dd{margin:0 0 12px}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}
 </style><main><h1>Tool access grant</h1><dl>` +

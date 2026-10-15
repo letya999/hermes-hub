@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/envstore"
@@ -25,6 +26,13 @@ import (
 )
 
 const credentialFormTTL = 10 * time.Minute
+
+// formRegistry holds pending credential forms behind their own lock; expiry
+// and lookup never contend on gateway state.
+type formRegistry struct {
+	mu sync.Mutex
+	m  map[string]credentialForm
+}
 
 type credentialForm struct {
 	OwnerID   string
@@ -127,17 +135,17 @@ func (g *Gateway) createCredentialForm(auth identity.Envelope, keys []string) (c
 		return credentialFormResponse{}, err
 	}
 	hash := sha256.Sum256([]byte(nonce))
-	g.formsMu.Lock()
-	if g.forms == nil {
-		g.forms = map[string]credentialForm{}
+	g.forms.mu.Lock()
+	if g.forms.m == nil {
+		g.forms.m = map[string]credentialForm{}
 	}
-	for formID, form := range g.forms {
+	for formID, form := range g.forms.m {
 		if form.OwnerID == auth.PrincipalID && g.now().After(form.ExpiresAt) {
-			delete(g.forms, formID)
+			delete(g.forms.m, formID)
 		}
 	}
-	g.forms[id] = credentialForm{OwnerID: auth.PrincipalID, Envelope: auth, Keys: append([]string(nil), keys...), NonceHash: hex.EncodeToString(hash[:]), ExpiresAt: g.now().Add(credentialFormTTL)}
-	g.formsMu.Unlock()
+	g.forms.m[id] = credentialForm{OwnerID: auth.PrincipalID, Envelope: auth, Keys: append([]string(nil), keys...), NonceHash: hex.EncodeToString(hash[:]), ExpiresAt: g.now().Add(credentialFormTTL)}
+	g.forms.mu.Unlock()
 	return credentialFormResponse{Input: "protected-form", FormURL: origin + "/credentials/" + id + "?nonce=" + url.QueryEscape(nonce), Fields: append([]string(nil), keys...)}, nil
 }
 
@@ -172,9 +180,9 @@ func randomFormToken() (string, error) {
 }
 
 func (g *Gateway) credentialForm(id, nonce string, claim bool) (credentialForm, error) {
-	g.formsMu.Lock()
-	defer g.formsMu.Unlock()
-	form, ok := g.forms[id]
+	g.forms.mu.Lock()
+	defer g.forms.mu.Unlock()
+	form, ok := g.forms.m[id]
 	if !ok || form.ExpiresAt.Before(g.now()) || form.Used {
 		return credentialForm{}, errors.New("form unavailable")
 	}
@@ -184,7 +192,7 @@ func (g *Gateway) credentialForm(id, nonce string, claim bool) (credentialForm, 
 	}
 	if claim {
 		form.Used = true
-		g.forms[id] = form
+		g.forms.m[id] = form
 	}
 	return form, nil
 }

@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,14 +48,14 @@ func migrationFixture(t *testing.T) (dir, root string, policy string) {
 	return dir, root, manifest.PolicyVersion
 }
 
-func migrationDefinition(id string) toolhub.ToolDefinition {
-	return toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: id, Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:    toolhub.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-		Tools:     []toolhub.ToolSpec{{Name: "read", Effect: toolhub.ReadEffect}},
-		Workload:  toolhub.WorkloadPolicy{Class: toolhub.Shared, Rationale: "stateless shared workload"},
-		Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
-		Health:    toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+func migrationDefinition(id string) api.ToolDefinition {
+	return api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: id, Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:    api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
+		Tools:     []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}},
+		Workload:  api.WorkloadPolicy{Class: api.Shared, Rationale: "stateless shared workload"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
+		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 }
 
@@ -68,15 +69,15 @@ func seedMigrationStore(t *testing.T, dir, policy string) {
 	}
 	for _, seed := range []struct {
 		definitionID string
-		status       toolhub.Status
+		status       api.Status
 	}{
-		{"mig-active", toolhub.ActiveStatus},
-		{"mig-revoked", toolhub.RevokedStatus},
+		{"mig-active", api.ActiveStatus},
+		{"mig-revoked", api.RevokedStatus},
 	} {
-		binding := toolhub.ToolBinding{
-			Schema: toolhub.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice",
+		binding := api.ToolBinding{
+			Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice",
 			DefinitionID: seed.definitionID, DefinitionVersion: "1.0.0", PolicyVersion: policy,
-			WorkloadClass: toolhub.Shared, Status: seed.status, Revision: 1, ProjectionRevision: 1,
+			WorkloadClass: api.Shared, Status: seed.status, Revision: 1, ProjectionRevision: 1,
 		}
 		if err := store.PutBinding(binding); err != nil {
 			t.Fatal(err)
@@ -158,8 +159,8 @@ func TestUpMigratesAfterRightsChange(t *testing.T) {
 	}
 
 	bindings, changes := storeBindings(t, dir)
-	activeID := toolhub.DeterministicBindingID("alice", "alice", "alice", "mig-active", "1.0.0", "", "")
-	revokedID := toolhub.DeterministicBindingID("alice", "alice", "alice", "mig-revoked", "1.0.0", "", "")
+	activeID := api.DeterministicBindingID("alice", "alice", "alice", "mig-active", "1.0.0", "", "")
+	revokedID := api.DeterministicBindingID("alice", "alice", "alice", "mig-revoked", "1.0.0", "", "")
 	if got := bindings[activeID]; got.Policy != policyV2 || got.Status != "active" {
 		t.Fatalf("active binding not migrated: %+v (want policy %s)", got, policyV2)
 	}

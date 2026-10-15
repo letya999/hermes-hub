@@ -1,34 +1,35 @@
 package toolhub
 
 import (
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"path/filepath"
 	"testing"
 )
 
 // policyMigrationDefinition is a credential-free fixture so migration tests
 // bind principals without connections.
-func policyMigrationDefinition(id string) ToolDefinition {
-	return ToolDefinition{
-		Schema: SchemaVersion, DefinitionID: id, Version: "1.0.0", Transport: RemoteMCP,
-		Source:    DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-		Tools:     []ToolSpec{{Name: "read", Effect: ReadEffect}},
-		Workload:  WorkloadPolicy{Class: Shared, Rationale: "stateless shared workload"},
-		Execution: ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
-		Health:    HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+func policyMigrationDefinition(id string) api.ToolDefinition {
+	return api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: id, Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:    api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
+		Tools:     []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}},
+		Workload:  api.WorkloadPolicy{Class: api.Shared, Rationale: "stateless shared workload"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
+		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 }
 
-func putMigrationBinding(t *testing.T, store *Store, principal, contextID, runtimeID, definitionID, policy string, status Status) ToolBinding {
+func putMigrationBinding(t *testing.T, store *Store, principal, contextID, runtimeID, definitionID, policy string, status api.Status) api.ToolBinding {
 	t.Helper()
-	binding := ToolBinding{
-		Schema: SchemaVersion, PrincipalID: principal, ContextID: contextID, RuntimeID: runtimeID,
+	binding := api.ToolBinding{
+		Schema: api.SchemaVersion, PrincipalID: principal, ContextID: contextID, RuntimeID: runtimeID,
 		DefinitionID: definitionID, DefinitionVersion: "1.0.0", PolicyVersion: policy,
-		WorkloadClass: Shared, Status: status, Revision: 1, ProjectionRevision: 1,
+		WorkloadClass: api.Shared, Status: status, Revision: 1, ProjectionRevision: 1,
 	}
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
-	binding.ToolBindingID = DeterministicBindingID(principal, contextID, runtimeID, definitionID, "1.0.0", "", "")
+	binding.ToolBindingID = api.DeterministicBindingID(principal, contextID, runtimeID, definitionID, "1.0.0", "", "")
 	return binding
 }
 
@@ -42,10 +43,10 @@ func TestMigrateBindingsMovesOnlyActive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	active := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-active", "policy-1", ActiveStatus)
-	disabled := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-disabled", "policy-1", DisabledStatus)
-	revoked := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-revoked", "policy-1", RevokedStatus)
-	foreign := putMigrationBinding(t, store, "bob", "bob", "runtime", "mig-foreign", "policy-1", ActiveStatus)
+	active := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-active", "policy-1", api.ActiveStatus)
+	disabled := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-disabled", "policy-1", api.DisabledStatus)
+	revoked := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-revoked", "policy-1", api.RevokedStatus)
+	foreign := putMigrationBinding(t, store, "bob", "bob", "runtime", "mig-foreign", "policy-1", api.ActiveStatus)
 
 	moved, err := MigrateBindings(store, "alice", "alice", "runtime", "policy-1", "policy-2")
 	if err != nil {
@@ -58,7 +59,7 @@ func TestMigrateBindingsMovesOnlyActive(t *testing.T) {
 	if got.PolicyVersion != "policy-2" || got.Revision <= active.Revision || got.ProjectionRevision <= active.ProjectionRevision {
 		t.Fatalf("active binding not migrated: %+v", got)
 	}
-	for id, want := range map[string]ToolBinding{disabled.ToolBindingID: disabled, revoked.ToolBindingID: revoked, foreign.ToolBindingID: foreign} {
+	for id, want := range map[string]api.ToolBinding{disabled.ToolBindingID: disabled, revoked.ToolBindingID: revoked, foreign.ToolBindingID: foreign} {
 		if store.bindings[id] != want {
 			t.Fatalf("binding %s must stay untouched: %+v", id, store.bindings[id])
 		}
@@ -72,7 +73,7 @@ func TestMigrateBindingsIdempotent(t *testing.T) {
 	if err := store.RegisterDefinition(policyMigrationDefinition("mig-idem")); err != nil {
 		t.Fatal(err)
 	}
-	binding := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-idem", "policy-1", ActiveStatus)
+	binding := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-idem", "policy-1", api.ActiveStatus)
 	if moved, err := MigrateBindings(store, "alice", "alice", "runtime", "policy-1", "policy-2"); err != nil || moved != 1 {
 		t.Fatalf("first migrate: moved=%d err=%v", moved, err)
 	}
@@ -95,7 +96,7 @@ func TestMigrateBindingsAudited(t *testing.T) {
 	if err := seed.RegisterDefinition(policyMigrationDefinition("mig-audit")); err != nil {
 		t.Fatal(err)
 	}
-	putMigrationBinding(t, seed, "alice", "alice", "runtime", "mig-audit", "policy-1", ActiveStatus)
+	putMigrationBinding(t, seed, "alice", "alice", "runtime", "mig-audit", "policy-1", api.ActiveStatus)
 	if err := seed.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestMigrateBindingsConcurrentWriterRetries(t *testing.T) {
 	if err := seed.RegisterDefinition(policyMigrationDefinition("mig-conc")); err != nil {
 		t.Fatal(err)
 	}
-	putMigrationBinding(t, seed, "alice", "alice", "runtime", "mig-conc", "policy-1", ActiveStatus)
+	putMigrationBinding(t, seed, "alice", "alice", "runtime", "mig-conc", "policy-1", api.ActiveStatus)
 	if err := seed.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestMigrateBindingsConcurrentWriterRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := DeterministicBindingID("alice", "alice", "runtime", "mig-conc", "1.0.0", "", "")
+	id := api.DeterministicBindingID("alice", "alice", "runtime", "mig-conc", "1.0.0", "", "")
 	if final.bindings[id].PolicyVersion != "policy-2" {
 		t.Fatalf("migration lost: %+v", final.bindings[id])
 	}
@@ -177,7 +178,7 @@ func TestMigrateBindingsRejectsBadScope(t *testing.T) {
 	if err := store.RegisterDefinition(policyMigrationDefinition("mig-scope")); err != nil {
 		t.Fatal(err)
 	}
-	binding := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-scope", "policy-1", ActiveStatus)
+	binding := putMigrationBinding(t, store, "alice", "alice", "runtime", "mig-scope", "policy-1", api.ActiveStatus)
 	for _, call := range []struct {
 		name     string
 		from, to string

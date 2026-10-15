@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +14,7 @@ import (
 	"time"
 )
 
-func genericDefinition(t *testing.T) (ToolDefinition, string, string) {
+func genericDefinition(t *testing.T) (api.ToolDefinition, string, string) {
 	t.Helper()
 	d := statefulContainerDefinition()
 	d.DefinitionID, d.Version = "generic-mcp", "1.0.0"
@@ -25,8 +26,8 @@ func genericDefinition(t *testing.T) (ToolDefinition, string, string) {
 	d.Source.SBOMDigest = "sha256:" + strings.Repeat("3", 64)
 	d.Source.RecipeDigest = "sha256:" + strings.Repeat("4", 64)
 	d.Source.ReviewDigest = "sha256:" + strings.Repeat("5", 64)
-	d.Source.ToolContractSource = ToolContractPreflight
-	digest, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractPreflight, Tools: d.Tools})
+	d.Source.ToolContractSource = api.ToolContractPreflight
+	digest, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: d.Tools})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func genericDefinition(t *testing.T) (ToolDefinition, string, string) {
 	root := t.TempDir()
 	toolhive := filepath.Join(root, "thv")
 	seccomp := filepath.Join(root, "seccomp.json")
-	if err := os.WriteFile(toolhive, []byte(linuxELFMagic+"trusted"), 0700); err != nil {
+	if err := os.WriteFile(toolhive, []byte(api.LinuxELFMagic+"trusted"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(seccomp, []byte("{}"), 0600); err != nil {
@@ -46,8 +47,8 @@ func genericDefinition(t *testing.T) (ToolDefinition, string, string) {
 	return d, root, toolhive + "\x00" + seccomp
 }
 
-func genericPlan(d ToolDefinition) controllerPlan {
-	return controllerPlan{WorkloadID: "generic-workload", DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Image: d.Source.Image, Digest: d.Source.Digest, ToolHiveVersion: d.Workload.ToolHiveVersion, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution, Definition: d}
+func genericPlan(d api.ToolDefinition) api.ControllerPlan {
+	return api.ControllerPlan{WorkloadID: "generic-workload", DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Image: d.Source.Image, Digest: d.Source.Digest, ToolHiveVersion: d.Workload.ToolHiveVersion, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution, Definition: d}
 }
 
 func TestGenericControllerAcceptsAuthenticatedDynamicDefinitions(t *testing.T) {
@@ -80,14 +81,14 @@ func TestGenericControllerAdmitsGroupAndProxyMetadataAfterStoreReload(t *testing
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
 	storedDigest := d.Source.ToolContractDigest
-	d.Credentials = []CredentialInput{
+	d.Credentials = []api.CredentialInput{
 		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXC_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXD_TOKEN", Required: true},
 	}
 	d.CredentialGroups = [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}}
 	d.ProxyEnvironment = []string{"SLACK_MCP_PROXY"}
-	recomputed, err := confirmedToolContractDigest(ConfirmedToolContract{Source: d.Source.ToolContractSource, Tools: d.Tools})
+	recomputed, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: d.Source.ToolContractSource, Tools: d.Tools})
 	if err != nil || recomputed != storedDigest {
 		t.Fatalf("metadata drifted the tool contract: stored=%s recomputed=%s err=%v", storedDigest, recomputed, err)
 	}
@@ -135,7 +136,7 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := genericPlan(d)
-	plan.CredentialMounts = []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}
+	plan.CredentialMounts = []api.Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}
 	if err := c.validatePlan(plan); err != nil {
 		t.Fatalf("reviewed broker mount rejected: %v", err)
 	}
@@ -143,20 +144,20 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 	if err := os.MkdirAll(stateDirectory, 0700); err != nil {
 		t.Fatal(err)
 	}
-	stateMount := Mount{Source: stateDirectory, Target: "/owner-state", ReadOnly: false}
-	if err := c.validateCredentialMounts([]Mount{stateMount}); err != nil {
+	stateMount := api.Mount{Source: stateDirectory, Target: "/owner-state", ReadOnly: false}
+	if err := c.validateCredentialMounts([]api.Mount{stateMount}); err != nil {
 		t.Fatal("Broker state directory rejected", err)
 	}
-	if !credentialMountsOK([]genericMount{{Type: "bind", Source: stateDirectory, Destination: "/owner-state", RW: true}}, []Mount{stateMount}) {
+	if !credentialMountsOK([]genericMount{{Type: "bind", Source: stateDirectory, Destination: "/owner-state", RW: true}}, []api.Mount{stateMount}) {
 		t.Fatal("writable state receipt rejected")
 	}
-	if credentialMountsOK([]genericMount{{Type: "bind", Source: stateDirectory, Destination: "/other-owner", RW: true}}, []Mount{stateMount}) {
+	if credentialMountsOK([]genericMount{{Type: "bind", Source: stateDirectory, Destination: "/other-owner", RW: true}}, []api.Mount{stateMount}) {
 		t.Fatal("wrong state target admitted")
 	}
-	if err := c.validateCredentialMounts([]Mount{{Source: secret, Target: "/owner-state", ReadOnly: false}}); err == nil {
+	if err := c.validateCredentialMounts([]api.Mount{{Source: secret, Target: "/owner-state", ReadOnly: false}}); err == nil {
 		t.Fatal("writable credential file accepted")
 	}
-	if err := c.validateCredentialMounts([]Mount{{Source: filepath.Dir(stateDirectory), Target: "/owner-state", ReadOnly: false}}); err == nil {
+	if err := c.validateCredentialMounts([]api.Mount{{Source: filepath.Dir(stateDirectory), Target: "/owner-state", ReadOnly: false}}); err == nil {
 		t.Fatal("whole lease directory accepted")
 	}
 	plan.CredentialMounts[0].Source = filepath.Join(root, "outside")
@@ -164,12 +165,12 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 		t.Fatal("credential mount outside broker root accepted")
 	}
 	plan = genericPlan(d)
-	plan.CredentialMounts = []Mount{{Source: mountRoot, Target: "/run/secrets/config.json", ReadOnly: true}}
+	plan.CredentialMounts = []api.Mount{{Source: mountRoot, Target: "/run/secrets/config.json", ReadOnly: true}}
 	if err := c.validatePlan(plan); err == nil {
 		t.Fatal("credential mount directory accepted")
 	}
 	plan = genericPlan(d)
-	plan.CredentialMounts = []Mount{{Source: secret, Target: "relative", ReadOnly: true}}
+	plan.CredentialMounts = []api.Mount{{Source: secret, Target: "relative", ReadOnly: true}}
 	if err := c.validatePlan(plan); err == nil {
 		t.Fatal("relative credential mount target accepted")
 	}
@@ -177,11 +178,11 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := withoutRoot.validateCredentialMounts([]Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}); err == nil {
+	if err := withoutRoot.validateCredentialMounts([]api.Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}); err == nil {
 		t.Fatal("credential mount without an approved root accepted")
 	}
 	plan = genericPlan(d)
-	plan.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state", ReadOnly: true}}
+	plan.Execution.Mounts = []api.Mount{{Source: "connection-state", Target: "/state", ReadOnly: true}}
 	if err := c.validatePlan(plan); err == nil {
 		t.Fatal("host state mount accepted without Docker fallback")
 	}
@@ -198,7 +199,7 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 		return []byte("--read-only --security-opt --cpus --memory --pids-limit --cap-drop --user --timeout --output-limit"), nil
 	}
 	plan = genericPlan(d)
-	plan.CredentialMounts = []Mount{{Source: mountRoot, Target: "/run/secrets/config.json", ReadOnly: true}}
+	plan.CredentialMounts = []api.Mount{{Source: mountRoot, Target: "/run/secrets/config.json", ReadOnly: true}}
 	if _, err := c.start(context.Background(), plan); err == nil {
 		t.Fatal("directory credential mount reached workload startup")
 	}
@@ -206,19 +207,19 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 	if _, err := c.start(context.Background(), plan); err == nil {
 		t.Fatal("ToolHive without volume support accepted credential mount")
 	}
-	if !credentialMountsOK([]genericMount{{Type: "bind", Source: secret, Destination: "/run/secrets/config.json", RW: false}}, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+	if !credentialMountsOK([]genericMount{{Type: "bind", Source: secret, Destination: "/run/secrets/config.json", RW: false}}, []api.Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
 		t.Fatal("valid read-only credential mount was not recognized")
 	}
-	if credentialMountsOK(nil, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+	if credentialMountsOK(nil, []api.Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
 		t.Fatal("missing credential mount was accepted")
 	}
-	if credentialMountsOK([]genericMount{{Type: "bind", Source: secret, Destination: "/run/secrets/config.json", RW: true}}, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+	if credentialMountsOK([]genericMount{{Type: "bind", Source: secret, Destination: "/run/secrets/config.json", RW: true}}, []api.Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
 		t.Fatal("writable credential mount was accepted")
 	}
-	if credentialMountsOK([]genericMount{{Type: "bind", Source: filepath.Join(mountRoot, "other"), Destination: "/run/secrets/config.json"}}, []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
+	if credentialMountsOK([]genericMount{{Type: "bind", Source: filepath.Join(mountRoot, "other"), Destination: "/run/secrets/config.json"}}, []api.Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}) {
 		t.Fatal("unmatched credential mount was accepted")
 	}
-	workload := genericWorkload{bridgeVol: "bridge-volume", plan: controllerPlan{CredentialMounts: []Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}}}
+	workload := genericWorkload{bridgeVol: "bridge-volume", plan: api.ControllerPlan{CredentialMounts: []api.Mount{{Source: secret, Target: "/run/secrets/config.json", ReadOnly: true}}}}
 	validFallback := []genericMount{{Type: "volume", Name: "bridge-volume", Destination: "/hermes-bridge"}, {Type: "bind", Source: secret, Destination: "/run/secrets/config.json"}}
 	if !fallbackBridgeMountsOK(validFallback, workload) {
 		t.Fatal("valid fallback credential mount was not recognized")
@@ -229,7 +230,7 @@ func TestGenericControllerCredentialMountBoundary(t *testing.T) {
 	}
 }
 
-func genericContainers(plan controllerPlan, seccomp, proxyVol string) []map[string]any {
+func genericContainers(plan api.ControllerPlan, seccomp, proxyVol string) []map[string]any {
 	network := "hermes-" + plan.WorkloadID
 	host := map[string]any{"NanoCpus": int64(plan.Execution.CPUMillis) * 1000000, "Memory": int64(plan.Execution.MemoryMiB) * 1048576, "PidsLimit": int64(plan.Execution.MaxPIDs), "Privileged": false, "ReadonlyRootfs": true, "NetworkMode": network, "PidMode": "", "CapAdd": []string{}, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges=true", "seccomp=" + seccomp}, "Binds": []string{}}
 	return []map[string]any{
@@ -241,7 +242,7 @@ func genericContainers(plan controllerPlan, seccomp, proxyVol string) []map[stri
 func TestGenericControllerPlanReceiptAndReuse(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	budget, err := NewWorkloadBudget(2, time.Minute)
+	budget, err := api.NewWorkloadBudget(2, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,7 @@ func TestGenericControllerPlanReceiptAndReuse(t *testing.T) {
 	if recorder.Code != 200 {
 		t.Fatalf("first admission: %d", recorder.Code)
 	}
-	var receipt AdmissionReceipt
+	var receipt api.AdmissionReceipt
 	if json.Unmarshal(recorder.Body.Bytes(), &receipt) != nil || receipt.Endpoint == "" {
 		t.Fatalf("missing endpoint receipt: %s", recorder.Body.String())
 	}
@@ -318,7 +319,7 @@ func TestGenericControllerPlanReceiptAndReuse(t *testing.T) {
 func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	budget, _ := NewWorkloadBudget(1, time.Minute)
+	budget, _ := api.NewWorkloadBudget(1, time.Minute)
 	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, Budget: budget})
 	if err != nil {
 		t.Fatal(err)
@@ -362,7 +363,7 @@ func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 	var credentialContainers []map[string]any
 	_ = json.Unmarshal(valid, &credentialContainers)
 	secret := filepath.Join(root, "credential.json")
-	workload.plan.CredentialMounts = []Mount{{Source: secret, Target: "/run/credentials/google.json", ReadOnly: true}}
+	workload.plan.CredentialMounts = []api.Mount{{Source: secret, Target: "/run/credentials/google.json", ReadOnly: true}}
 	credentialContainers[0]["HostConfig"].(map[string]any)["Binds"] = []string{secret + ":/run/credentials/google.json:ro"}
 	credentialContainers[0]["Mounts"] = append(credentialContainers[0]["Mounts"].([]any), map[string]any{"Type": "bind", "Source": secret, "Destination": "/run/credentials/google.json", "RW": false})
 	body, _ := json.Marshal(credentialContainers)
@@ -370,10 +371,10 @@ func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 	if _, err := c.inspect(context.Background(), workload); err != nil {
 		t.Fatalf("declared credential bind rejected: %v", err)
 	}
-	if _, err := genericProxyConfig([]string{"service.example.com:443", "10.0.0.0/8"}); err != nil {
+	if _, err := api.GenericProxyConfig([]string{"service.example.com:443", "10.0.0.0/8"}); err != nil {
 		t.Fatal(err)
 	}
-	conf, err := genericProxyConfig([]string{"slack.com", "127.0.0.1", "localhost", ".already.dotted:8443"})
+	conf, err := api.GenericProxyConfig([]string{"slack.com", "127.0.0.1", "localhost", ".already.dotted:8443"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,20 +384,20 @@ func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 		}
 	}
 	for _, egress := range [][]string{nil, {"bad host"}, {"2001:db8::1"}} {
-		if _, err := genericProxyConfig(egress); err == nil {
+		if _, err := api.GenericProxyConfig(egress); err == nil {
 			t.Fatal("unsafe egress accepted")
 		}
 	}
 	tooMany := make([]string, 33)
-	if _, err := genericProxyConfig(tooMany); err == nil {
+	if _, err := api.GenericProxyConfig(tooMany); err == nil {
 		t.Fatal("oversized egress accepted")
 	}
-	if err := c.validatePlan(controllerPlan{WorkloadID: "bad", DefinitionID: d.DefinitionID}); err == nil {
+	if err := c.validatePlan(api.ControllerPlan{WorkloadID: "bad", DefinitionID: d.DefinitionID}); err == nil {
 		t.Fatal("incomplete plan accepted")
 	}
-	if err := c.validatePlan(func() controllerPlan {
+	if err := c.validatePlan(func() api.ControllerPlan {
 		p := genericPlan(d)
-		p.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
+		p.Execution.Mounts = []api.Mount{{Source: "connection-state", Target: "/state"}}
 		return p
 	}()); err == nil {
 		t.Fatalf("host mount accepted: %v", err)
@@ -406,30 +407,30 @@ func TestGenericControllerRejectsProfilesAndInputs(t *testing.T) {
 func TestGenericSecretFileAndBudgetCleanup(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	d.Credentials = []CredentialInput{{Name: "SERVICE_TOKEN", Required: true}}
+	d.Credentials = []api.CredentialInput{{Name: "SERVICE_TOKEN", Required: true}}
 	file := filepath.Join(root, "credentials.env")
 	if err := os.WriteFile(file, []byte("SERVICE_TOKEN=private\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	values, err := readGenericSecrets(file, d)
+	values, err := api.ReadGenericSecrets(file, d)
 	if err != nil || values["SERVICE_TOKEN"] != "private" {
 		t.Fatal(values, err)
 	}
 	if err := os.WriteFile(file, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readGenericSecrets(file, d); err == nil {
+	if _, err := api.ReadGenericSecrets(file, d); err == nil {
 		t.Fatal("missing required secret accepted")
 	}
 	for _, body := range []string{"SERVICE_TOKEN=\n", "UNKNOWN=x\n", "SERVICE_TOKEN=x\nSERVICE_TOKEN=y\n"} {
 		if err := os.WriteFile(file, []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readGenericSecrets(file, d); err == nil {
+		if _, err := api.ReadGenericSecrets(file, d); err == nil {
 			t.Fatal("invalid secret file accepted")
 		}
 	}
-	budget, _ := NewWorkloadBudget(1, time.Minute)
+	budget, _ := api.NewWorkloadBudget(1, time.Minute)
 	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, Budget: budget})
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +468,7 @@ func TestGenericSecretFileAndBudgetCleanup(t *testing.T) {
 
 func TestReadGenericSecretsCredentialGroups(t *testing.T) {
 	d, root, _ := genericDefinition(t)
-	d.Credentials = []CredentialInput{
+	d.Credentials = []api.CredentialInput{
 		{Name: "SLACK_MCP_XOXP_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXB_TOKEN", Required: true},
 		{Name: "SLACK_MCP_XOXC_TOKEN", Required: true},
@@ -491,7 +492,7 @@ func TestReadGenericSecretsCredentialGroups(t *testing.T) {
 			if err := os.WriteFile(file, []byte(tc.body), 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := readGenericSecrets(file, d)
+			_, err := api.ReadGenericSecrets(file, d)
 			if tc.wantErr && err == nil {
 				t.Fatalf("%q accepted", tc.body)
 			}
@@ -505,10 +506,10 @@ func TestReadGenericSecretsCredentialGroups(t *testing.T) {
 func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	if _, err := localCommandEnv(context.Background(), map[string]string{"HERMES_TEST_ENV": "ok"}, "go", "version"); err != nil {
+	if _, err := api.LocalCommandEnv(context.Background(), map[string]string{"HERMES_TEST_ENV": "ok"}, "go", "version"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := localCommandEnv(context.Background(), nil, "missing-hermes-command"); err == nil {
+	if _, err := api.LocalCommandEnv(context.Background(), nil, "missing-hermes-command"); err == nil {
 		t.Fatal("missing command succeeded")
 	}
 	if _, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 2, IdleTTLSeconds: 60}); err != nil {
@@ -541,7 +542,7 @@ func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 		t.Fatalf("loopback port allocation: %d %v", port, err)
 	}
 	shared := d
-	shared.Workload.Class, shared.Credentials = Shared, []CredentialInput{{Name: "SERVICE_TOKEN", Required: true}}
+	shared.Workload.Class, shared.Credentials = api.Shared, []api.CredentialInput{{Name: "SERVICE_TOKEN", Required: true}}
 	if _, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: shared, MaxActive: 1, IdleTTLSeconds: 1}); err == nil {
 		t.Fatal("shared credential workload accepted")
 	}
@@ -566,11 +567,11 @@ func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 	if _, err := c.proxyIP(context.Background(), "proxy", "network"); err == nil {
 		t.Fatal("proxy command failure accepted")
 	}
-	if reflectMounts(nil, []Mount{{Source: "connection-state", Target: "/state"}}) || reflectMounts([]Mount{{Source: "connection-state", Target: "/state"}}, []Mount{{Source: "job-state", Target: "/state"}}) {
+	if api.ReflectMounts(nil, []api.Mount{{Source: "connection-state", Target: "/state"}}) || api.ReflectMounts([]api.Mount{{Source: "connection-state", Target: "/state"}}, []api.Mount{{Source: "job-state", Target: "/state"}}) {
 		t.Fatal("mount comparison broken")
 	}
 	withCredentials := d
-	withCredentials.Credentials = []CredentialInput{{Name: "SERVICE_TOKEN", Required: true}}
+	withCredentials.Credentials = []api.CredentialInput{{Name: "SERVICE_TOKEN", Required: true}}
 	workspace := filepath.Join(root, "credential-workspace")
 	if err := os.Mkdir(workspace, 0700); err != nil {
 		t.Fatal(err)
@@ -578,7 +579,7 @@ func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "credentials.env"), []byte("SERVICE_TOKEN=private\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	budget, _ := NewWorkloadBudget(1, time.Minute)
+	budget, _ := api.NewWorkloadBudget(1, time.Minute)
 	c, err = newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: withCredentials, Budget: budget})
 	if err != nil {
 		t.Fatal(err)
@@ -604,7 +605,7 @@ func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 	var forwarded map[string]string
 	c.commandEnv = func(_ context.Context, env map[string]string, _ string, args ...string) ([]byte, error) {
 		forwarded = env
-		if !contains(args, "--secret") {
+		if !api.Contains(args, "--secret") {
 			return nil, errors.New("secret flag missing")
 		}
 		return nil, nil
@@ -617,8 +618,8 @@ func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 func TestGenericControllerRequiresOneContainerProxy(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	d.Transport = RemoteMCP
-	d.Source = DefinitionSource{URL: "https://mcp.example", TLSMode: "required"}
+	d.Transport = api.RemoteMCP
+	d.Source = api.DefinitionSource{URL: "https://mcp.example", TLSMode: "required"}
 	if _, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 1, IdleTTLSeconds: 60}); err == nil {
 		t.Fatal("non-container transport accepted")
 	}
@@ -632,7 +633,7 @@ func TestGenericControllerRequiresOneContainerProxy(t *testing.T) {
 func TestGenericControllerHandlerDenyPaths(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	budget, _ := NewWorkloadBudget(1, time.Minute)
+	budget, _ := api.NewWorkloadBudget(1, time.Minute)
 	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, Budget: budget})
 	if err != nil {
 		t.Fatal(err)
@@ -724,7 +725,7 @@ func TestGenericControllerHandlerDenyPaths(t *testing.T) {
 func TestGenericControllerPlanPathAndInspectParsing(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	budget, _ := NewWorkloadBudget(1, time.Minute)
+	budget, _ := api.NewWorkloadBudget(1, time.Minute)
 	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, Budget: budget})
 	if err != nil {
 		t.Fatal(err)
@@ -749,10 +750,10 @@ func TestGenericControllerPlanPathAndInspectParsing(t *testing.T) {
 			t.Fatal("incomplete inspect payload accepted")
 		}
 	}
-	if _, err := readGenericSecrets(filepath.Join(root, "credentials.txt"), d); err == nil {
+	if _, err := api.ReadGenericSecrets(filepath.Join(root, "credentials.txt"), d); err == nil {
 		t.Fatal("wrong secret extension accepted")
 	}
-	if _, err := readGenericSecrets(filepath.Join(root, "missing.env"), d); err == nil {
+	if _, err := api.ReadGenericSecrets(filepath.Join(root, "missing.env"), d); err == nil {
 		t.Fatal("missing secret file accepted")
 	}
 }
@@ -762,7 +763,7 @@ func TestGenericControllerStartFailureBoundaries(t *testing.T) {
 	parts := strings.Split(paths, "\x00")
 	help := []byte("--read-only --security-opt --cpus --memory --pids-limit --cap-drop --user --timeout --output-limit")
 	for failAt := 1; failAt <= 10; failAt++ {
-		budget, _ := NewWorkloadBudget(1, time.Minute)
+		budget, _ := api.NewWorkloadBudget(1, time.Minute)
 		c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, Budget: budget})
 		if err != nil {
 			t.Fatal(err)
@@ -843,7 +844,7 @@ func TestGenericControllerCapabilityGateFailsBeforeDocker(t *testing.T) {
 		t.Fatal("unsupported ToolHive profile accepted")
 	}
 	c = newController()
-	plan.Execution.Mounts = []Mount{{Source: "state", Target: "/state"}}
+	plan.Execution.Mounts = []api.Mount{{Source: "state", Target: "/state"}}
 	c.command = func(_ context.Context, binary string, args ...string) ([]byte, error) {
 		if binary == parts[0] && len(args) > 0 && args[0] == "version" {
 			return []byte("ToolHive v0.49.0"), nil
@@ -857,12 +858,12 @@ func TestGenericControllerCapabilityGateFailsBeforeDocker(t *testing.T) {
 
 func TestCredentialMountInspectionUsesDaemonPaths(t *testing.T) {
 	t.Setenv("HUB_DOCKER_HOST_ROOT", "/run/broker-materialized=/daemon/materialized")
-	declared := []Mount{{Source: "/run/broker-materialized/lease/state", Target: "/owner-state"}}
+	declared := []api.Mount{{Source: "/run/broker-materialized/lease/state", Target: "/owner-state"}}
 	actual := []genericMount{{Type: "bind", Source: "/daemon/materialized/lease/state", Destination: "/owner-state", RW: true}}
 	if !credentialMountsOK(actual, declared) {
 		t.Fatal("daemon path rejected")
 	}
-	workload := genericWorkload{bridgeVol: "bridge", plan: controllerPlan{CredentialMounts: declared}}
+	workload := genericWorkload{bridgeVol: "bridge", plan: api.ControllerPlan{CredentialMounts: declared}}
 	mounts := append(actual, genericMount{Type: "volume", Name: "bridge", Destination: "/hermes-bridge"})
 	if !fallbackBridgeMountsOK(mounts, workload) {
 		t.Fatal("fallback daemon path rejected")

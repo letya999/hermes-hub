@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,29 +37,29 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
 	var lastArgs map[string]any
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: time.Minute}
-	grantTestControlOperations(t, store, "alice", ControlOperations...)
-	grantTestControlOperations(t, store, "bob", ControlOperations...)
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	grantTestControlOperations(t, store, "bob", api.ControlOperations...)
 	gateway := &Gateway{
 		Store:  store,
 		Tokens: map[string]identity.Envelope{aliceToken: auth, bobToken: bobAuth()},
-		Backend: backendFunc(func(_ context.Context, _ EffectiveBinding, _ ToolSpec, args map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, args map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
 			lastArgs = args
-			return BackendResult{Text: "ok"}, nil
+			return api.BackendResult{Text: "ok"}, nil
 		}),
 		Control: control,
-		Injector: func(_ context.Context, effective EffectiveBinding) (CredentialInjection, error) {
-			env, err := DecryptAuthorized(secrets, effective)
+		Injector: func(_ context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+			env, err := api.DecryptAuthorized(secrets, effective)
 			if err != nil {
-				return CredentialInjection{}, err
+				return api.CredentialInjection{}, err
 			}
-			return CredentialInjection{Environment: env, Cleanup: func() error { return nil }}, nil
+			return api.CredentialInjection{Environment: env, Cleanup: func() error { return nil }}, nil
 		},
 	}
 	handler, err := gateway.Handler()
@@ -124,29 +125,29 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status["phase"] != PhaseEnabled {
+	if status["phase"] != api.PhaseEnabled {
 		t.Fatalf("credential form did not complete authorization: %v", status)
 	}
 	if err := control.SubmitCredentials(prepared["onboarding_id"].(string), nonceFromPath(formPath), map[string]string{"GOOGLE_TOKEN": testSecret}); err == nil {
 		t.Fatal("one-time credential form replay accepted")
 	}
 	status, err = callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil || status["phase"] != PhaseEnabled {
+	if err != nil || status["phase"] != api.PhaseEnabled {
 		t.Fatalf("confirmed onboarding was not enabled: status=%v err=%v", status, err)
 	}
 	projected, _ := status["projected_tools"].([]any)
-	if len(projected) == 0 || projected[0] != ProjectedToolName("google-work", "1.0.0", "search") {
+	if len(projected) == 0 || projected[0] != api.ProjectedToolName("google-work", "1.0.0", "search") {
 		t.Fatalf("enabled status omitted exact projected tools: %v", status)
 	}
-	if err := control.finishAuthorization(context.Background(), "missing-onboarding"); !errors.Is(err, ErrNotFound) {
+	if err := control.finishAuthorization(context.Background(), "missing-onboarding"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("missing onboarding finalization error=%v", err)
 	}
 	badAuth := aliceAuth()
 	badAuth.PolicyVersion = ""
-	if _, err := control.Invoke(context.Background(), badAuth, "status", map[string]any{}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), badAuth, "status", map[string]any{}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid control identity accepted: %v", err)
 	}
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	}
 	expired := control
 	expired.Now = func() time.Time { return time.Now().UTC().Add(2 * time.Hour) }
-	if _, err := expired.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := expired.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("expired confirmation: %v", err)
 	}
 	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err == nil {
@@ -206,7 +207,7 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 	if err := store.RegisterDefinition(remoteDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, "alice", "google-work", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -245,7 +246,7 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	if err := store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -269,7 +270,7 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 		t.Fatalf("nonce already used before expiry check: %+v err=%v", onboarding, err)
 	}
 	control.Now = func() time.Time { return now.Add(2 * time.Hour) }
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": nonce}); !errors.Is(err, ErrUnauthorized) || !strings.Contains(err.Error(), "expired") {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": nonce}); !errors.Is(err, api.ErrUnauthorized) || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("unused expired nonce: %v", err)
 	}
 	onboarding, err = store.onboarding(prepared["onboarding_id"].(string))
@@ -305,7 +306,7 @@ func nonceFromPath(path string) string {
 	return u.Query().Get("nonce")
 }
 
-func mustOnboarding(t *testing.T, store *Store, id string) Onboarding {
+func mustOnboarding(t *testing.T, store *Store, id string) api.Onboarding {
 	t.Helper()
 	onboarding, err := store.onboarding(id)
 	if err != nil {
@@ -331,18 +332,18 @@ func TestRotateRevokeCutsOpenSession(t *testing.T) {
 	store.Stopper = stops
 	var calls atomic.Int32
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir()}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-rotate1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0", Phase: PhaseEnabled, BindingID: binding.ToolBindingID, ConnectionID: binding.ConnectionID, Locator: "local://alice/google/1", Revision: 1, CreatedAt: time.Now().UTC()}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-rotate1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0", Phase: api.PhaseEnabled, BindingID: binding.ToolBindingID, ConnectionID: binding.ConnectionID, Locator: "local://alice/google/1", Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	gateway := &Gateway{
 		Store: store, Control: control, Tokens: map[string]identity.Envelope{aliceToken: auth},
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
-			return BackendResult{Text: "ok"}, nil
+			return api.BackendResult{Text: "ok"}, nil
 		}),
 	}
 	handler, err := gateway.Handler()
@@ -351,7 +352,7 @@ func TestRotateRevokeCutsOpenSession(t *testing.T) {
 	}
 	server := httptestNew(t, handler)
 	alice := mcpConnect(t, server.URL, aliceToken)
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
 		t.Fatal(err)
 	}

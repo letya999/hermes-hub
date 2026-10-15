@@ -250,6 +250,7 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 		}
 		return len(entries)
 	}
+
 	contains := func(hay []string, needle string) bool {
 		for _, item := range hay {
 			if strings.Contains(item, needle) {

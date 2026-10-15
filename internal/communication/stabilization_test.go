@@ -528,7 +528,7 @@ func TestM10SupervisorScriptClientHTTPBoundaries(t *testing.T) {
 	o.Job.Trigger = "cron"
 	o.Job.Text = `emit("ok")`
 	response, status := `["ok"]`, 200
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request hubruntime.ScriptRequest
 		if r.URL.Path != "/v1/script" || r.Header.Get("Authorization") != "Bearer token" || json.NewDecoder(r.Body).Decode(&request) != nil || request.PrincipalID != "alice" || request.Text != o.Job.Text || !request.DueAt.Equal(o.DueAt) {
 			t.Error("script ownership lost in transport")
@@ -536,9 +536,9 @@ func TestM10SupervisorScriptClientHTTPBoundaries(t *testing.T) {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(response))
 	}))
-	defer api.Close()
+	defer srv.Close()
 	g.config.Supervised = true
-	g.config.RuntimeURL = api.URL
+	g.config.RuntimeURL = srv.URL
 	g.config.RuntimeAuth = "token"
 	texts, err := g.runIsolatedScript(context.Background(), o)
 	if err != nil || len(texts) != 1 || texts[0] != "ok" {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"io/fs"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // runExecPack is the private runtime-side input materializer for the
@@ -22,7 +22,7 @@ import (
 // admitted files — regular files only, no symlinks, capped count and size.
 // The command accepts no authority fields and produces no workspace writes.
 func runExecPack(ctx context.Context) error {
-	var request toolhub.ScratchPackRequest
+	var request api.ScratchPackRequest
 	if err := json.NewDecoder(io.LimitReader(os.Stdin, toolsExecMaxRequest)).Decode(&request); err != nil {
 		return fmt.Errorf("exec-pack request: %w", err)
 	}

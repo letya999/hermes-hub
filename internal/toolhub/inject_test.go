@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,17 +29,17 @@ func TestDecryptAuthorizedFiltersAndSharedStatic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := DecryptAuthorized(backend, effective)
+	env, err := api.DecryptAuthorized(backend, effective)
 	if err != nil || env["GOOGLE_TOKEN"] != "keep-me" || env["OTHER_TOKEN"] != "" {
 		t.Fatalf("decrypt=%v err=%v", env, err)
 	}
 	shared := effective
-	shared.Definition.Workload.Class = Shared
+	shared.Definition.Workload.Class = api.Shared
 	shared.Definition.Credentials[0].PerRequest = false
-	if _, err := DecryptAuthorized(backend, shared); err == nil {
+	if _, err := api.DecryptAuthorized(backend, shared); err == nil {
 		t.Fatal("shared static accepted")
 	}
-	empty, err := DecryptAuthorized(backend, EffectiveBinding{})
+	empty, err := api.DecryptAuthorized(backend, api.EffectiveBinding{})
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("missing credential decrypt=%v err=%v", empty, err)
 	}
@@ -58,12 +59,12 @@ func TestWriteAuthorizedFilesAndCorrelation(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	wipe, err := writeAuthorizedFiles(context.Background(), root, effective, map[string]string{"GOOGLE_TOKEN": "file-secret"})
+	wipe, err := api.WriteAuthorizedFiles(context.Background(), root, effective, map[string]string{"GOOGLE_TOKEN": "file-secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = wipe() })
-	workspace, err := OpenWorkloadWorkspace(root, effective, "")
+	workspace, err := api.OpenWorkloadWorkspace(root, effective, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,17 +78,17 @@ func TestWriteAuthorizedFilesAndCorrelation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); !os.IsNotExist(err) {
 		t.Fatal("credentials.env survived wipe")
 	}
-	if _, err := writeAuthorizedFiles(context.Background(), "", effective, map[string]string{"GOOGLE_TOKEN": "x"}); err == nil {
+	if _, err := api.WriteAuthorizedFiles(context.Background(), "", effective, map[string]string{"GOOGLE_TOKEN": "x"}); err == nil {
 		t.Fatal("empty root accepted")
 	}
-	corr := headerCorrelation("job-alice", "run-alice")
+	corr := api.HeaderCorrelation("job-alice", "run-alice")
 	if corr.JobID != "job-alice" || corr.HermesRunID != "run-alice" {
 		t.Fatalf("corr=%+v", corr)
 	}
-	if headerCorrelation("bad\nid", "run-alice").JobID != "" {
+	if api.HeaderCorrelation("bad\nid", "run-alice").JobID != "" {
 		t.Fatal("newline job id accepted")
 	}
-	if id := newToolCallID(); !strings.HasPrefix(id, "call-") {
+	if id := api.NewToolCallID(); !strings.HasPrefix(id, "call-") {
 		t.Fatalf("tool call id=%q", id)
 	}
 }

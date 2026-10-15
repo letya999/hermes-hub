@@ -4,7 +4,7 @@ last_verified: 2026-10-07
 ---
 # Prepared connectors
 
-The reviewed [catalog](../internal/toolhub/prepared/catalog.json) records exact
+The reviewed [catalog](../internal/toolhub/api/prepared/catalog.json) records exact
 commits, licenses, inferred entrypoints, credential overlays, Broker contracts,
 runtime settings, egress, read tools and user handoffs. New entries require data,
 not provider branches. `context_sources` merges another exact-pinned GitHub
@@ -19,7 +19,7 @@ credentialed probe already does. Unprepared sources keep `--network none`.
 Live evidence is tracked in
 [CHG-0036](../.work/in-progress/CHG-0036-repository-driven-toolhub/plan.md).
 
-Reviewed Broker contracts ship in `internal/toolhub/prepared/contracts/` and
+Reviewed Broker contracts ship in `internal/toolhub/api/prepared/contracts/` and
 are validated with their prepared entries. Provision them into the Broker's
 configured contracts directory before enrollment; the Broker control API does
 not expose contract registration. Missing contracts are deployment errors,

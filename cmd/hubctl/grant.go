@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 
@@ -54,14 +55,14 @@ func runGrant(_ context.Context, args []string) error {
 		}
 		store = toolhub.NewStore()
 	}
-	grant := toolhub.OperatorGrant(toolhub.GrantKind(*kind), *profile, *definition, *version)
-	if grant.Kind == toolhub.GrantControlOperation {
-		grant = toolhub.OperatorControlGrant(*profile, *operation)
+	grant := api.OperatorGrant(api.GrantKind(*kind), *profile, *definition, *version)
+	if grant.Kind == api.GrantControlOperation {
+		grant = api.OperatorControlGrant(*profile, *operation)
 		grant.DefinitionID, grant.DefinitionVersion = *definition, *version
 	} else {
 		grant.Operation = *operation
 	}
-	grant.Status, grant.Revision = toolhub.Status(*status), *revision
+	grant.Status, grant.Revision = api.Status(*status), *revision
 	grant.IssuedBy = *issuer
 	if err := confirmRecord(*confirm, *issuer, &grant); err != nil {
 		return err

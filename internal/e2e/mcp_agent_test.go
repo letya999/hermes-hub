@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -49,7 +49,7 @@ func TestMCPAgentRequiresIndependentInstallationAndRevocation(t *testing.T) {
 				var mu sync.Mutex
 				name := ""
 				revoked := false
-				phase := toolhub.PhaseEnabled
+				phase := api.PhaseEnabled
 				calls := 0
 				server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 				for _, operation := range []string{"prepare_source", "status", "confirm", "enable", "disable", "revoke", "remove"} {
@@ -105,7 +105,7 @@ func TestMCPAgentRequiresIndependentInstallationAndRevocation(t *testing.T) {
 								t.Fatal("unsafe CLI fixture")
 							}
 						}
-						projected := toolhub.ProjectedToolName(name, "1.0.0", tool)
+						projected := api.ProjectedToolName(name, "1.0.0", tool)
 						mu.Unlock()
 						server.AddTool(&mcp.Tool{Name: projected, InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 							mu.Lock()
@@ -118,7 +118,7 @@ func TestMCPAgentRequiresIndependentInstallationAndRevocation(t *testing.T) {
 							if cli {
 								text = "ruff 0.11.13"
 							}
-							return &mcp.CallToolResult{IsError: revoked || phase != toolhub.PhaseEnabled, Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil
+							return &mcp.CallToolResult{IsError: revoked || phase != api.PhaseEnabled, Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil
 						})
 					}
 					if strings.HasPrefix(input.Text, "Call ToolHub ") {
@@ -126,7 +126,7 @@ func TestMCPAgentRequiresIndependentInstallationAndRevocation(t *testing.T) {
 							t.Fatal("foreign lifecycle target")
 						}
 						mu.Lock()
-						for op, value := range map[string]string{"disable": toolhub.PhaseDisabled, "enable": toolhub.PhaseEnabled, "revoke": toolhub.PhaseRevoked, "remove": toolhub.PhaseRemoved} {
+						for op, value := range map[string]string{"disable": api.PhaseDisabled, "enable": api.PhaseEnabled, "revoke": api.PhaseRevoked, "remove": api.PhaseRemoved} {
 							if strings.HasPrefix(input.Text, "Call ToolHub "+op+" ") && !(fault == "disable" && op == "disable") {
 								phase = value
 							}
@@ -136,7 +136,7 @@ func TestMCPAgentRequiresIndependentInstallationAndRevocation(t *testing.T) {
 					id := "mock-" + strings.Repeat("a", 64)
 					marker := regexp.MustCompile(`E2E [a-f0-9]{16}`).FindString(input.Text)
 					if strings.Contains(input.Text, "Use the installed tool") {
-						if !strings.Contains(input.Text, toolhub.ProjectedToolName(name, "1.0.0", "read_wiki_structure")) && !strings.Contains(input.Text, toolhub.ProjectedToolName(name, "1.0.0", "version")) {
+						if !strings.Contains(input.Text, api.ProjectedToolName(name, "1.0.0", "read_wiki_structure")) && !strings.Contains(input.Text, api.ProjectedToolName(name, "1.0.0", "version")) {
 							t.Fatal("invocation prompt lost exact installation")
 						}
 						marker += " Overview"
@@ -167,7 +167,7 @@ func TestMCPAgentRequiresIndependentInstallationAndRevocation(t *testing.T) {
 				}
 				mu.Lock()
 				defer mu.Unlock()
-				if fault == "" && (phase != toolhub.PhaseRemoved || calls != 5) {
+				if fault == "" && (phase != api.PhaseRemoved || calls != 5) {
 					t.Fatal("revocation not exercised")
 				}
 			})

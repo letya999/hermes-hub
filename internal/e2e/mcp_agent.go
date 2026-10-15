@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"os"
 	"regexp"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -97,17 +97,17 @@ func installationAgentCase(ctx context.Context, client *http.Client, config comm
 	if status != "PASS" {
 		return status, reason
 	}
-	if actual["phase"] != toolhub.PhaseEnabled || (!cli && actual["repository"] != "https://mcp.deepwiki.com/mcp") {
+	if actual["phase"] != api.PhaseEnabled || (!cli && actual["repository"] != "https://mcp.deepwiki.com/mcp") {
 		return "FAIL", "independent installation phase or endpoint differs"
 	}
 	listed, err := session.ListTools(ctx, nil)
 	if err != nil {
 		return "FAIL", "installed MCP projection unavailable"
 	}
-	projected := toolhub.ProjectedToolName(name, "1.0.0", "read_wiki_structure")
+	projected := api.ProjectedToolName(name, "1.0.0", "read_wiki_structure")
 	arguments := map[string]any{"repoName": "golang/go"}
 	if cli {
-		projected, arguments = toolhub.ProjectedToolName(name, "1.0.0", "version"), map[string]any{}
+		projected, arguments = api.ProjectedToolName(name, "1.0.0", "version"), map[string]any{}
 	}
 	found := false
 	for _, tool := range listed.Tools {
@@ -137,7 +137,7 @@ func installationAgentCase(ctx context.Context, client *http.Client, config comm
 	if status != "PASS" {
 		return status, reason + "; installed tool agent invocation not verified"
 	}
-	for _, stage := range []struct{ operation, phase string }{{"disable", toolhub.PhaseDisabled}, {"enable", toolhub.PhaseEnabled}, {"revoke", toolhub.PhaseRevoked}, {"remove", toolhub.PhaseRemoved}} {
+	for _, stage := range []struct{ operation, phase string }{{"disable", api.PhaseDisabled}, {"enable", api.PhaseEnabled}, {"revoke", api.PhaseRevoked}, {"remove", api.PhaseRemoved}} {
 		prompt := fmt.Sprintf("Call ToolHub %s only with onboarding_id %s, the synthetic installation created for this acceptance test. Do not touch other integrations. Return exactly %s only after the operation succeeds; otherwise report the error.", stage.operation, id, marker)
 		status, reason = run(ctx, client, config, user, "text", prompt, marker)
 		if status != "PASS" {
@@ -148,7 +148,7 @@ func installationAgentCase(ctx context.Context, client *http.Client, config comm
 			return "FAIL", "independent installation lifecycle state differs after " + stage.operation
 		}
 		result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: projected, Arguments: arguments})
-		if stage.phase == toolhub.PhaseEnabled {
+		if stage.phase == api.PhaseEnabled {
 			if err != nil || result == nil || result.IsError {
 				return "FAIL", "reenabled installation remains unavailable"
 			}
@@ -158,7 +158,7 @@ func installationAgentCase(ctx context.Context, client *http.Client, config comm
 		} else if !revocationDenied(result, err, projected) {
 			return "FAIL", "disabled/revoked/removed tool did not explicitly deny an open-session call"
 		}
-		if stage.phase == toolhub.PhaseRevoked || stage.phase == toolhub.PhaseRemoved {
+		if stage.phase == api.PhaseRevoked || stage.phase == api.PhaseRemoved {
 			revoked = true
 		}
 	}

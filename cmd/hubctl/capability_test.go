@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,9 +32,9 @@ func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
 	if err := store.RegisterDefinition(previous); err != nil {
 		t.Fatal(err)
 	}
-	stale := toolhub.ToolBinding{Schema: toolhub.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice",
+	stale := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice",
 		DefinitionID: previous.DefinitionID, DefinitionVersion: previous.Version, PolicyVersion: "policy-old",
-		WorkloadClass: previous.Workload.Class, Status: toolhub.ActiveStatus, Revision: 1, ProjectionRevision: 5}
+		WorkloadClass: previous.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 5}
 	if err := store.PutBinding(stale); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(tools, func(v toolhub.ProjectedTool) bool { return v.Tool.Name == "inbox_fetch" }) {
+	if !slices.ContainsFunc(tools, func(v api.ProjectedTool) bool { return v.Tool.Name == "inbox_fetch" }) {
 		t.Fatal("current inbox tool missing from projection")
 	}
 	if err := runCapability(args); err != nil {
@@ -85,13 +86,13 @@ func TestCapabilityCLIProtectedPublicationAndRevoke(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	policy := toolhub.CapabilityPolicy{Schema: toolhub.SchemaVersion, PolicyID: "personal", Members: []string{"alice"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Explicit empty starting policy", Status: toolhub.ActiveStatus}
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "personal", Members: []string{"alice"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Explicit empty starting policy", Status: api.ActiveStatus}
 	write(policy)
 	args := []string{"capability", "--kind", "policy", "--file", input, "--toolhub-store", storePath, "--confirm"}
 	if err := run(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
-	profile := toolhub.CapabilityProfile{Schema: toolhub.SchemaVersion, ProfileID: "alice-default", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: "personal", PolicyRevision: 1, Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Explicit empty profile", Status: toolhub.ActiveStatus}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "alice-default", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: "personal", PolicyRevision: 1, Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Explicit empty profile", Status: api.ActiveStatus}
 	write(profile)
 	args[2] = "profile"
 	if err := run(t.Context(), args); err != nil {
@@ -107,23 +108,23 @@ func TestCapabilityCLIProtectedPublicationAndRevoke(t *testing.T) {
 		t.Fatalf("empty published profile: %v %v", tools, err)
 	}
 	policy.Revision++
-	policy.Status = toolhub.RevokedStatus
+	policy.Status = api.RevokedStatus
 	write(policy)
 	args[2] = "policy"
 	if err := run(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ListProjectedTools(auth); !errors.Is(err, toolhub.ErrUnauthorized) {
+	if _, err := store.ListProjectedTools(auth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("existing reader retained revoked policy: %v", err)
 	}
 	policy.Revision = 1
-	policy.Status = toolhub.ActiveStatus
+	policy.Status = api.ActiveStatus
 	write(policy)
 	before, err := os.ReadFile(storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run(t.Context(), args); !errors.Is(err, toolhub.ErrConflict) {
+	if err := run(t.Context(), args); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale operator input accepted: %v", err)
 	}
 	after, err := os.ReadFile(storePath)
@@ -138,7 +139,7 @@ func TestCapabilityCLIProtectedPublicationAndRevoke(t *testing.T) {
 func TestCapabilityCLIRequiresExplicitConfirmation(t *testing.T) {
 	dir := t.TempDir()
 	storePath, input := filepath.Join(dir, "store.json"), filepath.Join(dir, "reviewed.json")
-	policy := toolhub.CapabilityPolicy{Schema: toolhub.SchemaVersion, PolicyID: "personal", Members: []string{"alice"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed", Status: toolhub.ActiveStatus}
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "personal", Members: []string{"alice"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed", Status: api.ActiveStatus}
 	body, err := json.Marshal(policy)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +166,7 @@ func TestCapabilityCLIRequiresExplicitConfirmation(t *testing.T) {
 	// An operator-supplied confirmation that does not cover this record is void.
 	var stored struct {
 		Changes []struct {
-			Policy *toolhub.CapabilityPolicy `json:"policy"`
+			Policy *api.CapabilityPolicy `json:"policy"`
 		} `json:"capability_changes"`
 	}
 	raw, err := os.ReadFile(storePath)
@@ -180,8 +181,8 @@ func TestCapabilityCLIRequiresExplicitConfirmation(t *testing.T) {
 func TestCapabilityCLIGroupAuthoringIsValidationOnly(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "group.json")
-	group := toolhub.CapabilityGroup{GroupID: "workspace-reads", Revision: 1, Members: []toolhub.CapabilityRule{
-		{CapabilityID: "files.read", ImplementationDigest: "sha256:" + strings.Repeat("a", 64), Action: "read", Resource: "workspace", Limits: toolhub.CapabilityLimits{OutputBytes: 1024, TimeoutSeconds: 5}},
+	group := api.CapabilityGroup{GroupID: "workspace-reads", Revision: 1, Members: []api.CapabilityRule{
+		{CapabilityID: "files.read", ImplementationDigest: "sha256:" + strings.Repeat("a", 64), Action: "read", Resource: "workspace", Limits: api.CapabilityLimits{OutputBytes: 1024, TimeoutSeconds: 5}},
 	}}
 	body, err := json.Marshal(group)
 	if err != nil {
@@ -193,7 +194,7 @@ func TestCapabilityCLIGroupAuthoringIsValidationOnly(t *testing.T) {
 	if err := runCapability([]string{"--kind", "group", "--file", input}); err != nil {
 		t.Fatal(err)
 	}
-	bad := toolhub.CapabilityGroup{GroupID: "workspace-reads", Revision: 0}
+	bad := api.CapabilityGroup{GroupID: "workspace-reads", Revision: 0}
 	body, _ = json.Marshal(bad)
 	if err := os.WriteFile(input, body, 0600); err != nil {
 		t.Fatal(err)
@@ -272,7 +273,7 @@ func TestCapabilityCLITools(t *testing.T) {
 	// terminal is a deny-by-default section: the host admits it for alice
 	// before the tools edit, the same rule an operator writes with
 	// hubctl governance --kind rule.
-	seedTestGovernance(t, dir, toolhub.PolicyRule{RuleID: "allow-terminal-alice", Scope: toolhub.ScopeUser, Subject: "alice", Section: "native:terminal", Effect: toolhub.RuleAllow, Reason: "test", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+	seedTestGovernance(t, dir, api.PolicyRule{RuleID: "allow-terminal-alice", Scope: api.ScopeUser, Subject: "alice", Section: "native:terminal", Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	// Without --set the compiled plan prints and nothing changes.
 	plan := captureOutput(t, func() error {
 		return runCapability([]string{"--kind", "tools", "--settings", settingsPath})
@@ -355,12 +356,12 @@ func TestCapabilityCLITools(t *testing.T) {
 // seedTestGovernance writes a valid host policy document and pins it via
 // HUB_TOOL_GOVERNANCE: the staged-write validation re-reads the settings pair
 // from a scratch dir, so only the pin reaches every read path.
-func seedTestGovernance(t *testing.T, spaceDir string, rules ...toolhub.PolicyRule) {
+func seedTestGovernance(t *testing.T, spaceDir string, rules ...api.PolicyRule) {
 	t.Helper()
-	doc := toolhub.NewGovernance()
+	doc := api.NewGovernance()
 	doc.Rules = append(doc.Rules, rules...)
 	path := filepath.Join(spaceDir, "runtime", "toolhub", "governance.json")
-	if err := toolhub.SaveGovernance(path, doc); err != nil {
+	if err := api.SaveGovernance(path, doc); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_TOOL_GOVERNANCE", path)
@@ -383,7 +384,7 @@ func TestCapabilityCLIToolsSplitSpace(t *testing.T) {
 	}
 	// mcp-raw onto a user-declared server is the user_mcp section — denied by
 	// default; the host admits it for this principal before the edit.
-	seedTestGovernance(t, dir, toolhub.PolicyRule{RuleID: "allow-usermcp-alice", Scope: toolhub.ScopeUser, Subject: "alice", Section: toolhub.SectionUserMCP, Effect: toolhub.RuleAllow, Reason: "test", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+	seedTestGovernance(t, dir, api.PolicyRule{RuleID: "allow-usermcp-alice", Scope: api.ScopeUser, Subject: "alice", Section: api.SectionUserMCP, Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	agentBefore, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -457,13 +458,13 @@ func TestCapabilityCLIPreview(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	policy := toolhub.CapabilityPolicy{Schema: toolhub.SchemaVersion, PolicyID: "personal", Members: []string{"alice"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed", Status: toolhub.ActiveStatus}
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "personal", Members: []string{"alice"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed", Status: api.ActiveStatus}
 	write(policy)
 	args := []string{"--kind", "policy", "--file", input, "--toolhub-store", storePath, "--confirm"}
 	if err := runCapability(args); err != nil {
 		t.Fatal(err)
 	}
-	profile := toolhub.CapabilityProfile{Schema: toolhub.SchemaVersion, ProfileID: "alice-default", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: "personal", PolicyRevision: 1, Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed", Status: toolhub.ActiveStatus}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "alice-default", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: "personal", PolicyRevision: 1, Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed", Status: api.ActiveStatus}
 	write(profile)
 	args[1] = "profile"
 	if err := runCapability(args); err != nil {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,11 +32,11 @@ func TestTelegramSendRetainsOwnerSession(t *testing.T) {
 }
 
 func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
-	entries, err := PreparedCatalog()
+	entries, err := api.PreparedCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var entry PreparedEntry
+	var entry api.PreparedEntry
 	for _, candidate := range entries {
 		if candidate.ID == "telegram" {
 			entry = candidate
@@ -45,7 +46,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	definition.DefinitionID = "telegram"
 	definition.Source.Repository, definition.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
 	definition.Source.Command, definition.Source.Args = entry.Entrypoint[0], entry.Entrypoint[1:]
-	definition.RuntimeEnvironment = cloneMap(entry.RuntimeEnvironment)
+	definition.RuntimeEnvironment = api.CloneMap(entry.RuntimeEnvironment)
 	definition.Workload.Stateful = entry.Stateful
 	definition.Credentials = entry.Connection.CredentialInputs()
 	definition.CredentialContractID, definition.CredentialContractRevision = entry.ContractID, entry.ContractRevision
@@ -53,9 +54,9 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	for _, input := range definition.Credentials {
 		definition.CredentialContractEnv[input.Name] = input.Name
 	}
-	definition.Tools = []ToolSpec{{Name: "list_accounts", Effect: ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}}
-	imported := ImportedArtifact{Definition: definition}
-	if _, err := ApplyPreflightToolList(&imported, definition.Tools); err != nil {
+	definition.Tools = []api.ToolSpec{{Name: "list_accounts", Effect: api.ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	imported := api.ImportedArtifact{Definition: definition}
+	if _, err := api.ApplyPreflightToolList(&imported, definition.Tools); err != nil {
 		t.Fatal(err)
 	}
 	definition = imported.Definition
@@ -97,10 +98,10 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	c := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Release: func(context.Context, string) error { return nil }}
 	// Require readiness so the normal Broker version-upgrade path mints a new
 	// binding grant instead of the legacy no-controller shortcut.
-	c.Ready = func(context.Context, EffectiveBinding) error { return nil }
+	c.Ready = func(context.Context, api.EffectiveBinding) error { return nil }
 	auth := aliceAuth()
 	if managed {
-		var profile CapabilityProfile
+		var profile api.CapabilityProfile
 		c.Store, auth, _, profile = managedStore(t)
 		profile.Revision++
 		profile.SelfInstall = true
@@ -109,21 +110,21 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 			t.Fatal(err)
 		}
 	}
-	resolve := func(owner identity.Envelope, bindingID string) (EffectiveBinding, error) {
+	resolve := func(owner identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
 		c.Store.mu.RLock()
 		defer c.Store.mu.RUnlock()
 		return c.Store.resolveLocked(owner, bindingID)
 	}
 	for _, principal := range []string{"alice", "bob"} {
 		grantTestControlOperations(t, c.Store, principal, "prepare_source", "confirm", "enable")
-		if err := putGrant(t, c.Store, OperatorGrant(GrantSelfInstall, principal, "", "")); err != nil {
+		if err := putGrant(t, c.Store, api.OperatorGrant(api.GrantSelfInstall, principal, "", "")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := c.registerAdmittedDefinition(&definition, auth.PrincipalID); err != nil {
 		t.Fatal(err)
 	}
-	original, err := c.newOnboarding(auth, OnboardingSelfInstall, "read", definition, entry.Source.Repository, entry.Source.CommitSHA)
+	original, err := c.newOnboarding(auth, api.OnboardingSelfInstall, "read", definition, entry.Source.Repository, entry.Source.CommitSHA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,13 +136,13 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original.BindingID, original.ConnectionID, original.Phase = bind.ToolBindingID, bind.ConnectionID, PhaseEnabled
+	original.BindingID, original.ConnectionID, original.Phase = bind.ToolBindingID, bind.ConnectionID, api.PhaseEnabled
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
 	args := map[string]any{"telegram_send": true, "onboarding_id": original.OnboardingID}
 	for _, invalid := range []map[string]any{{"telegram_send": false}, {"telegram_send": "true"}, {"telegram_send": true}, {"telegram_send": true, "onboarding_id": original.OnboardingID, "source": entry.Source.Repository}} {
-		if _, err := c.Invoke(t.Context(), auth, "prepare_source", invalid); !errors.Is(err, ErrInvalid) {
+		if _, err := c.Invoke(t.Context(), auth, "prepare_source", invalid); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("invalid selection accepted: %v", err)
 		}
 	}
@@ -149,8 +150,8 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if _, err := c.Invoke(t.Context(), bob, "prepare_source", args); err == nil || grants.Load() != 1 {
 		t.Fatal("foreign session reached Broker")
 	}
-	c.AdmitWithCredentials = func(context.Context, ToolDefinition, map[string]string) (ToolDefinition, error) {
-		return ToolDefinition{}, errors.New("provider echoed owner-session-secret")
+	c.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
+		return api.ToolDefinition{}, errors.New("provider echoed owner-session-secret")
 	}
 	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); err == nil || strings.Contains(err.Error(), "owner-session-secret") {
 		t.Fatal("failed admission succeeded or exposed session")
@@ -159,19 +160,19 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		t.Fatal("failed probe cut the working connection or leaked lease/grant")
 	}
 	var probes atomic.Int32
-	c.AdmitWithCredentials = func(_ context.Context, draft ToolDefinition, values map[string]string) (ToolDefinition, error) {
+	c.AdmitWithCredentials = func(_ context.Context, draft api.ToolDefinition, values map[string]string) (api.ToolDefinition, error) {
 		probes.Add(1)
 		if draft.RuntimeEnvironment["TELEGRAM_EXPOSED_TOOLS"] != "read-only+send_message" || values["TELEGRAM_SESSION_STRING"] != "owner-session-secret" {
 			t.Error("existing session or restricted send mode missing")
 		}
-		packet := ImportedArtifact{Definition: draft}
-		_, err := ApplyPreflightToolList(&packet, append(append([]ToolSpec(nil), draft.Tools...), ToolSpec{Name: "send_message", Effect: WriteEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}))
+		packet := api.ImportedArtifact{Definition: draft}
+		_, err := api.ApplyPreflightToolList(&packet, append(append([]api.ToolSpec(nil), draft.Tools...), api.ToolSpec{Name: "send_message", Effect: api.WriteEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}))
 		return packet.Definition, err
 	}
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Go(func() {
-			if body, err := c.Invoke(t.Context(), auth, "prepare_source", args); err != nil || body["phase"] != PhaseAwaitingConfirm {
+			if body, err := c.Invoke(t.Context(), auth, "prepare_source", args); err != nil || body["phase"] != api.PhaseAwaitingConfirm {
 				t.Errorf("send preparation: %v %v", body, err)
 			}
 		})
@@ -185,7 +186,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		t.Fatal(err)
 	}
 	body, err := c.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": upgrade.OnboardingID})
-	if err != nil || body["phase"] != PhaseEnabled {
+	if err != nil || body["phase"] != api.PhaseEnabled {
 		t.Fatalf("enable: %v %v", body, err)
 	}
 	upgrade, _ = c.Store.OnboardingFor(auth, upgrade.OnboardingID)
@@ -211,58 +212,58 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 	c := &ControlPlane{Store: NewStore()}
 	auth := aliceAuth()
 	grantTestControlOperations(t, c.Store, "alice", "prepare_source")
-	if err := putGrant(t, c.Store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, c.Store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	args := map[string]any{"telegram_send": true, "onboarding_id": "missing"}
 	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); err == nil {
 		t.Fatal("missing onboarding accepted")
 	}
-	original := Onboarding{Schema: SchemaVersion, OnboardingID: "telegram-read", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: OnboardingSelfInstall, Phase: PhaseAwaitingConfirm, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now()}
+	original := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "telegram-read", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now()}
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
 	args["onboarding_id"] = original.OnboardingID
-	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, ErrUnauthorized) {
+	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unconfirmed session accepted: %v", err)
 	}
-	original.Phase, original.BrokerCredentialID = PhaseEnabled, "credential"
+	original.Phase, original.BrokerCredentialID = api.PhaseEnabled, "credential"
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
 	upgrade := original
-	upgrade.OnboardingID, upgrade.IdempotencyKey, upgrade.Phase = "telegram-send-upgrade", "telegram-send:"+original.OnboardingID, PhaseRemoved
+	upgrade.OnboardingID, upgrade.IdempotencyKey, upgrade.Phase = "telegram-send-upgrade", "telegram-send:"+original.OnboardingID, api.PhaseRemoved
 	if err := c.Store.PutOnboarding(upgrade); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, ErrRevoked) {
+	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, api.ErrRevoked) {
 		t.Fatalf("removed upgrade accepted: %v", err)
 	}
 }
 
 func TestTelegramSendRejectsContractDrift(t *testing.T) {
 	base := statefulContainerDefinition()
-	base.Tools = []ToolSpec{{Name: "read", Effect: ReadEffect}}
+	base.Tools = []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}}
 	for _, scenario := range []string{"valid", "whitespace", "extra-write", "missing-read", "read-effect", "image", "env", "missing-send", "unconfirmed"} {
 		t.Run(scenario, func(t *testing.T) {
-			packet := ImportedArtifact{Definition: base}
+			packet := api.ImportedArtifact{Definition: base}
 			expected := base
-			tools := append(append([]ToolSpec(nil), base.Tools...), ToolSpec{Name: "send_message", Effect: WriteEffect, InputSchema: json.RawMessage(`{"type":"object"}`)})
+			tools := append(append([]api.ToolSpec(nil), base.Tools...), api.ToolSpec{Name: "send_message", Effect: api.WriteEffect, InputSchema: json.RawMessage(`{"type":"object"}`)})
 			if scenario == "whitespace" {
-				expected.Tools = []ToolSpec{{Name: "read", Effect: ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}}
+				expected.Tools = []api.ToolSpec{{Name: "read", Effect: api.ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}}
 				tools[0].InputSchema = json.RawMessage("{\n  \"type\": \"object\"\n}")
 			}
 			switch scenario {
 			case "extra-write":
-				tools = append(tools, ToolSpec{Name: "delete_message", Effect: WriteEffect})
+				tools = append(tools, api.ToolSpec{Name: "delete_message", Effect: api.WriteEffect})
 			case "missing-read":
 				tools = tools[1:]
 			case "read-effect":
-				tools[0].Effect = WriteEffect
+				tools[0].Effect = api.WriteEffect
 			case "missing-send":
 				tools = tools[:1]
 			}
-			if _, err := ApplyPreflightToolList(&packet, tools); err != nil {
+			if _, err := api.ApplyPreflightToolList(&packet, tools); err != nil {
 				t.Fatal(err)
 			}
 			switch scenario {

@@ -28,6 +28,7 @@ func TestCoverage(t *testing.T) {
 		{"mode: set\nbad row\n", 85, false},
 		{"mode: set\na:1 0 1\n", 85, false},
 		{"mode: set\na:1 0 0\nb:1 1 1\n", 85, true},
+		{"mode: set\na:1 84 0\nb:1 16 0\na:1 84 1\nb:1 16 1\n", 85, true},
 	} {
 		if err := os.WriteFile(name, []byte(tc.body), 0600); err != nil {
 			t.Fatal(err)
@@ -36,6 +37,35 @@ func TestCoverage(t *testing.T) {
 		if (err == nil) != tc.ok {
 			t.Fatalf("Coverage(%q): %v", tc.body, err)
 		}
+	}
+}
+
+func TestCoverAll(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "coverage.out")
+	packages := []string{"pkg/a", "pkg/b"}
+	listed := 0
+	tested := map[string]bool{}
+	actual, err := CoverAll(name, 85,
+		func() ([]string, error) {
+			listed++
+			return packages, nil
+		},
+		func(pkg, out string) error {
+			tested[pkg] = true
+			body := "mode: count\na.go:1.1,2.1 84 0\nb.go:1.1,2.1 16 0\n"
+			if pkg == "pkg/b" {
+				body = "mode: count\na.go:1.1,2.1 84 1\nb.go:1.1,2.1 16 1\n"
+			}
+			return os.WriteFile(out, []byte(body), 0600)
+		})
+	if err != nil {
+		t.Fatalf("CoverAll: %v", err)
+	}
+	if listed != 1 || len(tested) != 2 || !tested["pkg/a"] || !tested["pkg/b"] {
+		t.Fatalf("packages not exercised: listed=%d tested=%v", listed, tested)
+	}
+	if actual != 100 {
+		t.Fatalf("union coverage = %.2f, want 100", actual)
 	}
 }
 

@@ -1,10 +1,9 @@
 package stack
 
 import (
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"reflect"
 	"testing"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 func policyBaseline() Settings {
@@ -99,8 +98,8 @@ func TestPolicyVersionChangesOnRightsFields(t *testing.T) {
 		"ImageGen":              func(s *Settings) { s.ImageGen.Provider = "fal" },
 		"Web":                   func(s *Settings) { s.Web.Backend = "tavily" },
 		"gov": func(s *Settings) {
-			s.gov = &toolGovernance{decisions: map[string]toolhub.PolicyDecision{
-				"file": {Effect: toolhub.RuleDeny},
+			s.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{
+				"file": {Effect: api.RuleDeny},
 			}}
 		},
 	}

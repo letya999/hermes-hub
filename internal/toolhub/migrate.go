@@ -3,6 +3,7 @@ package toolhub
 import (
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -30,10 +31,10 @@ const migrateMaxAttempts = 8
 
 func MigrateBindings(store *Store, principalID, contextID, runtimeID, from, to string) (int, error) {
 	if !identity.ValidID(principalID) || !identity.ValidID(contextID) || !identity.ValidID(runtimeID) {
-		return 0, fmt.Errorf("%w: migration target", ErrInvalid)
+		return 0, fmt.Errorf("%w: migration target", api.ErrInvalid)
 	}
 	if !identity.ValidID(from) || !identity.ValidID(to) || from == to {
-		return 0, fmt.Errorf("%w: migration policy versions", ErrInvalid)
+		return 0, fmt.Errorf("%w: migration policy versions", api.ErrInvalid)
 	}
 	var lastErr error
 	for attempt := 0; attempt < migrateMaxAttempts; attempt++ {
@@ -42,7 +43,7 @@ func MigrateBindings(store *Store, principalID, contextID, runtimeID, from, to s
 			return moved, nil
 		}
 		lastErr = err
-		if !errors.Is(err, ErrConflict) && !errors.Is(err, ErrStale) {
+		if !errors.Is(err, api.ErrConflict) && !errors.Is(err, api.ErrStale) {
 			return 0, err
 		}
 		// A concurrent writer committed between our snapshot and Save. Reload
@@ -51,7 +52,7 @@ func MigrateBindings(store *Store, principalID, contextID, runtimeID, from, to s
 			return 0, fmt.Errorf("%w: reload after stale write: %v", err, reloadErr)
 		}
 	}
-	return 0, fmt.Errorf("%w: migrate gave up after %d stale writes: %v", ErrConflict, migrateMaxAttempts, lastErr)
+	return 0, fmt.Errorf("%w: migrate gave up after %d stale writes: %v", api.ErrConflict, migrateMaxAttempts, lastErr)
 }
 
 func (s *Store) migrateOnce(principalID, contextID, runtimeID, from, to string) (int, error) {
@@ -61,7 +62,7 @@ func (s *Store) migrateOnce(principalID, contextID, runtimeID, from, to string) 
 		if binding.PrincipalID != principalID || binding.ContextID != contextID || binding.RuntimeID != runtimeID {
 			continue
 		}
-		if binding.Status != ActiveStatus || binding.PolicyVersion != from {
+		if binding.Status != api.ActiveStatus || binding.PolicyVersion != from {
 			continue
 		}
 		binding.PolicyVersion = to

@@ -3,6 +3,7 @@ package toolhub
 import (
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,7 +13,7 @@ import (
 )
 
 // GovernanceStore is the control-plane's path-bound accessor for the
-// governance document. Reads are lock-free because SaveGovernance writes
+// governance document. Reads are lock-free because savegovernance writes
 // atomically; mutations take the flock so concurrent control ops and host
 // edits serialize.
 type GovernanceStore struct {
@@ -42,22 +43,22 @@ func GovernanceStorePath(storePath string) string {
 // default posture (user_mcp denied, external denied) rather than failing the
 // whole plane, while a present-but-corrupt file is a hard error — callers
 // deny closed on it.
-func (g *GovernanceStore) Load() (*Governance, error) {
+func (g *GovernanceStore) Load() (*api.Governance, error) {
 	if g == nil || g.path == "" {
-		return nil, fmt.Errorf("%w: governance store", ErrInvalid)
+		return nil, fmt.Errorf("%w: governance store", api.ErrInvalid)
 	}
-	doc, err := LoadGovernance(g.path)
+	doc, err := api.LoadGovernance(g.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return NewGovernance(), nil
+		return api.NewGovernance(), nil
 	}
 	return doc, err
 }
 
 // Update serializes one mutation: load under flock (seeding on absence), run
 // fn, persist. A failed fn leaves the file untouched.
-func (g *GovernanceStore) Update(now time.Time, fn func(*Governance) error) error {
+func (g *GovernanceStore) Update(now time.Time, fn func(*api.Governance) error) error {
 	if g == nil || g.path == "" {
-		return fmt.Errorf("%w: governance store", ErrInvalid)
+		return fmt.Errorf("%w: governance store", api.ErrInvalid)
 	}
 	if err := os.MkdirAll(filepath.Dir(g.path), 0700); err != nil {
 		return err
@@ -67,36 +68,36 @@ func (g *GovernanceStore) Update(now time.Time, fn func(*Governance) error) erro
 		return err
 	}
 	defer lock.Unlock()
-	doc, err := LoadGovernance(g.path)
+	doc, err := api.LoadGovernance(g.path)
 	if errors.Is(err, os.ErrNotExist) {
-		doc = NewGovernance()
+		doc = api.NewGovernance()
 	} else if err != nil {
 		return err // corrupt document: fail closed, never overwrite
 	}
 	if err := fn(doc); err != nil {
 		return err
 	}
-	return saveGovernanceLocked(g.path, doc)
+	return api.SaveGovernanceLocked(g.path, doc)
 }
 
 // projectedToolAttrs derives the deterministic axes a dynamic ToolHub
 // projection is evaluated under: who authored it (connection owner, prepared
 // provenance or unreviewed artifact), transport, prepared/official markers
 // and the concrete tool's declared effect.
-func projectedToolAttrs(effective EffectiveBinding, tool ToolSpec) map[string]string {
+func projectedToolAttrs(effective api.EffectiveBinding, tool api.ToolSpec) map[string]string {
 	definition := effective.Definition
-	owner := OwnerExternal
+	owner := api.OwnerExternal
 	reviewed := definition.Source.ReviewDigest != ""
 	prepared := reviewed || definition.Source.RecipeDigest != "" || definition.Source.ToolContractDigest != ""
 	switch {
-	case definition.Transport == AgentTools || shippedCLI(definition):
-		owner, reviewed, prepared = OwnerHub, true, true
-	case effective.Connection != nil && effective.Connection.Owner.Type == PrincipalOwner:
-		owner = OwnerUser
-	case effective.Connection != nil && effective.Connection.Owner.Type == ContextOwner:
-		owner = OwnerOrg
+	case definition.Transport == api.AgentTools || shippedCLI(definition):
+		owner, reviewed, prepared = api.OwnerHub, true, true
+	case effective.Connection != nil && effective.Connection.Owner.Type == api.PrincipalOwner:
+		owner = api.OwnerUser
+	case effective.Connection != nil && effective.Connection.Owner.Type == api.ContextOwner:
+		owner = api.OwnerOrg
 	case reviewed || prepared:
-		owner = OwnerOrg
+		owner = api.OwnerOrg
 	}
 	return map[string]string{
 		"definition_id": definition.DefinitionID,
@@ -110,9 +111,9 @@ func projectedToolAttrs(effective EffectiveBinding, tool ToolSpec) map[string]st
 }
 
 // Trust the reviewed release bytes, not a user-controlled id or transport.
-func shippedCLI(definition ToolDefinition) bool {
-	for _, shipped := range CLICatalogDefinitions() {
-		if DefinitionDigest(definition) == DefinitionDigest(shipped) {
+func shippedCLI(definition api.ToolDefinition) bool {
+	for _, shipped := range api.CLICatalogDefinitions() {
+		if api.DefinitionDigest(definition) == api.DefinitionDigest(shipped) {
 			return true
 		}
 	}
@@ -122,29 +123,29 @@ func shippedCLI(definition ToolDefinition) bool {
 // governanceDecision evaluates the toolhub section for one projection. A
 // governance load failure is deny — the caller converts it into the
 // surface-appropriate refusal.
-func (g *Gateway) governanceDecision(auth identity.Envelope, tool ToolSpec, effective EffectiveBinding) (PolicyDecision, error) {
+func (g *Gateway) governanceDecision(auth identity.Envelope, tool api.ToolSpec, effective api.EffectiveBinding) (api.PolicyDecision, error) {
 	doc, err := g.Governance.Load()
 	if err != nil {
-		return PolicyDecision{Effect: RuleDeny, Via: "unknown", Reason: "policy unreadable"}, fmt.Errorf("%w: tool governance: %v", ErrUnauthorized, err)
+		return api.PolicyDecision{Effect: api.RuleDeny, Via: "unknown", Reason: "policy unreadable"}, fmt.Errorf("%w: tool governance: %v", api.ErrUnauthorized, err)
 	}
-	return doc.Evaluate(auth.PrincipalID, auth.Organization, SectionToolHub, projectedToolAttrs(effective, tool), time.Now().UTC()), nil
+	return doc.Evaluate(auth.PrincipalID, auth.Organization, api.SectionToolHub, projectedToolAttrs(effective, tool), time.Now().UTC()), nil
 }
 
 // filterProjectedTools applies section+per-tool governance at list time:
 // denied sections and cap:read-narrowed effects drop out of the projection.
 // The store layer already proved ownership; this is the policy fence.
-func (g *Gateway) filterProjectedTools(auth identity.Envelope, projected []ProjectedTool) ([]ProjectedTool, error) {
+func (g *Gateway) filterProjectedTools(auth identity.Envelope, projected []api.ProjectedTool) ([]api.ProjectedTool, error) {
 	if g.Governance == nil {
 		return projected, nil
 	}
 	doc, err := g.Governance.Load()
 	if err != nil {
-		return nil, fmt.Errorf("%w: tool governance: %v", ErrUnauthorized, err)
+		return nil, fmt.Errorf("%w: tool governance: %v", api.ErrUnauthorized, err)
 	}
-	out := make([]ProjectedTool, 0, len(projected))
-	bindings := map[string]EffectiveBinding{}
+	out := make([]api.ProjectedTool, 0, len(projected))
+	bindings := map[string]api.EffectiveBinding{}
 	for _, tool := range projected {
-		var effective EffectiveBinding
+		var effective api.EffectiveBinding
 		var resolveErr error
 		if auth.CapabilityProfile == "" {
 			var ok bool
@@ -161,7 +162,7 @@ func (g *Gateway) filterProjectedTools(auth identity.Envelope, projected []Proje
 		if resolveErr != nil {
 			continue // unresolved bindings can't be invoked anyway
 		}
-		decision := doc.Evaluate(auth.PrincipalID, auth.Organization, SectionToolHub, projectedToolAttrs(effective, tool.Tool), time.Now().UTC())
+		decision := doc.Evaluate(auth.PrincipalID, auth.Organization, api.SectionToolHub, projectedToolAttrs(effective, tool.Tool), time.Now().UTC())
 		if decision.AllowsToolEffect(string(tool.Tool.Effect)) {
 			out = append(out, tool)
 		}
@@ -172,17 +173,17 @@ func (g *Gateway) filterProjectedTools(auth identity.Envelope, projected []Proje
 // admitGoverned wraps an admission callback with call-time governance: the
 // evaluation runs after ownership admission but before credential injection,
 // so a mid-session denial cuts the call exactly like a binding revocation.
-func (g *Gateway) admitGoverned(auth identity.Envelope, admit func(ProjectedTool, EffectiveBinding) error) func(ProjectedTool, EffectiveBinding) error {
+func (g *Gateway) admitGoverned(auth identity.Envelope, admit func(api.ProjectedTool, api.EffectiveBinding) error) func(api.ProjectedTool, api.EffectiveBinding) error {
 	if g.Governance == nil {
 		return admit
 	}
-	return func(projected ProjectedTool, effective EffectiveBinding) error {
+	return func(projected api.ProjectedTool, effective api.EffectiveBinding) error {
 		decision, err := g.governanceDecision(auth, projected.Tool, effective)
 		if err != nil {
 			return err
 		}
 		if !decision.AllowsToolEffect(string(projected.Tool.Effect)) {
-			return fmt.Errorf("%w: %s denied by tool governance (%s)", ErrUnauthorized, projected.Name, decision.Via)
+			return fmt.Errorf("%w: %s denied by tool governance (%s)", api.ErrUnauthorized, projected.Name, decision.Via)
 		}
 		return admit(projected, effective)
 	}

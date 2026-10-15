@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
 	"net/http"
@@ -23,9 +24,9 @@ import (
 )
 
 func TestValidateRemoteMCPEndpointDeniesNonPublic(t *testing.T) {
-	original := resolveRemoteIP
-	defer func() { resolveRemoteIP = original }()
-	resolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
+	original := api.ResolveRemoteIP
+	defer func() { api.ResolveRemoteIP = original }()
+	api.ResolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
 	}
 	denied := []string{
@@ -50,19 +51,19 @@ func TestValidateRemoteMCPEndpointDeniesNonPublic(t *testing.T) {
 		"",
 	}
 	for _, candidate := range denied {
-		if err := ValidateRemoteMCPEndpoint(candidate); err == nil {
+		if err := api.ValidateRemoteMCPEndpoint(candidate); err == nil {
 			t.Fatalf("non-public endpoint %q accepted", candidate)
 		}
 	}
 	for _, candidate := range []string{"https://api.githubcopilot.com/mcp/", "https://calendarmcp.googleapis.com/mcp/v1", "https://mcp.example.com:8443/x", "https://93.184.216.34/mcp", "https://[2606:4700::6810:85e5]/mcp"} {
-		if err := ValidateRemoteMCPEndpoint(candidate); err != nil {
+		if err := api.ValidateRemoteMCPEndpoint(candidate); err != nil {
 			t.Fatalf("public endpoint %q refused: %v", candidate, err)
 		}
 	}
-	resolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
+	api.ResolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("192.168.0.1")}, nil
 	}
-	if err := ValidateRemoteMCPEndpoint("https://rebind.example/mcp"); err == nil {
+	if err := api.ValidateRemoteMCPEndpoint("https://rebind.example/mcp"); err == nil {
 		t.Fatal("host with a private answer accepted")
 	}
 }
@@ -70,78 +71,78 @@ func TestValidateRemoteMCPEndpointDeniesNonPublic(t *testing.T) {
 func TestRemoteAddrPublicClassification(t *testing.T) {
 	denied := []string{"127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "198.18.0.1", "240.1.2.3"}
 	for _, raw := range denied {
-		if remoteAddrPublic(netip.MustParseAddr(raw)) {
+		if api.RemoteAddrPublic(netip.MustParseAddr(raw)) {
 			t.Fatalf("%s classified public", raw)
 		}
 	}
 	for _, raw := range []string{"93.184.216.34", "140.82.113.6", "2606:4700::6810:85e5"} {
-		if !remoteAddrPublic(netip.MustParseAddr(raw)) {
+		if !api.RemoteAddrPublic(netip.MustParseAddr(raw)) {
 			t.Fatalf("%s classified private", raw)
 		}
 	}
 }
 
 func TestRemoteDialAndRedirectRefuse(t *testing.T) {
-	if _, err := remoteDial(context.Background(), "tcp", "169.254.169.254:443"); err == nil {
+	if _, err := api.RemoteDial(context.Background(), "tcp", "169.254.169.254:443"); err == nil {
 		t.Fatal("private dial target dialed")
 	}
-	original := resolveRemoteIP
-	defer func() { resolveRemoteIP = original }()
-	resolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
+	original := api.ResolveRemoteIP
+	defer func() { api.ResolveRemoteIP = original }()
+	api.ResolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("10.0.0.8")}, nil
 	}
-	if _, err := remoteDial(context.Background(), "tcp", "poisoned.example:443"); err == nil {
+	if _, err := api.RemoteDial(context.Background(), "tcp", "poisoned.example:443"); err == nil {
 		t.Fatal("host resolving private dialed")
 	}
-	client := defaultRemoteHTTPClient("https://remote.example/mcp", nil)
+	client := api.DefaultRemoteHTTPClient("https://remote.example/mcp", nil)
 	if err := client.CheckRedirect(&http.Request{}, nil); !errors.Is(err, http.ErrUseLastResponse) {
 		t.Fatal("remote client follows redirects")
 	}
 }
 
 func TestRemoteCredentialInputsAndHeaderDelivery(t *testing.T) {
-	inputs, err := RemoteCredentialInputs(map[string]any{"credentials": []any{"GITHUB_TOKEN"}})
+	inputs, err := api.RemoteCredentialInputs(map[string]any{"credentials": []any{"GITHUB_TOKEN"}})
 	if err != nil || len(inputs) != 1 || inputs[0].Name != "GITHUB_TOKEN" || inputs[0].Target != "Authorization" || inputs[0].Prefix != "Bearer " || inputs[0].Delivery != "http_header" {
 		t.Fatalf("inputs=%+v err=%v", inputs, err)
 	}
-	custom, err := RemoteCredentialInputs(map[string]any{"credentials": []any{map[string]any{"name": "ACME_KEY", "header": "X-Api-Key"}}})
+	custom, err := api.RemoteCredentialInputs(map[string]any{"credentials": []any{map[string]any{"name": "ACME_KEY", "header": "X-Api-Key"}}})
 	if err != nil || custom[0].Target != "X-Api-Key" || custom[0].Prefix != "" {
 		t.Fatalf("custom=%+v err=%v", custom, err)
 	}
-	stringsList, err := RemoteCredentialInputs(map[string]any{"credentials": []string{"A_TOKEN"}, "credential_header": "X-Token", "credential_prefix": "key="})
+	stringsList, err := api.RemoteCredentialInputs(map[string]any{"credentials": []string{"A_TOKEN"}, "credential_header": "X-Token", "credential_prefix": "key="})
 	if err != nil || stringsList[0].Target != "X-Token" || stringsList[0].Prefix != "key=" {
 		t.Fatalf("stringsList=%+v err=%v", stringsList, err)
 	}
-	if _, err := RemoteCredentialInputs(map[string]any{"credentials": "GITHUB_TOKEN"}); err == nil {
+	if _, err := api.RemoteCredentialInputs(map[string]any{"credentials": "GITHUB_TOKEN"}); err == nil {
 		t.Fatal("scalar credentials accepted")
 	}
-	if _, err := RemoteCredentialInputs(map[string]any{"credentials": []any{42}}); err == nil {
+	if _, err := api.RemoteCredentialInputs(map[string]any{"credentials": []any{42}}); err == nil {
 		t.Fatal("non-string credential accepted")
 	}
-	if _, err := RemoteCredentialInputs(map[string]any{"credentials": []any{"A_TOKEN", "B_TOKEN", "C_TOKEN", "D_TOKEN", "E_TOKEN", "F_TOKEN", "G_TOKEN", "H_TOKEN", "I_TOKEN"}}); err == nil {
+	if _, err := api.RemoteCredentialInputs(map[string]any{"credentials": []any{"A_TOKEN", "B_TOKEN", "C_TOKEN", "D_TOKEN", "E_TOKEN", "F_TOKEN", "G_TOKEN", "H_TOKEN", "I_TOKEN"}}); err == nil {
 		t.Fatal("unbounded credential list accepted")
 	}
-	if _, err := RemoteCredentialInputs(map[string]any{"credentials": []any{"A_TOKEN", "A_TOKEN"}}); err == nil {
+	if _, err := api.RemoteCredentialInputs(map[string]any{"credentials": []any{"A_TOKEN", "A_TOKEN"}}); err == nil {
 		t.Fatal("duplicate credential accepted")
 	}
-	if _, err := RemoteCredentialInputs(map[string]any{"credentials": []any{map[string]any{"name": "x", "header": "Authorization"}}}); err == nil {
+	if _, err := api.RemoteCredentialInputs(map[string]any{"credentials": []any{map[string]any{"name": "x", "header": "Authorization"}}}); err == nil {
 		t.Fatal("invalid credential name accepted")
 	}
-	if _, err := RemoteCredentialInputs(map[string]any{"credentials": []any{map[string]any{"name": "A_TOKEN", "header": "Host"}}}); err == nil {
+	if _, err := api.RemoteCredentialInputs(map[string]any{"credentials": []any{map[string]any{"name": "A_TOKEN", "header": "Host"}}}); err == nil {
 		t.Fatal("Host header credential accepted")
 	}
-	definition, err := remoteDefinitionBase("https://mcp.example.com/mcp", "", inputs)
+	definition, err := api.RemoteDefinitionBase("https://mcp.example.com/mcp", "", inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	headers, err := CredentialHeaders(definition, map[string]string{"GITHUB_TOKEN": "ghp_secret"})
+	headers, err := api.CredentialHeaders(definition, map[string]string{"GITHUB_TOKEN": "ghp_secret"})
 	if err != nil || headers["Authorization"] != "Bearer ghp_secret" {
 		t.Fatalf("headers=%v err=%v", headers, err)
 	}
-	if _, err := CredentialHeaders(definition, nil); !errors.Is(err, ErrUnauthorized) {
+	if _, err := api.CredentialHeaders(definition, nil); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("missing required credential did not deny: %v", err)
 	}
-	if _, err := CredentialHeaders(definition, map[string]string{"GITHUB_TOKEN": "bad\r\ninjected: 1"}); err == nil {
+	if _, err := api.CredentialHeaders(definition, map[string]string{"GITHUB_TOKEN": "bad\r\ninjected: 1"}); err == nil {
 		t.Fatal("CRLF credential accepted into a header")
 	}
 }
@@ -149,20 +150,20 @@ func TestRemoteCredentialInputsAndHeaderDelivery(t *testing.T) {
 func TestRemoteToolEffectClassification(t *testing.T) {
 	writes := []string{"create_issue", "merge_pull_request", "issue_write", "send_message", "update-file"}
 	for _, name := range writes {
-		if remoteToolEffect(name) != WriteEffect {
+		if api.RemoteToolEffect(name) != api.WriteEffect {
 			t.Fatalf("%s not classified write", name)
 		}
 	}
 	reads := []string{"search", "get_issue", "list_repos", "get_file_contents", "reassigning_lookup"}
 	for _, name := range reads {
-		if remoteToolEffect(name) != ReadEffect {
+		if api.RemoteToolEffect(name) != api.ReadEffect {
 			t.Fatalf("%s classified write", name)
 		}
 	}
 }
 
 // remoteMCPFixture is a real MCP server behind httptest TLS. Tests pin DNS to
-// a public answer and swap remoteHTTPClient for a fixture-dialing client so
+// a public answer and swap api.RemoteHTTPClient for a fixture-dialing client so
 // the shipped endpoint validation, header delivery and probe code all run.
 type remoteMCPFixture struct {
 	URL        string
@@ -194,10 +195,10 @@ func newRemoteMCPFixture(t *testing.T, requiredToken string) *remoteMCPFixture {
 	t.Cleanup(server.Close)
 	fixture.URL = server.URL
 
-	originalResolve, originalClient := resolveRemoteIP, remoteHTTPClient
-	fixture.tlsCleanup = func() { resolveRemoteIP, remoteHTTPClient = originalResolve, originalClient }
+	originalResolve, originalClient := api.ResolveRemoteIP, api.RemoteHTTPClient
+	fixture.tlsCleanup = func() { api.ResolveRemoteIP, api.RemoteHTTPClient = originalResolve, originalClient }
 	t.Cleanup(fixture.tlsCleanup)
-	resolveRemoteIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
+	api.ResolveRemoteIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
 	}
 	dialAddr := strings.TrimPrefix(server.URL, "https://")
@@ -207,13 +208,13 @@ func newRemoteMCPFixture(t *testing.T, requiredToken string) *remoteMCPFixture {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", dialAddr)
 		},
 	}
-	remoteHTTPClient = func(endpoint string, headers map[string]string) *http.Client {
+	api.RemoteHTTPClient = func(endpoint string, headers map[string]string) *http.Client {
 		origin := ""
 		if u, err := url.Parse(endpoint); err == nil {
-			origin = requestOrigin(u)
+			origin = api.RequestOrigin(u)
 		}
 		return &http.Client{
-			Transport:     remoteHeaderRoundTripper{base: transport, origin: origin, headers: headers},
+			Transport:     api.RemoteHeaderRoundTripper{Base: transport, Origin: origin, Headers: headers},
 			Timeout:       30 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
@@ -247,22 +248,22 @@ func newRemoteControlFixture(t *testing.T) *remoteControlFixture {
 	fix.control.AdmitWithCredentials = admitRemoteDefinition
 	// The shipped remote call path must run — a stub backend would bypass
 	// callRemoteMCP, header injection and endpoint re-validation entirely.
-	fix.gateway.Backend = MCPBackend{}
+	fix.gateway.Backend = api.MCPBackend{}
 	// Enable runs the same readiness probe the production wiring installs:
 	// the endpoint must still speak MCP and still advertise every bound tool.
-	fix.control.Ready = func(ctx context.Context, effective EffectiveBinding) error {
-		env, err := DecryptAuthorized(secrets, effective)
+	fix.control.Ready = func(ctx context.Context, effective api.EffectiveBinding) error {
+		env, err := api.DecryptAuthorized(secrets, effective)
 		if err != nil {
 			return err
 		}
-		return (MCPBackend{}).EnsureReady(ctx, effective, env)
+		return (api.MCPBackend{}).EnsureReady(ctx, effective, env)
 	}
-	fix.store.Reconnect = &ReconnectController{Store: fix.store, Auth: aliceAuth(), OnChange: func(ProjectionChange) error {
+	fix.store.Reconnect = &ReconnectController{Store: fix.store, Auth: aliceAuth(), OnChange: func(api.ProjectionChange) error {
 		return fix.gateway.RefreshProjection()
 	}}
-	fix.gateway.Injector = func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
-		env, err := DecryptAuthorized(secrets, effective)
-		return CredentialInjection{Environment: env}, err
+	fix.gateway.Injector = func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+		env, err := api.DecryptAuthorized(secrets, effective)
+		return api.CredentialInjection{Environment: env}, err
 	}
 	return &remoteControlFixture{controlFixture: fix, secrets: secrets}
 }
@@ -271,13 +272,13 @@ func TestPrepareRemoteDeniedWithoutSelfInstallGrant(t *testing.T) {
 	fixture := newRemoteMCPFixture(t, "")
 	fix := newRemoteControlFixture(t)
 	alice := fix.session(t, aliceToken)
-	if _, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()}); !errors.Is(err, ErrUnauthorized) && err == nil {
+	if _, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()}); !errors.Is(err, api.ErrUnauthorized) && err == nil {
 		t.Fatalf("ungated prepare succeeded: %v", err)
 	}
 	fix.store.mu.RLock()
 	defer fix.store.mu.RUnlock()
 	for _, definition := range fix.store.definitions {
-		if definition.Transport == RemoteMCP {
+		if definition.Transport == api.RemoteMCP {
 			t.Fatalf("denied prepare wrote a definition: %s", definition.DefinitionID)
 		}
 	}
@@ -286,7 +287,7 @@ func TestPrepareRemoteDeniedWithoutSelfInstallGrant(t *testing.T) {
 func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	fixture := newRemoteMCPFixture(t, "")
 	fix := newRemoteControlFixture(t)
-	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice, bob := fix.session(t, aliceToken), fix.session(t, bobToken)
@@ -294,7 +295,7 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared["phase"] != PhaseAwaitingConfirm || prepared["onboarding_id"] == "" {
+	if prepared["phase"] != api.PhaseAwaitingConfirm || prepared["onboarding_id"] == "" {
 		t.Fatalf("prepare=%v", prepared)
 	}
 	// Idempotent: the same prepare resolves to the same onboarding.
@@ -310,7 +311,7 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if confirmed["phase"] != PhaseConfirmed {
+	if confirmed["phase"] != api.PhaseConfirmed {
 		t.Fatalf("confirm=%v", confirmed)
 	}
 	enabled, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -375,7 +376,7 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	fixture := newRemoteMCPFixture(t, "ghp_fixture")
 	fix := newRemoteControlFixture(t)
-	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
@@ -388,19 +389,19 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared["phase"] != PhaseAwaitingCreds {
+	if prepared["phase"] != api.PhaseAwaitingCreds {
 		t.Fatalf("credentialed prepare=%v", prepared)
 	}
 	onboardingID := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, fix.store, onboardingID)
-	if err := fix.control.SubmitCredentials(onboardingID, "wrong-nonce", map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); !errors.Is(err, ErrUnauthorized) {
+	if err := fix.control.SubmitCredentials(onboardingID, "wrong-nonce", map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bad nonce: %v", err)
 	}
 	if err := fix.control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding = mustOnboarding(t, fix.store, onboardingID)
-	if onboarding.Phase != PhaseAwaitingConfirm || onboarding.AdmissionPending {
+	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.AdmissionPending {
 		t.Fatalf("post-submit=%+v", onboarding)
 	}
 	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
@@ -452,13 +453,13 @@ func TestPrepareRemoteNonMCPDenied(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	t.Cleanup(rest.Close)
-	originalResolve, originalClient := resolveRemoteIP, remoteHTTPClient
-	defer func() { resolveRemoteIP, remoteHTTPClient = originalResolve, originalClient }()
-	resolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
+	originalResolve, originalClient := api.ResolveRemoteIP, api.RemoteHTTPClient
+	defer func() { api.ResolveRemoteIP, api.RemoteHTTPClient = originalResolve, originalClient }()
+	api.ResolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
 	}
 	dialAddr := strings.TrimPrefix(rest.URL, "https://")
-	remoteHTTPClient = func(endpoint string, headers map[string]string) *http.Client {
+	api.RemoteHTTPClient = func(endpoint string, headers map[string]string) *http.Client {
 		return &http.Client{Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -467,7 +468,7 @@ func TestPrepareRemoteNonMCPDenied(t *testing.T) {
 		}, Timeout: 15 * time.Second}
 	}
 	fix := newRemoteControlFixture(t)
-	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
@@ -483,7 +484,7 @@ func TestPrepareRemoteNonMCPDenied(t *testing.T) {
 func TestRemoteAllowlistNarrowsProjection(t *testing.T) {
 	fixture := newRemoteMCPFixture(t, "")
 	fix := newRemoteControlFixture(t)
-	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
@@ -521,11 +522,11 @@ func TestRemoteSecretStaysOutOfStoreFile(t *testing.T) {
 	}
 	fix.control.Store = persisted
 	fix.gateway.Store = persisted
-	if err := putGrant(t, persisted, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, persisted, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range ControlOperations {
-		if err := putGrant(t, persisted, OperatorControlGrant("alice", op)); err != nil {
+	for _, op := range api.ControlOperations {
+		if err := putGrant(t, persisted, api.OperatorControlGrant("alice", op)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -560,10 +561,10 @@ func newRemoteSSEFixture(t *testing.T) *remoteMCPFixture {
 	server := httptest.NewTLSServer(sseHandler)
 	t.Cleanup(server.Close)
 	fixture.URL = server.URL
-	originalResolve, originalClient := resolveRemoteIP, remoteHTTPClient
-	fixture.tlsCleanup = func() { resolveRemoteIP, remoteHTTPClient = originalResolve, originalClient }
+	originalResolve, originalClient := api.ResolveRemoteIP, api.RemoteHTTPClient
+	fixture.tlsCleanup = func() { api.ResolveRemoteIP, api.RemoteHTTPClient = originalResolve, originalClient }
 	t.Cleanup(fixture.tlsCleanup)
-	resolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
+	api.ResolveRemoteIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
 	}
 	dialAddr := strings.TrimPrefix(server.URL, "https://")
@@ -573,13 +574,13 @@ func newRemoteSSEFixture(t *testing.T) *remoteMCPFixture {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", dialAddr)
 		},
 	}
-	remoteHTTPClient = func(endpoint string, headers map[string]string) *http.Client {
+	api.RemoteHTTPClient = func(endpoint string, headers map[string]string) *http.Client {
 		origin := ""
 		if u, err := url.Parse(endpoint); err == nil {
-			origin = requestOrigin(u)
+			origin = api.RequestOrigin(u)
 		}
 		return &http.Client{
-			Transport:     remoteHeaderRoundTripper{base: transport, origin: origin, headers: headers},
+			Transport:     api.RemoteHeaderRoundTripper{Base: transport, Origin: origin, Headers: headers},
 			Timeout:       30 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
@@ -593,22 +594,22 @@ func TestRemoteLegacySSEProbeAndCall(t *testing.T) {
 	endpoint := fixture.endpoint()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	def, err := remoteDefinitionBase(endpoint, "remote-sse", nil)
+	def, err := api.RemoteDefinitionBase(endpoint, "remote-sse", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe, err := probeRemoteMCP(ctx, def, nil)
+	probe, err := api.ProbeRemoteMCP(ctx, def, nil)
 	if err != nil {
 		t.Fatalf("SSE fallback probe: %v", err)
 	}
 	if len(probe.Tools) != 1 || probe.Tools[0].Name != "search" {
 		t.Fatalf("SSE tools: %+v", probe.Tools)
 	}
-	full, err := RemoteMCPDefinition(endpoint, "remote-sse", nil, probe.Tools, nil)
+	full, err := api.RemoteMCPDefinition(endpoint, "remote-sse", nil, probe.Tools, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := (MCPBackend{}).callRemoteMCP(ctx, EffectiveBinding{Definition: full}, full.Tools[0], map[string]any{"q": "x"}, nil)
+	result, err := (api.MCPBackend{}).CallRemoteMCP(ctx, api.EffectiveBinding{Definition: full}, full.Tools[0], map[string]any{"q": "x"}, nil)
 	if err != nil {
 		t.Fatalf("SSE call: %v", err)
 	}
@@ -617,15 +618,15 @@ func TestRemoteLegacySSEProbeAndCall(t *testing.T) {
 	}
 }
 
-// Credential headers ride only to the admitted origin: a legacy SSE endpoint
+// Credential headers ride only to the admitted Origin: a legacy SSE endpoint
 // that redirects its message POSTs to another host must not leak them.
 func TestRemoteHeaderOriginPinning(t *testing.T) {
 	var sawAuth []string
-	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	base := api.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		sawAuth = append(sawAuth, req.URL.Host+"="+req.Header.Get("Authorization"))
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("{}")), Header: http.Header{}, Request: req}, nil
 	})
-	rt := remoteHeaderRoundTripper{base: base, origin: "https://admitted.example", headers: map[string]string{"Authorization": "Bearer token"}}
+	rt := api.RemoteHeaderRoundTripper{Base: base, Origin: "https://admitted.example", Headers: map[string]string{"Authorization": "Bearer token"}}
 	for _, raw := range []string{"https://admitted.example/mcp", "https://evil.example/messages", "https://admitted.example:8443/mcp"} {
 		req, _ := http.NewRequest(http.MethodPost, raw, nil)
 		if _, err := rt.RoundTrip(req); err != nil {
@@ -636,20 +637,20 @@ func TestRemoteHeaderOriginPinning(t *testing.T) {
 		t.Fatalf("origin request missing header: %v", sawAuth)
 	}
 	if sawAuth[1] != "evil.example=" {
-		t.Fatalf("off-origin request carried headers: %v", sawAuth)
+		t.Fatalf("off-origin request carried Headers: %v", sawAuth)
 	}
 	if sawAuth[2] != "admitted.example:8443=" {
-		t.Fatalf("mismatched port carried headers: %v", sawAuth)
+		t.Fatalf("mismatched port carried Headers: %v", sawAuth)
 	}
 }
 
 // The response body cap keeps a hostile endpoint from exhausting memory
 // before OutputBytes is even evaluated.
 func TestRemoteBodyLimit(t *testing.T) {
-	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("x", remoteMaxBodyBytes+100))), Header: http.Header{}, Request: req}, nil
+	base := api.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("x", api.RemoteMaxBodyBytes+100))), Header: http.Header{}, Request: req}, nil
 	})
-	rt := remoteHeaderRoundTripper{base: base, origin: "https://admitted.example"}
+	rt := api.RemoteHeaderRoundTripper{Base: base, Origin: "https://admitted.example"}
 	req, _ := http.NewRequest(http.MethodGet, "https://admitted.example/mcp", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
@@ -659,7 +660,7 @@ func TestRemoteBodyLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != remoteMaxBodyBytes {
+	if len(body) != api.RemoteMaxBodyBytes {
 		t.Fatalf("body not capped: %d", len(body))
 	}
 }
@@ -668,7 +669,7 @@ func TestRemoteBodyLimit(t *testing.T) {
 // benchmarking space must classify non-public.
 func TestRemoteAddrPublicExtendedDenies(t *testing.T) {
 	for _, raw := range []string{"0.1.2.3", "192.0.2.10", "2001:0000::1", "2001:0002::1", "2002:0a00::1"} {
-		if remoteAddrPublic(netip.MustParseAddr(raw)) {
+		if api.RemoteAddrPublic(netip.MustParseAddr(raw)) {
 			t.Fatalf("%s classified public", raw)
 		}
 	}

@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -21,9 +22,9 @@ func TestGatewayRefreshesOpenOwnerSessionWithoutCrossOwnerAccess(t *testing.T) {
 	var backendCalls atomic.Int32
 	gateway := &Gateway{
 		Store: store, Tokens: map[string]identity.Envelope{aliceToken: aliceAuth, bobToken: bobAuth},
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			backendCalls.Add(1)
-			return BackendResult{Text: "ok"}, nil
+			return api.BackendResult{Text: "ok"}, nil
 		}),
 	}
 	handler, err := gateway.Handler()
@@ -53,7 +54,7 @@ func TestGatewayRefreshesOpenOwnerSessionWithoutCrossOwnerAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer bob.Close()
-	name := ProjectedToolName(binding.DefinitionID, binding.DefinitionVersion, "search")
+	name := api.ProjectedToolName(binding.DefinitionID, binding.DefinitionVersion, "search")
 	if listed, err := alice.ListTools(context.Background(), nil); err != nil || !toolListed(listed, name) {
 		t.Fatalf("alice initial tools/list: listed=%v err=%v", listed, err)
 	}
@@ -76,7 +77,7 @@ func TestGatewayRefreshesOpenOwnerSessionWithoutCrossOwnerAccess(t *testing.T) {
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("foreign session ID accepted: %d", response.StatusCode)
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	if err := gateway.RefreshProjection(); err != nil {
@@ -96,7 +97,7 @@ func TestGatewayRefreshesOpenOwnerSessionWithoutCrossOwnerAccess(t *testing.T) {
 	if alice.ID() != initialSession {
 		t.Fatal("projection refresh replaced the MCP session")
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, ActiveStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.ActiveStatus); err != nil {
 		t.Fatal(err)
 	}
 	if err := gateway.RefreshProjection(); err != nil {
@@ -126,8 +127,8 @@ func TestGatewayRefreshesProjectionWrittenByAnotherStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateway := &Gateway{Store: serving, Tokens: map[string]identity.Envelope{aliceToken: auth}, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{Text: "ok"}, nil
+	gateway := &Gateway{Store: serving, Tokens: map[string]identity.Envelope{aliceToken: auth}, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
 	})}
 	handler, err := gateway.Handler()
 	if err != nil {
@@ -144,11 +145,11 @@ func TestGatewayRefreshesProjectionWrittenByAnotherStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	name := ProjectedToolName(binding.DefinitionID, binding.DefinitionVersion, "search")
+	name := api.ProjectedToolName(binding.DefinitionID, binding.DefinitionVersion, "search")
 	if listed, err := session.ListTools(context.Background(), nil); err != nil || !toolListed(listed, name) {
 		t.Fatalf("initial tool unavailable: listed=%v err=%v", listed, err)
 	}
-	if err := mutating.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := mutating.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	if err := gateway.RefreshProjection(); err != nil {

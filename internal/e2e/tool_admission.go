@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"os"
@@ -72,7 +73,7 @@ func admittedHubTool(ctx context.Context, client *http.Client, config communicat
 		return false
 	}
 	definition := agenttools.HubToolsDefinition()
-	projected := toolhub.ProjectedToolName(definition.DefinitionID, definition.Version, name)
+	projected := api.ProjectedToolName(definition.DefinitionID, definition.Version, name)
 	for _, tool := range listed.Tools {
 		if tool.Name == name || tool.Name == projected {
 			return true

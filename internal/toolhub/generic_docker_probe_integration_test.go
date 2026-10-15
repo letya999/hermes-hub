@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"os"
@@ -75,7 +76,7 @@ func TestRealDockerFallbackNamesAndRuntimeProfile(t *testing.T) {
 	}
 	volumes := map[string]string{}
 	for i, container := range containers {
-		if container.HostConfig.Privileged || !container.HostConfig.ReadonlyRootfs || container.HostConfig.NetworkMode == "host" || container.HostConfig.PidMode == "host" || len(container.HostConfig.CapAdd) != 0 || len(container.HostConfig.CapDrop) == 0 || container.HostConfig.CapDrop[0] != "ALL" || !contains(container.HostConfig.SecurityOpt, "no-new-privileges=true") || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || envContainsForwardingSecret(container.Config.Env) {
+		if container.HostConfig.Privileged || !container.HostConfig.ReadonlyRootfs || container.HostConfig.NetworkMode == "host" || container.HostConfig.PidMode == "host" || len(container.HostConfig.CapAdd) != 0 || len(container.HostConfig.CapDrop) == 0 || container.HostConfig.CapDrop[0] != "ALL" || !api.Contains(container.HostConfig.SecurityOpt, "no-new-privileges=true") || container.Config.User == "" || container.Config.User == "0" || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 || api.EnvContainsForwardingSecret(container.Config.Env) {
 			t.Fatalf("unsafe live profile %d: %+v", i, container.HostConfig)
 		}
 		if len(container.Mounts) != 1 || container.Mounts[0].Type != "volume" {
@@ -109,7 +110,7 @@ func TestRealDockerFallbackNamesAndRuntimeProfile(t *testing.T) {
 	if json.Unmarshal(inspect, &host) != nil || len(host) != 1 {
 		t.Fatalf("unsafe inspect decode: %s", inspect)
 	}
-	profile := RuntimeSecurityProfile{User: host[0].Config.User, NetworkMode: host[0].HostConfig.NetworkMode, PIDMode: host[0].HostConfig.PidMode, ReadonlyRootfs: host[0].HostConfig.ReadonlyRootfs, Privileged: host[0].HostConfig.Privileged, NoNewPrivileges: contains(host[0].HostConfig.SecurityOpt, "no-new-privileges=true"), CapDrop: host[0].HostConfig.CapDrop, CapAdd: host[0].HostConfig.CapAdd, HostMounts: host[0].HostConfig.Binds, CPUQuota: 1, MemoryBytes: 64 << 20, PIDsLimit: 1, TimeoutSeconds: 1, OutputBytes: 1, SeccompProfile: "mcp.json"}
+	profile := api.RuntimeSecurityProfile{User: host[0].Config.User, NetworkMode: host[0].HostConfig.NetworkMode, PIDMode: host[0].HostConfig.PidMode, ReadonlyRootfs: host[0].HostConfig.ReadonlyRootfs, Privileged: host[0].HostConfig.Privileged, NoNewPrivileges: api.Contains(host[0].HostConfig.SecurityOpt, "no-new-privileges=true"), CapDrop: host[0].HostConfig.CapDrop, CapAdd: host[0].HostConfig.CapAdd, HostMounts: host[0].HostConfig.Binds, CPUQuota: 1, MemoryBytes: 64 << 20, PIDsLimit: 1, TimeoutSeconds: 1, OutputBytes: 1, SeccompProfile: "mcp.json"}
 	if err := profile.Validate(statefulContainerDefinition()); err == nil {
 		t.Fatal("privileged host-network docker.sock profile accepted by MCP runtime contract")
 	}
@@ -210,7 +211,7 @@ func TestRealDockerSequentialHundredBindings(t *testing.T) {
 			t.Fatalf("inspect decode %s: %s", id, body)
 		}
 		container := containers[0]
-		if container.HostConfig.Privileged || !container.HostConfig.ReadonlyRootfs || container.HostConfig.NetworkMode == "host" || container.HostConfig.PidMode == "host" || len(container.HostConfig.CapDrop) == 0 || container.HostConfig.CapDrop[0] != "ALL" || !contains(container.HostConfig.SecurityOpt, "no-new-privileges=true") || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 {
+		if container.HostConfig.Privileged || !container.HostConfig.ReadonlyRootfs || container.HostConfig.NetworkMode == "host" || container.HostConfig.PidMode == "host" || len(container.HostConfig.CapDrop) == 0 || container.HostConfig.CapDrop[0] != "ALL" || !api.Contains(container.HostConfig.SecurityOpt, "no-new-privileges=true") || container.Config.User == "0:0" || len(container.HostConfig.Binds) != 0 {
 			t.Fatalf("unsafe live profile %s: %+v", id, container.HostConfig)
 		}
 		if !envContains(container.Config.Env, "TOKEN=") {
@@ -368,14 +369,14 @@ HTTPServer(("0.0.0.0",8765),H).serve_forever()`
 	if err != nil {
 		t.Fatal(err)
 	}
-	if envContainsForwardingSecret(strings.Split(strings.TrimSpace(string(mcpEnv)), "\n")) || strings.Contains(string(mcpEnv), token) {
+	if api.EnvContainsForwardingSecret(strings.Split(strings.TrimSpace(string(mcpEnv)), "\n")) || strings.Contains(string(mcpEnv), token) {
 		t.Fatal("MCP container received the forwarding token")
 	}
 	relayEnv, err := exec.Command("docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", relay).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !envHasBridgeToken(strings.Split(strings.TrimSpace(string(relayEnv)), "\n")) {
+	if !api.EnvHasBridgeToken(strings.Split(strings.TrimSpace(string(relayEnv)), "\n")) {
 		t.Fatal("relay did not hold the forwarding token")
 	}
 	probe := `import os, pathlib
@@ -428,17 +429,17 @@ print("mcp-secret-inaccessible")`
 		time.Sleep(200 * time.Millisecond)
 	}
 	store, auth, binding := seededStore(t)
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	var hits int
-	gw := Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+	gw := Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		resp, err := http.Post(backendURL, "text/plain", strings.NewReader("tool"))
 		if err != nil {
-			return BackendResult{}, err
+			return api.BackendResult{}, err
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		hits++
-		return BackendResult{Text: string(body)}, nil
+		return api.BackendResult{Text: string(body)}, nil
 	})}
 	if _, err := gw.call(context.Background(), auth, name, map[string]any{"query": "hello"}); err != nil {
 		t.Fatalf("enabled call: %v", err)
@@ -446,7 +447,7 @@ print("mcp-secret-inaccessible")`
 	if hits != 1 {
 		t.Fatalf("docker backend hits before revoke: %d", hits)
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, RevokedStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.RevokedStatus); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := gw.call(context.Background(), auth, name, map[string]any{"query": "stale"}); err == nil {
@@ -460,7 +461,7 @@ print("mcp-secret-inaccessible")`
 func TestWindowsPEBridgeRejectedAgainstBuiltELF(t *testing.T) {
 	exe := os.Args[0]
 	if strings.EqualFold(filepath.Ext(exe), ".exe") {
-		if err := ValidateLinuxBridgeBinary(exe); err == nil {
+		if err := api.ValidateLinuxBridgeBinary(exe); err == nil {
 			t.Fatal("current Windows executable accepted as Linux bridge")
 		}
 	}
@@ -468,7 +469,7 @@ func TestWindowsPEBridgeRejectedAgainstBuiltELF(t *testing.T) {
 	if output == "" {
 		t.Skip("HERMES_LINUX_BRIDGE not set")
 	}
-	if err := ValidateLinuxBridgeBinary(output); err != nil {
+	if err := api.ValidateLinuxBridgeBinary(output); err != nil {
 		t.Fatal(err)
 	}
 }

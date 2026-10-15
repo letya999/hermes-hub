@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"log"
 	"net/http"
@@ -1397,11 +1398,11 @@ func TestCredentialFormValidationAndOrigins(t *testing.T) {
 	if _, err := g.formOrigin(); err != nil {
 		t.Fatal(err)
 	}
-	g.forms = nil
+	g.forms.m = nil
 	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
 		t.Fatal(err)
 	}
-	g.forms["expired"] = credentialForm{OwnerID: "alice", ExpiresAt: time.Now().Add(-time.Minute)}
+	g.forms.m["expired"] = credentialForm{OwnerID: "alice", ExpiresAt: time.Now().Add(-time.Minute)}
 	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1597,9 +1598,9 @@ func (t chatBearerTransport) RoundTrip(request *http.Request) (*http.Response, e
 
 type chatCallCounter struct{ n *atomic.Int32 }
 
-func (c chatCallCounter) Call(context.Context, toolhub.EffectiveBinding, toolhub.ToolSpec, map[string]any) (toolhub.BackendResult, error) {
+func (c chatCallCounter) Call(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 	c.n.Add(1)
-	return toolhub.BackendResult{Text: "ok"}, nil
+	return api.BackendResult{Text: "ok"}, nil
 }
 
 func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
@@ -1622,37 +1623,37 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := toolhub.NewStore()
-	definition := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:      toolhub.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-		Tools:       []toolhub.ToolSpec{{Name: "search", Effect: toolhub.ReadEffect}},
-		Credentials: []toolhub.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true}},
-		Workload:    toolhub.WorkloadPolicy{Class: toolhub.PerUser, Rationale: "OAuth account and provider session are user-owned"},
-		Execution:   toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
-		Health:      toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:      api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
+		Tools:       []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
+		Credentials: []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true}},
+		Workload:    api.WorkloadPolicy{Class: api.PerUser, Rationale: "OAuth account and provider session are user-owned"},
+		Execution:   api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
+		Health:      api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := registry.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	credential := toolhub.CredentialReference{Schema: toolhub.SchemaVersion, CredentialRefID: toolhub.CredentialReferenceID("google-work", 1), ConnectionID: "google-work", Revision: 1, Backend: "local", Locator: infos[0].Locator, Keys: []string{"GOOGLE_TOKEN"}, Status: toolhub.ActiveStatus}
+	credential := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 1), ConnectionID: "google-work", Revision: 1, Backend: "local", Locator: infos[0].Locator, Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
 	if err := registry.PutCredentialReference(credential); err != nil {
 		t.Fatal(err)
 	}
-	connection := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: "google-work", Owner: toolhub.OwnerRef{Type: toolhub.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: credential.CredentialRefID, Revision: 1, Status: toolhub.ActiveStatus}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "google-work", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: credential.CredentialRefID, Revision: 1, Status: api.ActiveStatus}
 	if err := registry.PutConnection(connection); err != nil {
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
-	binding := toolhub.ToolBinding{Schema: toolhub.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: toolhub.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 	if err := registry.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
-	binding.ToolBindingID = toolhub.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
-	workload, err := toolhub.NewWorkloadInstance(binding, &toolhub.OwnerRef{Type: toolhub.ContextOwner, ID: "alice"}, "", 1, time.Now().UTC(), time.Time{})
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	workload, err := api.NewWorkloadInstance(binding, &api.OwnerRef{Type: api.ContextOwner, ID: "alice"}, "", 1, time.Now().UTC(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	workload.Status = toolhub.RunningStatus
+	workload.Status = api.RunningStatus
 	if err := registry.PutWorkloadInstance(workload); err != nil {
 		t.Fatal(err)
 	}
@@ -1692,7 +1693,7 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	name := toolhub.ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
 		t.Fatal(err)
 	}

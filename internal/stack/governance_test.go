@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,31 +10,30 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
 )
 
 // seedGovernance writes a valid governance document into the space's
 // runtime/toolhub dir before the first Read, so no migration allow is
 // recorded — the doc the test authors is the whole policy.
-func seedGovernance(t *testing.T, dir string, mutate func(*toolhub.Governance)) *toolhub.Governance {
+func seedGovernance(t *testing.T, dir string, mutate func(*api.Governance)) *api.Governance {
 	t.Helper()
-	doc := toolhub.NewGovernance()
+	doc := api.NewGovernance()
 	if mutate != nil {
 		mutate(doc)
 	}
 	path := filepath.Join(dir, "runtime", "toolhub", "governance.json")
-	if err := toolhub.SaveGovernance(path, doc); err != nil {
+	if err := api.SaveGovernance(path, doc); err != nil {
 		t.Fatal(err)
 	}
 	return doc
 }
 
-func activeToolGrant(t *testing.T, doc *toolhub.Governance, principal, section string, ttl time.Duration) {
+func activeToolGrant(t *testing.T, doc *api.Governance, principal, section string, ttl time.Duration) {
 	t.Helper()
 	now := time.Now().UTC()
-	grant := toolhub.NewToolGrant("grant-"+principal+"-"+strings.ReplaceAll(section, ":", "-"), principal, section, "test grant", "operator", now.Add(ttl), nil)
-	if err := toolhub.Confirm(&grant, "operator", now); err != nil {
+	grant := api.NewToolGrant("grant-"+principal+"-"+strings.ReplaceAll(section, ":", "-"), principal, section, "test grant", "operator", now.Add(ttl), nil)
+	if err := api.Confirm(&grant, "operator", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := doc.PutToolGrant(grant, now); err != nil {
@@ -81,8 +81,8 @@ func TestGovernanceUserMCPGrantUnlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendWorkspaceKey(t, d, "\nmcp:\n  gitea: {url: \"https://mcp.example.com/gitea\"}\n")
-	seedGovernance(t, d, func(doc *toolhub.Governance) {
-		activeToolGrant(t, doc, "me", toolhub.SectionUserMCP, time.Hour)
+	seedGovernance(t, d, func(doc *api.Governance) {
+		activeToolGrant(t, doc, "me", api.SectionUserMCP, time.Hour)
 	})
 	s, err := Read(d)
 	if err != nil {
@@ -100,15 +100,15 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	}
 	// Default workspace selects `file: toolhub` and `web: native`; a global
 	// deny on either section must fail the whole read, not silently filter.
-	seedGovernance(t, d, func(doc *toolhub.Governance) {
-		doc.Rules = append(doc.Rules, toolhub.PolicyRule{RuleID: "deny-files", Scope: toolhub.ScopeGlobal, Section: "hub:files", Effect: toolhub.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+	seedGovernance(t, d, func(doc *api.Governance) {
+		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-files", Scope: api.ScopeGlobal, Section: "hub:files", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	_, err := Read(d)
 	if err == nil || !strings.Contains(err.Error(), "hub:files") {
 		t.Fatalf("denied explicit tools entry admitted: %v", err)
 	}
-	seedGovernance(t, d, func(doc *toolhub.Governance) {
-		doc.Rules = append(doc.Rules, toolhub.PolicyRule{RuleID: "deny-web", Scope: toolhub.ScopeGlobal, Section: "native:web", Effect: toolhub.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+	seedGovernance(t, d, func(doc *api.Governance) {
+		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-web", Scope: api.ScopeGlobal, Section: "native:web", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	if _, err := Read(d); err == nil || !strings.Contains(err.Error(), "native:web") {
 		t.Fatalf("denied native toolset admitted: %v", err)
@@ -135,13 +135,13 @@ func TestGovernanceMigrationPreservesSelection(t *testing.T) {
 	if _, err := Read(d); err != nil {
 		t.Fatalf("migration seed read: %v", err)
 	}
-	doc, err := toolhub.LoadGovernance(filepath.Join(d, "runtime", "toolhub", "governance.json"))
+	doc, err := api.LoadGovernance(filepath.Join(d, "runtime", "toolhub", "governance.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var found bool
 	for _, r := range doc.Rules {
-		if r.Scope == toolhub.ScopeUser && r.Subject == "me" && r.Section == "native:terminal" && r.Effect == toolhub.RuleAllow {
+		if r.Scope == api.ScopeUser && r.Subject == "me" && r.Section == "native:terminal" && r.Effect == api.RuleAllow {
 			found = true
 		}
 	}
@@ -166,8 +166,8 @@ func TestGovernanceImplicitSectionsFilteredAtRender(t *testing.T) {
 	// cronjob is an implicit unmanaged emission — not in the default
 	// workspace tools map — so its deny filters render output without failing
 	// the read.
-	seedGovernance(t, d, func(doc *toolhub.Governance) {
-		doc.Rules = append(doc.Rules, toolhub.PolicyRule{RuleID: "deny-cronjob", Scope: toolhub.ScopeGlobal, Section: "native:cronjob", Effect: toolhub.RuleDeny, Reason: "test", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+	seedGovernance(t, d, func(doc *api.Governance) {
+		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-cronjob", Scope: api.ScopeGlobal, Section: "native:cronjob", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	s, err := Read(d)
 	if err != nil {
@@ -206,10 +206,10 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 	// explicit-entry deny would fail the read instead (proven above), so the
 	// deny list is exercised through a default-scope attribute deny on a
 	// family the space does not select.
-	seedGovernance(t, d, func(doc *toolhub.Governance) {
+	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules,
-			toolhub.PolicyRule{RuleID: "cap-hh", Scope: toolhub.ScopeGlobal, Section: "hub:hh", Effect: toolhub.RuleCapRead, Reason: "test", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1},
-			toolhub.PolicyRule{RuleID: "deny-terminal-family", Scope: toolhub.ScopeGlobal, Section: "hub:terminal", Effect: toolhub.RuleDeny, Reason: "test", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+			api.PolicyRule{RuleID: "cap-hh", Scope: api.ScopeGlobal, Section: "hub:hh", Effect: api.RuleCapRead, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1},
+			api.PolicyRule{RuleID: "deny-terminal-family", Scope: api.ScopeGlobal, Section: "hub:terminal", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	if _, err := Read(d); err != nil {
 		t.Fatalf("hh deny: %v", err)
@@ -221,7 +221,7 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot missing: %v", err)
 	}
-	var snapshot toolhub.ToolPolicySnapshot
+	var snapshot api.ToolPolicySnapshot
 	if err := json.Unmarshal(body, &snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -249,15 +249,15 @@ func TestGovernanceOrgScopedCatalog(t *testing.T) {
 	// An org-scoped space treats its merged catalog as org_mcp; deny that
 	// section and the read must fail.
 	appendWorkspaceKey(t, d, "\nmcp:\n  orgwiki: {url: \"https://wiki.acme.example/mcp\"}\n")
-	seedGovernance(t, d, func(doc *toolhub.Governance) {
-		doc.Rules = append(doc.Rules, toolhub.PolicyRule{RuleID: "deny-orgmcp", Scope: toolhub.ScopeOrg, Subject: "acme", Section: toolhub.SectionOrgMCP, Effect: toolhub.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+	seedGovernance(t, d, func(doc *api.Governance) {
+		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-orgmcp", Scope: api.ScopeOrg, Subject: "acme", Section: api.SectionOrgMCP, Effect: api.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	if _, err := Read(d); err == nil || !strings.Contains(err.Error(), "org_mcp") {
 		t.Fatalf("org catalog deny ignored: %v", err)
 	}
 	// The same deny for a different organization does not touch this space.
-	seedGovernance(t, d, func(doc *toolhub.Governance) {
-		doc.Rules = append(doc.Rules, toolhub.PolicyRule{RuleID: "deny-orgmcp-other", Scope: toolhub.ScopeOrg, Subject: "otherorg", Section: toolhub.SectionOrgMCP, Effect: toolhub.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: toolhub.ActiveStatus, Revision: 1})
+	seedGovernance(t, d, func(doc *api.Governance) {
+		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-orgmcp-other", Scope: api.ScopeOrg, Subject: "otherorg", Section: api.SectionOrgMCP, Effect: api.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	if _, err := Read(d); err != nil {
 		t.Fatalf("foreign-org deny applied: %v", err)
@@ -306,7 +306,7 @@ func TestSectionForEntryMapping(t *testing.T) {
 		{"code_exec", ToolEntry{Via: ToolViaToolHub}, "hub:terminal"},
 		{"websearch", ToolEntry{Via: ToolViaToolHub}, "hub:websearch"},
 		{"gitea", ToolEntry{Via: ToolViaMCP}, "hub:gitea"},
-		{"gitea", ToolEntry{Via: ToolViaMCPRaw}, toolhub.SectionUserMCP},
+		{"gitea", ToolEntry{Via: ToolViaMCPRaw}, api.SectionUserMCP},
 		{"x", ToolEntry{Via: ToolViaOff}, ""},
 		{"x", ToolEntry{}, ""},
 	} {
@@ -316,7 +316,7 @@ func TestSectionForEntryMapping(t *testing.T) {
 	}
 	// Org-scoped spaces route mcp-raw into the organization catalog section.
 	org := Settings{User: "alice", Organization: "acme"}
-	if got := org.sectionForEntry("gitea", ToolEntry{Via: ToolViaMCPRaw}); got != toolhub.SectionOrgMCP {
+	if got := org.sectionForEntry("gitea", ToolEntry{Via: ToolViaMCPRaw}); got != api.SectionOrgMCP {
 		t.Fatalf("org mcp-raw: %s", got)
 	}
 }
@@ -331,7 +331,7 @@ func TestDenyDefaultSelections(t *testing.T) {
 		"off":      {Via: ToolViaOff},     // disabled: skipped
 		"ssh":      {Via: ToolViaToolHub}, // hub:ssh is deny-default exec
 	}}
-	got := s.denyDefaultSelections(toolhub.NewGovernance())
+	got := s.denyDefaultSelections(api.NewGovernance())
 	want := []string{"native:terminal"}
 	if len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("preserved %v want %v", got, want)
@@ -346,7 +346,7 @@ func TestImplicitToolsetSections(t *testing.T) {
 		t.Fatalf("managed implicit: %v", got)
 	}
 	plain := implicitToolsetSections(Settings{User: "alice"})
-	if !slices.Contains(plain, toolhub.SectionHubTools) || !slices.Contains(plain, "native:terminal") {
+	if !slices.Contains(plain, api.SectionHubTools) || !slices.Contains(plain, "native:terminal") {
 		t.Fatalf("unmanaged implicit: %v", plain)
 	}
 	if slices.Contains(plain, "hub:browser_guest") {
