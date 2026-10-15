@@ -14,6 +14,7 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-runtime ./cmd/runtime
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /toolhub ./cmd/toolhub
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub ./cmd/communication
+RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /e2e ./cmd/e2e
 
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-media ./cmd/hub-media
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
@@ -64,7 +65,7 @@ WORKDIR /opt/hermes
 RUN set -e; git init; git remote add origin https://github.com/nousresearch/hermes-agent.git; for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; git checkout --detach FETCH_HEAD; uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp; uv pip install --python .venv/bin/python aiohttp==3.14.3 faster-whisper==1.2.1 av==18.1.0; .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"
 COPY docker/browser/package*.json /opt/browser/
 RUN set -e; cd /opt/browser; for i in 1 2 3 4; do if npm ci --ignore-scripts; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; npm cache clean --force
-COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /usr/local/bin/
+COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /e2e /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/
 COPY docker/hub-stt docker/hub-tts /usr/local/bin/

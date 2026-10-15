@@ -303,6 +303,9 @@ func (s *Spool) applyStreamReceiptLocked(receipt streamReceipt) error {
 		return err
 	}
 	mapping.EventPosition, mapping.LastEventID = receipt.Position, receipt.Event.EventID
+	if receipt.StatusDelivery && receipt.Delivery != nil && strings.TrimSpace(receipt.Delivery.Text) != "" {
+		mapping.StatusText = receipt.Delivery.Text
+	}
 	if receipt.Event.LastEvent == "approval.request" {
 		mapping.ApprovalID, mapping.ApprovalChoices, mapping.ApprovalDeadline, mapping.ApprovalState = receipt.Event.ApprovalID, receipt.Event.ApprovalChoices, receipt.ApprovalDeadline, "pending"
 	}

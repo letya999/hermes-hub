@@ -234,6 +234,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
 	proactiveDone := make(chan struct{})
+	progressDone := make(chan struct{})
 	canaryDone := make(chan struct{})
 	go func() {
 		defer close(canaryDone)
@@ -257,6 +258,19 @@ func (g *Gateway) Run(ctx context.Context) error {
 		g.controlLoop(workerCtx)
 	}()
 	go func() {
+		defer close(progressDone)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			g.progressTick(workerCtx)
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	go func() {
 		defer close(deliveryDone)
 		g.deliveryLoop(workerCtx)
 	}()
@@ -266,6 +280,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-deliveryDone
 		<-controlDone
 		<-proactiveDone
+		<-progressDone
 		<-canaryDone
 		g.usageWG.Wait()
 	}()
@@ -400,6 +415,15 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		}
 		log.Printf("gateway telegram-received user=%q update_id=%d chat_id=%d message_id=%d %s", user.ID, update.UpdateID, message.Chat.ID, message.MessageID, g.contentField(visible))
 	}
+	if message.Chat.ID < 0 && message.ForumTopicCreated != nil {
+		return g.forumTopicCreated(user, message.Chat.ID, messageTopicID(message), message.ForumTopicCreated.Name)
+	}
+	if message.Chat.ID < 0 && message.ForumTopicEdited != nil {
+		if err := g.spool.RenameTopicTask(user, message.Chat.ID, messageTopicID(message), message.ForumTopicEdited.Name); err != nil {
+			log.Printf("gateway forum topic rename failed chat=%d topic=%d: %v", message.Chat.ID, messageTopicID(message), err)
+		}
+		return nil
+	}
 	if edited {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), "Изменение сообщения не перезапускает задачу. Используйте новое сообщение или /cancel.")
 	}
@@ -461,15 +485,35 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		case "start":
 			return reply("Готово. Вы подключены к своему Hermes-пространству.")
 		case "new":
-			return reply(g.newTaskCommand(user, message.Chat.ID, topic, text))
+			answer, replyTopic := g.newTaskCommand(ctx, user, message.Chat.ID, topic, text)
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, replyTopic, answer)
 		case "sessions":
 			return reply(g.sessionsCommand(user, message.Chat.ID))
 		case "use":
-			return reply(g.useCommand(user, message.Chat.ID, text))
+			return reply(g.useCommand(ctx, user, message.Chat.ID, text))
 		case "delete":
-			return reply(g.deleteCommand(user, message.Chat.ID, task, text))
+			answer, replyTopic := g.deleteCommand(ctx, user, message.Chat.ID, topic, task, text)
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, replyTopic, answer)
+		case "archive":
+			return reply(g.archiveCommand(ctx, user, message.Chat.ID, task, text))
+		case "archived":
+			return reply(g.archivedCommand(user, message.Chat.ID))
 		case "session", "status":
 			return reply(g.taskStatus(user, task))
+		case "stop":
+			return reply(g.stopCommand(user, task, callerForJob))
+		case "cancel":
+			fields := strings.Fields(text)
+			answer := "Используйте /cancel <job-id>."
+			if len(fields) >= 2 {
+				mapping, err := g.spool.RequestCancel(fields[1], callerForJob(fields[1]))
+				if err == nil {
+					answer = "Отмена " + mapping.JobID + ": " + mapping.Status + "."
+				} else {
+					answer = "Не удалось отменить: задача недоступна в этом разговоре."
+				}
+			}
+			return reply(answer)
 		case "routines":
 			items, err := g.spool.ListSchedules(user.envelope(message.From.ID))
 			if err != nil {
@@ -604,6 +648,49 @@ func (g *Gateway) wakeRuntime(job Job) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
 	if response.StatusCode >= 300 {
 		log.Printf("gateway wake job_id=%q status=%d", job.ID, response.StatusCode)
+	}
+}
+
+// progressTick refreshes live progress for every non-terminal telegram job:
+// typing is re-armed (it expires after ~5s) and the job's single status
+// message gets a fresh elapsed-time suffix through the durable upsert path,
+// so a real stream event or a restarted gateway never duplicates it.
+func (g *Gateway) progressTick(ctx context.Context) {
+	ids, err := g.spool.activeMappingIDs()
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		m, found, err := g.spool.Mapping(id)
+		if err != nil || !found || m.Channel != "telegram_bot" || m.CancelRequested {
+			continue
+		}
+		// Only an admitted run earns live progress: a queued or wedged job
+		// would farm typing and edits forever with nothing behind them.
+		if m.RunID == "" {
+			continue
+		}
+		_ = g.api.SendChatAction(ctx, m.ChatID, m.TopicID, "typing")
+		base := strings.TrimSpace(m.StatusText)
+		if base == "" {
+			base = "Выполняю запрос."
+		}
+		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(g.now().Sub(m.CreatedAt)), CreatedAt: g.now().UTC()})
+	}
+}
+
+func formatElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	s := int(d.Round(time.Second).Seconds())
+	switch {
+	case s < 60:
+		return strconv.Itoa(s) + " сек"
+	case s < 3600:
+		return strconv.Itoa(s/60) + " мин " + strconv.Itoa(s%60) + " сек"
+	default:
+		return strconv.Itoa(s/3600) + " ч " + strconv.Itoa((s%3600)/60) + " мин"
 	}
 }
 

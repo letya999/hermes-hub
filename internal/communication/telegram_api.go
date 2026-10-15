@@ -44,18 +44,29 @@ type Message struct {
 	// MessageThreadID/IsTopicMessage carry group forum topics: a message
 	// posted inside a forum topic has is_topic_message=true and the topic id
 	// in message_thread_id.
-	MessageThreadID int64     `json:"message_thread_id,omitempty"`
-	IsTopicMessage  bool      `json:"is_topic_message,omitempty"`
-	Voice           *TGMedia  `json:"voice,omitempty"`
-	Audio           *TGMedia  `json:"audio,omitempty"`
-	Document        *TGMedia  `json:"document,omitempty"`
-	Photo           []TGMedia `json:"photo,omitempty"`
+	MessageThreadID int64 `json:"message_thread_id,omitempty"`
+	IsTopicMessage  bool  `json:"is_topic_message,omitempty"`
+	// ForumTopicCreated is the group service message emitted when a user
+	// creates a forum topic; the bot's own topic actions never pass the
+	// verified-user gate, so they cannot echo back.
+	ForumTopicCreated *TGForumTopicCreated `json:"forum_topic_created,omitempty"`
+	ForumTopicEdited  *TGForumTopicEdited  `json:"forum_topic_edited,omitempty"`
+	Voice             *TGMedia             `json:"voice,omitempty"`
+	Audio             *TGMedia             `json:"audio,omitempty"`
+	Document          *TGMedia             `json:"document,omitempty"`
+	Photo             []TGMedia            `json:"photo,omitempty"`
 }
 type TGUser struct {
 	ID int64 `json:"id"`
 }
 type TGDirectTopic struct {
 	TopicID int64 `json:"topic_id"`
+}
+type TGForumTopicCreated struct {
+	Name string `json:"name"`
+}
+type TGForumTopicEdited struct {
+	Name string `json:"name,omitempty"`
 }
 
 // messageTopicID returns the topic of an inbound message: a private-chat
@@ -118,6 +129,11 @@ type TelegramAPI interface {
 	SendKeyboard(context.Context, int64, int64, string, []DeliveryButton) error
 	AnswerCallbackQuery(context.Context, string, string) error
 	SetMyCommands(context.Context) error
+	CreateForumTopic(context.Context, int64, string) (int64, error)
+	EditForumTopic(context.Context, int64, int64, string) error
+	DeleteForumTopic(context.Context, int64, int64) error
+	CloseForumTopic(context.Context, int64, int64) error
+	ReopenForumTopic(context.Context, int64, int64) error
 }
 
 type telegramAPI struct {
@@ -376,6 +392,28 @@ func (t *telegramAPI) SendChatAction(ctx context.Context, chatID int64, topicID 
 		params[topicField(chatID)] = topicID
 	}
 	return t.call(ctx, "sendChatAction", params, nil)
+}
+
+// createForumTopic needs a bot with manage_topics in a forum-enabled group;
+// it fails otherwise and callers fall back to plain topic routing.
+func (t *telegramAPI) CreateForumTopic(ctx context.Context, chatID int64, name string) (int64, error) {
+	var result struct {
+		MessageThreadID int64 `json:"message_thread_id"`
+	}
+	err := t.call(ctx, "createForumTopic", map[string]any{"chat_id": chatID, "name": name}, &result)
+	return result.MessageThreadID, err
+}
+func (t *telegramAPI) EditForumTopic(ctx context.Context, chatID, topicID int64, name string) error {
+	return t.call(ctx, "editForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID, "name": name}, nil)
+}
+func (t *telegramAPI) DeleteForumTopic(ctx context.Context, chatID, topicID int64) error {
+	return t.call(ctx, "deleteForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID}, nil)
+}
+func (t *telegramAPI) CloseForumTopic(ctx context.Context, chatID, topicID int64) error {
+	return t.call(ctx, "closeForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID}, nil)
+}
+func (t *telegramAPI) ReopenForumTopic(ctx context.Context, chatID, topicID int64) error {
+	return t.call(ctx, "reopenForumTopic", map[string]any{"chat_id": chatID, "message_thread_id": topicID}, nil)
 }
 func (t *telegramAPI) GetFile(ctx context.Context, fileID string) (TelegramFile, error) {
 	var file TelegramFile

@@ -26,6 +26,10 @@ var botCommandInventory = []struct {
 	{"connections", "Подключения и коннекторы ToolHub"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
 	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
+	{"stop", "Остановить выполнение текущей сессии"},
+	{"cancel", "Отменить задачу: /cancel <job-id>"},
+	{"archive", "Архивировать сессию: /archive [id|имя]"},
+	{"archived", "Архивные сессии с датами"},
 }
 
 // commandHelp is the authoritative inventory of supported slash commands;
@@ -72,6 +76,9 @@ func (g *Gateway) maybeAutoTitle(ctx context.Context, job Job) {
 		return
 	}
 	if g.spool.AutoTitleTask(job.PrincipalID, job.TaskID, report.Title) {
+		if job.ChatID < 0 && job.TopicID != 0 {
+			_ = g.api.EditForumTopic(ctx, job.ChatID, job.TopicID, strings.TrimSpace(report.Title))
+		}
 		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "».", CreatedAt: g.now().UTC()})
 	}
 }
