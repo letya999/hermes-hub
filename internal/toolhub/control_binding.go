@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
@@ -218,7 +219,7 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
 	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 		if control, err := c.Broker.New(auth, "broker:control"); err == nil {
-			if err := control.Revoke(context.Background(), onboarding.BrokerCredentialID); err != nil {
+			if err := control.Revoke(context.Background(), onboarding.BrokerCredentialID); err != nil && !brokerclient.IsNotFound(err) {
 				return err
 			}
 		}
@@ -345,7 +346,11 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 					return api.ToolBinding{}, err
 				}
 				if err := control.Do(ctx, http.MethodPost, "/v1/grants/"+url.PathEscape(previous.BrokerGrantID)+"/revoke", nil, nil); err != nil {
-					return api.ToolBinding{}, err
+					// The broker may have dropped this grant already (ledger
+					// reset or volume drift); absent is the post-revoke state.
+					if !brokerclient.IsNotFound(err) {
+						return api.ToolBinding{}, err
+					}
 				}
 			}
 			next := connection.Revision + 1

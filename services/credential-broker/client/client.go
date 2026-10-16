@@ -39,6 +39,14 @@ type APIError struct {
 func (e *APIError) Error() string {
 	return "credential broker: " + e.Code + " (" + strconv.Itoa(e.Status) + ")"
 }
+
+// IsNotFound reports a broker 404: the referenced object is gone (or not
+// visible to this actor). Callers revoking a resource they recorded earlier
+// may treat it as the desired post-revoke state.
+func IsNotFound(err error) bool {
+	var e *APIError
+	return errors.As(err, &e) && e.Status == http.StatusNotFound
+}
 func New(base string, signer Signer, actor identity.Actor, h *http.Client) (*Client, error) {
 	u, e := url.Parse(base)
 	if e != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || len(signer.PrivateKey) != ed25519.PrivateKeySize || !actor.Valid() {

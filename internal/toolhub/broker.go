@@ -11,6 +11,7 @@ import (
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -40,7 +41,7 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := control.Do(cleanupCtx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.ID)+"/revoke", nil, nil); err != nil {
+		if err := control.Do(cleanupCtx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.ID)+"/revoke", nil, nil); err != nil && !brokerclient.IsNotFound(err) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker grant revoke: %v", api.ErrIsolation, err))
 		}
 	}()

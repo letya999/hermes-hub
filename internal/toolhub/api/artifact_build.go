@@ -213,7 +213,7 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 	buildArgs := []string{"exec", builder, "buildctl", "--addr", "unix:///run/user/1000/buildkit/buildkitd.sock", "build", "--progress", "plain", "--frontend", "dockerfile.v0", "--local", "context=/run/hermes-context", "--local", "dockerfile=/run/hermes-context",
 		"--opt", "filename=" + recipe.Dockerfile,
 		"--opt", "build-arg:HTTP_PROXY=" + proxyURL, "--opt", "build-arg:HTTPS_PROXY=" + proxyURL, "--opt", "build-arg:NO_PROXY=",
-		"--opt", "attest:provenance=mode=Max", "--opt", "attest:sbom=generator=" + RestrictedSBOMScannerImage,
+		"--opt", "attest:provenance=mode=max", "--opt", "attest:sbom=generator=" + RestrictedSBOMScannerImage,
 		"--output", "type=oci,dest=/run/hermes-output/artifact.tar"}
 	if _, err := run(ctx, nil, buildArgs...); err != nil {
 		return StoredOCIArtifact{}, err
@@ -248,7 +248,7 @@ func buildCacheEnabled() bool {
 func verifyRestrictedBuildEgress(ctx context.Context, run artifactDockerRun, builder, proxy string) error {
 	connect := func(host string) string {
 		request := "CONNECT " + host + ":443 HTTP/1.1\r\nHost: " + host + ":443\r\n\r\n"
-		body, _ := run(ctx, strings.NewReader(request), "exec", "-i", builder, "nc", "-W", "2", proxy, "3128")
+		body, _ := run(ctx, strings.NewReader(request), "exec", "-i", builder, "nc", "-w", "2", proxy, "3128")
 		return string(body)
 	}
 	if !strings.Contains(connect("registry.npmjs.org"), " 200 ") || !strings.Contains(connect("example.com"), " 403 ") {

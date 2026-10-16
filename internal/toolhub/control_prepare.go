@@ -7,6 +7,8 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -375,5 +377,35 @@ func (c *ControlPlane) selfInstallUsable(definition api.ToolDefinition) bool {
 	if matched && (definition.Workload.Stateful != entry.Stateful || !maps.Equal(definition.RuntimeEnvironment, entry.RuntimeEnvironment) || definition.CredentialContractID != entry.ContractID || definition.CredentialContractRevision != entry.ContractRevision || definition.Source.Command != entry.Entrypoint[0] || !slices.Equal(definition.Source.Args, entry.Entrypoint[1:])) {
 		return false
 	}
+	if !selfInstallArtifactPresent(definition) {
+		return false
+	}
 	return c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 || definition.CredentialContractID != ""
+}
+
+// selfInstallArtifactPresent requires the reviewed OCI tar to still sit in the
+// quarantine store. A reused definition whose archive is gone wedges admission
+// on "reviewed artifact image unavailable" the moment the daemon image is
+// pruned, so reuse falls back to a full review that rebuilds the durable copy.
+// Integrity is not re-checked here: OpenStoredOCIArtifact verifies checksum and
+// OCI evidence on every read before the image enters the daemon.
+func selfInstallArtifactPresent(definition api.ToolDefinition) bool {
+	digest := strings.TrimSpace(definition.Source.ArchiveDigest)
+	if digest == "" {
+		return true
+	}
+	artifacts, _ := api.ControlArtifactPaths(api.EnvOr("HUB_STATE", "/state"))
+	if artifacts == "" || !api.DigestPattern.MatchString(digest) {
+		return false
+	}
+	if err := api.SafeStorePath(filepath.Join(artifacts, "artifact-check")); err != nil {
+		return false
+	}
+	root, err := os.OpenRoot(artifacts)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	info, err := root.Lstat(api.ArtifactObjectName(digest))
+	return err == nil && info.Mode().IsRegular()
 }

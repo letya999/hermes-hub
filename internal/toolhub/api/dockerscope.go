@@ -189,7 +189,7 @@ func dockerScopeLabelMap(body []byte) map[string]string {
 var dockerFlagsWithValues = map[string]bool{
 	"-d": true, "--driver": true, "-o": true, "--opt": true, "--label": true,
 	"--name": true, "--network": true, "-e": true, "--env": true, "--env-file": true,
-	"-u": true, "--user": true, "-W": true, "--workdir": true, "--entrypoint": true,
+	"-u": true, "--user": true, "-w": true, "--workdir": true, "--entrypoint": true,
 	"-v": true, "--volume": true, "--mount": true, "-p": true, "--publish": true,
 	"-f": true, "--format": true, "--filter": true, "--memory": true, "-m": true,
 	"--cpus": true, "--pids-limit": true, "--stop-timeout": true, "--stop-signal": true,
