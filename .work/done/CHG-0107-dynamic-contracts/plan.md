@@ -27,10 +27,20 @@ credential to enter a new one — self-service, but safe.
 
 ## Steps
 
-- [ ] broker change + tests (its own .work/todo/dynamic-contracts)
-- [ ] toolhub synthesis + tests
-- [ ] broker ADR-0008 + spec + scope/api docs
-- [ ] just check (root; broker module builds via root test run)
-- [ ] hubctl build/up; live: arbitrary connector without contract file,
-      rotate → new form → new token; old credential rejected
-- [ ] state.yaml acceptance, commit
+- [x] broker change + tests (its own .work/todo/dynamic-contracts)
+- [x] toolhub synthesis + tests
+- [x] broker ADR-0008 + spec + scope/api docs
+- [x] just check (root: green except gosec recipe hang under just→PowerShell on
+     this host — standalone clean; broker module just check green 90.35%)
+- [x] hubctl build/up; live: google_workspace_mcp with no contract file →
+     dyn-6bd689c8 registered, form, submit, confirm, enable; rotate → fresh
+     request r01045e18... + fresh form → re-enabled (bind-701d18d7),
+     credential id kept, rev 1→3 supersede
+- [x] state.yaml acceptance, commit (5a44d82 + 29a2f81)
+
+## Notes
+
+`spaces/local/broker/contracts/notion-token.json` stays: the live broker journal
+binds existing notion requests/grants to that file contract's digest; deleting
+it would trip the fail-closed drift check on restart. New connectors never need
+files — dynamic registration covers them.
