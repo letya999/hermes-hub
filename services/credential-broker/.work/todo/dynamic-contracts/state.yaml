@@ -1,0 +1,22 @@
+{
+  "description": "Динамическая регистрация credential contracts через control API",
+  "last_updated": "2026-10-16",
+  "done": [
+    "broker: contractRecord mutation + RegisterContract + replay-восстановление",
+    "httpapi: POST /v1/contracts; client: RegisterContract",
+    "тесты: регистрация, идемпотентность, конфликт digest, запрет routes/oauth/state/shared, рестарт, аудит, audience",
+    "ADR-0008, scope.md, api-contract.md, openapi.json, spec credential-broker-dynamic-contracts"
+  ],
+  "current": "Прогон just check брокера",
+  "next": [
+    "just check брокера",
+    "интеграция в корневой CHG-0107"
+  ],
+  "evidence": [
+    "plan.md"
+  ],
+  "review": {
+    "open": [],
+    "resolved": []
+  }
+}

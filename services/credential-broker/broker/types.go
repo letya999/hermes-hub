@@ -109,6 +109,13 @@ type oauthRecord struct {
 	ExpiresAt   time.Time    `json:"expires_at"`
 	Consumed    bool         `json:"consumed"`
 }
+
+// contractRecord persists a dynamically registered contract through the
+// journal. Dynamic contracts are collect-and-deliver only (see
+// Broker.RegisterContract); the file catalog remains the reviewed baseline.
+type contractRecord struct {
+	Contract contract.Contract `json:"contract"`
+}
 type mutation struct {
 	Audit      v1.Event          `json:"audit"`
 	Request    *requestRecord    `json:"request,omitempty"`
@@ -117,6 +124,7 @@ type mutation struct {
 	Grant      *grantRecord      `json:"grant,omitempty"`
 	State      *stateRecord      `json:"state,omitempty"`
 	OAuth      *oauthRecord      `json:"oauth,omitempty"`
+	Contract   *contractRecord   `json:"contract,omitempty"`
 }
 type Broker struct {
 	mu           sync.Mutex

@@ -672,6 +672,9 @@
           "lease_id": {
             "type": "string"
           },
+          "contract_id": {
+            "type": "string"
+          },
           "binding_id": {
             "type": "string"
           },
@@ -838,6 +841,48 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "registerContract",
+        "summary": "Register a collect-and-deliver contract",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contract"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Contract"
               }
             }
           }

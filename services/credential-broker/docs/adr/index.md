@@ -14,4 +14,5 @@ last_verified: "2026-09-18"
 | [ADR-0005: Ограниченный OAuth и отсутствие runtime платформ](0005.md) | Ограниченный OAuth и отсутствие runtime платформ. |
 | [ADR-0006: Адаптация medium memory bank](0006.md) | Адаптация medium memory bank. |
 | [ADR-0007: consumer_id — дискриминатор нескольких кредов на connection](0007.md) | consumer_id разделяет несколько кредов на одном connection по потребителю. |
+| [ADR-0008: динамическая регистрация контрактов через control API](0008.md) | Динамическая регистрация collect-and-deliver контрактов через control API. |
 | [Шаблон ADR](template.md) | Какие вопросы закрывает новое архитектурное решение. |

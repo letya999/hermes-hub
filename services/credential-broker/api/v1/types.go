@@ -104,6 +104,7 @@ type Event struct {
 	CredentialID  string    `json:"credential_id,omitempty"`
 	GrantID       string    `json:"grant_id,omitempty"`
 	LeaseID       string    `json:"lease_id,omitempty"`
+	ContractID    string    `json:"contract_id,omitempty"`
 	BindingID     string    `json:"binding_id,omitempty"`
 	WorkloadID    string    `json:"workload_id,omitempty"`
 	PolicyVersion string    `json:"policy_version,omitempty"`

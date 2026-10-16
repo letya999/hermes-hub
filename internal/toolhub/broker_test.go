@@ -574,6 +574,15 @@ func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(catalog)
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/contracts" {
+			var in contract.Contract
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			in.Storage = "local"
+			catalog = append(catalog, in)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(in)
+			return
+		}
 		http.NotFound(w, r)
 	}))
 	defer server.Close()

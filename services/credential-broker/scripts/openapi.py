@@ -51,6 +51,7 @@ def build():
         if input:o['requestBody']={'required':True,'content':{'application/json':{'schema':ref(input)}}}
         paths.setdefault(path,{})[method]=o
     add('/v1/contracts','get','catalog','Reviewed contracts','Contracts')
+    add('/v1/contracts','post','registerContract','Register a collect-and-deliver contract','Contract','Contract',status=201)
     add('/v1/events','get','events','Owner-filtered audit events and global cursor','Events')
     add('/v1/requests','post','createRequest','Idempotent credential enrollment','Request','CreateRequest',status=201)
     add('/v1/requests/{request_id}','get','getRequest','Enrollment status','Request')

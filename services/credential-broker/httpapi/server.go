@@ -21,6 +21,7 @@ import (
 
 	v1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/credential-broker/broker"
+	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/credential-broker/identity"
 	"github.com/letya999/credential-broker/internal/safenet"
 	"github.com/letya999/credential-broker/internal/strictjson"
@@ -211,6 +212,12 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/v1/contracts":
 		out = s.b.Catalog()
+	case r.Method == "POST" && r.URL.Path == "/v1/contracts":
+		var in contract.Contract
+		if e = decode(data, &in); e == nil {
+			out, e = s.b.RegisterContract(a, in)
+			status = 201
+		}
 	case r.Method == "GET" && r.URL.Path == "/v1/events":
 		var after uint64
 		after, e = strconv.ParseUint(defaultString(r.URL.Query().Get("after"), "0"), 10, 64)

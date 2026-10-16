@@ -1,0 +1,19 @@
+change: CHG-0107-dynamic-contracts
+milestone: M13 follow-up — credential self-service without connector hardcoding
+status: in_progress
+branch: fix/chg-0105-broker-drift-self-heal
+slices:
+  broker-api: done (RegisterContract + journal mutation + replay; POST /v1/contracts; client)
+  broker-tests: done (registration, idempotency, digest conflict, denied features, restart, audit, audience)
+  toolhub-synthesis: done (dyn- content-id, pinned-id heal, field-id dedup, grouped optional, PerRequest/BoundedCLI/shared/non-env exclusions)
+  toolhub-tests: done (bind-level + prepare-level fake broker)
+  docs: done (ADR-0008, delta spec, scope.md, api-contract.md, openapi regeneration, docs-check green)
+  gates: in_progress (broker just check green 90.35% in container; root just check running)
+  live-verify: pending (hubctl rebuild; arbitrary connector; rotate→new form→new token; revoke)
+  cleanup: pending (remove spaces/local/broker/contracts/notion-token.json; final state; commit)
+notes: >
+  Dynamic contracts are collect-and-deliver only (env/file/json_file deliveries,
+  no routes/OAuth/state/shared). Registration is broker:control-only, journaled,
+  idempotent on same digest, conflict on drift, fail-closed when a file contract
+  shadows a journaled one. devcheck per-package floor now scopes to this module's
+  internal/ packages — credential-broker has its own 85% gate.

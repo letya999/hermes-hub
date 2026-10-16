@@ -59,12 +59,15 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 	required := map[string]bool{}
 	declared := map[string]bool{}
 	for _, input := range definition.Credentials {
+		if input.PerRequest {
+			continue
+		}
 		declared[input.Name] = true
 		if input.Required {
 			required[input.Name] = true
 		}
 	}
-	if len(required) == 0 {
+	if len(declared) == 0 {
 		return nil
 	}
 	control, err := c.Broker.New(auth, "broker:control")
@@ -79,7 +82,12 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 	best := -1
 	bestExtra := 0
 	var bestEnv map[string]string
+	// All-optional credentials must not bind an unrelated catalog contract;
+	// they fall through to the synthesis fallback.
 	for i, candidate := range contracts {
+		if len(required) == 0 {
+			break
+		}
 		if bound != "" && candidate.ID != bound {
 			continue
 		}
@@ -120,12 +128,60 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 			best, bestExtra, bestEnv = i, extra, env
 		}
 	}
-	if best == -1 {
+	if best >= 0 {
+		definition.CredentialContractID = contracts[best].ID
+		definition.CredentialContractRevision = contracts[best].Revision
+		definition.CredentialContractEnv = bestEnv
 		return nil
 	}
-	definition.CredentialContractID = contracts[best].ID
-	definition.CredentialContractRevision = contracts[best].Revision
-	definition.CredentialContractEnv = bestEnv
+	// Nothing in the catalog covers the declared credentials. A pinned
+	// contract that exists but does not cover keeps the stored binding; every
+	// other gap is healed by registering a contract synthesized from the
+	// reviewed definition. The broker form stays the human consent point.
+	for _, candidate := range contracts {
+		if bound != "" && candidate.ID == bound && candidate.Revision == definition.CredentialContractRevision {
+			return nil
+		}
+	}
+	// Bounded-cli credentials use the local protected form, not the broker.
+	if definition.Transport == api.BoundedCLI && bound == "" {
+		return nil
+	}
+	// Dynamic contracts are per-user collect-and-deliver; shared workloads
+	// still require an operator-reviewed catalog contract with allow_shared.
+	if definition.Workload.Class == api.Shared && bound == "" {
+		return nil
+	}
+	// Dynamic contracts are env-delivery only; inputs that declare another
+	// delivery mode keep the admission error instead of a wrong-shaped form.
+	for _, input := range definition.Credentials {
+		if input.PerRequest {
+			continue
+		}
+		if input.Delivery != "" && input.Delivery != "env" {
+			return nil
+		}
+	}
+	synthesized, err := synthesizeContract(*definition)
+	if err != nil {
+		return err
+	}
+	stored, err := control.RegisterContract(ctx, synthesized)
+	if err != nil {
+		return fmt.Errorf("register credential broker contract %s@%d: %w", synthesized.ID, synthesized.Revision, err)
+	}
+	definition.CredentialContractID = stored.ID
+	definition.CredentialContractRevision = stored.Revision
+	env := map[string]string{}
+	for _, input := range definition.Credentials {
+		if input.PerRequest {
+			continue
+		}
+		if env[input.Name] == "" {
+			env[input.Name] = input.Name
+		}
+	}
+	definition.CredentialContractEnv = env
 	return nil
 }
 

@@ -150,6 +150,14 @@ func (c *Client) Contracts(ctx context.Context) (out []contract.Contract, e erro
 	e = c.Do(ctx, "GET", "/v1/contracts", nil, &out)
 	return
 }
+
+// RegisterContract registers a contract synthesized by the control plane.
+// Identical re-registration is idempotent; a digest drift on the same
+// id@revision returns a conflict.
+func (c *Client) RegisterContract(ctx context.Context, in contract.Contract) (out contract.Contract, e error) {
+	e = c.Do(ctx, "POST", "/v1/contracts", in, &out)
+	return
+}
 func (c *Client) Revoke(ctx context.Context, id string) error {
 	return c.Do(ctx, "POST", "/v1/credentials/"+id+"/revoke", nil, nil)
 }
