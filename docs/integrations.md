@@ -275,14 +275,21 @@ companion/relay front stays the only externally visible endpoint. Heuristic env 
 (`.env.example`, Compose
 `environment`) mark only secret-class names required; an uncommented empty
 non-secret knob stays optional, while explicit manifest `isRequired` flags are
-authoritative. Required credentials must be covered by a reviewed Credential
+authoritative. Required credentials must be covered by a Credential
 Broker contract whose deliveries produce the matching env names; one contract
 field may deliver the same secret under several env spellings when upstream
 declarations disagree. Deliveries targeting optional declared inputs are wired
 into the workload env mapping as well, so optional values entered at onboarding
 reach the server; a definition bound before this rule is backfilled on the next
-`prepare_source` from the same contract. The operator installs contracts under
-the broker `contracts_dir`. Runtime materialization rejects a missing delivery
+`prepare_source` from the same contract. Contracts come from two sources: the
+operator may install reviewed contracts under the broker `contracts_dir`, and
+ToolHub synthesizes and registers `dyn-` contracts over the signed
+`broker:control` API for declared inputs that are contract-coverable — `env`
+(empty), `file` and `json` deliveries. Local-plane inputs (`http_header`,
+`brokered`, OAuth-minted, per-request) are satisfied by their own planes and
+never need a contract. A Sharable `Shared` definition synthesizes an
+`allow_shared` contract; routes, broker-side OAuth and broker state stay
+operator-only. Runtime materialization rejects a missing delivery
 for any referenced input, even when another input produced a file mount. A
 file-credential workload must pass admission before its binding is projected;
 writable state is checkpointed only after that workload is stopped. Cleanup
@@ -468,9 +475,11 @@ key-file, key-ID and issuer variables to enable Broker-only credentials. The
 signing key files must be private files visible in the corresponding Hub
 containers; no key is committed to the repository.
 
-For every credential-bearing MCP definition, add the reviewed contract fields
+For every credential-bearing MCP definition, the contract fields
 `credential_contract_id`, `credential_contract_revision` and an explicit
-`credential_contract_env` mapping. ToolHub creates the Broker request and
+`credential_contract_env` mapping are bound at review/bind time — either from a
+covering catalog/`contracts_dir` contract or from a `dyn-` contract ToolHub
+registers from the declared inputs. ToolHub creates the Broker request and
 grant, Communication Hub accepts `/credentials <request-id> <code>`, and the
 runtime acquires/materializes/releases a lease. The generated Compose stack
 sets `BROKER_DIRECT_FORM=1` on the broker service, so the connect link opens

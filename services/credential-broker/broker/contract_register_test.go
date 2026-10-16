@@ -102,7 +102,6 @@ func TestDynamicContractRegistrationBounds(t *testing.T) {
 		"state": func(c *contract.Contract) {
 			c.State = &contract.State{Target: "/home/mcp/.s", Files: []contract.StateFile{{Name: "s.json", MaxBytes: 64}}}
 		},
-		"shared": func(c *contract.Contract) { c.AllowShared = true },
 	} {
 		c := dynamicContract()
 		c.ID = "dyn-" + name
@@ -110,6 +109,14 @@ func TestDynamicContractRegistrationBounds(t *testing.T) {
 		if _, err := f.b.RegisterContract(alice, c); !errors.Is(err, ErrDenied) {
 			t.Fatalf("%s must be denied for dynamic contracts: %v", name, err)
 		}
+	}
+	// allow_shared is synthesizable: a Sharable shared definition's single
+	// policy-owned credential is still collected through the same form.
+	shared := dynamicContract()
+	shared.ID = "dyn-shared"
+	shared.AllowShared = true
+	if _, err := f.b.RegisterContract(alice, shared); err != nil {
+		t.Fatalf("allow_shared dynamic contract must register: %v", err)
 	}
 	if _, err := f.b.RegisterContract(identity.Actor{}, dynamicContract()); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid actor: %v", err)

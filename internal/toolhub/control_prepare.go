@@ -288,14 +288,25 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	if review.AdmissionPending {
 		return c.acceptCredentialGate(ctx, auth, preparing, review)
 	}
+	// The shared class must be on the definition before contract binding so a
+	// synthesized contract is registered with allow_shared — a shared
+	// workload's binding may only reference shared-capable contracts.
+	if shared {
+		review.Definition.Workload.Class = api.Shared
+		review.Definition.Workload.Sharable = true
+		review.Definition.Workload.Rationale = "operator-shared repository connector; catalog-visible, members bind one policy-owned connection and credential"
+	}
 	if err := c.bindReviewedContract(ctx, auth, &review.Definition); err != nil {
 		return failPrepare(err)
 	}
 	if !c.selfInstallUsable(review.Definition) {
-		if c.Broker != nil && c.Broker.Enabled() && len(review.Definition.Credentials) > 0 && review.Definition.CredentialContractID == "" {
+		if c.Broker != nil && c.Broker.Enabled() && coverableCredentials(review.Definition) && review.Definition.CredentialContractID == "" {
 			names := requiredCredentialNames(review.Definition)
 			if len(names) == 0 {
 				for _, input := range review.Definition.Credentials {
+					if input.PerRequest || !contractCoverable(input) {
+						continue
+					}
 					names = append(names, input.Name)
 				}
 				slices.Sort(names)
@@ -308,11 +319,6 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	// the same id+version by an older pipeline (for example, without a broker
 	// contract binding). Bump the patch component until the key is free or the
 	// stored record is identical.
-	if shared {
-		review.Definition.Workload.Class = api.Shared
-		review.Definition.Workload.Sharable = true
-		review.Definition.Workload.Rationale = "operator-shared repository connector; catalog-visible, members bind one policy-owned connection and credential"
-	}
 	for i := 0; i < 100; i++ {
 		stored, lookupErr := c.Store.Definition(review.Definition.DefinitionID, review.Definition.Version)
 		if lookupErr != nil || api.DefinitionsEqual(stored, review.Definition) {
@@ -412,7 +418,20 @@ func (c *ControlPlane) selfInstallUsable(definition api.ToolDefinition) bool {
 	if !selfInstallArtifactPresent(definition) {
 		return false
 	}
-	return c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 || definition.CredentialContractID != ""
+	return c == nil || c.Broker == nil || !c.Broker.Enabled() || !coverableCredentials(definition) || definition.CredentialContractID != ""
+}
+
+// coverableCredentials reports whether the definition declares any input a
+// broker contract can collect and deliver. Local-plane credentials
+// (http_header, brokered, oauth) are collected elsewhere, so a definition
+// carrying only those needs no contract at all.
+func coverableCredentials(definition api.ToolDefinition) bool {
+	for _, input := range definition.Credentials {
+		if !input.PerRequest && contractCoverable(input) {
+			return true
+		}
+	}
+	return false
 }
 
 // selfInstallArtifactPresent requires the reviewed OCI tar to still sit in the

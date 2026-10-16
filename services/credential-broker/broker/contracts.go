@@ -21,9 +21,10 @@ func (b *Broker) RegisterContract(a identity.Actor, c contract.Contract) (contra
 		return contract.Contract{}, ErrInvalid
 	}
 	// Dynamic contracts are collect-and-deliver only. Proxy routes, OAuth
-	// providers, state files and shared-workload delivery stay exclusive to the
-	// operator-reviewed file catalog.
-	if c.OAuthProvider != "" || c.State != nil || len(c.Routes) != 0 || c.AllowShared {
+	// providers and state files stay exclusive to the operator-reviewed file
+	// catalog; allow_shared is synthesizable because a Sharable shared
+	// definition's single policy-owned credential is still form-collected.
+	if c.OAuthProvider != "" || c.State != nil || len(c.Routes) != 0 {
 		return contract.Contract{}, ErrDenied
 	}
 	if c.Storage == "" {

@@ -60,7 +60,7 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 	required := map[string]bool{}
 	declared := map[string]bool{}
 	for _, input := range definition.Credentials {
-		if input.PerRequest {
+		if input.PerRequest || !contractCoverable(input) {
 			continue
 		}
 		declared[input.Name] = true
@@ -148,20 +148,12 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 	if definition.Transport == api.BoundedCLI && bound == "" {
 		return nil
 	}
-	// Dynamic contracts are per-user collect-and-deliver; shared workloads
-	// still require an operator-reviewed catalog contract with allow_shared.
-	if definition.Workload.Class == api.Shared && bound == "" {
+	// A shared definition without the Sharable flag cannot hold static
+	// credentials at all — it is definition-invalid, so synthesis must not
+	// rescue it. Sharable shared definitions get an allow_shared contract
+	// for the same single form-collected credential.
+	if definition.Workload.Class == api.Shared && bound == "" && !definition.Workload.Sharable {
 		return nil
-	}
-	// Dynamic contracts are env-delivery only; inputs that declare another
-	// delivery mode keep the admission error instead of a wrong-shaped form.
-	for _, input := range definition.Credentials {
-		if input.PerRequest {
-			continue
-		}
-		if input.Delivery != "" && input.Delivery != "env" {
-			return nil
-		}
 	}
 	synthesized, err := synthesizeContract(*definition)
 	if err != nil {

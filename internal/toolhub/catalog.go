@@ -104,7 +104,7 @@ func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 func requiredCredentialNames(definition api.ToolDefinition) []string {
 	result := make([]string, 0)
 	for _, input := range definition.Credentials {
-		if input.Required {
+		if input.Required && !input.PerRequest && contractCoverable(input) {
 			result = append(result, input.Name)
 		}
 	}

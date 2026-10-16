@@ -10,6 +10,20 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
+// contractCoverable reports whether a credential input is collected through
+// the broker form and delivered by a contract delivery. Header, brokered and
+// oauth-minted inputs are satisfied by other planes — the remote client's
+// header promotion on the reviewed origin, the bounded-cli cell cred proxy,
+// the OAuth flow — so they never need a contract.
+func contractCoverable(input api.CredentialInput) bool {
+	switch input.Delivery {
+	case "", "env", "file", "json":
+		return true
+	default:
+		return false
+	}
+}
+
 // contractFieldID derives a broker field id from a declared credential name.
 func contractFieldID(name string) string {
 	id := strings.ToLower(name)
@@ -41,7 +55,7 @@ func synthesizeContract(definition api.ToolDefinition) (contract.Contract, error
 	deliveries := make([]contract.Delivery, 0, len(definition.Credentials))
 	used := map[string]bool{}
 	for _, input := range definition.Credentials {
-		if input.PerRequest {
+		if input.PerRequest || !contractCoverable(input) {
 			continue
 		}
 		fid := contractFieldID(input.Name)
@@ -54,7 +68,20 @@ func synthesizeContract(definition api.ToolDefinition) (contract.Contract, error
 		// optional in the contract; the definition-level group check decides
 		// completeness.
 		required := input.Required && !api.GroupedCredentialInput(definition, input.Name)
-		fields = append(fields, contract.Field{ID: fid, Label: input.Name, Kind: "secret", Required: required, MaxBytes: 16384})
+		kind := "secret"
+		switch input.Delivery {
+		case "file":
+			kind = "blob"
+		case "json":
+			kind = "json"
+		}
+		fields = append(fields, contract.Field{ID: fid, Label: input.Name, Kind: kind, Required: required, MaxBytes: 16384})
+		if input.Delivery == "file" {
+			// The value mounts read-only at Target; the env var carries the
+			// in-container path, matching the local materializer's contract.
+			deliveries = append(deliveries, contract.Delivery{Type: "file", Field: fid, Target: input.Target, EnvName: input.Name})
+			continue
+		}
 		deliveries = append(deliveries, contract.Delivery{Type: "env", Field: fid, Target: input.Name})
 	}
 	canonical, _ := json.Marshal(struct {
@@ -77,5 +104,5 @@ func synthesizeContract(definition api.ToolDefinition) (contract.Contract, error
 	if len(title) > 120 {
 		title = title[:120]
 	}
-	return contract.Contract{ID: id, Revision: revision, Title: title, Fields: fields, Deliveries: deliveries}, nil
+	return contract.Contract{ID: id, Revision: revision, Title: title, Fields: fields, Deliveries: deliveries, AllowShared: definition.Workload.Class == api.Shared && definition.Workload.Sharable}, nil
 }

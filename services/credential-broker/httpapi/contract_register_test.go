@@ -33,7 +33,7 @@ func TestHTTPDynamicContractRegistration(t *testing.T) {
 	}
 	denied := in
 	denied.ID = "dyn-denied"
-	denied.AllowShared = true
+	denied.Routes = []contract.Route{{ID: "r", BaseURL: "https://api.example", PathPrefixes: []string{"/"}, Methods: []string{"GET"}, Auth: "bearer", Field: "token"}}
 	if w = f.api("POST", "/v1/contracts", "broker:control", actor, denied); w.Code != http.StatusForbidden {
 		t.Fatalf("out-of-scope contract must be denied: %d", w.Code)
 	}

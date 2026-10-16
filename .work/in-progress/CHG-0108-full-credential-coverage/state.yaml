@@ -1,0 +1,13 @@
+change: CHG-0108-full-credential-coverage
+milestone: M13 follow-up — every reviewed delivery mode installs without operator files
+status: in_progress
+branch: fix/chg-0105-broker-drift-self-heal
+slices:
+  merges: done (feat/m13-closeout 8dc2a04 + feat/m15-model-provider-layer 072a58f, clean ort)
+  synthesis: done (env/file/json mapping, blob file delivery, json kind, AllowShared for Sharable shared)
+  binding: done (coverable partition in declared/required, shared marking before bind)
+  prepare: done (selfInstallUsable + requiredCredentialNames only count coverable inputs)
+  broker: done (RegisterContract accepts allow_shared; routes/oauth_provider/state still denied)
+  tests: done (file/json/http_header/shared synthesis, broker allow_shared, prepare shared order)
+  docs: done (broker ADR-0009 + scope.md + docs/integrations.md)
+  gates-live: pending (just check, rebuild, live shared install)

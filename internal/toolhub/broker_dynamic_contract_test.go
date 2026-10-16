@@ -276,6 +276,22 @@ func TestBindReviewedContractSkipsUnsupportedDelivery(t *testing.T) {
 	}
 }
 
+// The uncovered-credentials error must name only inputs a contract could
+// actually deliver: a header credential is collected by the remote client
+// path and must never appear in the operator instruction.
+func TestRequiredCredentialNamesExcludesLocalPlaneInputs(t *testing.T) {
+	definition := api.ToolDefinition{Credentials: []api.CredentialInput{
+		{Name: "AUTH_HEADER", Required: true, Delivery: "http_header", Target: "Authorization", Prefix: "Bearer "},
+		{Name: "CELL_KEY", Required: true, Delivery: "brokered", Target: "api.example"},
+		{Name: "API_KEY", Required: true},
+		{Name: "PER_CALL", Required: true, PerRequest: true},
+	}}
+	got := requiredCredentialNames(definition)
+	if len(got) != 1 || got[0] != "API_KEY" {
+		t.Fatalf("non-contract credentials leaked into the error names: %v", got)
+	}
+}
+
 // Credential groups are either/or alternatives: the synthesized contract must
 // mark grouped members optional, or the form would force the user to fill
 // every alternative instead of one of them.
@@ -329,9 +345,9 @@ func TestBindReviewedContractGroupedInputsStayOptional(t *testing.T) {
 	}
 }
 
-// Dynamic contracts are per-user collect-and-deliver only: a shared-workload
-// definition still requires an operator-reviewed catalog contract with
-// allow_shared, never a synthesized one.
+// A shared definition without the Sharable flag cannot have static
+// credentials at all — it is definition-invalid, so synthesis must not
+// rescue it with a contract.
 func TestBindReviewedContractSkipsSharedWorkload(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -359,13 +375,181 @@ func TestBindReviewedContractSkipsSharedWorkload(t *testing.T) {
 
 	definition := remoteDefinition()
 	definition.Workload.Class = api.Shared
+	definition.Workload.Sharable = false
 	definition.Credentials = []api.CredentialInput{{Name: "SHARED_TOKEN", Required: true}}
 	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
 	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
 		t.Fatal(err)
 	}
 	if registered != 0 || definition.CredentialContractID != "" {
-		t.Fatalf("shared workload must not synthesize a contract: registered=%d contract=%q", registered, definition.CredentialContractID)
+		t.Fatalf("non-sharable shared workload must not synthesize a contract: registered=%d contract=%q", registered, definition.CredentialContractID)
+	}
+}
+
+// A Sharable shared definition keeps one policy-owned credential collected
+// through the same protected form; the synthesized contract must carry
+// allow_shared so the shared workload's binding can reference it.
+func TestBindReviewedContractSynthesizesAllowShared(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var registered []contract.Contract
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/contracts":
+			_ = json.NewEncoder(w).Encode(registered)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var in contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Error(err)
+			}
+			in.Storage = "local"
+			registered = append(registered, in)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(in)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	definition := remoteDefinition()
+	definition.Workload.Class = api.Shared
+	definition.Workload.Sharable = true
+	definition.Credentials = []api.CredentialInput{{Name: "SHARED_TOKEN", Required: true}}
+	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 1 || definition.CredentialContractID == "" {
+		t.Fatalf("sharable definition must synthesize a contract: %+v", definition)
+	}
+	if !registered[0].AllowShared {
+		t.Fatalf("shared definition's contract must allow shared: %+v", registered[0])
+	}
+}
+
+// A container file credential is collected through the same broker form and
+// materialized as a read-only mount plus an env var carrying the path — the
+// contract needs a file delivery, not an env one.
+func TestBindReviewedContractSynthesizesFileDelivery(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var registered []contract.Contract
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/contracts":
+			_ = json.NewEncoder(w).Encode(registered)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var in contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Error(err)
+			}
+			in.Storage = "local"
+			registered = append(registered, in)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(in)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	definition := remoteDefinition()
+	definition.Transport = api.ContainerMCP
+	definition.Credentials = []api.CredentialInput{
+		{Name: "GOOGLE_APPLICATION_CREDENTIALS", Required: true, Delivery: "file", Target: "/run/secrets/sa.json"},
+		{Name: "GCLOUD_PROJECT", Required: false},
+	}
+	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 1 {
+		t.Fatalf("no contract registered: %d", len(registered))
+	}
+	var fileDelivery *contract.Delivery
+	for i := range registered[0].Deliveries {
+		d := &registered[0].Deliveries[i]
+		if d.Type == "file" {
+			fileDelivery = d
+		}
+		if d.Type == "env" && d.Target != "GCLOUD_PROJECT" {
+			t.Fatalf("unexpected env delivery: %+v", d)
+		}
+	}
+	if fileDelivery == nil || fileDelivery.Target != "/run/secrets/sa.json" || fileDelivery.EnvName != "GOOGLE_APPLICATION_CREDENTIALS" {
+		t.Fatalf("file credential not mapped to file delivery: %+v", registered[0].Deliveries)
+	}
+	if definition.CredentialContractEnv["GOOGLE_APPLICATION_CREDENTIALS"] != "GOOGLE_APPLICATION_CREDENTIALS" {
+		t.Fatalf("file credential env path not bound: %v", definition.CredentialContractEnv)
+	}
+}
+
+// A "json" credential input is a JSON value collected through the form's
+// textarea and delivered to the environment: the contract field must carry
+// the "json" kind so the broker validates the payload, with an env delivery.
+func TestBindReviewedContractSynthesizesJSONField(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var registered []contract.Contract
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/contracts":
+			_ = json.NewEncoder(w).Encode(registered)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var in contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Error(err)
+			}
+			in.Storage = "local"
+			registered = append(registered, in)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(in)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	definition := remoteDefinition()
+	definition.Transport = api.ContainerMCP
+	definition.Credentials = []api.CredentialInput{
+		{Name: "SERVICE_ACCOUNT_JSON", Required: true, Delivery: "json"},
+	}
+	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 1 {
+		t.Fatalf("no contract registered: %d", len(registered))
+	}
+	got := registered[0]
+	if len(got.Fields) != 1 || got.Fields[0].Kind != "json" {
+		t.Fatalf("json credential not mapped to json field kind: %+v", got.Fields)
+	}
+	if len(got.Deliveries) != 1 || got.Deliveries[0].Type != "env" || got.Deliveries[0].Target != "SERVICE_ACCOUNT_JSON" {
+		t.Fatalf("json credential must deliver to env: %+v", got.Deliveries)
 	}
 }
 
