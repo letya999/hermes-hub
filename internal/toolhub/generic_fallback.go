@@ -367,7 +367,17 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 		if value == "" {
 			continue
 		}
-		if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
+		if input.Delivery == "file" {
+			// Reviewed contract: the submitted content is a file the workload
+			// reads at Target. Mount it read-only and hand the container the
+			// path — never the content — through the env var.
+			path := filepath.Join(workspace, input.Name+".secret")
+			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+				return "", nil, err
+			}
+			mounts = append(mounts, api.Mount{Source: path, Target: input.Target, ReadOnly: true})
+			value = input.Target
+		} else if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
 			path := filepath.Join(workspace, input.Name+".json")
 			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
 				return "", nil, err

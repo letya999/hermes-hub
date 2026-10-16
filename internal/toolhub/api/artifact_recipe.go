@@ -65,6 +65,12 @@ func (r ArtifactRecipe) Validate() error {
 		if len(r.BaseImages) != 1 || len(r.DependencyLocks) != 1 {
 			return fmt.Errorf("%w: package recipe carries one base image and one package lock", ErrInvalid)
 		}
+	case "mcpb-v1":
+		// A bundle carries its own server files; the pinned base is the
+		// runtime only (scratch needs none).
+		if len(r.BaseImages) > 1 || len(r.DependencyLocks) != 0 {
+			return fmt.Errorf("%w: mcpb recipe carries no locks and at most one base image", ErrInvalid)
+		}
 	default:
 		return fmt.Errorf("%w: supported Dockerfile recipe required", ErrInvalid)
 	}

@@ -212,7 +212,7 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 	}
 	var injected Injection
 	err := s.Registry.AuthorizeProjected(auth, projectedName, func(_ api.ProjectedTool, effective api.EffectiveBinding) error {
-		if effective.Definition.Workload.Class == api.Shared {
+		if effective.Definition.Workload.Class == api.Shared && !effective.Definition.Workload.Sharable {
 			for _, input := range effective.Definition.Credentials {
 				if !input.PerRequest {
 					return fmt.Errorf("%w: static credentials cannot be shared", api.ErrUnauthorized)

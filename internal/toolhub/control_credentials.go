@@ -326,6 +326,7 @@ func credentialProbeFailure(err error) string {
 // returned error instead of silently dropping both cause and state update.
 func (c *ControlPlane) persistFailure(onboarding api.Onboarding, errorText string, cause error) error {
 	onboarding.Error = errorText
+	onboarding.ErrorCode = api.ErrorCode(cause)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return fmt.Errorf("%w (recording failure state failed: %v)", cause, err)
@@ -452,6 +453,11 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		if regErr := c.registerAdmittedDefinition(&admitted, onboarding.PrincipalID); regErr != nil {
 			return c.persistFailure(onboarding, credentialProbeFailure(regErr), regErr)
 		}
+		if admitted.Workload.Class == api.Shared {
+			if err := c.Store.PromoteToCatalog(admitted.DefinitionID, admitted.Version, onboarding.PrincipalID); err != nil {
+				return c.persistFailure(onboarding, credentialProbeFailure(err), err)
+			}
+		}
 		onboarding.Definition = &admitted
 		onboarding.DefinitionID = admitted.DefinitionID
 		onboarding.DefinitionVersion = admitted.Version
@@ -460,6 +466,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		onboarding.ReviewDigest = admitted.Source.ReviewDigest
 		onboarding.AdmissionPending = false
 		onboarding.Error = ""
+		onboarding.ErrorCode = ""
 	}
 	locator := onboarding.Locator
 	owner := onboarding.PrincipalID
@@ -539,7 +546,16 @@ func credentialHints(definition api.ToolDefinition) []api.CredentialHint {
 		if strings.Contains(upper, "CREDENTIALS") {
 			kind, delivery = "json", "json"
 		}
-		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: input.Name, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
+		// A reviewed delivery/target on the input wins over the name
+		// heuristics: the form renders and submits what the contract says.
+		if input.Delivery != "" {
+			delivery = input.Delivery
+		}
+		target := input.Name
+		if input.Target != "" {
+			target = input.Target
+		}
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
 	}
 	return hints
 }

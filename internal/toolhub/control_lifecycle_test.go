@@ -88,7 +88,11 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if tools, err := store.ListProjectedTools(auth); err != nil || len(tools) != 0 {
 		t.Fatalf("disabled projection=%+v err=%v", tools, err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(ws.Path); !os.IsNotExist(err) {

@@ -33,7 +33,11 @@ type Gateway struct {
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   api.CredentialInjector
-	Control                    *ControlPlane
+	// OAuthRefresh mints a new access token for a connection whose remote
+	// call was rejected, then reports whether a retry may carry a fresh
+	// bearer. Nil disables refresh-retry.
+	OAuthRefresh func(context.Context, api.EffectiveBinding) (bool, error)
+	Control      *ControlPlane
 	// governance is the host-owned tool policy document (issue 139). Nil
 	// keeps the legacy projection behavior; a configured but unreadable
 	// document fails every projection closed.

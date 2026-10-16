@@ -11,19 +11,22 @@ import (
 // plan only: Resolver never executes its command, image, compose file or
 // healthcheck.
 type LaunchRecipe struct {
-	Artifact   string           `json:"artifact,omitempty"`
-	Version    string           `json:"version,omitempty"`
-	Digest     string           `json:"digest,omitempty"`
-	Transport  Transport        `json:"transport"`
-	Endpoint   string           `json:"endpoint,omitempty"`
-	Entrypoint []string         `json:"entrypoint,omitempty"`
-	Args       []string         `json:"args,omitempty"`
-	Network    []string         `json:"network,omitempty"`
-	Mounts     []Mount          `json:"mounts,omitempty"`
-	State      string           `json:"state,omitempty"`
-	Health     HealthProbe      `json:"health,omitempty"`
-	Sidecars   []string         `json:"sidecars,omitempty"`
-	Evidence   []RecipeEvidence `json:"evidence,omitempty"`
+	Artifact   string    `json:"artifact,omitempty"`
+	Version    string    `json:"version,omitempty"`
+	Digest     string    `json:"digest,omitempty"`
+	Transport  Transport `json:"transport"`
+	Endpoint   string    `json:"endpoint,omitempty"`
+	Entrypoint []string  `json:"entrypoint,omitempty"`
+	Args       []string  `json:"args,omitempty"`
+	Network    []string  `json:"network,omitempty"`
+	Mounts     []Mount   `json:"mounts,omitempty"`
+	// Environment carries reviewed static env (e.g. MCPB mcp_config.env
+	// literals); credential placeholders never land here.
+	Environment map[string]string `json:"environment,omitempty"`
+	State       string            `json:"state,omitempty"`
+	Health      HealthProbe       `json:"health,omitempty"`
+	Sidecars    []string          `json:"sidecars,omitempty"`
+	Evidence    []RecipeEvidence  `json:"evidence,omitempty"`
 }
 
 type ConnectionField struct {
@@ -54,7 +57,7 @@ func (r ConnectionRecipe) Validate() error {
 			return fmt.Errorf("%w: invalid connection field", ErrInvalid)
 		}
 		if field.Delivery != "env" && field.Delivery != "file" && field.Delivery != "json" && field.Delivery != "http_header" && field.Delivery != "oauth" {
-			return fmt.Errorf("%w: unsupported connection delivery", ErrInvalid)
+			return fmt.Errorf("%w: %q", ErrUnsupportedCredentialContract, field.Delivery)
 		}
 		if field.Target != "" && strings.ContainsAny(field.Target, "\x00\r\n") {
 			return fmt.Errorf("%w: invalid connection target", ErrInvalid)
@@ -72,11 +75,21 @@ func (r ConnectionRecipe) Validate() error {
 	return nil
 }
 
+// CredentialInputs projects the recipe's declared contract into definition
+// credentials. Delivery and Target ride along: a recipe-declared file
+// credential must reach the workload as a mounted file, not silently shrink
+// to an env var whose value is a path that does not exist in the container.
+// An env/json target that just restates the variable name adds nothing —
+// only targets carrying a real destination (mount path, header, host) stay.
 func (r ConnectionRecipe) CredentialInputs() []CredentialInput {
 	normalized := normalizeConnection(r)
 	inputs := make([]CredentialInput, 0, len(normalized.Fields))
 	for _, field := range normalized.Fields {
-		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required})
+		target := field.Target
+		if target == field.Name {
+			target = ""
+		}
+		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required, Delivery: field.Delivery, Target: target})
 	}
 	return inputs
 }

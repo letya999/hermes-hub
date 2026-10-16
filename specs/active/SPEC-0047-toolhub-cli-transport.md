@@ -62,6 +62,19 @@ A CLI connector uses the same five records as every other transport:
   lock, `COPY --chmod=<octal>`, non-root `10001:10001`), and the definition
   records `source.release_tag` / `source.release_asset` /
   `source.asset_digest` as provenance.
+- **MCPB bundle** — a release asset ending in `.mcpb` routes to the bundle
+  importer instead of the binary path. The asset is a ZIP whose digest is
+  verified the same way, then unpacked safely (path-traversal and size caps
+  apply) and its `manifest.json` (MCPB `manifest_version`) parsed. The
+  manifest's `server.mcp_config` supplies command/args/environment —
+  `${__dirname}` resolves to the container install directory — and its
+  `user_config` declarations referenced from `mcp_config.env` become reviewed
+  credential inputs. Static `env` entries carry into the definition's
+  runtime environment. The imported definition runs as a container-MCP
+  workload on the bundle's language base image; bundle provenance
+  (`release_tag`/`release_asset`/`asset_digest`) is recorded the same way.
+  No `binary` entrypoint is required for `.mcpb` assets — the bundle is the
+  entrypoint.
 - **Shared CLI** — `cli` spec with `scope: shared`. Only a principal
   holding the `install_shared` control grant may register one; the
   definition publishes with catalog visibility and `class: shared`.

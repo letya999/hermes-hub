@@ -23,6 +23,9 @@ type preparedOAuthFlow struct {
 	url          string
 	expires      time.Time
 	broker       *oauth.Broker
+	// remote marks a generic remote-mcp flow minted from discovered PRM/AS
+	// metadata rather than a reviewed prepared-provider contract.
+	remote bool
 }
 
 // oauthFlowStore serializes pending handoffs behind their own lock; flow
@@ -36,7 +39,13 @@ type oauthFlowStore struct {
 // never interpreted as an authorization URL or a provider configuration.
 func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition) (map[string]any, error) {
 	entry, matched, err := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA})
-	if err != nil || !matched || entry.OAuth == nil || c.Injector == nil || c.Secrets == nil {
+	if err != nil || !matched || entry.OAuth == nil {
+		if definition.Transport == api.RemoteMCP {
+			return c.ensureRemoteOAuth(auth, onboarding, definition)
+		}
+		return nil, api.ErrUnauthorized
+	}
+	if c.Injector == nil || c.Secrets == nil {
 		return nil, api.ErrUnauthorized
 	}
 	c.oauthFlows.mu.Lock()
@@ -172,6 +181,9 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	onboarding, err := c.Store.onboarding(flow.onboardingID)
 	if err != nil || onboarding.Phase != api.PhaseAwaitingOAuth {
 		return api.ErrUnauthorized
+	}
+	if flow.remote {
+		return c.completeRemoteOAuth(ctx, flow, onboarding, state, code)
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 	meta, err := flow.broker.HandleCallback(auth.PrincipalID, auth.ContextID, onboarding.OnboardingID, state, code, c.origin()+"/oauth/callback")

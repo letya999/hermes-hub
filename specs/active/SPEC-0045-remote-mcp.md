@@ -14,11 +14,16 @@ registry, config block or runtime flag.
 ## Endpoint admission
 
 - `prepare_source` accepts `remote_url` plus optional `name`, `tools` (allowlist
-  that may only narrow the advertised set), `credentials` and
-  `credential_header`/`credential_prefix`. It is mutually exclusive with
-  `source`, `definition_id` and `candidate_id`.
+  that may only narrow the advertised set), `credentials`,
+  `credential_header`/`credential_prefix` and `scope`. It is mutually exclusive
+  with `source`, `definition_id` and `candidate_id`.
 - The caller needs the `self-install` grant; catalog-only principals are denied
-  before any store write.
+  before any store write. `scope: shared` replaces it with the operator-only
+  `install_shared` control operation: the definition registers `Shared` +
+  `Sharable`, publishes to the catalog, and members bind one policy-owned
+  connection and credential — including OAuth-managed endpoints, where the
+  owner's locator carries `OAUTH_PROVIDER`/`OAUTH_CONNECTION` so member calls
+  ride the same refresh path.
 - The endpoint must be HTTPS, carry no userinfo, query or fragment, have a
   multi-label public host and resolve only to public addresses. Loopback,
   private, link-local, CGNAT, benchmarking, documentation, multicast,
@@ -50,6 +55,23 @@ registry, config block or runtime flag.
   (`admission_pending`); the probed tool list is then intersected with the
   requested allowlist and frozen. Credential-free endpoints probe at prepare
   time and land directly in `awaiting-confirm`.
+- An endpoint whose unauthenticated probe answers 401/403 *and* advertises
+  RFC 9728 protected-resource metadata enters `awaiting-oauth` instead of the
+  credentials form. The control plane discovers the authorization server
+  (RFC 8414), registers a public client when the AS offers RFC 7591 dynamic
+  registration, and opens authorization-code+PKCE with the RFC 8707
+  `resource` parameter on authorize, token and refresh requests. Provider
+  slots are per-definition (`remote-mcp:<id>`) so endpoints cannot overwrite
+  each other.
+- Callback completion exchanges the code, persists the token set **plus the
+  provider document and DCR client** in the owner's encrypted locator, probes
+  `tools/list` with the minted bearer and freezes only the authenticated tool
+  set. The onboarding's `oauth_provider` marker lands on the materialized
+  connection so a rejected call triggers exactly one broker refresh —
+  restart-safe because the locator, not process memory, is the durable
+  record — and a single retried call with the re-injected credential. Public
+  DCR clients persist no empty `client_secret`; endpoints without usable
+  OAuth metadata keep the static-credential form path.
 
 ## Projection and call
 
@@ -76,9 +98,12 @@ registry, config block or runtime flag.
 
 ## Provider trust
 
-- Remote integrations are opt-in and owner-scoped (`PublicationUser`). Provider
-  names, descriptions and tool output are untrusted content; effect is a
-  verb-segment heuristic shown to the owner at confirm, not an authorization.
+- Remote integrations are opt-in and owner-scoped (`PublicationUser`) unless an
+  operator deliberately installs `scope: shared`. Provider names, descriptions
+  and tool output are untrusted content; effect is a verb-segment heuristic
+  shown to the owner at confirm, not an authorization.
 - Organization membership cannot widen this path: the store's publication and
   binding checks keep a user endpoint invisible to every other principal, and a
-  member cannot register connectors that expand host policy.
+  member cannot register connectors that expand host policy. Shared installs
+  are catalog-visible by explicit operator action only; members then bind
+  through the shared-credential policy, never the owner record directly.

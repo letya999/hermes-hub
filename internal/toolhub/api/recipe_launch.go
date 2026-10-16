@@ -205,7 +205,7 @@ func composeLaunch(services map[string]*composeService, name string) (LaunchReci
 	for _, service := range services {
 		if strings.Contains(strings.ToLower(service.name+" "+service.image), "mcp") {
 			if selected != nil {
-				return LaunchRecipe{}, ConnectionRecipe{}, nil, fmt.Errorf("%w: Compose has multiple MCP-looking services", ErrInvalid)
+				return LaunchRecipe{}, ConnectionRecipe{}, nil, fmt.Errorf("%w: Compose has multiple MCP-looking services", ErrAmbiguousEntrypoint)
 			}
 			selected = service
 		}

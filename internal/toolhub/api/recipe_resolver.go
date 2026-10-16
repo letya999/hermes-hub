@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -200,6 +201,12 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 		case base == "compose.yaml" || base == "compose.yml" || strings.HasPrefix(base, "docker-compose."):
 			candidate, fields, fileWarnings, err := parseCompose(data, name)
 			if err != nil {
+				// Ambiguity in reviewed metadata fails closed with a stable code
+				// instead of degrading to a warning that later reads as an
+				// unexplained "no launch recipe".
+				if errors.Is(err, ErrAmbiguousEntrypoint) {
+					return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+				}
 				warnings = append(warnings, "Compose recipe rejected: "+err.Error())
 				continue
 			}

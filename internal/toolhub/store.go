@@ -392,6 +392,48 @@ func (s *Store) SetBindingStatus(bindingID string, status api.Status) error {
 	return s.persistAndNotify()
 }
 
+// RemoveBindingRecords drops the binding row and any rows only it referenced:
+// the workload instances, the owner connection and its credential reference.
+// A connection still named by another live binding is kept — shared
+// credentials survive one member's remove. The onboarding tombstone is the
+// caller's concern; this only clears the operative rows.
+func (s *Store) RemoveBindingRecords(bindingID string) error {
+	s.mu.Lock()
+	binding, ok := s.bindings[bindingID]
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	binding.Status = api.RevokedStatus
+	s.touchProjectionLocked(&binding)
+	s.bindings[bindingID] = binding
+	stopped := s.stopBindingLocked(bindingID)
+	delete(s.bindings, bindingID)
+	referenced := false
+	for _, other := range s.bindings {
+		if other.ConnectionID != "" && other.ConnectionID == binding.ConnectionID {
+			referenced = true
+			break
+		}
+	}
+	if binding.ConnectionID != "" && !referenced {
+		delete(s.connections, binding.ConnectionID)
+		for refID, ref := range s.credentials {
+			if ref.ConnectionID == binding.ConnectionID {
+				delete(s.credentials, refID)
+			}
+		}
+	}
+	for id, workload := range s.workloads {
+		if workload.BindingID == bindingID {
+			delete(s.workloads, id)
+		}
+	}
+	s.mu.Unlock()
+	s.stopWorkloads(stopped)
+	return s.persistAndNotify()
+}
+
 func (s *Store) Resolve(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
 	if auth.CapabilityProfile != "" {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: managed lookup requires a capability", api.ErrUnauthorized)
@@ -471,7 +513,7 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 	if !ok {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: connection", api.ErrStale)
 	}
-	if !connection.Owner.Matches(auth) {
+	if !connection.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, connection) {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: exact connection owner", api.ErrUnauthorized)
 	}
 	if connection.Status == api.RevokedStatus {
@@ -545,9 +587,35 @@ func (s *Store) stopAffectedLocked(connectionID string) []string {
 }
 
 func (s *Store) stopBindingLocked(bindingID string) []string {
+	// A workload governed by a shared connection is keyed to whichever
+	// member's binding registered it, so the stop set is the connection's
+	// bindings, not only the caller's. It keeps running while another member
+	// still holds an active binding — one member's disable removes only that
+	// member's projection.
+	shared := false
+	if binding, ok := s.bindings[bindingID]; ok && binding.ConnectionID != "" {
+		if connection, ok := s.connections[binding.ConnectionID]; ok && connection.Metadata["shared_policy"] != "" {
+			shared = true
+			for _, other := range s.bindings {
+				if other.ToolBindingID != bindingID && other.ConnectionID == binding.ConnectionID && other.Status == api.ActiveStatus {
+					return nil
+				}
+			}
+		}
+	}
+	connectionID := ""
+	if shared {
+		connectionID = s.bindings[bindingID].ConnectionID
+	}
 	ids := make([]string, 0)
 	for id, workload := range s.workloads {
-		if workload.BindingID != bindingID {
+		mine := workload.BindingID == bindingID
+		if !mine && shared {
+			if other, ok := s.bindings[workload.BindingID]; ok && other.ConnectionID == connectionID {
+				mine = true
+			}
+		}
+		if !mine {
 			continue
 		}
 		if workload.Status == api.RunningStatus || workload.Status == api.StartingStatus {
