@@ -990,3 +990,50 @@ func TestCredentialEgressHosts(t *testing.T) {
 		t.Fatalf("mergeEgressHosts did not dedupe: %v", merged)
 	}
 }
+
+// An all-optional definition submits only some contract fields; the injector
+// must not reject the lease just because other optional env entries stayed
+// empty — required coverage is already checked by CredentialsSatisfied.
+func TestBrokerRuntimeInjectorSkipsBlankOptionalInputs(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/leases":
+			_ = json.NewEncoder(w).Encode(brokerv1.Lease{ID: "lease_1", GrantID: "grant_1", CredentialID: "credential_1", Revision: 1})
+		case "/v1/runtime/leases/lease_1/materialize":
+			_ = json.NewEncoder(w).Encode(brokerv1.Materialized{LeaseID: "lease_1", Env: map[string]string{"TOOL_TIER": "core"}})
+		case "/v1/runtime/leases/lease_1/release":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	definition := remoteDefinition()
+	definition.Credentials = []api.CredentialInput{
+		{Name: "TOOL_TIER"},
+		{Name: "GOOGLE_OAUTH_CLIENT_ID"},
+	}
+	effective := api.EffectiveBinding{
+		Definition: definition,
+		Binding:    api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: []string{"TOOL_TIER", "GOOGLE_OAUTH_CLIENT_ID"}, BrokerEnv: map[string]string{"TOOL_TIER": "TOOL_TIER", "GOOGLE_OAUTH_CLIENT_ID": "GOOGLE_OAUTH_CLIENT_ID"}},
+		WorkloadID: "workload_1",
+	}
+	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
+	if err != nil {
+		t.Fatalf("optional blank credential rejected: %v", err)
+	}
+	if injection.Environment["TOOL_TIER"] != "core" || len(injection.Environment) != 1 {
+		t.Fatalf("unexpected environment: %v", injection.Environment)
+	}
+}

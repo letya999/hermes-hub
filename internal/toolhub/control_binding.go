@@ -410,7 +410,7 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 				}
 			}
 			next := connection.Revision + 1
-			reference := api.CredentialReference{CredentialRefID: api.CredentialReferenceID(connection.ConnectionID, next), ConnectionID: connection.ConnectionID, Revision: next, Backend: "credential-broker", Locator: onboarding.Locator, Keys: credentialNames(onboarding), BrokerContractID: definition.CredentialContractID, BrokerContractRevision: definition.CredentialContractRevision, BrokerEnv: api.CloneMap(definition.CredentialContractEnv)}
+			reference := api.CredentialReference{CredentialRefID: api.CredentialReferenceID(connection.ConnectionID, next), ConnectionID: connection.ConnectionID, Revision: next, Backend: "credential-broker", Locator: onboarding.Locator, Keys: brokerCredentialKeys(definition, onboarding), BrokerContractID: definition.CredentialContractID, BrokerContractRevision: definition.CredentialContractRevision, BrokerEnv: api.CloneMap(definition.CredentialContractEnv)}
 			candidate := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: next, CredentialRefID: reference.CredentialRefID, CredentialRevision: next, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 			candidate.ToolBindingID = api.DeterministicBindingID(candidate.PrincipalID, candidate.ContextID, candidate.RuntimeID, candidate.DefinitionID, candidate.DefinitionVersion, candidate.ConnectionID, candidate.CredentialRefID)
 			grantID, err := c.ensureBrokerGrant(ctx, auth, definition, onboarding, candidate)
@@ -443,6 +443,7 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: credstore.BackendLocal, Locator: onboarding.Locator, Keys: credentialNames(onboarding), Status: api.ActiveStatus}
 	if c.brokerCredentialRequired(definition, onboarding) {
 		reference.Backend = "credential-broker"
+		reference.Keys = brokerCredentialKeys(definition, onboarding)
 		reference.BrokerContractID = definition.CredentialContractID
 		reference.BrokerContractRevision = definition.CredentialContractRevision
 		reference.BrokerEnv = api.CloneMap(definition.CredentialContractEnv)

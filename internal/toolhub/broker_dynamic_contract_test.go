@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -505,5 +506,82 @@ func TestBindReviewedContractDisambiguatesFieldIDs(t *testing.T) {
 	}
 	if len(registered) != 1 || len(registered[0].Fields) != 2 || registered[0].Fields[0].ID == registered[0].Fields[1].ID {
 		t.Fatalf("colliding field ids must be disambiguated: %+v", registered)
+	}
+}
+
+// Regression for the live replay: a definition whose credentials are all
+// optional (google_workspace) binds a dynamic contract, then confirm builds a
+// broker credential reference. Required hints are empty, so the reference keys
+// must come from the contract env map — otherwise validate rejects an empty
+// key set and confirm dead-ends with "credential reference metadata".
+func TestBrokerConfirmAllOptionalCredentials(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := brokerv1.Request{ID: "request_1", ContractID: "dyn-abc", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "ready", CredentialID: "credential_1", Revision: 1, AuthorizationURL: "http://127.0.0.1/connect/request_1"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			_ = json.NewEncoder(w).Encode(request)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
+			_ = json.NewEncoder(w).Encode(request)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
+			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", ConnectionID: "connection_1", ConsumerID: "google-work-optional", Status: "active"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/credentials/credential_1/grants":
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1", CredentialID: "credential_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", BindingID: "binding_1", WorkloadID: "work_1", Execution: "dedicated", ContractID: "dyn-abc", ContractRevision: 1, PolicyVersion: "policy-1", Active: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.DefinitionID = "google-work-optional"
+	definition.Credentials = []api.CredentialInput{
+		{Name: "GOOGLE_OAUTH_CLIENT_ID"},
+		{Name: "GOOGLE_OAUTH_CLIENT_SECRET"},
+	}
+	definition.CredentialContractID = "dyn-abc"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{
+		"GOOGLE_OAUTH_CLIENT_ID":     "GOOGLE_OAUTH_CLIENT_ID",
+		"GOOGLE_OAUTH_CLIENT_SECRET": "GOOGLE_OAUTH_CLIENT_SECRET",
+	}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "opt-confirm", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.ensureBrokerRequest(t.Context(), auth, &onboarding, definition); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Phase != api.PhaseAwaitingConfirm {
+		t.Fatalf("unexpected phase: %+v", stored)
+	}
+	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.ConfirmationNonce}); err != nil {
+		t.Fatalf("confirm rejected all-optional credential reference: %v", err)
+	}
+	effective, err := store.Resolve(auth, stored.OnboardingID)
+	if err == nil {
+		_ = effective
+	}
+	stored, _ = store.OnboardingFor(auth, stored.OnboardingID)
+	if stored.BindingID == "" {
+		t.Fatal("confirm did not produce a binding")
 	}
 }

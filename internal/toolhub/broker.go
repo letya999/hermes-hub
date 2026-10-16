@@ -7,6 +7,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -123,10 +124,17 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 			return api.CredentialInjection{}, fmt.Errorf("%w: broker delivery does not satisfy %s", api.ErrIsolation, effective.Definition.DefinitionID)
 		}
 		for _, input := range effective.Credential.Keys {
-			if environment[input] == "" && !api.GroupedCredentialInput(effective.Definition, input) {
-				_ = release(false, false)
-				return api.CredentialInjection{}, fmt.Errorf("%w: broker delivery %s", api.ErrIsolation, input)
+			if environment[input] != "" || api.GroupedCredentialInput(effective.Definition, input) {
+				continue
 			}
+			// Optional inputs the user left blank in the form are legitimately
+			// absent; required coverage was already enforced by the satisfied
+			// check above. Undeclared or required names still fail closed.
+			if slices.ContainsFunc(effective.Definition.Credentials, func(c api.CredentialInput) bool { return c.Name == input && !c.Required }) {
+				continue
+			}
+			_ = release(false, false)
+			return api.CredentialInjection{}, fmt.Errorf("%w: broker delivery %s", api.ErrIsolation, input)
 		}
 		mounts := make([]api.Mount, 0, len(materialized.Mounts))
 		var checkpoint func() error

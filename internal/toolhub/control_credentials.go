@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -578,5 +579,32 @@ func credentialNames(onboarding api.Onboarding) []string {
 	for _, hint := range onboarding.Required {
 		names = append(names, hint.Name)
 	}
+	return names
+}
+
+// brokerCredentialKeys lists the names a broker-bound credential reference
+// covers. The contract env map already carries every collectable input —
+// required or optional — while onboarding.Required only names the required
+// ones, so an all-optional definition would otherwise produce an empty key
+// set that reference validation rejects.
+func brokerCredentialKeys(definition api.ToolDefinition, onboarding api.Onboarding) []string {
+	if len(definition.CredentialContractEnv) == 0 {
+		return credentialNames(onboarding)
+	}
+	seen := map[string]bool{}
+	names := make([]string, 0, len(definition.CredentialContractEnv)+len(onboarding.Required))
+	for name := range definition.CredentialContractEnv {
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	for _, hint := range onboarding.Required {
+		if !seen[hint.Name] {
+			seen[hint.Name] = true
+			names = append(names, hint.Name)
+		}
+	}
+	slices.Sort(names)
 	return names
 }
