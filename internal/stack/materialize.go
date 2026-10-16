@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // writeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7): the
@@ -20,6 +22,24 @@ func writeSoulEffective(dir string, s Settings) error {
 	}
 	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract
 	return atomic(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md"), []byte(body))
+}
+
+// writeModelRegistry materializes the merged spaces/org/user models.yaml into
+// generated/ so the managed model-relay mounts it read-only. A space with no
+// declared models still gets its cliproxy ladder so managed chat keeps working.
+func writeModelRegistry(dir string, s Settings) error {
+	reg, err := LoadModelRegistry(dir, s)
+	if err != nil {
+		return err
+	}
+	if len(reg.Models) == 0 {
+		reg.Models["default"] = ModelEntry{Ladder: []ModelHopRef{{Provider: "cliproxy", Model: s.Model}}}
+	}
+	body, err := yaml.Marshal(reg)
+	if err != nil {
+		return err
+	}
+	return atomic(filepath.Join(dir, "generated", "models."+s.Environment+".yaml"), body)
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the

@@ -61,14 +61,17 @@ type Settings struct {
 	Organization    string               `yaml:"organization,omitempty"`
 	Model           string               `yaml:"model"`
 	ModelURL        string               `yaml:"model_url"`
-	Timezone        string               `yaml:"timezone"`
-	GoogleEmail     string               `yaml:"google_email"`
-	GitLabHost      string               `yaml:"gitlab_host"`
-	DesktopURL      string               `yaml:"desktop_url"`
-	DraftsURL       string               `yaml:"drafts_url"`
-	OAuthPort       int                  `yaml:"oauth_port"`
-	BrowserPort     int                  `yaml:"browser_port"`
-	SlackEventsPort int                  `yaml:"slack_events_port,omitempty"`
+	// Cliproxy selects the proxy topology: "shared" (default) resolves the
+	// infra space's instance; "dedicated" renders a cliproxy per space.
+	Cliproxy        string `yaml:"cliproxy,omitempty"`
+	Timezone        string `yaml:"timezone"`
+	GoogleEmail     string `yaml:"google_email"`
+	GitLabHost      string `yaml:"gitlab_host"`
+	DesktopURL      string `yaml:"desktop_url"`
+	DraftsURL       string `yaml:"drafts_url"`
+	OAuthPort       int    `yaml:"oauth_port"`
+	BrowserPort     int    `yaml:"browser_port"`
+	SlackEventsPort int    `yaml:"slack_events_port,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -342,6 +345,15 @@ func (s Settings) Validate() error {
 	}
 	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
 		return fmt.Errorf("managed capability identity requires capability_mode managed")
+	}
+	switch s.Cliproxy {
+	case "", "shared":
+	case "dedicated":
+		if s.RendersInfra() {
+			return fmt.Errorf("cliproxy: dedicated cannot render on the infra space itself")
+		}
+	default:
+		return fmt.Errorf("cliproxy must be shared or dedicated")
 	}
 	if s.Schema < 1 || s.Schema > 3 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1..3 and profile a lowercase identifier")

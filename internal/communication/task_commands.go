@@ -1,12 +1,14 @@
 package communication
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -465,4 +467,67 @@ func usageSuffix(at string) string {
 
 func itoa64(v int64) string {
 	return strconv.FormatInt(v, 10)
+}
+
+// modelCommand implements /model: list the owner's granted logical models and
+// switch the selection through the space's own model-relay admin endpoint.
+// The bearer comes from model-relay.auth (HUB_MODEL_RELAY_ADMIN) — the relay
+// re-checks grants, so the command can never widen access.
+func modelCommand(ctx context.Context, text string) string {
+	base := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL"))
+	if base == "" {
+		return "Переключение моделей недоступно: в этом пространстве нет управляемого релея."
+	}
+	admin := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
+	call := func(ctx context.Context, method, path string, body []byte) (int, []byte) {
+		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body))
+		if err != nil {
+			return 0, nil
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if admin != "" {
+			req.Header.Set("Authorization", "Bearer "+admin)
+		}
+		client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, nil
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return resp.StatusCode, b
+	}
+	fields := strings.Fields(text)
+	if len(fields) < 2 {
+		code, body := call(ctx, http.MethodGet, "/v1/models", nil)
+		if code != http.StatusOK {
+			return "Список моделей недоступен: релей не отвечает."
+		}
+		var catalog struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(body, &catalog) != nil || len(catalog.Data) == 0 {
+			return "Список моделей пуст."
+		}
+		var names []string
+		for _, m := range catalog.Data {
+			names = append(names, m.ID)
+		}
+		return "Модели: " + strings.Join(names, ", ") + ". Переключить: /model <имя>."
+	}
+	name := fields[1]
+	payload, _ := json.Marshal(map[string]string{"model": name})
+	code, _ := call(ctx, http.MethodPut, "/v1/model", payload)
+	switch code {
+	case http.StatusOK:
+		return "Модель переключена: " + name + ". Новые запросы пойдут через её лесенку."
+	case http.StatusForbidden:
+		return "Нет права на модель " + name + "."
+	default:
+		return "Переключение недоступно: релей отклонил запрос."
+	}
 }

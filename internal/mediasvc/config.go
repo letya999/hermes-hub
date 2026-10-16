@@ -18,6 +18,13 @@ import (
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 )
 
+// RouteHop is one candidate in a logical model's ordered fallback chain:
+// the engine name and the provider-side model id it gets called with.
+type RouteHop struct {
+	Engine string
+	Model  string
+}
+
 // Role selects which HTTP surface the process serves.
 const (
 	RoleSTT   = "stt"
@@ -26,16 +33,21 @@ const (
 )
 
 type Config struct {
-	Role          string
-	ListenAddr    string
-	Auth          string   // required bearer token
-	DataDir       string   // durable job store + scratch
-	InputRoot     string   // local sources must resolve under this root
-	FetchHosts    []string // allowed https fetch hosts; empty disables remote fetch
-	Workers       int      // concurrent engine calls
-	Engine        string   // "remote" | "command" | "sherpa" | "fal" | "elevenlabs"
-	Command       string   // command engine argv0
-	Upstream      string   // remote engine base URL, e.g. http://speaches:8000
+	Role       string
+	ListenAddr string
+	Auth       string   // required bearer token
+	DataDir    string   // durable job store + scratch
+	InputRoot  string   // local sources must resolve under this root
+	FetchHosts []string // allowed https fetch hosts; empty disables remote fetch
+	Workers    int      // concurrent engine calls
+	Engine     string   // "remote" | "command" | "sherpa" | "fal" | "elevenlabs"
+	// Engines lists the media engines to build in order (HUB_MEDIA_ENGINES);
+	// empty means [Engine]. Routes maps a logical model id to an ordered
+	// list of provider candidates (HUB_MEDIA_MODEL_ROUTES).
+	Engines       []string
+	Routes        map[string][]RouteHop
+	Command       string // command engine argv0
+	Upstream      string // remote engine base URL, e.g. http://speaches:8000
 	UpstreamKey   string
 	QueueUpstream string   // async queue base; fal default derives from Upstream
 	ModelDir      string   // sherpa/native models
@@ -78,6 +90,7 @@ func ConfigFromEnv(role string) (Config, error) {
 		FetchHosts:    splitEnv("HUB_MEDIA_FETCH_HOSTS"),
 		Workers:       envInt("HUB_MEDIA_WORKERS", 2),
 		Engine:        envOr("HUB_MEDIA_ENGINE", "command"),
+		Engines:       splitEnv("HUB_MEDIA_ENGINES"),
 		Command:       os.Getenv("HUB_MEDIA_COMMAND"),
 		Upstream:      normalizeUpstream(os.Getenv("HUB_MEDIA_UPSTREAM")),
 		UpstreamKey:   os.Getenv("HUB_MEDIA_UPSTREAM_KEY"),
@@ -140,7 +153,7 @@ func ConfigFromEnv(role string) (Config, error) {
 			c.Upstream = "https://fal.run"
 		}
 	case "command", "command-serve", "sherpa":
-		if c.Role == RoleMedia {
+		if c.Role == RoleMedia && c.Engine != "command" {
 			return c, fmt.Errorf("HUB_MEDIA_ENGINE=%s is not a media engine", c.Engine)
 		}
 		if c.Engine == "command-serve" && c.Role == RoleTTS {
@@ -164,6 +177,14 @@ func ConfigFromEnv(role string) (Config, error) {
 		return c, fmt.Errorf("HUB_MEDIA_ENGINE must be remote, command, command-serve, sherpa, fal or elevenlabs, not %q", c.Engine)
 	}
 	if c.Role == RoleMedia {
+		if len(c.Engines) == 0 {
+			c.Engines = []string{c.Engine}
+		}
+		routes, err := parseRoutes(os.Getenv("HUB_MEDIA_MODEL_ROUTES"), c.Engines)
+		if err != nil {
+			return c, err
+		}
+		c.Routes = routes
 		if c.ImageModel == "" {
 			return c, errors.New("HUB_MEDIA_IMAGE_MODEL is required for the media role")
 		}
@@ -182,6 +203,34 @@ func ConfigFromEnv(role string) (Config, error) {
 		c.InputRoot = root
 	}
 	return c, nil
+}
+
+// parseRoutes reads HUB_MEDIA_MODEL_ROUTES:
+// "logical=engine:provider_id[,engine:provider_id];..." — every hop's engine
+// must be one of the configured engines so a route can never name a
+// provider the deployment did not bring up.
+func parseRoutes(raw string, engines []string) (map[string][]RouteHop, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	known := toSet(engines)
+	out := map[string][]RouteHop{}
+	for _, entry := range strings.Split(raw, ";") {
+		logical, hopsRaw, ok := strings.Cut(strings.TrimSpace(entry), "=")
+		if !ok || logical == "" {
+			return nil, fmt.Errorf("HUB_MEDIA_MODEL_ROUTES: bad entry %q", entry)
+		}
+		var hops []RouteHop
+		for _, hop := range strings.Split(hopsRaw, ",") {
+			engine, model, ok := strings.Cut(strings.TrimSpace(hop), ":")
+			if !ok || model == "" || !known[engine] {
+				return nil, fmt.Errorf("HUB_MEDIA_MODEL_ROUTES: bad hop %q in %q", hop, logical)
+			}
+			hops = append(hops, RouteHop{Engine: engine, Model: model})
+		}
+		out[logical] = hops
+	}
+	return out, nil
 }
 
 // normalizeUpstream accepts both bare hosts (http://speaches:8000) and full
