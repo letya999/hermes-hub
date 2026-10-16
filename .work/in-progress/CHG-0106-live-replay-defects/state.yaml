@@ -1,0 +1,25 @@
+change: CHG-0106-live-replay-defects
+milestone: M13 follow-up — live Telegram replay defect fixes
+status: in-progress
+slices:
+  S1-watcher-probe-fixes: done (watchValue non-empty group, 1MiB body cap, verbatim LastError; tests green)
+  S2-contract-errors: done (uncovered prepare failure names credentials; CreateRequest error names contract)
+  S3-session-leak-routing: done (durable prepare origin by onboarding id; topic routing + trigger=prepare; tests green)
+  S4-message-retry-once: done (one -r1 retry for plain message failures; test green)
+  S5-broker-catalog-restore: done live (notion-token contract added; status minted request r437d3bb3a10a86e2e6992cc428b9f278)
+  S6-latency: documented — supervisor /v1/jobs 30-190s is model+tool time; hub polling adds 1-5s
+  S7-live-replay-verification: pending (needs rebuild + group/topic replay)
+just_check: pending
+live_acceptance: pending
+notes: >
+  Watcher defect decomposed into three real bugs: 256KiB body cap rejected
+  every real page (github issues page is 398KB), watchValue ignored non-first
+  capture groups so alternation regexes produced empty values forever, and
+  settleProbe discarded the real error into a constant string. Notion public
+  pages additionally serve a 20KB JS shell — no HTML regex can see content
+  edits; guidance now steers agents to probe_kind=mcp_tool or static markers,
+  and routine_list exposes the real err. Contract-side: missing broker
+  contract now names uncovered credential names at prepare time and the
+  rejected contract id at request time; the notion-token contract file was
+  restored to spaces/local/broker/contracts and synced into the broker
+  volume (broker restart required — contracts load at startup).

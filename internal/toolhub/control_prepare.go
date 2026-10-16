@@ -280,6 +280,9 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		return failPrepare(err)
 	}
 	if !c.selfInstallUsable(review.Definition) {
+		if c.Broker != nil && c.Broker.Enabled() && len(review.Definition.Credentials) > 0 && review.Definition.CredentialContractID == "" {
+			return failPrepare(fmt.Errorf("%w: no reviewed credential broker contract delivers %s for %s — an operator must add a contract covering these names before onboarding can collect them", api.ErrUnauthorized, strings.Join(requiredCredentialNames(review.Definition), ", "), review.Definition.DefinitionID))
+		}
 		return failPrepare(fmt.Errorf("%w: no reviewed credential broker contract covers %s credentials", api.ErrUnauthorized, review.Definition.DefinitionID))
 	}
 	// The produced definition may differ from an immutable record stored under

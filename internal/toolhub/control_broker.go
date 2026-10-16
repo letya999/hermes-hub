@@ -104,7 +104,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			OwnerKind: ownerKind,
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("credential broker request for contract %s rev %d: %w", definition.CredentialContractID, definition.CredentialContractRevision, err)
 		}
 		onboarding.BrokerRequestID = request.ID
 		onboarding.BrokerAuthorizationURL = request.AuthorizationURL

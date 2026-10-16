@@ -86,7 +86,11 @@ func watchValue(body []byte, re *regexp.Regexp) string {
 		return string(body)
 	}
 	if m := re.FindSubmatch(body); len(m) > 1 {
-		return string(m[1])
+		for _, group := range m[1:] {
+			if len(group) > 0 {
+				return string(group)
+			}
+		}
 	}
 	return ""
 }
@@ -147,8 +151,8 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("probe status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
-	if len(body) > 256*1024 {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
+	if len(body) > 1024*1024 {
 		return nil, errors.New("probe body exceeds size limit")
 	}
 	return body, err
@@ -290,7 +294,7 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 	}
 	result := probeResult{Watch: st, Occurrence: live}
 	if probeErr != nil {
-		st.LastError = "probe failed; baseline unchanged"
+		st.LastError = boundedWatchText(probeErr.Error())
 		limit := schedule.MaxRetries
 		if limit <= 0 {
 			limit = 3

@@ -227,7 +227,24 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		return errNoPrepareChannel
 	}
 	now := g.now().UTC()
-	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)
+	// The callback authenticates by principal only, so caller.ConversationID is
+	// the synthesized DM envelope: route by the still-active message job that
+	// initiated this onboarding, else the notice leaks to the DM root.
+	conversation, deliveryTarget := caller.ConversationID, caller.DeliveryTargetID
+	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], conversation)
+	if origin, ok := g.spool.newestActiveMessageMapping(user.ID); ok && origin.ConversationID != "" {
+		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
+		conversation, deliveryTarget = origin.ConversationID, origin.DeliveryTargetID
+		// The origin job ends long before the build settles; persist the route
+		// so later outcomes still reach the topic instead of the DM default.
+		_ = g.spool.putPrepareOrigin(request.OnboardingID, prepareOrigin{
+			ConversationID: conversation, DeliveryTargetID: deliveryTarget,
+			ChatID: bound.ChatID, TopicID: bound.TopicID,
+		})
+	} else if origin, ok := g.spool.loadPrepareOrigin(request.OnboardingID); ok {
+		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
+		conversation, deliveryTarget = origin.ConversationID, origin.DeliveryTargetID
+	}
 	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: "telegram_bot", ChatID: bound.ChatID, TaskID: bound.TaskID, TopicID: bound.TopicID, Text: notice, CreatedAt: now}
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
@@ -236,11 +253,13 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		// Wait for user action before resuming the agent.
 		return nil
 	}
-	task := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)
 	envelope := caller
-	if task.ChatID < 0 {
-		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(task.ChatID, 10)
+	envelope.ConversationID = conversation
+	envelope.DeliveryTargetID = deliveryTarget
+	if bound.ChatID < 0 && deliveryTarget == "" {
+		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(bound.ChatID, 10)
 	}
+	task := bound
 	job := Job{
 		Envelope: envelope, ID: key, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID,
 		ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "prepare", IdempotencyKey: key,

@@ -313,7 +313,7 @@ func TestFetchWatchBounded(t *testing.T) {
 	var sawNoCache bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawNoCache = r.Header.Get("Cache-Control") == "no-cache"
-		_, _ = w.Write(bytes.Repeat([]byte("x"), 300*1024))
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 1100*1024))
 	}))
 	defer server.Close()
 	g := &Gateway{watchHTTP: server.Client()}
@@ -324,7 +324,7 @@ func TestFetchWatchBounded(t *testing.T) {
 	if !sawNoCache {
 		t.Fatal("watch fetch must bypass caches")
 	}
-	if len(body) > 256*1024 {
+	if len(body) > 1024*1024 {
 		t.Fatalf("fetch body unbounded: %d", len(body))
 	}
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
