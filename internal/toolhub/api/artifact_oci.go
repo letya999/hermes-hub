@@ -80,7 +80,7 @@ func VerifyOCIArtifact(archive io.ReaderAt, size, maxBytes int64) (OCIArtifactEv
 			return invalid()
 		}
 		hash := sha256.New()
-		n, err := io.Copy(hash, r)
+		n, err := io.Copy(hash, r) // #nosec G110 -- h.Size is capped by maxBytes and digest-verified below.
 		if err != nil || n != h.Size {
 			return invalid()
 		}

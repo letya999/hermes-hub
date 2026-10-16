@@ -20,17 +20,25 @@ func TestRunCoverageAndValidation(t *testing.T) {
 		}
 	}
 	called := false
+	var gotPkgMin float64
 	old := coverAll
-	coverAll = func(name string, minimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
+	coverAll = func(name string, minimum, packageMinimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
 		called = true
+		gotPkgMin = packageMinimum
 		if name != profile || minimum != 85 {
 			t.Fatalf("coverAll(%q, %v)", name, minimum)
 		}
 		return 99, nil
 	}
 	t.Cleanup(func() { coverAll = old })
-	if err := run([]string{"covergo", profile, "85"}); err != nil || !called {
-		t.Fatalf("covergo: err=%v called=%v", err, called)
+	if err := run([]string{"covergo", profile, "85"}); err != nil || !called || gotPkgMin != 0 {
+		t.Fatalf("covergo: err=%v called=%v pkgMin=%v", err, called, gotPkgMin)
+	}
+	if err := run([]string{"covergo", profile, "85", "50"}); err != nil || gotPkgMin != 50 {
+		t.Fatalf("covergo pkgmin: err=%v pkgMin=%v", err, gotPkgMin)
+	}
+	if err := run([]string{"covergo", profile, "85", "bad"}); err == nil {
+		t.Fatal("covergo accepted invalid package minimum")
 	}
 	if err := run([]string{"covergo", profile, "bad"}); err == nil {
 		t.Fatal("covergo accepted invalid minimum")

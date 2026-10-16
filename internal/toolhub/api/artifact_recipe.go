@@ -154,7 +154,7 @@ func (r ArtifactRecipe) VerifyContext(contextBytes []byte) error {
 		if h.Name == r.Dockerfile {
 			dst = io.MultiWriter(hash, &content)
 		}
-		if _, err := io.Copy(dst, reader); err != nil {
+		if _, err := io.Copy(dst, reader); err != nil { // #nosec G110 -- h.Size is capped by the remaining context budget and digest-verified below.
 			return fmt.Errorf("%w: truncated context", ErrInvalid)
 		}
 		if "sha256:"+hex.EncodeToString(hash.Sum(nil)) != digest {

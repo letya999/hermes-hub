@@ -29,21 +29,21 @@ func run(args []string) error {
 		err = devcheck.Project(".")
 	case len(args) == 1 && args[0] == "format":
 		err = devcheck.Format(".")
-	case len(args) == 3 && args[0] == "coverage":
-		minimum, parseErr := strconv.ParseFloat(args[2], 64)
+	case len(args) >= 3 && len(args) <= 4 && args[0] == "coverage":
+		minimum, pkgMin, parseErr := parseMinimums(args)
 		if parseErr != nil {
 			err = parseErr
-		} else if actual, checkErr := devcheck.Coverage(args[1], minimum); checkErr != nil {
+		} else if actual, checkErr := devcheck.CoverageGate(args[1], minimum, pkgMin); checkErr != nil {
 			err = checkErr
 		} else {
 			fmt.Printf("Go statement coverage: %.2f%%\n", actual)
 		}
-	case len(args) == 3 && args[0] == "covergo":
-		minimum, parseErr := strconv.ParseFloat(args[2], 64)
+	case len(args) >= 3 && len(args) <= 4 && args[0] == "covergo":
+		minimum, pkgMin, parseErr := parseMinimums(args)
 		if parseErr != nil {
 			err = parseErr
 		} else {
-			actual, checkErr := coverAll(args[1], minimum,
+			actual, checkErr := coverAll(args[1], minimum, pkgMin,
 				func() ([]string, error) {
 					listed, listErr := exec.Command("go", "list", "./...").Output()
 					if listErr != nil {
@@ -107,7 +107,19 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM|covergo FILE MINIMUM|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
+		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
 	}
 	return err
+}
+
+func parseMinimums(args []string) (float64, float64, error) {
+	minimum, err := strconv.ParseFloat(args[2], 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	pkgMin := 0.0
+	if len(args) == 4 {
+		pkgMin, err = strconv.ParseFloat(args[3], 64)
+	}
+	return minimum, pkgMin, err
 }

@@ -60,7 +60,7 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 }
 
 func (m *Manager) finishJob(request hubruntime.ExecuteRequest, response hubruntime.ExecuteResponse, status string) {
-	m.finishJobGeneration(request, response, status, "")
+	m.finishJobGeneration(request, response, status, "") // #nosec G104 -- terminal bookkeeping is best-effort; the caller continues regardless.
 }
 
 // abandonJob removes a job that failed before dispatch. Acquire errors mean no
@@ -334,7 +334,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, runtime.Address+"/v1/execute", bytes.NewReader(body))
 	if err != nil {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
-		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort; the response is committed either way.
 		writeJSON(w, http.StatusBadGateway, uncertain)
 		return
 	}
@@ -347,7 +347,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	response, err := client.Do(req)
 	if err != nil {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
-		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort; the response is committed either way.
 		writeJSON(w, http.StatusBadGateway, uncertain)
 		return
 	}
@@ -359,7 +359,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
 	if readErr != nil || len(body) > 2*1024*1024 {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
-		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort; the response is committed either way.
 		writeJSON(w, http.StatusBadGateway, uncertain)
 		return
 	}
@@ -374,17 +374,17 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 				event = "run.failed"
 			}
 			result = hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: status, LastEvent: event}
-			m.finishJobGeneration(request, result, status, runtime.Generation)
+			m.finishJobGeneration(request, result, status, runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort; the response is committed either way.
 			writeJSON(w, response.StatusCode, result)
 			return
 		}
 		if status == "" && response.StatusCode/100 == 2 {
 			status = "completed"
 		}
-		m.finishJobGeneration(request, result, status, runtime.Generation)
+		m.finishJobGeneration(request, result, status, runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort; the response is committed either way.
 	} else {
 		uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
-		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation)
+		m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort; the response is committed either way.
 		writeJSON(w, http.StatusBadGateway, uncertain)
 		return
 	}
@@ -445,7 +445,7 @@ func (m *Manager) consumeJobStream(request hubruntime.ExecuteRequest, runtime Ru
 	})
 	if !terminalRunStatus(known.Status) {
 		known.Status, known.LastEvent, known.Text = "uncertain", "run.unknown", ""
-		m.finishJobGeneration(request, known, "uncertain", runtime.Generation)
+		m.finishJobGeneration(request, known, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort after a terminal event was already recorded.
 	}
 	_ = err // A durably recorded terminal event remains authoritative after a later transport error.
 }
