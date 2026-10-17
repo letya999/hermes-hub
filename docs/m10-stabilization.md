@@ -1,6 +1,6 @@
 ---
 description: Current M10 file, routine, mock, knowledge and usage contracts after stabilization.
-last_verified: 2026-10-12
+last_verified: 2026-10-18
 ---
 # M10 stabilization
 
@@ -55,7 +55,19 @@ expired backlog, so recording old misses cannot starve a fresh reminder. The
 public-IP validation occurs at connection time, ambient proxies and redirects
 are disabled. Private endpoints and credential-bearing URLs are refused.
 The default probe compares a body or first regex capture. A missing capture is
-an error, not an empty successful value. `github_issue` accepts the exact public
+an error, not an empty successful value. Probes separate fetch from extraction:
+an ordered `extract` pipeline (css, html2text, regex, grep, drop_regex,
+drop_lines, sort_lines, strip, json_path, rss; at most 8 steps) reduces the
+fetched body to the canonical compared value, and a failing or empty step is a
+probe error, never a silent "unchanged". `kind=script` ships the (optionally
+pre-extracted) fragment to the disposable script container as `input()` and
+requires exactly one emitted value. `kind=command` never fetches; it runs the
+script with only the owner's `spaces/<user>/watch` directory bind-mounted
+read-only at `/watch` and bounded `read_file`/`list_dir`/`hash_path` builtins
+confined to that root. `probe.recipe` expands builtin presets into snapshotted
+schedule fields at create time; explicit fields win and unknown recipes are
+rejected. Browser rendering is an opt-in external service and stays out of the
+base image. `github_issue` accepts the exact public
 GitHub issue REST URL and compares only `state`; it needs no account and supports
 no private repositories. Checks accept `changed`, `unchanged` or `equals:<value>`.
 Creation validates ownership before its baseline request; schedule and initial

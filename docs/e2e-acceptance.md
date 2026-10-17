@@ -1,8 +1,17 @@
 ---
 description: Sequential capability acceptance registry and truthful evidence boundaries.
-last_verified: 2026-10-12
+last_verified: 2026-10-18
 ---
 # Sequential acceptance registry
+
+CHG-0113 (ADR-0043/SPEC-0057, issue #248 probe side) adds the watcher
+fetch → extract → compare pipeline: ordered extraction steps, isolated
+`kind=script`/`kind=command` probes (`input()`, owner `watch/` mount, file
+builtins) and snapshotted recipes. Coverage is unit/integration tests plus
+`just check`/`just security` on 2026-10-18; live dev-stack acceptance for
+css-extract, script-probe and command/file-watch probes has NOT been run —
+no entry below claims it. Deterministic unit coverage is not evidence of
+behavior in the real container.
 
 Issue #247 reminder acceptance was repeated on 2026-10-17 with the rebuilt local/dev
 gateway: E2E-081 passed against the real Bot API in 6.5 seconds, with the exact saved
