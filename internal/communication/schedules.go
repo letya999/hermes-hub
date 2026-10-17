@@ -67,6 +67,7 @@ type Schedule struct {
 	Enabled           bool        `json:"enabled"`
 	Paused            bool        `json:"paused"`
 	NextDue           time.Time   `json:"next_due"`
+	LastOccurrenceID  string      `json:"last_occurrence_id,omitempty"`
 	// LastFailureSHA256 dedupes owner-facing error deliveries: a routine that
 	// fails every tick with the same normalized error notifies once, and a
 	// success clears it so the next failure notifies again.
@@ -109,7 +110,7 @@ func scheduleIntent(in Schedule) string {
 	in.Creation = nil
 	in.Revision, in.Enabled, in.Paused = 0, false, false
 	in.NextDue, in.CreatedAt, in.UpdatedAt, in.SnoozedUntil = time.Time{}, time.Time{}, time.Time{}, time.Time{}
-	in.InitialProbeValue, in.NativeCronRef, in.LastFailureSHA256 = nil, "", ""
+	in.InitialProbeValue, in.NativeCronRef, in.LastFailureSHA256, in.LastOccurrenceID = nil, "", "", ""
 	if in.JobKind == "" {
 		in.JobKind = "agent"
 	}
@@ -441,6 +442,52 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			continue
 		}
 		due := item.NextDue
+		if item.LastOccurrenceID != "" {
+			if !spoolIDPattern.MatchString(item.LastOccurrenceID) || len(item.LastOccurrenceID) > 160 {
+				return errors.New("invalid last occurrence ID")
+			}
+			lastPath := filepath.Join(s.root, "occurrences", item.LastOccurrenceID+".json")
+			body, err := os.ReadFile(lastPath)
+			if err == nil {
+				var last RoutineOccurrence
+				if json.Unmarshal(body, &last) != nil || last.Job.ID != item.LastOccurrenceID {
+					if err := s.quarantineOccurrenceLocked(lastPath); err != nil {
+						return err
+					}
+					if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
+						return err
+					}
+					continue
+				}
+				outstanding := last.State == "pending" || last.State == "probing" || last.State == "scripting"
+				if last.State == "dispatched" && last.JobKind == "agent" {
+					mapping, mappingErr := s.loadMappingLocked(last.Job.ID)
+					if mappingErr != nil && !os.IsNotExist(mappingErr) {
+						return mappingErr
+					}
+					outstanding = mappingErr == nil && !terminalStatus(mapping.Status)
+					if os.IsNotExist(mappingErr) {
+						for _, dir := range []string{"pending", "running"} {
+							_, statErr := os.Stat(filepath.Join(s.root, dir, spoolFileID(last.Job.ID)+".json"))
+							if statErr == nil {
+								outstanding = true
+							}
+							if statErr != nil && !os.IsNotExist(statErr) {
+								return statErr
+							}
+						}
+					}
+				}
+				if last.Revision == item.Revision && outstanding {
+					if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
+						return err
+					}
+					continue
+				}
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
 		window := item.CatchUpWindow
 		if window <= 0 {
 			window = defaultCatchUp
@@ -467,14 +514,29 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		occ.Job.CreatedAt = due.UTC()
 		occPath := filepath.Join(s.root, "occurrences", occ.Job.ID+".json")
 		if _, err := os.Stat(occPath); err == nil {
+			item.LastOccurrenceID = occ.Job.ID
 			if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := atomicJSON(occPath, occ); err != nil {
-			return err
+		found := false
+		for _, dir := range []string{"receipts", "archive", "quarantine"} {
+			_, statErr := os.Stat(filepath.Join(s.root, "occurrences", dir, occ.Job.ID+".json"))
+			if statErr == nil {
+				found = true
+				break
+			}
+			if !os.IsNotExist(statErr) {
+				return statErr
+			}
 		}
+		if !found {
+			if err := atomicJSON(occPath, occ); err != nil {
+				return err
+			}
+		}
+		item.LastOccurrenceID = occ.Job.ID
 		if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
 			return err
 		}
