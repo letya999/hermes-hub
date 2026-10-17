@@ -141,6 +141,7 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 	sort.Slice(occurrences, func(i, j int) bool { return occurrences[i].DueAt.Before(occurrences[j].DueAt) })
 	// ponytail: single-host occurrence scan; index by schedule if history becomes large.
 	active := map[string]string{}
+	blocked := map[string]bool{}
 	for _, o := range occurrences {
 		mapping, err := s.loadMappingLocked(o.Job.ID)
 		if os.IsNotExist(err) {
@@ -167,6 +168,7 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 			// Preserve the admitted job and block overlap for this schedule.
 			// Other schedules can still make progress.
 			active[key] = o.Job.ID
+			blocked[o.Job.ID] = true
 			if s.mappingDriftReported == nil {
 				s.mappingDriftReported = make(map[string]bool)
 			}
@@ -183,7 +185,7 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 	dispatched := 0
 	for _, o := range occurrences {
 		path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
-		if o.State != "pending" || now.Before(o.DueAt) {
+		if o.State != "pending" || now.Before(o.DueAt) || blocked[o.Job.ID] {
 			continue
 		}
 		if !s.occurrenceCurrentLocked(o) {

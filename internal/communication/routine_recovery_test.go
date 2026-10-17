@@ -374,3 +374,55 @@ func TestCompactDispatchedWaitsForDelivery(t *testing.T) {
 		t.Fatalf("completed delivery retained hot occurrence: %v", err)
 	}
 }
+
+func TestPendingMappingDriftDoesNotRetryOrBlockOtherSchedule(t *testing.T) {
+	s, old, g := occurrenceFixture(t)
+	if err := s.PutOccurrence(old, old.Job.Envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(old.DueAt, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	id := occurrenceID(old)
+	path := filepath.Join(s.root, "occurrences", id+".json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending RoutineOccurrence
+	if err := json.Unmarshal(body, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pending.State = "pending"
+	if err := atomicJSON(path, pending); err != nil {
+		t.Fatal(err)
+	}
+	mapping, err := s.loadMappingLocked(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping.Fingerprint = "drift"
+	if err := atomicJSON(s.mappingPath(id), mapping); err != nil {
+		t.Fatal(err)
+	}
+	next := old
+	next.ScheduleID = "another"
+	next.DueAt = old.DueAt.Add(time.Minute)
+	if err := s.PutOccurrence(next, next.Job.Envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(next.DueAt, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(next)+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progressed RoutineOccurrence
+	if err := json.Unmarshal(body, &progressed); err != nil {
+		t.Fatal(err)
+	}
+	if progressed.State != "dispatched" {
+		t.Fatalf("healthy schedule state %s", progressed.State)
+	}
+}
