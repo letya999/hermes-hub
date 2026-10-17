@@ -2,9 +2,11 @@ change: CHG-0110-routine-recovery
 status: in-progress
 branch: fix/chg-0110-routine-recovery
 scope: communication spool schedule coalescing, fault isolation, occurrence retention
-source_tests: communication package green; docs and config contracts green
-coverage: 85.84% own Go statement coverage during just check (threshold 85%)
+source_tests: communication package green; selected regressions race-green; vet, format, docs and config contracts green
+coverage: 85.84% own Go statement coverage during just check (threshold 85%; before final narrow regression)
 just_check: incomplete; Go tests, vet, format, staticcheck and tidy passed; pinned gosec launch stalled
 security: gitleaks clean; full ai-repo-safety scan limited by worktree-incompatible TruffleHog and older Go export-data importer
-docker_check: running from this worktree; image build, smoke and Hermes contract passed
+docker_check: failed at managed-network-canary (model relay forwarded metadata redirect); image build, smoke, Hermes contract, reminder and capability probe passed on first commit
+final_narrow_fix: pending mapping drift regression package and race tests green; not included in Docker image gate
+docker_clean: green after failed gate
 live_acceptance: pending controlled deployment and owner schedule review
