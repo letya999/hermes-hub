@@ -106,3 +106,70 @@ func synthesizeContract(definition api.ToolDefinition) (contract.Contract, error
 	}
 	return contract.Contract{ID: id, Revision: revision, Title: title, Fields: fields, Deliveries: deliveries, AllowShared: definition.Workload.Class == api.Shared && definition.Workload.Sharable}, nil
 }
+
+// brokerExtras lists declared optional inputs the bound contract does not
+// deliver. They ride on the credential request as request-scoped extras, so
+// the same protected form collects them and entered values materialize as env
+// without ever rewriting the reviewed contract. Extras must never shadow the
+// bound contract — a field id or delivery target collision makes the broker
+// reject the whole request — so inputs whose target the contract already
+// delivers are dropped and inputs whose derived field id collides are
+// renamed deterministically.
+func brokerExtras(definition api.ToolDefinition) *contract.Extra {
+	fieldIDs, targets := boundContractShape(definition)
+	extra := &contract.Extra{}
+	used := map[string]bool{}
+	for _, input := range definition.Credentials {
+		if input.Required || input.PerRequest || !contractCoverable(input) || definition.CredentialContractEnv[input.Name] != "" || targets[input.Name] {
+			continue
+		}
+		fid := contractFieldID(input.Name)
+		if fieldIDs[fid] {
+			sum := sha256.Sum256([]byte(input.Name))
+			fid = fid[:min(len(fid), 31)] + "_" + hex.EncodeToString(sum[:4])
+		}
+		if used[fid] || fieldIDs[fid] || fid == "csrf" {
+			continue
+		}
+		used[fid] = true
+		kind := "string"
+		if api.SecretName(input.Name) {
+			kind = "secret"
+		}
+		extra.Fields = append(extra.Fields, contract.Field{ID: fid, Label: input.Name, Kind: kind, MaxBytes: 16384})
+		extra.Deliveries = append(extra.Deliveries, contract.Delivery{Type: "env", Field: fid, Target: input.Name})
+	}
+	if len(extra.Fields) == 0 {
+		return nil
+	}
+	return extra
+}
+
+// boundContractShape returns the field ids and delivery targets of the
+// contract the definition is bound to, when that shape is locally known
+// (embedded reviewed contract). Catalog contracts bound by selection mark
+// every deliverable input through CredentialContractEnv, so an empty shape
+// is safe for them.
+func boundContractShape(definition api.ToolDefinition) (map[string]bool, map[string]bool) {
+	fieldIDs, targets := map[string]bool{}, map[string]bool{}
+	if definition.CredentialContractID == "" {
+		return fieldIDs, targets
+	}
+	reviewed, ok, err := api.PreparedContractFor(definition.CredentialContractID, definition.CredentialContractRevision)
+	if err != nil || !ok {
+		return fieldIDs, targets
+	}
+	for _, f := range reviewed.Fields {
+		fieldIDs[f.ID] = true
+	}
+	for _, d := range reviewed.Deliveries {
+		target := d.Target
+		if d.Type != "env" {
+			target = d.EnvName
+		}
+		if target != "" {
+			targets[target] = true
+		}
+	}
+	return fieldIDs, targets
+}

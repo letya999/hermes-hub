@@ -295,8 +295,12 @@ Broker token; verify identity and a safe repository read.”
 Source: [zereight/gitlab-mcp](https://github.com/zereight/gitlab-mcp). Both bin
 aliases resolve to `build/index.js`. Generated Node build ignores upstream cache
 mounts as installation authority. Broker: `gitlab-pat`, delivering
-`GITLAB_PERSONAL_ACCESS_TOKEN`, compatibility alias `GITLAB_TOKEN` and non-secret
-`GITLAB_API_URL`. Confirm the intended HTTPS API URL in the protected form;
+`GITLAB_PERSONAL_ACCESS_TOKEN`, compatibility alias `GITLAB_TOKEN`, non-secret
+`GITLAB_API_URL` and `GITLAB_ENDPOINT` — the real host:port of a plain-HTTP
+self-hosted instance behind the managed loopback forward on `18929`. Upstream
+env knobs the contract does not declare (for example `GITLAB_PROJECT_ID` from
+`docker/.env.example`) stay optional extras, never required form inputs.
+Confirm the intended HTTPS API URL in the protected form;
 its host becomes an egress destination. Secrets, authenticated URLs and URLs
 with queries cannot expand egress. Verify current-user/whoami after rotation.
 On failure, check credentials and the confirmed host on the same connection;

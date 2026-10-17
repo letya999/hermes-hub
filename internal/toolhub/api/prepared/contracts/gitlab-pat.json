@@ -1,6 +1,6 @@
 {
   "id": "gitlab-pat",
-  "revision": 1,
+  "revision": 2,
   "title": "GitLab PAT",
   "storage": "local",
   "fields": [
@@ -17,6 +17,13 @@
       "kind": "string",
       "required": false,
       "max_bytes": 2048
+    },
+    {
+      "id": "endpoint",
+      "label": "GitLab endpoint host:port (plain-HTTP self-hosted, optional)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 256
     }
   ],
   "allow_shared": false,
@@ -35,6 +42,11 @@
       "type": "env",
       "field": "api_url",
       "target": "GITLAB_API_URL"
+    },
+    {
+      "type": "env",
+      "field": "endpoint",
+      "target": "GITLAB_ENDPOINT"
     }
   ]
 }

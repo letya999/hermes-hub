@@ -13,6 +13,23 @@ import (
 	"time"
 )
 
+// onboardingShared reports whether the onboarding's definition is a shared
+// workload; an unreadable definition falls back to the per-user signer and
+// lets the broker's own authorization decide.
+func (c *ControlPlane) onboardingShared(onboarding api.Onboarding) bool {
+	definition, err := c.definitionOf(onboarding)
+	return err == nil && definition.Workload.Class == api.Shared
+}
+
+// brokerControl signs control calls; shared (context-owned) credentials
+// require the context_manager assertion or the broker rejects them.
+func (c *ControlPlane) brokerControl(auth identity.Envelope, shared bool) (*brokerclient.Client, error) {
+	if shared {
+		return c.Broker.NewContextManaged(auth, "broker:control")
+	}
+	return c.Broker.New(auth, "broker:control")
+}
+
 func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, definition api.ToolDefinition) error {
 	if c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 {
 		return nil
@@ -26,7 +43,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 || len(definition.CredentialContractEnv) == 0 {
 		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", api.ErrUnauthorized, definition.DefinitionID)
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, definition.Workload.Class == api.Shared)
 	if err != nil {
 		return err
 	}
@@ -101,7 +118,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
 			ConnectionID: connectionID, ConsumerID: consumerID, RotateCredentialID: rotateTarget,
 			OnboardingID: onboarding.OnboardingID, IdempotencyKey: fmt.Sprintf("%s/broker-%d", onboarding.OnboardingID, onboarding.BrokerAttempts),
-			OwnerKind: ownerKind,
+			OwnerKind: ownerKind, Extra: brokerExtras(definition),
 		})
 		if err != nil {
 			return fmt.Errorf("credential broker request for contract %s rev %d: %w", definition.CredentialContractID, definition.CredentialContractRevision, err)
@@ -161,7 +178,7 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		}
 		return nil
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, c.onboardingShared(*onboarding))
 	if err != nil {
 		return err
 	}
@@ -309,6 +326,25 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	return nil
 }
 
+// resetSubmittedCredential reopens the credential step when a readiness probe
+// rejects the minted credential: submitted values are wrong and the spent
+// connect link cannot take corrections, so the dead credential becomes the
+// rotate target and the next status poll mints a fresh request.
+func (c *ControlPlane) resetSubmittedCredential(onboarding *api.Onboarding) {
+	if onboarding == nil || onboarding.BrokerCredentialID == "" || onboarding.Phase != api.PhaseAwaitingConfirm {
+		return
+	}
+	onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
+	onboarding.BrokerCredentialID, onboarding.Locator = "", ""
+	onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
+	onboarding.BrokerAttempts++
+	onboarding.Phase = api.PhaseAwaitingCreds
+	onboarding.FormNonce, onboarding.FormExpires = "", time.Time{}
+	onboarding.ConfirmationNonce, onboarding.ConfirmationExpires = "", time.Time{}
+	onboarding.ConfirmationUsed = false
+	onboarding.Revision++
+}
+
 // regenerateBrokerRequest replaces an expired or canceled broker request while
 // the onboarding still waits for credentials, so a dead connect link heals on
 // the next status poll instead of pinning the onboarding forever.
@@ -350,7 +386,7 @@ func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Enve
 	if err != nil {
 		return "", err
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, binding.WorkloadClass == api.Shared)
 	if err != nil {
 		return "", err
 	}

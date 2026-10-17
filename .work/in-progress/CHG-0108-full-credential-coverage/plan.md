@@ -29,12 +29,39 @@ gaps:
 3. `shared` workload marking moves before bindReviewedContract so the
    synthesized contract is shared-capable from the start.
 
+## GitLab incident additions (onboard-facc0e96)
+
+`missing credential broker delivery for GITLAB_PROJECT_ID` — a placeholder in
+`docker/.env.example` made an undeclared upstream env a required credential and
+killed prepare before the form. Follow-ups requested by the owner:
+
+4. Broker request-scoped effective contract: `extra_fields`/`extra_deliveries`
+   on request create (optional only) and `opt:<id>` demotion of
+   reviewed-required fields at form submit. Pinned contract never mutates;
+   effective requiredness rides on request/credential and drives materialize.
+   Spec `credential-broker-effective-contract`, ADR-0010.
+5. Forms show required + optional fields with labels; user can demote any
+   required field for that attempt (formnovalidate path).
+6. ToolHub converts discovered extras into broker request extras and demotes
+   undeliverable reviewed-required fields in the generic bind path, so prepare
+   reaches the credential form on malformed/broad upstream metadata.
+7. Source provenance: `ConnectionField.Source` (per parser file + `catalog`),
+   conflict warnings on contradictory requiredness, `prepare_source`
+   `credential_source` argument (fresh prepare and `request_key` replay) and
+   `credential_sources` in status — user can pick `server.json` over a noisy
+   `.env.example`.
+8. One evolving status message per onboarding: later prepare notices edit the
+   first delivered Telegram message (`EditMessageID` + outbox anchor lookup).
+
 ## Steps
 
-- [ ] synthesis + binding changes with tests
-- [ ] broker RegisterContract allow_shared + tests
-- [ ] docs (ADR amendment, spec, api-contract)
-- [ ] just check; rebuild; live: file-cred + shared + remote-header connector
+- [x] synthesis + binding changes with tests
+- [x] broker RegisterContract allow_shared + tests
+- [x] broker extras/demote effective contract + form + ToolHub wiring
+- [x] source provenance + credential_source selection + status edit-in-place
+- [x] docs (ADR amendment, spec, api-contract; ADR-0010 + effective spec)
+- [x] just check (covergo 86.28%/all pkgs ≥75; lint/vet/staticcheck/gosec/docs/config OK; broker module in Linux container: all tests green, 90.46% coverage, all pkgs ≥85)
+- [ ] live: file-cred + shared + remote-header + gitlab retry
 
 ## Wildberries live recovery, 2026-10-17
 

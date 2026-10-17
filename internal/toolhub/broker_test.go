@@ -306,8 +306,8 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 		t.Fatal("mount without required environment delivery was accepted")
 	}
 	mode = "missing"
-	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil {
-		t.Fatal("missing broker environment was accepted")
+	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil || !errors.Is(err, api.ErrCredentialDelivery) {
+		t.Fatalf("missing broker environment was accepted or misclassified: %v", err)
 	}
 	if _, err := brokerRuntimeInjector(&cfg, &credentialbroker.Config{URL: server.URL, KeyFile: filepath.Join(t.TempDir(), "missing.key"), KeyID: "toolhub", Issuer: "hermes-toolhub"})(t.Context(), effective); err == nil {
 		t.Fatal("runtime signing key failure was ignored")
@@ -385,7 +385,7 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 	}
 	for _, incomplete := range []string{"partial", "empty"} {
 		mode = incomplete
-		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, api.ErrIsolation) {
+		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, api.ErrIsolation) || !errors.Is(err, api.ErrCredentialDelivery) {
 			t.Fatalf("incomplete alternative groups accepted (%s): %v", incomplete, err)
 		}
 	}

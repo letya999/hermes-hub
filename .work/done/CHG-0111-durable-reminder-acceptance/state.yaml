@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0111
+title: Durable reminder acceptance
+status: done
+branch: fix/chg-0105-broker-drift-self-heal
+updated: 2026-10-17
+github_issue: 247
+phase: accepted
+implementation_status: complete
+validation:
+  test_review: self-review completed before execution; no independent review claimed
+  regression_red: passed; snooze, full scheduler catch-up, owner status and command tests failed on intended assertions before fixes
+  just_check: passed; identical check recipes with a separate coverage output to avoid concurrent writers
+  go_statement_coverage: 86.24%
+  docker_check: final-image smoke and MCP stdio contract passed; full multi-image gate remains in CI
+  live_acceptance: passed; E2E-081 real Telegram on final dev overlay
+evidence:
+  - Prior audit reproduced lost two-hour snooze and absent missed occurrence after downtime.
+  - Snooze regressions green for one-shot, weekly Friday 10 Moscow and already-dispatched one-shot; restart preserves exact text and one delivery.
+  - Legacy stored snooze regression red then green; scheduling honours the later saved snoozed_until without rewriting user data.
+  - Retention/isolation regression red then green; no delivery receipt state is exposed unless occurrence ownership was verified, including when archived detail has expired.
+  - Weekly crash recovery regression red then green; a pending occurrence from last Friday expires without suppressing this Friday within its catch-up window; the next slot remains Friday 10 Moscow.
+  - Full schedule recovery green at the one-hour boundary, outside it and with short/long custom catch-up windows; 12 concurrent ticks create one logical delivery.
+  - Valid Bob session cannot list, read, update, snooze or delete Alice reminder even when claiming her principal header.
+  - Real local HTTP adapters and worker verify zero unavailable-runtime/model requests, cancellation/revocation before delivery and no resend after a lost response plus restart; this is a transport contract test, not live Telegram acceptance.
+  - Live acceptance found more than 10000 old pending occurrences starving the new reminder; red/green regression now prioritizes deliverable work without raising the 16-settlements bound.
+  - hubctl dev-rebuild deployed final communication image sha256:3c6407e1113076903bc83e3f04108baeb49eee765172aef9e63a065c370c4934; running container image matches and HTTP API answers 401 without auth.
+  - E2E-081 real Telegram PASS on final image on 2026-10-17 at 22:46 Moscow in 6.502s; receipt bound to exact text, audience and occurrence, firing job absent from agent queue, successful fixture cleanup.
+  - Final-image HTTP trust probe passed; caller-supplied last_occurrence_id/state/delivery_state were ignored at creation and the synthetic future fixture was retired through the owner API.
+  - Earlier two pending test schedules were explicitly retired through the owner API before the final retry; their temporary task was removed after confirming no delivery had been admitted.
+  - Standalone Docker runtime smoke and the MCP stdio contract passed; no upstream change or dependency change was made.
+  - Targeted source Gitleaks scan passed with redaction; just docker-clean passed after overlay builds.
+  - Final just check passed race/shuffle tests, coverage floor, format, vet, tidy diff, staticcheck, gosec, docs, actionlint and deployment configuration contract.
+remaining: []
+limitations:
+  - No full multi-image Docker/CI gate or production rollout was run; changed-service Docker contracts and real Telegram acceptance passed on local/dev.
+  - Changes were not pushed and no GitHub issue or pull request was mutated.

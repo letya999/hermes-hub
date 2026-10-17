@@ -527,6 +527,14 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 				if item.Paused || !item.Enabled {
 					state = "пауза"
 				}
+				if item.LastOccurrenceState == "missed" {
+					state += ", последнее срабатывание пропущено"
+				}
+				if item.LastDeliveryState == "uncertain" {
+					state += ", доставка не подтверждена"
+				} else if item.LastDeliveryState == "delivered" {
+					state += ", доставлено"
+				}
 				lines = append(lines, item.ScheduleID+" — "+item.JobKind+", "+state+", "+item.NextDue.UTC().Format(time.RFC3339))
 			}
 			if len(items) == 0 {

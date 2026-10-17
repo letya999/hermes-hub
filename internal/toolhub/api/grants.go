@@ -81,27 +81,34 @@ type CredentialHint struct {
 	Target           string `json:"target,omitempty"`
 	Alternative      string `json:"alternative,omitempty"`
 	AlternativeURL   string `json:"alternative_url,omitempty"`
+	// Source names the metadata file the field was discovered from when the
+	// hint came from a connection recipe (server.json, .env.example, ...).
+	Source string `json:"source,omitempty"`
 }
 
 type Onboarding struct {
-	Schema              int              `json:"schema"`
-	OnboardingID        string           `json:"onboarding_id"`
-	PrincipalID         string           `json:"principal_id"`
-	ContextID           string           `json:"context_id"`
-	RuntimeID           string           `json:"runtime_id"`
-	PolicyVersion       string           `json:"policy_version"`
-	Mode                string           `json:"mode"`
-	SourceURL           string           `json:"source_url,omitempty"`
-	Subfolder           string           `json:"subfolder,omitempty"`
-	CommitSHA           string           `json:"commit_sha,omitempty"`
-	DefinitionID        string           `json:"definition_id,omitempty"`
-	DefinitionVersion   string           `json:"definition_version,omitempty"`
-	Phase               string           `json:"phase"`
-	BindingID           string           `json:"binding_id,omitempty"`
-	ConnectionID        string           `json:"connection_id,omitempty"`
-	CredentialRefID     string           `json:"credential_ref,omitempty"`
-	ReviewDigest        string           `json:"review_digest,omitempty"`
-	Required            []CredentialHint `json:"required,omitempty"`
+	Schema            int              `json:"schema"`
+	OnboardingID      string           `json:"onboarding_id"`
+	PrincipalID       string           `json:"principal_id"`
+	ContextID         string           `json:"context_id"`
+	RuntimeID         string           `json:"runtime_id"`
+	PolicyVersion     string           `json:"policy_version"`
+	Mode              string           `json:"mode"`
+	SourceURL         string           `json:"source_url,omitempty"`
+	Subfolder         string           `json:"subfolder,omitempty"`
+	CommitSHA         string           `json:"commit_sha,omitempty"`
+	DefinitionID      string           `json:"definition_id,omitempty"`
+	DefinitionVersion string           `json:"definition_version,omitempty"`
+	Phase             string           `json:"phase"`
+	BindingID         string           `json:"binding_id,omitempty"`
+	ConnectionID      string           `json:"connection_id,omitempty"`
+	CredentialRefID   string           `json:"credential_ref,omitempty"`
+	ReviewDigest      string           `json:"review_digest,omitempty"`
+	Required          []CredentialHint `json:"required,omitempty"`
+	// Optional lists discovered non-required inputs the user may fill in the
+	// same protected form. They are shown to the user but never gate the
+	// credential phase; empty submissions simply stay undelivered.
+	Optional            []CredentialHint `json:"optional,omitempty"`
 	Permissions         []string         `json:"permissions,omitempty"`
 	Effects             []string         `json:"effects,omitempty"`
 	ConfirmationNonce   string           `json:"confirmation_nonce,omitempty"`
@@ -138,11 +145,16 @@ type Onboarding struct {
 	Error            string `json:"error,omitempty"`
 	// ErrorCode is the stable machine-readable companion of Error; it is set
 	// from the failure cause via ErrorCode() and survives snapshot reloads.
-	ErrorCode  string            `json:"error_code,omitempty"`
-	Recipe     *RecipeResolution `json:"recipe,omitempty"`
-	Revision   uint64            `json:"revision"`
-	CreatedAt  time.Time         `json:"created_at"`
-	Definition *ToolDefinition   `json:"definition,omitempty"`
+	ErrorCode string            `json:"error_code,omitempty"`
+	Recipe    *RecipeResolution `json:"recipe,omitempty"`
+	// CredentialSources records every distinct metadata source the recipe
+	// discovered credential declarations in. When several are present the
+	// caller may ask the user which one to trust and replay prepare_source
+	// with credential_source.
+	CredentialSources []string        `json:"credential_sources,omitempty"`
+	Revision          uint64          `json:"revision"`
+	CreatedAt         time.Time       `json:"created_at"`
+	Definition        *ToolDefinition `json:"definition,omitempty"`
 }
 
 func OperatorGrant(kind GrantKind, principal, definitionID, version string) Grant {

@@ -47,27 +47,31 @@ type Schedule struct {
 	ChatID         int64             `json:"chat_id,omitempty"`
 	// TaskID/TopicID snapshot the task the routine was created in: occurrence
 	// jobs rebind their conversation and deliver back to the same topic.
-	TaskID       string `json:"task_id,omitempty"`
-	TopicID      int64  `json:"topic_id,omitempty"`
-	SlackChannel string `json:"slack_channel,omitempty"`
-	SlackThread  string `json:"slack_thread,omitempty"`
-	Timezone     string `json:"timezone"`
-	Expression   string `json:"expression"`
-	JobKind      string `json:"job_kind"`
+	TaskID         string         `json:"task_id,omitempty"`
+	TopicID        int64          `json:"topic_id,omitempty"`
+	SlackChannel   string         `json:"slack_channel,omitempty"`
+	SlackThread    string         `json:"slack_thread,omitempty"`
+	Timezone       string         `json:"timezone"`
+	Expression     string         `json:"expression"`
+	Timing         *RoutineTiming `json:"timing,omitempty"`
+	IntervalAnchor time.Time      `json:"interval_anchor,omitempty"`
+	JobKind        string         `json:"job_kind"`
 	// Probe is the deterministic source spec for watcher/check schedules:
 	// an http(s) GET plus an optional regex whose first capture group is the
 	// compared value. It never carries credentials.
-	Probe             *WatchProbe `json:"probe,omitempty"`
-	Expect            string      `json:"expect,omitempty"`
-	InitialProbeValue *string     `json:"initial_probe_value,omitempty"`
-	NotifyMode        string      `json:"notify_mode,omitempty"`
-	SourceIDs         []string    `json:"source_ids,omitempty"`
-	SnoozedUntil      time.Time   `json:"snoozed_until,omitempty"`
-	Input             string      `json:"input"`
-	Enabled           bool        `json:"enabled"`
-	Paused            bool        `json:"paused"`
-	NextDue           time.Time   `json:"next_due"`
-	LastOccurrenceID  string      `json:"last_occurrence_id,omitempty"`
+	Probe               *WatchProbe `json:"probe,omitempty"`
+	Expect              string      `json:"expect,omitempty"`
+	InitialProbeValue   *string     `json:"initial_probe_value,omitempty"`
+	NotifyMode          string      `json:"notify_mode,omitempty"`
+	SourceIDs           []string    `json:"source_ids,omitempty"`
+	SnoozedUntil        time.Time   `json:"snoozed_until,omitempty"`
+	Input               string      `json:"input"`
+	Enabled             bool        `json:"enabled"`
+	Paused              bool        `json:"paused"`
+	NextDue             time.Time   `json:"next_due"`
+	LastOccurrenceID    string      `json:"last_occurrence_id,omitempty"`
+	LastOccurrenceState string      `json:"last_occurrence_state,omitempty"`
+	LastDeliveryState   string      `json:"last_delivery_state,omitempty"`
 	// LastFailureSHA256 dedupes owner-facing error deliveries: a routine that
 	// fails every tick with the same normalized error notifies once, and a
 	// success clears it so the next failure notifies again.
@@ -108,6 +112,7 @@ var errScheduleExists = errors.New("schedule already exists or is unreadable")
 
 func scheduleIntent(in Schedule) string {
 	in.Creation = nil
+	in.LastOccurrenceState, in.LastDeliveryState = "", ""
 	in.Revision, in.Enabled, in.Paused = 0, false, false
 	in.NextDue, in.CreatedAt, in.UpdatedAt, in.SnoozedUntil = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 	in.InitialProbeValue, in.NativeCronRef, in.LastFailureSHA256, in.LastOccurrenceID = nil, "", "", ""
@@ -168,7 +173,7 @@ func ValidateSchedule(in Schedule, caller identity.Envelope, now time.Time) erro
 	if err != nil {
 		return errors.New("invalid timezone")
 	}
-	_, err = nextExpression(in.Expression, loc, now)
+	_, err = nextSchedule(in, loc, now)
 	return err
 }
 
@@ -203,7 +208,7 @@ func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCr
 	if err != nil {
 		return Schedule{}, errors.New("invalid timezone")
 	}
-	next, err := nextExpression(in.Expression, loc, now)
+	next, err := nextSchedule(in, loc, now)
 	if err != nil {
 		return Schedule{}, err
 	}
@@ -256,6 +261,9 @@ func (s *Spool) ListSchedules(caller identity.Envelope) ([]Schedule, error) {
 		if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
 			continue
 		}
+		if item.JobKind == "reminder" && item.LastOccurrenceID != "" {
+			item.LastOccurrenceState, item.LastDeliveryState = s.reminderStateLocked(item)
+		}
 		out = append(out, item)
 	}
 	return out, nil
@@ -292,7 +300,7 @@ func (s *Spool) UpdateSchedule(id string, caller identity.Envelope, expression, 
 	if err != nil {
 		return Schedule{}, err
 	}
-	next, err := nextExpression(item.Expression, loc, time.Now().UTC())
+	next, err := nextSchedule(item, loc, time.Now().UTC())
 	if err != nil {
 		return Schedule{}, err
 	}
@@ -354,6 +362,13 @@ func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.T
 		return errors.New("snooze must be in the future")
 	}
 	item.SnoozedUntil = until.UTC()
+	if strings.HasPrefix(strings.TrimSpace(item.Expression), "once:") {
+		item.Expression = "once:" + until.UTC().Format(time.RFC3339Nano)
+		item.NextDue = until.UTC()
+		item.Enabled, item.Paused = true, false
+	} else if item.NextDue.Before(until) {
+		item.NextDue = until.UTC()
+	}
 	item.Revision++
 	item.UpdatedAt = time.Now().UTC()
 	return atomicJSON(s.schedulePath(id), item)
@@ -442,6 +457,9 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			continue
 		}
 		due := item.NextDue
+		if due.Before(item.SnoozedUntil) {
+			due = item.SnoozedUntil
+		}
 		if item.LastOccurrenceID != "" {
 			if !spoolIDPattern.MatchString(item.LastOccurrenceID) || len(item.LastOccurrenceID) > 160 {
 				return errors.New("invalid last occurrence ID")
@@ -460,6 +478,13 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 					continue
 				}
 				outstanding := last.State == "pending" || last.State == "probing" || last.State == "scripting"
+				if last.JobKind == "reminder" && last.State == "pending" {
+					window := last.CatchUpWindow
+					if window <= 0 {
+						window = defaultCatchUp
+					}
+					outstanding = now.Sub(last.DueAt) <= window
+				}
 				if last.State == "dispatched" && last.JobKind == "agent" {
 					mapping, mappingErr := s.loadMappingLocked(last.Job.ID)
 					if mappingErr != nil && !os.IsNotExist(mappingErr) {
@@ -492,14 +517,8 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		if window <= 0 {
 			window = defaultCatchUp
 		}
-		if now.Sub(due) > window {
-			if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
-				return err
-			}
-			continue
-		}
 		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
-		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job}
+		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job, CatchUpWindow: window}
 		if err := validateOccurrence(occ, item.Envelope); err != nil {
 			continue
 		}
@@ -508,6 +527,9 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		}
 		occ.DueAt = due.UTC()
 		occ.State = "pending"
+		if now.Sub(due) > window {
+			occ.State = "missed"
+		}
 		occ.Job.ID = occurrenceID(occ)
 		occ.Job.IdempotencyKey = occ.Job.ID
 		occ.Job.Trigger = "cron"
@@ -552,14 +574,14 @@ func (s *Spool) settleScheduleLocked(item *Schedule, loc *time.Location, due, no
 		item.UpdatedAt = now
 		return atomicJSON(s.schedulePath(item.ScheduleID), item)
 	}
-	next, err := nextExpression(item.Expression, loc, due)
+	next, err := nextSchedule(*item, loc, due)
 	if err != nil {
 		return err
 	}
 	item.NextDue = next
 	// Catch-up is at most one missed occurrence: skip any extra due times in-window.
 	for !item.NextDue.After(now) {
-		skipped, skipErr := nextExpression(item.Expression, loc, item.NextDue)
+		skipped, skipErr := nextSchedule(*item, loc, item.NextDue)
 		if skipErr != nil || !skipped.After(item.NextDue) {
 			break
 		}
@@ -630,6 +652,7 @@ func validTaskProbe(url string) bool {
 }
 
 func normalizeScheduleDraft(in Schedule) Schedule {
+	in.LastOccurrenceID, in.LastOccurrenceState, in.LastDeliveryState = "", "", ""
 	if in.Probe != nil {
 		probe := *in.Probe
 		probe.URL = strings.TrimSpace(probe.URL)

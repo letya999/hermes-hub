@@ -13,7 +13,10 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0112](in-progress/CHG-0112-routine-lifecycle/plan.md) | Full routine lifecycle and interval windows; implementation and managed acceptance in progress |
+| [CHG-0111](done/CHG-0111-durable-reminder-acceptance/plan.md) | Done: issue #247 reminder recovery, snooze, history isolation and real Telegram acceptance; just check passed |
 | [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; verification in progress |
+| [CHG-0109](in-progress/CHG-0109-fast-local-rebuild/plan.md) | Fast local Go service rebuild, in progress |
 | [CHG-0106](done/CHG-0106-live-replay-defects/plan.md) | Done: live-replay defect fixes — watcher probes, session leak routing, contract errors, retry, broker catalog; live verified |
 | [CHG-0107](done/CHG-0107-dynamic-contracts/plan.md) | Done: dynamic credential contracts (POST /v1/contracts + ToolHub synthesis) + live-verified rotate/self-service on google_workspace_mcp |
 | [CHG-0105](done/CHG-0105-broker-drift-self-heal/plan.md) | Done: live-smoke fixes — broker drift self-heal, agent tool guidance, stale artifact reuse; live replay verified |

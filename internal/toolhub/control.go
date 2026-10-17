@@ -208,10 +208,11 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	}
 	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
-		if errors.Is(err, api.ErrUnauthorized) {
+		if errors.Is(err, api.ErrUnauthorized) || errors.Is(err, api.ErrCredentialDelivery) {
 			if entry, matched, lookupErr := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); lookupErr == nil && matched && entry.OAuth != nil {
 				return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
 			}
+			c.resetSubmittedCredential(&onboarding)
 		}
 		return nil, c.persistFailure(onboarding, api.PublicPrepareError(err), err)
 	}
@@ -442,6 +443,9 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	}
 	if onboarding.Recipe != nil {
 		body["recipe"] = onboarding.Recipe
+	}
+	if len(onboarding.CredentialSources) > 0 {
+		body["credential_sources"] = onboarding.CredentialSources
 	}
 	if onboarding.BrokerRequestID != "" {
 		body["broker_request_id"] = onboarding.BrokerRequestID

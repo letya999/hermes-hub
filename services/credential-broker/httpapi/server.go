@@ -111,11 +111,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	if !s.cfg.DevHTTP {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 	}
-	browserPath := strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css"
+	browserPath := strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css" || r.URL.Path == "/form.js"
 	if r.Host != s.host && (browserPath || !slices.Contains(s.apiHosts, r.Host)) || !s.cfg.DevHTTP && r.TLS == nil {
 		fail(w, broker.ErrDenied)
 		return
@@ -139,7 +139,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css" {
+	if strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css" || r.URL.Path == "/form.js" {
 		if !s.limits.allow(r.RemoteAddr) {
 			writeJSON(w, 429, v1.Error{Code: "rate_limited"})
 			return

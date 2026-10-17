@@ -27,6 +27,7 @@ func BuilderArgsAreTrustedBootstrap(args []string) bool {
 
 var RestrictedBuildHosts = []string{
 	"auth.docker.io", "registry-1.docker.io", "production.cloudflare.docker.com", "production.cloudfront.docker.com",
+	"mirror.gcr.io",
 	"pypi.org", "files.pythonhosted.org",
 	"registry.npmjs.org",
 	"proxy.golang.org", "sum.golang.org", "storage.googleapis.com",
@@ -48,12 +49,21 @@ func RestrictedBuildProxyConfig() string {
 		"pid_filename /tmp/squid.pid\n"
 }
 
+// RestrictedBuildKitConfig routes docker.io base-image resolution through a
+// public pull-through cache: unauthenticated Docker Hub rate limits failed
+// every artifact build on this host. Digest-pinned bases keep content
+// integrity on either path; buildkitd falls back to docker.io when the mirror
+// lacks a repository.
+func RestrictedBuildKitConfig() string {
+	return "[registry.\"docker.io\"]\n  mirrors = [\"mirror.gcr.io\"]\n"
+}
+
 // RestrictedBuildKitCreateArgs returns the only builder bootstrap profile that
 // Hermes accepts. It is intentionally separate from the stricter MCP runtime
 // profile: SETUID/SETGID and selected namespace syscalls are needed only by
 // rootless BuildKit during bootstrap.
-func RestrictedBuildKitCreateArgs(name, stateVolume, seccompPath, network, proxyName, contextVolume, outputVolume string) ([]string, error) {
-	if !toolNamePattern.MatchString(name) || !toolNamePattern.MatchString(stateVolume) || !filepath.IsAbs(seccompPath) || ((network == "") != (proxyName == "")) || ((contextVolume == "") != (outputVolume == "")) || (network != "" && (!toolNamePattern.MatchString(network) || !toolNamePattern.MatchString(proxyName))) || (contextVolume != "" && (!toolNamePattern.MatchString(contextVolume) || !toolNamePattern.MatchString(outputVolume))) {
+func RestrictedBuildKitCreateArgs(name, stateVolume, seccompPath, network, proxyName, contextVolume, outputVolume, configVolume string) ([]string, error) {
+	if !toolNamePattern.MatchString(name) || !toolNamePattern.MatchString(stateVolume) || !filepath.IsAbs(seccompPath) || ((network == "") != (proxyName == "")) || ((contextVolume == "") != (outputVolume == "")) || (network != "" && (!toolNamePattern.MatchString(network) || !toolNamePattern.MatchString(proxyName))) || (contextVolume != "" && (!toolNamePattern.MatchString(contextVolume) || !toolNamePattern.MatchString(outputVolume) || !toolNamePattern.MatchString(configVolume))) {
 		return nil, fmt.Errorf("%w: fixed builder name, volume and absolute seccomp path required", ErrInvalid)
 	}
 	seccompPath = filepath.Clean(seccompPath)
@@ -82,7 +92,8 @@ func RestrictedBuildKitCreateArgs(name, stateVolume, seccompPath, network, proxy
 	if contextVolume != "" {
 		args = append(args,
 			"--mount", "type=volume,source="+contextVolume+",target=/run/hermes-context,readonly",
-			"--mount", "type=volume,source="+outputVolume+",target=/run/hermes-output")
+			"--mount", "type=volume,source="+outputVolume+",target=/run/hermes-output",
+			"--mount", "type=volume,source="+configVolume+",target=/run/hermes-buildkit-config,readonly")
 	}
 	if network == "" {
 		args = append(args, "--network", "none")
@@ -95,7 +106,11 @@ func RestrictedBuildKitCreateArgs(name, stateVolume, seccompPath, network, proxy
 	// The shared state volume has no TTL: bound buildkitd GC so repeated
 	// artifact builds cannot grow it without limit (4 GiB keeps the warm
 	// base-image cache useful without eating the host disk).
-	return append(args, RestrictedBuildKitImage, "--oci-worker-no-process-sandbox", "--oci-worker-snapshotter=native", "--oci-worker-gc-keepstorage=4096"), nil
+	args = append(args, RestrictedBuildKitImage, "--oci-worker-no-process-sandbox", "--oci-worker-snapshotter=native", "--oci-worker-gc-keepstorage=4096")
+	if configVolume != "" {
+		args = append(args, "--config=/run/hermes-buildkit-config/buildkitd.toml")
+	}
+	return args, nil
 }
 
 func RestrictedBuildProxyCreateArgs(name, network, configVolume string) ([]string, error) {

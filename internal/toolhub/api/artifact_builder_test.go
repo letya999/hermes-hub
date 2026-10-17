@@ -21,7 +21,7 @@ func TestRestrictedBuildKitProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", abs, "", "", "", "")
+	args, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", abs, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +60,16 @@ func TestRestrictedBuildProxyIsDenyByDefault(t *testing.T) {
 	}
 }
 
+func TestRestrictedBuildRegistryMirrorConfig(t *testing.T) {
+	config := RestrictedBuildKitConfig()
+	if !strings.Contains(config, "[registry.\"docker.io\"]") || !strings.Contains(config, "mirror.gcr.io") {
+		t.Fatalf("docker.io mirror fallback missing: %q", config)
+	}
+	if !slices.Contains(RestrictedBuildHosts, "mirror.gcr.io") {
+		t.Fatal("build proxy blocks the registry mirror")
+	}
+}
+
 func TestRestrictedBuilderDependenciesAreImmutable(t *testing.T) {
 	for _, image := range []string{RestrictedBuildKitImage, RestrictedBuildProxyImage, RestrictedSBOMScannerImage} {
 		parts := strings.Split(image, "@sha256:")
@@ -75,10 +85,10 @@ func TestRestrictedBuildKitProfileRejectsDrift(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", bad, "", "", "", ""); err == nil {
+	if _, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", bad, "", "", "", "", ""); err == nil {
 		t.Fatal("modified seccomp profile accepted")
 	}
-	if _, err := RestrictedBuildKitCreateArgs("bad name", "hermes-buildkit-state", bad, "", "", "", ""); err == nil {
+	if _, err := RestrictedBuildKitCreateArgs("bad name", "hermes-buildkit-state", bad, "", "", "", "", ""); err == nil {
 		t.Fatal("unsafe builder identity accepted")
 	}
 	profile, err := os.ReadFile(filepath.Join("..", "..", "..", "docker", "seccomp-buildkit-rootless.json"))
@@ -92,12 +102,12 @@ func TestRestrictedBuildNetworkTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", profile, "hermes-build", "hermes-build-proxy", "hermes-build-context", "hermes-build-output")
+	builder, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", profile, "hermes-build", "hermes-build-proxy", "hermes-build-context", "hermes-build-output", "hermes-build-builder-config")
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(builder, "\x00")
-	for _, expected := range []string{"--network\x00hermes-build", "HTTP_PROXY=http://hermes-build-proxy:3128", "HTTPS_PROXY=http://hermes-build-proxy:3128", "NO_PROXY=", "http_proxy=http://hermes-build-proxy:3128", "https_proxy=http://hermes-build-proxy:3128", "no_proxy=", "type=volume,source=hermes-build-context,target=/run/hermes-context,readonly", "type=volume,source=hermes-build-output,target=/run/hermes-output"} {
+	for _, expected := range []string{"--network\x00hermes-build", "HTTP_PROXY=http://hermes-build-proxy:3128", "HTTPS_PROXY=http://hermes-build-proxy:3128", "NO_PROXY=", "http_proxy=http://hermes-build-proxy:3128", "https_proxy=http://hermes-build-proxy:3128", "no_proxy=", "type=volume,source=hermes-build-context,target=/run/hermes-context,readonly", "type=volume,source=hermes-build-output,target=/run/hermes-output", "type=volume,source=hermes-build-builder-config,target=/run/hermes-buildkit-config,readonly", "--config=/run/hermes-buildkit-config/buildkitd.toml"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("builder proxy topology omitted %q", expected)
 		}
@@ -112,10 +122,10 @@ func TestRestrictedBuildNetworkTopology(t *testing.T) {
 			t.Fatalf("proxy profile omitted %q", expected)
 		}
 	}
-	if _, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", profile, "hermes-build", "", "", ""); err == nil {
+	if _, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", profile, "hermes-build", "", "", "", ""); err == nil {
 		t.Fatal("networked builder without proxy accepted")
 	}
-	if _, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", profile, "hermes-build", "hermes-build-proxy", "hermes-build-context", ""); err == nil {
+	if _, err := RestrictedBuildKitCreateArgs("hermes-buildkit", "hermes-buildkit-state", profile, "hermes-build", "hermes-build-proxy", "hermes-build-context", "", ""); err == nil {
 		t.Fatal("builder output without isolated volume accepted")
 	}
 }

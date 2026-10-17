@@ -261,6 +261,95 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	}
 }
 
+func TestConfirmProbeFailureReopensBrokerCredentialForm(t *testing.T) {
+	store := NewStore()
+	definition := catalogReadDefinition()
+	definition.Credentials = []api.CredentialInput{{Name: "GRAFANA_TOKEN", Required: true}}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error {
+		return fmt.Errorf("%w: provider read probe failed", api.ErrUnauthorized)
+	}}
+	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm")
+	connectionID := api.DeterministicID("conn", auth.PrincipalID, definition.DefinitionID, "onboard-probe-reset")
+	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: "credential-broker", Locator: "broker-cred-1", Keys: []string{"GRAFANA_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "grafana-sat", BrokerContractRevision: 1, BrokerEnv: map[string]string{"GRAFANA_TOKEN": "GRAFANA_TOKEN"}}
+	if err := store.PutCredentialReference(reference); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-probe-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "GRAFANA_TOKEN"}}, ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": "nonce-1"}); err == nil {
+		t.Fatal("rejected probe passed confirm")
+	}
+	after, err := store.onboarding(onboarding.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Phase != api.PhaseAwaitingCreds || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.ConfirmationNonce != "" {
+		t.Fatalf("probe rejection did not reopen the credential form: %+v", after)
+	}
+	if after.Error == "" {
+		t.Fatal("probe rejection dropped the failure record")
+	}
+}
+
+func TestConfirmDeliveryFailureReopensBrokerCredentialForm(t *testing.T) {
+	// A credential materialized without the required inputs — e.g. the owner
+	// demoted a required field on the form — is a fixable credential failure,
+	// not an infrastructure isolation fault: the onboarding must reopen the
+	// credential step and mint a fresh request instead of pinning on
+	// awaiting-confirm until the nonce dies.
+	store := NewStore()
+	definition := catalogReadDefinition()
+	definition.Credentials = []api.CredentialInput{{Name: "MCP_HTTP_AUTH_TOKEN", Required: true}}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error {
+		return fmt.Errorf("%w: %w: broker delivery does not satisfy %s", api.ErrIsolation, api.ErrCredentialDelivery, definition.DefinitionID)
+	}}
+	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm")
+	connectionID := api.DeterministicID("conn", auth.PrincipalID, definition.DefinitionID, "onboard-delivery-reset")
+	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: "credential-broker", Locator: "broker-cred-1", Keys: []string{"MCP_HTTP_AUTH_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "marketplace-sat", BrokerContractRevision: 1, BrokerEnv: map[string]string{"MCP_HTTP_AUTH_TOKEN": "MCP_HTTP_AUTH_TOKEN"}}
+	if err := store.PutCredentialReference(reference); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-delivery-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "MCP_HTTP_AUTH_TOKEN"}}, ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": "nonce-1"}); err == nil {
+		t.Fatal("unsatisfiable delivery passed confirm")
+	}
+	after, err := store.onboarding(onboarding.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Phase != api.PhaseAwaitingCreds || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.ConfirmationNonce != "" {
+		t.Fatalf("delivery failure did not reopen the credential form: %+v", after)
+	}
+	if after.Error == "" {
+		t.Fatal("delivery failure dropped the failure record")
+	}
+}
+
 func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	key, err := credstore.GenerateKey()
 	if err != nil {

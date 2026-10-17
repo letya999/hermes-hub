@@ -37,6 +37,11 @@ type ConnectionField struct {
 	Delivery    string `json:"delivery"`
 	Target      string `json:"target,omitempty"`
 	Alternative string `json:"alternative,omitempty"`
+	// Source names the metadata file this declaration came from
+	// (server.json, docker/.env.example, ...) or "catalog" for catalog
+	// candidates. It lets callers pick one authoritative source when
+	// upstream declarations disagree.
+	Source string `json:"source,omitempty"`
 }
 
 type ConnectionAlternative struct {
@@ -89,7 +94,7 @@ func (r ConnectionRecipe) CredentialInputs() []CredentialInput {
 		if target == field.Name {
 			target = ""
 		}
-		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required, Delivery: field.Delivery, Target: target})
+		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required, Delivery: field.Delivery, Target: target, Source: field.Source})
 	}
 	return inputs
 }

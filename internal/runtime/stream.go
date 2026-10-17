@@ -18,20 +18,20 @@ import (
 const RunStreamContentType = "application/x-ndjson"
 
 type nativeRunEvent struct {
-	Event     string          `json:"event"`
-	RunID     string          `json:"run_id"`
-	Timestamp float64         `json:"timestamp"`
-	Tool      string          `json:"tool"`
-	Error     bool            `json:"error"`
-	RequestID string          `json:"request_id"`
-	Choices   []string        `json:"choices"`
+	Event     string   `json:"event"`
+	RunID     string   `json:"run_id"`
+	Timestamp float64  `json:"timestamp"`
+	Tool      string   `json:"tool"`
+	Error     bool     `json:"error"`
+	RequestID string   `json:"request_id"`
+	Choices   []string `json:"choices"`
 	// Approval context upstream attaches to approval.request events, already
 	// secret-redacted before it reaches the stream.
 	Description string          `json:"description,omitempty"`
 	Command     string          `json:"command,omitempty"`
-	Output    string          `json:"output,omitempty"`
-	Text      string          `json:"text,omitempty"`
-	Result    json.RawMessage `json:"result,omitempty"`
+	Output      string          `json:"output,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Result      json.RawMessage `json:"result,omitempty"`
 }
 
 func eventID(event nativeRunEvent) string {

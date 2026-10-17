@@ -24,7 +24,7 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: mode, SourceURL: sourceURL, CommitSHA: commit, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Required: credentialHints(definition), Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition),
+		Required: credentialHints(definition), Optional: optionalCredentialHints(definition), Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition),
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 	}
 	if len(onboarding.Required) > 0 {
@@ -135,12 +135,76 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 		definition.CredentialContractEnv = bestEnv
 		return nil
 	}
+	// A prepared definition pins a reviewed contract that may be missing from
+	// the broker catalog (fresh volume, ledger reset). Register the embedded
+	// reviewed contract and re-run selection — synthesizing from discovered
+	// credentials instead would overflow the broker's contract bounds on
+	// noisy upstream metadata and lose the reviewed delivery mapping.
+	if bound != "" && definition.CredentialContractRevision > 0 {
+		if reviewed, ok, rerr := api.PreparedContractFor(bound, definition.CredentialContractRevision); rerr == nil && ok {
+			if stored, rerr := control.RegisterContract(ctx, reviewed); rerr == nil {
+				contracts = append(contracts, stored)
+				for i, candidate := range contracts {
+					if candidate.ID != bound || candidate.Revision != definition.CredentialContractRevision {
+						continue
+					}
+					env := api.CloneMap(definition.CredentialContractEnv)
+					if env == nil {
+						env = map[string]string{}
+					}
+					delivered := map[string]bool{}
+					for _, delivery := range candidate.Deliveries {
+						target := delivery.Target
+						if delivery.Type != "env" {
+							target = delivery.EnvName
+						}
+						if target == "" {
+							continue
+						}
+						delivered[target] = true
+						if declared[target] && env[target] == "" {
+							env[target] = target
+						}
+					}
+					if definition.CredentialsSatisfied(func(name string) bool { return delivered[env[name]] }) {
+						definition.CredentialContractID = contracts[i].ID
+						definition.CredentialContractRevision = contracts[i].Revision
+						definition.CredentialContractEnv = env
+						return nil
+					}
+					break
+				}
+			}
+		}
+	}
 	// Nothing in the catalog covers the declared credentials. A pinned
 	// contract that exists but does not cover keeps the stored binding; every
 	// other gap is healed by registering a contract synthesized from the
 	// reviewed definition. The broker form stays the human consent point.
 	for _, candidate := range contracts {
 		if bound != "" && candidate.ID == bound && candidate.Revision == definition.CredentialContractRevision {
+			// The pinned contract stays authoritative for what it delivers; a
+			// discovered input it cannot cover (over-broad upstream examples,
+			// placeholder heuristics) must not kill prepare before the form.
+			// It demotes to optional and reaches the same form as an extra.
+			delivered := map[string]bool{}
+			for _, delivery := range candidate.Deliveries {
+				target := delivery.Target
+				if delivery.Type != "env" {
+					target = delivery.EnvName
+				}
+				if target != "" {
+					delivered[target] = true
+				}
+			}
+			for i, input := range definition.Credentials {
+				if !input.Required || input.PerRequest || !contractCoverable(input) {
+					continue
+				}
+				if !delivered[definition.CredentialContractEnv[input.Name]] {
+					definition.Credentials[i].Required = false
+				}
+			}
 			return nil
 		}
 	}
@@ -278,7 +342,7 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
 	}
 	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
-		if control, err := c.Broker.New(auth, "broker:control"); err == nil {
+		if control, err := c.brokerControl(auth, c.onboardingShared(onboarding)); err == nil {
 			if err := control.Revoke(context.Background(), onboarding.BrokerCredentialID); err != nil && !brokerclient.IsNotFound(err) {
 				return err
 			}

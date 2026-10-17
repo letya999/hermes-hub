@@ -22,13 +22,20 @@ var formPage = template.Must(template.New("form").Parse(`<!doctype html>
 {{if not .View.Approved}}<p>Подтвердите этот код в том же доверенном канале Communication Hub, где начали подключение. Одна ссылка сама по себе не даёт доступ к форме.</p><p class="code">{{.View.Code}}</p><p>Запрос: <code>{{.View.RequestID}}</code></p><p>После подтверждения обновите эту страницу.</p><a href="/connect/{{.View.RequestID}}">Проверить подтверждение</a>
 {{else if eq .View.Status "pending"}}<p>Значения будут переданы только брокеру и настроенному хранилищу, не в чат или модель.</p>
 <form method="post" enctype="multipart/form-data" action="/connect/{{.View.RequestID}}/submit"><input type="hidden" name="csrf" value="{{.CSRF}}">
-{{range .View.Fields}}<label for="f_{{.ID}}">{{.Label}}</label>{{if or (eq .Kind "blob") (eq .Kind "json") (eq .Kind "pem")}}<input id="f_{{.ID}}" name="{{.ID}}" type="file" {{if .Required}}required{{end}}><small>До {{.MaxBytes}} байт. Имя загружаемого файла не используется как путь.</small>{{else}}<input id="f_{{.ID}}" name="{{.ID}}" type="{{if eq .Kind "secret"}}password{{else}}text{{end}}" autocomplete="off" spellcheck="false" maxlength="{{.MaxBytes}}" {{if .Required}}required{{end}}>{{end}}{{end}}
-<button type="submit">Сохранить и продолжить</button></form>
+{{range .View.Fields}}<label for="f_{{.ID}}">{{.Label}} <small class="tag">{{if .Required}}обязательное{{else}}необязательное{{end}}</small></label>{{if or (eq .Kind "blob") (eq .Kind "json") (eq .Kind "pem")}}<input id="f_{{.ID}}" name="{{.ID}}" type="file" {{if .Required}}required{{end}}><small>До {{.MaxBytes}} байт. Имя загружаемого файла не используется как путь.</small>{{else}}<input id="f_{{.ID}}" name="{{.ID}}" type="{{if eq .Kind "secret"}}password{{else}}text{{end}}" autocomplete="off" spellcheck="false" maxlength="{{.MaxBytes}}" {{if .Required}}required{{end}}>{{end}}{{if .Required}}<label class="opt"><input type="checkbox" name="opt:{{.ID}}" value="1"> Поле не требуется — запустить без него</label>{{end}}{{end}}
+{{if .View.Extra}}<p>Необязательные параметры, объявленные источником:</p>{{range .View.Extra}}<label for="f_{{.ID}}">{{.Label}} <small class="tag">необязательное</small></label>{{if or (eq .Kind "blob") (eq .Kind "json") (eq .Kind "pem")}}<input id="f_{{.ID}}" name="{{.ID}}" type="file"><small>До {{.MaxBytes}} байт. Имя загружаемого файла не используется как путь.</small>{{else}}<input id="f_{{.ID}}" name="{{.ID}}" type="{{if eq .Kind "secret"}}password{{else}}text{{end}}" autocomplete="off" spellcheck="false" maxlength="{{.MaxBytes}}">{{end}}{{end}}{{end}}
+<button type="submit">Сохранить и продолжить</button>{{if .View.AnyRequired}}<button type="submit" formnovalidate>Отправить без проверки браузера</button>{{end}}</form>
 {{else if eq .View.Status "authorizing"}}<p>Файлы приняты. Подтвердите доступ у провайдера.</p><form method="post" action="/connect/{{.View.RequestID}}/oauth"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Перейти к авторизации</button></form>
 {{else}}<p>Авторизация обрабатывается. Повторное использование кода запрещено.</p>{{end}}
-<p class="foot">Ссылка ограничена по времени. Не отправляйте секреты через Telegram, Slack или обычные сообщения.</p></main></body></html>`))
+<p class="foot">Ссылка ограничена по времени. Не отправляйте секреты через Telegram, Slack или обычные сообщения.</p><script src="/form.js" defer></script></main></body></html>`))
 
 const css = `body{font:16px/1.6 system-ui,sans-serif;background:#f4f5f7;color:#17212b;margin:0}main{max-width:620px;margin:48px auto;padding:32px;background:white;border:1px solid #d9e0e7;border-radius:12px}h1{font-size:28px;line-height:1.2}.eyebrow,.foot,small{color:#546476}.eyebrow{letter-spacing:.08em;font-size:12px}.code{font:700 25px monospace;padding:16px;background:#eef3f7;overflow-wrap:anywhere}label{display:block;font-weight:600;margin-top:20px}input{display:block;box-sizing:border-box;width:100%;padding:10px;margin:8px 0;border:1px solid #98a7b5;border-radius:6px}button{margin-top:24px;padding:12px 18px;border:0;border-radius:6px;background:#153a54;color:white;cursor:pointer}small{display:block;font-size:12px}.foot{font-size:13px;border-top:1px solid #ddd;margin-top:28px;padding-top:16px}a{color:#154d74}code{overflow-wrap:anywhere}@media(max-width:700px){main{margin:16px;padding:20px}}`
+
+// Demote checkboxes release the paired input's HTML required flag, so a
+// deliberate skip goes through the normal submit button instead of relying on
+// the formnovalidate fallback the user may not notice. Served as a static
+// file because the content-security-policy forbids inline scripts.
+const formJS = `document.addEventListener("change",function(e){var c=e.target;if(!c||c.type!=="checkbox"||!c.name||c.name.indexOf("opt:")!==0){return}var i=document.getElementById("f_"+c.name.slice(4));if(i){i.required=!c.checked}})`
 
 func (s *Server) cookieName() string {
 	if s.cfg.DevHTTP {
@@ -47,6 +54,11 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/form.css" && r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = io.WriteString(w, css)
+		return
+	}
+	if r.URL.Path == "/form.js" && r.Method == "GET" {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = io.WriteString(w, formJS)
 		return
 	}
 	if r.URL.Path == "/oauth/callback" && r.Method == "GET" {
@@ -128,7 +140,7 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	values, csrf, e := readForm(r)
+	values, csrf, demoted, e := readForm(r)
 	if values != nil {
 		defer values.Wipe()
 	}
@@ -136,7 +148,7 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	if e = s.b.Submit(r.Context(), p[1], s.cookie(r), csrf, values); e != nil {
+	if e = s.b.Submit(r.Context(), p[1], s.cookie(r), csrf, values, demoted); e != nil {
 		fail(w, e)
 		return
 	}
@@ -149,57 +161,67 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 	}
 	s.success(w)
 }
-func readForm(r *http.Request) (provider.Bundle, string, error) {
+func readForm(r *http.Request) (provider.Bundle, string, map[string]bool, error) {
 	mt, params, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if e != nil || mt != "multipart/form-data" || params["boundary"] == "" {
-		return nil, "", broker.ErrInvalid
+		return nil, "", nil, broker.ErrInvalid
 	}
 	// Stream parts into bounded memory, never multipart.ParseForm's disk spill path.
 	rd := multipart.NewReader(r.Body, params["boundary"])
 	values := provider.Bundle{}
 	seen := map[string]bool{}
 	csrf := ""
+	demoted := map[string]bool{}
 	total := 0
 	for i := 0; ; i++ {
 		part, e := rd.NextPart()
 		if e == io.EOF {
 			break
 		}
-		if e != nil || i >= 33 {
-			return values, "", broker.ErrInvalid
+		// A full legitimate form posts 32 contract fields + 32 demote controls
+		// + 64 request-scoped extras + 1 CSRF part.
+		if e != nil || i >= 129 {
+			return values, "", nil, broker.ErrInvalid
 		}
 		name := part.FormName()
 		if name == "" || seen[name] || len(name) > 80 {
 			_ = part.Close()
-			return values, "", broker.ErrInvalid
+			return values, "", nil, broker.ErrInvalid
 		}
 		seen[name] = true
 		v, e := io.ReadAll(io.LimitReader(part, 65537))
 		_ = part.Close()
 		if e != nil || len(v) > 65536 {
 			clear(v)
-			return values, "", broker.ErrInvalid
+			return values, "", nil, broker.ErrInvalid
 		}
 		total += len(v)
 		if total > contract.MaxBundle {
 			clear(v)
-			return values, "", broker.ErrInvalid
+			return values, "", nil, broker.ErrInvalid
 		}
 		if name == "csrf" {
 			if len(v) > 128 {
 				clear(v)
-				return values, "", broker.ErrInvalid
+				return values, "", nil, broker.ErrInvalid
 			}
 			csrf = string(v)
+			clear(v)
+		} else if strings.HasPrefix(name, "opt:") {
+			if string(v) != "1" {
+				clear(v)
+				return values, "", nil, broker.ErrInvalid
+			}
+			demoted[name[4:]] = true
 			clear(v)
 		} else {
 			values[name] = v
 		}
 	}
 	if csrf == "" {
-		return values, "", broker.ErrInvalid
+		return values, "", nil, broker.ErrInvalid
 	}
-	return values, csrf, nil
+	return values, csrf, demoted, nil
 }
 func (s *Server) success(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})

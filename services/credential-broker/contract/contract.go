@@ -76,6 +76,52 @@ type Contract struct {
 	AllowShared   bool       `json:"allow_shared"`
 }
 
+// MaxExtraInputs bounds one request's optional extras. Upstream metadata can
+// declare dozens of settings (a gitlab-class connector lists ~50), so the
+// catalog contract's 32-field ceiling does not apply — extras extend one form,
+// not the audited catalog surface, but still need a hard cap.
+const MaxExtraInputs = 64
+
+// Extra attaches request-scoped optional env inputs to one credential request.
+// Reviewed contracts stay immutable; extras extend only the credential minted
+// from that request — they are validated by the same rules as contract fields
+// but can never be required or change where existing fields go.
+type Extra struct {
+	Fields     []Field    `json:"fields,omitempty"`
+	Deliveries []Delivery `json:"deliveries,omitempty"`
+}
+
+// Validate checks extras against the same field and env-delivery rules as a
+// contract member, plus the extras-only invariants: never required, env-only,
+// every field delivered exactly once.
+func (e *Extra) Validate() error {
+	if e == nil {
+		return nil
+	}
+	if len(e.Fields) > MaxExtraInputs || len(e.Deliveries) > MaxExtraInputs {
+		return ErrContract
+	}
+	fields := map[string]bool{}
+	for _, f := range e.Fields {
+		if f.Required || !fieldID.MatchString(f.ID) || f.ID == "csrf" || fields[f.ID] || len(f.Label) == 0 || len(f.Label) > 120 || f.MaxBytes < 1 || f.MaxBytes > 65536 || !slices.Contains([]string{"secret", "string", "json", "pem", "blob"}, f.Kind) {
+			return ErrContract
+		}
+		fields[f.ID] = true
+	}
+	targets := map[string]bool{}
+	for _, d := range e.Deliveries {
+		if d.Type != "env" || !envName.MatchString(d.Target) || targets[d.Target] || !fields[d.Field] || d.EnvName != "" || len(d.Mapping) != 0 {
+			return ErrContract
+		}
+		targets[d.Target] = true
+		delete(fields, d.Field)
+	}
+	if len(fields) != 0 {
+		return ErrContract
+	}
+	return nil
+}
+
 func SafeTarget(s string) bool {
 	if !strings.HasPrefix(s, "/") || path.Clean(s) != s || s == "/" || strings.ContainsAny(s, "\\\x00\r\n") {
 		return false
@@ -112,7 +158,17 @@ func forbiddenHeader(h string) bool {
 	return strings.HasPrefix(strings.ToLower(h), "x-forwarded-")
 }
 func (c Contract) Validate() error {
-	if !identity.ValidID(c.ID) || c.Revision < 1 || c.Revision > 100000 || len(c.Title) == 0 || len(c.Title) > 120 || !identity.ValidID(c.Storage) || len(c.Fields) > 32 || len(c.Deliveries) > 32 || len(c.Routes) > 8 {
+	if len(c.Fields) > 32 || len(c.Deliveries) > 32 || len(c.Routes) > 8 {
+		return ErrContract
+	}
+	return c.ValidateStructure()
+}
+
+// ValidateStructure applies every per-field, delivery, state and route rule
+// except the catalog cardinality caps — the effective contract one request
+// collects may exceed them through validated optional extras.
+func (c Contract) ValidateStructure() error {
+	if !identity.ValidID(c.ID) || c.Revision < 1 || c.Revision > 100000 || len(c.Title) == 0 || len(c.Title) > 120 || !identity.ValidID(c.Storage) {
 		return ErrContract
 	}
 	fields := map[string]bool{}

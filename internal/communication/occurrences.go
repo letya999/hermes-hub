@@ -29,7 +29,8 @@ type RoutineOccurrence struct {
 	Job        Job       `json:"job"`
 	// JobKind mirrors the schedule kind. "reminder" occurrences deliver their
 	// text through the outbox directly — no ordinary job, no runtime, no model.
-	JobKind string `json:"job_kind,omitempty"`
+	JobKind       string        `json:"job_kind,omitempty"`
+	CatchUpWindow time.Duration `json:"catch_up_window_ns,omitempty"`
 	// RetryCount counts probe-error retries (check kind, SPEC-0054 R1.1) and
 	// RetryAfter holds them back until the backoff deadline passes.
 	RetryCount int       `json:"retry_count,omitempty"`
@@ -138,7 +139,21 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		}
 		occurrences = append(occurrences, o)
 	}
-	sort.Slice(occurrences, func(i, j int) bool { return occurrences[i].DueAt.Before(occurrences[j].DueAt) })
+	eligible := func(o RoutineOccurrence) bool {
+		window := o.CatchUpWindow
+		if window <= 0 {
+			window = defaultCatchUp
+		}
+		return o.State == "pending" && !now.Before(o.DueAt) && now.Sub(o.DueAt) <= window
+	}
+	// Expired history must not spend the bounded pass before a deliverable reminder.
+	sort.Slice(occurrences, func(i, j int) bool {
+		iReady, jReady := eligible(occurrences[i]), eligible(occurrences[j])
+		if iReady != jReady {
+			return iReady
+		}
+		return occurrences[i].DueAt.Before(occurrences[j].DueAt)
+	})
 	// ponytail: single-host occurrence scan; index by schedule if history becomes large.
 	active := map[string]string{}
 	blocked := map[string]bool{}
@@ -188,9 +203,13 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		if o.State != "pending" || now.Before(o.DueAt) || blocked[o.Job.ID] {
 			continue
 		}
+		window := o.CatchUpWindow
+		if window <= 0 {
+			window = defaultCatchUp
+		}
 		if !s.occurrenceCurrentLocked(o) {
 			o.State = "cancelled"
-		} else if now.Sub(o.DueAt) > time.Hour {
+		} else if now.Sub(o.DueAt) > window {
 			o.State = "missed"
 		} else if authorize(o.Job) != nil {
 			o.State = "blocked"

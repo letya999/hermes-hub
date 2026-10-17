@@ -52,18 +52,23 @@ type Config struct {
 }
 
 type requestRecord struct {
-	View             v1.Request     `json:"view"`
-	Actor            identity.Actor `json:"actor"`
-	OwnerKind        string         `json:"owner_kind"`
-	ContractKey      string         `json:"contract_key"`
-	ContractDigest   string         `json:"contract_digest"`
-	Idempotency      string         `json:"idempotency"`
-	Fingerprint      string         `json:"fingerprint"`
-	RotateID         string         `json:"rotate_id,omitempty"`
-	ExpectedRevision uint64         `json:"expected_revision"`
-	ExternalAlias    string         `json:"external_alias,omitempty"`
-	OAuthStateHash   string         `json:"oauth_state_hash,omitempty"`
-	DraftRef         *provider.Ref  `json:"draft_ref,omitempty"`
+	View             v1.Request      `json:"view"`
+	Actor            identity.Actor  `json:"actor"`
+	OwnerKind        string          `json:"owner_kind"`
+	ContractKey      string          `json:"contract_key"`
+	ContractDigest   string          `json:"contract_digest"`
+	Idempotency      string          `json:"idempotency"`
+	Fingerprint      string          `json:"fingerprint"`
+	RotateID         string          `json:"rotate_id,omitempty"`
+	ExpectedRevision uint64          `json:"expected_revision"`
+	ExternalAlias    string          `json:"external_alias,omitempty"`
+	OAuthStateHash   string          `json:"oauth_state_hash,omitempty"`
+	DraftRef         *provider.Ref   `json:"draft_ref,omitempty"`
+	Extra            *contract.Extra `json:"extra,omitempty"`
+	// Demoted lists required field ids the owner deliberately left empty in
+	// the form. Recorded for audit and carried to the credential so lease
+	// materialization applies the same relaxed contract.
+	Demoted []string `json:"demoted,omitempty"`
 }
 type sessionRecord struct {
 	Hash      string    `json:"hash"`
@@ -74,13 +79,15 @@ type sessionRecord struct {
 	Consumed  bool      `json:"consumed"`
 }
 type credentialRecord struct {
-	View           v1.Credential  `json:"view"`
-	ContractKey    string         `json:"contract_key"`
-	ContractDigest string         `json:"contract_digest"`
-	Ref            provider.Ref   `json:"ref"`
-	Managed        bool           `json:"managed"`
-	OwnedRefs      []provider.Ref `json:"owned_refs,omitempty"`
-	TokenRevision  uint64         `json:"token_revision"`
+	View           v1.Credential   `json:"view"`
+	ContractKey    string          `json:"contract_key"`
+	ContractDigest string          `json:"contract_digest"`
+	Ref            provider.Ref    `json:"ref"`
+	Managed        bool            `json:"managed"`
+	OwnedRefs      []provider.Ref  `json:"owned_refs,omitempty"`
+	TokenRevision  uint64          `json:"token_revision"`
+	Extra          *contract.Extra `json:"extra,omitempty"`
+	Demoted        []string        `json:"demoted,omitempty"`
 }
 type grantRecord struct {
 	View           v1.Grant `json:"view"`

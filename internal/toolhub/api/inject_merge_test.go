@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
@@ -40,11 +41,12 @@ func TestOpenWorkloadWorkspaceClasses(t *testing.T) {
 	base := EffectiveBinding{Definition: ToolDefinition{DefinitionID: "def-1"},
 		Binding: ToolBinding{PrincipalID: "p1", ContextID: "ctx-1", ToolBindingID: "bind-1"}}
 
-	// shared workloads own no filesystem state
+	// shared workloads get a context-scoped path for credential
+	// materialization; they still own no principal-scoped or job state
 	shared := base
 	shared.Definition.Workload.Class = Shared
 	ws, err := OpenWorkloadWorkspace(root, shared, "")
-	if err != nil || ws.Path != "" {
+	if err != nil || !strings.Contains(ws.Path, filepath.Join("shared", "ctx-1", "def-1")) {
 		t.Fatalf("shared workspace: %+v %v", ws, err)
 	}
 	if err := ws.Cleanup(); err != nil {
@@ -164,10 +166,26 @@ func TestDecryptAuthorizedAndEnvFile(t *testing.T) {
 	if _, err := WriteAuthorizedFiles(context.Background(), "  ", eff, env); !errors.Is(err, ErrIsolation) {
 		t.Fatalf("rootless env: %v", err)
 	}
-	// shared class still receives no inject path
-	noPath := eff
-	noPath.Definition.Workload.Class = Shared
-	if _, err := WriteAuthorizedFiles(context.Background(), root, noPath, env); !errors.Is(err, ErrIsolation) {
-		t.Fatalf("shared env: %v", err)
+	// shared class gets a context-scoped inject path: the credential is
+	// context-owned, so its materialization lives under shared/<context>/
+	// rather than a per-principal directory, and job state stays forbidden.
+	sharedEff := eff
+	sharedEff.Definition.Workload.Class = Shared
+	cleanup, err = WriteAuthorizedFiles(context.Background(), root, sharedEff, env)
+	if err != nil {
+		t.Fatalf("shared env rejected: %v", err)
+	}
+	var sharedEnvPath string
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if info != nil && info.Name() == "credentials.env" && strings.Contains(p, "shared") {
+			sharedEnvPath = p
+		}
+		return nil
+	})
+	if sharedEnvPath == "" || !strings.Contains(sharedEnvPath, filepath.Join("shared", "ctx-1")) {
+		t.Fatalf("shared env file not under context scope: %q", sharedEnvPath)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
 	}
 }

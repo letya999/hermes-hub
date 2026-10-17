@@ -20,7 +20,12 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 	}
 	requestKey := api.ArgString(args, "request_key")
 	if requestKey != "" {
-		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved {
+		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved && !c.stalePreparing(existing) {
+			if credentialSource := api.ArgString(args, "credential_source"); credentialSource != "" {
+				if err := c.rebuildCredentialSource(&existing, credentialSource); err != nil {
+					return nil, err
+				}
+			}
 			if err := c.regenerateBrokerRequest(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
@@ -93,7 +98,7 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 				return nil, err
 			}
 		}
-		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, selected, shared)
+		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, selected, shared, api.ArgString(args, "credential_source"))
 	}
 	if definitionID != "" && version != "" {
 		return c.prepareCatalog(ctx, auth, definitionID, version, requestKey)
@@ -128,7 +133,7 @@ func (c *ControlPlane) prepareWindow() time.Duration {
 	return c.PrepareSyncWindow
 }
 
-func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate, shared bool) (map[string]any, error) {
+func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate, shared bool, credentialSource string) (map[string]any, error) {
 	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
 	if err != nil {
 		return nil, err
@@ -140,16 +145,16 @@ func (c *ControlPlane) prepareSelfInstall(ctx context.Context, auth identity.Env
 	if inFlight {
 		return c.statusBody(preparing, false), nil
 	}
-	return c.finishSelfInstall(ctx, auth, preparing, source, requestKey, selected, shared)
+	return c.finishSelfInstall(ctx, auth, preparing, source, requestKey, selected, shared, credentialSource)
 }
 
 // prepareSelfInstallAsync runs review+build under a detached context: a slow or
 // lost HTTP response no longer discards the work. The caller waits
 // PrepareSyncWindow for a completed result, then receives the durable
 // "preparing" record — the outcome is read via status afterwards.
-func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate, shared bool) (map[string]any, error) {
+func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identity.Envelope, sourceURL, requestKey string, selected *api.RecipeCandidate, shared bool, credentialSource string) (map[string]any, error) {
 	if window := c.prepareWindow(); window < 0 {
-		return c.prepareSelfInstall(ctx, auth, sourceURL, requestKey, selected, shared)
+		return c.prepareSelfInstall(ctx, auth, sourceURL, requestKey, selected, shared, credentialSource)
 	}
 	source, config, err := c.resolveSelfInstallSource(ctx, auth, sourceURL)
 	if err != nil {
@@ -171,7 +176,7 @@ func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identit
 	go func() {
 		defer stop()
 		api.DeliverPrepareEvent(background, auth, preparing, "prepare-started")
-		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected, shared)
+		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected, shared, credentialSource)
 		latest := c.latestPrepareRecord(auth, preparing)
 		log.Printf("toolhub prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.Phase, err)
 		if c.PrepareDone != nil {
@@ -213,6 +218,17 @@ func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identi
 	return source, api.DefaultSelfInstallConfig(source), nil
 }
 
+// prepareClaimTTL bounds one in-flight prepare: past it the record belongs to
+// a crashed or restarted build and the next call must reclaim it.
+const prepareClaimTTL = 35 * time.Minute
+
+// stalePreparing reports a preparing record past the claim window. Without
+// this check a crashed prepare deadlocks its request_key: every repeat call
+// early-returns the dead stub and no review ever restarts.
+func (c *ControlPlane) stalePreparing(onboarding api.Onboarding) bool {
+	return onboarding.Phase == api.PhasePreparing && !c.now().Before(onboarding.CreatedAt.Add(prepareClaimTTL))
+}
+
 // ensurePreparing registers a preparing record before review+build so status
 // works mid-flight and a failed prepare leaves a durable failure instead of
 // "record not found". A fresh record already in preparing means an identical
@@ -234,7 +250,7 @@ func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.Artifa
 		DefinitionID: config.DefinitionID, DefinitionVersion: config.Version,
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 	}
-	return c.Store.ClaimPreparingOnboarding(preparing, 35*time.Minute, c.now())
+	return c.Store.ClaimPreparingOnboarding(preparing, prepareClaimTTL, c.now())
 }
 
 // latestPrepareRecord resolves the onboarding a backgrounded prepare actually
@@ -262,7 +278,7 @@ func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub api.Onbo
 	return latest
 }
 
-func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, requestKey string, selected *api.RecipeCandidate, shared bool) (map[string]any, error) {
+func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, requestKey string, selected *api.RecipeCandidate, shared bool, credentialSource string) (map[string]any, error) {
 	failPrepare := func(err error) (map[string]any, error) {
 		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == api.PhasePreparing {
 			latest.Phase = api.PhaseFailed
@@ -274,7 +290,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	}
 	review := api.SourceReview{}
 	var err error
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) {
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) && !api.DeploySecretRequired(existing) {
 		review = api.SourceReview{Definition: existing, Permissions: api.ToolNames(existing), Effects: api.EffectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
@@ -284,6 +300,18 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		if err != nil {
 			return failPrepare(err)
 		}
+	}
+	credentialSources := recipeCredentialSources(review.Recipe)
+	if credentialSource != "" {
+		if review.Recipe == nil {
+			return failPrepare(fmt.Errorf("%w: credential_source %q has no discovered recipe to filter", api.ErrInvalid, credentialSource))
+		}
+		filtered, _ := api.FilterConnectionSource(review.Recipe.Connection, credentialSource)
+		if len(filtered.Fields) == 0 && len(review.Recipe.Connection.Fields) > 0 {
+			return failPrepare(fmt.Errorf("%w: credential_source %q not among %s", api.ErrInvalid, credentialSource, strings.Join(credentialSources, ", ")))
+		}
+		review.Recipe.Connection = filtered
+		api.MergeConnectionForDefinition(filtered, &review.Definition)
 	}
 	if review.AdmissionPending {
 		return c.acceptCredentialGate(ctx, auth, preparing, review)
@@ -357,6 +385,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	onboarding.Effects = append([]string(nil), review.Effects...)
 	onboarding.ReviewDigest = review.ReviewDigest
 	onboarding.Subfolder = source.Subfolder
+	onboarding.CredentialSources = credentialSources
 	if review.Recipe != nil {
 		copyRecipe := *review.Recipe
 		onboarding.Recipe = &copyRecipe
@@ -382,6 +411,38 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		return failPrepare(err)
 	}
 	return c.statusBody(onboarding, false), nil
+}
+
+func recipeCredentialSources(recipe *api.RecipeResolution) []string {
+	if recipe == nil {
+		return nil
+	}
+	return api.ConnectionSources(recipe.Connection)
+}
+
+// rebuildCredentialSource applies the user's authoritative metadata source to
+// an existing onboarding's recipe. The hint set and the embedded definition
+// copy are rebuilt from that source alone; the registered definition and the
+// reviewed broker contract stay unchanged.
+func (c *ControlPlane) rebuildCredentialSource(onboarding *api.Onboarding, source string) error {
+	if onboarding == nil || onboarding.Recipe == nil {
+		return fmt.Errorf("%w: credential_source %q has no discovered recipe to filter", api.ErrInvalid, source)
+	}
+	filtered, sources := api.FilterConnectionSource(onboarding.Recipe.Connection, source)
+	if len(filtered.Fields) == 0 && len(onboarding.Recipe.Connection.Fields) > 0 {
+		return fmt.Errorf("%w: credential_source %q not among %s", api.ErrInvalid, source, strings.Join(sources, ", "))
+	}
+	onboarding.Recipe.Connection = filtered
+	defForHints := api.ToolDefinition{Credentials: filtered.CredentialInputs()}
+	if onboarding.Definition != nil {
+		onboarding.Definition.Credentials = defForHints.Credentials
+		defForHints = *onboarding.Definition
+	}
+	onboarding.Required = credentialHintsForRecipe(defForHints, filtered)
+	onboarding.Optional = optionalCredentialHints(defForHints)
+	onboarding.CredentialSources = sources
+	onboarding.Revision++
+	return c.Store.PutOnboarding(*onboarding)
 }
 
 // selfInstallUsable reports whether a stored definition can proceed past the

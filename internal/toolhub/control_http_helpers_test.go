@@ -63,13 +63,13 @@ func TestCredentialFormHelpers(t *testing.T) {
 		{Name: "EMAIL", Type: "email", AlternativeGroup: 2},
 		{Name: "PASSWORD", Type: "string", Secret: true, AlternativeGroup: 2},
 	}
-	writeCredentialFields(&b, hints, "nonce-1")
+	writeCredentialFields(&b, hints, nil, "nonce-1")
 	page := b.String()
 	if !strings.Contains(page, `value="nonce-1"`) || strings.Count(page, "<form") != 2 || !strings.Contains(page, "<details>") {
 		t.Fatalf("grouped form: %s", page)
 	}
 	b.Reset()
-	writeCredentialFields(&b, []api.CredentialHint{hint}, "n")
+	writeCredentialFields(&b, []api.CredentialHint{hint}, nil, "n")
 	if strings.Contains(b.String(), "<details>") || !strings.Contains(b.String(), "API_TOKEN") {
 		t.Fatalf("plain form: %s", b.String())
 	}

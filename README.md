@@ -106,6 +106,9 @@ key names and status, never values; groups reject credential entry.
 `just check` is the single local CI entrypoint. It runs Go race tests, the >=85%
 coverage gate for all original Go statements, static analysis, documentation/workflow
 checks and CLI integration tests. Upstream source is not counted toward coverage.
+For fast local Go iteration, `go run ./cmd/hubctl dev-rebuild --dir spaces/<user>
+--env dev <service>` updates one enabled dev service on its existing base image;
+see [operations](docs/operations.md).
 
 GitHub Actions runs the same gate and builds/smoke-tests both Docker targets. A manual
 workflow is included for a labelled self-hosted GitHub Runner. Never use a personal

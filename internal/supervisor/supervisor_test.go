@@ -1720,6 +1720,13 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 	if !strings.Contains(otherArgs, "--network hermes-hub-runtime") || !strings.Contains(otherArgs, "src=hermes-hub-bob-dev_broker-secrets-runtime") || strings.Contains(otherArgs, "hermes-hub-alice-dev") {
 		t.Fatalf("runtime secrets are not owner-scoped: %s", otherArgs)
 	}
+	if err := os.WriteFile(filepath.Join(root, "generated", "dev-runtime-image"), []byte("hermes-hub-dev-alice-hermes-runtime:local\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	devArgs, err := m.runArgs(b, "hermes-context-test", 19000)
+	if err != nil || devArgs[len(devArgs)-2] != "hermes-hub-dev-alice-hermes-runtime:local" {
+		t.Fatalf("dev runtime image not selected: %v %v", devArgs, err)
+	}
 }
 
 // SPEC-0053 R1.4: supervisor-spawned runtimes mount the rendered tool

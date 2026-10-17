@@ -55,21 +55,21 @@ type SelfEnvRequest struct {
 }
 
 type ExecuteResponse struct {
-	Text              string        `json:"text"`
-	JobID             string        `json:"job_id,omitempty"`
-	SessionID         string        `json:"session_id,omitempty"`
-	RunID             string        `json:"run_id,omitempty"`
-	RuntimeGeneration string        `json:"runtime_generation,omitempty"`
-	Status            string        `json:"status,omitempty"`
-	LastEvent         string        `json:"last_event,omitempty"`
-	EventID           string        `json:"event_id,omitempty"`
-	ToolName          string        `json:"tool_name,omitempty"`
-	ApprovalID        string        `json:"approval_id,omitempty"`
-	ApprovalChoices   []string      `json:"approval_choices,omitempty"`
+	Text              string   `json:"text"`
+	JobID             string   `json:"job_id,omitempty"`
+	SessionID         string   `json:"session_id,omitempty"`
+	RunID             string   `json:"run_id,omitempty"`
+	RuntimeGeneration string   `json:"runtime_generation,omitempty"`
+	Status            string   `json:"status,omitempty"`
+	LastEvent         string   `json:"last_event,omitempty"`
+	EventID           string   `json:"event_id,omitempty"`
+	ToolName          string   `json:"tool_name,omitempty"`
+	ApprovalID        string   `json:"approval_id,omitempty"`
+	ApprovalChoices   []string `json:"approval_choices,omitempty"`
 	// ApprovalSummary is the redacted human-readable context of the flagged
 	// action (what is being approved), bounded at the runtime boundary.
-	ApprovalSummary   string        `json:"approval_summary,omitempty"`
-	Artifacts         []ArtifactRef `json:"artifacts,omitempty"`
+	ApprovalSummary string        `json:"approval_summary,omitempty"`
+	Artifacts       []ArtifactRef `json:"artifacts,omitempty"`
 	// Voice carries the text the model asked to deliver as a voice message
 	// (upstream VOICE: marker). The gateway synthesizes and sends it; the
 	// audio itself is never persisted — the text transcript stays canonical.

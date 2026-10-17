@@ -33,7 +33,8 @@ lint:
     # moby-style pragmatism: G101/G204/G30x are structural noise here (exec is the
     # product, workspace paths are computed, shared dirs are 0755/0660 on purpose);
     # G104/G110 stay enabled and are #nosec'd per site.
-    go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet -exclude-generated -exclude-dir=.local -exclude-dir=.tmpgen -exclude-dir=.tmpbind -exclude-dir=.probity -exclude-dir=.work -exclude-dir=spaces -exclude-dir=bin -exclude-dir=dist "-exclude=G101,G204,G301,G302,G304,G306" ./...
+    # devcheck scopes both Go modules and avoids PowerShell 5 hanging on gosec.
+    go run ./cmd/devcheck gosec
 
 docs-check:
     go run ./cmd/devcheck docs

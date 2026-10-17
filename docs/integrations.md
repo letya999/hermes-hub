@@ -169,7 +169,10 @@ SETUID capabilities, unconfined seccomp, privileged mode, host
 network/PID, Docker socket and host mounts. The integration gate also
 proves the controlled dependency path: the builder is attached only to an
 internal network, while a pinned ToolHive egress proxy is dual-attached and
-permits an explicit TLS package-host allowlist. A real pinned base-image build
+permits an explicit TLS package-host allowlist. The builder daemon resolves
+`docker.io` through a generated `buildkitd.toml` mirror list (`mirror.gcr.io`
+first, Hub as fallback) so anonymous Hub rate limits cannot stall every
+build; digest-pinned bases keep integrity on either path. A real pinned base-image build
 exported an OCI archive with SLSA provenance and SPDX SBOM from a pinned scanner.
 Restricted BuildKit is allowed 25 minutes so a conventional Rust recipe can finish cargo
 through the allowlist proxy; the MCP runtime timeout is unchanged.

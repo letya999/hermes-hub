@@ -86,11 +86,37 @@ func connectionFieldFromEnv(line string) (ConnectionField, bool) {
 	// values are required — "JIRA_URL=https://your-company.example" is the
 	// author's replace-me marker, not a usable default (mcp-atlassian lists
 	// zero tools until it is filled).
-	field := ConnectionField{Name: key, Type: ConnectionType(key), Required: secret || placeholder, Secret: secret, Delivery: "env", Target: key}
+	field := ConnectionField{Name: key, Type: ConnectionType(key), Required: (secret || placeholder) && !deploySecretEnvName(key), Secret: secret, Delivery: "env", Target: key}
 	if strings.Contains(strings.ToUpper(key), "CREDENTIALS") && strings.HasSuffix(strings.ToLower(value), ".json") {
 		field.Type, field.Delivery = "json", "json"
 	}
 	return field, true
+}
+
+// deploySecretEnvName marks env names that guard the MCP server's own
+// listener — HTTP bearer or session material. They are deployment secrets
+// the operator mints at run time, not upstream provider credentials, so
+// heuristic env-line sources must not force them into the required set the
+// owner is asked to supply.
+func deploySecretEnvName(name string) bool {
+	if strings.EqualFold(name, "SESSION_SECRET") {
+		return true
+	}
+	return strings.HasSuffix(name, "_AUTH_TOKEN") || strings.HasSuffix(name, "_AUTH_SECRET")
+}
+
+// DeploySecretRequired reports whether the definition still demands a
+// deploy-secret-named credential. Stored definitions carrying one predate the
+// demotion heuristic and must not be reused: the owner cannot satisfy them —
+// a demoted form field materializes no env, so admission fails closed on
+// every retry while a fresh review would re-parse with the demotion applied.
+func DeploySecretRequired(definition ToolDefinition) bool {
+	for _, input := range definition.Credentials {
+		if input.Required && !input.PerRequest && deploySecretEnvName(input.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // placeholderValue reports whether an .env.example value is a replace-me

@@ -262,8 +262,12 @@ func validateGenericDefinition(definition api.ToolDefinition) error {
 	if definition.Transport != api.ContainerMCP || len(definition.Workload.SidecarImages) != 1 {
 		return fmt.Errorf("%w: generic controller requires one ContainerMCP proxy image", api.ErrInvalid)
 	}
-	if definition.Workload.Class == api.Shared && len(definition.Credentials) != 0 {
-		return fmt.Errorf("%w: shared generic MCP cannot retain credentials", api.ErrUnauthorized)
+	if definition.Workload.Class == api.Shared && !definition.Workload.Sharable {
+		for _, input := range definition.Credentials {
+			if !input.PerRequest {
+				return fmt.Errorf("%w: shared generic MCP cannot retain credentials", api.ErrUnauthorized)
+			}
+		}
 	}
 	return nil
 }

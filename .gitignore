@@ -26,3 +26,4 @@ docker/observability/.secrets/
 /.work/df-test
 /.work/hub-stt-out
 /.work/s-out.json
+.work/**/verify/

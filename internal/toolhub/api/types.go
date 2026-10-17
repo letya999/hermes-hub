@@ -158,6 +158,9 @@ type CredentialInput struct {
 	Delivery string `json:"delivery,omitempty"`
 	Target   string `json:"target,omitempty"`
 	Prefix   string `json:"prefix,omitempty"`
+	// Source is the metadata file the input was discovered from, carried over
+	// from the connection recipe for audit.
+	Source string `json:"source,omitempty"`
 }
 
 type WorkloadPolicy struct {

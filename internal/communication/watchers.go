@@ -131,7 +131,7 @@ func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, a
 }
 
 // fetchWatch is the live probe: one GET, caches bypassed, body capped at
-// 256 KiB — the deterministic poll never touches the model.
+// 1 MiB — the deterministic poll never touches the model.
 func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

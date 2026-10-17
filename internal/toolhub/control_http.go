@@ -90,6 +90,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["source"] = map[string]any{"type": "string", "description": "GitHub repository URL of a hosted MCP server connector. To install a command-line tool (ripgrep, bat, jq, fd, …) put a cli spec object in cli instead — never a bare repo URL here."}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
+		properties["credential_source"] = map[string]any{"type": "string", "description": "Authoritative metadata file for the credential recipe when sources disagree (for example server.json or .env.example). The status credential_sources list names the discovered choices; replay prepare_source with the same request_key to switch sources on the existing onboarding."}
 		properties["remote_url"] = map[string]any{"type": "string", "description": "Public HTTPS remote MCP endpoint for a user-owned connector (for example https://api.githubcopilot.com/mcp/). Only the endpoint's official URL on the user's explicit request; private, IP-literal, redirecting or non-MCP targets are refused."}
 		properties["name"] = map[string]any{"type": "string", "description": "Optional remote-* connector id derived from the endpoint host when omitted."}
 		properties["tools"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional allowlist of advertised remote tool names to expose; omit to expose every advertised tool."}
@@ -281,7 +282,7 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		var b strings.Builder
 		b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение MCP</title><style>
-:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
+:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}.tag{display:inline;margin:0 0 0 6px;font-size:12px}.opt{display:flex;align-items:center;gap:8px;margin:-14px 0 18px;font-weight:400;color:#52606d;font-size:14px}.opt input{display:inline;width:auto;margin:0;padding:0}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
 </style><main class="panel"><h1>Подключение MCP</h1><p>` + html.EscapeString(credentialFormIntro(onboarding.Required)) + `</p>`)
 		hints := credentialFormHints(onboarding.Required)
 		separate := credentialHintsUseAlternatives(hints)
@@ -297,9 +298,9 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 				b.WriteString("<details><summary>Другой способ авторизации</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
 			}
 		}
-		writeCredentialFields(&b, hints, onboarding.FormNonce)
+		writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce)
 		if !separate {
-			b.WriteString("<button type=\"submit\">Сохранить и продолжить</button></form>")
+			b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></form>`)
 		}
 		// The submit blocks on a real server probe; a silent 30+ seconds reads
 		// as a refresh loop. Swap the inputs for an honest waiting state while
@@ -405,11 +406,12 @@ func credentialFormIntro(hints []api.CredentialHint) string {
 	return "Введите запрошенные поля. Они сохранятся в защищённом хранилище и не попадут в чат."
 }
 
-func writeCredentialFields(b *strings.Builder, hints []api.CredentialHint, nonce string) {
+func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string) {
 	if !credentialHintsUseAlternatives(hints) {
 		for _, hint := range hints {
 			b.WriteString(credentialFieldMarkup(hint))
 		}
+		writeOptionalCredentialFields(b, optional)
 		return
 	}
 	groups := map[int][]api.CredentialHint{}
@@ -444,11 +446,25 @@ func writeCredentialFields(b *strings.Builder, hints []api.CredentialHint, nonce
 		for _, hint := range group {
 			b.WriteString(credentialFieldMarkup(hint))
 		}
-		b.WriteString(`<button type="submit">Сохранить и продолжить</button></fieldset></form>`)
+		writeOptionalCredentialFields(b, optional)
+		b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></fieldset></form>`)
 		if index > 0 {
 			b.WriteString(`</details>`)
 		}
 	}
+}
+
+// writeOptionalCredentialFields renders discovered non-required inputs so the
+// owner can fill them in the same submit without them gating the form.
+func writeOptionalCredentialFields(b *strings.Builder, optional []api.CredentialHint) {
+	if len(optional) == 0 {
+		return
+	}
+	b.WriteString(`<details><summary>Необязательные параметры</summary>`)
+	for _, hint := range credentialFormHints(optional) {
+		b.WriteString(optionalCredentialFieldMarkup(hint))
+	}
+	b.WriteString(`</details>`)
 }
 
 func credentialSubmitPage(err error) (int, string, string) {
@@ -497,10 +513,10 @@ func credentialFieldMarkup(hint api.CredentialHint) string {
 		return `<fieldset><legend>Данные OAuth-клиента Google</legend><label>Выберите скачанный JSON-файл<input type="file" name="google_oauth_file" accept=".json,application/json"></label><small>Подойдёт файл с именем вроде client_secret_….apps.googleusercontent.com.json.</small><details><summary>Или ввести значения вручную</summary><label>Client ID<input type="text" name="google_oauth_client_id" autocomplete="off"></label><label>Client Secret<input type="password" name="google_oauth_client_secret" autocomplete="off"></label></details></fieldset>`
 	}
 	if hint.Delivery == "file" {
-		return "<label>" + label + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + "</label>"
+		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + "</label>"
 	}
 	if hint.Delivery == "json" || strings.EqualFold(hint.Type, "json") {
-		return "<label>" + label + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + "</label>"
+		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + "</label>"
 	}
 	autocomplete := "off"
 	switch inputType {
@@ -513,7 +529,39 @@ func credentialFieldMarkup(hint api.CredentialHint) string {
 	if hint.AlternativeGroup > 0 {
 		required = ""
 	}
-	return "<label>" + label + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + "</label>"
+	tag := "необязательное"
+	opt := ""
+	if required != "" {
+		tag = "обязательное"
+		opt = `<label class="opt"><input type="checkbox" name="opt:` + inputName + `" value="1"> Поле не требуется — запустить без него</label>`
+	}
+	return "<label>" + label + " <small class=\"tag\">" + tag + "</small>" + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + "</label>" + opt
+}
+
+// optionalCredentialFieldMarkup renders a discovered non-required input: same
+// control, no required attribute, explicit "необязательное" tag.
+func optionalCredentialFieldMarkup(hint api.CredentialHint) string {
+	label := html.EscapeString(credentialFieldLabel(hint)) + " <small class=\"tag\">необязательное</small>"
+	inputName := html.EscapeString(hint.Name)
+	if hint.Delivery == "file" {
+		return "<label>" + label + `<input type="file" name="` + inputName + `">` + credentialFieldHint(hint) + "</label>"
+	}
+	if hint.Delivery == "json" || strings.EqualFold(hint.Type, "json") {
+		return "<label>" + label + "<textarea name=\"" + inputName + "\" autocomplete=\"off\"></textarea>" + credentialFieldHint(hint) + "</label>"
+	}
+	inputType := "text"
+	if hint.Secret {
+		inputType = "password"
+	}
+	switch strings.ToLower(hint.Type) {
+	case "email":
+		inputType = "email"
+	case "url":
+		inputType = "url"
+	case "number", "integer":
+		inputType = "number"
+	}
+	return "<label>" + label + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"off\">" + credentialFieldHint(hint) + "</label>"
 }
 
 func credentialHintsUseAlternatives(hints []api.CredentialHint) bool {

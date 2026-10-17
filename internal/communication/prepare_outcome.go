@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -22,6 +23,9 @@ type prepareOutcomeRequest struct {
 	FormURL         string `json:"form_url"`
 	Event           string `json:"event"`
 	Tools           int    `json:"tools"`
+	// CreatedAt pins the onboarding creation instant so the gateway can find
+	// the message job that was running when the install was requested.
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // handlePrepareOutcome turns a finished ToolHub prepare into a channel reply
@@ -232,20 +236,41 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	// initiated this onboarding, else the notice leaks to the DM root.
 	conversation, deliveryTarget := caller.ConversationID, caller.DeliveryTargetID
 	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], conversation)
-	if origin, ok := g.spool.newestActiveMessageMapping(user.ID); ok && origin.ConversationID != "" {
-		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
-		conversation, deliveryTarget = origin.ConversationID, origin.DeliveryTargetID
+	// The initiating tool call runs inside its message job, so the job that
+	// existed — and most recently started — at the onboarding's creation
+	// instant is the initiator. It outranks a persisted route, which older
+	// builds may have bound through the unsafe newest-active heuristic.
+	origin, found := prepareOrigin{}, false
+	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() {
+		if mapping, ok := g.spool.initiatingMessageMapping(user.ID, created, request.Repository); ok {
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			found = true
+		}
+	}
+	if !found {
+		if persisted, ok := g.spool.loadPrepareOrigin(request.OnboardingID); ok {
+			origin, found = persisted, true
+		}
+	}
+	if !found {
+		if mapping, ok := g.spool.newestActiveMessageMapping(user.ID); ok {
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			found = true
+		}
+	}
+	if found {
 		// The origin job ends long before the build settles; persist the route
-		// so later outcomes still reach the topic instead of the DM default.
-		_ = g.spool.putPrepareOrigin(request.OnboardingID, prepareOrigin{
-			ConversationID: conversation, DeliveryTargetID: deliveryTarget,
-			ChatID: bound.ChatID, TopicID: bound.TopicID,
-		})
-	} else if origin, ok := g.spool.loadPrepareOrigin(request.OnboardingID); ok {
+		// so later outcomes still reach the same session.
+		_ = g.spool.putPrepareOrigin(request.OnboardingID, origin)
+	}
+	if found && origin.ConversationID != "" {
 		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
 		conversation, deliveryTarget = origin.ConversationID, origin.DeliveryTargetID
 	}
 	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: "telegram_bot", ChatID: bound.ChatID, TaskID: bound.TaskID, TopicID: bound.TopicID, Text: notice, CreatedAt: now}
+	// One evolving status message per onboarding: once the first notice was
+	// delivered, later updates edit it instead of stacking new messages.
+	delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
 	}

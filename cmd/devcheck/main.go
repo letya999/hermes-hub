@@ -29,6 +29,18 @@ func run(args []string) error {
 		err = devcheck.Project(".")
 	case len(args) == 1 && args[0] == "format":
 		err = devcheck.Format(".")
+	case len(args) == 1 && args[0] == "gosec":
+		for _, scan := range []struct {
+			dir  string
+			pkgs []string
+		}{{".", []string{"./cmd/...", "./internal/..."}}, {"services/credential-broker", []string{"./..."}}} {
+			argv := append([]string{"run", "github.com/securego/gosec/v2/cmd/gosec@v2.29.0", "-quiet", "-exclude-generated", "-exclude=G101,G204,G301,G302,G304,G306"}, scan.pkgs...)
+			cmd := exec.Command("go", argv...)
+			cmd.Dir, cmd.Stdout, cmd.Stderr = scan.dir, os.Stdout, os.Stderr
+			if err = cmd.Run(); err != nil {
+				return fmt.Errorf("gosec %s: %w", scan.dir, err)
+			}
+		}
 	case len(args) >= 3 && len(args) <= 4 && args[0] == "coverage":
 		minimum, pkgMin, parseErr := parseMinimums(args)
 		if parseErr != nil {
@@ -107,7 +119,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
+		err = fmt.Errorf("usage: devcheck docs|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
 	}
 	return err
 }

@@ -3,8 +3,41 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestGosecScansOnlyModulePackages(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	name, script := "go", "#!/bin/sh\nprintf '%s|%s\\n' \"$PWD\" \"$*\" >> \"$GOSEC_TEST_LOG\"\n"
+	if runtime.GOOS == "windows" {
+		name, script = "go.cmd", "@echo off\r\n>>\"%GOSEC_TEST_LOG%\" echo %CD%^|%*\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GOSEC_TEST_LOG", log)
+	root, _ := filepath.Abs(filepath.Join("..", ".."))
+	old, _ := os.Getwd()
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+	if err := run([]string{"gosec"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := string(data)
+	if strings.Count(calls, "gosec@v2.29.0") != 2 || !strings.Contains(calls, "./cmd/... ./internal/...") || !strings.Contains(calls, filepath.Join(root, "services", "credential-broker")) {
+		t.Fatalf("wrong gosec package scope: %s", calls)
+	}
+}
 
 func TestRunCoverageAndValidation(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "coverage.out")

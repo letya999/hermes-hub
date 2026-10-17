@@ -48,8 +48,10 @@ tombstone and retired IDs cannot be reused. Already admitted Hermes work may
 continue; queued delivery is checked again before sending. Cancellation cannot
 recall a message already accepted by an external service.
 
-Two background workers admit at most 16 oldest occurrences per pass and one per
-source. HTTP requests have a 10-second deadline and a 256 KiB response limit;
+Two background workers admit at most 16 oldest eligible occurrences per pass and
+one per source. Due occurrences inside their catch-up window take priority over
+expired backlog, so recording old misses cannot starve a fresh reminder. The
+16-settlements-per-pass bound is unchanged. HTTP requests have a 10-second deadline and a 1 MiB response limit;
 public-IP validation occurs at connection time, ambient proxies and redirects
 are disabled. Private endpoints and credential-bearing URLs are refused.
 The default probe compares a body or first regex capture. A missing capture is
@@ -74,6 +76,31 @@ unavailability summarized on subsequent digests, so failed sources cannot
 permanently consume every digest slot. `GET /v1/routines/<id>` returns schedule and watch state.
 `POST /v1/routines/<id>/snooze {until: RFC3339}` postpones checks and invalidates
 old queued occurrences. Deterministic digests do not call a model.
+
+Reminder snooze replaces a one-shot deadline and rearms that same schedule with a
+new revision, including when the old occurrence is already queued for delivery.
+For recurring schedules, snooze postpones an earlier next due time to `until`;
+subsequent runs retain the original cron expression and owner timezone. A weekly
+Friday 10:00 Moscow reminder therefore stays on that weekly cadence after snooze.
+The catch-up window is measured from the deferred deadline, saved on the occurrence
+and honoured by both scheduling and dispatch (one hour by default). A late tick
+outside it writes a durable `missed` occurrence before advancing or retiring the
+schedule. Recovery admits at most one occurrence, never a burst of missed slots.
+An expired pending reminder from an earlier slot does not block the current slot
+of its recurring schedule; agent jobs keep their existing overlap fence.
+Existing snoozes written before `NextDue` was updated also use `snoozed_until` as
+their effective deadline; no bulk rewrite or replay of already-retired reminders
+is performed.
+
+Owner routine reads include derived `last_occurrence_state` and
+`last_delivery_state` for reminders. The latter is `delivered` only with a completed
+outbox record; a failed/unknown transport answer is `uncertain` and is not resent on
+restart. `/routines` also names missed and unconfirmed deliveries. Occurrence detail
+is read from the hot spool or its existing archive; after detail retention expires,
+or if that detail cannot be verified, its state reads `unavailable`. These read-only
+fields do not change creation idempotency or authorize access to another owner.
+An unverified or expired occurrence never exposes the state of an outbox receipt
+through a caller-supplied history reference.
 
 Starlark routines require the supervisor. It starts a disposable core-image
 container with no network, mounts or injected secrets; read-only filesystem,

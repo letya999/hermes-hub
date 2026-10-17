@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -43,8 +44,23 @@ func ParseArtifactRecipe(data []byte) (ArtifactRecipe, error) {
 	return recipe, recipe.Validate()
 }
 
+// mcpbRecipeMaxFiles bounds a bundle recipe's pinned context. Vendored
+// node_modules trees legitimately exceed the 4096-file bound that fits
+// dockerfile recipes; the bound still caps context records.
+const mcpbRecipeMaxFiles = 32768
+
+// mcpbContextPath applies only path hygiene — no escapes, no absolute or
+// drive-letter paths — because every bundle byte is digest-pinned upstream.
+func mcpbContextPath(name string) bool {
+	return name != "" && name != "." && path.Clean(name) == name && !strings.HasPrefix(name, "/") && !strings.ContainsAny(name, "\\:\x00\r\n") && name != ".." && !strings.HasPrefix(name, "../")
+}
+
 func (r ArtifactRecipe) Validate() error {
-	if !ArtifactContextPath(r.Dockerfile) || len(r.Files) == 0 || len(r.Files) > 4096 || len(r.DependencyLocks) > 32 || len(r.BaseImages) > 32 || len(r.Entrypoint) == 0 || len(r.Entrypoint) > 32 || !ValidCommand(r.Entrypoint[0]) {
+	maxFiles := 4096
+	if r.Format == "mcpb-v1" {
+		maxFiles = mcpbRecipeMaxFiles
+	}
+	if !ArtifactContextPath(r.Dockerfile) || len(r.Files) == 0 || len(r.Files) > maxFiles || len(r.DependencyLocks) > 32 || len(r.BaseImages) > 32 || len(r.Entrypoint) == 0 || len(r.Entrypoint) > 32 || !ValidCommand(r.Entrypoint[0]) {
 		return fmt.Errorf("%w: supported Dockerfile recipe, entrypoint, locks and pinned bases required", ErrInvalid)
 	}
 	switch r.Format {
@@ -76,7 +92,15 @@ func (r ArtifactRecipe) Validate() error {
 	}
 	files := map[string]bool{}
 	for _, file := range r.Files {
-		if !ArtifactContextPath(file.Path) || !DigestPattern.MatchString(file.Digest) || files[file.Path] {
+		// An mcpb bundle is itself the digest-pinned reviewed artifact:
+		// its vendored node_modules is the application, not a smuggled dep
+		// tree, so only path hygiene applies. Repo-derived contexts keep
+		// the credential-path denylist.
+		pathOK := ArtifactContextPath(file.Path)
+		if r.Format == "mcpb-v1" {
+			pathOK = mcpbContextPath(file.Path)
+		}
+		if !pathOK || !DigestPattern.MatchString(file.Digest) || files[file.Path] {
 			return fmt.Errorf("%w: unsafe, unpinned or duplicate recipe file", ErrInvalid)
 		}
 		files[file.Path] = true

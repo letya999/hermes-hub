@@ -4,6 +4,17 @@ last_verified: 2026-10-12
 ---
 # Sequential acceptance registry
 
+Issue #247 reminder acceptance was repeated on 2026-10-17 with the rebuilt local/dev
+gateway: E2E-081 passed against the real Bot API in 6.5 seconds, with the exact saved
+text, bound delivery receipt, no firing job in the agent queue and fixture cleanup.
+CHG-0111 adds deterministic persistence/race tests for snooze (including legacy
+stored state), weekly Friday 10:00 Moscow cadence and crash recovery, catch-up
+boundaries, expired-backlog priority, foreign-session denial, cancellation,
+revocation, history isolation and lost transport responses without blind resend.
+The unavailable runtime/model checks use local HTTP adapters; they complement the
+real Telegram receipt rather than replacing it. Scope remains reminder acceptance,
+not completion of the full registry below.
+
 The full inventory contains 139 scenarios. The default `--scope core` selects 108 local, agent/channel and credential-free installation scenarios; 31 account-dependent connector scenarios are excluded by the owner’s explicit scope. `--scope all` lists the full inventory. A scenario definition is not evidence of a passing E2E test.
 
 Run from the repository root:

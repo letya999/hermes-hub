@@ -96,7 +96,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err := putGrant(t, store, api.Grant{Schema: api.SchemaVersion, GrantID: "grant-selfalice", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil, false); !errors.Is(err, api.ErrInvalid) {
+	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil, false, ""); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("nil reviewer: %v", err)
 	}
 	control.Reviewer = fixtureReviewer(userMCPDefinition())
@@ -562,7 +562,7 @@ func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
 		}}
 	done := make(chan error, 1)
 	go func() {
-		_, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "req-wake", nil, false)
+		_, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "req-wake", nil, false, "")
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
