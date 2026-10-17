@@ -222,10 +222,12 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		if materializeErr != nil {
 			return genericWorkload{}, materializeErr
 		}
-		if _, err = api.ReadGenericSecrets(credentialEnv, definition); err != nil {
-			return genericWorkload{}, err
+		if credentialEnv != "" {
+			if _, err = api.ReadGenericSecrets(credentialEnv, definition); err != nil {
+				return genericWorkload{}, err
+			}
+			bridgeArgs = append(bridgeArgs, "--env-file", credentialEnv)
 		}
-		bridgeArgs = append(bridgeArgs, "--env-file", credentialEnv)
 		plan.CredentialMounts = append(plan.CredentialMounts, credentialMounts...)
 	}
 	for i, mount := range plan.Execution.Mounts {
@@ -356,6 +358,12 @@ func writeWorldReadableTemp(dir, pattern, content string) (string, error) {
 
 func materializeRuntimeCredentials(workspace string, definition api.ToolDefinition) (string, []api.Mount, error) {
 	source := filepath.Join(workspace, "credentials.env")
+	if _, err := os.Lstat(source); os.IsNotExist(err) && definition.CredentialsSatisfied(func(string) bool { return false }) {
+		if workspace == "" || api.NoSymlinkPath(workspace) != nil {
+			return "", nil, api.ErrIsolation
+		}
+		return "", nil, nil
+	}
 	values, err := api.ReadGenericSecrets(source, definition)
 	if err != nil {
 		return "", nil, err

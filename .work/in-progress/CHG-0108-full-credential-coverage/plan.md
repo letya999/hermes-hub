@@ -35,3 +35,12 @@ gaps:
 - [ ] broker RegisterContract allow_shared + tests
 - [ ] docs (ADR amendment, spec, api-contract)
 - [ ] just check; rebuild; live: file-cred + shared + remote-header connector
+
+## Wildberries live recovery, 2026-10-17
+
+- [x] Submit the all-optional protected Broker form and confirm under the local owner.
+- [x] Reproduce missing optional credentials.env in helper and fallback regression tests; fix and deploy workload-controller through dev-rebuild.
+- [x] Review the pinned upstream's runtime hosts; publish a private local 0.0.4 network policy retaining the existing artifact and tool contract.
+- [x] Enable and verify real category, product metadata and review reads through ToolHub MCP.
+- [ ] Search and price-card reads: upstream HTTP 403; upstream DOM mode requires a dedicated CDP browser, absent from this deployment. Automatic execution policy rejected starting a separate headless Chrome; no browser was launched.
+- [x] just check passed: own Go statement coverage 85.81%, format/vet/tidy/staticcheck/gosec/docs/actionlint/config checks passed. No dependency changes.
