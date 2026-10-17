@@ -883,6 +883,15 @@ occurrence before acknowledging it. Due occurrences become ordinary jobs
 with `trigger=cron`; the normal supervisor execution path wakes the context.
 The idle gateway checks due routines and uncertain-run recovery every five
 seconds; newly enqueued interactive jobs still wake workers immediately.
+An unresolved probe, script or agent job holds its schedule revision so later
+due times do not pile up. Malformed occurrence files move to
+`occurrences/quarantine`; investigate them before clearing evidence. A drifted
+nonterminal job mapping holds only its own schedule. Settled silent occurrences leave the hot directory on the hourly compaction
+pass. Full detail stays in `occurrences/archive` for 48 hours after its last
+write; a small deduplication receipt remains for the ordinary spool retention
+period (normally 14 days).
+Pending records and dispatched records with live jobs or deliveries are retained. This compaction runs with the
+existing hourly spool pass; a backlog still settles at 16 occurrences per pass.
 Duplicate ticks and restart reuse the same occurrence key. Inputs containing
 credential assignments are rejected. Catch-up is limited to one hour and each
 tick settles at most sixteen occurrences. Recurrence CRUD/DST and native cron
