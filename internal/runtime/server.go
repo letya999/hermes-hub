@@ -66,6 +66,9 @@ type ExecuteResponse struct {
 	ToolName          string        `json:"tool_name,omitempty"`
 	ApprovalID        string        `json:"approval_id,omitempty"`
 	ApprovalChoices   []string      `json:"approval_choices,omitempty"`
+	// ApprovalSummary is the redacted human-readable context of the flagged
+	// action (what is being approved), bounded at the runtime boundary.
+	ApprovalSummary   string        `json:"approval_summary,omitempty"`
 	Artifacts         []ArtifactRef `json:"artifacts,omitempty"`
 	// Voice carries the text the model asked to deliver as a voice message
 	// (upstream VOICE: marker). The gateway synthesizes and sends it; the

@@ -133,8 +133,20 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			text, id, markdown = event.Text, "job-"+job.ID+"-response", true
 		case terminalStatus(event.Status):
 			text, id = failureMessage(job.ID, event.Status), "job-"+job.ID+"-error"
+			if event.Status == "cancelled" && mapping.ApprovalID != "" && !mapping.ApprovalDeadline.IsZero() && !time.Now().Before(mapping.ApprovalDeadline) {
+				if mapping.Control != nil && mapping.Control.Choice == "deny" {
+					text = "Подтверждение действия отклонено — задача отменена. ID: " + job.ID
+				} else {
+					text = "Подтверждение действия истекло — задача отменена. ID: " + job.ID
+				}
+			}
 		case event.LastEvent == "approval.request":
-			text = "Требуется подтверждение действия.\n/approve " + job.ID + " " + event.ApprovalID + " <choice>\nВарианты: " + strings.Join(event.ApprovalChoices, ", ") + "\nОтмена: /cancel " + job.ID
+			text = "Требуется подтверждение действия."
+			if event.ApprovalSummary != "" {
+				text += "\n" + event.ApprovalSummary
+			}
+			text += "\nДействует до " + receipt.ApprovalDeadline.Format("15:04 UTC") + "; затем задача будет отменена."
+			text += "\n/approve " + job.ID + " " + event.ApprovalID + " <choice>\nВарианты: " + strings.Join(event.ApprovalChoices, ", ") + "\nОтмена: /cancel " + job.ID
 		case event.LastEvent == "tool.start" || event.LastEvent == "tool.end" || event.LastEvent == "run.started":
 			text, markdown = strings.TrimSpace(event.Text), true
 			if text == "" && event.LastEvent == "run.started" {

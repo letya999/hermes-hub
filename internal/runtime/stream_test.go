@@ -96,7 +96,7 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/events") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			for range 2 {
-				_, _ = w.Write([]byte("data: {\"event\":\"approval.request\",\"run_id\":\"original\",\"request_id\":\"request-1\",\"choices\":[\"once\",\"deny\"],\"args\":\"PRIVATE_CANARY\"}\n\n"))
+				_, _ = w.Write([]byte("data: {\"event\":\"approval.request\",\"run_id\":\"original\",\"request_id\":\"request-1\",\"choices\":[\"once\",\"deny\"],\"description\":\"Write to protected file AGENTS.md\",\"args\":\"PRIVATE_CANARY\"}\n\n"))
 			}
 			for range 15 {
 				_, _ = w.Write([]byte("data: {\"event\":\"tool.started\",\"run_id\":\"original\",\"tool\":\"mcp__toolhub__prepare_source\",\"args\":\"PRIVATE_CANARY\"}\n\n"))
@@ -120,6 +120,9 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 	result, err := (&runtimeHTTP{}).observeHermesRun(ctx, ExecuteResponse{RunID: "original", SessionID: "session", Status: "running", LastEvent: "run.admitted"}, func(event ExecuteResponse) error {
 		if event.LastEvent == "approval.request" {
 			approvals++
+			if !strings.Contains(event.ApprovalSummary, "AGENTS.md") {
+				t.Errorf("approval summary lost upstream context: %q", event.ApprovalSummary)
+			}
 		}
 		if event.LastEvent == "tool.start" {
 			progress++
@@ -187,7 +190,7 @@ func TestPersistentStreamAdmissionApprovalAndTerminal(t *testing.T) {
 			_, _ = w.Write([]byte(`{"run_id":"run-stream"}`))
 		case "/v1/runs/run-stream":
 			if polls.Add(1) < 3 {
-				_, _ = w.Write([]byte(`{"status":"waiting_for_approval","approval":{"request_id":"approval-1","choices":["once","deny"],"command":"secret"}}`))
+				_, _ = w.Write([]byte(`{"status":"waiting_for_approval","approval":{"request_id":"approval-1","choices":["once","deny"],"description":"Write to protected file AGENTS.md","command":"<write to AGENTS.md>"}}`))
 			} else {
 				_, _ = w.Write([]byte(`{"status":"completed","output":"answer"}`))
 			}
@@ -230,6 +233,9 @@ func TestPersistentStreamAdmissionApprovalAndTerminal(t *testing.T) {
 		}
 		if frame.ApprovalID != "" {
 			approvals++
+			if !strings.Contains(frame.ApprovalSummary, "AGENTS.md") {
+				t.Fatalf("polled approval lost context: %+v", frame)
+			}
 		}
 	}
 	if approvals != 1 {
@@ -395,5 +401,23 @@ func TestObservationRejectsWrongRunSessionAndFailedApprovalHandoff(t *testing.T)
 				t.Fatalf("expected boundary failure %q, got %v", want, err)
 			}
 		})
+	}
+}
+
+// The approval prompt must carry the redacted context upstream sends so the
+// user knows WHAT is being confirmed; the summary is a single bounded line.
+func TestApprovalSummaryTextRendersContext(t *testing.T) {
+	summary := approvalSummaryText(nativeRunEvent{
+		Description: "Write to protected agent-instruction file(s): AGENTS.md.\nThese files steer future behavior.",
+		Command:     "<write to AGENTS.md>",
+	})
+	if !strings.Contains(summary, "AGENTS.md") || strings.Contains(summary, "\n") {
+		t.Fatalf("summary lost context or kept newline: %q", summary)
+	}
+	if got := approvalSummaryText(nativeRunEvent{Description: strings.Repeat("x", 5000)}); len(got) > 400 {
+		t.Fatalf("summary unbounded: %d", len(got))
+	}
+	if got := approvalSummaryText(nativeRunEvent{Command: "dd if=/dev/zero of=/tmp/x"}); !strings.Contains(got, "dd if=/dev/zero") {
+		t.Fatalf("command-only context dropped: %q", got)
 	}
 }
