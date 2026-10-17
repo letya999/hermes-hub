@@ -16,7 +16,7 @@ import (
 )
 
 var routineDescriptions = map[string]string{
-	"routine_create":  "Create an owner-scoped routine. kind=reminder delivers exact text; expression after:180s resolves once; show its deadline. kind=watcher polls a url plus optional regex capture (first non-empty group) or probe_kind=mcp_tool with a projected read-only tool: baseline and unchanged values are silent, changes deliver captured old/new values; errors preserve baseline and appear in routine_list err. url probes see raw HTML only — JS pages stay blind; use mcp_tool or a static marker. kind=check tests expect (changed|unchanged|equals:value) on a url or task:<task_id>; failed probes retry max_retries times (default 3). kind=script runs bounded Starlark; kind=digest aggregates watches; kind=brief composes changed sources and open tasks into one brief. Cron cadence minimum 1 minute. quiet_from/quiet_to defer notifications inside an HH:MM window; daily_limit (0..32) caps deliveries per day while polling continues. notify_mode=agent escalates changes as untrusted evidence. Deterministic kinds never wake a model.",
+	"routine_create":  "Create an owner-scoped routine. kind=reminder delivers exact text; expression after:180s resolves once; show its deadline. kind=watcher polls a url plus regex capture, an extract JSON array (css/html2text/regex/grep/drop_regex/drop_lines/sort_lines/strip/json_path/rss), recipe=rss_feed, probe_kind=script (probe_script gets the body via input(), emits one value), probe_kind=command (probe_script reads the owner watch/ dir, no fetch), or probe_kind=mcp_tool: baseline/unchanged are silent, changes deliver old/new; errors surface in routine_list err. probes see raw HTML — JS pages stay blind. kind=check tests expect (changed|unchanged|equals:value) on a url or task:id; failed probes retry max_retries (default 3). kind=script runs bounded Starlark; digest/brief aggregate watches and tasks. Cron minimum 1 minute. quiet_from/quiet_to defer notifications in an HH:MM window; daily_limit (0..32) caps daily deliveries. notify_mode=agent escalates changes as untrusted evidence. Deterministic kinds never wake a model.",
 	"routine_list":    "List owned routines and their current delivery state; the err field carries the real probe failure reason. Observe the same schedule ID after an uncertain create before proposing another routine.",
 	"routine_update":  "Update an owned routine schedule or text. Use an absolute once:RFC3339 expression or cron; after: is creation-only.",
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
@@ -115,7 +115,21 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		create := map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": kind}
 		if kind == "watcher" || kind == "check" {
-			create["probe"] = map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex, "tool": r.Tool}
+			probe := map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex, "tool": r.Tool}
+			if r.Recipe != "" {
+				probe["recipe"] = r.Recipe
+			}
+			if r.Extract != "" {
+				var steps []map[string]any
+				if err := json.Unmarshal([]byte(r.Extract), &steps); err != nil {
+					return nil, errors.New("extract must be a JSON array of steps")
+				}
+				probe["extract"] = steps
+			}
+			if r.ProbeScript != "" {
+				probe["script"] = r.ProbeScript
+			}
+			create["probe"] = probe
 		}
 		if kind == "check" {
 			create["expect"] = r.Expect

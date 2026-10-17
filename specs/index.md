@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0057](active/SPEC-0057-watcher-probe-pipeline.md) | Frozen: watcher fetch/extract pipeline, isolated script/command probes, snapshotted recipes |
 | [SPEC-0056](active/SPEC-0056-routine-lifecycle.md) | Frozen: owner routine lifecycle and interval windows |
 | [SPEC-0055](active/SPEC-0055-routine-occurrence-recovery.md) | Active amendment: routine coalescing, fault isolation and bounded occurrence detail |
 | [SPEC-0054](active/SPEC-0054-proactive-automation.md) | Frozen: verified follow-ups, watcher notification policy, control-plane tool calls, owner brief and event subscriptions (M12) |

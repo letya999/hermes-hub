@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -47,7 +49,17 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		defer stop()
 		_, _ = m.command(cleanup, "rm", "-f", name)
 	}()
-	out, err := m.command(ctx, "run", "--rm", "--name", name, "--network", "none", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "16", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--log-driver", "none", "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.role=script", "--entrypoint", "communication-hub", m.cfg.Image, "--script", base64.StdEncoding.EncodeToString([]byte(request.Text)), request.DueAt.UTC().Format(time.RFC3339Nano))
+	args := []string{"run", "--rm", "--name", name, "--network", "none", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "16", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--log-driver", "none", "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.role=script"}
+	if request.MountSpace {
+		watchDir := filepath.Join(m.cfg.SpacesRoot, binding.ContextID, "watch")
+		if err := os.MkdirAll(watchDir, 0750); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "watch directory unavailable"})
+			return
+		}
+		args = append(args, "--mount", "type=bind,src="+watchDir+",dst=/watch,readonly")
+	}
+	args = append(args, "--entrypoint", "communication-hub", m.cfg.Image, "--script", base64.StdEncoding.EncodeToString([]byte(request.Text)), request.DueAt.UTC().Format(time.RFC3339Nano), base64.StdEncoding.EncodeToString([]byte(request.Input)), map[bool]string{true: "/watch", false: "-"}[request.MountSpace])
+	out, err := m.command(ctx, args...)
 	var emitted []string
 	if err != nil || len(out) > 128*1024 || json.Unmarshal(out, &emitted) != nil || len(emitted) > 4 {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "isolated script failed"})

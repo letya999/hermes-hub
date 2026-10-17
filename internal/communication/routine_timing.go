@@ -65,6 +65,9 @@ func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, e
 		return time.Time{}, errors.New("interval must be integral seconds from 1m through 8760h")
 	}
 	p := in.Timing
+	if p == nil {
+		p = &RoutineTiming{}
+	}
 	if !p.StartAt.IsZero() && from.Before(p.StartAt) {
 		from = p.StartAt.Add(-time.Nanosecond)
 	}

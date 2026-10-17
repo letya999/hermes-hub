@@ -1,31 +1,60 @@
 package communication
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
 
 func TestRoutineIntervalPersistsAnchorAndCompletesAtEnd(t *testing.T) {
- for _,bounded:=range []bool{false,true}{t.Run(map[bool]string{false:"unbounded",true:"bounded"}[bounded],func(t *testing.T){
-  s,o,_:=occurrenceFixture(t)
-  now:=time.Date(2100,1,1,10,0,0,0,time.UTC)
-  in:=Schedule{ScheduleID:"interval-restart",Envelope:o.Job.Envelope,UserID:"alice",ActorID:"alice",ScopeID:"user:alice",Channel:"telegram_bot",ChatID:11,Timezone:"UTC",Expression:"every:15m",Input:"fixture",JobKind:"reminder"}
-  if bounded{in.Timing=&RoutineTiming{EndAt:now.Add(30*time.Minute)}}
-  defer func(){if r:=recover();r!=nil{t.Errorf("optional timing must not panic: %v",r)}}()
-  got,err:=s.createScheduleAt(in,in.Envelope,"",nil,now)
-  if err!=nil{t.Fatal(err)}
-  if !got.IntervalAnchor.Equal(now){t.Errorf("anchor not persisted: %s",got.IntervalAnchor)}
-  restart,err:=NewSpool(s.root);if err!=nil{t.Fatal(err)}
-  if err:=restart.TickSchedules(now.Add(15*time.Minute),"",nil);err!=nil{t.Fatalf("last slot must settle: %v",err)}
-  items,err:=restart.ListSchedules(in.Envelope);if err!=nil||len(items)!=1{t.Fatalf("read: %v %v",items,err)}
-  if bounded {if items[0].Enabled||!items[0].NextDue.IsZero(){t.Fatalf("exhausted interval not completed: %+v",items[0])};return}
-  next,err:=nextSchedule(items[0],time.UTC,now.Add(22*time.Minute))
-  if err!=nil||!next.Equal(now.Add(30*time.Minute)){t.Fatalf("restart cadence drift: %s %v",next,err)}
-  _,err=nextSchedule(Schedule{Expression:"every:15m",Timing:&RoutineTiming{EndAt:now}},time.UTC,now)
-  if !errors.Is(err,errRoutineExhausted){t.Fatal("exhaustion must be explicit")}
- })}
+	for _, bounded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unbounded", true: "bounded"}[bounded], func(t *testing.T) {
+			s, o, _ := occurrenceFixture(t)
+			now := time.Date(2100, 1, 1, 10, 0, 0, 0, time.UTC)
+			in := Schedule{ScheduleID: "interval-restart", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:15m", Input: "fixture", JobKind: "reminder"}
+			if bounded {
+				in.Timing = &RoutineTiming{EndAt: now.Add(30 * time.Minute)}
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("optional timing must not panic: %v", r)
+				}
+			}()
+			got, err := s.createScheduleAt(in, in.Envelope, "", nil, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.IntervalAnchor.Equal(now) {
+				t.Errorf("anchor not persisted: %s", got.IntervalAnchor)
+			}
+			restart, err := NewSpool(s.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restart.TickSchedules(now.Add(15*time.Minute), "", nil); err != nil {
+				t.Fatalf("last slot must settle: %v", err)
+			}
+			items, err := restart.ListSchedules(in.Envelope)
+			if err != nil || len(items) != 1 {
+				t.Fatalf("read: %v %v", items, err)
+			}
+			if bounded {
+				if items[0].Enabled || !items[0].NextDue.IsZero() {
+					t.Fatalf("exhausted interval not completed: %+v", items[0])
+				}
+				return
+			}
+			next, err := nextSchedule(items[0], time.UTC, now.Add(22*time.Minute))
+			if err != nil || !next.Equal(now.Add(30*time.Minute)) {
+				t.Fatalf("restart cadence drift: %s %v", next, err)
+			}
+			_, err = nextSchedule(Schedule{Expression: "every:15m", Timing: &RoutineTiming{EndAt: now}}, time.UTC, now)
+			if !errors.Is(err, errRoutineExhausted) {
+				t.Fatal("exhaustion must be explicit")
+			}
+		})
+	}
 }
 
 func TestRoutineTimingRejectsUnsafeConfiguration(t *testing.T) {

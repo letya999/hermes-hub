@@ -187,6 +187,17 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 	} else if !os.IsNotExist(err) {
 		return
 	}
+	if schedule.Probe.Kind == "command" {
+		// File-state watcher: no fetch — the isolated script reads the
+		// owner's mounted watch/ dir and emits the compared value (SPEC-0057).
+		if s.probeScript == nil {
+			s.settleProbe(o, schedule, "", "", now, errors.New("command probe runtime unavailable"), authorize)
+			return
+		}
+		value, valueErr := s.probeScript(ctx, o, schedule.Probe.Script, "", true)
+		s.settleProbe(o, schedule, value, watchHash(value), now, valueErr, authorize)
+		return
+	}
 	var body []byte
 	var fetchErr error
 	if strings.HasPrefix(schedule.Probe.URL, "task:") {
@@ -231,7 +242,27 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 		s.settleProbe(o, schedule, "", "", now, fetchErr, authorize)
 		return
 	}
-	value, valueErr := probeValue(schedule.Probe, body)
+	if schedule.Probe.Kind == "script" {
+		// Isolated-script probe: the fetched body is the script's input; its
+		// single emitted value is the compared watch value (SPEC-0057).
+		if s.probeScript == nil {
+			s.settleProbe(o, schedule, "", "", now, errors.New("script probe runtime unavailable"), authorize)
+			return
+		}
+		input := body
+		if len(schedule.Probe.Extract) > 0 {
+			fragment, extractErr := extractValue(schedule.Probe, body)
+			if extractErr != nil {
+				s.settleProbe(o, schedule, "", "", now, extractErr, authorize)
+				return
+			}
+			input = []byte(fragment)
+		}
+		value, valueErr := s.probeScript(ctx, o, schedule.Probe.Script, string(input), false)
+		s.settleProbe(o, schedule, value, watchHash(value), now, valueErr, authorize)
+		return
+	}
+	value, valueErr := extractValue(schedule.Probe, body)
 	if valueErr != nil {
 		s.settleProbe(o, schedule, "", "", now, valueErr, authorize)
 		return
@@ -428,28 +459,5 @@ func boundedWatchText(value string) string {
 }
 
 func probeValue(probe *WatchProbe, body []byte) (string, error) {
-	if probe == nil {
-		return "", errors.New("probe required")
-	}
-	if probe.Kind == "github_issue" {
-		var issue struct {
-			State string `json:"state"`
-		}
-		if json.Unmarshal(body, &issue) != nil || (issue.State != "open" && issue.State != "closed") {
-			return "", errors.New("invalid GitHub issue response")
-		}
-		return issue.State, nil
-	}
-	var re *regexp.Regexp
-	if probe.Regex != "" {
-		var err error
-		re, err = regexp.Compile(probe.Regex)
-		if err != nil {
-			return "", err
-		}
-		if re.NumSubexp() == 0 || re.FindSubmatch(body) == nil {
-			return "", errors.New("probe did not match")
-		}
-	}
-	return watchValue(body, re), nil
+	return extractValue(probe, body)
 }

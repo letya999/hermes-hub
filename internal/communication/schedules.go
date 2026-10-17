@@ -32,6 +32,13 @@ type WatchProbe struct {
 	Tool        string         `json:"tool,omitempty"`
 	Args        map[string]any `json:"args,omitempty"`
 	RequeueTool string         `json:"requeue_tool,omitempty"`
+	Extract     []ExtractStep  `json:"extract,omitempty"`
+	Script      string         `json:"script,omitempty"`
+	// Recipe names a builtin probe preset expanded at create time; the
+	// snapshot below is what actually runs, so catalog edits never silently
+	// change existing schedules (SPEC-0057).
+	Recipe        string `json:"recipe,omitempty"`
+	RecipeVersion int    `json:"recipe_version,omitempty"`
 }
 
 type Schedule struct {
@@ -207,6 +214,9 @@ func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCr
 	loc, err := time.LoadLocation(in.Timezone)
 	if err != nil {
 		return Schedule{}, errors.New("invalid timezone")
+	}
+	if strings.HasPrefix(strings.TrimSpace(in.Expression), "every:") && in.IntervalAnchor.IsZero() {
+		in.IntervalAnchor = now
 	}
 	next, err := nextSchedule(in, loc, now)
 	if err != nil {
@@ -576,6 +586,12 @@ func (s *Spool) settleScheduleLocked(item *Schedule, loc *time.Location, due, no
 	}
 	next, err := nextSchedule(*item, loc, due)
 	if err != nil {
+		if errors.Is(err, errRoutineExhausted) {
+			item.Enabled = false
+			item.NextDue = time.Time{}
+			item.UpdatedAt = now
+			return atomicJSON(s.schedulePath(item.ScheduleID), item)
+		}
 		return err
 	}
 	item.NextDue = next
@@ -712,7 +728,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 			if err := validMCPProbe(in.Probe); err != nil {
 				return err
 			}
-		} else {
+		} else if in.Probe.Kind != "command" {
 			u, err := url.Parse(in.Probe.URL)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 				return errors.New("watch probe must be a plain http(s) url")
@@ -766,10 +782,13 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		return errors.New("stream delivery needs an event schedule with an mcp_tool probe")
 	}
 	if in.Probe != nil {
+		if err := expandRecipe(in.Probe); err != nil {
+			return err
+		}
 		if len(in.Probe.URL) > 2048 {
 			return errors.New("probe URL exceeds limit")
 		}
-		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" {
+		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" && in.Probe.Kind != "script" && in.Probe.Kind != "command" {
 			return errors.New("invalid probe kind")
 		}
 		if in.Probe.Regex != "" {
@@ -777,6 +796,21 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 			if err != nil || re.NumSubexp() == 0 {
 				return errors.New("probe regex needs a capture group")
 			}
+		}
+		if len(in.Probe.Extract) > extractMaxSteps {
+			return errors.New("extract pipeline exceeds bounds")
+		}
+		for _, step := range in.Probe.Extract {
+			if err := validateExtractStep(step); err != nil {
+				return err
+			}
+		}
+		if in.Probe.Kind == "script" || in.Probe.Kind == "command" {
+			if err := ScriptSyntaxError(in.Probe.Script); err != nil {
+				return errors.New("probe script does not compile")
+			}
+		} else if in.Probe.Script != "" {
+			return errors.New("script requires a script or command probe kind")
 		}
 		if in.Probe.Kind == "github_issue" {
 			u, err := url.Parse(in.Probe.URL)

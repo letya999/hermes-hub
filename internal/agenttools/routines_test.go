@@ -265,6 +265,46 @@ func TestRoutineCreateForwardsMCPTool(t *testing.T) {
 	}
 }
 
+// The probe pipeline fields ride the same probe object so an agent can create
+// recipe, extract-chain, script and command watchers without a second tool.
+func TestRoutineCreateForwardsProbePipeline(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"feed"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	ctx := context.Background()
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "feed", Timezone: "UTC", Expression: "*/30 * * * *", Text: "watch the feed", Kind: "watcher", URL: "https://example.com/rss", Recipe: "rss_feed"}); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ := request["probe"].(map[string]any)
+	if probe["recipe"] != "rss_feed" {
+		t.Fatalf("recipe lost: %v", request)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "price2", Timezone: "UTC", Expression: "*/15 * * * *", Text: "watch", Kind: "watcher", URL: "https://example.com/p", Extract: `[{"kind":"css","selector":"div.price"},{"kind":"strip"}]`}); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ = request["probe"].(map[string]any)
+	steps, _ := probe["extract"].([]any)
+	if len(steps) != 2 || steps[0].(map[string]any)["kind"] != "css" {
+		t.Fatalf("extract lost: %v", request)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "dir", Timezone: "UTC", Expression: "10 * * * *", Text: "watch dir", Kind: "watcher", ProbeKind: "command", ProbeScript: `emit(hash_path("."))`}); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ = request["probe"].(map[string]any)
+	if probe["kind"] != "command" || probe["script"] != `emit(hash_path("."))` {
+		t.Fatalf("command probe lost: %v", request)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "bad", Timezone: "UTC", Expression: "10 * * * *", Text: "watch", Kind: "watcher", URL: "https://example.com", Extract: `[{"kind":`}); err == nil {
+		t.Fatal("malformed extract accepted")
+	}
+}
+
 // watch_subscribe is an event-subscription routine: the create payload must
 // carry job_kind=event, an mcp_tool probe with parsed JSON args, and the
 // requested sink — the agent never constructs the probe envelope itself.

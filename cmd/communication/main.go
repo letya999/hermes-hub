@@ -53,7 +53,7 @@ func main() {
 }
 
 func runScriptHelper(args []string, out io.Writer) error {
-	if len(args) != 2 {
+	if len(args) != 2 && len(args) != 4 {
 		return fmt.Errorf("invalid script arguments")
 	}
 	source, err := base64.StdEncoding.DecodeString(args[0])
@@ -64,11 +64,22 @@ func runScriptHelper(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var input, watchRoot string
+	if len(args) == 4 {
+		raw, err := base64.StdEncoding.DecodeString(args[2])
+		if err != nil {
+			return err
+		}
+		input = string(raw)
+		if args[3] != "-" {
+			watchRoot = args[3]
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	watchdog := time.AfterFunc(5*time.Second, func() { os.Exit(1) })
 	defer watchdog.Stop()
-	emitted, err := communication.RunScript(ctx, string(source), due)
+	emitted, err := communication.RunScriptProbe(ctx, string(source), due, input, watchRoot)
 	if err != nil {
 		return err
 	}

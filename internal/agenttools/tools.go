@@ -53,6 +53,9 @@ type Input struct {
 	URL                string   `json:"url,omitempty"`
 	Regex              string   `json:"regex,omitempty"`
 	ProbeKind          string   `json:"probe_kind,omitempty"`
+	Recipe             string   `json:"recipe,omitempty"`
+	Extract            string   `json:"extract,omitempty"`
+	ProbeScript        string   `json:"probe_script,omitempty"`
 	Tool               string   `json:"tool,omitempty"`
 	NotifyMode         string   `json:"notify_mode,omitempty"`
 	SourceIDs          []string `json:"source_ids,omitempty"`
