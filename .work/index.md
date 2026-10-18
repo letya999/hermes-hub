@@ -13,7 +13,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
-| [CHG-0126](in-progress/CHG-0126-spool-knowledge-migration/plan.md) | Phase 5: hubctl spool migrate — knowledge copies to runtime state; implemented, docs pending |
+| [CHG-0126](done/CHG-0126-spool-knowledge-migration/plan.md) | Done: hubctl spool migrate — offline knowledge copy spool→state, dry-run/conflict-safe, just check green |
 | [CHG-0125](done/CHG-0125-domain-model-relocation/plan.md) | Done: commodel/channel/routines packages, engine relocation, conformance + goldens; coverage 86.39% |
 | [CHG-0114](done/CHG-0114-routine-destinations/plan.md) | Routine delivery destinations; done |
 | [CHG-0115](done/CHG-0115-routine-snooze-audit/plan.md) | Routine snooze acceptance correction; done |
