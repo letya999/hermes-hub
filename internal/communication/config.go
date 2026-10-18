@@ -113,9 +113,6 @@ type Config struct {
 	RuntimeAuth       string        `yaml:"-"`
 	PollTimeout       time.Duration `yaml:"-"`
 	HermesCommand     string        `yaml:"-"`
-	CredentialStore   string        `yaml:"-"`
-	CredentialKeyFile string        `yaml:"-"`
-	ToolHubStore      string        `yaml:"-"`
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
@@ -123,7 +120,6 @@ type Config struct {
 	TelegramAuthEnabled bool                    `yaml:"-"`
 	TelegramAuthAPIID   string                  `yaml:"-"`
 	TelegramAuthAPIHash string                  `yaml:"-"`
-	AuditLedger         string                  `yaml:"-"`
 	BrokerApprove       credentialbroker.Config `yaml:"-"`
 	// Workers bounds concurrent job execution; contexts serialize per
 	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
@@ -292,17 +288,10 @@ func ConfigFromEnv() (Config, error) {
 		}
 		config.PollTimeout = 25 * time.Second
 		config.HermesCommand = envOr("HUB_HERMES_COMMAND", "hermes")
-		config.CredentialStore = os.Getenv("HUB_CREDENTIAL_STORE")
-		config.CredentialKeyFile = os.Getenv("HUB_CREDENTIAL_KEY_FILE")
-		config.ToolHubStore = os.Getenv("HUB_TOOLHUB_STORE")
-		config.AuditLedger = os.Getenv("HUB_AUDIT_LEDGER")
 		config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 		config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
 		if err != nil {
 			return Config{}, err
-		}
-		if config.BrokerApprove.Enabled() {
-			config.CredentialStore, config.CredentialKeyFile = "", ""
 		}
 		config.Workers = workersFromEnv()
 		config.SpoolRetention = spoolRetentionFromEnv()
@@ -339,14 +328,11 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
+	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
 	if err != nil {
 		return Config{}, err
-	}
-	if config.BrokerApprove.Enabled() {
-		config.CredentialStore, config.CredentialKeyFile = "", ""
 	}
 	config.ServiceEndpoints, err = serviceEndpointsFromEnv()
 	if err != nil {

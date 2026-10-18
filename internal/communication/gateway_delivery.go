@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"log"
@@ -517,21 +516,4 @@ func (g *Gateway) recordJob(job Job, outcome RunOutcome) {
 		status = "completed"
 	}
 	diagnostics.Logger("gateway").Info("job outcome", "job_id", job.ID, "run_id", outcome.RunID, "principal", job.UserID, "status", status)
-	if g.audit == nil {
-		return
-	}
-	principal := job.PrincipalID
-	if principal == "" {
-		principal = job.UserID
-	}
-	if principal == "" {
-		return
-	}
-	event := audit.NewEvent("job", principal, status)
-	event.JobID = job.ID
-	event.HermesRunID = outcome.RunID
-	event.RuntimeID = job.RuntimeID
-	event.ContextID = job.ContextID
-	event.PolicyRevision = job.PolicyVersion
-	_ = g.audit.Append(event)
 }

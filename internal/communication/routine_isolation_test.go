@@ -218,41 +218,70 @@ func TestBlockNoticeGoesToOwnerHomeNotDestination(t *testing.T) {
 	_ = g
 }
 
-// With broker approval enabled the legacy credential-store env knobs must
-// not reach the config: communication never opens its own credential store
-// in broker mode, and carrying the paths invites accidental legacy intake.
-func TestConfigFromEnvBlanksCredentialStoreUnderBroker(t *testing.T) {
-	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
-	t.Setenv("HUB_CREDENTIAL_STORE", "/state/credentials/store.enc")
-	t.Setenv("HUB_CREDENTIAL_KEY_FILE", "/state/credential.key")
-	t.Setenv("HUB_CREDENTIAL_BROKER_APPROVE_URL", "http://broker:8088")
-	t.Setenv("HUB_CREDENTIAL_BROKER_APPROVE_KEY_FILE", "/run/secrets/broker.key")
-	t.Setenv("HUB_CREDENTIAL_BROKER_APPROVE_KEY_ID", "k1")
-	t.Setenv("HUB_CREDENTIAL_BROKER_APPROVE_ISSUER", "communication")
-	c, err := ConfigFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !c.BrokerApprove.Enabled() {
-		t.Fatal("broker approval env did not load")
-	}
-	if c.CredentialStore != "" || c.CredentialKeyFile != "" {
-		t.Fatalf("legacy credential surface leaked into broker mode: %+v", c)
-	}
-
+// The legacy credential-store env knobs are fully inert: credential intake
+// is broker-only, so neither env nor yaml config may open a local store —
+// no ciphertext file and no companion audit ledger is ever created, even
+// without a broker configured.
+func TestConfigFromEnvIgnoresLegacyCredentialStore(t *testing.T) {
 	dir := t.TempDir()
+	storePath := filepath.Join(dir, "credentials", "store.enc")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "bot")
+	t.Setenv("HUB_CREDENTIAL_STORE", storePath)
+	t.Setenv("HUB_CREDENTIAL_KEY_FILE", filepath.Join(dir, "credential.key"))
+	t.Setenv("HUB_AUDIT_LEDGER", filepath.Join(dir, "credentials", "audit.jsonl"))
 	yamlPath := filepath.Join(dir, "gw.yaml")
 	body := "organization_id: acme\nspool_dir: " + filepath.ToSlash(filepath.Join(dir, "spool")) + "\nusers:\n  - id: me\n    enabled: true\n    state_dir: " + filepath.ToSlash(filepath.Join(dir, "st")) + "\n    workspace_dir: " + filepath.ToSlash(filepath.Join(dir, "ws")) + "\n"
 	if err := os.WriteFile(yamlPath, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_COMMUNICATION_CONFIG", yamlPath)
+	c, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"st", "ws"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = g
+	for _, path := range []string{storePath, filepath.Join(dir, "credentials", "audit.jsonl")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("legacy credential surface materialized: %s", path)
+		}
+	}
+
+	// The single-space env branch ignores the same knobs identically.
+	if err := os.Unsetenv("HUB_COMMUNICATION_CONFIG"); err != nil {
+		t.Fatal(err)
+	}
+	stateDir, workDir := filepath.Join(dir, "s-state"), filepath.Join(dir, "s-ws")
+	for _, path := range []string{stateDir, workDir} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HUB_STATE", stateDir)
+	t.Setenv("HUB_WORKSPACE", workDir)
+	t.Setenv("HUB_COMMUNICATION_SPOOL", filepath.Join(dir, "s-spool"))
 	c, err = ConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.CredentialStore != "" || c.CredentialKeyFile != "" {
-		t.Fatalf("legacy credential surface leaked into broker mode via yaml: %+v", c)
+	g, err = New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = g
+	for _, path := range []string{storePath, filepath.Join(dir, "credentials", "audit.jsonl")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("legacy credential surface materialized: %s", path)
+		}
 	}
 }
 

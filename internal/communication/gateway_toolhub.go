@@ -22,48 +22,12 @@ import (
 // builtin agent tools, bounded CLIs, containerized and remote MCP servers.
 func (g *Gateway) connectionsCommand(user User, sender int64) string {
 	answer := connectionList(user)
-	if g.secrets == nil || g.secrets.Registry == nil {
-		// Broker-approve mode keeps the ToolHub store inside the ToolHub
-		// container; ask it over the control endpoint instead.
-		if lines, ok := g.toolHubConnectorsHTTP(user); ok {
-			return answer + lines
-		}
-		return answer + "\nКоннекторы ToolHub: реестр недоступен."
+	// The ToolHub store lives inside the ToolHub container; ask it over the
+	// control endpoint.
+	if lines, ok := g.toolHubConnectorsHTTP(user); ok {
+		return answer + lines
 	}
-	tools, err := g.secrets.Registry.ListProjectedTools(user.envelope(sender))
-	if err != nil {
-		return answer + "\nКоннекторы ToolHub: не удалось получить список."
-	}
-	if len(tools) == 0 {
-		return answer + "\nКоннекторы ToolHub: нет."
-	}
-	kind := map[string]string{}
-	for _, t := range tools {
-		if _, seen := kind[t.DefinitionID]; seen {
-			continue
-		}
-		label := string(t.Tool.Effect)
-		if def, derr := g.secrets.Registry.Definition(t.DefinitionID, t.Version); derr == nil {
-			label = string(def.Transport)
-		}
-		kind[t.DefinitionID] = label
-	}
-	lines := []string{"", "Коннекторы ToolHub:"}
-	seen := map[string]bool{}
-	for _, t := range tools {
-		if seen[t.DefinitionID] {
-			continue
-		}
-		seen[t.DefinitionID] = true
-		var names []string
-		for _, o := range tools {
-			if o.DefinitionID == t.DefinitionID {
-				names = append(names, o.Name)
-			}
-		}
-		lines = append(lines, "- "+connectorLine(t.DefinitionID, kind[t.DefinitionID], names))
-	}
-	return answer + strings.Join(lines, "\n")
+	return answer + "\nКоннекторы ToolHub: реестр недоступен."
 }
 
 // watchesCommand answers /watches: the caller's event subscriptions with

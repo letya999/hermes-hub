@@ -1,0 +1,40 @@
+schema: 1
+change: CHG-0120
+title: "Phase 1 slice 1a — legacy credential surface leaves communication"
+status: done
+branch: refactor/comm-plane-separation
+updated: 2026-10-18
+phase: implementation
+requirements: []
+depends_on:
+  - CHG-0118
+design_status: accepted
+implementation_status: done
+slices:
+  S1-config-fields-and-env-reads: done
+  S2-credential-surface-removal: done
+  S3-toolhub-http-only: done
+  S4-audit-correlation-removal: done
+validation:
+  unit: pass
+  integration: pass
+  documents: done
+  just_check: pending
+  docker_check: not_required
+  red_team: done
+  live_acceptance: not_required
+evidence:
+  - "TestConfigFromEnvIgnoresLegacyCredentialStore: env+yaml branches both inert — New() succeeds and materializes neither the ciphertext store nor the audit ledger"
+  - "Config.CredentialStore/CredentialKeyFile/AuditLedger/ToolHubStore fields and all HUB_CREDENTIAL_*/HUB_AUDIT_LEDGER/HUB_TOOLHUB_STORE reads deleted from ConfigFromEnv"
+  - "openCredentialSurface, g.secrets, g.audit removed; communication imports neither internal/secrets nor internal/audit"
+  - "/connections always queries ToolHub /v1/connectors over HUB_TOOLHUB_URL (toolHubConnectorsHTTP)"
+  - "persistCredentialForm keeps runtime /v1/self-env path; unmanaged fallback writes the runtime-owned envstore file only"
+  - "recordJob keeps the structured job outcome log line; the audit.jsonl append moved to ToolHub/runtime ownership"
+  - "Removed tests covering deleted behavior: TestOpenCredentialSurfaceSkipsLocalStoreWhenBrokerApprovalIsConfigured, TestCredentialFormPersistsThroughEncryptedStore, TestWorkerAppendsJobCorrelation"
+  - "TestGatewayInterceptsSecretsAndRejectsGroups now asserts via the envstore file; TestGatewayChatCutsOpenToolHubSession fixture cleaned of store fields"
+  - "docs/operations.md and SPEC-0020 updated: ledger is ToolHub-owned, legacy env vars documented as inert to hub-communication"
+remaining: []
+limitations:
+  - "Unmanaged deployments keep only the envstore file path for credential forms (no encrypted store, no ledger)"
+  - "internal/secrets remains for hubctl secret/connector CLI consumers — untouched"
+  - "Live broker/ToolHub verification not performed — owner gate"

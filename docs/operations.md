@@ -477,9 +477,11 @@ exposure copies selected names into that owner's `self-env.json` overlay and is
 reversible. The legacy `env_update` path is not used for managed secrets. Failed
 rotates leave the connection `degraded` until a successful rotate or an explicit
 revoke. ToolHub records `X-Hub-Job-ID` and `X-Hub-Run-ID` on MCP requests into the
-audit ledger together with a generated tool-call id. The communication worker
-appends matching job events when `HUB_AUDIT_LEDGER` or a credential store is
-configured. `HUB_CREDENTIAL_STORE` must be set on `hub-toolhub` for decrypt-and-inject.
+audit ledger together with a generated tool-call id. The communication hub no
+longer opens the credential store or the audit ledger — `HUB_CREDENTIAL_STORE`,
+`HUB_CREDENTIAL_KEY_FILE` and `HUB_AUDIT_LEDGER` are ToolHub/runtime settings
+and are inert to `hub-communication`. `HUB_CREDENTIAL_STORE` must be set on
+`hub-toolhub` for decrypt-and-inject.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
 To enable the Credential Broker path, configure the control, approval and

@@ -7,13 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/secrets"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"log"
 	"net/http"
@@ -42,8 +39,6 @@ type Gateway struct {
 	usageWG      sync.WaitGroup
 	commandCtx   context.Context
 	now          func() time.Time
-	secrets      *secrets.Service
-	audit        *audit.Ledger
 	transcriber  Transcriber
 	synthesizer  Synthesizer
 	forms        formRegistry
@@ -117,11 +112,7 @@ func New(config Config) (*Gateway, error) {
 		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}
 	}
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
-	secretService, ledger, err := openCredentialSurface(config)
-	if err != nil {
-		return nil, err
-	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	spool.JobDone = g.toolHubJobDone
 	spool.probeScript = g.runProbeScript
 	if config.TelegramAuthEnabled {
@@ -162,55 +153,6 @@ func (g *Gateway) contentField(visible string) string {
 		return "text=" + strconv.Quote(diagnostics.Redact(visible))
 	}
 	return "text_len=" + strconv.Itoa(len(visible))
-}
-
-func openCredentialSurface(config Config) (*secrets.Service, *audit.Ledger, error) {
-	if config.BrokerApprove.Enabled() {
-		return nil, nil, nil
-	}
-	if config.CredentialStore == "" {
-		return nil, nil, nil
-	}
-	opened, err := secrets.Open(config.CredentialStore, config.CredentialKeyFile, nil, "")
-	if err != nil {
-		return nil, nil, err
-	}
-	auditPath := config.AuditLedger
-	if auditPath == "" {
-		auditPath = filepath.Join(filepath.Dir(config.CredentialStore), "audit.jsonl")
-	}
-	ledger, err := audit.Open(auditPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	opened.Audit = ledger
-	opened.EnvFile = func(owner string) string {
-		for _, user := range config.Users {
-			if user.ID == owner {
-				return filepath.Join(user.StateDir, envstore.FileName)
-			}
-		}
-		return ""
-	}
-	storePath := config.ToolHubStore
-	if storePath == "" && len(config.Users) > 0 && config.Users[0].StateDir != "" {
-		candidate := filepath.Join(config.Users[0].StateDir, "runtime", "toolhub", "store.json")
-		if _, err := os.Lstat(candidate); err == nil {
-			storePath = candidate
-		}
-	}
-	if storePath != "" {
-		if _, err := os.Lstat(storePath); err == nil {
-			registry, err := toolhub.Load(storePath)
-			if err != nil {
-				return nil, nil, err
-			}
-			opened.Registry = registry
-		} else if !os.IsNotExist(err) {
-			return nil, nil, err
-		}
-	}
-	return opened, ledger, nil
 }
 
 func (g *Gateway) Run(ctx context.Context) error {

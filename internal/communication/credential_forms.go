@@ -292,24 +292,12 @@ func (g *Gateway) persistCredentialForm(r *http.Request, form credentialForm, va
 		return nil
 	}
 	user := g.user(form.OwnerID)
-	if g.secrets != nil {
-		infos, err := g.secrets.Set(form.OwnerID, values)
-		if err != nil {
-			return err
-		}
-		for _, info := range infos {
-			if err := g.secrets.SetTerminalExposure(form.OwnerID, info.Name, true); err != nil {
-				return err
-			}
-		}
-	} else {
-		allowed := make([]string, 0, len(user.ConfiguredEnv))
-		for key := range user.ConfiguredEnv {
-			allowed = append(allowed, key)
-		}
-		if _, err := envstore.UpdateValues(filepath.Join(user.StateDir, envstore.FileName), values, strings.Join(allowed, ","), strings.Join(stack.GatewaySecretKeys(), ",")); err != nil {
-			return err
-		}
+	allowed := make([]string, 0, len(user.ConfiguredEnv))
+	for key := range user.ConfiguredEnv {
+		allowed = append(allowed, key)
+	}
+	if _, err := envstore.UpdateValues(filepath.Join(user.StateDir, envstore.FileName), values, strings.Join(allowed, ","), strings.Join(stack.GatewaySecretKeys(), ",")); err != nil {
+		return err
 	}
 	if g.restart != nil {
 		request := hubruntime.ExecuteRequest{}
