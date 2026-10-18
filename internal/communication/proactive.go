@@ -98,7 +98,7 @@ func (s *Spool) processProactive(ctx context.Context, state string, execute func
 }
 
 // runProbeScript runs a watcher probe script in the disposable runtime and
-// requires exactly one canonical emitted value (SPEC-0057).
+// requires exactly one canonical emitted value (SPEC-0059).
 func (g *Gateway) runProbeScript(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
 	texts, err := g.postScript(ctx, hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: o.Job.Envelope, JobID: o.Job.ID, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: o.Job.Channel, Trigger: o.Job.Trigger, IdempotencyKey: o.Job.IdempotencyKey, Text: src}, DueAt: o.DueAt, Input: input, MountSpace: mountSpace, Needs: needs})
 	if err != nil {

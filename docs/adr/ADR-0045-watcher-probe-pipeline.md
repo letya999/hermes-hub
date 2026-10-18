@@ -2,10 +2,10 @@
 description: Watcher probe = fetcher plus deterministic extract pipeline; isolated script/command probes bounded to the owner watch directory; recipes snapshotted at create.
 last_verified: 2026-10-18
 ---
-# ADR-0043: Watcher probe pipeline — fetch/extract separation, isolated probe scripts, snapshotted recipes
+# ADR-0045: Watcher probe pipeline — fetch/extract separation, isolated probe scripts, snapshotted recipes
 
 Status: Accepted 2026-10-18. Implements the probe half of GitHub issue #248.
-Spec: [SPEC-0057](../../specs/active/SPEC-0057-watcher-probe-pipeline.md).
+Spec: [SPEC-0059](../../specs/active/SPEC-0059-watcher-probe-pipeline.md).
 
 ## Context
 
@@ -56,7 +56,7 @@ expensive last resort and keeps the compared artifact canonical.
 - The `watch/` directory is the explicit, owner-controlled boundary for
   file-state probes; nothing else in the space is visible to probe scripts.
 
-## Amendment 2026-10-18 (CHG-0114): generalized probe sources and delivery modes
+## Amendment 2026-10-18 (CHG-0117): generalized probe sources and delivery modes
 
 Scope of issue #248 widened from URL polling to "any source the owner can
 read": internal tools, memory/knowledge stores, web search, files,

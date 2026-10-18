@@ -1,13 +1,13 @@
 schema: 1
-change: CHG-0113
+change: CHG-0116
 title: Watcher probe pipeline
 status: in_progress
 branch: feat/issue-248-watcher-probe-pipeline
 worktree: hermes-hub-248
 updated: 2026-10-18
 phase: implementation
-adr: ADR-0043
-spec: SPEC-0057
+adr: ADR-0045
+spec: SPEC-0059
 requirements: [R1.1, R1.2, R1.3, R2.1, R2.2, R2.3, R3.1, R3.2, R4.1]
 depends_on: [CHG-0100, CHG-0101]
 github_issue: 248

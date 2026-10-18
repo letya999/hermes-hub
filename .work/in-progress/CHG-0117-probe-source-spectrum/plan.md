@@ -1,6 +1,6 @@
-# CHG-0114: Probe source spectrum and delivery modes
+# CHG-0117: Probe source spectrum and delivery modes
 
-Chain: ADR-0043 (amended) -> SPEC-0057 amendment -> this plan -> state.yaml.
+Chain: ADR-0045 (amended) -> SPEC-0059 amendment -> this plan -> state.yaml.
 Issue: GitHub #248 extended scope — any owner-granted source as a probe,
 content/artifact delivery, hub-mediated tool needs for scripts, opt-in
 render and registered service endpoints (job_ftch et al).

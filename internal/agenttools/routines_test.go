@@ -307,7 +307,7 @@ func TestRoutineCreateForwardsProbePipeline(t *testing.T) {
 
 // needs and deliver_mode ride the same create surface: a script probe gets
 // hub-prefetched tool results via needs() and report modes ship the value
-// every tick or as a staged file (SPEC-0057 R5.2/R6).
+// every tick or as a staged file (SPEC-0059 R5.2/R6).
 func TestRoutineCreateForwardsNeedsAndDeliver(t *testing.T) {
 	v := fixture(t)
 	t.Setenv("HUB_PRINCIPAL_ID", "alice")
@@ -342,7 +342,7 @@ func TestRoutineCreateForwardsNeedsAndDeliver(t *testing.T) {
 }
 
 // render/service probes name an operator-registered service; browser steps
-// travel as a JSON array for the render contract (SPEC-0057 R5.4/R5.5).
+// travel as a JSON array for the render contract (SPEC-0059 R5.4/R5.5).
 func TestRoutineCreateForwardsRenderAndService(t *testing.T) {
 	v := fixture(t)
 	t.Setenv("HUB_PRINCIPAL_ID", "alice")

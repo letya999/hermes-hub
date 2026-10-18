@@ -186,7 +186,7 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 	}
 	if schedule.Probe.Kind == "command" {
 		// File-state watcher: no fetch — the isolated script reads the
-		// owner's mounted watch/ dir and emits the compared value (SPEC-0057).
+		// owner's mounted watch/ dir and emits the compared value (SPEC-0059).
 		if s.probeScript == nil {
 			s.settleProbe(o, schedule, "", "", now, errors.New("command probe runtime unavailable"), authorize)
 			return
@@ -224,7 +224,7 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 	} else if schedule.Probe.Kind == "render" || schedule.Probe.Kind == "service" {
 		// Registered-service probe: an operator-declared endpoint (external
 		// renderer, parser API) answers for the probe; the response body
-		// feeds the normal extract chain (SPEC-0057 R5.4/R5.5).
+		// feeds the normal extract chain (SPEC-0059 R5.4/R5.5).
 		if serviceCall == nil {
 			fetchErr = errors.New("service probe path unavailable")
 		} else {
@@ -255,7 +255,7 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 	}
 	if schedule.Probe.Kind == "script" {
 		// Isolated-script probe: the fetched body is the script's input; its
-		// single emitted value is the compared watch value (SPEC-0057).
+		// single emitted value is the compared watch value (SPEC-0059).
 		if s.probeScript == nil {
 			s.settleProbe(o, schedule, "", "", now, errors.New("script probe runtime unavailable"), authorize)
 			return
@@ -496,7 +496,7 @@ func probeValue(probe *WatchProbe, body []byte) (string, error) {
 }
 
 // prefetchNeeds runs a script probe's declared tool needs through the same
-// read-only ToolHub path as mcp_tool probes (SPEC-0057 R5.2): the sandboxed
+// read-only ToolHub path as mcp_tool probes (SPEC-0059 R5.2): the sandboxed
 // script stays networkless while owner-granted results arrive as needs().
 // A failed need is a probe error — partial data never reaches the script.
 func prefetchNeeds(ctx context.Context, principal string, probe *WatchProbe, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) ([]string, error) {

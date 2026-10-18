@@ -16,7 +16,7 @@ import (
 )
 
 // ExtractStep is one deterministic transform in a probe extract pipeline
-// (SPEC-0057): each step maps the fetched bytes to new bytes, in order, and
+// (SPEC-0059): each step maps the fetched bytes to new bytes, in order, and
 // the last step's output is the compared value. Steps are pure functions —
 // they never fetch, execute, or see the wall clock.
 type ExtractStep struct {
@@ -303,7 +303,7 @@ func evalJSONPath(segs []jsonPathSeg, data any) ([]byte, error) {
 }
 
 // extractFeed canonicalizes an RSS 2.0 or Atom feed into "title|link|date"
-// lines, one per entry in document order (SPEC-0057).
+// lines, one per entry in document order (SPEC-0059).
 func extractFeed(in []byte) ([]byte, error) {
 	type rssItem struct {
 		Title   string `xml:"title"`

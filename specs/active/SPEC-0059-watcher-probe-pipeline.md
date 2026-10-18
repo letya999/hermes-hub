@@ -1,7 +1,7 @@
-# SPEC-0057: Watcher probe pipeline (fetch → extract → compare → deliver)
+# SPEC-0059: Watcher probe pipeline (fetch → extract → compare → deliver)
 
 Frozen: 2026-10-18. Amendment to SPEC-0048/0054.
-Decision: [ADR-0043](../../docs/adr/ADR-0043-watcher-probe-pipeline.md).
+Decision: [ADR-0045](../../docs/adr/ADR-0045-watcher-probe-pipeline.md).
 
 ## Requirements
 
@@ -48,7 +48,7 @@ Decision: [ADR-0043](../../docs/adr/ADR-0043-watcher-probe-pipeline.md).
   evaluation of diffs stays opt-in escalation (`notify_mode=agent`) and is
   never the deterministic change detector.
 
-## Amendment 2026-10-18 (CHG-0114): probe source spectrum and delivery modes
+## Amendment 2026-10-18 (CHG-0117): probe source spectrum and delivery modes
 
 - R5.1: `probe.kind=tool` is accepted as an alias and normalized to
   `mcp_tool` at create time. The ToolHub `/v1/tool-call` path already

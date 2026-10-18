@@ -1,6 +1,6 @@
-# CHG-0113: Watcher probe pipeline
+# CHG-0116: Watcher probe pipeline
 
-Chain: ADR-0043 D1-D5 -> SPEC-0057 R1-R4 -> this plan -> state.yaml.
+Chain: ADR-0045 D1-D5 -> SPEC-0059 R1-R4 -> this plan -> state.yaml.
 Issue: GitHub #248 (source watchers; probe-side scope — MCP live connector
 acceptance stays with #257).
 

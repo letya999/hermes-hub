@@ -4,7 +4,7 @@ import "errors"
 
 // watchRecipe is a reviewed probe preset. Expansion happens once at schedule
 // create: the resolved fields are stored on the probe itself, so a later
-// catalog change cannot silently alter an existing schedule (SPEC-0057).
+// catalog change cannot silently alter an existing schedule (SPEC-0059).
 type watchRecipe struct {
 	Version int
 	Extract []ExtractStep

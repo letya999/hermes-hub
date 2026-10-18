@@ -1,6 +1,6 @@
 package communication
 
-// Probe source spectrum tests (SPEC-0057 amendment, CHG-0114): the tool
+// Probe source spectrum tests (SPEC-0059 amendment, CHG-0117): the tool
 // alias, hub-mediated needs, content/artifact delivery, render and
 // registered service probes.
 

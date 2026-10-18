@@ -36,19 +36,19 @@ type WatchProbe struct {
 	Script      string         `json:"script,omitempty"`
 	// Recipe names a builtin probe preset expanded at create time; the
 	// snapshot below is what actually runs, so catalog edits never silently
-	// change existing schedules (SPEC-0057).
+	// change existing schedules (SPEC-0059).
 	Recipe        string `json:"recipe,omitempty"`
 	RecipeVersion int    `json:"recipe_version,omitempty"`
 	// Needs declares read-tool calls the hub prefetches under the owner's
 	// grants before running a script/command probe; results reach the
-	// networkless script through the needs() builtin (SPEC-0057 R5.2).
+	// networkless script through the needs() builtin (SPEC-0059 R5.2).
 	Needs []ProbeNeed `json:"needs,omitempty"`
 	// Service names a registered internal endpoint for kind=service probes
-	// (SPEC-0057 R5.5); the URL comes from operator config, never the draft.
+	// (SPEC-0059 R5.5); the URL comes from operator config, never the draft.
 	Service string `json:"service,omitempty"`
 	// Steps/WaitFor are the declarative browser pipeline for kind=render
 	// probes: replayed by the external render service before the extract
-	// chain sees the DOM (SPEC-0057 R5.4).
+	// chain sees the DOM (SPEC-0059 R5.4).
 	Steps   []RenderStep `json:"steps,omitempty"`
 	WaitFor string       `json:"wait_for,omitempty"`
 }
@@ -126,7 +126,7 @@ type Schedule struct {
 	// outbox (default), "agent" bundles them into one untrusted-evidence job.
 	Sink string `json:"sink,omitempty"`
 	// DeliverMode selects what a watcher ships on each successful probe tick
-	// (SPEC-0057 R6): empty/"notify" delivers only on change (default),
+	// (SPEC-0059 R6): empty/"notify" delivers only on change (default),
 	// "content" delivers the probed value as text every tick, "artifact"
 	// stages the value as a file attachment named ArtifactName.
 	DeliverMode  string `json:"deliver_mode,omitempty"`
@@ -693,7 +693,7 @@ func validMCPProbe(probe *WatchProbe) error {
 }
 
 // validateProbeNeeds bounds hub-prefetched tool calls for script/command
-// probes (SPEC-0057 R5.2): at most four projected read tools, each with a
+// probes (SPEC-0059 R5.2): at most four projected read tools, each with a
 // bounded args object. Other kinds cannot spend tool budget they never run.
 func validateProbeNeeds(probe *WatchProbe) error {
 	if len(probe.Needs) == 0 {
@@ -734,7 +734,7 @@ func normalizeScheduleDraft(in Schedule) Schedule {
 		probe.URL = strings.TrimSpace(probe.URL)
 		if probe.Kind == "tool" {
 			// "tool" is the readable alias for the same ToolHub path: any
-			// projected read tool, not only connector MCPs (SPEC-0057 R5.1).
+			// projected read tool, not only connector MCPs (SPEC-0059 R5.1).
 			probe.Kind = "mcp_tool"
 		}
 		in.Probe = &probe

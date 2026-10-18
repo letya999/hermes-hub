@@ -303,7 +303,7 @@ func (g *Gateway) toolCallProbeWithin(ctx context.Context, principalID string, p
 
 // serviceProbe POSTs a render/service probe to an operator-registered
 // endpoint from Config.ServiceEndpoints; the response body feeds the normal
-// extract chain (SPEC-0057 R5.4/R5.5). Endpoint URLs come only from operator
+// extract chain (SPEC-0059 R5.4/R5.5). Endpoint URLs come only from operator
 // config — a probe can name a key but never reach an arbitrary address.
 func (g *Gateway) serviceProbe(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
 	endpoint, ok := g.config.ServiceEndpoints[probe.Service]

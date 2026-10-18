@@ -53,7 +53,7 @@ func RunScript(ctx context.Context, src string, now time.Time) ([]string, error)
 // RunScriptProbe evaluates a watcher probe script: input() returns the
 // fetched/extracted body, needs() returns hub-prefetched tool results and,
 // when watchRoot is set, file builtins read the owner's mounted watch/
-// directory (SPEC-0057 R5.2).
+// directory (SPEC-0059 R5.2).
 func RunScriptProbe(ctx context.Context, src string, now time.Time, input, watchRoot string, needs []string) ([]string, error) {
 	return runScript(ctx, src, now, input, watchRoot, needs)
 }

@@ -4,7 +4,7 @@ last_verified: 2026-10-18
 ---
 # Sequential acceptance registry
 
-CHG-0113 (ADR-0043/SPEC-0057, issue #248 probe side) adds the watcher
+CHG-0116 (ADR-0045/SPEC-0059, issue #248 probe side) adds the watcher
 fetch → extract → compare pipeline: ordered extraction steps, isolated
 `kind=script`/`kind=command` probes (`input()`, owner `watch/` mount, file
 builtins) and snapshotted recipes. Coverage is unit/integration tests plus
@@ -13,7 +13,7 @@ css-extract, script-probe and command/file-watch probes has NOT been run —
 no entry below claims it. Deterministic unit coverage is not evidence of
 behavior in the real container.
 
-CHG-0114 (ADR-0043 D6–D10, SPEC-0057 R5) generalizes probe sources:
+CHG-0117 (ADR-0045 D6–D10, SPEC-0059 R5) generalizes probe sources:
 `kind=tool` alias over the owner read-tool catalog, `needs[]` hub-prefetched
 tool calls for script/command probes, `deliver_mode` content/artifact, and
 `kind=render`/`kind=service` against operator-registered

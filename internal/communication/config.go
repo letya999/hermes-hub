@@ -137,7 +137,7 @@ type Config struct {
 	// ServiceEndpoints is the operator-registered catalog of probe services
 	// (external renderers, parser APIs like job_ftch): name → endpoint. The
 	// schedule draft names a key; URLs never come from the probe, so internal
-	// addresses stay an explicit operator decision (SPEC-0057 R5.5).
+	// addresses stay an explicit operator decision (SPEC-0059 R5.5).
 	ServiceEndpoints map[string]ServiceEndpoint `yaml:"service_endpoints,omitempty"`
 }
 
@@ -352,7 +352,7 @@ func ConfigFromEnv() (Config, error) {
 
 // serviceEndpointsFromEnv parses HUB_SERVICE_ENDPOINTS — a JSON object of
 // name → "url" or {"url","auth"} — into the registered probe-service catalog
-// used by render/service watcher kinds (SPEC-0057 R5.5).
+// used by render/service watcher kinds (SPEC-0059 R5.5).
 func serviceEndpointsFromEnv() (map[string]ServiceEndpoint, error) {
 	raw := strings.TrimSpace(os.Getenv("HUB_SERVICE_ENDPOINTS"))
 	if raw == "" {
