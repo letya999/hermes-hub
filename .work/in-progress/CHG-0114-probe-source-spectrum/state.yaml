@@ -20,13 +20,20 @@ slices:
   S4-render: completed
   S5-service: completed
 validation:
-  documents: pending
-  just_check: pending
+  documents: done
+  just_check: passed
   docker_check: not_run
-  just_security: pending
+  just_security: passed
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence:
+  - "just check: all packages green, coverage 86.29% (>=85%)"
+  - "just security: govulncheck 0 reachable, npm audit clean"
+  - "ai-repo-safety scan: opengrep 0 findings, gitleaks dir scan clean;
+    git-mode scanners (gitleaks detect/trufflehog) cannot read a linked
+    worktree, ruff flags only .repo-safety's own scripts, pip-audit and
+    standalone gosec are tool-environment failures — repo devcheck gosec
+    passed inside just check"
 notes: >
   kind=exec with egress-proxy stays deferred — hub-mediated needs[] plus
   registered services cover the internet-facing script cases without
