@@ -14,19 +14,31 @@ slices:
   S3-quiet-escalation: completed
   S4-drift-noise: completed
   S5-error-detail: completed
+  S6-script-image-pin: completed
 validation:
   documents: done
   just_check: passed
   docker_check: not_run
   just_security: not_run
-  live_acceptance: partial
+  live_acceptance: passed
 evidence:
   - "just check: all packages green, coverage 86.38% (>=85%)"
-  - "go test ./internal/routines ./internal/communication ./internal/agenttools: green"
-  - "live M13 run found the defects; fixes verified by unit/integration
-    tests, not re-run live — live re-acceptance pending"
+  - "live re-acceptance 2026-10-18 22:48-23:09 UTC on dev stack
+    (dev-rebuild communication-hub): lv-dead alert probe status 302
+    telegram msg 3338, lv-empty probe produced empty value msg 3337,
+    lv-check equals:Example Domain met msg 3339, dedupe 5 failed ticks
+    1 alert each, last_error in /v1/routines listing, lv-aquiet agent
+    escalation capped inside quiet window then resumed, lv-cap
+    daily_limit=1 capped after first notify, lv-quiet deferred to
+    not_before, 0 binding drift in 30m with live agent escalations"
+  - "lv-file command probe: baseline live-ok -> file edit -> change
+    notification 23:08; required new S6 — dev script containers spawned
+    the stale base image; dev-rebuild communication-hub now pins
+    generated/dev-script-image and scriptHTTP resolves it, full core
+    builds clear it like the runtime pin"
 notes: >
   Failure alerts dedupe per normalized error and reset after the first
   successful probe. Agent escalation in quiet hours settles capped (cannot
   defer a model wake like a delivery). Probe kinds bypass the binding-drift
-  check entirely.
+  check entirely. dev-script-image pin is supervisor-mode only; prod script
+  containers keep the core image.

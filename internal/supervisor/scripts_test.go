@@ -138,6 +138,55 @@ func TestScriptProbeInputAndWatchMount(t *testing.T) {
 	}
 }
 
+// The disposable script container runs --entrypoint communication-hub, so a
+// dev space must spawn it from the communication-hub overlay pin — the base
+// runtime image can carry a stale helper while the rebuilt gateway is new.
+func TestScriptProbeSelectsDevScriptImage(t *testing.T) {
+	var commands [][]string
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "run" {
+			return []byte(`["value"]`), nil
+		}
+		return nil, nil
+	}, nil)
+	m.cfg.Environment = "dev"
+	if err := os.MkdirAll(filepath.Join(root, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	image := "hermes-hub-dev-alice-communication-hub:local"
+	if err := os.WriteFile(filepath.Join(root, "generated", "dev-script-image"), []byte(image+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", Text: `emit("x")`}, DueAt: time.Now()}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/v1/script", strings.NewReader(string(body)))
+	r.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("script=%d %s", w.Code, w.Body.String())
+	}
+	var run []string
+	for _, args := range commands {
+		if len(args) > 0 && args[0] == "run" {
+			run = args
+		}
+	}
+	found := false
+	for i, arg := range run {
+		if arg == "--entrypoint" && i+2 < len(run) && run[i+2] == image {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("script run did not select dev script image: %v", run)
+	}
+}
+
 func TestScriptProbeInputBounds(t *testing.T) {
 	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 		if args[0] == "run" {

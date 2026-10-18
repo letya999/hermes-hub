@@ -124,11 +124,21 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(selected)) != "hermes-hub-dev-owner-hermes-runtime:local" {
 		t.Fatalf("supervisor runtime image selection: %q %v", selected, err)
 	}
+	if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", "communication-hub"}); err != nil {
+		t.Fatal(err)
+	}
+	scriptSelected, err := os.ReadFile(filepath.Join(dir, "generated", "dev-script-image"))
+	if err != nil || strings.TrimSpace(string(scriptSelected)) != "hermes-hub-dev-owner-communication-hub:local" {
+		t.Fatalf("script image selection: %q %v", scriptSelected, err)
+	}
 	if err := run(context.Background(), []string{"build", "--dir", dir, "--root", "../..", "--env", "dev", "cliproxy"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "generated", "dev-runtime-image")); !os.IsNotExist(err) {
 		t.Fatal("full core build retained stale supervised dev image selection")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated", "dev-script-image")); !os.IsNotExist(err) {
+		t.Fatal("full core build retained stale script image selection")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated", "dev-runtime-image"), selected, 0600); err != nil {
 		t.Fatal(err)

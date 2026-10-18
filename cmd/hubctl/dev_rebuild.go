@@ -142,6 +142,14 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		}
 		return nil
 	}
+	if service == "communication-hub" && settings.ExecutionMode == "supervisor" {
+		// Disposable script containers spawn --entrypoint communication-hub
+		// from the supervisor's runtime image; pin the overlay so dev script
+		// probes run the same code the rebuilt gateway does.
+		if err := writeAtomic(filepath.Join(dirAbs, "generated", "dev-script-image"), []byte(image+"\n")); err != nil {
+			return err
+		}
+	}
 	override := filepath.Join(buildDir, "compose.override.yaml")
 	if err := os.WriteFile(override, []byte("services:\n  "+service+":\n    image: "+image+"\n"), 0600); err != nil {
 		return err

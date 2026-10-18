@@ -53,6 +53,11 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "script capacity unavailable"})
 		return
 	}
+	image, err := devScriptImage(binding.ContextRoot, binding.UserID, m.cfg.Environment, m.cfg.Image)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dev script image unavailable"})
+		return
+	}
 	name := "hermes-script-" + binding.PrincipalID + "-" + rand.Text()
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
@@ -68,7 +73,7 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		args = append(args, "--mount", "type=bind,src="+watchDir+",dst=/watch,readonly")
 	}
-	args = append(args, "--entrypoint", "communication-hub", m.cfg.Image, "--script", base64.StdEncoding.EncodeToString([]byte(request.Text)), request.DueAt.UTC().Format(time.RFC3339Nano), base64.StdEncoding.EncodeToString([]byte(request.Input)), map[bool]string{true: "/watch", false: "-"}[request.MountSpace])
+	args = append(args, "--entrypoint", "communication-hub", image, "--script", base64.StdEncoding.EncodeToString([]byte(request.Text)), request.DueAt.UTC().Format(time.RFC3339Nano), base64.StdEncoding.EncodeToString([]byte(request.Input)), map[bool]string{true: "/watch", false: "-"}[request.MountSpace])
 	for _, need := range request.Needs {
 		args = append(args, base64.StdEncoding.EncodeToString([]byte(need)))
 	}

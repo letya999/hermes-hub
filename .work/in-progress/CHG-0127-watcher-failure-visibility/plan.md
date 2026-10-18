@@ -29,6 +29,12 @@ carried no compiler detail.
   reason; routine_create tool description documents command probes,
   read_file('name'), quiet/daily-limit coverage of agent mode and the
   once-per-error failure alert.
+- S6 script image pin (found in live re-acceptance): disposable script
+  containers always spawned cfg.Image, so a dev stack ran a stale
+  communication-hub helper and every command probe failed opaque.
+  dev-rebuild communication-hub now writes generated/dev-script-image,
+  scriptHTTP resolves it through the same exact-name dev selection as
+  dev-runtime-image, and full core builds clear it.
 
 ## Contract updates
 

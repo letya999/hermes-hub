@@ -470,8 +470,10 @@ func run(ctx context.Context, args []string) error {
 				}
 			}
 			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
-				if err := os.Remove(filepath.Join(abs, "generated", "dev-runtime-image")); err != nil && !os.IsNotExist(err) {
-					return err
+				for _, pin := range []string{"dev-runtime-image", "dev-script-image"} {
+					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) {
+						return err
+					}
 				}
 			}
 		}
