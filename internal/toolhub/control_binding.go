@@ -353,24 +353,31 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding, purge bool) e
 		if onboarding.CredentialOwner != "" {
 			owner = onboarding.CredentialOwner
 		}
-		_ = c.Secrets.SetStatus(onboarding.Locator, owner, credstore.StatusRevoked)
+		if err := c.Secrets.SetStatus(onboarding.Locator, owner, credstore.StatusRevoked); err != nil {
+			return err
+		}
 	}
-	c.releaseBindingWorkloads(onboarding, purge)
-	return nil
+	return c.releaseBindingWorkloads(onboarding, purge)
 }
 
 // releaseBindingWorkloads stops the workload owned by the onboarding binding.
 // Recorded workload instances cover every class; the deterministic recompute
 // covers admissions whose record is gone (e.g. a store snapshot predating the
 // record or a controller that kept the containers after losing its own map).
-func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge bool) {
+func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge bool) error {
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if c.CLIRelease != nil && onboarding.BindingID != "" && identity.ValidID(onboarding.PrincipalID) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = c.CLIRelease(ctx, api.CliReleaseRequest{PrincipalID: onboarding.PrincipalID, BindingID: onboarding.BindingID, Reason: "binding-release"})
+		note(c.CLIRelease(ctx, api.CliReleaseRequest{PrincipalID: onboarding.PrincipalID, BindingID: onboarding.BindingID, Reason: "binding-release"}))
 	}
 	if c.Release == nil || onboarding.BindingID == "" {
-		return
+		return firstErr
 	}
 	released := map[string]bool{}
 	release := func(workloadID string) {
@@ -380,18 +387,18 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge 
 		released[workloadID] = true
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = c.Release(ctx, api.ControllerRelease{WorkloadID: workloadID, Purge: purge})
+		note(c.Release(ctx, api.ControllerRelease{WorkloadID: workloadID, Purge: purge}))
 	}
 	for _, workloadID := range c.Store.WorkloadIDsForBinding(onboarding.BindingID) {
 		release(workloadID)
 	}
 	binding, err := c.Store.binding(onboarding.BindingID)
 	if err != nil {
-		return
+		return firstErr
 	}
 	definition, err := c.definitionOf(onboarding)
 	if err != nil {
-		return
+		return firstErr
 	}
 	switch definition.Workload.Class {
 	case api.Shared:
@@ -403,6 +410,7 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge 
 		}
 		release(api.WorkloadInstanceID(definition.DefinitionID, api.PerUser, ownerID, ""))
 	}
+	return firstErr
 }
 
 func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition) (api.ToolBinding, error) {

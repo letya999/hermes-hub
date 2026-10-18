@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
@@ -236,8 +237,14 @@ func (c *genericController) removeWorkload(ctx context.Context, workload generic
 		_, _ = c.docker(ctx, "volume", "rm", workload.relayVol)
 	}
 	if !keepState {
+		var errs []error
 		for _, volume := range workload.stateVols {
-			_, _ = c.docker(ctx, "volume", "rm", volume)
+			if _, err := c.docker(ctx, "volume", "rm", volume); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if err := errors.Join(errs...); err != nil {
+			return err
 		}
 	}
 	if workload.remoteState != "" {

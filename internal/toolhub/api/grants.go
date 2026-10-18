@@ -31,7 +31,11 @@ const (
 	PhaseDisabled         string    = "disabled"
 	PhaseRevoked          string    = "revoked"
 	PhaseRemoved          string    = "removed"
-	PhaseFailed           string    = "failed"
+	// PhaseCleanupIncomplete marks a remove whose cleanup did not converge:
+	// no removed tombstone until every step succeeded, and a bare retry
+	// resumes the remaining work without another confirmation.
+	PhaseCleanupIncomplete string = "cleanup_incomplete"
+	PhaseFailed            string = "failed"
 )
 
 var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics", "grant_request", "install_shared"}
@@ -262,7 +266,7 @@ func (o Onboarding) Validate() error {
 		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
 	}
 	switch o.Phase {
-	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseFailed:
+	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseCleanupIncomplete, PhaseFailed:
 	default:
 		return fmt.Errorf("%w: onboarding phase", ErrInvalid)
 	}

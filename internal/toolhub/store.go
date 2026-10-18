@@ -388,8 +388,11 @@ func (s *Store) SetBindingStatus(bindingID string, status api.Status) error {
 	s.bindings[bindingID] = binding
 	stopped := s.stopBindingLocked(bindingID)
 	s.mu.Unlock()
-	s.stopWorkloads(stopped)
-	return s.persistAndNotify()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persistAndNotify(); err != nil {
+		return err
+	}
+	return stopErr
 }
 
 // RemoveBindingRecords drops the binding row and any rows only it referenced:
@@ -627,11 +630,15 @@ func (s *Store) stopBindingLocked(bindingID string) []string {
 	return ids
 }
 
-func (s *Store) stopWorkloads(ids []string) {
+func (s *Store) stopWorkloads(ids []string) error {
 	if s == nil || s.Stopper == nil {
-		return
+		return nil
 	}
+	var firstErr error
 	for _, id := range ids {
-		_ = s.Stopper.Stop(id)
+		if err := s.Stopper.Stop(id); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
+	return firstErr
 }

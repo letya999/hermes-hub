@@ -361,45 +361,62 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 	if onboarding.Phase == api.PhaseRemoved {
 		return c.statusBody(onboarding, false), nil
 	}
-	// Destructive step: a bare call previews what goes away and arms a nonce;
-	// only the nonce-carrying follow-up deletes credentials and state.
-	nonce := api.ArgString(args, "remove_nonce")
-	if onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce {
-		if nonce != "" {
-			return nil, fmt.Errorf("%w: remove confirmation", api.ErrUnauthorized)
+	if onboarding.Phase != api.PhaseCleanupIncomplete {
+		// Destructive step: a bare call previews what goes away and arms a
+		// nonce; only the nonce-carrying follow-up deletes credentials and
+		// state. A cleanup_incomplete retry already passed that gate once.
+		nonce := api.ArgString(args, "remove_nonce")
+		if onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce {
+			if nonce != "" {
+				return nil, fmt.Errorf("%w: remove confirmation", api.ErrUnauthorized)
+			}
+			onboarding.RemoveNonce = api.RandomNonce()
+			onboarding.RemoveExpires = c.now().Add(c.ttl())
+			onboarding.Revision++
+			if err := c.Store.PutOnboarding(onboarding); err != nil {
+				return nil, err
+			}
+			body := c.statusBody(onboarding, false)
+			body["requires_confirmation"] = true
+			body["remove_nonce"] = onboarding.RemoveNonce
+			body["next_action"] = "confirm_remove"
+			body["instructions"] = "Removing this connector deletes its credentials, workspace and runtime state permanently. Repeat remove with remove_nonce to execute; ask the user to confirm first."
+			return body, nil
 		}
-		onboarding.RemoveNonce = api.RandomNonce()
-		onboarding.RemoveExpires = c.now().Add(c.ttl())
-		onboarding.Revision++
-		if err := c.Store.PutOnboarding(onboarding); err != nil {
-			return nil, err
+		if onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
+			return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
 		}
-		body := c.statusBody(onboarding, false)
-		body["requires_confirmation"] = true
-		body["remove_nonce"] = onboarding.RemoveNonce
-		body["next_action"] = "confirm_remove"
-		body["instructions"] = "Removing this connector deletes its credentials, workspace and runtime state permanently. Repeat remove with remove_nonce to execute; ask the user to confirm first."
-		return body, nil
-	}
-	if onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
-		return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
 	}
 	onboarding.RemoveNonce = ""
-	_ = c.cutAuthorization(onboarding, true)
+	cleanupErr := c.cutAuthorization(onboarding, true)
 	// Remove deletes the owner's ciphertext, not just revokes it — a revoked
 	// marker still leaves the secret recoverable. A credential owned by
 	// someone else (shared policy store owner) is left untouched: removing
 	// one member's connector must not destroy the shared secret.
-	if c.Secrets != nil && onboarding.Locator != "" {
+	if cleanupErr == nil && c.Secrets != nil && onboarding.Locator != "" {
 		owner := onboarding.PrincipalID
 		if onboarding.CredentialOwner != "" {
 			owner = onboarding.CredentialOwner
 		}
 		if owner == onboarding.PrincipalID {
 			if err := c.Secrets.Delete(onboarding.Locator, owner); err != nil && !errors.Is(err, credstore.ErrNotFound) {
-				return nil, err
+				cleanupErr = err
 			}
 		}
+	}
+	if cleanupErr != nil {
+		onboarding.Phase = api.PhaseCleanupIncomplete
+		onboarding.Error = "cleanup did not converge"
+		onboarding.ErrorCode = "cleanup_incomplete"
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(onboarding); err != nil {
+			return nil, err
+		}
+		body := c.statusBody(onboarding, false)
+		body["retryable"] = true
+		body["next_action"] = "remove"
+		body["instructions"] = "Cleanup did not fully converge; call remove again with the same selector to continue where it stopped."
+		return body, nil
 	}
 	if onboarding.BindingID != "" {
 		if binding, err := c.Store.binding(onboarding.BindingID); err == nil {
