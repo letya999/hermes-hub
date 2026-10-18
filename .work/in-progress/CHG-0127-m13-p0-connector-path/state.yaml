@@ -18,7 +18,7 @@ slices:
   S0.2-convergent-remove: done
   S0.3-nonce-free-results: done
   S0.4-ssrf-safe-client: done
-  S0.5-scope-selection: not_started
+  S0.5-scope-selection: done
   S0.6-env-injection-guard: not_started
   S0.7-remote-effect-fail-closed: not_started
   S0.8-ready-outside-lock: not_started
@@ -34,6 +34,7 @@ evidence:
   - "be17929 S0.2: PhaseCleanupIncomplete phase; remove propagates release/credential-delete failures into retryable cleanup_incomplete, no removed tombstone until converged; SetBindingStatus + tombstone + purge state-volume errors surfaced (was silently discarded)"
   - "S0.3: agent-facing bodies carry no nonce/form_url/form_path/authorization_url; notices carry /credentials/ /confirm/ /remove/ /connect/ loopback links; /connect/<id> validates state/request against the record then 302s to provider/broker URL; elicitation resolves the link server-side; link refresh re-posts the notice"
   - "S0.4: internal/netguard DNS-resolve-then-deny (private/loopback/link-local/multicast/CGNAT/metadata, fail-closed on any unsafe answer); same-origin redirects; oauth.Broker guarded by default behind AllowLoopback; discovered metadata issuer equality; OciHTTPClient blocks recipe-named private registries"
+  - "S0.5: scope priority challenge>PRM, AS scopes_supported never unions; WWW-Authenticate scope captured in probe and drives the authorize URL; insufficient_scope surfaces ErrReconsent and skips the refresh retry"
 remaining:
   - "Finding 10: committed 11MB live snapshots in 16cb15c (.work/done/CHG-0107-dynamic-contracts/) — owner decision on history scrub before any push"
   - "Push to origin + CI image/containers gates require owner instruction"

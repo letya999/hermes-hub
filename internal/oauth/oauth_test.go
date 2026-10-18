@@ -325,7 +325,7 @@ func TestDiscoverRemoteMCPCapturesResourceRegistrationScopes(t *testing.T) {
 
 	broker := NewBroker(testSecrets(t), []string{"http://127.0.0.1/callback"})
 	broker.HTTP = server.Client()
-	provider, err := broker.DiscoverRemoteMCPAs("remote-mcp-test", server.URL)
+	provider, err := broker.DiscoverRemoteMCPAs("remote-mcp-test", server.URL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +550,7 @@ func TestDiscoveryFailsClosedOnPrivateIssuer(t *testing.T) {
 
 	broker := NewBroker(testSecrets(t), []string{"http://127.0.0.1/callback"})
 	broker.HTTP = netguard.Client(3*time.Second, true)
-	if _, err := broker.DiscoverRemoteMCPAs("bad-issuer", server.URL); !errors.Is(err, ErrInvalid) {
+	if _, err := broker.DiscoverRemoteMCPAs("bad-issuer", server.URL, nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("private issuer accepted: %v", err)
 	}
 
@@ -567,7 +567,7 @@ func TestDiscoveryFailsClosedOnPrivateIssuer(t *testing.T) {
 		w.WriteHeader(404)
 	}))
 	defer redirect.Close()
-	if _, err := broker.DiscoverRemoteMCPAs("redirect", redirect.URL); err == nil {
+	if _, err := broker.DiscoverRemoteMCPAs("redirect", redirect.URL, nil); err == nil {
 		t.Fatal("cross-origin redirect to the AS document was followed")
 	}
 	if asHits != 0 {
@@ -592,7 +592,7 @@ func TestDiscoveryIssuerMismatchRejected(t *testing.T) {
 	defer server.Close()
 	broker := NewBroker(testSecrets(t), []string{"http://127.0.0.1/callback"})
 	broker.HTTP = server.Client()
-	if _, err := broker.DiscoverRemoteMCPAs("mismatch", server.URL); !errors.Is(err, ErrInvalid) {
+	if _, err := broker.DiscoverRemoteMCPAs("mismatch", server.URL, nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("issuer mismatch accepted: %v", err)
 	}
 }
@@ -622,4 +622,51 @@ func TestBrokerDefaultClientIsGuarded(t *testing.T) {
 		t.Fatalf("AllowLoopback client rejected loopback: %v", err)
 	}
 	resp.Body.Close()
+}
+
+// CHG-0127 S0.5: the authorization request asks for exactly the scopes the
+// resource demanded — the WWW-Authenticate challenge wins over the PRM
+// document, and AS-advertised scopes_supported never widen the request.
+func TestAuthorizeScopeEqualsChallengeScope(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc(ProtectedResourceWellKnown, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": server.URL + "/mcp", "authorization_servers": []string{server.URL}, "scopes_supported": []string{"mcp:read", "mcp:write"}})
+	})
+	mux.HandleFunc(AuthorizationServerWellKnown, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token", "scopes_supported": []string{"mcp:read", "admin:all"}})
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+	broker := NewBroker(testSecrets(t), []string{"http://127.0.0.1/callback"})
+	broker.HTTP = server.Client()
+
+	provider, err := broker.DiscoverRemoteMCPAs("scoped", server.URL, []string{"mcp:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.Scopes) != 1 || provider.Scopes[0] != "mcp:read" {
+		t.Fatalf("challenge scope lost: %v", provider.Scopes)
+	}
+	start, err := broker.StartAuth(AuthRequest{Principal: "alice", Context: "alice", Connection: "conn", Provider: "scoped", Redirect: "http://127.0.0.1/callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(start.AuthorizeURL)
+	if got := parsed.Query().Get("scope"); got != "mcp:read" {
+		t.Fatalf("authorize scope %q, want challenge scope only", got)
+	}
+
+	provider, err = broker.DiscoverRemoteMCPAs("scoped", server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range provider.Scopes {
+		if scope == "admin:all" {
+			t.Fatalf("AS-advertised scope leaked into provider: %v", provider.Scopes)
+		}
+	}
+	if len(provider.Scopes) != 2 {
+		t.Fatalf("PRM scopes_supported is the fallback: %v", provider.Scopes)
+	}
 }

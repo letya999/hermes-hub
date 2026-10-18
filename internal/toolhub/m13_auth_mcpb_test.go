@@ -344,7 +344,8 @@ func TestRemoteOAuthStatusHandsAuthorizationURL(t *testing.T) {
 		t.Fatal("onboarding lacks provider authorization url")
 	}
 	authURL, _ := url.Parse(rawURL)
-	if authURL.Query().Get("client_id") != "dcr-client" || authURL.Query().Get("resource") == "" || authURL.Query().Get("scope") != "mcp:read" {
+	scope := authURL.Query().Get("scope")
+	if authURL.Query().Get("client_id") != "dcr-client" || authURL.Query().Get("resource") == "" || !strings.Contains(scope, "mcp:read") || strings.Contains(scope, "mcp:admin") {
 		t.Fatalf("authorize URL incomplete: %s", rawURL)
 	}
 }
@@ -619,9 +620,16 @@ type remoteOAuthFixture struct {
 	lastAuth    atomic.Value
 	// accepted holds the bearer the endpoint currently honors; rotation
 	// simulates access-token expiry mid-life.
-	accepted  atomic.Value
-	dialAddr  string
-	transport *http.Transport
+	accepted atomic.Value
+	// challengeScope lands in the 401 WWW-Authenticate challenge; the
+	// authorization request must ask for exactly it, nothing broader.
+	challengeScope string
+	// insufficient makes /mcp answer 403 insufficient_scope for any token —
+	// a granted-set shortfall, not expiry, so refresh must not fire.
+	insufficient atomic.Bool
+	tokenHits    atomic.Int32
+	dialAddr     string
+	transport    *http.Transport
 }
 
 func newRemoteOAuthFixture(t *testing.T) *remoteOAuthFixture {
@@ -636,25 +644,34 @@ func newRemoteOAuthFixture(t *testing.T) *remoteOAuthFixture {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		fixture.lastAuth.Store(r.Header.Get("Authorization"))
+		if fixture.insufficient.Load() {
+			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="mcp:admin"`)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		want := "Bearer oauth-at-1"
 		if accepted := fixture.accepted.Load(); accepted != nil {
 			want = "Bearer " + accepted.(string)
 		}
 		if r.Header.Get("Authorization") != want {
-			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+issuer+`/.well-known/oauth-protected-resource/mcp"`)
+			challenge := `Bearer resource_metadata="` + issuer + `/.well-known/oauth-protected-resource/mcp"`
+			if fixture.challengeScope != "" {
+				challenge += `, scope="` + fixture.challengeScope + `"`
+			}
+			w.Header().Set("WWW-Authenticate", challenge)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		mcpHandler.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"resource": issuer + "/mcp", "authorization_servers": []string{issuer}, "scopes_supported": []string{"mcp:read"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": issuer + "/mcp", "authorization_servers": []string{issuer}, "scopes_supported": []string{"mcp:read", "mcp:write"}})
 	})
 	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"resource": issuer + "/mcp", "authorization_servers": []string{issuer}, "scopes_supported": []string{"mcp:read"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": issuer + "/mcp", "authorization_servers": []string{issuer}, "scopes_supported": []string{"mcp:read", "mcp:write"}})
 	})
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token", "registration_endpoint": issuer + "/register", "scopes_supported": []string{"mcp:read"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token", "registration_endpoint": issuer + "/register", "scopes_supported": []string{"mcp:read", "mcp:admin"}})
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "dcr-client"})
@@ -668,6 +685,7 @@ func newRemoteOAuthFixture(t *testing.T) *remoteOAuthFixture {
 		http.Redirect(w, r, target.String(), http.StatusFound)
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		fixture.tokenHits.Add(1)
 		body, _ := io.ReadAll(r.Body)
 		form, _ := url.ParseQuery(string(body))
 		switch {
@@ -719,4 +737,74 @@ func (f *remoteOAuthFixture) broker(secrets credstore.Backend, redirect string) 
 	broker := oauth.NewBroker(secrets, []string{redirect})
 	broker.HTTP = &http.Client{Transport: f.transport, Timeout: 10 * time.Second}
 	return broker
+}
+
+// CHG-0127 S0.5: the 401 challenge declares the demanded scope — the
+// authorization URL asks for exactly it, never the AS-advertised union.
+func TestRemoteOAuthAsksChallengeScopeOnly(t *testing.T) {
+	fixture := newRemoteOAuthFixture(t)
+	fixture.challengeScope = "mcp:read"
+	fix := newRemoteControlFixture(t)
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
+	alice := fix.session(t, aliceToken)
+	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ := url.Parse(providerAuthURLOf(t, fix.store, prepared["onboarding_id"].(string)))
+	if got := authURL.Query().Get("scope"); got != "mcp:read" {
+		t.Fatalf("authorize scope %q: challenge scope must win over AS scopes_supported", got)
+	}
+}
+
+// CHG-0127 S0.5: a granted-set shortfall is a re-consent event — refreshing
+// the same-scoped token cannot fix it and must not loop.
+func TestInsufficientScopeDoesNotRefreshLoop(t *testing.T) {
+	fixture := newRemoteOAuthFixture(t)
+	fix := newRemoteControlFixture(t)
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
+	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth)
+	alice := fix.session(t, aliceToken)
+	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ := url.Parse(providerAuthURLOf(t, fix.store, prepared["onboarding_id"].(string)))
+	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	listed, err := alice.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectedName := ""
+	for _, tool := range listed.Tools {
+		if strings.HasPrefix(tool.Name, "hub-remote-") {
+			projectedName = tool.Name
+		}
+	}
+	if projectedName == "" {
+		t.Fatal("remote tool not projected")
+	}
+	before := fixture.tokenHits.Load()
+	fixture.insufficient.Store(true)
+	_, err = alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
+	if got := fixture.tokenHits.Load(); got != before {
+		t.Fatalf("insufficient_scope triggered %d refresh attempts; want re-consent, no refresh", got-before)
+	}
+	if err == nil || !strings.Contains(err.Error(), "re-consent") {
+		t.Fatalf("want re-consent surfacing, got %v", err)
+	}
 }

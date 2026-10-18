@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -63,7 +64,9 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		}
 		// An OAuth-managed remote connection whose token was just rejected gets
 		// one refresh-and-retry: a renewed bearer re-injects from the locator.
-		if callErr != nil && envOK && g.OAuthRefresh != nil && effective.Connection != nil && effective.Connection.Metadata["oauth_provider"] != "" {
+		// insufficient_scope is a granted-set shortfall — only re-consent fixes
+		// it, so the refresh path is skipped.
+		if callErr != nil && envOK && !errors.Is(callErr, api.ErrReconsent) && g.OAuthRefresh != nil && effective.Connection != nil && effective.Connection.Metadata["oauth_provider"] != "" {
 			if refreshed, refreshErr := g.OAuthRefresh(callCtx, effective); refreshErr == nil && refreshed && g.Injector != nil {
 				if fresh, injErr := g.Injector(ctx, effective); injErr == nil {
 					if fresh.Cleanup != nil {

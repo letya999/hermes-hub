@@ -39,6 +39,9 @@ var (
 	ErrDegraded     = errors.New("toolhub connection is degraded")
 	// Resolution sentinels wrap ErrInvalid so existing fail-closed callers keep
 	// failing closed while stable machine-readable codes reach status.
+	// ErrReconsent marks a granted-set shortfall (RFC6750 insufficient_scope):
+	// the fix is a new consent round, never a token refresh.
+	ErrReconsent                     = fmt.Errorf("%w: re-consent required", ErrUnauthorized)
 	ErrAmbiguousEntrypoint           = fmt.Errorf("%w: ambiguous MCP entrypoint", ErrInvalid)
 	ErrUnsupportedCredentialContract = fmt.Errorf("%w: unsupported credential contract", ErrInvalid)
 	ErrUnsupportedAuth               = fmt.Errorf("%w: unsupported authentication contract", ErrInvalid)

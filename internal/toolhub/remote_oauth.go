@@ -31,11 +31,11 @@ func remoteOAuthContract() []api.CredentialInput {
 // endpoint advertises RFC9728 protected-resource metadata. advertised=false
 // means the endpoint says nothing about OAuth and the static-credential
 // instruction stands.
-func (c *ControlPlane) prepareRemoteOAuth(auth identity.Envelope, draft api.ToolDefinition, onboardingID, requestKey string, allowlist []string) (map[string]any, bool, error) {
+func (c *ControlPlane) prepareRemoteOAuth(auth identity.Envelope, draft api.ToolDefinition, onboardingID, requestKey string, allowlist, challengeScopes []string) (map[string]any, bool, error) {
 	if c.OAuth == nil || c.Secrets == nil {
 		return nil, false, nil
 	}
-	if _, err := c.OAuth.DiscoverRemoteMCPAs(remoteOAuthProvider(draft), draft.Source.URL); err != nil {
+	if _, err := c.OAuth.DiscoverRemoteMCPAs(remoteOAuthProvider(draft), draft.Source.URL, challengeScopes); err != nil {
 		return nil, false, nil
 	}
 	// The draft carries no tools yet — tools/list only answers after the
@@ -84,7 +84,8 @@ func (c *ControlPlane) ensureRemoteOAuth(auth identity.Envelope, onboarding api.
 	}
 	provider := remoteOAuthProvider(definition)
 	redirect := c.origin() + "/oauth/callback"
-	if _, err := c.OAuth.DiscoverRemoteMCPAs(provider, definition.Source.URL); err != nil {
+	prior, _ := c.OAuth.Provider(provider)
+	if _, err := c.OAuth.DiscoverRemoteMCPAs(provider, definition.Source.URL, prior.Scopes); err != nil {
 		return nil, fmt.Errorf("%w: remote endpoint advertises no usable OAuth metadata", api.ErrUnsupportedAuth)
 	}
 	if c.OAuth.Client(provider).ID == "" {

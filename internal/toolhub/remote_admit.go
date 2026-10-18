@@ -90,7 +90,7 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	probe, err := api.ProbeRemoteMCP(ctx, draft, nil)
 	if err != nil {
 		if probe.AuthNeeded {
-			body, advertised, oauthErr := c.prepareRemoteOAuth(auth, draft, onboardingID, requestKey, allowlist)
+			body, advertised, oauthErr := c.prepareRemoteOAuth(auth, draft, onboardingID, requestKey, allowlist, probe.Scopes)
 			if advertised {
 				return body, oauthErr
 			}

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -392,7 +391,7 @@ func (b *Broker) Refresh(principal, connection, provider string) (TokenMeta, err
 }
 
 func (b *Broker) DiscoverRemoteMCP(resourceURL string) (Provider, error) {
-	return b.DiscoverRemoteMCPAs("remote-mcp", resourceURL)
+	return b.DiscoverRemoteMCPAs("remote-mcp", resourceURL, nil)
 }
 
 // DiscoverRemoteMCPAs runs RFC9728 protected-resource discovery under a
@@ -402,7 +401,10 @@ func (b *Broker) DiscoverRemoteMCP(resourceURL string) (Provider, error) {
 // https://host/.well-known/oauth-protected-resource/mcp, and a path-bearing
 // issuer maps its AS metadata the same RFC8414 way. Every discovered URL
 // must be https — an AS answer that downgrades to plain HTTP fails closed.
-func (b *Broker) DiscoverRemoteMCPAs(name, resourceURL string) (Provider, error) {
+// preferredScopes carries the recipe- or challenge-declared scope set: it
+// wins over the PRM scopes_supported fallback, and AS scopes_supported never
+// unions in — a metadata document must not widen the consent request.
+func (b *Broker) DiscoverRemoteMCPAs(name, resourceURL string, preferredScopes []string) (Provider, error) {
 	if err := b.ready(); err != nil {
 		return Provider{}, err
 	}
@@ -425,7 +427,7 @@ func (b *Broker) DiscoverRemoteMCPAs(name, resourceURL string) (Provider, error)
 	if declared, _ := meta["issuer"].(string); !sameIssuer(declared, issuer) {
 		return Provider{}, fmt.Errorf("%w: issuer mismatch", ErrInvalid)
 	}
-	return b.registerDiscovered(name, resourceURL, resource, meta)
+	return b.registerDiscovered(name, resourceURL, resource, meta, preferredScopes)
 }
 
 // wellKnownURL inserts a well-known suffix between the origin and the
@@ -482,7 +484,7 @@ func sameIssuer(declared, expected string) bool {
 // registerDiscovered builds the provider from the PRM document + AS metadata
 // and stores it under name. The PRM-declared resource becomes the RFC8707
 // audience; the AS registration endpoint enables RFC7591 DCR.
-func (b *Broker) registerDiscovered(name, resourceURL string, resource, meta map[string]any) (Provider, error) {
+func (b *Broker) registerDiscovered(name, resourceURL string, resource, meta map[string]any, preferredScopes []string) (Provider, error) {
 	authorize, _ := meta["authorization_endpoint"].(string)
 	token, _ := meta["token_endpoint"].(string)
 	device, _ := meta["device_authorization_endpoint"].(string)
@@ -498,12 +500,9 @@ func (b *Broker) registerDiscovered(name, resourceURL string, resource, meta map
 	if provider.Resource == "" {
 		provider.Resource = strings.TrimRight(resourceURL, "/")
 	}
-	for _, doc := range []map[string]any{resource, meta} {
-		for _, scope := range stringList(doc["scopes_supported"]) {
-			if !slices.Contains(provider.Scopes, scope) {
-				provider.Scopes = append(provider.Scopes, scope)
-			}
-		}
+	provider.Scopes = append([]string(nil), preferredScopes...)
+	if len(provider.Scopes) == 0 {
+		provider.Scopes = stringList(resource["scopes_supported"])
 	}
 	b.mu.Lock()
 	if b.Providers == nil {
