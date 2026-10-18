@@ -15,6 +15,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // CHG-0127 S0.1: /release purge must drop named state volumes even when the
@@ -992,5 +993,79 @@ func TestMaterializeReadsSecretFiles(t *testing.T) {
 	}
 	if strings.Contains(string(body), "BEGIN") {
 		t.Fatal("file content leaked into an env line")
+	}
+}
+
+// CHG-0127 S0.7: remote effect classification fails closed — annotation-first,
+// never name heuristics. readOnlyHint=true => read; absent/false => write.
+
+func newAnnotatedRemoteFixture(t *testing.T, tools ...*mcp.Tool) *remoteMCPFixture {
+	t.Helper()
+	fixture := &remoteMCPFixture{}
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "remote-annotation-fixture", Version: "1"}, nil)
+	for _, tool := range tools {
+		if tool.InputSchema == nil {
+			tool.InputSchema = map[string]any{"type": "object"}
+		}
+		mcpServer.AddTool(tool, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		})
+	}
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
+	server := httptest.NewTLSServer(handler)
+	t.Cleanup(server.Close)
+	fixture.URL = server.URL
+	pinRemoteFixtureClient(t, fixture, server.URL)
+	return fixture
+}
+
+func probeAnnotatedEffects(t *testing.T, fixture *remoteMCPFixture) map[string]api.Effect {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	def, err := api.RemoteDefinitionBase(fixture.endpoint(), "remote-annotated", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, err := api.ProbeRemoteMCP(ctx, def, nil)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	effects := make(map[string]api.Effect, len(probe.Tools))
+	for _, tool := range probe.Tools {
+		effects[tool.Name] = tool.Effect
+	}
+	return effects
+}
+
+func TestRemoteToolEffectDefaultsToWrite(t *testing.T) {
+	fixture := newAnnotatedRemoteFixture(t,
+		&mcp.Tool{Name: "archive_item"},
+		&mcp.Tool{Name: "unknown_verb"},
+	)
+	effects := probeAnnotatedEffects(t, fixture)
+	for _, name := range []string{"archive_item", "unknown_verb"} {
+		if effects[name] != api.WriteEffect {
+			t.Fatalf("%s classified %v without readOnlyHint; must fail closed to write", name, effects[name])
+		}
+	}
+}
+
+func TestRemoteToolEffectHonorsReadOnlyHint(t *testing.T) {
+	destructive := true
+	fixture := newAnnotatedRemoteFixture(t,
+		&mcp.Tool{Name: "archive_item", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
+		&mcp.Tool{Name: "delete_everything", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false}},
+		&mcp.Tool{Name: "reset_account", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &destructive}},
+	)
+	effects := probeAnnotatedEffects(t, fixture)
+	if effects["archive_item"] != api.ReadEffect {
+		t.Fatalf("readOnlyHint=true classified %v", effects["archive_item"])
+	}
+	if effects["delete_everything"] != api.WriteEffect {
+		t.Fatalf("readOnlyHint=false classified %v", effects["delete_everything"])
+	}
+	if effects["reset_account"] != api.WriteEffect {
+		t.Fatalf("readOnlyHint+destructiveHint classified %v", effects["reset_account"])
 	}
 }

@@ -59,7 +59,7 @@ func ProbeRemoteMCP(ctx context.Context, definition ToolDefinition, env map[stri
 		if tool == nil || !McpToolNamePattern.MatchString(tool.Name) {
 			continue
 		}
-		spec := ToolSpec{Name: tool.Name, Effect: RemoteToolEffect(tool.Name)}
+		spec := ToolSpec{Name: tool.Name, Effect: RemoteAnnotatedEffect(tool)}
 		if tool.Description != "" {
 			spec.Description = tool.Description
 			if len(spec.Description) > 1024 {
@@ -150,6 +150,16 @@ var remoteWriteVerbs = map[string]bool{
 	"approve": true, "reject": true, "schedule": true, "deploy": true,
 	"publish": true, "subscribe": true, "notify": true, "transfer": true,
 	"provision": true, "destroy": true, "edit": true, "insert": true,
+}
+
+// RemoteAnnotatedEffect fails closed: only an explicit readOnlyHint=true
+// annotation (without destructiveHint) classifies a remote tool read.
+func RemoteAnnotatedEffect(tool *mcp.Tool) Effect {
+	if tool != nil && tool.Annotations != nil && tool.Annotations.ReadOnlyHint &&
+		!(tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint) {
+		return ReadEffect
+	}
+	return WriteEffect
 }
 
 // RemoteToolEffect classifies on name segments only — provider text is
