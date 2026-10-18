@@ -161,6 +161,26 @@ func run(ctx context.Context, args []string) error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(rep)
 	}
+	if op == "spool" {
+		f := flag.NewFlagSet("spool", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir")
+		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
+		apply := f.Bool("apply", false, "apply migration; default is dry-run")
+		if len(args) < 2 || args[1] != "migrate" {
+			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
+		}
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *spoolDir == "" || *stateDir == "" {
+			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
+		}
+		rep, err := spoolMigrate(*spoolDir, *stateDir, *apply)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
 	f := flag.NewFlagSet(op, flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
 	root := f.String("root", ".", "source root")
