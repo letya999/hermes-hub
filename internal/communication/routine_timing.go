@@ -22,6 +22,9 @@ type RoutineWindow struct {
 }
 
 func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, error) {
+	if strings.HasPrefix(strings.TrimSpace(in.Expression), "every:") && in.Delivery == "stream" {
+		return time.Time{}, errors.New("stream delivery does not use interval schedules")
+	}
 	if in.Timing != nil {
 		if !strings.HasPrefix(strings.TrimSpace(in.Expression), "every:") || in.Delivery == "stream" {
 			return time.Time{}, errors.New("timing requires a polled interval routine")
@@ -65,6 +68,9 @@ func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, e
 		return time.Time{}, errors.New("interval must be integral seconds from 1m through 8760h")
 	}
 	p := in.Timing
+	if p == nil {
+		p = &RoutineTiming{}
+	}
 	if !p.StartAt.IsZero() && from.Before(p.StartAt) {
 		from = p.StartAt.Add(-time.Nanosecond)
 	}
@@ -129,12 +135,30 @@ func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, e
 				endDay := day.AddDate(0, 0, 1)
 				end = time.Date(endDay.Year(), endDay.Month(), endDay.Day(), b.Hour(), b.Minute(), 0, 0, loc)
 			}
+			wallStart := time.Date(day.Year(), day.Month(), day.Day(), a.Hour(), a.Minute(), 0, 0, time.UTC)
+			wallEnd := time.Date(day.Year(), day.Month(), day.Day(), b.Hour(), b.Minute(), 0, 0, time.UTC)
+			if b.Before(a) {
+				wallEnd = wallEnd.AddDate(0, 0, 1)
+			}
+			_, beforeOffset := start.Add(-48 * time.Hour).Zone()
+			_, afterOffset := end.Add(48 * time.Hour).Zone()
+			shift := time.Duration(beforeOffset-afterOffset) * time.Second
+			if shift < 0 {
+				shift = -shift
+			}
+			end = end.Add(shift)
 			t := start
 			if !t.After(from) {
 				t = t.Add((from.Sub(t)/d + 1) * d)
 			}
-			if t.Before(end) {
-				take(t)
+			for t.Before(end) {
+				local := t.In(loc)
+				wall := time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), local.Minute(), local.Second(), 0, time.UTC)
+				if !wall.Before(wallStart) && wall.Before(wallEnd) {
+					take(t)
+					break
+				}
+				t = t.Add(d)
 			}
 		}
 		for _, v := range p.At {

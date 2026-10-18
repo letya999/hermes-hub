@@ -343,6 +343,12 @@ func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool
 		if err != nil || task.Archived || task.ContextID != job.ContextID || task.ChatID != job.ChatID || task.TopicID != job.TopicID {
 			return false
 		}
+		if task.TopicID != 0 {
+			bound, err := g.spool.topicTaskLocked(job.PrincipalID, job.ChatID, job.TopicID)
+			if err != nil || bound != job.TaskID {
+				return false
+			}
+		}
 	}
 	if job.ConversationID != canonical.ConversationID {
 		// Before admission the envelope is canonical; dispatch pins the

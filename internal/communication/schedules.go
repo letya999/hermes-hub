@@ -35,16 +35,19 @@ type WatchProbe struct {
 }
 
 type Schedule struct {
-	Creation       *ScheduleCreation `json:"creation,omitempty"`
-	ScheduleID     string            `json:"schedule_id"`
-	Revision       uint64            `json:"revision"`
-	Envelope       identity.Envelope `json:"envelope"`
-	OrganizationID string            `json:"organization_id"`
-	UserID         string            `json:"user_id"`
-	ActorID        string            `json:"actor_id"`
-	ScopeID        string            `json:"scope_id"`
-	Channel        string            `json:"channel"`
-	ChatID         int64             `json:"chat_id,omitempty"`
+	OriginJobID       string              `json:"origin_job_id,omitempty"`
+	DestinationTaskID string              `json:"destination_task_id,omitempty"`
+	Creation          *ScheduleCreation   `json:"creation,omitempty"`
+	ScheduleID        string              `json:"schedule_id"`
+	Revision          uint64              `json:"revision"`
+	Envelope          identity.Envelope   `json:"envelope"`
+	PriorEnvelopes    []identity.Envelope `json:"prior_envelopes,omitempty"`
+	OrganizationID    string              `json:"organization_id"`
+	UserID            string              `json:"user_id"`
+	ActorID           string              `json:"actor_id"`
+	ScopeID           string              `json:"scope_id"`
+	Channel           string              `json:"channel"`
+	ChatID            int64               `json:"chat_id,omitempty"`
 	// TaskID/TopicID snapshot the task the routine was created in: occurrence
 	// jobs rebind their conversation and deliver back to the same topic.
 	TaskID         string         `json:"task_id,omitempty"`
@@ -62,6 +65,7 @@ type Schedule struct {
 	Probe               *WatchProbe `json:"probe,omitempty"`
 	Expect              string      `json:"expect,omitempty"`
 	InitialProbeValue   *string     `json:"initial_probe_value,omitempty"`
+	ProbeRevision       uint64      `json:"probe_revision,omitempty"`
 	NotifyMode          string      `json:"notify_mode,omitempty"`
 	SourceIDs           []string    `json:"source_ids,omitempty"`
 	SnoozedUntil        time.Time   `json:"snoozed_until,omitempty"`
@@ -111,6 +115,8 @@ var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or 
 var errScheduleExists = errors.New("schedule already exists or is unreadable")
 
 func scheduleIntent(in Schedule) string {
+	in.PriorEnvelopes = nil
+	in.OriginJobID, in.DestinationTaskID = "", ""
 	in.Creation = nil
 	in.LastOccurrenceState, in.LastDeliveryState = "", ""
 	in.Revision, in.Enabled, in.Paused = 0, false, false
@@ -181,13 +187,22 @@ func (s *Spool) createSchedule(in Schedule, caller identity.Envelope, nativeCron
 	return s.createScheduleAt(in, caller, nativeCron, initialValue, time.Now().UTC())
 }
 
-func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time) (Schedule, error) {
+func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time, routingUser ...User) (Schedule, error) {
 	in = normalizeScheduleDraft(in)
 	if err := validateScheduleDraft(in, caller); err != nil {
 		return Schedule{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(routingUser) > 0 && (in.OriginJobID != "" || in.DestinationTaskID != "") {
+		var err error
+		in, err = s.bindRoutineDestinationLocked(in, caller, routingUser[0])
+		if err != nil {
+			return Schedule{}, err
+		}
+		caller = in.Envelope
+	}
+	in.OriginJobID, in.DestinationTaskID = "", ""
 	if item, found, err := s.creationReplayLocked(in, caller); found || err != nil {
 		return item, err
 	}
@@ -208,6 +223,7 @@ func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCr
 	if err != nil {
 		return Schedule{}, errors.New("invalid timezone")
 	}
+	in.IntervalAnchor = now
 	next, err := nextSchedule(in, loc, now)
 	if err != nil {
 		return Schedule{}, err
@@ -265,6 +281,7 @@ func (s *Spool) ListSchedules(caller identity.Envelope) ([]Schedule, error) {
 			item.LastOccurrenceState, item.LastDeliveryState = s.reminderStateLocked(item)
 		}
 		out = append(out, item)
+		out[len(out)-1].NextDue = effectiveRoutineNextDue(item)
 	}
 	return out, nil
 }
@@ -313,7 +330,7 @@ func (s *Spool) UpdateSchedule(id string, caller identity.Envelope, expression, 
 	return item, nil
 }
 
-func (s *Spool) PauseSchedule(id string, caller identity.Envelope) error {
+func (s *Spool) PauseSchedule(id string, caller identity.Envelope, expected ...uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, err := s.loadScheduleLocked(id)
@@ -324,12 +341,15 @@ func (s *Spool) PauseSchedule(id string, caller identity.Envelope) error {
 		return errors.New("schedule not owned")
 	}
 	item.Paused = true
+	if len(expected) > 0 && expected[0] != item.Revision {
+		return ErrRoutineRevision
+	}
 	item.Revision++
 	item.UpdatedAt = time.Now().UTC()
 	return atomicJSON(s.schedulePath(id), item)
 }
 
-func (s *Spool) DeleteSchedule(id string, caller identity.Envelope) error {
+func (s *Spool) DeleteSchedule(id string, caller identity.Envelope, expected ...uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, err := s.loadScheduleLocked(id)
@@ -340,6 +360,10 @@ func (s *Spool) DeleteSchedule(id string, caller identity.Envelope) error {
 		return errors.New("schedule not owned")
 	}
 	item.Enabled, item.Paused = false, true
+	if len(expected) > 0 && expected[0] != item.Revision {
+		return ErrRoutineRevision
+	}
+	item.Revision++
 	item.NextDue = time.Time{}
 	item.UpdatedAt = time.Now().UTC()
 	if err := atomicJSON(s.cancelPath(id), item); err != nil {
@@ -348,7 +372,7 @@ func (s *Spool) DeleteSchedule(id string, caller identity.Envelope) error {
 	return os.Remove(s.schedulePath(id))
 }
 
-func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.Time) error {
+func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.Time, expected ...uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, err := s.loadScheduleLocked(id)
@@ -360,6 +384,12 @@ func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.T
 	}
 	if !until.After(time.Now().UTC()) {
 		return errors.New("snooze must be in the future")
+	}
+	if len(expected) > 0 && expected[0] != item.Revision {
+		return ErrRoutineRevision
+	}
+	if !item.NextDue.IsZero() && !until.After(effectiveRoutineNextDue(item)) {
+		return ErrRoutineSnoozeNotLater
 	}
 	item.SnoozedUntil = until.UTC()
 	if strings.HasPrefix(strings.TrimSpace(item.Expression), "once:") {
@@ -574,19 +604,16 @@ func (s *Spool) settleScheduleLocked(item *Schedule, loc *time.Location, due, no
 		item.UpdatedAt = now
 		return atomicJSON(s.schedulePath(item.ScheduleID), item)
 	}
-	next, err := nextSchedule(*item, loc, due)
+	next, err := nextSchedule(*item, loc, now)
+	if errors.Is(err, errRoutineExhausted) {
+		item.Enabled, item.Paused, item.NextDue = false, true, time.Time{}
+		item.UpdatedAt = now
+		return atomicJSON(s.schedulePath(item.ScheduleID), item)
+	}
 	if err != nil {
 		return err
 	}
 	item.NextDue = next
-	// Catch-up is at most one missed occurrence: skip any extra due times in-window.
-	for !item.NextDue.After(now) {
-		skipped, skipErr := nextSchedule(*item, loc, item.NextDue)
-		if skipErr != nil || !skipped.After(item.NextDue) {
-			break
-		}
-		item.NextDue = skipped
-	}
 	item.UpdatedAt = now
 	return atomicJSON(s.schedulePath(item.ScheduleID), item)
 }
@@ -652,6 +679,7 @@ func validTaskProbe(url string) bool {
 }
 
 func normalizeScheduleDraft(in Schedule) Schedule {
+	in.PriorEnvelopes = nil
 	in.LastOccurrenceID, in.LastOccurrenceState, in.LastDeliveryState = "", "", ""
 	if in.Probe != nil {
 		probe := *in.Probe

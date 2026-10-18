@@ -145,19 +145,19 @@
   {
     "id": "E2E-012",
     "surface": "hub",
-    "name": "routine_update",
-    "title": "routine_update",
-    "action": "Через routine_update выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить.",
-    "expected": "Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет.",
+    "name": "routine_edit",
+    "title": "Редактирование рутины",
+    "action": "Через routine_edit с action=update изменить отдельную тестовую рутину с observed revision.",
+    "expected": "Действие update передаёт patch и expected_revision; ответ содержит новую revision.",
     "package": "agenttools",
-    "test": "TestRoutineToolsCallCommunicationHub",
+    "test": "TestRoutineEditDispatchesExplicitActions",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
   },
   {
     "id": "E2E-013",
-    "surface": "hub",
+    "surface": "internal",
     "name": "routine_snooze",
     "title": "routine_snooze",
     "action": "Через routine_snooze выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить.",
@@ -170,7 +170,7 @@
   },
   {
     "id": "E2E-014",
-    "surface": "hub",
+    "surface": "internal",
     "name": "routine_pause",
     "title": "routine_pause",
     "action": "Через routine_pause выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить.",
@@ -1857,5 +1857,57 @@
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
+  },
+  {
+    "id": "E2E-144",
+    "surface": "hub",
+    "name": "routine_get",
+    "title": "Карточка рутины",
+    "action": "Прочитать полную карточку своей рутины по ID.",
+    "expected": "Переданы ID и маршрут get; возвращена полная карточка, ошибки не скрываются.",
+    "package": "agenttools",
+    "test": "TestRoutinePublishedLifecycleDispatch",
+    "prerequisites": "Изолированные HTTP fixtures; не live acceptance",
+    "level": "contract",
+    "cleanup": "Закрыть тестовый HTTP server"
+  },
+  {
+    "id": "E2E-145",
+    "surface": "hub",
+    "name": "routine_get",
+    "title": "История рутины",
+    "action": "Через routine_get include=[history] запросить страницу истории своей рутины.",
+    "expected": "История и её курсор возвращены внутри карточки; ограничения объёма сохранены.",
+    "package": "agenttools",
+    "test": "TestRoutineGetIncludesBoundedHistoryAndPreview",
+    "prerequisites": "Изолированные HTTP fixtures; не live acceptance",
+    "level": "contract",
+    "cleanup": "Закрыть тестовый HTTP server"
+  },
+  {
+    "id": "E2E-146",
+    "surface": "hub",
+    "name": "routine_get",
+    "title": "Предпросмотр рутины",
+    "action": "Через routine_get include=[next_runs] запросить следующие срабатывания своей рутины.",
+    "expected": "Предпросмотр возвращён внутри карточки без запуска рутины.",
+    "package": "agenttools",
+    "test": "TestRoutinePublishedLifecycleDispatch",
+    "prerequisites": "Изолированные HTTP fixtures; не live acceptance",
+    "level": "contract",
+    "cleanup": "Закрыть тестовый HTTP server"
+  },
+  {
+    "id": "E2E-147",
+    "surface": "hub",
+    "name": "routine_edit",
+    "title": "Возобновление рутины",
+    "action": "Возобновить свою рутину через routine_edit action=resume с observed revision.",
+    "expected": "Действие resume передаёт ID и expected_revision в соответствующий HTTP-маршрут.",
+    "package": "agenttools",
+    "test": "TestRoutineEditDispatchesExplicitActions",
+    "prerequisites": "Изолированные HTTP fixtures; не live acceptance",
+    "level": "contract",
+    "cleanup": "Закрыть тестовый HTTP server"
   }
 ]

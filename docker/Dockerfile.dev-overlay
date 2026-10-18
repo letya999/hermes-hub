@@ -2,3 +2,4 @@ ARG BASE=hermes-hub:0.3.0-dev
 FROM ${BASE}
 ARG BINARY
 COPY binary /usr/local/bin/${BINARY}
+COPY companions/ /usr/local/bin/

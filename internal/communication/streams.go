@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -241,6 +242,10 @@ func (g *Gateway) streamPollOnce(ctx context.Context, schedule Schedule, toolCal
 func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time, probeErr error, authorize func(Job) error) ([]Event, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	live, err := s.loadScheduleLocked(schedule.ScheduleID)
+	if err != nil || live.Revision != schedule.Revision || !streamActive(&live, now) {
+		return nil, true
+	}
 	st, err := s.loadEventStateLocked(schedule.ScheduleID)
 	if err != nil {
 		return nil, true
@@ -278,7 +283,11 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 			fresh = append(fresh, ev)
 		}
 	}
-	seed := "stream-" + schedule.ScheduleID + "-" + watchHash(strings.Join(ids, "|"))[:16]
+	sourceID := schedule.ScheduleID
+	if schedule.ProbeRevision > 0 {
+		sourceID += "-" + strconv.FormatUint(schedule.ProbeRevision, 10)
+	}
+	seed := "stream-" + sourceID + "-" + watchHash(strings.Join(ids, "|"))[:16]
 	job.ID = seed
 	job.IdempotencyKey = seed
 	overflowed := s.fanoutEventsLocked(&st, schedule, job, fresh, seed, schedule.ScheduleID, now)

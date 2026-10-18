@@ -6,6 +6,8 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0044](ADR-0044-routine-destinations.md) | Accepted: verified task destinations and per-run origin for routine delivery |
+| [ADR-0043](ADR-0043-compact-routine-tools.md) | Accepted: five public routine tools; lifecycle operations retained internally |
 | [ADR-0042](ADR-0042-routine-lifecycle.md) | Accepted direction: routine lifecycle, revision fences and interval windows |
 | [ADR-0041](ADR-0041-proactive-automation.md) | Accepted: proactive automation on the occurrence pipeline — bounded follow-up retry, quiet/cap/escalation policy, control-plane tool calls, owner brief, event subscriptions (M12) |
 | [ADR-0040](ADR-0040-single-stack-supervisor.md) | Accepted direction: one Compose supervisor using the existing control image; deployment acceptance pending |

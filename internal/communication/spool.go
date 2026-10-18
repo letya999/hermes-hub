@@ -428,6 +428,10 @@ func (s *Spool) Compact(now time.Time, retention time.Duration) error {
 // Detail stays in an archive for 48 hours; a small receipt keeps the normal
 // spool deduplication horizon. Active and dispatched work stays untouched.
 func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration) error {
+	outcomes, err := s.routineDeliveryStatesLocked()
+	if err != nil {
+		return err
+	}
 	dir := filepath.Join(s.root, "occurrences")
 	archiveDir := filepath.Join(dir, "archive")
 	receiptDir := filepath.Join(dir, "receipts")
@@ -511,7 +515,7 @@ func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration)
 			return err
 		}
 		receiptPath := filepath.Join(receiptDir, entry.Name())
-		if err := atomicJSON(receiptPath, map[string]string{"id": o.Job.ID}); err != nil {
+		if err := atomicJSON(receiptPath, routineHistoryReceipt{ID: o.Job.ID, ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, Run: s.routineRunLocked(o, outcomes)}); err != nil {
 			return err
 		}
 		if err := os.Chtimes(receiptPath, info.ModTime(), info.ModTime()); err != nil {

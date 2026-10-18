@@ -19,7 +19,7 @@ func (s *Spool) reminderStateLocked(item Schedule) (string, string) {
 			continue
 		}
 		var o RoutineOccurrence
-		if err != nil || len(body) > 128*1024 || json.Unmarshal(body, &o) != nil || o.Job.ID != id || o.ScheduleID != item.ScheduleID || o.Job.Envelope != item.Envelope {
+		if err != nil || len(body) > 128*1024 || json.Unmarshal(body, &o) != nil || o.Job.ID != id || o.ScheduleID != item.ScheduleID || !routineOwnsHistoryEnvelope(item, o.Job.Envelope) {
 			return "unavailable", ""
 		}
 		state = o.State

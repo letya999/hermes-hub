@@ -8,7 +8,7 @@ Status: accepted direction, 2026-10-17, by the owner's implementation request.
 Implementation and acceptance remain tracked in CHG-0112.
 
 Requirements: [SPEC-0056](../../specs/active/SPEC-0056-routine-lifecycle.md).
-Evidence and alternatives: [research](../../.work/in-progress/CHG-0112-routine-lifecycle/research.md).
+Evidence and alternatives: [research](../../.work/done/CHG-0112-routine-lifecycle/research.md).
 
 ## Context
 

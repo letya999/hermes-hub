@@ -1,0 +1,52 @@
+schema: 1
+change: CHG-0112
+title: Routine lifecycle and interval windows
+status: done
+branch: fix/chg-0105-broker-drift-self-heal
+updated: 2026-10-18
+phase: accepted
+adr: ADR-0042
+spec: SPEC-0056
+requirements: [R1.1, R1.2, R1.3, R1.4, R2.1, R2.2, R2.3, R3.1, R3.2]
+depends_on: [CHG-0111]
+github_issue: 247
+design_status: accepted
+implementation_status: complete
+slices:
+  S1-lifecycle: green
+  S2-timing: green
+  S3-managed-acceptance: green; deployed ToolHub business path passed, live managed policy excluded as recorded below
+validation:
+  documents: passed
+  just_check: passed; identical recipes with isolated TEMP coverage output to avoid concurrent coverage writers
+  go_statement_coverage: 86.31%
+  docker_check: changed-service dev overlays, endpoint checks and final runtime stdio contract passed; full multi-image gate remains in CI
+  red_team: passed targeted ownership, stale-write, source epoch, large-response and DST regression checks
+  live_acceptance: passed deployed MCP lifecycle and separate real Telegram reminder; live stack uses legacy access policy
+evidence:
+  - Red/green regression cycles reproduced silent large replies, stale mutations, snooze-edit and paused-text drift.
+  - Interval windows, overnight weekday ownership, bounds, restart anchor, DST fixtures and downtime exhaustion pass targeted Go tests.
+  - HTTP summary pages retain all 71 long-input routines; history retains execution and delivered outcome after 48-hour detail compaction.
+  - All ten lifecycle operations dispatch through the MCP server to asserted HTTP routes with typed patch, revision and paging arguments.
+  - Existing package run exposed fixed tool-count assertions and corrupt-state HTTP status compatibility; both corrected before final full gate.
+  - Concurrent workspace commits 57d050d and 5a47330 included early design/timing changes while this task continued; no reset performed.
+  - Principal/context isolation and concurrent revision regression tests passed with race detection.
+  - Source baseline revision, event dedup source isolation and paused/edited in-flight stream fencing passed red-green tests.
+  - History verifies agent mapping identity and owned multipart delivery; completed schedules and effective legacy snooze deadlines are shown honestly.
+  - Catalog 2.0.0 upgrades from an immutable 1.3.0 fixture; runtime dev overlays now rebuild the tools executor alongside the runtime.
+  - Current guide, architecture/operations links and stable agent guidance updated; devcheck docs passed.
+  - Supported hubctl dev-rebuild completed for communication-hub, toolhub, workload-controller, supervisor and hermes-runtime; running containers use their selected dev tags and endpoints answered.
+  - Runtime overlay includes the freshly compiled hubctl executor; communication image e4576ea10a599eba93eff3dbabc7bb61879a272b3405012676636198ca324c4d, ToolHub image 5ef789b130fba7a00f3e0224841ffa825e4c353afadfe00cbf9f00355cd4f3f4, runtime image 941f5dcec5449fe3201972580554ff8e4b0ef9bd0cf2f9eb9719fff0116721fa.
+  - Official capability registration selected hub-agent-tools 2.0.0 with 51 tools; previous immutable definitions remain stored, previous active binding disabled. Existing legacy policy mode preserved.
+  - Actual pinned Hermes MCP client traversed ToolHub and the private executor into the gateway. All ten routine tools were advertised and executed; stale conflict, paused edit, snooze/timing edit and kind conversion passed. Synthetic future fixture chg0112-live-fe9323feb7 retired before firing, deleted get and empty preview confirmed, zero external sends in this lifecycle run.
+  - E2E-081 PASS on 2026-10-18 Moscow using a fresh Linux runner against the live gateway and actual Telegram Bot API in 7.042s; exact bound receipt, firing job absent from agent queue, fixture cleanup succeeded.
+  - Final runtime TestHubStdioReminderContract passed in 9.404s using hermes-hub-dev-local-hermes-runtime local image; its HTTP fixtures are separate from live MCP and Telegram evidence.
+  - Full gate caught missing acceptance registry entries for get/history/preview/resume; E2E-144 through E2E-147 added and inventory regression passed.
+  - Authored tests self-reviewed with test-critic guidance while retaining author context; no independent reviewer or delegated agent used.
+  - Final just check passed race/shuffle tests, own Go statement coverage 86.31 percent and per-package floors, format, vet, tidy diff, staticcheck, gosec, docs, actionlint and deployment configuration contract.
+  - Redacted Gitleaks scan completed with no leaks found; git diff whitespace check passed.
+remaining: []
+limitations:
+  - Existing dirty branch preserved; no external publication authorized.
+  - Live ToolHub lifecycle used this dev stack's legacy policy; managed profile enforcement is covered by automated contracts, not claimed as live policy acceptance.
+  - Full multi-image CI gate and production rollout not run.

@@ -88,6 +88,10 @@ Telegram IDs are transport links, never filesystem or authorization keys.
 Hermes owns reasoning, chat, tool selection, memory, skills and hooks. Go owns
 space initialization, strict configuration, organization policy resolution, Docker
 lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
+A routine's clock, execution and delivery remain separate durable records. The
+[routine lifecycle](routines.md) exposes owner/context-scoped business operations
+through ToolHub with revision fences, bounded discovery/history and interval
+windows; ADR-0042 records decisions and CHG-0112 the acceptance boundary.
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
 using files and tools; web retrieval uses the Hermes `web` toolset with

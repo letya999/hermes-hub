@@ -96,10 +96,14 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		{"workload-controller", "./cmd/hubctl", "hermes-hub:0.3.0-dev-control"},
 		{"hermes-runtime", "./cmd/runtime", "hermes-hub:0.3.0-dev"},
 	} {
+		before, _ := os.ReadFile(log)
 		if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", tc.service}); err != nil {
 			t.Fatal(tc.service, err)
 		}
 		all, _ := os.ReadFile(log)
+		if tc.service == "hermes-runtime" && !strings.Contains(string(all[len(before):]), "./cmd/hubctl") {
+			t.Error("runtime overlay must rebuild its tools executor hubctl alongside hub-runtime")
+		}
 		for _, want := range []string{tc.source, "BASE=" + tc.base, "--no-build --no-deps " + tc.service} {
 			if !strings.Contains(string(all), want) {
 				t.Fatalf("%s missing %s in %s", tc.service, want, all)

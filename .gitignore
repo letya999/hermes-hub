@@ -27,3 +27,5 @@ docker/observability/.secrets/
 /.work/hub-stt-out
 /.work/s-out.json
 .work/**/verify/
+/.work/bin/
+/.work/*.mcpb

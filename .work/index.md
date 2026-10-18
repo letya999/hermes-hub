@@ -13,7 +13,10 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
-| [CHG-0112](in-progress/CHG-0112-routine-lifecycle/plan.md) | Full routine lifecycle and interval windows; implementation and managed acceptance in progress |
+| [CHG-0114](done/CHG-0114-routine-destinations/plan.md) | Routine delivery destinations; done |
+| [CHG-0115](done/CHG-0115-routine-snooze-audit/plan.md) | Routine snooze acceptance correction; done |
+| [CHG-0113](done/CHG-0113-compact-routine-tools/plan.md) | Done: five public routine tools; deployed MCP lifecycle and just check passed, coverage 86.32% |
+| [CHG-0112](done/CHG-0112-routine-lifecycle/plan.md) | Done: full routine lifecycle and interval windows; deployed ToolHub, real Telegram and just check passed; live policy boundary recorded |
 | [CHG-0111](done/CHG-0111-durable-reminder-acceptance/plan.md) | Done: issue #247 reminder recovery, snooze, history isolation and real Telegram acceptance; just check passed |
 | [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; verification in progress |
 | [CHG-0109](in-progress/CHG-0109-fast-local-rebuild/plan.md) | Fast local Go service rebuild, in progress |

@@ -627,7 +627,9 @@ hermes-runtime` records the exact per-user dev image for the next spawn and
 does not interrupt an active job. A subsequent full core dev build clears that
 selection. If the selected container fails to start, the command tries to
 restore the prior image and service. Each service/user has one local tag;
-superseded stopped images and BuildKit cache are cleaned through the existing
+runtime overlays also rebuild the `hubctl` tools executor alongside `hub-runtime`
+so catalog parsing and execution use the same source. Superseded stopped images
+and BuildKit cache are cleaned through the existing
 bounded hub cleanup path.
 
 After rebuilding a Compose service, verify its running image with
@@ -905,7 +907,9 @@ or an unmigrated native Hermes cron. Disabling a pin does not cancel current
 jobs or remove user files; normal idle retention resumes. Pins require the
 private supervisor token and the same saved owner envelope for removal.
 
-A verified private owner may enqueue one-shot and recurring tasks through the
+A private owner manages routines with the [lifecycle tools](routines.md), including
+interval windows, paged discovery, revision-fenced edits and retained history.
+The owner may enqueue tasks through the
 schedules HTTP API (`/v1/routines`). The communication spool saves each
 occurrence before acknowledging it. Due occurrences become ordinary jobs
 with `trigger=cron`; the normal supervisor execution path wakes the context.
@@ -960,6 +964,14 @@ per-runtime `HUB_RUNTIME_AUTH` reference as `HUB_COMMUNICATION_AUTH`, and the
 trusted principal/user IDs explicitly. New renders and legacy config materialization
 both supply these entries because MCP child environments filter inherited variables.
 Routine management still authenticates and checks ownership at the communication hub.
+The five routine tools use `hub-agent-tools@4.0.0` for named delivery destinations.
+`routine_list view=destinations` shows live owned task IDs and topics; create uses
+the current run's `origin_job_id` or an explicit `destination_task_id`. The hub
+resolves that ID under the owner lock. `routine_get` reports the saved destination
+and availability. `routine_edit action=update` may move future deliveries with a
+revision-fenced `destination_task_id` patch. Existing admitted jobs and old
+history retain their original audience. A revoked task/chat is not used as a
+fallback. See [routines.md](routines.md) for prompts and cleanup.
 Simple `job_kind: reminder` occurrences enqueue the exact text for delivery directly;
 they never enqueue an agent job or wake Hermes.
 

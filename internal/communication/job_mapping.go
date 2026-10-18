@@ -47,27 +47,28 @@ func failureMessage(jobID, status string) string {
 // JobMapping is durable routing/lifecycle metadata. Binding fields are copied
 // at acceptance and are never changed by a retry or a caller-supplied payload.
 type JobMapping struct {
-	IdentitySchema      int             `json:"identity_schema"`
-	ExternalIdentityID  string          `json:"external_identity_id"`
-	ObservationAttempts uint64          `json:"observation_attempts,omitempty"`
-	NextObservationAt   time.Time       `json:"next_observation_at,omitempty"`
-	Control             *PendingControl `json:"control,omitempty"`
-	CancelRequested     bool            `json:"cancel_requested,omitempty"`
-	JobID               string          `json:"job_id"`
-	IdempotencyKey      string          `json:"idempotency_key"`
-	Fingerprint         string          `json:"fingerprint"`
-	PrincipalID         string          `json:"principal_id"`
-	ActorID             string          `json:"actor_id"`
-	ContextID           string          `json:"context_id"`
-	ScopeID             string          `json:"scope_id"`
-	RuntimeID           string          `json:"runtime_id"`
-	ConversationID      string          `json:"conversation_id"`
-	DeliveryTargetID    string          `json:"delivery_target_id"`
-	OrganizationID      string          `json:"organization_id"`
-	UserID              string          `json:"user_id"`
-	PolicyVersion       string          `json:"policy_version"`
-	Channel             string          `json:"channel"`
-	Trigger             string          `json:"trigger"`
+	RoutineOriginVersion uint64          `json:"routine_origin_version,omitempty"`
+	IdentitySchema       int             `json:"identity_schema"`
+	ExternalIdentityID   string          `json:"external_identity_id"`
+	ObservationAttempts  uint64          `json:"observation_attempts,omitempty"`
+	NextObservationAt    time.Time       `json:"next_observation_at,omitempty"`
+	Control              *PendingControl `json:"control,omitempty"`
+	CancelRequested      bool            `json:"cancel_requested,omitempty"`
+	JobID                string          `json:"job_id"`
+	IdempotencyKey       string          `json:"idempotency_key"`
+	Fingerprint          string          `json:"fingerprint"`
+	PrincipalID          string          `json:"principal_id"`
+	ActorID              string          `json:"actor_id"`
+	ContextID            string          `json:"context_id"`
+	ScopeID              string          `json:"scope_id"`
+	RuntimeID            string          `json:"runtime_id"`
+	ConversationID       string          `json:"conversation_id"`
+	DeliveryTargetID     string          `json:"delivery_target_id"`
+	OrganizationID       string          `json:"organization_id"`
+	UserID               string          `json:"user_id"`
+	PolicyVersion        string          `json:"policy_version"`
+	Channel              string          `json:"channel"`
+	Trigger              string          `json:"trigger"`
 	// TaskID/TopicID pin the durable task binding; Style/StyleVersion/
 	// StyleSnapshotted pin the admitted-run presentation snapshot.
 	TaskID  string `json:"task_id,omitempty"`
@@ -138,7 +139,7 @@ func (mapping JobMapping) MatchesJob(job Job) bool {
 }
 
 func mappingFromJob(job Job, now time.Time) JobMapping {
-	return JobMapping{IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: jobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
+	return JobMapping{RoutineOriginVersion: 1, IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: jobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
 }
 
 func (s *Spool) mappingPath(id string) string {

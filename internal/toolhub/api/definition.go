@@ -170,7 +170,7 @@ func (d ToolDefinition) Validate() error {
 		}
 		argumentNames := map[string]bool{}
 		for _, argument := range tool.Arguments {
-			validType := validCLIType(argument.Type) || (argument.Type == "array" && d.Transport == AgentTools)
+			validType := validCLIType(argument.Type) || ((argument.Type == "array" || argument.Type == "object") && d.Transport == AgentTools)
 			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validType {
 				return fmt.Errorf("%w: invalid tool argument %q", ErrInvalid, argument.Name)
 			}

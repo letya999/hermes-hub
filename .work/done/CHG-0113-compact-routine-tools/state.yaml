@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0113
+title: Compact routine tools
+status: done
+updated: 2026-10-18
+phase: accepted
+implementation_status: complete
+adr: ADR-0043
+spec: SPEC-0057
+depends_on: [CHG-0112]
+validation:
+  just_check: passed; identical just recipes with isolated TEMP coverage output
+  go_statement_coverage: 86.32%
+  deployed_mcp: passed; actual pinned Hermes MCP client through ToolHub and private executor
+  image_contract: passed; final runtime stdio reminder contract
+  secret_scan: passed; redacted Gitleaks on agenttools, communication and docs
+  docs: passed
+evidence:
+  - Red-green public catalog and MCP discovery now require exactly five routine tools at immutable version 3.0.0; 46 built-in tools total.
+  - Red-green edit action dispatch preserves expected_revision and existing HTTP routes; invalid actions and conflicting patch/until fail before HTTP.
+  - Red-green get includes preserve card, paged history and next_runs with independent bounded limits; invalid or duplicate includes fail before HTTP and component errors cannot become partial success.
+  - Red-green query transport and real filesystem HTTP search prove case-insensitive ID/text matching before pagination, combined filters and foreign-principal exclusion.
+  - Full agenttools, e2e and hubctl package checks passed; authored tests self-reviewed with test-critic guidance retaining author context, no independent reviewer used.
+  - Supported dev-rebuild completed for communication-hub, toolhub, workload-controller, supervisor and hermes-runtime; runtime rebuilt once more after duplicate-include validation.
+  - Running communication image ae3e219777464694ad1997646e5214ca7f9af844578dce067174d25f85357fd0; ToolHub b972a77ee9af49c2420cca3375f1176c3b6cf9df5b38e96237bed35215671410; final runtime c97118475b0262ac2ce13e8abfe4f340ea4ce0a877f91db740f895200797c8e7. All selected dev tags verified, supervisor wake returned HTTP 200.
+  - Official hubctl capability registration selected hub-agent-tools 3.0.0 and disabled prior binding without rewriting old definitions or migrating this legacy dev policy.
+  - Actual MCP acceptance PASS on 2026-10-18 with five-tool discovery, create, scoped search, update, pause, resume, snooze, stale conflict, invalid edit, duplicate include, timing edit clearing snooze, combined get and deleted-card reads. Fixture chg0113-live-19de9a1959 retired before firing; external sends zero.
+  - The first live harness used an incorrect Python SDK attribute; its single future fixture was independently identified by exact text, expression and revision and retired before retry. Corrected harness uses serialized SDK aliases.
+  - Final image TestHubStdioReminderContract passed in 10.267s; synthetic HTTP contract is separate from actual MCP evidence.
+  - Final just check passed race/shuffle package tests, own Go coverage 86.32 percent with per-package floors, format, vet, tidy diff, staticcheck, gosec, docs, actionlint and deployment configuration contract. Final log is TEMP/chg0113-final-check.log; final coverage is TEMP/chg0113-coverage.out.
+  - The initial gate was restarted after the final duplicate-include guard; final-source targeted tests and the complete replacement gate passed. E2E registry selector corrections were separately verified after their metadata update.
+remaining: []
+limitations:
+  - Live dev uses legacy access policy; managed policy contracts are automated, no live managed-profile migration claimed.
+  - No full multi-image CI gate, production rollout, external sending or publication performed for this interface change.
+  - No measured LLM task-success comparison; five tools are the explicit owner-approved contract.

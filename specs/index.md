@@ -2,6 +2,8 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0058](active/SPEC-0058-routine-destinations.md) | Frozen: routine destination discovery, binding, edits and history |
+| [SPEC-0057](active/SPEC-0057-compact-routine-tools.md) | Frozen: five-tool routine interface amendment |
 | [SPEC-0056](active/SPEC-0056-routine-lifecycle.md) | Frozen: owner routine lifecycle and interval windows |
 | [SPEC-0055](active/SPEC-0055-routine-occurrence-recovery.md) | Active amendment: routine coalescing, fault isolation and bounded occurrence detail |
 | [SPEC-0054](active/SPEC-0054-proactive-automation.md) | Frozen: verified follow-ups, watcher notification policy, control-plane tool calls, owner brief and event subscriptions (M12) |

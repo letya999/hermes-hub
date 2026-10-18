@@ -160,3 +160,12 @@ routines:
 	}
 	_ = time.Now
 }
+
+func TestApplyIgnoresServerOwnedPriorRoutingHistory(t *testing.T) {
+	base := communication.Schedule{ScheduleID: "fixture", Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1")}
+	withHistory := base
+	withHistory.PriorEnvelopes = []identity.Envelope{identity.TelegramEnvelope("alice", 12, "alice", "policy-1")}
+	if !sameRoutine(base, withHistory) {
+		t.Fatal("server-owned prior audience changes declarative apply intent")
+	}
+}

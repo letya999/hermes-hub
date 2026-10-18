@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,12 +106,34 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		limit := 20
+		if value, ok := r.URL.Query()["limit"]; ok {
+			var err error
+			limit, err = strconv.Atoi(value[0])
+			if err != nil || limit < 1 || limit > 100 {
+				http.Error(w, "limit must be 1..100", http.StatusBadRequest)
+				return
+			}
+		}
+		if r.URL.Query().Get("view") == "destinations" {
+			page, err := g.spool.ListRoutineDestinations(g.user(caller.PrincipalID), caller, r.URL.Query().Get("after"), limit, r.URL.Query().Get("query"))
+			if err != nil {
+				http.Error(w, "destination list failed", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, page)
+			return
+		}
 		items, err := g.spool.ListSchedules(caller)
 		if err != nil {
 			http.Error(w, "list failed", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, items)
+		if r.URL.RawQuery != "" {
+			writeJSON(w, routinePage(items, r.URL.Query().Get("after"), limit, r.URL.Query().Get("kind"), r.URL.Query().Get("state"), r.URL.Query().Get("query")))
+		} else {
+			writeJSON(w, items)
+		}
 	case http.MethodPost:
 		var in Schedule
 		if decodeJSON(r, &in) != nil {
@@ -148,6 +171,16 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		g.spool.mu.Lock()
+		if in.OriginJobID != "" || in.DestinationTaskID != "" {
+			var err error
+			in, err = g.spool.bindRoutineDestinationLocked(in, caller, g.user(caller.PrincipalID))
+			if err != nil {
+				g.spool.mu.Unlock()
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			caller = in.Envelope
+		}
 		replayed, found, existingErr := g.spool.creationReplayLocked(in, caller)
 		g.spool.mu.Unlock()
 		if existingErr != nil {
@@ -172,39 +205,14 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			// The follow-up predicate is anchored at creation: probe once,
 			// seed the baseline, then create — a dead source must not
 			// become a silently-skipping schedule.
-			var body []byte
-			if in.Probe.Kind == "mcp_tool" {
-				var err error
-				body, err = g.toolCallProbe(r.Context(), caller.PrincipalID, in.Probe)
-				if err != nil {
-					http.Error(w, "check source unreachable", http.StatusBadGateway)
-					return
-				}
-			} else if strings.HasPrefix(in.Probe.URL, "task:") {
-				g.spool.mu.Lock()
-				state, taskErr := g.spool.taskProbeValueLocked(caller.PrincipalID, strings.TrimPrefix(in.Probe.URL, "task:"))
-				g.spool.mu.Unlock()
-				if taskErr != nil {
-					http.Error(w, "check task unreadable", http.StatusBadGateway)
-					return
-				}
-				body = []byte(state)
-			} else {
-				var err error
-				body, err = g.fetchWatch(r.Context(), in.Probe.URL)
-				if err != nil {
-					http.Error(w, "check source unreachable", http.StatusBadGateway)
-					return
-				}
-			}
-			value, err := probeValue(in.Probe, body)
+			value, err := g.checkBaseline(r.Context(), caller.PrincipalID, in.Probe)
 			if err != nil {
-				http.Error(w, "invalid check probe result", http.StatusBadGateway)
+				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
 			initialValue = &value
 		}
-		created, err := g.spool.createScheduleAt(in, caller, g.config.NativeCron, initialValue, now)
+		created, err := g.spool.createScheduleAt(in, caller, g.config.NativeCron, initialValue, now, g.user(caller.PrincipalID))
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, ErrScheduleConflict) {
@@ -232,63 +240,137 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case r.Method == http.MethodGet && action == "":
-		items, err := g.spool.ListSchedules(caller)
-		if err != nil {
-			http.Error(w, "list failed", http.StatusInternalServerError)
-			return
-		}
-		for _, item := range items {
-			if item.ScheduleID == id {
-				g.spool.mu.Lock()
-				state, err := g.spool.loadWatchStateLocked(id)
-				g.spool.mu.Unlock()
-				if err != nil {
-					http.Error(w, "state unavailable", http.StatusInternalServerError)
-					return
-				}
-				writeJSON(w, map[string]any{"schedule": item, "watch_state": state})
+	case r.Method == http.MethodGet && action == "history":
+		limit := 20
+		if value := r.URL.Query().Get("limit"); value != "" {
+			var err error
+			limit, err = strconv.Atoi(value)
+			if err != nil || limit < 1 || limit > 100 {
+				http.Error(w, "limit must be 1..100", http.StatusBadRequest)
 				return
 			}
 		}
-		http.NotFound(w, r)
+		items, err := g.spool.RoutineHistory(id, caller)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, routineHistoryPage(items, r.URL.Query().Get("after"), limit))
+	case r.Method == http.MethodGet && action == "preview":
+		limit := 20
+		if value := r.URL.Query().Get("limit"); value != "" {
+			var err error
+			limit, err = strconv.Atoi(value)
+			if err != nil || limit < 1 || limit > 20 {
+				http.Error(w, "limit must be 1..20", http.StatusBadRequest)
+				return
+			}
+		}
+		preview, err := g.spool.PreviewRoutine(id, caller, limit, g.now().UTC())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, preview)
+	case r.Method == http.MethodGet && action == "":
+		card, err := g.getRoutineCard(id, caller)
+		if err != nil {
+			if errors.Is(err, ErrRoutineNotOwned) {
+				http.NotFound(w, r)
+			} else {
+				http.Error(w, "state unavailable", http.StatusInternalServerError)
+			}
+			return
+		}
+		writeJSON(w, card)
 	case r.Method == http.MethodPost && action == "snooze":
 		var patch struct {
-			Until time.Time `json:"until"`
+			Until            time.Time `json:"until"`
+			ExpectedRevision *uint64   `json:"expected_revision"`
 		}
 		if decodeJSON(r, &patch) != nil || !patch.Until.After(g.now().UTC()) {
 			http.Error(w, "future until required", http.StatusBadRequest)
 			return
 		}
-		if err := g.spool.SnoozeSchedule(id, caller, patch.Until); err != nil {
+		var expected []uint64
+		if patch.ExpectedRevision != nil {
+			expected = append(expected, *patch.ExpectedRevision)
+		}
+		if err := g.spool.SnoozeSchedule(id, caller, patch.Until, expected...); err != nil {
+			if errors.Is(err, ErrRoutineRevision) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			if errors.Is(err, ErrRoutineSnoozeNotLater) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "schedule not owned", http.StatusForbidden)
+			return
+		}
+		if len(expected) > 0 {
+			g.writeRoutineCard(w, id, caller)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodDelete && action == "":
-		if err := g.spool.DeleteSchedule(id, caller); err != nil {
+		expected, err := routineRevisionRequest(r)
+		if err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if err := g.spool.DeleteSchedule(id, caller, expected...); err != nil {
+			if errors.Is(err, ErrRoutineRevision) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if len(expected) > 0 {
+			g.writeRoutineCard(w, id, caller)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && action == "pause":
-		if err := g.spool.PauseSchedule(id, caller); err != nil {
+		expected, err := routineRevisionRequest(r)
+		if err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if err := g.spool.PauseSchedule(id, caller, expected...); err != nil {
+			if errors.Is(err, ErrRoutineRevision) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-	case r.Method == http.MethodPost && action == "":
-		var patch struct {
-			Expression string `json:"expression"`
-			Input      string `json:"input"`
+		if len(expected) > 0 {
+			g.writeRoutineCard(w, id, caller)
+			return
 		}
+		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodPost && (action == "" || action == "resume"):
+		var patch map[string]json.RawMessage
 		if decodeJSON(r, &patch) != nil {
 			http.Error(w, "invalid patch", http.StatusBadRequest)
 			return
 		}
-		item, err := g.spool.UpdateSchedule(id, caller, patch.Expression, patch.Input, nil)
+		baseline, err := g.routineEditBaseline(r.Context(), id, caller, patch)
+		var item Schedule
+		if err == nil {
+			item, err = g.spool.editRoutine(id, caller, patch, action == "resume", g.now().UTC(), routineEditContext{User: g.user(caller.PrincipalID), Baseline: baseline})
+		}
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrRoutineNotOwned) {
+				status = http.StatusForbidden
+			}
+			if errors.Is(err, ErrRoutineRevision) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		writeJSON(w, item)

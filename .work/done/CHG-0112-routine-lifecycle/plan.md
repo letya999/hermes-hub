@@ -65,7 +65,7 @@ access, forced replay/backfill, read receipts and killing already admitted work.
 
 ## Done checklist
 
-- [ ] Red/green tests, just check and relevant image gates.
-- [ ] Red-team, managed lifecycle and real delivery evidence.
-- [ ] Current docs, specification and state updated.
-- [ ] Move to done only after local acceptance; publish only when instructed.
+- [x] Red/green tests, just check and relevant image gates.
+- [x] Red-team, deployed ToolHub lifecycle and real delivery evidence; live managed-profile policy boundary recorded in state.
+- [x] Current docs, specification and state updated.
+- [x] Move to done after local acceptance; publication was not requested.

@@ -109,6 +109,15 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	if err := run("go", goEnv, goDir, append(goArgs, spec.source)...); err != nil {
 		return err
 	}
+	companions := filepath.Join(buildDir, "companions")
+	if err := os.Mkdir(companions, 0700); err != nil {
+		return err
+	}
+	if service == "hermes-runtime" {
+		if err := run("go", goEnv, rootAbs, "build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(companions, "hubctl"), "./cmd/hubctl"); err != nil {
+			return err
+		}
+	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()

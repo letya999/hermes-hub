@@ -63,10 +63,15 @@ func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 }
 
 func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error) {
+	origin := ""
 	if r.Spool != nil {
 		mapping, ok, err := r.Spool.Mapping(job.ID)
 		if err != nil {
 			return RunOutcome{}, err
+		}
+		if ok && mapping.RoutineOriginVersion == 1 && mapping.MatchesJob(job) && job.Channel == "telegram_bot" {
+			body, _ := json.Marshal(map[string]string{"origin_job_id": job.ID})
+			origin = string(body)
 		}
 		if ok && mapping.RunID != "" && mapping.SessionID != "" {
 			r.Resume = true
@@ -97,6 +102,9 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		} else {
 			return RunOutcome{}, styleErr
 		}
+	}
+	if origin != "" {
+		instructions += "\nCurrent run routing reference: " + origin
 	}
 	// SPEC-0053 R1.8: the static channel contract (artifacts, MEDIA, inbox,
 	// listing, reminder guidance) lives in the rendered effective SOUL — the
