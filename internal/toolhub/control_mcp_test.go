@@ -42,6 +42,9 @@ func TestControlToolContractRoutesInstallBeforeLifecycle(t *testing.T) {
 	if !strings.Contains(prepare, "call this first") || !strings.Contains(prepare, "GitHub repository URL") {
 		t.Fatalf("prepare_source does not own explicit install routing: %q", prepare)
 	}
+	if !strings.Contains(prepare, "resend") || !strings.Contains(prepare, "required_credentials") {
+		t.Fatalf("prepare_source does not route resend/status requests to resume: %q", prepare)
+	}
 	for _, op := range []string{"disable", "revoke", "remove"} {
 		description, _ := controlToolContract(op)
 		if !strings.Contains(description, "only when the user's current message explicitly requests") {

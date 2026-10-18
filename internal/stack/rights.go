@@ -23,6 +23,7 @@ var settingsFieldRights = map[string]string{
 	"User":                "",
 	"Model":               "",
 	"ModelURL":            "",
+	"Cliproxy":            "",
 	"Timezone":            "",
 	"OAuthPort":           "",
 	"BrowserPort":         "",

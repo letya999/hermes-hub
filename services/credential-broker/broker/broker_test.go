@@ -134,7 +134,7 @@ func (f *fixture) enroll(a identity.Actor, cid, conn string) v1.Credential {
 	f.t.Helper()
 	r := f.request(a, cid, conn, "create__"+conn)
 	cookie := f.pair(a, r)
-	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("SENTINEL_NOT_A_REAL_SECRET")}); e != nil {
+	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("SENTINEL_NOT_A_REAL_SECRET")}, nil); e != nil {
 		f.t.Fatal(e)
 	}
 	rr, e := f.b.GetRequest(a, r.ID)
@@ -192,7 +192,7 @@ func TestEnrollmentIdentityReplayAndIdempotency(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}); !errors.Is(e, ErrDenied) {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil); !errors.Is(e, ErrDenied) {
 		t.Fatal("link possession is not identity", e)
 	}
 	if e = f.b.Approve(bob, r.ID, v.Code); !errors.Is(e, ErrNotFound) {
@@ -218,16 +218,16 @@ func TestEnrollmentIdentityReplayAndIdempotency(t *testing.T) {
 	if e != nil || again != cookie || !seen.Approved || len(seen.Fields) != 1 {
 		t.Fatal(e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, "bad", provider.Bundle{"token": []byte("x")}); !errors.Is(e, ErrDenied) {
+	if e = f.b.Submit(testCtx, r.ID, cookie, "bad", provider.Bundle{"token": []byte("x")}, nil); !errors.Is(e, ErrDenied) {
 		t.Fatal(e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"unknown": []byte("x")}); !errors.Is(e, ErrInvalid) {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"unknown": []byte("x")}, nil); !errors.Is(e, ErrInvalid) {
 		t.Fatal(e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("secret-value")}); e != nil {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("secret-value")}, nil); e != nil {
 		t.Fatal(e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("other")}); !errors.Is(e, ErrExpired) {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("other")}, nil); !errors.Is(e, ErrExpired) {
 		t.Fatal(e)
 	}
 	if _, _, e = f.b.OpenSession(r.ID, cookie); !errors.Is(e, ErrExpired) {
@@ -322,7 +322,7 @@ func TestLeaseMaterializationRevokeAndRotation(t *testing.T) {
 		t.Fatal(e)
 	}
 	cookie := f.pair(alice, r)
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("new-value")}); e != nil {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("new-value")}, nil); e != nil {
 		t.Fatal(e)
 	}
 	if use.Valid() {
@@ -457,7 +457,7 @@ func TestExpirationCancellationAndBrowserLimits(t *testing.T) {
 	if rr.Status != "expired" {
 		t.Fatal(rr)
 	}
-	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}); !errors.Is(e, ErrExpired) {
+	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil); !errors.Is(e, ErrExpired) {
 		t.Fatal(e)
 	}
 	c := f.enroll(alice, "pat", "newconn")
@@ -491,7 +491,7 @@ func TestSharedOwnershipAndSeveralBindings(t *testing.T) {
 		t.Fatal(e)
 	}
 	cookie := f.pair(admin, r)
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("org-pat")}); e != nil {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("org-pat")}, nil); e != nil {
 		t.Fatal(e)
 	}
 	r, _ = f.b.GetRequest(admin, r.ID)
@@ -548,7 +548,7 @@ func TestRestartKeepsEnrollmentAndRejectsContractDrift(t *testing.T) {
 	if e != nil || !view.Approved || again != cookie {
 		t.Fatal(e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}); e != nil {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil); e != nil {
 		t.Fatal(e)
 	}
 	cfg := f.cfg
@@ -585,7 +585,7 @@ func TestRotationCannotResurrectRevokedCredential(t *testing.T) {
 	if e = f.b.RevokeCredential(alice, c.ID); e != nil {
 		t.Fatal(e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("stale")}); !errors.Is(e, ErrConflict) {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("stale")}, nil); !errors.Is(e, ErrConflict) {
 		t.Fatal("stale form resurrected", e)
 	}
 	current, _ := f.b.GetCredential(alice, c.ID)
@@ -606,7 +606,7 @@ func TestDirectFormSkipsChannelApproval(t *testing.T) {
 	if e = f.b.Approve(alice, r.ID, v.Code); !errors.Is(e, ErrDenied) {
 		t.Fatal("pre-approved session accepted a second approval", e)
 	}
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("SENTINEL_NOT_A_REAL_SECRET")}); e != nil {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("SENTINEL_NOT_A_REAL_SECRET")}, nil); e != nil {
 		t.Fatal(e)
 	}
 	rr, e := f.b.GetRequest(alice, r.ID)
@@ -623,7 +623,7 @@ func TestConsumerIDDiscriminator(t *testing.T) {
 	enrollReq := func(r v1.Request) v1.Credential {
 		f.t.Helper()
 		cookie := f.pair(alice, r)
-		if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("k")}); e != nil {
+		if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("k")}, nil); e != nil {
 			f.t.Fatal(e)
 		}
 		rr, e := f.b.GetRequest(alice, r.ID)

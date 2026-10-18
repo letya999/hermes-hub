@@ -174,6 +174,36 @@ func (s *Store) sharedPolicyLocked(auth identity.Envelope, definitionID string) 
 	return nil
 }
 
+// sharedConnectionCoversLocked reports whether a connection owned by a shared
+// policy's store owner is usable by this member: the connection must name the
+// policy and the policy must be active and list the caller. This is the
+// per-call authorization for member bindings on a shared workload.
+func (s *Store) sharedConnectionCoversLocked(auth identity.Envelope, connection api.Connection) bool {
+	policyID := connection.Metadata["shared_policy"]
+	if policyID == "" {
+		return false
+	}
+	policy, ok := s.sharedPolicies[policyID]
+	if !ok || policy.Status != api.ActiveStatus || policy.DefinitionID != connection.DefinitionID {
+		return false
+	}
+	return policy.StoreOwner == connection.Owner.ID && slices.Contains(policy.Principals, auth.PrincipalID)
+}
+
+// sharedForeignConnection reports that connectionID is governed by a shared
+// credential policy whose store owner is someone other than this principal —
+// the member may cut its own binding but never the shared connection, its
+// ciphertext or the shared workload.
+func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
+	if connectionID == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	connection, ok := s.connections[connectionID]
+	return ok && connection.Metadata["shared_policy"] != "" && connection.Owner.ID != principalID
+}
+
 func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition api.ToolDefinition) error {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)

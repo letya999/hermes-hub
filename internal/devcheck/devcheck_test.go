@@ -40,12 +40,76 @@ func TestCoverage(t *testing.T) {
 	}
 }
 
+func TestCoverageGate(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "coverage.out")
+	body := "mode: count\n" +
+		"github.com/letya999/hermes-hub/internal/a/x.go:1.1,2.1 90 1\n" +
+		"github.com/letya999/hermes-hub/internal/a/y.go:1.1,2.1 10 0\n" +
+		"github.com/letya999/hermes-hub/internal/b/z.go:1.1,2.1 5 0\n" +
+		"github.com/letya999/hermes-hub/cmd/c/main.go:1.1,2.1 5 0\n"
+	if err := os.WriteFile(name, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CoverageGate(name, 60, 0); err != nil {
+		t.Fatalf("global gate: %v", err)
+	}
+	if _, err := CoverageGate(name, 60, 50); err == nil {
+		t.Fatal("package at 0% accepted under 50% floor")
+	}
+	if _, err := CoverageGate(name, 60, 85); err == nil {
+		t.Fatal("package at 0% accepted under 85% floor")
+	}
+	if _, err := CoverageGate(name, 95, 0); err == nil {
+		t.Fatal("global shortfall accepted")
+	}
+	// cmd/ stays outside the floor: internal/a at 90% passes, cmd/c at 0% ignored.
+	body = "mode: count\ngithub.com/letya999/hermes-hub/internal/a/x.go:1.1,2.1 9 1\ngithub.com/letya999/hermes-hub/internal/a/y.go:1.1,2.1 1 0\ngithub.com/letya999/hermes-hub/cmd/c/main.go:1.1,2.1 5 0\n"
+	if err := os.WriteFile(name, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CoverageGate(name, 60, 85); err != nil {
+		t.Fatalf("cmd/ main wrongly gated: %v", err)
+	}
+	// Replaced local modules carry their own stricter coverage gate; the root
+	// floor must not police their internal packages, only this module's.
+	body = "mode: count\n" +
+		"github.com/letya999/hermes-hub/internal/a/x.go:1.1,2.1 30 1\n" +
+		"github.com/letya999/credential-broker/internal/strictjson/j.go:1.1,2.1 10 0\n"
+	if err := os.WriteFile(name, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CoverageGate(name, 60, 85); err != nil {
+		t.Fatalf("foreign module internal package wrongly gated: %v", err)
+	}
+	body = "mode: count\n" +
+		"github.com/letya999/hermes-hub/internal/a/x.go:1.1,2.1 30 1\n" +
+		"github.com/letya999/hermes-hub/internal/b/y.go:1.1,2.1 10 0\n"
+	if err := os.WriteFile(name, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CoverageGate(name, 60, 85); err == nil {
+		t.Fatal("own internal package below floor accepted")
+	}
+}
+
+func TestCoverAllPackageFloor(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "coverage.out")
+	_, err := CoverAll(name, 0, 50,
+		func() ([]string, error) { return []string{"pkg/a"}, nil },
+		func(pkg, out string) error {
+			return os.WriteFile(out, []byte("mode: count\ngithub.com/letya999/hermes-hub/internal/pa/x.go:1.1,2.1 9 1\ngithub.com/letya999/hermes-hub/internal/pb/y.go:1.1,2.1 5 0\n"), 0600)
+		})
+	if err == nil {
+		t.Fatal("CoverAll ignored package floor")
+	}
+}
+
 func TestCoverAll(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "coverage.out")
 	packages := []string{"pkg/a", "pkg/b"}
 	listed := 0
 	tested := map[string]bool{}
-	actual, err := CoverAll(name, 85,
+	actual, err := CoverAll(name, 85, 0,
 		func() ([]string, error) {
 			listed++
 			return packages, nil

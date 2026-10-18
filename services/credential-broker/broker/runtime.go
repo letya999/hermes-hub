@@ -46,7 +46,7 @@ func (b *Broker) BeginUse(ctx context.Context, a identity.Actor, id string) (Use
 	op := newID("u")
 	ctx, cancel := context.WithTimeout(ctx, l.View.ExpiresAt.Sub(b.now()))
 	l.Active[op] = cancel
-	use := Use{Context: ctx, Contract: cloneContract(b.catalog[g.ContractKey]), CredentialID: c.View.ID, Ref: c.Ref}
+	use := Use{Context: ctx, Contract: requestContract(b.catalog[g.ContractKey], c.Extra, demotedSet(c.Demoted)), CredentialID: c.View.ID, Ref: c.Ref}
 	use.Finish = func() {
 		cancel()
 		b.mu.Lock()

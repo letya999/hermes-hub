@@ -1,10 +1,47 @@
 ---
 description: Sequential capability acceptance registry and truthful evidence boundaries.
-last_verified: 2026-10-12
+last_verified: 2026-10-18
 ---
 # Sequential acceptance registry
 
-The full inventory contains 139 scenarios. The default `--scope core` selects 108 local, agent/channel and credential-free installation scenarios; 31 account-dependent connector scenarios are excluded by the owner’s explicit scope. `--scope all` lists the full inventory. A scenario definition is not evidence of a passing E2E test.
+CHG-0113 consolidates the current public routine surface into five tools.
+routine_edit dispatches update/pause/resume/snooze with revision checks;
+routine_get optionally includes bounded history and next_runs. E2E-013/014
+retain internal compatibility checks for old pinned private operations.
+The earlier ten-tool live evidence below belongs to catalog 2.0.0; see the
+[current guide](routines.md) and CHG-0113 state for the new contract's evidence.
+On 2026-10-18 the actual pinned Hermes MCP client traversed ToolHub 3.0.0 and
+the runtime executor with exactly five routine tools. All four edit actions,
+scoped search, revision conflict, invalid arguments, combined get and retirement
+passed; the future fixture was retired with zero external sends. This run used
+the existing legacy dev access mode, not a managed-profile migration.
+
+CHG-0112 extends routine acceptance with ten business operations, revision fences,
+bounded list/history, kind/source conversion and interval/window evaluation. See
+the [routine guide](routines.md) and its state record for current evidence.
+Published MCP-to-HTTP fixture success does not establish deployed ToolHub/runtime
+or real-channel success; those gates are recorded separately.
+
+On 2026-10-18 local/dev acceptance exercised all ten operations through the actual
+Hermes runtime, ToolHub and gateway: create, paged list, get, preview, update,
+pause, resume, snooze, history and delete. Additional checks covered stale-write
+conflict, snooze/timing edits and kind conversion. The future fixture was deleted
+before firing. This stack uses legacy access policy; this run does not establish
+live managed-profile policy enforcement. The freshly built E2E-081 runner then
+passed real Telegram delivery in 7.04 seconds with its own fixture cleanup.
+
+Issue #247 reminder acceptance was repeated on 2026-10-17 with the rebuilt local/dev
+gateway: E2E-081 passed against the real Bot API in 6.5 seconds, with the exact saved
+text, bound delivery receipt, no firing job in the agent queue and fixture cleanup.
+CHG-0111 adds deterministic persistence/race tests for snooze (including legacy
+stored state), weekly Friday 10:00 Moscow cadence and crash recovery, catch-up
+boundaries, expired-backlog priority, foreign-session denial, cancellation,
+revocation, history isolation and lost transport responses without blind resend.
+The unavailable runtime/model checks use local HTTP adapters; they complement the
+real Telegram receipt rather than replacing it. Scope remains reminder acceptance,
+not completion of the full registry below.
+
+The full inventory contains 147 scenarios. The default `--scope core` selects 116 local, agent/channel and credential-free installation scenarios; 31 account-dependent connector scenarios are excluded by the owner’s explicit scope. `--scope all` lists the full inventory. A scenario definition is not evidence of a passing E2E test.
 
 Run from the repository root:
 
@@ -91,9 +128,9 @@ The code_exec boundary fixture verifies sandbox launch, export application and c
 | E2E-009 | hub / settings_set | Установи тестовое значение разрешённого compression-ключа, дождись применения, затем верни исходное. | Настройка сохранена для своего пользователя и действует после перезапуска. | agenttools.TestSettingsSetValidatesPersistsAndRestarts (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
 | E2E-010 | hub / routine_create | Через routine_create выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
 | E2E-011 | hub / routine_list | Через routine_list выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
-| E2E-012 | hub / routine_update | Через routine_update выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
-| E2E-013 | hub / routine_snooze | Через routine_snooze выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
-| E2E-014 | hub / routine_pause | Через routine_pause выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-012 | hub / routine_edit | Через routine_edit с action=update изменить отдельную тестовую рутину с observed revision. | Действие update передаёт patch и expected_revision; ответ содержит новую revision. | agenttools.TestRoutineEditDispatchesExplicitActions (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-013 | internal / routine_snooze | Через routine_snooze выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-014 | internal / routine_pause | Через routine_pause выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
 | E2E-015 | hub / routine_delete | Через routine_delete выполнить соответствующий шаг жизненного цикла отдельного e2e-напоминания: создать, получить список, обновить, приостановить, отложить или удалить. | Проверить сохранённую запись и момент следующего срабатывания; только свой ID. После delete повторного срабатывания нет. | agenttools.TestRoutineToolsCallCommunicationHub (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
 | E2E-016 | hub / document_extract | Извлеки текст из полученного тестового документа. | Извлечён E2E_DOCUMENT; исходный файл не изменён. | agenttools.TestMediaThroughHubMCP (mcp-contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
 | E2E-017 | hub / document_create | Создай документ e2e-{run} формата txt с текстом E2E_DOCUMENT; отправь файл. | Получен непустой файл с точными байтами E2E_DOCUMENT в artifacts/documents. | agenttools.TestMediaThroughHubMCP (mcp-contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
@@ -219,3 +256,11 @@ The code_exec boundary fixture verifies sandbox launch, export application and c
 | E2E-137 | integration / remote-mcp | Подключить локальный read-only MCP через prepare_source → confirm → enable → invoke → revoke; повторить подготовку и попытаться вызвать от другого owner. | Подготовка идемпотентна, tools/list содержит projection, backend получил search; другой owner не видит и не вызывает его; отзыв блокирует открытую сессию. | toolhub.TestPrepareRemoteCredentialFreeEndToEnd (remote-mcp-contract) | Точный разрешённый test account/profile; отдельные fixture resources; без business mutations | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
 | E2E-138 | integration / memory-restart | В отдельной тестовой области сохранить случайный факт, перезапустить только свой тестовый runtime и запросить факт из новой сессии. | Факт восстановлен без подсказки после настоящего рестарта; другой owner его не видит; рабочий runtime не перезапускается. | BLOCKED: fixture missing | Точный разрешённый test account/profile; отдельные fixture resources; без business mutations | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
 | E2E-139 | integration / idle-5min | В изолированном runtime начать настоящую долгую задачу, проверить отсутствие сна во время активности; затем дождаться реальных пяти минут простоя и разбудить новой задачей. | Активная задача не прервана; после простоя runtime действительно остановлен; новая задача поднимает его с сохранённым своим состоянием; часы теста не ускорены. | BLOCKED: fixture missing | Точный разрешённый test account/profile; отдельные fixture resources; без business mutations | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-140 | hub / watch_subscribe | Через watch_subscribe подписаться на события тестового коннектора и проверить созданную event-рутину. | Создан schedule с job_kind=event, mcp_tool probe и выбранным sink; только свой ID. | agenttools.TestWatchSubscribeCreatesEventSchedule (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-141 | hub / watch_list | Через watch_list получить только event-подписки владельца. | Список содержит только job_kind=event подписки владельца; чужие и другие виды рутин не входят. | agenttools.TestWatchOpsFilterEventKind (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-142 | hub / watch_pause | Через watch_pause приостановить свою event-подписку; попытка на другой вид рутины отклоняется. | Event-подписка приостановлена; reminder/watcher id через watch_pause отклонён. | agenttools.TestWatchOpsFilterEventKind (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-143 | hub / watch_delete | Через watch_delete удалить свою event-подписку; повторного срабатывания нет. | Event-подписка удалена; не-event id через watch_delete отклонён. | agenttools.TestWatchOpsFilterEventKind (contract) | Тестовый managed-профиль; отдельные fixtures, без рабочих данных | Удалить только созданные тестом ресурсы; восстановить исходную настройку |
+| E2E-144 | hub / routine_get | Прочитать полную карточку своей рутины по ID. | Переданы ID и маршрут get; возвращена полная карточка, ошибки не скрываются. | agenttools.TestRoutinePublishedLifecycleDispatch (contract) | Изолированные HTTP fixtures; не live acceptance | Закрыть тестовый HTTP server |
+| E2E-145 | hub / routine_get | Через routine_get include=[history] запросить страницу истории своей рутины. | История и её курсор возвращены внутри карточки; ограничения объёма сохранены. | agenttools.TestRoutineGetIncludesBoundedHistoryAndPreview (contract) | Изолированные HTTP fixtures; не live acceptance | Закрыть тестовый HTTP server |
+| E2E-146 | hub / routine_get | Через routine_get include=[next_runs] запросить следующие срабатывания своей рутины. | Предпросмотр возвращён внутри карточки без запуска рутины. | agenttools.TestRoutinePublishedLifecycleDispatch (contract) | Изолированные HTTP fixtures; не live acceptance | Закрыть тестовый HTTP server |
+| E2E-147 | hub / routine_edit | Возобновить свою рутину через routine_edit action=resume с observed revision. | Действие resume передаёт ID и expected_revision в соответствующий HTTP-маршрут. | agenttools.TestRoutineEditDispatchesExplicitActions (contract) | Изолированные HTTP fixtures; не live acceptance | Закрыть тестовый HTTP server |

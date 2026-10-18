@@ -21,6 +21,7 @@ import (
 
 	v1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/credential-broker/broker"
+	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/credential-broker/identity"
 	"github.com/letya999/credential-broker/internal/safenet"
 	"github.com/letya999/credential-broker/internal/strictjson"
@@ -110,11 +111,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	if !s.cfg.DevHTTP {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 	}
-	browserPath := strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css"
+	browserPath := strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css" || r.URL.Path == "/form.js"
 	if r.Host != s.host && (browserPath || !slices.Contains(s.apiHosts, r.Host)) || !s.cfg.DevHTTP && r.TLS == nil {
 		fail(w, broker.ErrDenied)
 		return
@@ -138,7 +139,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css" {
+	if strings.HasPrefix(r.URL.Path, "/connect/") || r.URL.Path == "/oauth/callback" || r.URL.Path == "/form.css" || r.URL.Path == "/form.js" {
 		if !s.limits.allow(r.RemoteAddr) {
 			writeJSON(w, 429, v1.Error{Code: "rate_limited"})
 			return
@@ -211,6 +212,12 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/v1/contracts":
 		out = s.b.Catalog()
+	case r.Method == "POST" && r.URL.Path == "/v1/contracts":
+		var in contract.Contract
+		if e = decode(data, &in); e == nil {
+			out, e = s.b.RegisterContract(a, in)
+			status = 201
+		}
 	case r.Method == "GET" && r.URL.Path == "/v1/events":
 		var after uint64
 		after, e = strconv.ParseUint(defaultString(r.URL.Query().Get("after"), "0"), 10, 64)

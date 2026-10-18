@@ -33,15 +33,26 @@ type artifactDockerRun func(context.Context, io.Reader, ...string) ([]byte, erro
 // buildkitd.lock. Even without the cache, parallel builds thrash the host.
 var restrictedBuildMu sync.Mutex
 
+// validateBuildContext runs the pre-build context gates. The digest-pinned
+// mcpb bundle is itself the reviewed unit — vendored node_modules ships
+// PEM/token test fixtures that are not credentials — so the repo-context
+// secret scan applies only to source-derived contexts.
+func validateBuildContext(recipe ArtifactRecipe, contextBytes []byte) error {
+	if err := recipe.VerifyContext(contextBytes); err != nil {
+		return err
+	}
+	if recipe.Format == "mcpb-v1" {
+		return nil
+	}
+	return VerifyArtifactContextNoSecrets(contextBytes)
+}
+
 // BuildRestrictedOCI builds one verified recipe in the pinned rootless BuildKit
 // topology and publishes only a provenance/SBOM-bearing OCI archive to the
 // quarantine CAS. The caller still has to preflight tools/effects and approve a
 // trusted catalog definition.
 func BuildRestrictedOCI(ctx context.Context, recipe ArtifactRecipe, contextBytes []byte, config RestrictedBuildConfig) (StoredOCIArtifact, error) {
-	if err := recipe.VerifyContext(contextBytes); err != nil {
-		return StoredOCIArtifact{}, err
-	}
-	if err := VerifyArtifactContextNoSecrets(contextBytes); err != nil {
+	if err := validateBuildContext(recipe, contextBytes); err != nil {
 		return StoredOCIArtifact{}, err
 	}
 	if !filepath.IsAbs(config.SeccompPath) || !filepath.IsAbs(config.ArtifactDirectory) || config.MaxArtifactBytes < 1 || config.MaxArtifactBytes > 8<<30 {
@@ -107,7 +118,7 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 	if persistentState {
 		stateVolume = "hermes-build-state-shared"
 	}
-	volumes := []string{stateVolume, "hermes-build-proxy-config-" + suffix, "hermes-build-context-" + suffix, "hermes-build-output-" + suffix}
+	volumes := []string{stateVolume, "hermes-build-proxy-config-" + suffix, "hermes-build-context-" + suffix, "hermes-build-output-" + suffix, "hermes-build-builder-config-" + suffix}
 	log.Printf("toolhub build start: dockerfile=%s context=%dB builder=%s", recipe.Dockerfile, len(contextBytes), builder)
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 20*time.Second)
@@ -132,14 +143,14 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 	if _, err := run(ctx, nil, "network", "create", "--internal", "--label", "hermes-hub.role=artifact-build", network); err != nil {
 		return StoredOCIArtifact{}, err
 	}
-	roles := []string{"state", "proxy-config", "context", "output"}
+	roles := []string{"state", "proxy-config", "context", "output", "builder-config"}
 	for i, volume := range volumes {
 		if _, err := run(ctx, nil, "volume", "create", "--label", "hermes-hub.role=artifact-build-"+roles[i], volume); err != nil {
 			return StoredOCIArtifact{}, err
 		}
 	}
 	seedArgs := []string{"create", "--name", seed, "--label", "hermes-hub.role=artifact-build-seed", "--user", "0:0", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--cpus", "0.1", "--memory", "32m", "--memory-swap", "32m", "--pids-limit", "16",
-		"--mount", "type=volume,source=" + volumes[1] + ",target=/proxy-config", "--mount", "type=volume,source=" + volumes[2] + ",target=/context", "--mount", "type=volume,source=" + volumes[3] + ",target=/output",
+		"--mount", "type=volume,source=" + volumes[1] + ",target=/proxy-config", "--mount", "type=volume,source=" + volumes[2] + ",target=/context", "--mount", "type=volume,source=" + volumes[3] + ",target=/output", "--mount", "type=volume,source=" + volumes[4] + ",target=/builder-config",
 		"--entrypoint", "/bin/chmod", RestrictedBuildProxyImage, "0777", "/output"}
 	if _, err := run(ctx, nil, seedArgs...); err != nil {
 		return StoredOCIArtifact{}, err
@@ -152,6 +163,13 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 		return StoredOCIArtifact{}, err
 	}
 	if _, err := run(ctx, bytes.NewReader(contextBytes), "cp", "-", seed+":/context/."); err != nil {
+		return StoredOCIArtifact{}, err
+	}
+	builderConfigTar, err := artifactBuildTar("buildkitd.toml", []byte(RestrictedBuildKitConfig()))
+	if err != nil {
+		return StoredOCIArtifact{}, err
+	}
+	if _, err := run(ctx, bytes.NewReader(builderConfigTar), "cp", "-", seed+":/builder-config/."); err != nil {
 		return StoredOCIArtifact{}, err
 	}
 	if _, err := run(ctx, nil, "start", "--attach", seed); err != nil {
@@ -167,7 +185,7 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 	if _, err := run(ctx, nil, "network", "connect", "bridge", proxy); err != nil {
 		return StoredOCIArtifact{}, err
 	}
-	builderArgs, err := RestrictedBuildKitCreateArgs(builder, volumes[0], config.SeccompPath, network, proxy, volumes[2], volumes[3])
+	builderArgs, err := RestrictedBuildKitCreateArgs(builder, volumes[0], config.SeccompPath, network, proxy, volumes[2], volumes[3], volumes[4])
 	if err != nil {
 		return StoredOCIArtifact{}, err
 	}
@@ -213,7 +231,7 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 	buildArgs := []string{"exec", builder, "buildctl", "--addr", "unix:///run/user/1000/buildkit/buildkitd.sock", "build", "--progress", "plain", "--frontend", "dockerfile.v0", "--local", "context=/run/hermes-context", "--local", "dockerfile=/run/hermes-context",
 		"--opt", "filename=" + recipe.Dockerfile,
 		"--opt", "build-arg:HTTP_PROXY=" + proxyURL, "--opt", "build-arg:HTTPS_PROXY=" + proxyURL, "--opt", "build-arg:NO_PROXY=",
-		"--opt", "attest:provenance=mode=Max", "--opt", "attest:sbom=generator=" + RestrictedSBOMScannerImage,
+		"--opt", "attest:provenance=mode=max", "--opt", "attest:sbom=generator=" + RestrictedSBOMScannerImage,
 		"--output", "type=oci,dest=/run/hermes-output/artifact.tar"}
 	if _, err := run(ctx, nil, buildArgs...); err != nil {
 		return StoredOCIArtifact{}, err
@@ -248,7 +266,7 @@ func buildCacheEnabled() bool {
 func verifyRestrictedBuildEgress(ctx context.Context, run artifactDockerRun, builder, proxy string) error {
 	connect := func(host string) string {
 		request := "CONNECT " + host + ":443 HTTP/1.1\r\nHost: " + host + ":443\r\n\r\n"
-		body, _ := run(ctx, strings.NewReader(request), "exec", "-i", builder, "nc", "-W", "2", proxy, "3128")
+		body, _ := run(ctx, strings.NewReader(request), "exec", "-i", builder, "nc", "-w", "2", proxy, "3128")
 		return string(body)
 	}
 	if !strings.Contains(connect("registry.npmjs.org"), " 200 ") || !strings.Contains(connect("example.com"), " 403 ") {

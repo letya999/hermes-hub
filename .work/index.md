@@ -13,6 +13,16 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0114](done/CHG-0114-routine-destinations/plan.md) | Routine delivery destinations; done |
+| [CHG-0115](done/CHG-0115-routine-snooze-audit/plan.md) | Routine snooze acceptance correction; done |
+| [CHG-0113](done/CHG-0113-compact-routine-tools/plan.md) | Done: five public routine tools; deployed MCP lifecycle and just check passed, coverage 86.32% |
+| [CHG-0112](done/CHG-0112-routine-lifecycle/plan.md) | Done: full routine lifecycle and interval windows; deployed ToolHub, real Telegram and just check passed; live policy boundary recorded |
+| [CHG-0111](done/CHG-0111-durable-reminder-acceptance/plan.md) | Done: issue #247 reminder recovery, snooze, history isolation and real Telegram acceptance; just check passed |
+| [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; verification in progress |
+| [CHG-0109](in-progress/CHG-0109-fast-local-rebuild/plan.md) | Fast local Go service rebuild, in progress |
+| [CHG-0106](done/CHG-0106-live-replay-defects/plan.md) | Done: live-replay defect fixes — watcher probes, session leak routing, contract errors, retry, broker catalog; live verified |
+| [CHG-0107](done/CHG-0107-dynamic-contracts/plan.md) | Done: dynamic credential contracts (POST /v1/contracts + ToolHub synthesis) + live-verified rotate/self-service on google_workspace_mcp |
+| [CHG-0105](done/CHG-0105-broker-drift-self-heal/plan.md) | Done: live-smoke fixes — broker drift self-heal, agent tool guidance, stale artifact reuse; live replay verified |
 | [CHG-0104](in-progress/CHG-0104-event-streams/plan.md) | M12 follow-up: stream event subscriptions (delivery=stream) |
 | [CHG-0103](in-progress/CHG-0103-event-subscriptions/plan.md) | M12 stage 5: event subscriptions, sinks, watch_* surface, telegram event tools |
 | [CHG-0102](in-progress/CHG-0102-owner-brief/plan.md) | M12 stage 4: opt-in owner brief — deterministic snapshot, in-slot model synthesis |

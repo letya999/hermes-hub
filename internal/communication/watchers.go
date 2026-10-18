@@ -21,14 +21,15 @@ import (
 // spool/watchers/<scheduleID>.json and is the only thing the deterministic
 // poll needs between ticks — no model sees an unchanged source.
 type WatchState struct {
-	Generation  uint64    `json:"generation,omitempty"`
-	ScheduleID  string    `json:"schedule_id"`
-	Baseline    string    `json:"baseline"`
-	Value       string    `json:"value"`
-	PrevValue   string    `json:"prev_value,omitempty"`
-	ChangedAt   time.Time `json:"changed_at"`
-	LastSuccess time.Time `json:"last_success"`
-	LastError   string    `json:"last_error,omitempty"`
+	ProbeRevision uint64    `json:"probe_revision,omitempty"`
+	Generation    uint64    `json:"generation,omitempty"`
+	ScheduleID    string    `json:"schedule_id"`
+	Baseline      string    `json:"baseline"`
+	Value         string    `json:"value"`
+	PrevValue     string    `json:"prev_value,omitempty"`
+	ChangedAt     time.Time `json:"changed_at"`
+	LastSuccess   time.Time `json:"last_success"`
+	LastError     string    `json:"last_error,omitempty"`
 	// NotifyDay/NotifyCount implement the owner-timezone daily notification
 	// cap (SPEC-0054 R2.2): the day rolls the counter back to zero.
 	NotifyDay   string `json:"notify_day,omitempty"`
@@ -53,13 +54,14 @@ func (s *Spool) watchPath(id string) string {
 
 func (s *Spool) loadWatchStateLocked(id string) (WatchState, error) {
 	var st WatchState
+	schedule, scheduleErr := s.loadScheduleLocked(id)
 	b, err := os.ReadFile(s.watchPath(id))
-	if os.IsNotExist(err) {
+	if os.IsNotExist(err) || (err == nil && json.Unmarshal(b, &st) == nil && scheduleErr == nil && st.ProbeRevision != schedule.ProbeRevision) {
 		if schedule, err := s.loadScheduleLocked(id); err == nil && schedule.InitialProbeValue != nil {
 			value := *schedule.InitialProbeValue
-			return WatchState{ScheduleID: id, Baseline: watchHash(value), Value: value, LastSuccess: schedule.CreatedAt}, nil
+			return WatchState{ScheduleID: id, ProbeRevision: schedule.ProbeRevision, Baseline: watchHash(value), Value: value, LastSuccess: schedule.UpdatedAt}, nil
 		}
-		return WatchState{ScheduleID: id}, nil
+		return WatchState{ScheduleID: id, ProbeRevision: schedule.ProbeRevision}, nil
 	}
 	if err != nil {
 		return st, err
@@ -86,7 +88,11 @@ func watchValue(body []byte, re *regexp.Regexp) string {
 		return string(body)
 	}
 	if m := re.FindSubmatch(body); len(m) > 1 {
-		return string(m[1])
+		for _, group := range m[1:] {
+			if len(group) > 0 {
+				return string(group)
+			}
+		}
 	}
 	return ""
 }
@@ -127,7 +133,7 @@ func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, a
 }
 
 // fetchWatch is the live probe: one GET, caches bypassed, body capped at
-// 256 KiB — the deterministic poll never touches the model.
+// 1 MiB — the deterministic poll never touches the model.
 func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -147,11 +153,38 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("probe status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
-	if len(body) > 256*1024 {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
+	if len(body) > 1024*1024 {
 		return nil, errors.New("probe body exceeds size limit")
 	}
 	return body, err
+}
+
+func (g *Gateway) checkBaseline(ctx context.Context, principal string, probe *WatchProbe) (string, error) {
+	var body []byte
+	var err error
+	if probe.Kind == "mcp_tool" {
+		body, err = g.toolCallProbe(ctx, principal, probe)
+	} else if strings.HasPrefix(probe.URL, "task:") {
+		g.spool.mu.Lock()
+		var value string
+		value, err = g.spool.taskProbeValueLocked(principal, strings.TrimPrefix(probe.URL, "task:"))
+		g.spool.mu.Unlock()
+		if err != nil {
+			return "", errors.New("check task unreadable")
+		}
+		body = []byte(value)
+	} else {
+		body, err = g.fetchWatch(ctx, probe.URL)
+	}
+	if err != nil {
+		return "", errors.New("check source unreachable")
+	}
+	value, err := probeValue(probe, body)
+	if err != nil {
+		return "", errors.New("invalid check probe result")
+	}
+	return value, nil
 }
 
 func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) {
@@ -290,7 +323,7 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 	}
 	result := probeResult{Watch: st, Occurrence: live}
 	if probeErr != nil {
-		st.LastError = "probe failed; baseline unchanged"
+		st.LastError = boundedWatchText(probeErr.Error())
 		limit := schedule.MaxRetries
 		if limit <= 0 {
 			limit = 3

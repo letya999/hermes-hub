@@ -34,6 +34,11 @@ SDK вычисляет hash и подпись: не собирать assertions 
 пользователь submit/consent; `GET /v1/requests/{id}` или cursor events → credential ID;
 `POST /v1/credentials/{id}/grants`; `POST /v1/leases` → descriptor.
 
+`POST /v1/contracts` (только `broker:control`) регистрирует collect-and-deliver контракт: без
+routes/OAuth/state/shared, storage по умолчанию — первый writable provider. Идемпотентен по
+`id@revision`+digest; конфликт digest — 409. Секретов в теле нет — контракт описывает shape,
+значения вводит владелец через форму.
+
 `GET /v1/events?after=N` возвращает до 100 видимых событий и `next_cursor`. Cursor глобальный,
 поэтому видимые номера могут иметь разрывы. Consumer сохраняет cursor и идемпотентно обрабатывает sequence;
 события не заменяют повторную проверку текущей credential/grant revision.

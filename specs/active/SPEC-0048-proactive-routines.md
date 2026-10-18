@@ -35,7 +35,7 @@ deterministic and durable.
    The gateway control loop runs the whole chain in `tickProactive` — no
    separate watcher daemon.
 3. The live fetch is bounded: one GET, `Cache-Control: no-cache`, 2xx only,
-   body capped at 256 KiB, 10 s timeout. It never touches the model.
+   body capped at 1 MiB, 10 s timeout. It never touches the model.
 4. Durable per-schedule state (`spool/watchers/<id>.json`): baseline hash,
    current value, previous value, changed_at. The first successful probe
    seeds the baseline silently. An equal hash settles `no_change` at zero

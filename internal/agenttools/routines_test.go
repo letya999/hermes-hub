@@ -38,6 +38,216 @@ func TestRoutineRejectsUnresolvedConfiguration(t *testing.T) {
 	}
 }
 
+func TestRoutineLargeReplyIsNotSilentlyLost(t *testing.T) {
+	value := strings.Repeat("x", 74000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"input": value})
+	}))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL = server.URL
+	out, err := v.Routine(context.Background(), "routine_list", Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := out["result"].(map[string]any)
+	if !ok || result["input"] != value {
+		t.Fatal("large success reply lost its result")
+	}
+}
+
+func TestRoutineInvalidSuccessReplyFailsExplicitly(t *testing.T) {
+	for _, body := range []string{`{"items":`, `{"input":"` + strings.Repeat("x", 256*1024) + `"}`} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, body) }))
+		v := fixture(t)
+		v.CommunicationURL = server.URL
+		_, err := v.Routine(context.Background(), "routine_list", Input{})
+		server.Close()
+		if err == nil {
+			t.Errorf("invalid/beyond-bound response accepted (%d bytes)", len(body))
+		}
+	}
+}
+
+func TestRoutineLifecycleCatalogDeclaresArguments(t *testing.T) {
+	if err := HubToolsDefinition().Validate(); err != nil {
+		t.Errorf("invalid published routine catalog: %v", err)
+	}
+	want := map[string][]string{
+		"routine_get": {"id", "include", "history_limit", "history_cursor", "preview_limit"}, "routine_delete": {"id", "expected_revision"},
+		"routine_edit": {"id", "action", "expected_revision", "patch", "until"}, "routine_list": {"limit", "cursor", "kind", "state", "query"}, "routine_create": {"timing"},
+	}
+	found := map[string]bool{}
+	for _, tool := range HubToolsDefinition().Tools {
+		names, ok := want[tool.Name]
+		if !ok {
+			continue
+		}
+		found[tool.Name] = true
+		for _, name := range names {
+			present := false
+			for _, arg := range tool.Arguments {
+				if arg.Name == name {
+					present = true
+					if (name == "id" || name == "expected_revision" || name == "action") && !arg.Required {
+						t.Errorf("%s %s must be required", tool.Name, name)
+					}
+				}
+			}
+			if !present {
+				t.Errorf("%s missing %s", tool.Name, name)
+			}
+		}
+	}
+	for name := range want {
+		if !found[name] {
+			t.Errorf("missing lifecycle tool %s", name)
+		}
+	}
+}
+
+func TestRoutinePublishedLifecycleDispatch(t *testing.T) {
+	seen := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen[r.Method+" "+r.URL.Path] = true
+		var body map[string]any
+		if r.Method != http.MethodGet {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+		}
+		if r.URL.Path == "/v1/routines" && r.Method == http.MethodGet {
+			if r.URL.Query().Get("limit") != "7" || r.URL.Query().Get("after") != "cursor-a" || r.URL.Query().Get("kind") != "reminder" || r.URL.Query().Get("state") != "paused" {
+				t.Errorf("lost list filters: %s", r.URL.RawQuery)
+			}
+		}
+		if strings.HasSuffix(r.URL.Path, "/history") && r.URL.Query().Get("after") != "cursor-a" {
+			t.Error("lost history cursor")
+		}
+		if r.Method != http.MethodGet && r.URL.Path != "/v1/routines" && body["expected_revision"] != float64(3) {
+			t.Errorf("lost revision: %+v", body)
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/routines/item" && body["input"] != "edited" {
+			t.Errorf("lost typed patch: %+v", body)
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/routines" && body["timing"] == nil {
+			t.Error("lost timing")
+		}
+		_, _ = io.WriteString(w, `{"saved":true}`)
+	}))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL = server.URL
+	client, closeAll := connectHub(t, v)
+	defer closeAll()
+	listed, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptions := map[string]string{}
+	for _, tool := range listed.Tools {
+		descriptions[tool.Name] = tool.Description
+	}
+	for _, op := range []string{"create", "list", "get", "edit", "delete"} {
+		name := "routine_" + op
+		if descriptions[name] == "" {
+			t.Errorf("missing documented MCP tool %s", name)
+		}
+		args := map[string]any{"id": "item", "action": "update", "expected_revision": 3, "limit": 7, "cursor": "cursor-a", "include": []string{"history", "next_runs"}, "history_cursor": "cursor-a", "kind": "reminder", "state": "paused", "timezone": "UTC", "expression": "2100-01-01T10:00:00Z", "text": "fixture", "patch": map[string]any{"input": "edited"}, "timing": map[string]any{"windows": []any{map[string]any{"from": "14:00", "to": "16:00"}}}}
+		args["destination_task_id"] = "default"
+		result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil || result.IsError {
+			t.Errorf("published %s call failed: %+v %v", name, result, err)
+		}
+	}
+	if len(seen) != 7 {
+		t.Errorf("five public tools reached %d distinct HTTP routes, want 7", len(seen))
+	}
+}
+
+func TestRoutineListRequestsBoundedDefaultPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") != "20" {
+			t.Errorf("list must request default page: %s", r.URL.RawQuery)
+		}
+		_, _ = io.WriteString(w, `{"items":[]}`)
+	}))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_list", Input{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRoutineMutationRequiresObservedRevision(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; _, _ = io.WriteString(w, `{}`) }))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL = server.URL
+	for _, op := range []string{"routine_update", "routine_pause", "routine_resume", "routine_snooze", "routine_delete"} {
+		_, err := v.Routine(context.Background(), op, Input{ID: "fixture", Expression: "2100-01-01T10:00:00Z"})
+		if err == nil {
+			t.Errorf("%s accepted missing revision", op)
+		}
+	}
+	if calls != 0 {
+		t.Errorf("unfenced mutations reached server: %d", calls)
+	}
+}
+
+func TestRoutineCreatePassesConnectorProbeArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid fixture body", http.StatusBadRequest)
+			return
+		}
+		probe, _ := body["probe"].(map[string]any)
+		args, _ := probe["args"].(map[string]any)
+		if args["resource"] != "fixture" {
+			t.Errorf("connector probe arguments lost: %+v", body)
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL = server.URL
+	if _, err := v.Routine(context.Background(), "routine_create", Input{DestinationTaskID: "default", ID: "check-args", Kind: "check", ProbeKind: "mcp_tool", Tool: "read_resource", Args: `{"resource":"fixture"}`}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range HubToolsDefinition().Tools {
+		if tool.Name == "routine_create" {
+			for _, arg := range tool.Arguments {
+				if arg.Name == "args" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("create does not advertise probe arguments")
+	}
+}
+
+func TestRoutineConflictKeepsStatusAndReasonWithoutRetry(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "routine revision changed; read current state", http.StatusConflict)
+	}))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL = server.URL
+	_, err := v.Routine(context.Background(), "routine_pause", Input{ID: "fixture", ExpectedRevision: 1})
+	if err == nil || !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "revision changed") || calls != 1 {
+		t.Fatalf("conflict lost or automatically retried: %v calls=%d", err, calls)
+	}
+}
+
 func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 	v := fixture(t)
 	if _, err := v.Routine(context.Background(), "routine_list", Input{}); err == nil {
@@ -65,7 +275,7 @@ func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"schedule_id":"morning"}`))
 		case "POST /v1/routines/morning/snooze":
-			var request map[string]string
+			var request map[string]any
 			if json.Unmarshal(body, &request) != nil || request["until"] != "2099-01-02T00:00:00Z" {
 				t.Errorf("wrong snooze payload: %s", body)
 			}
@@ -84,22 +294,22 @@ func TestRoutineToolsCallCommunicationHub(t *testing.T) {
 	if _, err := v.Routine(ctx, "routine_list", Input{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Routine(ctx, "routine_create", Input{ID: "morning", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "brief"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_create", Input{DestinationTaskID: "default", ID: "morning", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "brief"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Routine(ctx, "routine_update", Input{ID: "morning", Expression: "* * * * *", Text: "later"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_update", Input{ID: "morning", ExpectedRevision: 1, Expression: "* * * * *", Text: "later"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Routine(ctx, "routine_pause", Input{ID: "morning"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_pause", Input{ID: "morning", ExpectedRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Routine(ctx, "routine_snooze", Input{ID: "morning", Expression: "2099-01-02T00:00:00Z"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_snooze", Input{ID: "morning", ExpectedRevision: 1, Expression: "2099-01-02T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Routine(ctx, "routine_delete", Input{ID: "morning"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_delete", Input{ID: "morning", ExpectedRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Routine(ctx, "routine_delete", Input{ID: "bad/id"}); err == nil {
+	if _, err := v.Routine(ctx, "routine_delete", Input{ID: "bad/id", ExpectedRevision: 1}); err == nil {
 		t.Fatal("slash id accepted")
 	}
 	if _, err := v.Routine(ctx, "unknown", Input{}); err == nil {
@@ -129,7 +339,7 @@ func TestRoutineCreateReminderPassesJobKind(t *testing.T) {
 	}))
 	defer server.Close()
 	v.CommunicationURL = server.URL
-	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "call-bank", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "Позвонить в банк", Kind: "reminder"}); err != nil {
+	if _, err := v.Routine(context.Background(), "routine_create", Input{DestinationTaskID: "default", ID: "call-bank", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "Позвонить в банк", Kind: "reminder"}); err != nil {
 		t.Fatal(err)
 	}
 	if request["job_kind"] != "reminder" {
@@ -150,14 +360,14 @@ func TestRoutineCreateScriptGate(t *testing.T) {
 	}))
 	defer server.Close()
 	v.CommunicationURL = server.URL
-	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "nightly", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: `emit("backup done")`, Kind: "script"}); err != nil {
+	if _, err := v.Routine(context.Background(), "routine_create", Input{DestinationTaskID: "default", ID: "nightly", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: `emit("backup done")`, Kind: "script"}); err != nil {
 		t.Fatalf("valid script routine rejected: %v", err)
 	}
 	if request["job_kind"] != "script" {
 		t.Fatalf("script kind lost: %v", request)
 	}
 	request = nil
-	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "broken", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: `emit(`, Kind: "script"}); err == nil {
+	if _, err := v.Routine(context.Background(), "routine_create", Input{DestinationTaskID: "default", ID: "broken", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: `emit(`, Kind: "script"}); err == nil {
 		t.Fatal("syntax-broken script accepted")
 	}
 	if request != nil {
@@ -178,20 +388,20 @@ func TestRoutineCreateProbeKinds(t *testing.T) {
 	defer server.Close()
 	v.CommunicationURL = server.URL
 	ctx := context.Background()
-	if _, err := v.Routine(ctx, "routine_create", Input{ID: "price", Timezone: "UTC", Expression: "*/15 * * * *", Text: "watch the price", Kind: "watcher", URL: "https://example.com/p", Regex: "price: (\\d+)"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_create", Input{DestinationTaskID: "default", ID: "price", Timezone: "UTC", Expression: "*/15 * * * *", Text: "watch the price", Kind: "watcher", URL: "https://example.com/p", Regex: "price: (\\d+)"}); err != nil {
 		t.Fatal(err)
 	}
 	probe, _ := request["probe"].(map[string]any)
 	if request["job_kind"] != "watcher" || probe["url"] != "https://example.com/p" || probe["regex"] != "price: (\\d+)" {
 		t.Fatalf("watcher probe lost: %v", request)
 	}
-	if _, err := v.Routine(ctx, "routine_create", Input{ID: "pr-merged", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "remind me to close the tab", Kind: "check", URL: "https://example.com/pr", Regex: "state: (\\w+)", Expect: "changed"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_create", Input{DestinationTaskID: "default", ID: "pr-merged", Timezone: "UTC", Expression: "once:2099-01-01T00:00:00Z", Text: "remind me to close the tab", Kind: "check", URL: "https://example.com/pr", Regex: "state: (\\w+)", Expect: "changed"}); err != nil {
 		t.Fatal(err)
 	}
 	if request["expect"] != "changed" {
 		t.Fatalf("check expect lost: %v", request)
 	}
-	if _, err := v.Routine(ctx, "routine_create", Input{ID: "dg", Timezone: "UTC", Expression: "0 8 * * *", Text: "morning digest", Kind: "digest"}); err != nil {
+	if _, err := v.Routine(ctx, "routine_create", Input{DestinationTaskID: "default", ID: "dg", Timezone: "UTC", Expression: "0 8 * * *", Text: "morning digest", Kind: "digest"}); err != nil {
 		t.Fatal(err)
 	}
 	if request["job_kind"] != "digest" {
@@ -233,7 +443,7 @@ func TestRoutineCreateForwardsPolicyFields(t *testing.T) {
 	}))
 	defer server.Close()
 	v.CommunicationURL = server.URL
-	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "quiet-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch", Kind: "watcher", URL: "https://example.com/q", QuietFrom: "22:00", QuietTo: "07:00", DailyLimit: 4, MaxRetries: 5}); err != nil {
+	if _, err := v.Routine(context.Background(), "routine_create", Input{DestinationTaskID: "default", ID: "quiet-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch", Kind: "watcher", URL: "https://example.com/q", QuietFrom: "22:00", QuietTo: "07:00", DailyLimit: 4, MaxRetries: 5}); err != nil {
 		t.Fatal(err)
 	}
 	if request["quiet_from"] != "22:00" || request["quiet_to"] != "07:00" {
@@ -256,7 +466,7 @@ func TestRoutineCreateForwardsMCPTool(t *testing.T) {
 	}))
 	defer server.Close()
 	v.CommunicationURL = server.URL
-	if _, err := v.Routine(context.Background(), "routine_create", Input{ID: "conn-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch connector", Kind: "watcher", ProbeKind: "mcp_tool", Tool: "hub-google-work-search-abc"}); err != nil {
+	if _, err := v.Routine(context.Background(), "routine_create", Input{DestinationTaskID: "default", ID: "conn-watch", Timezone: "UTC", Expression: "0 * * * *", Text: "watch connector", Kind: "watcher", ProbeKind: "mcp_tool", Tool: "hub-google-work-search-abc"}); err != nil {
 		t.Fatal(err)
 	}
 	probe, ok := request["probe"].(map[string]any)

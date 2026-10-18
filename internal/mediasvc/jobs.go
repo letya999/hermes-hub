@@ -16,22 +16,24 @@ import (
 // or a media generation (kind "video"). Status transitions:
 // queued -> running -> done | failed.
 type Job struct {
-	ID        string    `json:"id"`
-	Status    string    `json:"status"` // queued, running, done, failed
-	Kind      string    `json:"kind,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Source    string    `json:"source,omitempty"` // url|path|upload
-	Language  string    `json:"language,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	Prompt    string    `json:"prompt,omitempty"`
-	RemoteID  string    `json:"remote_id,omitempty"` // provider queue handle for resume
-	Mime      string    `json:"mime,omitempty"`      // media result content type
-	Diarize   bool      `json:"diarize,omitempty"`
-	Text      string    `json:"text,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Segments  []Segment `json:"-"`
-	Bytes     int64     `json:"bytes,omitempty"`
+	ID            string    `json:"id"`
+	Status        string    `json:"status"` // queued, running, done, failed
+	Kind          string    `json:"kind,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	Source        string    `json:"source,omitempty"` // url|path|upload
+	Language      string    `json:"language,omitempty"`
+	Model         string    `json:"model,omitempty"`
+	Prompt        string    `json:"prompt,omitempty"`
+	RemoteID      string    `json:"remote_id,omitempty"`      // provider queue handle for resume
+	Engine        string    `json:"engine,omitempty"`         // engine that accepted the submission (router)
+	ProviderModel string    `json:"provider_model,omitempty"` // provider-side model id for the poll URL
+	Mime          string    `json:"mime,omitempty"`           // media result content type
+	Diarize       bool      `json:"diarize,omitempty"`
+	Text          string    `json:"text,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	Segments      []Segment `json:"-"`
+	Bytes         int64     `json:"bytes,omitempty"`
 }
 
 type jobStore struct {
@@ -208,18 +210,18 @@ func (s *service) runGenJob(ctx context.Context, j *Job) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if j.RemoteID == "" {
-		remoteID, err := eng.Submit(ctx, GenRequest{Kind: j.Kind, Model: j.Model, Prompt: j.Prompt})
+		h, err := eng.Submit(ctx, GenRequest{Kind: j.Kind, Model: j.Model, Prompt: j.Prompt})
 		if err != nil {
 			fail(err)
 			return
 		}
-		j.RemoteID = remoteID
+		j.RemoteID, j.Engine, j.ProviderModel = h.RemoteID, h.Engine, h.Model
 		_ = s.jobs.put(j)
 	}
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
-		out, done, err := eng.Poll(ctx, j.RemoteID, j.Model)
+		out, done, err := eng.Poll(ctx, SubmitHandle{RemoteID: j.RemoteID, Engine: j.Engine, Model: j.ProviderModel}, j.Model)
 		if err != nil {
 			fail(err)
 			return

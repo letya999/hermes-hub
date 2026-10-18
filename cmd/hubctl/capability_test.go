@@ -28,7 +28,8 @@ func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()
 	previous := agenttools.HubToolsDefinition()
-	previous.Version = "1.1.0"
+	previous.Version = "1.3.0"
+	previous.Tools = slices.DeleteFunc(previous.Tools, func(tool api.ToolSpec) bool { return tool.Name == "routine_get" })
 	if err := store.RegisterDefinition(previous); err != nil {
 		t.Fatal(err)
 	}

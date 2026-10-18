@@ -92,6 +92,8 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_2", ContractID: "telegram-session", ContractRevision: 1, Status: status, CredentialID: credentialID, AuthorizationURL: "http://127.0.0.1/connect/request_2"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
 			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", Status: "active", ConnectionID: "connection_1", ConsumerID: "telegram"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_2":
+			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_2", Status: "active", ConnectionID: "connection_1", ConsumerID: "telegram"})
 		case r.Method == http.MethodPost && (r.URL.Path == "/v1/credentials/credential_1/grants" || r.URL.Path == "/v1/credentials/credential_2/grants"):
 			var input brokerv1.GrantRequest
 			if json.NewDecoder(r.Body).Decode(&input) != nil || input.ContractID != "telegram-session" || input.PrincipalID != "alice" || input.Execution != "dedicated" {

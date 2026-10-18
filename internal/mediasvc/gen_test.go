@@ -22,13 +22,15 @@ var testPNG = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3}
 var testMP4 = []byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 1, 2}
 
 type fakeGen struct {
-	result   GenResult
-	err      error
-	ready    bool
-	lastReq  GenRequest
-	submits  atomic.Int32
-	polls    atomic.Int32
-	pollDone bool
+	result     GenResult
+	err        error
+	ready      bool
+	lastReq    GenRequest
+	lastSubmit GenRequest
+	lastPollID string
+	submits    atomic.Int32
+	polls      atomic.Int32
+	pollDone   bool
 }
 
 func (f *fakeGen) Generate(_ context.Context, req GenRequest) (GenResult, error) {
@@ -39,13 +41,15 @@ func (f *fakeGen) Generate(_ context.Context, req GenRequest) (GenResult, error)
 	return f.result, nil
 }
 
-func (f *fakeGen) Submit(_ context.Context, req GenRequest) (string, error) {
+func (f *fakeGen) Submit(_ context.Context, req GenRequest) (SubmitHandle, error) {
 	f.submits.Add(1)
-	return "req-1", nil
+	f.lastSubmit = req
+	return SubmitHandle{RemoteID: "req-1"}, nil
 }
 
-func (f *fakeGen) Poll(context.Context, string, string) (GenResult, bool, error) {
+func (f *fakeGen) Poll(_ context.Context, h SubmitHandle, _ string) (GenResult, bool, error) {
 	f.polls.Add(1)
+	f.lastPollID = h.RemoteID
 	return f.result, f.pollDone, f.err
 }
 
@@ -433,7 +437,7 @@ func TestFalEngineSyncAndQueue(t *testing.T) {
 	}
 
 	id, err := eng.Submit(context.Background(), GenRequest{Kind: "video", Model: "fal-ai/test-video", Prompt: "rocket"})
-	if err != nil || id != "req-42" {
+	if err != nil || id.RemoteID != "req-42" {
 		t.Fatalf("submit: %v %q", err, id)
 	}
 	eng.fetch = func(_ context.Context, raw string) ([]byte, string, error) {
@@ -616,11 +620,11 @@ func TestFalPollTransitions(t *testing.T) {
 	eng.fetch = func(context.Context, string) ([]byte, string, error) {
 		return testPNG, "image/png", nil
 	}
-	res, done, err := eng.Poll(context.Background(), "req-7", "m")
+	res, done, err := eng.Poll(context.Background(), SubmitHandle{RemoteID: "req-7"}, "m")
 	if err != nil || done {
 		t.Fatalf("in-progress: %v %v", err, done)
 	}
-	res, done, err = eng.Poll(context.Background(), "req-7", "m")
+	res, done, err = eng.Poll(context.Background(), SubmitHandle{RemoteID: "req-7"}, "m")
 	if err != nil || !done || !bytes.Equal(res.Data, testPNG) {
 		t.Fatalf("completed: %v done=%v", err, done)
 	}
@@ -631,7 +635,7 @@ func TestFalPollTransitions(t *testing.T) {
 	}))
 	defer dead.Close()
 	eng2.queue = dead.URL
-	if _, _, err := eng2.Poll(context.Background(), "req-7", "m"); err == nil {
+	if _, _, err := eng2.Poll(context.Background(), SubmitHandle{RemoteID: "req-7"}, "m"); err == nil {
 		t.Fatal("terminal queue status accepted")
 	}
 }
@@ -825,7 +829,7 @@ func TestEngineErrorBranches(t *testing.T) {
 	if _, err := fal.Submit(context.Background(), GenRequest{Kind: "video", Model: "m", Prompt: "x"}); err == nil {
 		t.Fatal("submit 500 accepted")
 	}
-	if _, done, err := fal.Poll(context.Background(), "req-1", "m"); err == nil || done {
+	if _, done, err := fal.Poll(context.Background(), SubmitHandle{RemoteID: "req-1"}, "m"); err == nil || done {
 		t.Fatal("result without media accepted")
 	}
 	// fal without a queue base refuses video outright.
@@ -903,7 +907,7 @@ func TestFalPollStatusHTTPError(t *testing.T) {
 	}))
 	defer dead.Close()
 	eng := &falGen{base: "https://fal.run", queue: dead.URL, keyFor: staticKey("k"), client: dead.Client()}
-	if _, _, err := eng.Poll(context.Background(), "req-1", "m"); err == nil {
+	if _, _, err := eng.Poll(context.Background(), SubmitHandle{RemoteID: "req-1"}, "m"); err == nil {
 		t.Fatal("queue 502 accepted")
 	}
 }

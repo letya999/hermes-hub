@@ -288,9 +288,33 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.CapabilityMode == "managed" {
 		modelRelay := cloneMap(common)
 		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
-		modelRelay["environment"] = M{"HUB_MODEL_RELAY_MODEL": s.Model}
+		// The merged models.yaml (spaces -> org -> user layers) mounts
+		// read-only; provider key_env names resolve from the space's own
+		// secrets env file, the owner-facing switch bearer from
+		// model-relay.auth — never as literals in compose.
+		cliproxyURL := "http://cliproxy:8317"
+		if s.Cliproxy == "dedicated" {
+			cliproxyURL = "http://cliproxy-" + s.User + ":8317"
+		}
+		modelRelay["environment"] = M{
+			"HUB_MODEL_RELAY_REGISTRY": "/run/models.yaml",
+			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
+			"HUB_MODEL_RELAY_OWNER":    s.User,
+			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
+		}
+		modelRelay["env_file"] = []any{
+			M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
+			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
+		}
+		modelRelay["volumes"] = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "models."+s.Environment+".yaml")), "target": "/run/models.yaml", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
+		}
 		modelRelay["extra_hosts"] = []string{}
-		modelRelay["networks"] = []string{sharedNetworkName, managedAgentNetwork(s)}
+		// A stable per-space alias on the shared network lets the gateway of
+		// the same space call its own relay (owner model switching) without
+		// colliding with other spaces' model-relay service names.
+		modelRelay["networks"] = M{sharedNetworkName: M{"aliases": []string{"model-relay-" + s.User}}, managedAgentNetwork(s): M{}}
 		services["model-relay"] = modelRelay
 		toolhubRelay := cloneMap(common)
 		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
@@ -428,6 +452,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["credential-broker"] = broker
 	}
 
+	// cliproxy: dedicated gives a secondary space its own proxy instance,
+	// reachable as cliproxy-<user> on both networks — the space-local plain
+	// "cliproxy" name keeps resolving the shared infra instance.
+	if !infra && s.Cliproxy == "dedicated" {
+		cliproxy := cloneMap(common)
+		cliproxy["build"] = coreBuild
+		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
+		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
+		alias := []string{"cliproxy-" + s.User}
+		cliproxy["networks"] = M{"default": M{"aliases": alias}, sharedNetworkName: M{"aliases": alias}}
+		services["cliproxy"] = cliproxy
+	}
+
 	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 		if s.ExecutionMode != "" {
@@ -461,6 +498,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
+		if s.CapabilityMode == "managed" {
+			gatewayEnvironment["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"})
+		}
 		if s.Has("transcription") {
 			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
 			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-tts:8090"
@@ -570,8 +611,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		mediaSvc := cloneMap(common)
 		mediaSvc["entrypoint"] = []string{"hub-media"}
 		mediaEnv := M{
-			"HUB_MEDIA_LISTEN":         "0.0.0.0:8090",
-			"HUB_MEDIA_ENGINE":         "${HUB_MEDIA_ENGINE:-remote}",
+			"HUB_MEDIA_LISTEN": "0.0.0.0:8090",
+			"HUB_MEDIA_ENGINE": "${HUB_MEDIA_ENGINE:-remote}",
+			// Multi-engine ladder and logical-model routes come from the
+			// deploy env; "command" is the local engine (HUB_MEDIA_COMMAND
+			// points at a mounted runner script).
+			"HUB_MEDIA_ENGINES":        "${HUB_MEDIA_ENGINES:-}",
+			"HUB_MEDIA_MODEL_ROUTES":   "${HUB_MEDIA_MODEL_ROUTES:-}",
+			"HUB_MEDIA_COMMAND":        "${HUB_MEDIA_COMMAND:-}",
 			"HUB_MEDIA_UPSTREAM":       "${HUB_MEDIA_UPSTREAM:-http://cliproxy:8317}",
 			"HUB_MEDIA_QUEUE_UPSTREAM": "${HUB_MEDIA_QUEUE_UPSTREAM:-}",
 			"HUB_MEDIA_IMAGE_MODEL":    "${HUB_MEDIA_IMAGE_MODEL:-gpt-image-2}",

@@ -14,26 +14,29 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func Coverage(name string, minimum float64) (float64, error) {
+type coverBlock struct {
+	statements int
+	covered    bool
+	pkg        string
+}
+
+func parseCoverage(name string) (map[string]coverBlock, error) {
 	f, err := os.Open(name)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer f.Close()
 	s := bufio.NewScanner(f)
 	if !s.Scan() || !regexp.MustCompile(`^mode: (set|count|atomic)$`).MatchString(s.Text()) {
-		return 0, fmt.Errorf("invalid coverage header")
+		return nil, fmt.Errorf("invalid coverage header")
 	}
-	type block struct {
-		statements int
-		covered    bool
-	}
-	blocks := map[string]block{}
+	blocks := map[string]coverBlock{}
 	trailingBlank := false
 	for s.Scan() {
 		if strings.TrimSpace(s.Text()) == "" {
@@ -41,18 +44,26 @@ func Coverage(name string, minimum float64) (float64, error) {
 			continue
 		}
 		if trailingBlank {
-			return 0, fmt.Errorf("invalid coverage row after blank line")
+			return nil, fmt.Errorf("invalid coverage row after blank line")
 		}
 		fields := strings.Fields(s.Text())
 		if len(fields) != 3 {
-			return 0, fmt.Errorf("invalid coverage row %q", s.Text())
+			return nil, fmt.Errorf("invalid coverage row %q", s.Text())
 		}
 		statements, err1 := strconv.Atoi(fields[1])
 		count, err2 := strconv.Atoi(fields[2])
 		if err1 != nil || err2 != nil || statements < 0 || count < 0 {
-			return 0, fmt.Errorf("invalid coverage row %q", s.Text())
+			return nil, fmt.Errorf("invalid coverage row %q", s.Text())
 		}
 		merged := blocks[fields[0]]
+		if merged.pkg == "" {
+			file := fields[0][:strings.IndexByte(fields[0], ':')]
+			if i := strings.LastIndexByte(file, '/'); i >= 0 {
+				merged.pkg = file[:i]
+			} else {
+				merged.pkg = file
+			}
+		}
 		if merged.statements == 0 {
 			merged.statements = statements
 		}
@@ -60,13 +71,73 @@ func Coverage(name string, minimum float64) (float64, error) {
 		blocks[fields[0]] = merged
 	}
 	if err := s.Err(); err != nil {
+		return nil, err
+	}
+	if len(blocks) == 0 {
+		return nil, fmt.Errorf("empty coverage profile")
+	}
+	return blocks, nil
+}
+
+func Coverage(name string, minimum float64) (float64, error) {
+	return CoverageGate(name, minimum, 0)
+}
+
+// mainModule returns the module path declared by the nearest go.mod walking
+// up from the working directory; empty when none is found.
+func mainModule() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if m, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+					return strings.TrimSpace(m)
+				}
+			}
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// CoverageGate applies the global statement minimum plus an optional
+// per-package floor. A merged -coverpkg=./... profile can hide an untested
+// package behind coverage from another package's tests; the floor keeps each
+// package honest. Only internal/ packages are gated: cmd/ binaries are
+// exercised by the container contract gates, not unit tests.
+func CoverageGate(name string, minimum, packageMinimum float64) (float64, error) {
+	blocks, err := parseCoverage(name)
+	if err != nil {
 		return 0, err
 	}
 	var total, covered int
-	for _, merged := range blocks {
-		total += merged.statements
-		if merged.covered {
-			covered += merged.statements
+	type pkgStat struct{ total, covered int }
+	pkgs := map[string]*pkgStat{}
+	for _, b := range blocks {
+		total += b.statements
+		if b.covered {
+			covered += b.statements
+		}
+		// Only this module's internal packages: replaced local modules
+		// (credential-broker) run their own stricter coverage gate.
+		if strings.HasPrefix(b.pkg, mainModule()+"/internal/") {
+			p := pkgs[b.pkg]
+			if p == nil {
+				p = &pkgStat{}
+				pkgs[b.pkg] = p
+			}
+			p.total += b.statements
+			if b.covered {
+				p.covered += b.statements
+			}
 		}
 	}
 	if total == 0 {
@@ -76,10 +147,22 @@ func Coverage(name string, minimum float64) (float64, error) {
 	if actual < minimum {
 		return actual, fmt.Errorf("go coverage %.2f%% < %.2f%%", actual, minimum)
 	}
+	if packageMinimum > 0 {
+		var low []string
+		for pkg, p := range pkgs {
+			if pct := float64(p.covered) * 100 / float64(p.total); pct < packageMinimum {
+				low = append(low, fmt.Sprintf("%s %.2f%%", pkg, pct))
+			}
+		}
+		if len(low) > 0 {
+			sort.Strings(low)
+			return actual, fmt.Errorf("package coverage below %.2f%%: %s", packageMinimum, strings.Join(low, ", "))
+		}
+	}
 	return actual, nil
 }
 
-func CoverAll(profile string, minimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
+func CoverAll(profile string, minimum, packageMinimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
 	packages, err := listPackages()
 	if err != nil {
 		return 0, err
@@ -118,7 +201,7 @@ func CoverAll(profile string, minimum float64, listPackages func() ([]string, er
 	if err := out.Close(); err != nil {
 		return 0, err
 	}
-	return Coverage(profile, minimum)
+	return CoverageGate(profile, minimum, packageMinimum)
 }
 
 func Project(root string) error {

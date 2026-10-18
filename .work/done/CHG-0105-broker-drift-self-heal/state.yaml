@@ -1,0 +1,37 @@
+change: CHG-0105-broker-drift-self-heal
+milestone: M13 follow-up — live Telegram smoke fixes
+status: done
+slices:
+  S1-revoke-notfound-tolerance: done
+  S2-stale-state-self-heal: done
+  S3-agent-tool-guidance: done
+  S4-stale-artifact-reuse: done
+  S5-live-replay-verification: done
+just_check: done (coverage 86.31% >= 85 gate; vet/staticcheck/docs/actionlint/config-contract clean)
+live_acceptance: done (prepare -> restricted build -> confirm -> enable on live local stack)
+notes: >
+  Root cause of the onboarding 404: materializeBinding revoked the previous
+  broker grant before rotating; the external broker volume no longer holds
+  that grant (ledger drift vs toolhub store) so the revoke 404 aborted
+  confirm. All revoke/dead-record paths now tolerate typed not_found or
+  self-heal into a fresh request. Reminder + watcher + web worked live.
+  S5 replay (2026-10-16, spaces/local, principal local): prepare_source for
+  github-mcp-server re-reviewed and rebuilt because no quarantine tar existed
+  (artifact-reuse fix engaged), restricted build completed, confirm+enable
+  produced binding bind-8819c19b6c30d42704480685 with 43 projected tools and
+  no 503. Replaying surfaced four case regressions introduced by export-rename
+  refactor c688947b, all fixed with regression tests: busybox nc probe used
+  -W instead of -w, buildkit provenance used mode=Max instead of mode=max,
+  cli-rg-search source args used --Max-count instead of --max-count, and
+  dockerFlagsWithValues listed -W instead of -w. Connection conn-45acc221
+  self-healed: reuse verified broker liveness and rotated credential to
+  cred-ca0c356f rev3 (old creds revoked). Known leftovers, intentionally not
+  force-removed: five non-terminal onboarding records (remove op is not
+  granted to principal local; they self-heal on resume — status on
+  onboard-30ca minted fresh broker request r95a6fea), seven active
+  third-party definition versions without quarantine tars (gitlab-mcp 0.0.5,
+  google-calendar-mcp 0.0.4, mcp-atlassian 0.0.3, notion-mcp-server 0.0.2 and
+  0.0.3, slack-mcp-server 0.0.4 and 0.0.5 — covered by lazy re-review on next
+  prepare_source; not rebuilt proactively because a source-path rebuild
+  changes the pinned commit under live connections), plus the two orphan
+  broker credentials and duplicate routine watchers noted earlier.

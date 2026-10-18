@@ -1,11 +1,32 @@
 package communication
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+func TestScheduleDoesNotAccumulateOccurrencesWhilePreviousPending(t *testing.T) {
+	s, _, g := occurrenceFixture(t)
+	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	created, err := s.CreateSchedule(Schedule{ScheduleID: "bounded", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "work", JobKind: "agent"}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TickSchedules(created.NextDue, "", g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TickSchedules(created.NextDue.Add(2*time.Minute), "", g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("pending occurrences = %d, %v", len(entries), err)
+	}
+}
 
 // Schedule CRUD round-trip at the spool layer: create/list/update/pause/
 // snooze/delete plus routine-failure dedup, replay and the native-cron guard.

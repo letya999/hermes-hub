@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -28,7 +29,8 @@ type RoutineOccurrence struct {
 	Job        Job       `json:"job"`
 	// JobKind mirrors the schedule kind. "reminder" occurrences deliver their
 	// text through the outbox directly — no ordinary job, no runtime, no model.
-	JobKind string `json:"job_kind,omitempty"`
+	JobKind       string        `json:"job_kind,omitempty"`
+	CatchUpWindow time.Duration `json:"catch_up_window_ns,omitempty"`
 	// RetryCount counts probe-error retries (check kind, SPEC-0054 R1.1) and
 	// RetryAfter holds them back until the backoff deadline passes.
 	RetryCount int       `json:"retry_count,omitempty"`
@@ -78,7 +80,32 @@ func (s *Spool) PutOccurrence(o RoutineOccurrence, caller identity.Envelope) err
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	for _, dir := range []string{"receipts", "archive", "quarantine"} {
+		_, err := os.Stat(filepath.Join(s.root, "occurrences", dir, id+".json"))
+		if err == nil {
+			if dir == "quarantine" {
+				return errors.New("occurrence quarantined")
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	return atomicJSON(path, o)
+}
+
+// quarantineOccurrenceLocked preserves a bad durable record outside hot scans.
+func (s *Spool) quarantineOccurrenceLocked(path string) error {
+	dir := filepath.Join(s.root, "occurrences", "quarantine")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	if err := os.Rename(path, filepath.Join(dir, filepath.Base(path))); err != nil {
+		return err
+	}
+	log.Printf("quarantined invalid occurrence %s", filepath.Base(path))
+	return nil
 }
 
 // DispatchDueOccurrences persists the ordinary job before settling the occurrence.
@@ -105,13 +132,31 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		}
 		var o RoutineOccurrence
 		if len(b) > 128*1024 || json.Unmarshal(b, &o) != nil || validateOccurrence(o, o.Job.Envelope) != nil || entry.Name() != occurrenceID(o)+".json" || o.Job.ID != occurrenceID(o) || o.Job.IdempotencyKey != o.Job.ID {
-			return errors.New("invalid durable occurrence")
+			if err := s.quarantineOccurrenceLocked(path); err != nil {
+				return err
+			}
+			continue
 		}
 		occurrences = append(occurrences, o)
 	}
-	sort.Slice(occurrences, func(i, j int) bool { return occurrences[i].DueAt.Before(occurrences[j].DueAt) })
+	eligible := func(o RoutineOccurrence) bool {
+		window := o.CatchUpWindow
+		if window <= 0 {
+			window = defaultCatchUp
+		}
+		return o.State == "pending" && !now.Before(o.DueAt) && now.Sub(o.DueAt) <= window
+	}
+	// Expired history must not spend the bounded pass before a deliverable reminder.
+	sort.Slice(occurrences, func(i, j int) bool {
+		iReady, jReady := eligible(occurrences[i]), eligible(occurrences[j])
+		if iReady != jReady {
+			return iReady
+		}
+		return occurrences[i].DueAt.Before(occurrences[j].DueAt)
+	})
 	// ponytail: single-host occurrence scan; index by schedule if history becomes large.
 	active := map[string]string{}
+	blocked := map[string]bool{}
 	for _, o := range occurrences {
 		mapping, err := s.loadMappingLocked(o.Job.ID)
 		if os.IsNotExist(err) {
@@ -119,6 +164,9 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 		}
 		if err != nil {
 			return err
+		}
+		if terminalStatus(mapping.Status) {
+			continue
 		}
 		admitted := o.Job
 		admitted.ConversationID = routineConversation(o.ScheduleID)
@@ -130,10 +178,21 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 				admitted.ConversationID = taskConversation(o.Job.ChatID, o.Job.TaskID)
 			}
 		}
-		if mapping.TaskID != o.Job.TaskID || mapping.TopicID != o.Job.TopicID || !mapping.MatchesJob(admitted) {
-			return errors.New("occurrence job binding changed")
-		}
 		key := o.Job.PrincipalID + "\x00" + o.Job.ContextID + "\x00" + o.ScheduleID
+		if mapping.TaskID != o.Job.TaskID || mapping.TopicID != o.Job.TopicID || !mapping.MatchesJob(admitted) {
+			// Preserve the admitted job and block overlap for this schedule.
+			// Other schedules can still make progress.
+			active[key] = o.Job.ID
+			blocked[o.Job.ID] = true
+			if s.mappingDriftReported == nil {
+				s.mappingDriftReported = make(map[string]bool)
+			}
+			if !s.mappingDriftReported[o.Job.ID] {
+				log.Printf("occurrence job binding drift: %s", o.Job.ID)
+				s.mappingDriftReported[o.Job.ID] = true
+			}
+			continue
+		}
 		if !terminalStatus(mapping.Status) && active[key] == "" {
 			active[key] = o.Job.ID
 		}
@@ -141,12 +200,16 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 	dispatched := 0
 	for _, o := range occurrences {
 		path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
-		if o.State != "pending" || now.Before(o.DueAt) {
+		if o.State != "pending" || now.Before(o.DueAt) || blocked[o.Job.ID] {
 			continue
+		}
+		window := o.CatchUpWindow
+		if window <= 0 {
+			window = defaultCatchUp
 		}
 		if !s.occurrenceCurrentLocked(o) {
 			o.State = "cancelled"
-		} else if now.Sub(o.DueAt) > time.Hour {
+		} else if now.Sub(o.DueAt) > window {
 			o.State = "missed"
 		} else if authorize(o.Job) != nil {
 			o.State = "blocked"
@@ -229,7 +292,11 @@ func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
 	for i, step := range steps {
 		if err := step(); err != nil {
 			if ctx.Err() == nil {
-				log.Printf("routine tick failed stage=%d; work remains pending", i)
+				cause := strings.Join(strings.Fields(diagnostics.Redact(err.Error())), " ")
+				if len(cause) > 256 {
+					cause = cause[:256]
+				}
+				log.Printf("routine tick failed stage=%d: %s; work remains pending", i, cause)
 			}
 			return
 		}
@@ -275,6 +342,12 @@ func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool
 		task, err := g.spool.loadTaskLocked(job.PrincipalID, job.TaskID)
 		if err != nil || task.Archived || task.ContextID != job.ContextID || task.ChatID != job.ChatID || task.TopicID != job.TopicID {
 			return false
+		}
+		if task.TopicID != 0 {
+			bound, err := g.spool.topicTaskLocked(job.PrincipalID, job.ChatID, job.TopicID)
+			if err != nil || bound != job.TaskID {
+				return false
+			}
 		}
 	}
 	if job.ConversationID != canonical.ConversationID {

@@ -64,22 +64,22 @@ func TestRoutineOpsProjection(t *testing.T) {
 	if _, err := tools.Routine(t.Context(), "routine_list", Input{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_create", Input{ID: "r1", Expression: "*/5 * * * *", Text: "do it"}); err != nil {
+	if _, err := tools.Routine(t.Context(), "routine_create", Input{DestinationTaskID: "default", ID: "r1", Expression: "*/5 * * * *", Text: "do it"}); err != nil {
 		t.Fatal(err)
 	}
 	if lastPayload["job_kind"] != "agent" || lastPayload["schedule_id"] != "r1" {
 		t.Fatalf("routine_create payload: %v", lastPayload)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_create", Input{ID: "w1", Kind: "check", Expression: "@hourly", Text: "probe", ProbeKind: "http", URL: "https://example.com", Expect: "ok"}); err != nil {
+	if _, err := tools.Routine(t.Context(), "routine_create", Input{DestinationTaskID: "default", ID: "w1", Kind: "check", Expression: "@hourly", Text: "probe", ProbeKind: "http", URL: "https://example.com", Expect: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 	if lastPayload["job_kind"] != "check" || lastPayload["expect"] != "ok" || lastPayload["probe"].(map[string]any)["kind"] != "http" {
 		t.Fatalf("check payload: %v", lastPayload)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_create", Input{Kind: "script", Text: "print(1)"}); err != nil {
+	if _, err := tools.Routine(t.Context(), "routine_create", Input{DestinationTaskID: "default", Kind: "script", Text: "print(1)"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_create", Input{Kind: "script", Text: "def broken("}); err == nil {
+	if _, err := tools.Routine(t.Context(), "routine_create", Input{DestinationTaskID: "default", Kind: "script", Text: "def broken("}); err == nil {
 		t.Fatal("uncompilable script accepted")
 	}
 	if _, err := tools.Routine(t.Context(), "watch_subscribe", Input{ID: "sub1", Expression: "*/1 * * * *", Text: "watch", Tool: "poll", Args: `{"q":"x"}`, Sink: "notify", Delivery: "stream"}); err != nil {
@@ -92,22 +92,22 @@ func TestRoutineOpsProjection(t *testing.T) {
 	if _, err := tools.Routine(t.Context(), "watch_subscribe", Input{ID: "sub2", Args: "not json"}); err == nil {
 		t.Fatal("invalid watch args accepted")
 	}
-	if _, err := tools.Routine(t.Context(), "routine_update", Input{ID: "r1", Expression: "@daily", Text: "new"}); err != nil {
+	if _, err := tools.Routine(t.Context(), "routine_update", Input{ID: "r1", ExpectedRevision: 1, Expression: "@daily", Text: "new"}); err != nil {
 		t.Fatal(err)
 	}
 	if lastPayload["expression"] != "@daily" || lastPayload["input"] != "new" {
 		t.Fatalf("routine_update payload: %v", lastPayload)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_snooze", Input{ID: "r1", Expression: "+10m"}); err != nil {
+	if _, err := tools.Routine(t.Context(), "routine_snooze", Input{ID: "r1", ExpectedRevision: 1, Expression: "+10m"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_pause", Input{ID: "r1"}); err != nil {
+	if _, err := tools.Routine(t.Context(), "routine_pause", Input{ID: "r1", ExpectedRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_delete", Input{ID: "r1"}); err != nil {
+	if _, err := tools.Routine(t.Context(), "routine_delete", Input{ID: "r1", ExpectedRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tools.Routine(t.Context(), "routine_delete", Input{ID: "bad/id"}); err == nil {
+	if _, err := tools.Routine(t.Context(), "routine_delete", Input{ID: "bad/id", ExpectedRevision: 1}); err == nil {
 		t.Fatal("slashed id accepted")
 	}
 	if _, err := tools.Routine(t.Context(), "bogus_op", Input{}); err == nil {

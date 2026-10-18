@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -70,7 +71,7 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 				resolution.Launch = candidate.Launch
 			}
 		}
-		resolution.Connection = mergeConnection(resolution.Connection, candidate.Connection)
+		resolution.Connection = mergeConnection(resolution.Connection, connectionWithSource(candidate.Connection, "catalog"))
 	}
 
 	resolution.Connection = normalizeConnection(resolution.Connection)
@@ -164,13 +165,24 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 	var launch LaunchRecipe
 	var connection ConnectionRecipe
 	var warnings []string
+	// decls keeps every tagged field declaration before the merge deduplicates
+	// by name, so conflicting requiredness across sources can be reported.
+	var decls []fieldDecl
+	merge := func(recipe ConnectionRecipe, name string) {
+		tagged := connectionWithSource(recipe, name)
+		for _, field := range tagged.Fields {
+			decls = append(decls, fieldDecl{name: field.Name, source: field.Source, required: field.Required})
+		}
+		connection = mergeConnection(connection, tagged)
+	}
 	if data, name := findFile(files, "server.json"); data != nil {
 		candidate, fields, ok, err := ParseServerManifest(data, name, source)
 		if err != nil {
 			return LaunchRecipe{}, ConnectionRecipe{}, nil, err
 		}
 		if ok {
-			launch, connection = candidate, mergeConnection(connection, fields)
+			launch = candidate
+			merge(fields, name)
 		}
 	}
 	if data, name := findFile(files, "manifest.json"); data != nil {
@@ -181,7 +193,7 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 		if HasLaunch(candidate) {
 			launch = MergeLaunch(launch, candidate, &warnings)
 		}
-		connection = mergeConnection(connection, fields)
+		merge(fields, name)
 	}
 	for name, data := range files {
 		if testFixturePath(name) {
@@ -195,32 +207,81 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
 			}
 			launch = MergeLaunch(launch, candidate, &warnings)
-			connection = mergeConnection(connection, fields)
+			merge(fields, name)
 			warnings = append(warnings, fileWarnings...)
 		case base == "compose.yaml" || base == "compose.yml" || strings.HasPrefix(base, "docker-compose."):
 			candidate, fields, fileWarnings, err := parseCompose(data, name)
 			if err != nil {
+				// Ambiguity in reviewed metadata fails closed with a stable code
+				// instead of degrading to a warning that later reads as an
+				// unexplained "no launch recipe".
+				if errors.Is(err, ErrAmbiguousEntrypoint) {
+					return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+				}
 				warnings = append(warnings, "Compose recipe rejected: "+err.Error())
 				continue
 			}
 			launch = MergeLaunch(launch, candidate, &warnings)
-			connection = mergeConnection(connection, fields)
+			merge(fields, name)
 			warnings = append(warnings, fileWarnings...)
 		case strings.HasPrefix(base, "readme"):
-			connection = mergeConnection(connection, ParseDocumentationCredentials(data, name))
+			// Documentation mentions prove a variable exists, not that it is
+			// required — merge them for coverage but keep them out of the
+			// conflict accounting.
+			connection = mergeConnection(connection, connectionWithSource(ParseDocumentationCredentials(data, name), name))
 		case base == ".mcp.json":
 			candidate, fields, err := ParseMCPJSON(data, name)
 			if err != nil {
 				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
 			}
 			launch = MergeLaunch(launch, candidate, &warnings)
-			connection = mergeConnection(connection, fields)
+			merge(fields, name)
 		case base == ".env.example":
-			connection = mergeConnection(connection, ParseExampleEnv(data, name))
+			merge(ParseExampleEnv(data, name), name)
 		}
 	}
+	warnings = append(warnings, connectionSourceConflicts(decls)...)
 	if source.Subfolder != "" {
 		warnings = append(warnings, "subfolder is pinned; generated build fallback must preserve that working directory")
 	}
 	return launch, normalizeConnection(connection), warnings, nil
+}
+
+// fieldDecl is one tagged field declaration before dedup: name, the file it
+// came from, and whether that file marked it required.
+type fieldDecl struct {
+	name     string
+	source   string
+	required bool
+}
+
+// connectionSourceConflicts names every field declared with different
+// requiredness across metadata files, listing which source said what so the
+// caller can surface the disagreement instead of guessing.
+func connectionSourceConflicts(decls []fieldDecl) []string {
+	byName := map[string]map[string]bool{}
+	for _, decl := range decls {
+		kind := "optional"
+		if decl.required {
+			kind = "required"
+		}
+		if byName[decl.name] == nil {
+			byName[decl.name] = map[string]bool{}
+		}
+		byName[decl.name][decl.source+": "+kind] = true
+	}
+	var warnings []string
+	for name, variants := range byName {
+		if len(variants) < 2 {
+			continue
+		}
+		parts := make([]string, 0, len(variants))
+		for variant := range variants {
+			parts = append(parts, variant)
+		}
+		slices.Sort(parts)
+		warnings = append(warnings, "credential sources disagree about "+name+" ("+strings.Join(parts, ", ")+")")
+	}
+	slices.Sort(warnings)
+	return warnings
 }

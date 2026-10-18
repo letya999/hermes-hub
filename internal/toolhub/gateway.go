@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -33,7 +34,11 @@ type Gateway struct {
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   api.CredentialInjector
-	Control                    *ControlPlane
+	// OAuthRefresh mints a new access token for a connection whose remote
+	// call was rejected, then reports whether a retry may carry a fresh
+	// bearer. Nil disables refresh-retry.
+	OAuthRefresh func(context.Context, api.EffectiveBinding) (bool, error)
+	Control      *ControlPlane
 	// governance is the host-owned tool policy document (issue 139). Nil
 	// keeps the legacy projection behavior; a configured but unreadable
 	// document fails every projection closed.
@@ -70,6 +75,15 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	for token, auth := range g.Tokens {
 		server, tools, controls, err := g.projectedServer(auth)
 		if err != nil {
+			if errors.Is(err, api.ErrUnauthorized) {
+				// One enrolled identity whose managed scope no longer resolves
+				// (e.g. a sibling-space capability profile this store does not
+				// hold) must not take down the shared endpoint. The token gets
+				// no projection, so requests to it stay denied — fail closed
+				// per principal, matching the refresh-path tolerance.
+				log.Printf("toolhub projection skipped principal_id=%s error=%v", auth.PrincipalID, err)
+				continue
+			}
 			return nil, err
 		}
 		g.projections[token] = &gatewayProjection{

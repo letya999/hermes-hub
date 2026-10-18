@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -16,9 +17,14 @@ import (
 )
 
 var routineDescriptions = map[string]string{
-	"routine_create":  "Create an owner-scoped routine. kind=reminder delivers exact text; expression after:180s resolves once on the server; show the returned deadline. kind=watcher polls a public url plus optional regex capture, or probe_kind=mcp_tool with a tool name for a projected read-only connector tool: baseline and unchanged values are silent, changes include bounded old/new values; errors preserve baseline. kind=check tests expect (changed|unchanged|equals:value) against a url or task:<task_id>, retrying a failed probe up to max_retries times (default 3); kind=script runs bounded Starlark; kind=digest aggregates changed watches; kind=brief composes changed sources and open tasks into one model brief. quiet_from/quiet_to set an HH:MM owner-timezone deferral; daily_limit (0..32) caps same-day notifications. notify_mode=digest feeds the digest; notify_mode=agent escalates a real change as untrusted evidence. Deterministic kinds never wake an agent or invoke a model at firing.",
-	"routine_list":    "List owned routines and their current delivery state; observe the same schedule ID after an uncertain create before proposing another routine.",
-	"routine_update":  "Update an owned routine schedule or text. Use an absolute once:RFC3339 expression or cron; after: is creation-only.",
+	"routine_edit":    "Modify an owned routine: action=update|pause|resume|snooze, id, expected_revision from get/list. update requires nonempty patch and no until; pause/resume accept neither; snooze requires until RFC3339 and no patch. To move future results, use update patch={destination_task_id:<ID>} after routine_list view=destinations; use destination_task_id=current with origin_job_id from current run instructions. Move keeps timing, pause, snooze and prior history; old admitted work keeps its audience. Other patch fields: input, expression, timezone, job_kind, probe, expect, max_retries, notify_mode, quiet_from, quiet_to, daily_limit, source_ids, sink, delivery, catch_up_window_ns, timing. Text edits preserve due/pause/snooze; timing edits clear snooze/reset anchor. Conflict requires rereading. Delete is separate.",
+	"routine_get":     "Read full owner/context routine card: revision, configuration, state, saved destination name/chat/topic and active|archived|unavailable status, plus probe errors. Known retired IDs remain readable. Optional include=[history,next_runs]. history_limit 1..100 default 10, history_cursor for next page; preview_limit 1..20 default 5. History separates occurrence, execution and delivery (including partial/uncertain), normally retained 14 days; delivered does not mean read. next_runs previews dates without effects; paused dates are hypothetical, completed/deleted have none. Stream health is event_state. Extra reads are not an atomic snapshot; a failed component fails the call.",
+	"routine_resume":  "Resume an owned routine using expected_revision from get/list. Expired once schedules need a new due time first. This does not replay past occurrences.",
+	"routine_history": "Read a page of retained routine runs with separate occurrence, verified agent execution and delivery outcomes, including partial or uncertain multipart delivery. Pass next_cursor as cursor. Detail is retained 48h; summaries follow spool retention (normally 14d). Delivery is not a read receipt. Stream subscriptions expose current event_state in routine_get instead of occurrences.",
+	"routine_preview": "Read planned slots without running a probe, model or delivery. Includes next snoozed due then original cadence. limit is 1..20. State=paused means hypothetical dates until resume; completed/deleted have no future slots.",
+	"routine_create":  "Create owner/context routine. Pass origin_job_id from this run's routing reference for its session/topic, or destination_task_id from routine_list view=destinations for another; current requires origin_job_id. Do not guess chat/topic IDs. Default kind=agent; reminder sends exact text and deterministic actions never wake a model. after:180s resolves once; show deadline. once:RFC3339, five-field cron or every:15m (1m..8760h). timing: windows [{from:HH:MM,to:HH:MM}], weekdays [0..6], at [HH:MM], start_at/end_at. Preview dates. watcher: URL/regex capture or probe_kind=mcp_tool with tool/args JSON object string; baseline and unchanged values silent, changes show old/new. check: expect changed|unchanged|equals:value, URL/task:<id>/tool; bounded retries. script: Starlark; digest: sources; brief: optional synthesis. quiet_from/quiet_to and daily_limit govern notifications; notify_mode=agent escalates.",
+	"routine_list":    "Find compact owner/context routine cards in stable ID pages. view=destinations instead lists live owned session/task names with task_id, chat_id, topic_id and conversation_id for routing. Optional case-insensitive query searches ID/text (routine view) or task name/ID (destination view) before paging; kind/state filters apply to routine view. limit 1..100 default 20; pass next_cursor as cursor. Use routine_get for full text, destination availability, outcomes and errors. Inspect the same ID after uncertain creation before proposing a replacement.",
+	"routine_update":  "Edit patch using expected_revision from get/list; conflict means read and reconsider. Fields: input, expression, timezone, job_kind, probe, expect, max_retries, notify_mode, quiet_from, quiet_to, daily_limit, source_ids, sink, delivery, catch_up_window_ns, timing. Text retains due/pause/snooze; timing clears snooze and resets anchor, preserving pause. Kind change clears old action fields; supply complete target configuration. Clear optional probe/timing with null. once:RFC3339, five-field cron or every:15m; after: is creation-only. timing: windows [{from:HH:MM,to:HH:MM}], weekdays [0..6], at [HH:MM], start_at/end_at RFC3339. Opening inclusive, close exclusive, overnight allowed; extras form union. Identity/routing immutable.",
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
 	"routine_pause":   "Pause an owned routine; already queued occurrences recheck its state before execution.",
 	"routine_delete":  "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
@@ -29,11 +35,87 @@ var routineDescriptions = map[string]string{
 }
 
 func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any, error) {
+	if op == "routine_create" && r.OriginJobID == "" && r.DestinationTaskID == "" {
+		return nil, errors.New("routine_create requires origin_job_id from current run instructions or explicit destination_task_id; use routine_list view=destinations")
+	}
+	if op == "routine_list" && r.View != "" && r.View != "routines" && r.View != "destinations" {
+		return nil, errors.New("routine_list view must be routines or destinations")
+	}
+	if op == "routine_get" {
+		if r.HistoryLimit < 0 || r.HistoryLimit > 100 || r.PreviewLimit < 0 || r.PreviewLimit > 20 {
+			return nil, errors.New("routine_get: history_limit must be 1..100 and preview_limit 1..20; zero selects defaults")
+		}
+		seen := map[string]bool{}
+		for _, include := range r.Include {
+			if (include != "history" && include != "next_runs") || seen[include] {
+				return nil, errors.New("routine_get: include accepts unique history or next_runs entries")
+			}
+			seen[include] = true
+		}
+		if len(r.Include) > 0 {
+			includes := r.Include
+			r.Include = nil
+			out, err := t.Routine(ctx, op, r)
+			if err != nil {
+				return nil, err
+			}
+			card, ok := out["result"].(map[string]any)
+			if !ok {
+				return nil, errors.New("routine_get: invalid card response")
+			}
+			for _, include := range includes {
+				operation := "routine_history"
+				options := Input{ID: r.ID, Limit: r.HistoryLimit, Cursor: r.HistoryCursor}
+				if options.Limit == 0 {
+					options.Limit = 10
+				}
+				if include == "next_runs" {
+					operation = "routine_preview"
+					options.Limit, options.Cursor = r.PreviewLimit, ""
+					if options.Limit == 0 {
+						options.Limit = 5
+					}
+				}
+				part, err := t.Routine(ctx, operation, options)
+				if err != nil {
+					return nil, err
+				}
+				card[include] = part["result"]
+			}
+			return out, nil
+		}
+	}
+	if op == "routine_edit" {
+		switch r.Action {
+		case "update":
+			if len(r.Patch) == 0 || r.Until != "" {
+				return nil, errors.New("routine_edit: update requires nonempty patch and no until")
+			}
+		case "pause", "resume":
+			if r.Patch != nil || r.Until != "" {
+				return nil, errors.New("routine_edit: pause/resume accept neither patch nor until")
+			}
+		case "snooze":
+			if r.Until == "" || r.Patch != nil {
+				return nil, errors.New("routine_edit: snooze requires until and no patch")
+			}
+		default:
+			return nil, errors.New("routine_edit: action must be update, pause, resume or snooze")
+		}
+		r.Expression = r.Until
+		return t.Routine(ctx, "routine_"+r.Action, r)
+	}
 	if t.CommunicationURL == "" || strings.Contains(t.CommunicationURL, "${") {
 		return nil, errors.New("routines require HUB_COMMUNICATION_CONTROL_URL")
 	}
 	if strings.Contains(t.CommunicationAuth, "${") {
 		return nil, errors.New("routine control authorization is unavailable")
+	}
+	switch op {
+	case "routine_update", "routine_pause", "routine_resume", "routine_snooze", "routine_delete":
+		if r.ExpectedRevision == 0 {
+			return nil, errors.New("expected_revision from routine_get or routine_list is required")
+		}
 	}
 	principal := os.Getenv("HUB_PRINCIPAL_ID")
 	if principal == "" {
@@ -76,6 +158,14 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		// Resolved above: watch_list already returned, pause/delete paths set.
 	case "routine_list":
 		method, path = http.MethodGet, "/v1/routines"
+	case "routine_get":
+		method, path = http.MethodGet, "/v1/routines/"+r.ID
+	case "routine_history":
+		method, path = http.MethodGet, "/v1/routines/"+r.ID+"/history"
+	case "routine_preview":
+		method, path = http.MethodGet, "/v1/routines/"+r.ID+"/preview"
+	case "routine_resume":
+		method, path = http.MethodPost, "/v1/routines/"+r.ID+"/resume"
 	case "watch_subscribe":
 		method, path = http.MethodPost, "/v1/routines"
 		var args map[string]any
@@ -114,8 +204,24 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			}
 		}
 		create := map[string]any{"schedule_id": r.ID, "timezone": r.Timezone, "expression": r.Expression, "input": r.Text, "job_kind": kind}
+		if r.OriginJobID != "" {
+			create["origin_job_id"] = r.OriginJobID
+		}
+		if r.DestinationTaskID != "" {
+			create["destination_task_id"] = r.DestinationTaskID
+		}
+		if r.Timing != nil {
+			create["timing"] = r.Timing
+		}
 		if kind == "watcher" || kind == "check" {
 			create["probe"] = map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex, "tool": r.Tool}
+			if r.Args != "" {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(r.Args), &args); err != nil {
+					return nil, err
+				}
+				create["probe"].(map[string]any)["args"] = args
+			}
 		}
 		if kind == "check" {
 			create["expect"] = r.Expect
@@ -140,6 +246,16 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 	case "routine_update":
 		method, path = http.MethodPost, "/v1/routines/"+r.ID
 		payload = map[string]any{"expression": r.Expression, "input": r.Text}
+		if r.Patch != nil {
+			patch := map[string]any{}
+			for key, value := range r.Patch {
+				patch[key] = value
+			}
+			if r.OriginJobID != "" {
+				patch["origin_job_id"] = r.OriginJobID
+			}
+			payload = patch
+		}
 	case "routine_snooze":
 		method, path = http.MethodPost, "/v1/routines/"+r.ID+"/snooze"
 		payload = map[string]any{"until": r.Expression}
@@ -149,6 +265,37 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		method, path = http.MethodDelete, "/v1/routines/"+r.ID
 	default:
 		return nil, errors.New("unknown routine operation")
+	}
+	if op == "routine_list" || op == "routine_history" || op == "routine_preview" {
+		limit := r.Limit
+		if limit == 0 {
+			limit = 20
+		}
+		q := url.Values{"limit": []string{fmt.Sprint(limit)}}
+		if r.Cursor != "" {
+			q.Set("after", r.Cursor)
+		}
+		if op == "routine_list" {
+			if r.View != "" {
+				q.Set("view", r.View)
+			}
+			if r.Query != "" {
+				q.Set("query", r.Query)
+			}
+			if r.Kind != "" {
+				q.Set("kind", r.Kind)
+			}
+			if r.State != "" {
+				q.Set("state", r.State)
+			}
+		}
+		path += "?" + q.Encode()
+	}
+	if r.ExpectedRevision > 0 && strings.HasPrefix(op, "routine_") && method != http.MethodGet && op != "routine_create" {
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload.(map[string]any)["expected_revision"] = r.ExpectedRevision
 	}
 	if strings.Contains(path, "//") || strings.Contains(r.ID, "/") {
 		return nil, errors.New("invalid schedule id")
@@ -181,12 +328,18 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("routine hub rejected the request")
+		return nil, fmt.Errorf("routine hub rejected the request (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(raw[:min(len(raw), 1024)])))
+	}
+	if len(raw) > 256*1024 {
+		return nil, errors.New("routine reply exceeds 256 KiB; request a smaller page")
+	}
+	if len(raw) > 0 && !json.Valid(raw) {
+		return nil, errors.New("routine reply is not valid JSON")
 	}
 	out := map[string]any{"status": "ok"}
 	if len(raw) > 0 && json.Valid(raw) {

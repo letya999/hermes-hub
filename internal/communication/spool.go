@@ -162,9 +162,10 @@ type Spool struct {
 	// inFlight maps (principal, context) to the job currently allowed to run;
 	// held until the job's mapping reaches a terminal status. In-memory only,
 	// rebuilt from durable mappings on startup (ADR-0025).
-	inFlight        map[string]string
-	proactiveFlight map[string]bool
-	activeMappings  map[string]bool // Lazily rebuilt; only this spool's writer changes mappings.
+	inFlight             map[string]string
+	proactiveFlight      map[string]bool
+	activeMappings       map[string]bool // Lazily rebuilt; only this spool's writer changes mappings.
+	mappingDriftReported map[string]bool // One warning per corrupt active binding per process.
 	// notify coalesces wakeups for the worker/control/delivery loops so work
 	// starts on enqueue or completion instead of a poll tick (SPEC-0053 R2.3).
 	notify chan struct{}
@@ -383,6 +384,9 @@ func (s *Spool) Compact(now time.Time, retention time.Duration) error {
 	if err := s.compactReceiptsLocked(aged); err != nil {
 		return err
 	}
+	if err := s.compactOccurrencesLocked(now, retention); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return err
@@ -415,6 +419,151 @@ func (s *Spool) Compact(now time.Time, retention time.Duration) error {
 		}
 		if strings.TrimSpace(mapping.IdempotencyKey) != "" {
 			_ = os.Remove(s.idempotencyIndexPath(mapping.IdempotencyKey))
+		}
+	}
+	return nil
+}
+
+// compactOccurrencesLocked moves settled, silent detail out of the hot scan.
+// Detail stays in an archive for 48 hours; a small receipt keeps the normal
+// spool deduplication horizon. Active and dispatched work stays untouched.
+func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration) error {
+	outcomes, err := s.routineDeliveryStatesLocked()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(s.root, "occurrences")
+	archiveDir := filepath.Join(dir, "archive")
+	receiptDir := filepath.Join(dir, "receipts")
+	activeDelivery := map[string]bool{}
+	for _, outboxDir := range []string{"pending", "sending"} {
+		items, err := os.ReadDir(filepath.Join(s.root, "outbox", outboxDir))
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			if item.IsDir() || !strings.HasSuffix(item.Name(), ".json") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(s.root, "outbox", outboxDir, item.Name()))
+			if err != nil {
+				return err
+			}
+			var delivery Delivery
+			if json.Unmarshal(body, &delivery) != nil {
+				return errors.New("invalid live delivery")
+			}
+			if delivery.OccurrenceID != "" {
+				activeDelivery[delivery.OccurrenceID] = true
+			}
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var o RoutineOccurrence
+		if json.Unmarshal(body, &o) != nil || entry.Name() != occurrenceID(o)+".json" {
+			continue
+		}
+		switch o.State {
+		case "no_change", "missed", "blocked", "cancelled", "capped", "skipped", "failed":
+		case "dispatched":
+			if activeDelivery[o.Job.ID] {
+				continue
+			}
+			live := false
+			for _, jobDir := range []string{"pending", "running"} {
+				_, statErr := os.Stat(filepath.Join(s.root, jobDir, spoolFileID(o.Job.ID)+".json"))
+				if statErr == nil {
+					live = true
+				}
+				if statErr != nil && !os.IsNotExist(statErr) {
+					return statErr
+				}
+			}
+			if live {
+				continue
+			}
+			mapping, mappingErr := s.loadMappingLocked(o.Job.ID)
+			if mappingErr == nil && !terminalStatus(mapping.Status) {
+				continue
+			}
+			if mappingErr != nil && !os.IsNotExist(mappingErr) {
+				continue
+			}
+		default:
+			continue
+		}
+		if err := os.MkdirAll(receiptDir, 0700); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(archiveDir, 0700); err != nil {
+			return err
+		}
+		receiptPath := filepath.Join(receiptDir, entry.Name())
+		if err := atomicJSON(receiptPath, routineHistoryReceipt{ID: o.Job.ID, ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, Run: s.routineRunLocked(o, outcomes)}); err != nil {
+			return err
+		}
+		if err := os.Chtimes(receiptPath, info.ModTime(), info.ModTime()); err != nil {
+			return err
+		}
+		if err := os.Rename(path, filepath.Join(archiveDir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	archives, err := os.ReadDir(archiveDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range archives {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(archiveDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(now.Add(-48 * time.Hour)) {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	receipts, err := os.ReadDir(receiptDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range receipts {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(receiptDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(now.Add(-retention)) {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

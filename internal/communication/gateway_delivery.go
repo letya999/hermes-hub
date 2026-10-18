@@ -84,6 +84,22 @@ func (g *Gateway) worker(ctx context.Context) {
 					_ = g.spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: outcome.SessionID, RunID: outcome.RunID, RuntimeGeneration: outcome.RuntimeGeneration, Status: "uncertain", LastEvent: "run.unknown"})
 				}
 				_ = g.spool.FailJob(job.ID)
+				// A plain run.failed on a user message is usually a transient
+				// model/provider outage: retry once as a fresh run before
+				// telling the owner. Uncertain outcomes reconcile instead.
+				retried := false
+				if retryableMessageFailure(*job, outcome.Status, runErr) {
+					retry := *job
+					retry.ID = job.ID + "-r1"
+					retry.IdempotencyKey = job.IdempotencyKey + "-r1"
+					retry.CreatedAt = g.now().UTC()
+					if accepted, err := g.spool.Enqueue(retry); err == nil && accepted {
+						retried = true
+						if chatID, messageID := g.spool.CloseStatusDelivery(job.ID); messageID > 0 {
+							_ = g.api.DeleteMessage(ctx, chatID, messageID)
+						}
+					}
+				}
 				key, message := "job-"+job.ID+"-error", failureMessage(job.ID, outcome.Status)
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
 					key = "job-" + job.ID + "-uncertain"
@@ -118,7 +134,7 @@ func (g *Gateway) worker(ctx context.Context) {
 						}
 					}
 				}
-				if deliver {
+				if deliver && !retried {
 					_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 				}
 				if outcome.Status == "" {
@@ -147,6 +163,19 @@ func (g *Gateway) worker(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// retryableMessageFailure bounds automatic retries to plain user messages
+// whose run simply failed; uncertain outcomes reconcile, cancels and
+// interrupts are intentional, and cron/prepare continuations report instead.
+func retryableMessageFailure(job Job, status string, err error) bool {
+	if job.Trigger != "message" || strings.HasSuffix(job.ID, "-r1") {
+		return false
+	}
+	if errors.Is(err, ErrUncertain) || status == "uncertain" || status == "cancelled" || status == "interrupted" {
+		return false
+	}
+	return true
 }
 
 // deliveryLoop drains the outbox on the spool's notify signal with a

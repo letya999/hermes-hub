@@ -202,12 +202,26 @@ func ParseComposeDocument(document map[string]any, name string) (LaunchRecipe, C
 
 func composeLaunch(services map[string]*composeService, name string) (LaunchRecipe, ConnectionRecipe, []string, error) {
 	var selected *composeService
+	// The service name is the stronger signal: sibling services often share
+	// one MCP-named image (unified server plus per-source commands), which
+	// makes every service look MCP-ish while only one name says so.
 	for _, service := range services {
-		if strings.Contains(strings.ToLower(service.name+" "+service.image), "mcp") {
+		if strings.Contains(strings.ToLower(service.name), "mcp") {
 			if selected != nil {
-				return LaunchRecipe{}, ConnectionRecipe{}, nil, fmt.Errorf("%w: Compose has multiple MCP-looking services", ErrInvalid)
+				selected = nil
+				break
 			}
 			selected = service
+		}
+	}
+	if selected == nil {
+		for _, service := range services {
+			if strings.Contains(strings.ToLower(service.name+" "+service.image), "mcp") {
+				if selected != nil {
+					return LaunchRecipe{}, ConnectionRecipe{}, nil, fmt.Errorf("%w: Compose has multiple MCP-looking services", ErrAmbiguousEntrypoint)
+				}
+				selected = service
+			}
 		}
 	}
 	if selected == nil && len(services) == 1 {

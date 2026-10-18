@@ -69,7 +69,7 @@ func DecryptAuthorized(backend credstore.Backend, effective EffectiveBinding) (m
 	if backend == nil {
 		return nil, fmt.Errorf("%w: credential store", ErrInvalid)
 	}
-	if effective.Definition.Workload.Class == Shared {
+	if effective.Definition.Workload.Class == Shared && !effective.Definition.Workload.Sharable {
 		for _, input := range effective.Definition.Credentials {
 			if !input.PerRequest {
 				return nil, fmt.Errorf("%w: static credentials cannot be shared", ErrUnauthorized)

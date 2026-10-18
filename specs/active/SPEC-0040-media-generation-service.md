@@ -26,9 +26,11 @@ title: hub-media generation sidecar (phase 3 tracked in issue #182)
    model ids; `GET /healthz` reports engine readiness. Video is asynchronous
    on the existing durable job API: `POST /v1/jobs` with `kind: "video"`,
    `GET /v1/jobs/<id>`, `GET /v1/jobs/<id>/result`, `DELETE /v1/jobs/<id>`.
-   Jobs persist under `HUB_MEDIA_DATA`, survive restarts (a stored provider
-   `RemoteID` resumes polling instead of resubmitting) and expire by
-   `HUB_MEDIA_JOB_TTL`; `HUB_MEDIA_JOB_TIMEOUT` caps one job.
+   Jobs persist under `HUB_MEDIA_DATA`, survive restarts (a stored submit
+   handle — provider `remote_id` plus the `engine` and provider-side
+   `provider_model` — resumes polling on the engine that accepted the job
+   instead of resubmitting) and expire by `HUB_MEDIA_JOB_TTL`;
+   `HUB_MEDIA_JOB_TIMEOUT` caps one job.
 
 3. Engines are swappable via `HUB_MEDIA_ENGINE`:
    - `remote` — any OpenAI-compatible upstream (`HUB_MEDIA_UPSTREAM`; key
@@ -43,6 +45,19 @@ title: hub-media generation sidecar (phase 3 tracked in issue #182)
      status/response polling for video jobs. The credential comes from the
      broker grant (or `FAL_KEY`/`HUB_MEDIA_UPSTREAM_KEY` env fallback). Fal
      edit is rejected.
+   - `command` — a local runner: `HUB_MEDIA_COMMAND` argv0 reads the prompt on
+     stdin and writes media bytes to stdout; model/kind/size arrive via
+     `HUB_MEDIA_REQUEST_*` env, never argv. This is the self-hosted slot
+     (ComfyUI/diffusers wrapper scripts) — no provider SDK.
+
+   `HUB_MEDIA_ENGINES` lists engines in fallback order (default `[engine]`);
+   `HUB_MEDIA_MODEL_ROUTES` maps a logical model id to ordered
+   `engine:provider_id` hops (`logical=e:m,e:m;...`), so a request tries the
+   local engine first and falls through to a hosted provider on error or an
+   empty result. Every referenced engine must be configured, every attempt is
+   logged, and async submissions record which engine accepted them — a
+   sync-only hop in a video route is skipped, and a resumed job polls the
+   engine of record rather than re-walking the ladder.
 
 4. Provider result bytes are validated before they reach a caller: the
    declared mime must be one of image/png, image/jpeg, image/webp for images

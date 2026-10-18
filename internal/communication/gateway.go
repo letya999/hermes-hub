@@ -524,15 +524,32 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			lines := []string{"Напоминания и проверки:"}
 			for _, item := range items {
 				state := "активно"
-				if item.Paused || !item.Enabled {
+				switch routineState(item) {
+				case "paused":
 					state = "пауза"
+				case "completed":
+					state = "расписание завершено"
 				}
-				lines = append(lines, item.ScheduleID+" — "+item.JobKind+", "+state+", "+item.NextDue.UTC().Format(time.RFC3339))
+				if item.LastOccurrenceState == "missed" {
+					state += ", последнее срабатывание пропущено"
+				}
+				if item.LastDeliveryState == "uncertain" {
+					state += ", доставка не подтверждена"
+				} else if item.LastDeliveryState == "delivered" {
+					state += ", доставлено"
+				}
+				due := "следующих запусков нет"
+				if !item.NextDue.IsZero() {
+					due = item.NextDue.UTC().Format(time.RFC3339)
+				}
+				lines = append(lines, item.ScheduleID+" — "+item.JobKind+", "+state+", "+due)
 			}
 			if len(items) == 0 {
 				lines = append(lines, "Пока нет.")
 			}
 			return reply(strings.Join(lines, "\n"))
+		case "model":
+			return reply(modelCommand(ctx, text))
 		case "usage":
 			overview := true
 			if fields := strings.Fields(text); len(fields) >= 2 && fields[1] == "session" {

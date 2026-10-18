@@ -1,0 +1,29 @@
+change: CHG-0107-dynamic-contracts
+milestone: M13 follow-up — credential self-service without connector hardcoding
+status: done
+branch: fix/chg-0105-broker-drift-self-heal
+slices:
+  broker-api: done (RegisterContract + journal mutation + replay; POST /v1/contracts; client)
+  broker-tests: done (registration, idempotency, digest conflict, denied features, restart, audit, audience)
+  toolhub-synthesis: done (dyn- content-id, pinned-id heal, field-id dedup, grouped optional, PerRequest/BoundedCLI/shared/non-env exclusions)
+  toolhub-tests: done (bind-level + prepare-level fake broker)
+  toolhub-live-fixes: done (brokerCredentialKeys for all-optional defs; injector tolerates declared-optional blanks, still fail-closed on required/undeclared)
+  docs: done (ADR-0008, delta spec, scope.md, api-contract.md, openapi regeneration, docs-check green)
+  gates: done-with-caveat (broker just check green 90.35% in container; root just check passed except gosec recipe — `go run gosec` hangs under just→PowerShell on this host, standalone bash run clean; foreign WIP per-package floor + ci.yml split left uncommitted)
+  live-verify: done
+  cleanup: done (notion-token.json decision; final state; commit)
+live-evidence: >
+  google_workspace_mcp onboarded end-to-end with zero operator contract files:
+  dyn-6bd689c8a9d1c4d3687c9d91 registered via signed POST /v1/contracts
+  (unsigned → 401), survived broker restart (journal replay), protected form
+  rendered all 9 reviewed env names, submit → confirm → enable
+  (bind-1a159e1a → after rotate bind-701d18d7). rotate minted fresh request
+  r01045e18..., fresh form, same credential id rev 1→3 supersede; new binding
+  enabled. Grants for rotate/revoke/disable added to `local` via hubctl grant
+  (operator path); telegram profiles already carry them.
+notes: >
+  Dynamic contracts are collect-and-deliver only (env/file/json_file deliveries,
+  no routes/OAuth/state/shared). Registration is broker:control-only, journaled,
+  idempotent on same digest, conflict on drift, fail-closed when a file contract
+  shadows a journaled one. Rotation keeps the credential id and CAS-checks
+  ExpectedRevision, so a stale form cannot resurrect the old secret.

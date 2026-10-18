@@ -40,7 +40,22 @@ Managed Compose assigns each user/environment an internal agent network.
 Hermes reaches ToolHub and a per-user model relay there. The ToolHub relay
 exposes MCP plus the caller-scoped connector inventory used by readiness;
 the model relay forwards chat completions only for the selected model and
-returns only that model from CLIProxy's read-only catalog.
+returns only that model from CLIProxy's read-only catalog. The ladder is no
+longer env-hardcoded: layered registries (`spaces/models.yaml`, the
+organization's `models.yaml`, then the owner's own) merge into
+`generated/models.<env>.yaml`, mounted read-only at `/run/models.yaml`.
+Each logical model names an ordered ladder of `{provider, model}` hops with
+per-hop provider model ids; providers hold fixed endpoints plus `key_env`
+references into the space's secrets file — never literal keys. A hop cools
+down for a minute after a quota/auth/provider failure and every attempt is
+logged as an audit receipt. Owners granted a model (`owners:`) can switch it
+from chat: `/model` in the communication gateway calls the space's own
+`model-relay-<user>:8318` admin endpoint (`PUT /v1/model`, bearer from
+`model-relay.auth`), which persists the choice to `model-select.json`; the
+relay re-reads the registry when the file changes.
+`spaces/profiles.yaml` still overlays model, model_url and cliproxy topology
+per owner (default → named → the owner's own file), and `cliproxy: dedicated`
+renders a secondary space its own proxy instead of the shared infra one.
 CLIProxy, broker and sibling runtimes are not directly attached to the agent
 network. Managed launch requires supervised network lifecycle, immutable
 extension content and private executors.
@@ -73,6 +88,10 @@ Telegram IDs are transport links, never filesystem or authorization keys.
 Hermes owns reasoning, chat, tool selection, memory, skills and hooks. Go owns
 space initialization, strict configuration, organization policy resolution, Docker
 lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
+A routine's clock, execution and delivery remain separate durable records. The
+[routine lifecycle](routines.md) exposes owner/context-scoped business operations
+through ToolHub with revision fences, bounded discovery/history and interval
+windows; ADR-0042 records decisions and CHG-0112 the acceptance boundary.
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
 using files and tools; web retrieval uses the Hermes `web` toolset with
@@ -381,7 +400,10 @@ created anonymous per-user workload IDs and `per-user/<context>/<definition>`
 directories are not reused or automatically moved/deleted. The existing
 credential-bearing Telegram/controller path remains connection-scoped. The generic
 Docker fallback gives each binding its own workload ID, network, volumes and
-`credentials.env`; shared stateful or credential-bearing workloads stay denied.
+`credentials.env`; shared stateful workloads stay denied, and a shared
+credential-bearing workload exists only where a `Shared` definition carries the
+reviewed `sharable` flag under an operator shared-credential policy — members
+then resolve the policy owner's single connection and workload.
 Live Docker 95-plus-5 used 100 sequential unique networks, volumes and
 containers (95 distinct owner env-files + 5 of one shared file). One hundred
 users means one hundred **registered** bindings and a bounded live set

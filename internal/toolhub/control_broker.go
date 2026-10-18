@@ -13,6 +13,23 @@ import (
 	"time"
 )
 
+// onboardingShared reports whether the onboarding's definition is a shared
+// workload; an unreadable definition falls back to the per-user signer and
+// lets the broker's own authorization decide.
+func (c *ControlPlane) onboardingShared(onboarding api.Onboarding) bool {
+	definition, err := c.definitionOf(onboarding)
+	return err == nil && definition.Workload.Class == api.Shared
+}
+
+// brokerControl signs control calls; shared (context-owned) credentials
+// require the context_manager assertion or the broker rejects them.
+func (c *ControlPlane) brokerControl(auth identity.Envelope, shared bool) (*brokerclient.Client, error) {
+	if shared {
+		return c.Broker.NewContextManaged(auth, "broker:control")
+	}
+	return c.Broker.New(auth, "broker:control")
+}
+
 func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, definition api.ToolDefinition) error {
 	if c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 {
 		return nil
@@ -26,7 +43,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 || len(definition.CredentialContractEnv) == 0 {
 		return fmt.Errorf("%w: reviewed credential broker contract is required for %s", api.ErrUnauthorized, definition.DefinitionID)
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, definition.Workload.Class == api.Shared)
 	if err != nil {
 		return err
 	}
@@ -60,12 +77,14 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	}
 	if onboarding.BrokerRequestID != "" {
 		// A dead link must not pin the onboarding forever: expired or canceled
-		// requests are replaced by a fresh one under a new idempotency key.
+		// requests are replaced by a fresh one under a new idempotency key. The
+		// same applies when the broker dropped the request record entirely
+		// (ledger reset, volume drift).
 		request, err := control.Request(ctx, onboarding.BrokerRequestID)
-		if err != nil {
+		if err != nil && !brokerclient.IsNotFound(err) {
 			return err
 		}
-		if request.Status == "expired" || request.Status == "canceled" {
+		if err != nil || request.Status == "expired" || request.Status == "canceled" {
 			onboarding.BrokerRequestID = ""
 			onboarding.BrokerAuthorizationURL = ""
 			onboarding.BrokerAttempts++
@@ -78,22 +97,31 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		}
 		connectionID := api.DeterministicID("conn", auth.PrincipalID, definition.DefinitionID, onboarding.OnboardingID)
 		consumerID := definition.DefinitionID
-		if onboarding.BrokerRotateCredentialID != "" {
+		rotateTarget := onboarding.BrokerRotateCredentialID
+		if rotateTarget != "" {
 			var credential brokerv1.Credential
-			if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(onboarding.BrokerRotateCredentialID), nil, &credential); err != nil {
+			err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(rotateTarget), nil, &credential)
+			switch {
+			case err != nil && !brokerclient.IsNotFound(err):
 				return err
+			case err != nil || credential.Status == "deleted":
+				// Nothing left to rotate against (broker dropped or deleted
+				// the record): send a plain request — passing the dead id as
+				// rotate target is denied by the broker.
+				rotateTarget = ""
+			default:
+				connectionID = credential.ConnectionID
+				consumerID = credential.ConsumerID
 			}
-			connectionID = credential.ConnectionID
-			consumerID = credential.ConsumerID
 		}
 		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
 			ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
-			ConnectionID: connectionID, ConsumerID: consumerID, RotateCredentialID: onboarding.BrokerRotateCredentialID,
+			ConnectionID: connectionID, ConsumerID: consumerID, RotateCredentialID: rotateTarget,
 			OnboardingID: onboarding.OnboardingID, IdempotencyKey: fmt.Sprintf("%s/broker-%d", onboarding.OnboardingID, onboarding.BrokerAttempts),
-			OwnerKind: ownerKind,
+			OwnerKind: ownerKind, Extra: brokerExtras(definition),
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("credential broker request for contract %s rev %d: %w", definition.CredentialContractID, definition.CredentialContractRevision, err)
 		}
 		onboarding.BrokerRequestID = request.ID
 		onboarding.BrokerAuthorizationURL = request.AuthorizationURL
@@ -123,6 +151,23 @@ func brokerCredentialActive(ctx context.Context, control *brokerclient.Client, i
 	return credential.Status == "active"
 }
 
+// brokerCredentialGone distinguishes a definitively dead credential (absent or
+// no longer active) from a transient broker fault. Only the former may reset
+// onboarding state — a transport error must retry, not forget the credential.
+func brokerCredentialGone(ctx context.Context, control *brokerclient.Client, id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	var credential brokerv1.Credential
+	if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(id), nil, &credential); err != nil {
+		if brokerclient.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return credential.Status != "active", nil
+}
+
 func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
 	if c == nil || c.Broker == nil || !c.Broker.Enabled() || onboarding == nil {
 		return nil
@@ -133,13 +178,65 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		}
 		return nil
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, c.onboardingShared(*onboarding))
 	if err != nil {
 		return err
 	}
+	if onboarding.BrokerCredentialID != "" && (onboarding.Phase == api.PhaseAwaitingConfirm || onboarding.Phase == api.PhaseAwaitingCreds) {
+		// The broker dropped or revoked the minted credential before confirm
+		// (ledger reset, volume drift). Reset to a fresh request so the user
+		// can resubmit through a new link instead of dying on grant not_found.
+		gone, err := brokerCredentialGone(ctx, control, onboarding.BrokerCredentialID)
+		if err != nil {
+			return err
+		}
+		if gone {
+			onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
+			onboarding.BrokerCredentialID, onboarding.Locator = "", ""
+			onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
+			onboarding.BrokerAttempts++
+			onboarding.Phase = api.PhaseAwaitingCreds
+			onboarding.FormNonce, onboarding.FormExpires = "", time.Time{}
+			onboarding.ConfirmationNonce, onboarding.ConfirmationExpires = "", time.Time{}
+			onboarding.ConfirmationUsed = false
+			onboarding.Revision++
+			if err := c.Store.PutOnboarding(*onboarding); err != nil {
+				return err
+			}
+			definition, derr := c.definitionOf(*onboarding)
+			if derr != nil {
+				return derr
+			}
+			return c.ensureBrokerRequest(ctx, auth, onboarding, definition)
+		}
+	}
 	request, err := control.Request(ctx, onboarding.BrokerRequestID)
 	if err != nil {
-		return err
+		// The broker dropped this request record (ledger reset, volume drift):
+		// mint a fresh link instead of pinning the onboarding on not_found.
+		if !brokerclient.IsNotFound(err) {
+			return err
+		}
+		onboarding.BrokerRequestID = ""
+		onboarding.BrokerAuthorizationURL = ""
+		onboarding.BrokerAttempts++
+		definition, derr := c.definitionOf(*onboarding)
+		if derr != nil {
+			return derr
+		}
+		return c.ensureBrokerRequest(ctx, auth, onboarding, definition)
+	}
+	if request.Status == "expired" || request.Status == "canceled" {
+		// The broker still has the record but the connect link is dead:
+		// mint a fresh request instead of resending an unusable URL.
+		onboarding.BrokerRequestID = ""
+		onboarding.BrokerAuthorizationURL = ""
+		onboarding.BrokerAttempts++
+		definition, derr := c.definitionOf(*onboarding)
+		if derr != nil {
+			return derr
+		}
+		return c.ensureBrokerRequest(ctx, auth, onboarding, definition)
 	}
 	onboarding.BrokerAuthorizationURL = request.AuthorizationURL
 	onboarding.BrokerContractID = request.ContractID
@@ -229,6 +326,25 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	return nil
 }
 
+// resetSubmittedCredential reopens the credential step when a readiness probe
+// rejects the minted credential: submitted values are wrong and the spent
+// connect link cannot take corrections, so the dead credential becomes the
+// rotate target and the next status poll mints a fresh request.
+func (c *ControlPlane) resetSubmittedCredential(onboarding *api.Onboarding) {
+	if onboarding == nil || onboarding.BrokerCredentialID == "" || onboarding.Phase != api.PhaseAwaitingConfirm {
+		return
+	}
+	onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
+	onboarding.BrokerCredentialID, onboarding.Locator = "", ""
+	onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
+	onboarding.BrokerAttempts++
+	onboarding.Phase = api.PhaseAwaitingCreds
+	onboarding.FormNonce, onboarding.FormExpires = "", time.Time{}
+	onboarding.ConfirmationNonce, onboarding.ConfirmationExpires = "", time.Time{}
+	onboarding.ConfirmationUsed = false
+	onboarding.Revision++
+}
+
 // regenerateBrokerRequest replaces an expired or canceled broker request while
 // the onboarding still waits for credentials, so a dead connect link heals on
 // the next status poll instead of pinning the onboarding forever.
@@ -270,7 +386,7 @@ func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Enve
 	if err != nil {
 		return "", err
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, binding.WorkloadClass == api.Shared)
 	if err != nil {
 		return "", err
 	}

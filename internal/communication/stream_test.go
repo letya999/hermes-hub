@@ -1637,3 +1637,118 @@ func TestApprovalIdentityAndDeadlineSurviveRestart(t *testing.T) {
 		t.Fatalf("terminal run left actionable approval: %+v err=%v", after, err)
 	}
 }
+
+// The approval prompt must name the flagged action and its deadline; a bare
+// "confirm action" forces a blind decision on a two-minute clock.
+func TestApprovalRequestDeliveryShowsSummaryAndDeadline(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	s, job := streamJob(t)
+	g.spool = s
+	event := streamEvent(job)
+	event.Status, event.LastEvent, event.EventID, event.ApprovalID = "waiting_for_approval", "approval.request", "approval:b", "b"
+	event.ApprovalChoices = []string{"once", "deny"}
+	event.ApprovalSummary = "Write to protected agent-instruction file(s): AGENTS.md."
+	if err := s.RecordStreamEvent(job, event); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) == 0 || !strings.Contains(fake.sent[0], "AGENTS.md") {
+		t.Fatalf("approval text lacks action context: %v", fake.sent)
+	}
+	if !strings.Contains(fake.sent[0], "UTC") {
+		t.Fatalf("approval text lacks deadline: %q", fake.sent[0])
+	}
+}
+
+// A run cancelled after its approval deadline must tell the user WHY — the
+// confirmation expired — instead of a bare "cancelled".
+func TestExpiredApprovalCancelReportsReason(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	s, job := streamJob(t)
+	g.spool = s
+	event := streamEvent(job)
+	event.Status, event.LastEvent, event.EventID, event.ApprovalID = "waiting_for_approval", "approval.request", "approval:b", "b"
+	event.ApprovalChoices = []string{"once", "deny"}
+	if err := s.RecordStreamEvent(job, event); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	m, err := s.loadMappingLocked(job.ID)
+	if err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	m.ApprovalDeadline = time.Now().Add(-time.Minute)
+	if err := s.writeMappingLocked(m); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+	cancel := streamEvent(job)
+	cancel.Status, cancel.LastEvent, cancel.EventID = "cancelled", "run.cancelled", "terminal:cancelled"
+	if err := s.RecordStreamEvent(job, cancel); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		g.deliverOne(context.Background())
+	}
+	if got := strings.Join(fake.sent, "\n"); !strings.Contains(got, "истекл") {
+		t.Fatalf("expired approval reported bare cancel: %q", got)
+	}
+}
+
+// A run cancelled on an explicit deny says the confirmation was declined,
+// not that the task failed on its own.
+func TestDeniedApprovalCancelReportsReason(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	s, job := streamJob(t)
+	g.spool = s
+	event := streamEvent(job)
+	event.Status, event.LastEvent, event.EventID, event.ApprovalID = "waiting_for_approval", "approval.request", "approval:b", "b"
+	event.ApprovalChoices = []string{"once", "deny"}
+	if err := s.RecordStreamEvent(job, event); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	m, err := s.loadMappingLocked(job.ID)
+	if err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	m.ApprovalDeadline = time.Now().Add(-time.Minute)
+	m.Control = &PendingControl{Caller: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), Action: "approve", RequestID: "b", Choice: "deny", State: "closed"}
+	if err := s.writeMappingLocked(m); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+	cancel := streamEvent(job)
+	cancel.Status, cancel.LastEvent, cancel.EventID = "cancelled", "run.cancelled", "terminal:cancelled"
+	if err := s.RecordStreamEvent(job, cancel); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		g.deliverOne(context.Background())
+	}
+	if got := strings.Join(fake.sent, "\n"); !strings.Contains(got, "отклонено") {
+		t.Fatalf("denied approval reported bare cancel: %q", got)
+	}
+}

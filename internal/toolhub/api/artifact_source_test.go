@@ -529,3 +529,22 @@ func TestArtifactContextIsolation(t *testing.T) {
 		t.Fatal("accepted malformed archive")
 	}
 }
+
+// Test trees never compile: they hold secret-shaped fixtures (mcp-core's
+// test_redact.py ships AKIAIOSFODNN7EXAMPLE), so a context that needs them
+// cannot exist — excluding them keeps the fail-closed secret gate honest
+// without weakening it (observed: ru-marketplace-mcp build blocked).
+func TestArtifactAutoBuildPathExcludesTestTrees(t *testing.T) {
+	for name, want := range map[string]bool{
+		"packages/mcp-core/tests/test_redact.py":   false,
+		"tests/test_server.py":                     false,
+		"src/test/util.py":                         false,
+		"packages/mcp-core/src/mcp_core/redact.py": true,
+		"pyproject.toml":                           true,
+		"server.py":                                true,
+	} {
+		if got := artifactAutoBuildPath(name); got != want {
+			t.Fatalf("artifactAutoBuildPath(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

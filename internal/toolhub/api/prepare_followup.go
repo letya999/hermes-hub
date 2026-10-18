@@ -56,6 +56,11 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		"detail":            PublicPrepareError(ErrString(onboarding.Error)),
 		"form_url":          credentialNoticeURL(onboarding),
 	}
+	if !onboarding.CreatedAt.IsZero() {
+		// The gateway resolves the originating session from this instant; it
+		// travels on every notice so a restarted gateway can still rebind.
+		payload["created_at"] = onboarding.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
 	if event != "" {
 		payload["event"] = event
 	}

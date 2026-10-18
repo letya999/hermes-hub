@@ -109,6 +109,20 @@ func TestParseComposeBranches(t *testing.T) {
 	if _, _, _, err := ParseComposeDocument(mutable, "c.yaml"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("mutable image: %v", err)
 	}
+	// Several services sharing one MCP-named image are not ambiguous when the
+	// service name itself selects exactly one MCP process (unified server +
+	// per-source siblings on the same image).
+	shared := map[string]any{"services": map[string]any{
+		"marketplace-mcp": map[string]any{"build": ".", "image": "ru-marketplace-mcp:2.5.3", "command": []any{"marketplace-mcp"}},
+		"ozon":            map[string]any{"build": ".", "image": "ru-marketplace-mcp:2.5.3", "command": []any{"ozon-mcp"}},
+	}}
+	launch, _, _, err = ParseComposeDocument(shared, "c.yaml")
+	if err != nil {
+		t.Fatalf("shared-image compose rejected: %v", err)
+	}
+	if len(launch.Args) != 1 || launch.Args[0] != "marketplace-mcp" {
+		t.Fatalf("wrong service selected: %+v", launch)
+	}
 	hostMount := map[string]any{"services": map[string]any{"mcp": map[string]any{"image": "x@sha256:" + strings.Repeat("b", 64), "volumes": []any{"/etc:/mnt"}}}}
 	if _, _, _, err := ParseComposeDocument(hostMount, "c.yaml"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("host mount: %v", err)

@@ -28,7 +28,8 @@ func TestPostPrepareNoticeContract(t *testing.T) {
 
 	auth := identity.Envelope{PrincipalID: "p1"}
 	onboarding := Onboarding{OnboardingID: "onb-1", Phase: PhaseAwaitingCreds, FormNonce: "n/1",
-		DefinitionID: "def-1", SourceURL: "https://github.com/a/b", Error: "boom"}
+		DefinitionID: "def-1", SourceURL: "https://github.com/a/b", Error: "boom",
+		CreatedAt: time.Date(2026, 10, 17, 10, 55, 2, 0, time.UTC)}
 
 	// no control URL configured: a complete no-op
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", "")
@@ -51,6 +52,9 @@ func TestPostPrepareNoticeContract(t *testing.T) {
 	DeliverPrepareOutcome(context.Background(), auth, onboarding)
 	if got == nil || got["onboarding_id"] != "onb-1" || got["phase"] != PhaseAwaitingCreds {
 		t.Fatalf("payload: %v", got)
+	}
+	if got["created_at"] != "2026-10-17T10:55:02Z" {
+		t.Fatalf("created_at missing from payload: %v", got)
 	}
 	if authHeader != "Bearer tok" || principalHeader != "p1" {
 		t.Fatalf("headers: %q %q", authHeader, principalHeader)

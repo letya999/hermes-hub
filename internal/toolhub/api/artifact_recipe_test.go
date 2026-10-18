@@ -74,6 +74,95 @@ func TestArtifactRecipeRejectsMissingOrMutableInputs(t *testing.T) {
 	}
 }
 
+// Real .mcpb bundles ship a vendored node_modules tree — thousands of files,
+// all pinned in the recipe context. The dockerfile file bound must not shrink
+// the bundle below real-world size; dockerfile recipes keep the tight bound.
+func TestArtifactRecipeMCPBFileBound(t *testing.T) {
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("x")))
+	many := func(n int) []ArtifactFile {
+		files := []ArtifactFile{{Path: ".hub/Dockerfile", Digest: digest}}
+		for i := 0; i < n; i++ {
+			files = append(files, ArtifactFile{Path: fmt.Sprintf("node_modules/dep%d/index.js", i), Digest: digest})
+		}
+		return files
+	}
+	mcpb := ArtifactRecipe{Format: "mcpb-v1", Dockerfile: ".hub/Dockerfile", Files: many(6000), Entrypoint: []string{"node", "/app/server/index.js"}}
+	if err := mcpb.Validate(); err != nil {
+		t.Fatalf("mcpb bundle recipe rejected: %v", err)
+	}
+	mcpb.Files = many(mcpbRecipeMaxFiles + 1)
+	if err := mcpb.Validate(); err == nil {
+		t.Fatal("unbounded mcpb file count accepted")
+	}
+	dockerfile, _ := recipeFixture(t, "")
+	dockerfile.Files = append(dockerfile.Files, many(5000)...)
+	if err := dockerfile.Validate(); err == nil {
+		t.Fatal("dockerfile recipe file bound relaxed")
+	}
+}
+
+// A digest-pinned mcpb bundle is the reviewed unit: vendored test fixtures
+// that merely look like secrets (node_modules ships PEM and token fixtures)
+// must not trip the repo-context secret gate. Repo-derived contexts keep it.
+func TestValidateBuildContextMCPBSkipsSecretScan(t *testing.T) {
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("-----BEGIN PRIVATE KEY-----\ntest-fixture\n-----END PRIVATE KEY-----\n")))
+	mcpb := ArtifactRecipe{Format: "mcpb-v1", Dockerfile: ".hub/Dockerfile", Entrypoint: []string{"node", "/app/index.js"},
+		Files: []ArtifactFile{
+			{Path: ".hub/Dockerfile", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("FROM scratch\nCOPY . /app\nUSER 10001:10001\nWORKDIR /app\nCMD []\nENTRYPOINT [\"node\",\"/app/index.js\"]\n")))},
+			{Path: "node_modules/ssh2/test/fixtures/id_rsa", Digest: digest},
+		}}
+	var contextBytes bytes.Buffer
+	w := tar.NewWriter(&contextBytes)
+	for _, file := range []struct{ name, content string }{
+		{".hub/Dockerfile", "FROM scratch\nCOPY . /app\nUSER 10001:10001\nWORKDIR /app\nCMD []\nENTRYPOINT [\"node\",\"/app/index.js\"]\n"},
+		{"node_modules/ssh2/test/fixtures/id_rsa", "-----BEGIN PRIVATE KEY-----\ntest-fixture\n-----END PRIVATE KEY-----\n"},
+	} {
+		if err := w.WriteHeader(&tar.Header{Name: file.name, Mode: 0644, Size: int64(len(file.content)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(file.content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBuildContext(mcpb, contextBytes.Bytes()); err != nil {
+		t.Fatalf("mcpb context must not run the repo secret gate: %v", err)
+	}
+	dockerfile, dockerContext := recipeFixture(t, "FROM example/runtime@sha256:"+strings.Repeat("a", 64)+" AS build\nWORKDIR /app\nCOPY . /app\nRUN [\"go\",\"build\",\"-o\",\"/app/server\"]\nFROM scratch\nCOPY --from=build /app/server /app/server\nUSER 10001:10001\nENTRYPOINT [\"/app/server\"]\n")
+	dockerfile.Files = append(dockerfile.Files, ArtifactFile{Path: "leaked.pem.txt", Digest: digest})
+	var extra bytes.Buffer
+	reader := tar.NewReader(bytes.NewReader(dockerContext))
+	writer := tar.NewWriter(&extra)
+	for {
+		h, err := reader.Next()
+		if err != nil {
+			break
+		}
+		if err := writer.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(writer, reader); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload := []byte("-----BEGIN PRIVATE KEY-----\nleaked\n-----END PRIVATE KEY-----\n")
+	dockerfile.Files[len(dockerfile.Files)-1].Digest = fmt.Sprintf("sha256:%x", sha256.Sum256(payload))
+	if err := writer.WriteHeader(&tar.Header{Name: "leaked.pem.txt", Mode: 0644, Size: int64(len(payload)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBuildContext(dockerfile, extra.Bytes()); err == nil {
+		t.Fatal("repo context secret gate skipped")
+	}
+}
+
 func TestArtifactRecipeContextAndDockerfileDrift(t *testing.T) {
 	base := "example/runtime@sha256:" + strings.Repeat("a", 64)
 	valid := "FROM " + base + " AS build\nWORKDIR /app\nCOPY . /app\nRUN [\"go\",\"build\",\"-o\",\"/app/server\"]\nFROM scratch\nCOPY --from=build /app/server /app/server\nUSER 10001:10001\nENTRYPOINT [\"/app/server\"]\n"

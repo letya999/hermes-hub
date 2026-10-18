@@ -62,6 +62,39 @@ func TestMaterializeRuntimeCredentialsInline(t *testing.T) {
 	}
 }
 
+// A file credential already delivered as a broker lease mount must not be
+// materialized a second time: the workspace env already carries the container
+// path, and a duplicate bind on the same target makes docker create fail.
+func TestMaterializeRuntimeCredentialsSkipsLeaseDeliveredFile(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	envPath := filepath.Join(workspace, "credentials.env")
+	if err := os.WriteFile(envPath, []byte("CLIENT_JSON=/run/mcp-secrets/client.json\nAPI_TOKEN=tok\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	definition := api.ToolDefinition{Credentials: []api.CredentialInput{
+		{Name: "CLIENT_JSON", Required: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"},
+		{Name: "API_TOKEN", Required: true, Delivery: "env"},
+	}}
+	env, mounts, err := materializeRuntimeCredentials(workspace, definition)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if len(mounts) != 0 {
+		t.Fatalf("lease-delivered file credential mounted twice: %+v", mounts)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "CLIENT_JSON.secret")); !os.IsNotExist(err) {
+		t.Fatal("lease-delivered file credential must not stage a workspace .secret")
+	}
+	body, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "CLIENT_JSON=/run/mcp-secrets/client.json") || !strings.Contains(string(body), "API_TOKEN=tok") {
+		t.Fatalf("runtime env lost entries: %q", body)
+	}
+}
+
 // writeWorldReadableTemp produces a readable file or cleans it up on error.
 func TestWriteWorldReadableTemp(t *testing.T) {
 	t.Parallel()

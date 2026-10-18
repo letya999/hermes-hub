@@ -291,6 +291,9 @@ func finishRead(s Settings, dir string) (Settings, error) {
 	} else if !os.IsNotExist(scopeErr) {
 		return s, scopeErr
 	}
+	if err := applyProfiles(&s, dir); err != nil {
+		return s, err
+	}
 	if err := s.Validate(); err != nil {
 		return s, err
 	}

@@ -368,6 +368,77 @@ func extractZipMember(reader *zip.Reader, want string) ([]byte, error) {
 	return found, nil
 }
 
+func ExtractMCPBBundle(payload []byte) (map[string][]byte, error) {
+	reader, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		return nil, fmt.Errorf("%w: mcpb bundle is not a zip", ErrInvalid)
+	}
+	files := map[string][]byte{}
+	for _, f := range reader.File {
+		rc, err := f.Open()
+		if err != nil {
+			return nil, fmt.Errorf("%w: mcpb member unreadable", ErrInvalid)
+		}
+		data, err := io.ReadAll(io.LimitReader(rc, cliReleaseMaxMemberBytes+1))
+		_ = rc.Close()
+		if err != nil || int64(len(data)) > cliReleaseMaxMemberBytes {
+			return nil, fmt.Errorf("%w: mcpb member exceeds size bound", ErrInvalid)
+		}
+		name := path.Clean(strings.ReplaceAll(f.Name, "\\", "/"))
+		if name == "." || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || name == ".." || strings.Contains(name, "/../") {
+			return nil, fmt.Errorf("%w: mcpb member escapes the bundle: %s", ErrInvalid, f.Name)
+		}
+		files[name] = data
+	}
+	return files, nil
+}
+
+// GenerateMCPBRecipe turns an extracted bundle into a container-mcp image
+// recipe: the reviewed toolchain base for the declared server.type, the bundle
+// copied to /app, and the manifest's resolved argv as ENTRYPOINT.
+func GenerateMCPBRecipe(files map[string][]byte) (ArtifactRecipe, []byte, error) {
+	manifest, ok := files["manifest.json"]
+	if !ok {
+		return ArtifactRecipe{}, nil, fmt.Errorf("%w: mcpb bundle lacks manifest.json", ErrInvalid)
+	}
+	launch, _, err := ParseMCPBManifest(manifest, "manifest.json")
+	if err != nil {
+		return ArtifactRecipe{}, nil, err
+	}
+	argv := append([]string{}, launch.Entrypoint...)
+	argv = append(argv, launch.Args...)
+	if len(argv) == 0 {
+		return ArtifactRecipe{}, nil, fmt.Errorf("%w: mcpb manifest declares no launchable entrypoint", ErrInvalid)
+	}
+	var document map[string]any
+	_ = json.Unmarshal(manifest, &document)
+	base := "scratch"
+	if server, isMap := document["server"].(map[string]any); isMap {
+		switch strings.ToLower(firstString(server, "type")) {
+		case "node", "javascript", "typescript":
+			base = LanguageBaseImages["node"]
+		case "python":
+			base = LanguageBaseImages["python"]
+		case "binary", "":
+		default:
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: unsupported mcpb server.type", ErrInvalid)
+		}
+	}
+	entrypointJSON, _ := json.Marshal(argv)
+	contextFiles := maps.Clone(files)
+	contextFiles[".hub/Dockerfile"] = []byte("FROM " + base + "\nCOPY . /app\nUSER 10001:10001\nWORKDIR /app\nCMD []\nENTRYPOINT " + string(entrypointJSON) + "\n")
+	var bases []string
+	if base != "scratch" {
+		bases = []string{base}
+	}
+	recipe := ArtifactRecipe{Format: "mcpb-v1", Dockerfile: ".hub/Dockerfile", BaseImages: bases, Entrypoint: argv}
+	output, err := writeRecipeContext(&recipe, contextFiles)
+	if err != nil {
+		return ArtifactRecipe{}, nil, err
+	}
+	return recipe, output, recipe.VerifyContext(output)
+}
+
 // GenerateCLIReleaseRecipe wraps the verified binary in a scratch image, or
 // on a reviewed toolchain base when the binary needs a dynamic loader.
 // The checksum record doubles as the dependency lock — it is the pin

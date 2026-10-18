@@ -14,12 +14,16 @@ func TestCIDeploymentConfigurationGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var workflow struct {
-		Jobs map[string]struct{ Steps []struct{ Run string } }
+		Jobs map[string]struct {
+			Needs any
+			Steps []struct{ Run string }
+		}
 	}
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	for _, job := range []string{"checks-verify", "image"} {
+	// config-check runs inside the docs-config job; checks-verify requires it.
+	for _, job := range []string{"docs-config", "image"} {
 		found := false
 		for _, step := range workflow.Jobs[job].Steps {
 			found = found || step.Run == "just config-check"
@@ -27,6 +31,14 @@ func TestCIDeploymentConfigurationGate(t *testing.T) {
 		if !found {
 			t.Errorf("%s can pass without the deployment configuration contract", job)
 		}
+	}
+	needs, _ := workflow.Jobs["checks-verify"].Needs.([]any)
+	var sawDocsConfig bool
+	for _, need := range needs {
+		sawDocsConfig = sawDocsConfig || need == "docs-config"
+	}
+	if !sawDocsConfig {
+		t.Error("checks-verify does not require the docs-config gate")
 	}
 	data, err = os.ReadFile("../../justfile")
 	if err != nil {
@@ -115,7 +127,7 @@ func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {
 	var workflow struct {
 		Jobs map[string]struct {
 			If       string `yaml:"if"`
-			Needs    string `yaml:"needs"`
+			Needs    any    `yaml:"needs"`
 			Strategy struct {
 				FailFast bool `yaml:"fail-fast"`
 				Matrix   struct{ Target, Gate []string }

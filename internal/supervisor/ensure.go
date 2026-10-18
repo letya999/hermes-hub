@@ -524,7 +524,11 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	args = append(args, m.cfg.Image, "serve")
+	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, image, "serve")
 	return args, nil
 }
 
@@ -600,7 +604,11 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	args = append(args, m.cfg.Image, "serve")
+	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, image, "serve")
 	return args, nil
 }
 
@@ -632,7 +640,11 @@ func (m *Manager) ensureManagedInfra(ctx context.Context, binding Binding, setti
 
 func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet string) error {
 	relay := container + "-ctl"
-	args := []string{"run", "-d", "--name", relay, "--network", agentNet, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, controlRelayContainerPort), "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "-e", "HUB_CONTROL_RELAY_TARGET=http://" + container + ":" + strconv.Itoa(m.cfg.RuntimePort), "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.context=" + hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation=" + generation, "--label", "hermes-hub.role=control-relay", "--entrypoint", "hub-runtime", m.cfg.Image, "control-relay"}
+	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, m.cfg.Environment, m.cfg.Image)
+	if err != nil {
+		return err
+	}
+	args := []string{"run", "-d", "--name", relay, "--network", agentNet, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, controlRelayContainerPort), "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "-e", "HUB_CONTROL_RELAY_TARGET=http://" + container + ":" + strconv.Itoa(m.cfg.RuntimePort), "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.context=" + hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation=" + generation, "--label", "hermes-hub.role=control-relay", "--entrypoint", "hub-runtime", image, "control-relay"}
 	if out, err := m.command(ctx, args...); err != nil {
 		// A stale same-name relay from an older generation blocks the spawn;
 		// reclaim it only when its labels still prove our ownership.

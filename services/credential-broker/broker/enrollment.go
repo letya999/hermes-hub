@@ -63,9 +63,12 @@ func (b *Broker) CreateRequest(ctx context.Context, a identity.Actor, in v1.Crea
 			return v1.Request{}, ErrConflict
 		}
 	}
+	if validateExtra(c, in.Extra) != nil {
+		return v1.Request{}, ErrInvalid
+	}
 	id := newID("r")
 	view := v1.Request{ID: id, ContractID: c.ID, ContractRevision: c.Revision, ConnectionID: in.ConnectionID, OnboardingID: in.OnboardingID, ConsumerID: in.ConsumerID, Status: "pending", AuthorizationURL: b.cfg.PublicOrigin + "/connect/" + id, ExpiresAt: b.now().Add(15 * time.Minute)}
-	r := requestRecord{View: view, Actor: a, OwnerKind: in.OwnerKind, ContractKey: ck, ContractDigest: c.Digest(), Idempotency: idem, Fingerprint: fingerprint, RotateID: in.RotateCredentialID, ExternalAlias: in.ExternalAlias}
+	r := requestRecord{View: view, Actor: a, OwnerKind: in.OwnerKind, ContractKey: ck, ContractDigest: c.Digest(), Idempotency: idem, Fingerprint: fingerprint, RotateID: in.RotateCredentialID, ExternalAlias: in.ExternalAlias, Extra: in.Extra}
 	if in.RotateCredentialID != "" {
 		r.ExpectedRevision = b.credentials[in.RotateCredentialID].View.Revision
 	}
@@ -165,6 +168,15 @@ func (b *Broker) OpenSession(id, raw string) (v1.SessionView, string, error) {
 	view := v1.SessionView{RequestID: id, Title: c.Title, Status: r.View.Status, Code: b.sessionCode(raw), Approved: s.Approved, OAuth: c.OAuthProvider != ""}
 	if s.Approved {
 		view.Fields = append(view.Fields, c.Fields...)
+		if r.Extra != nil {
+			view.Extra = append(view.Extra, r.Extra.Fields...)
+		}
+		for _, f := range c.Fields {
+			if f.Required {
+				view.AnyRequired = true
+				break
+			}
+		}
 	}
 	return view, raw, nil
 }
@@ -202,7 +214,12 @@ func (b *Broker) Approve(a identity.Actor, id, code string) error {
 	}
 	return ErrDenied
 }
-func (b *Broker) Submit(ctx context.Context, id, raw, csrf string, values provider.Bundle) error {
+
+// Submit accepts the owner's form values. demoted carries ids of required
+// fields the owner deliberately skipped via the form's opt-out check; the
+// credential records the demotion so the readiness probe — not form
+// validation — decides whether the workload can run without them.
+func (b *Broker) Submit(ctx context.Context, id, raw, csrf string, values provider.Bundle, demoted map[string]bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.live() {
@@ -216,9 +233,15 @@ func (b *Broker) Submit(ctx context.Context, id, raw, csrf string, values provid
 		return ErrDenied
 	}
 	c := b.catalog[r.ContractKey]
-	if c.ValidateValues(values) != nil {
+	for fieldID := range demoted {
+		if !requiredField(c, fieldID) {
+			return ErrInvalid
+		}
+	}
+	if requestContract(c, r.Extra, demoted).ValidateValues(values) != nil {
 		return ErrInvalid
 	}
+	r.Demoted = sortedDemoted(demoted)
 	ref, e := b.cfg.Providers.Put(ctx, c.Storage, values)
 	if e != nil {
 		return ErrUnavailable
@@ -276,7 +299,7 @@ func (b *Broker) ready(r *requestRecord, ref provider.Ref, managed bool, s *sess
 		}
 		rev = old.View.Revision + 1
 	}
-	c := credentialRecord{View: v1.Credential{ID: id, OwnerKind: r.OwnerKind, PrincipalID: r.Actor.PrincipalID, ContextID: r.Actor.ContextID, ConnectionID: r.View.ConnectionID, ConsumerID: r.View.ConsumerID, Revision: rev, Status: "active", Provider: ref.Provider}, ContractKey: r.ContractKey, ContractDigest: r.ContractDigest, Ref: ref, Managed: managed, TokenRevision: 1}
+	c := credentialRecord{View: v1.Credential{ID: id, OwnerKind: r.OwnerKind, PrincipalID: r.Actor.PrincipalID, ContextID: r.Actor.ContextID, ConnectionID: r.View.ConnectionID, ConsumerID: r.View.ConsumerID, Revision: rev, Status: "active", Provider: ref.Provider}, ContractKey: r.ContractKey, ContractDigest: r.ContractDigest, Ref: ref, Managed: managed, TokenRevision: 1, Extra: r.Extra, Demoted: r.Demoted}
 	if old, ok := b.credentials[id]; ok {
 		c.OwnedRefs = append(c.OwnedRefs, old.OwnedRefs...)
 	}

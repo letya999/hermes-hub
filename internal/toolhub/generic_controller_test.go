@@ -546,6 +546,18 @@ func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 	if _, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: shared, MaxActive: 1, IdleTTLSeconds: 1}); err == nil {
 		t.Fatal("shared credential workload accepted")
 	}
+	sharable := d
+	sharable.Workload.Class, sharable.Workload.Sharable = api.Shared, true
+	sharable.Credentials = []api.CredentialInput{{Name: "SERVICE_TOKEN", Required: true}}
+	if _, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: sharable, MaxActive: 1, IdleTTLSeconds: 1}); err != nil {
+		t.Fatalf("sharable shared credential workload rejected: %v", err)
+	}
+	perRequest := d
+	perRequest.Workload.Class = api.Shared
+	perRequest.Credentials = []api.CredentialInput{{Name: "SERVICE_TOKEN", Required: true, PerRequest: true}}
+	if _, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: perRequest, MaxActive: 1, IdleTTLSeconds: 1}); err != nil {
+		t.Fatalf("per-request shared credential workload rejected: %v", err)
+	}
 	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 1, IdleTTLSeconds: 1})
 	if err != nil {
 		t.Fatal(err)

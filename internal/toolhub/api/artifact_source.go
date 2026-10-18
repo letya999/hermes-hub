@@ -413,11 +413,20 @@ func artifactSourceExtension(part string) bool {
 // artifactAutoBuildPath keeps generated language contexts focused on files
 // consumed by the package build. Repository documentation is not needed to
 // compile an MCP and often Contains PEM examples that must not block an
-// otherwise safe build. Explicitly requested files still use the stricter
+// otherwise safe build; test trees likewise never compile and routinely carry
+// secret-shaped fixtures. Explicitly requested files still use the stricter
 // ArtifactContextPath gate above.
 func artifactAutoBuildPath(name string) bool {
 	parts := strings.Split(strings.ToLower(name), "/")
-	return len(parts) == 0 || (parts[0] != "docs" && parts[0] != "documentation")
+	if len(parts) == 0 || parts[0] == "docs" || parts[0] == "documentation" {
+		return false
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if part == "test" || part == "tests" {
+			return false
+		}
+	}
+	return true
 }
 
 // artifactBinaryAssetPath marks binary asset extensions. They are never

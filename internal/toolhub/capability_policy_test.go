@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -629,6 +630,44 @@ func TestManagedPolicyOwnsPublishedData(t *testing.T) {
 	}
 	if api.DefinitionDigest(d) != "" {
 		t.Fatal("invalid definition received a digest")
+	}
+}
+
+// An enrolled sibling token whose managed capability profile is absent from
+// this store must not take down the shared endpoint at startup: the gateway
+// skips that projection — the token stays denied (fail closed per principal)
+// while every other token keeps working. The same tolerance RefreshProjection
+// applies after startup ("one failing principal must not starve the others").
+func TestGatewayStartupSkipsUnresolvableManagedToken(t *testing.T) {
+	s, alice, _ := seededStore(t)
+	carol := identity.TelegramEnvelope("carol", 9, "runtime-carol", "policy-1")
+	carol.CapabilityProfile, carol.Environment, carol.Generation = "carol-default", "dev", 1
+	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: alice, bobToken: carol},
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
+		})}
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatalf("one unresolvable managed token took the endpoint down: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := mcpConnect(t, server.URL, aliceToken)
+	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) == 0 {
+		t.Fatalf("healthy principal lost projection: %+v %v", listed, err)
+	}
+	req, err := http.NewRequest(http.MethodPost, server.URL+DefaultEndpointPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bobToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("managed token without a stored profile was served")
 	}
 }
 

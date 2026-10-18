@@ -508,20 +508,20 @@ func TestMultipartLimits(t *testing.T) {
 		raw, ct := formBytes(t, fields)
 		r := httptest.NewRequest("POST", "/", bytes.NewReader(raw))
 		r.Header.Set("Content-Type", ct)
-		v, _, e := readForm(r)
+		v, _, _, e := readForm(r)
 		v.Wipe()
 		if e == nil {
 			t.Fatal("bad multipart accepted")
 		}
 	}
 	many := [][2]string{{"csrf", "x"}}
-	for i := 0; i < 34; i++ {
+	for i := 0; i < 130; i++ {
 		many = append(many, [2]string{fmt.Sprintf("f%d", i), "x"})
 	}
 	raw, ct := formBytes(t, many)
 	r := httptest.NewRequest("POST", "/", bytes.NewReader(raw))
 	r.Header.Set("Content-Type", ct)
-	if _, _, e := readForm(r); e == nil {
+	if _, _, _, e := readForm(r); e == nil {
 		t.Fatal("parts")
 	}
 	many = [][2]string{{"csrf", "x"}}
@@ -531,13 +531,13 @@ func TestMultipartLimits(t *testing.T) {
 	raw, ct = formBytes(t, many)
 	r = httptest.NewRequest("POST", "/", bytes.NewReader(raw))
 	r.Header.Set("Content-Type", ct)
-	if _, _, e := readForm(r); e == nil {
+	if _, _, _, e := readForm(r); e == nil {
 		t.Fatal("total")
 	}
 	for _, contentType := range []string{"text/plain", "multipart/form-data", "multipart/form-data; boundary=bad"} {
 		r = httptest.NewRequest("POST", "/", strings.NewReader("invalid"))
 		r.Header.Set("Content-Type", contentType)
-		if _, _, e := readForm(r); e == nil {
+		if _, _, _, e := readForm(r); e == nil {
 			t.Fatal("format")
 		}
 	}
@@ -550,7 +550,7 @@ func TestMultipartLimits(t *testing.T) {
 	_ = mw.Close()
 	r = httptest.NewRequest("POST", "/", &b)
 	r.Header.Set("Content-Type", mw.FormDataContentType())
-	values, token, e := readForm(r)
+	values, token, _, e := readForm(r)
 	if e != nil || token != "x" || string(values["config"]) != "{}" {
 		t.Fatal(e)
 	}

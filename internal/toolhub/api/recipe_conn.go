@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"path"
 	"slices"
 	"strings"
 )
@@ -94,6 +95,53 @@ func mergeConnection(left, right ConnectionRecipe) ConnectionRecipe {
 	left.Fields = append(left.Fields, right.Fields...)
 	left.Alternatives = append(left.Alternatives, right.Alternatives...)
 	return normalizeConnection(left)
+}
+
+// connectionWithSource stamps one provenance tag on every field a parser or
+// catalog produced, before the merge deduplicates declarations by name.
+func connectionWithSource(recipe ConnectionRecipe, source string) ConnectionRecipe {
+	for i := range recipe.Fields {
+		recipe.Fields[i].Source = source
+	}
+	for i := range recipe.Alternatives {
+		for j := range recipe.Alternatives[i].Fields {
+			recipe.Alternatives[i].Fields[j].Source = source
+		}
+	}
+	return recipe
+}
+
+// ConnectionSources lists every distinct metadata source a recipe's fields
+// were discovered from, sorted.
+func ConnectionSources(recipe ConnectionRecipe) []string {
+	seen := map[string]bool{}
+	var sources []string
+	for _, field := range recipe.Fields {
+		if field.Source != "" && !seen[field.Source] {
+			seen[field.Source] = true
+			sources = append(sources, field.Source)
+		}
+	}
+	slices.Sort(sources)
+	return sources
+}
+
+// FilterConnectionSource rebuilds a recipe from one authoritative metadata
+// source. The match is on the exact path or the basename, so ".env.example"
+// selects every example-env file whatever directory it lives in. The second
+// return value lists every distinct source present, sorted.
+func FilterConnectionSource(recipe ConnectionRecipe, source string) (ConnectionRecipe, []string) {
+	var filtered ConnectionRecipe
+	for _, field := range recipe.Fields {
+		if matchConnectionSource(field.Source, source) {
+			filtered.Fields = append(filtered.Fields, field)
+		}
+	}
+	return filtered, ConnectionSources(recipe)
+}
+
+func matchConnectionSource(fieldSource, pick string) bool {
+	return fieldSource == pick || strings.EqualFold(path.Base(fieldSource), path.Base(pick))
 }
 
 func MergeLaunch(left, right LaunchRecipe, warnings *[]string) LaunchRecipe {

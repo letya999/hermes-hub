@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-10-02
+last_verified: 2026-10-16
 ---
 # Operations
 
@@ -469,6 +469,7 @@ best-effort deleted; it is never persisted. The gateway returns a one-time prote
 loopback form generated from the selected connector or MCP Connection Recipe; its fields,
 types, order, delivery metadata and OAuth alternatives are derived at request time.
 Alternative groups stay separate submits of the field names the recipe or the server named. The shortest set is open and the others are collapsed. A tools/list probe speaks stdio when the image command selects sse or http, and a fresh form link is delivered even if an older notice for the same onboarding already exists. The prepare notice includes that loopback form URL. A credential-gate submit with no reviewed broker contract stores the secret in the local encrypted store and finishes confirm and enable from that store; a reviewed contract still requires a broker credential. A failure after that secret is stored says the data was saved and sends the user back to chat confirmation. When that definition version is already a user publication of another principal, the submit keeps the next free patch version and leaves the existing publication in place.
+An all-optional Broker form may be submitted without values; the isolated MCP workload then starts without an env-file. Missing required inputs and invalid existing credential files still block startup.
 There is no static credential form. Groups reject credential entry. Set and delete also load the ToolHub registry
 (`HUB_TOOLHUB_STORE` or `spaces/<user>/runtime/toolhub/store.json`) so rotate and
 revoke cut an already-open MCP session and stop affected workloads. Personal-terminal
@@ -609,6 +610,35 @@ restart. This keeps unrelated runtime, speech and media images out of a
 gateway-only rebuild. After a successful `hubctl build` of the selected
 services, `hubctl up --no-build` starts those existing images without another
 build attempt.
+
+For a local Go edit, use `go run ./cmd/hubctl dev-rebuild --dir spaces/alice
+--env dev <service>`. It compiles one Linux binary with the host Go toolchain,
+builds a small overlay on the existing dev image, and recreates only that
+service. Supported names are `communication-hub`, `credential-broker`,
+`hub-media`, `toolhub`, `workload-controller`, `supervisor`, and
+`hermes-runtime` when present in that space. The selected service must already
+be enabled; `cliproxy`, speech images, Hermes/Python dependencies and Dockerfile
+changes still use `hubctl build`/`up`. The first dev base image must already
+exist. The command never uses a prod environment.
+
+The generated Compose file is unchanged: a later regular `hubctl up` returns
+the service to the full base image. In supervisor mode, `dev-rebuild
+hermes-runtime` records the exact per-user dev image for the next spawn and
+does not interrupt an active job. A subsequent full core dev build clears that
+selection. If the selected container fails to start, the command tries to
+restore the prior image and service. Each service/user has one local tag;
+runtime overlays also rebuild the `hubctl` tools executor alongside `hub-runtime`
+so catalog parsing and execution use the same source. Superseded stopped images
+and BuildKit cache are cleaned through the existing
+bounded hub cleanup path.
+
+After rebuilding a Compose service, verify its running image with
+`docker ps --filter name=hermes-hub-<user>-dev-<service>-1`; it should report
+the matching `hermes-hub-dev-<user>-<service>:local` tag and an `Up` status. Check the service's
+HTTP endpoint as well; only services with a Compose healthcheck report a
+meaningful `healthy` state. In supervisor mode, check
+`spaces/<user>/generated/dev-runtime-image` after rebuilding `hermes-runtime`;
+the new image is used when the next managed runtime starts.
 
 Rebuilds of the tagged hub image used to leave the superseded generation
 dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove
@@ -877,12 +907,23 @@ or an unmigrated native Hermes cron. Disabling a pin does not cancel current
 jobs or remove user files; normal idle retention resumes. Pins require the
 private supervisor token and the same saved owner envelope for removal.
 
-A verified private owner may enqueue one-shot and recurring tasks through the
+A private owner manages routines with the [lifecycle tools](routines.md), including
+interval windows, paged discovery, revision-fenced edits and retained history.
+The owner may enqueue tasks through the
 schedules HTTP API (`/v1/routines`). The communication spool saves each
 occurrence before acknowledging it. Due occurrences become ordinary jobs
 with `trigger=cron`; the normal supervisor execution path wakes the context.
 The idle gateway checks due routines and uncertain-run recovery every five
 seconds; newly enqueued interactive jobs still wake workers immediately.
+An unresolved probe, script or agent job holds its schedule revision so later
+due times do not pile up. Malformed occurrence files move to
+`occurrences/quarantine`; investigate them before clearing evidence. A drifted
+nonterminal job mapping holds only its own schedule. Settled silent occurrences leave the hot directory on the hourly compaction
+pass. Full detail stays in `occurrences/archive` for 48 hours after its last
+write; a small deduplication receipt remains for the ordinary spool retention
+period (normally 14 days).
+Pending records and dispatched records with live jobs or deliveries are retained. This compaction runs with the
+existing hourly spool pass; a backlog still settles at 16 occurrences per pass.
 Duplicate ticks and restart reuse the same occurrence key. Inputs containing
 credential assignments are rejected. Catch-up is limited to one hour and each
 tick settles at most sixteen occurrences. Recurrence CRUD/DST and native cron
@@ -923,8 +964,26 @@ per-runtime `HUB_RUNTIME_AUTH` reference as `HUB_COMMUNICATION_AUTH`, and the
 trusted principal/user IDs explicitly. New renders and legacy config materialization
 both supply these entries because MCP child environments filter inherited variables.
 Routine management still authenticates and checks ownership at the communication hub.
+The five routine tools use `hub-agent-tools@4.0.0` for named delivery destinations.
+`routine_list view=destinations` shows live owned task IDs and topics; create uses
+the current run's `origin_job_id` or an explicit `destination_task_id`. The hub
+resolves that ID under the owner lock. `routine_get` reports the saved destination
+and availability. `routine_edit action=update` may move future deliveries with a
+revision-fenced `destination_task_id` patch. Existing admitted jobs and old
+history retain their original audience. A revoked task/chat is not used as a
+fallback. See [routines.md](routines.md) for prompts and cleanup.
 Simple `job_kind: reminder` occurrences enqueue the exact text for delivery directly;
 they never enqueue an agent job or wake Hermes.
+
+Reminder snooze uses the existing schedule ID with a new revision: a one-shot
+gets a new deadline even after its previous occurrence entered the outbox, and
+recurring reminders keep their cron cadence after the deferred next run. The
+catch-up window (default one hour) starts at the deferred deadline. After longer
+downtime the scheduler records `missed` before advancing the schedule; it does not
+send a burst. Owner `routine_list`/routine HTTP reads expose
+`last_occurrence_state` and `last_delivery_state`; `/routines` labels missed and
+unconfirmed sends. `uncertain` is a lost/failed transport outcome, not proof of
+non-delivery: inspect it instead of recreating the reminder or retrying blindly.
 
 A verified owner keeps several independent task sessions inside one private DM.
 `/new [name]` creates a task and switches to it; a nameless task carries a

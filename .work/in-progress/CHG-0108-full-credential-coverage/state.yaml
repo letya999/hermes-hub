@@ -1,0 +1,199 @@
+change: CHG-0108-full-credential-coverage
+milestone: M13 follow-up — every reviewed delivery mode installs without operator files
+status: in_progress
+branch: fix/chg-0105-broker-drift-self-heal
+slices:
+  merges: done (feat/m13-closeout 8dc2a04 + feat/m15-model-provider-layer 072a58f, clean ort)
+  synthesis: done (env/file/json mapping, blob file delivery, json kind, AllowShared for Sharable shared)
+  binding: done (coverable partition in declared/required, shared marking before bind)
+  prepare: done (selfInstallUsable + requiredCredentialNames only count coverable inputs)
+  broker: done (RegisterContract accepts allow_shared; routes/oauth_provider/state still denied)
+  broker-effective-contract: done (request extras only-optional/env + opt:<id> demote → effective contract on request/credential; materialize uses it)
+  broker-form: done (обязательное/необязательное labels, extras section, demote checkboxes, formnovalidate submit)
+  toolhub-optional: done (Onboarding.Optional hints; local form optional section + opt: handling; broker request carries extras)
+  toolhub-source-tags: done (ConnectionField.Source per parser file + catalog; conflict warnings; CredentialHint/CredentialInput.Source)
+  toolhub-source-select: done (prepare_source credential_source arg on fresh prepare and request_key replay; credential_sources in status)
+  communication-status-edit: done (prepare notices edit one anchor Telegram message via EditMessageID + prepareMessageID lookup)
+  tests: done (file/json/http_header/shared synthesis, broker allow_shared, prepare shared order, extras/demote/reject, optional form, source tags/conflicts/filter/replay, status edit-in-place)
+  gates-local: done (just check green on Windows: covergo 86.28% total/all pkgs ≥75, vet+staticcheck+gosec+docs+actionlint+config-check; broker module via golang:1.27.2-bookworm container — go test ./... all green incl. e2e, coverage 90.46% total/all pkgs ≥85; broker justfile unusable on this host: go vet ./... needs Linux for securefs)
+  docs: done (broker ADR-0009 + scope.md + docs/integrations.md)
+  docs-effective: done (broker spec credential-broker-effective-contract + ADR-0010)
+  live-defects-found:
+    - "mcpb-v1 inherited 4096-file recipe limit; real .mcpb bundles carry node_modules (6064 files) — raised bound for mcpb-v1"
+    - "mcpb bundle content hit artifact secret-scan (vendor dsn-parser.test.ts fixtures) — scan skipped for digest-pinned bundle files"
+    - "shared context-owned broker calls signed as user → context_manager assertion added across request/credential/grant/admit/revoke paths"
+    - "bindingWorkspacePath returned empty for shared → root/shared/<ctx>/<def>"
+    - "generic controller rejected any shared credentials → reject only non-per-request on non-sharable"
+    - "generic Docker fallback rejected shared plans → same semantics; sharable shared allowed"
+    - "gitlab prepared def lacked plain-HTTP self-hosted path → added GITLAB_ENDPOINT + tcp forward (gitlab-pat rev2)"
+    - "broker lease mount + materialized .secret collided on same target → docker create duplicate mount point; materialize skips staging when env already carries Target"
+    - "docker.io anonymous pull limit failed every restricted build → buildkitd.toml registry mirror (mirror.gcr.io) in new builder-config volume; squid ACL opened"
+    - "request_key early-return polled stale preparing stubs forever → stale records past prepareClaimTTL fall through to reclaim+retry"
+    - "read-probe rejection pinned the minted credential on a spent connect link → resetSubmittedCredential returns onboarding to awaiting-creds with rotate target; next status mints fresh link"
+    - "gitlab prepare failed on 'missing credential broker delivery for GITLAB_PROJECT_ID': docker/.env.example placeholder made an undeclared upstream env required → PreparedEntry.Overlay demotes non-reviewed extras to optional"
+    - "gitlab prepare failed on 'register credential broker contract gitlab-pat@2: invalid_request (400)': pinned reviewed contract absent from broker catalog → bind synthesized a contract from ALL discovered inputs (>32 fields, wrong kinds) → now registers the embedded reviewed contract via PreparedContractFor and re-runs selection"
+    - "ru-marketplace-mcp prepare failed on 'ambiguous MCP entrypoint': 15 compose services share one MCP-named image → name+image match made all look MCP-ish → composeLaunch prefers a uniquely MCP-named service before the combined match"
+  gates-live: in_progress (shared grafana install confirmed+enabled+live list_datasources OK; notion rotate→form→resubmit→live call OK; grafana per-user probe-fail→resubmit→confirm→enable→live OK; gcal file-cred retry pending on rebuilt image; gitlab/dbhub live pending)
+  live-verified:
+    - "grafana shared: required_credentials → form submit → confirm → enable → list_datasources over tcp-forwarded backend (stored creds on sharable shared workload)"
+    - "notion env: rotate → new form → submit token → confirm → enable → API-get-self live"
+    - "google-calendar: form submit of client_json file field accepted; confirm failed at bridge-create (duplicate mount) — fixed, retry pending"
+    - "grafana per-user: probe rejected submitted :1300 (should be :13000) → confirm denied 'provider read probe failed'; new resubmit path minted rotate request, corrected values → confirmed → enabled; workload bridge log shows forward 127.0.0.1:13000→host.docker.internal:13000 and fetched Grafana frontend settings live"
+
+  - id: live-defect-2026-stale-prepare-origin
+    summary: >
+      prepare-origin persisted by the old newest-active heuristic stayed
+      authoritative forever; retrying the same repo reuses the deterministic
+      onboarding id, so the leak to the wrong Telegram session repeated.
+      deliverPrepareNotice now prefers the created_at initiator match over the
+      persisted route and re-binds it; persisted route remains the fallback
+      for legacy callbacks without created_at. Regression test:
+      TestPrepareOriginInitiatorOverridesStalePersisted.
+    status: fixed
+
+  - id: live-defect-2026-extra-shadows-reviewed-contract
+    summary: >
+      brokerExtras ignored the bound reviewed contract's shape: the optional
+      input TOKEN derived field id "token" (collides with contract field) and
+      optional inputs GITLAB_API_URL/GITLAB_ENDPOINT produced deliveries onto
+      targets the contract already owns — validateExtra rejected the whole
+      request with invalid_request 400 (observed: gitlab-pat@2, third install
+      attempt). brokerExtras now loads the bound contract's field ids and
+      delivery targets via boundContractShape (PreparedContractFor): inputs
+      whose env target the contract delivers are dropped from extras, and a
+      colliding derived field id is renamed with the same deterministic
+      hash suffix synthesizeContract uses. Test: TestBrokerExtrasAvoidBoundContractCollisions.
+    status: fixed
+  - id: live-defect-2026-uv-workspace-entrypoint
+    summary: >
+      ru-marketplace-mcp is a uv workspace: root pyproject declares no
+      [project.scripts] and pip install cannot resolve workspace file://
+      members — the Python recipe found zero candidates and failed
+      'ambiguous MCP entrypoint: select literal argv'. The generator now
+      detects [tool.uv.workspace] + uv.lock, installs members via
+      'uv sync --all-packages --frozen --no-dev' into the same venv,
+      discovers member console scripts (uvWorkspaceScripts) and picks the
+      one named by the upstream Dockerfile exec-form CMD
+      (disambiguatePythonScripts — same evidence rule as Go mains).
+      Test: TestGenerateArtifactRecipeUvWorkspace.
+    status: fixed
+
+  - id: live-defect-2026-form-part-cap
+    summary: >
+      readForm rejected any submit past 33 multipart parts; a contract with
+      extras needs up to 129 (32 fields + 32 demote controls + 64 extras +
+      CSRF). Observed live: gitlab-pat@2 form (~35 parts) returned
+      {"code":"invalid_request"} on every submit. Cap raised to the legitimate
+      maximum. Test: TestBrowserFormSubmitsFullExtrasSet; TestMultipartLimits
+      boundary updated to 130.
+    status: fixed
+  - id: live-defect-2026-test-tree-secret-scan
+    summary: >
+      The auto build context included test trees, so upstream secret-scrub
+      fixtures (mcp-core tests/test_redact.py ships AKIAIOSFODNN7EXAMPLE and
+      alphabet-body ghp_/sk- tokens) hit the fail-closed content gate and
+      blocked the ru-marketplace-mcp build. SPEC-0026 pins the fixture
+      exemption to uniform-char bodies, so the fix is at context selection:
+      artifactAutoBuildPath now prunes test/tests directories the same way it
+      prunes docs/ — tests never compile and need not enter the context or
+      the image. Test: TestArtifactAutoBuildPathExcludesTestTrees.
+    status: fixed
+
+  - id: live-defect-2026-deploy-secret-required
+    summary: >
+      MCP_HTTP_AUTH_TOKEN from the ru-marketplace compose env was classified
+      as a required user credential, though it guards the MCP server's own
+      HTTP listener — deployment material, not an upstream API credential.
+      Owner left it blank/demoted; materialize produced no env for it and
+      confirm failed 'broker delivery does not satisfy'. Heuristic env-line
+      sources now demote deploy-secret names (*_AUTH_TOKEN, *_AUTH_SECRET,
+      SESSION_SECRET) to optional via deploySecretEnvName. Test:
+      TestConnectionFieldDeploySecretDemoted.
+    status: fixed
+
+  - id: live-defect-2026-confirm-delivery-pins
+    summary: >
+      confirm's credential-reset path only matched ErrUnauthorized, so a
+      broker delivery that did not satisfy the definition (demoted/blank
+      required field) pinned the onboarding at awaiting-confirm until the
+      nonce expired — observed live on onboard-050d. The injector now wraps
+      ErrCredentialDelivery (alongside ErrIsolation) on both
+      delivery-mismatch branches, and confirm resets the submitted
+      credential on it: rotate target set, phase returns to awaiting-creds,
+      next status mints a fresh form link. Tests:
+      TestConfirmDeliveryFailureReopensBrokerCredentialForm,
+      TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems (missing env),
+      TestCredentialBrokerInjectorSatisfiesAlternativeGroups (partial).
+    status: fixed
+
+  - id: live-defect-2026-gitlab-external-url
+    summary: >
+      Not a hub defect — environment: the local gitlab-ce test container
+      (chg0108-gitlab) had no external_url, so API responses returned
+      web_url 'http://<container-id>/...' links unreachable from the owner
+      browser; the follow-up task looped 406s trying to verify the link
+      until cancelled. Fixed by setting external_url to the published port
+      (http://127.0.0.1:8929) in gitlab.rb + reconfigure; omnibus then moved
+      nginx to :8929 inside the container while Docker publishes :80 → added
+      gitlab_rails['nginx']['listen_port'] = 80 + second reconfigure.
+      Verified live: sign_in 200, Gitlab.config.gitlab reports
+      127.0.0.1:8929 so API web_url/http_url_to_repo are now host-reachable.
+      Plan note: hub-side improvement is bounded timeouts for
+      link-verification tasks.
+    status: fixed
+
+  - id: live-defect-2026-stale-deploysecret-reuse
+    summary: >
+      reusableSelfInstallDefinition revived the stored ru-marketplace
+      definition verbatim on every prepare_source retry, so the
+      MCP_HTTP_AUTH_TOKEN requiredness baked in by the pre-demotion parser
+      could never be corrected: demote relaxes only the contract, the
+      definition-level CredentialsSatisfied check kept failing, and each
+      rotate minted a fresh form demanding the same field — an endless
+      demote→deliver-fail→rotate loop (observed live on onboard-b8db4c /
+      request red68702175). finishSelfInstall's reuse gate now rejects
+      definitions where api.DeploySecretRequired holds, forcing a fresh
+      review that re-parses with the demotion; the content-different result
+      lands under a patch-bumped version and synthesizes a demoted contract.
+      Test: TestPrepareSourceReReviewsDeploySecretRequirement.
+    status: fixed
+
+  - id: live-defect-2026-demote-checkbox-required-attr
+    summary: >
+      The opt:<id> demote checkbox had no client-side effect on the paired
+      input's HTML required attribute, so ticking "field is not required"
+      still left the browser refusing the normal submit button — only the
+      formnovalidate fallback worked, which reads like a bypass. Inline JS
+      is CSP-forbidden (default-src 'none'), so the form now loads a static
+      same-origin /form.js that releases required on change, and the CSP
+      gained additive script-src 'self'. Tests:
+      TestBrowserDemoteCheckboxReleasesRequired.
+    status: fixed
+
+  - id: live-defect-2026-empty-optional-runtime-env
+    summary: >
+      An all-optional Broker submit delivers no environment, so the injector
+      correctly leaves credentials.env absent. The Docker fallback nevertheless
+      required that file and failed at bridge-create. Missing files now skip
+      env-file injection only when no required credential exists and the workspace
+      passes NoSymlinkPath. Existing env files still receive normal validation.
+      Regression tests cover helper behavior, required and malformed inputs,
+      and the actual fallback's bridge-create argv. Both new success assertions
+      failed before the implementation and passed after it.
+    status: fixed
+
+  - id: live-wb-2026-network-policy
+    summary: >
+      The discovered policy contained basket-nn.wbbasket.ru but missed dynamic
+      basket-01..28 and static CDN hosts. Operator-reviewed local definition
+      0.0.4 retains the exact upstream commit/image/tool contract and narrows
+      egress to wb.ru, wbbasket.ru, wildberries.ru with their subdomains.
+      Registered as a private local publication through Store APIs; source and
+      image were not patched. Onboarding onboard-c5bb2d25cd41dc355c243380 is enabled.
+      Real MCP calls returned 35 top-level categories, SKU 5535522 characteristics,
+      and imt_id 1002173489 reviews (pool 1053). Search and price-card APIs still
+      return upstream HTTP 403; a dedicated CDP browser is not configured.
+      The questions tool also returned healthy data. Automatic execution policy
+      rejected launching a separate headless Chrome. just check passed with
+      own Go statement coverage 85.81% and all lint/docs/config gates green.
+    status: partial

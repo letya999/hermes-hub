@@ -18,6 +18,10 @@ type CreateRequest struct {
 	ConsumerID         string `json:"consumer_id,omitempty"` // which MCP/CLI/tool consumes it
 	ExternalAlias      string `json:"external_alias,omitempty"`
 	RotateCredentialID string `json:"rotate_credential_id,omitempty"`
+	// Extra extends this request's form with optional env inputs the control
+	// plane discovered outside the reviewed contract. The pinned contract is
+	// unchanged; extras apply only to the credential minted here.
+	Extra *contract.Extra `json:"extra,omitempty"`
 }
 type Request struct {
 	ID               string    `json:"id"`
@@ -104,6 +108,7 @@ type Event struct {
 	CredentialID  string    `json:"credential_id,omitempty"`
 	GrantID       string    `json:"grant_id,omitempty"`
 	LeaseID       string    `json:"lease_id,omitempty"`
+	ContractID    string    `json:"contract_id,omitempty"`
 	BindingID     string    `json:"binding_id,omitempty"`
 	WorkloadID    string    `json:"workload_id,omitempty"`
 	PolicyVersion string    `json:"policy_version,omitempty"`
@@ -134,12 +139,14 @@ type RuntimeRelease struct {
 	Quiesced   bool `json:"quiesced"`
 }
 type SessionView struct {
-	RequestID string
-	Title     string
-	Status    string
-	Code      string
-	Approved  bool
-	Fields    []contract.Field
-	OAuth     bool
+	RequestID   string
+	Title       string
+	Status      string
+	Code        string
+	Approved    bool
+	Fields      []contract.Field
+	Extra       []contract.Field
+	AnyRequired bool
+	OAuth       bool
 }
 type RuntimeIdentity = identity.Actor

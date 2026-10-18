@@ -170,7 +170,7 @@ func (d ToolDefinition) Validate() error {
 		}
 		argumentNames := map[string]bool{}
 		for _, argument := range tool.Arguments {
-			validType := validCLIType(argument.Type) || (argument.Type == "array" && d.Transport == AgentTools)
+			validType := validCLIType(argument.Type) || ((argument.Type == "array" || argument.Type == "object") && d.Transport == AgentTools)
 			if !toolNamePattern.MatchString(argument.Name) || argumentNames[argument.Name] || !validType {
 				return fmt.Errorf("%w: invalid tool argument %q", ErrInvalid, argument.Name)
 			}
@@ -255,10 +255,31 @@ func (d ToolDefinition) Validate() error {
 			if len(input.Prefix) > 128 || strings.ContainsAny(input.Prefix, "\x00\r\n") {
 				return fmt.Errorf("%w: invalid brokered credential prefix", ErrInvalid)
 			}
+		case "file":
+			// Container-mcp only: the value is file content the runtime
+			// materializer bind-mounts read-only at Target; the env var then
+			// carries the in-container path. Only a container can take a mount.
+			if d.Transport != ContainerMCP {
+				return fmt.Errorf("%w: file credential delivery requires container-mcp", ErrUnsupportedCredentialContract)
+			}
+			if input.Prefix != "" || !ValidContainerMountTarget(input.Target) {
+				return fmt.Errorf("%w: invalid file credential target %q", ErrInvalid, input.Target)
+			}
+		case "json":
+			// A JSON document carried in the workload environment, exactly
+			// like env; the runtime may still file-mount CREDENTIALS-class
+			// values for servers that read a path. Target restates the name.
+			if input.Target != "" || input.Prefix != "" {
+				return fmt.Errorf("%w: json credential carries no header/mount target", ErrInvalid)
+			}
+		case "oauth":
+			// A browser flow mints these at runtime; the value store and the
+			// credential form cannot satisfy a static oauth field.
+			return fmt.Errorf("%w: credential %s mints through a reviewed OAuth flow, not the form", ErrUnsupportedAuth, input.Name)
 		default:
-			return fmt.Errorf("%w: unknown credential delivery %q", ErrInvalid, input.Delivery)
+			return fmt.Errorf("%w: %q", ErrUnsupportedCredentialContract, input.Delivery)
 		}
-		if d.Workload.Class == Shared && !input.PerRequest {
+		if d.Workload.Class == Shared && !input.PerRequest && !d.Workload.Sharable {
 			return fmt.Errorf("%w: shared workload requires per-request credentials", ErrInvalid)
 		}
 		seen[input.Name] = true

@@ -195,8 +195,10 @@ func sameRoutine(a, b communication.Schedule) bool {
 	}
 	norm := func(s communication.Schedule) communication.Schedule {
 		s.Revision, s.NextDue, s.CreatedAt, s.UpdatedAt = 0, time.Time{}, time.Time{}, time.Time{}
+		s.IntervalAnchor = time.Time{}
 		s.Enabled, s.Paused, s.CatchUpWindow = false, false, 0
 		s.Creation, s.Probe = nil, nil
+		s.PriorEnvelopes = nil
 		return s
 	}
 	return fmt.Sprintf("%+v", norm(a)) == fmt.Sprintf("%+v", norm(b))

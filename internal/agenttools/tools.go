@@ -21,30 +21,45 @@ import (
 const Limit = 2 * 1024 * 1024
 
 type Input struct {
-	exportBytes        []byte   // Private create-only scratch transport; absent from MCP input.
-	Path               string   `json:"path,omitempty"`
-	Root               string   `json:"root,omitempty"`
-	Text               string   `json:"text,omitempty"`
-	Revision           string   `json:"revision,omitempty"`
-	Query              string   `json:"query,omitempty"`
-	Format             string   `json:"format,omitempty"`
-	Name               string   `json:"name,omitempty"`
-	Prompt             string   `json:"prompt,omitempty"`
-	ID                 string   `json:"id,omitempty"`
-	ResumeID           string   `json:"resume_id,omitempty"`
-	Message            string   `json:"message,omitempty"`
-	Authorized         bool     `json:"authorized,omitempty"`
-	Service            string   `json:"service,omitempty"`
-	Page               int      `json:"page,omitempty"`
-	Timezone           string   `json:"timezone,omitempty"`
-	Expression         string   `json:"expression,omitempty"`
-	Host               string   `json:"host,omitempty"`
-	Command            string   `json:"command,omitempty"`
-	Data               string   `json:"data,omitempty"`
-	Offset             uint64   `json:"offset,omitempty"`
-	Key                string   `json:"key,omitempty"`
-	Value              string   `json:"value,omitempty"`
-	Paths              []string `json:"paths,omitempty"`
+	OriginJobID        string         `json:"origin_job_id,omitempty"`
+	DestinationTaskID  string         `json:"destination_task_id,omitempty"`
+	View               string         `json:"view,omitempty"`
+	exportBytes        []byte         // Private create-only scratch transport; absent from MCP input.
+	Path               string         `json:"path,omitempty"`
+	Root               string         `json:"root,omitempty"`
+	Text               string         `json:"text,omitempty"`
+	Revision           string         `json:"revision,omitempty"`
+	Query              string         `json:"query,omitempty"`
+	Format             string         `json:"format,omitempty"`
+	Name               string         `json:"name,omitempty"`
+	Prompt             string         `json:"prompt,omitempty"`
+	ID                 string         `json:"id,omitempty"`
+	ResumeID           string         `json:"resume_id,omitempty"`
+	Message            string         `json:"message,omitempty"`
+	Authorized         bool           `json:"authorized,omitempty"`
+	Service            string         `json:"service,omitempty"`
+	Page               int            `json:"page,omitempty"`
+	Timezone           string         `json:"timezone,omitempty"`
+	Expression         string         `json:"expression,omitempty"`
+	ExpectedRevision   uint64         `json:"expected_revision,omitempty"`
+	Patch              map[string]any `json:"patch,omitempty"`
+	Action             string         `json:"action,omitempty"`
+	Until              string         `json:"until,omitempty"`
+	Include            []string       `json:"include,omitempty"`
+	HistoryLimit       int            `json:"history_limit,omitempty"`
+	HistoryCursor      string         `json:"history_cursor,omitempty"`
+	PreviewLimit       int            `json:"preview_limit,omitempty"`
+	Timing             map[string]any `json:"timing,omitempty"`
+	Limit              int            `json:"limit,omitempty"`
+	Cursor             string         `json:"cursor,omitempty"`
+	State              string         `json:"state,omitempty"`
+	Host               string         `json:"host,omitempty"`
+	Command            string         `json:"command,omitempty"`
+	Data               string         `json:"data,omitempty"`
+	Offset             uint64         `json:"offset,omitempty"`
+	Key                string         `json:"key,omitempty"`
+	Value              string         `json:"value,omitempty"`
+	Paths              []string       `json:"paths,omitempty"`
 	archiveSources     *os.Root
 	archiveSourceNames []string
 	archiveOutput      *os.Root
