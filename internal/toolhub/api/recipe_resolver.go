@@ -175,7 +175,11 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 		}
 		connection = mergeConnection(connection, tagged)
 	}
-	if data, name := findFile(files, "server.json"); data != nil {
+	data, name, err := findScopedFile(files, "server.json")
+	if err != nil {
+		return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+	}
+	if data != nil {
 		candidate, fields, ok, err := ParseServerManifest(data, name, source)
 		if err != nil {
 			return LaunchRecipe{}, ConnectionRecipe{}, nil, err
@@ -195,7 +199,31 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 		}
 		merge(fields, name)
 	}
-	for name, data := range files {
+	// The file loop must resolve identically for every call: map iteration is
+	// unspecified, so names are visited in sorted order. Dockerfile and
+	// Compose declarations are the same rank — when two of them disagree about
+	// the launch recipe the resolution fails closed instead of first-wins.
+	launchFromBuild := false
+	mergeBuildLaunch := func(candidate LaunchRecipe, name string) error {
+		if !HasLaunch(candidate) {
+			return nil
+		}
+		if launchFromBuild && !SameLaunch(launch, candidate) {
+			return fmt.Errorf("%w: %s disagrees with an earlier build declaration", ErrAmbiguousEntrypoint, name)
+		}
+		if !HasLaunch(launch) || launchFromBuild {
+			launchFromBuild = true
+		}
+		launch = MergeLaunch(launch, candidate, &warnings)
+		return nil
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		data := files[name]
 		if testFixturePath(name) {
 			continue
 		}
@@ -206,7 +234,9 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 			if err != nil {
 				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
 			}
-			launch = MergeLaunch(launch, candidate, &warnings)
+			if err := mergeBuildLaunch(candidate, name); err != nil {
+				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+			}
 			merge(fields, name)
 			warnings = append(warnings, fileWarnings...)
 		case base == "compose.yaml" || base == "compose.yml" || strings.HasPrefix(base, "docker-compose."):
@@ -221,7 +251,9 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 				warnings = append(warnings, "Compose recipe rejected: "+err.Error())
 				continue
 			}
-			launch = MergeLaunch(launch, candidate, &warnings)
+			if err := mergeBuildLaunch(candidate, name); err != nil {
+				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+			}
 			merge(fields, name)
 			warnings = append(warnings, fileWarnings...)
 		case strings.HasPrefix(base, "readme"):

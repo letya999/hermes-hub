@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -1190,5 +1191,72 @@ func TestEnableReadyRecheckDoesNotBlockOtherPrincipals(t *testing.T) {
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatalf("re-enable: %v", err)
+	}
+}
+
+// CHG-0127 S0.9: local recipe resolution is deterministic — map iteration
+// never decides the recipe, and disagreeing same-rank declarations fail
+// closed instead of first-wins.
+
+func resolveLocalSignature(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	launch, connection, warnings, err := api.ResolveLocalRecipe(files, api.ArtifactSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%#v|%#v|%v", launch, connection, warnings)
+}
+
+func TestResolveLocalRecipeDeterministicDigest(t *testing.T) {
+	files := map[string][]byte{
+		"Dockerfile":       []byte("FROM img:1\nENTRYPOINT [\"./server\"]\nENV API_KEY x\nVOLUME /state\n"),
+		"docs/readme.md":   []byte("requires API_KEY and REGION set\n"),
+		".env.example":     []byte("API_KEY=\nREGION=\n"),
+		"tools/extra.env.example": []byte("MISC=\n"),
+		"sub/Dockerfile.alt":      []byte("FROM img:1\nENTRYPOINT [\"./server\"]\n"),
+	}
+	first := resolveLocalSignature(t, files)
+	for i := 0; i < 100; i++ {
+		if got := resolveLocalSignature(t, files); got != first {
+			t.Fatalf("iteration %d resolved differently: %s vs %s", i, got, first)
+		}
+	}
+}
+
+func TestResolveLocalRecipeAmbiguousEntrypoint(t *testing.T) {
+	twoDockerfiles := map[string][]byte{
+		"a/Dockerfile": []byte("FROM img:1\nENTRYPOINT [\"./one\"]\n"),
+		"b/Dockerfile": []byte("FROM img:1\nENTRYPOINT [\"./two\"]\n"),
+	}
+	if _, _, _, err := api.ResolveLocalRecipe(twoDockerfiles, api.ArtifactSource{}); !errors.Is(err, api.ErrAmbiguousEntrypoint) {
+		t.Fatalf("disagreeing Dockerfiles: %v", err)
+	}
+	dockerVsCompose := map[string][]byte{
+		"Dockerfile":   []byte("FROM img:1\nENTRYPOINT [\"./one\"]\n"),
+		"compose.yaml": []byte("services:\n  mcp:\n    image: img@sha256:1111111111111111111111111111111111111111111111111111111111111111\n    entrypoint: [\"./two\"]\n"),
+	}
+	if _, _, _, err := api.ResolveLocalRecipe(dockerVsCompose, api.ArtifactSource{}); !errors.Is(err, api.ErrAmbiguousEntrypoint) {
+		t.Fatalf("Dockerfile vs compose disagreement: %v", err)
+	}
+}
+
+func TestResolveLocalRecipeMultipleServerJSON(t *testing.T) {
+	rootWins := map[string][]byte{
+		"server.json":     []byte(`{"name":"io.acme/a","remotes":[{"type":"streamable-http","url":"https://root.example/mcp"}]}`),
+		"sub/server.json": []byte(`{"name":"io.acme/b","remotes":[{"type":"streamable-http","url":"https://nested.example/mcp"}]}`),
+	}
+	launch, _, _, err := api.ResolveLocalRecipe(rootWins, api.ArtifactSource{})
+	if err != nil {
+		t.Fatalf("root-preferred server.json: %v", err)
+	}
+	if launch.Endpoint != "https://root.example/mcp" {
+		t.Fatalf("endpoint=%q, want the scope-root server.json", launch.Endpoint)
+	}
+	noRoot := map[string][]byte{
+		"a/server.json": []byte(`{"name":"io.acme/a","remotes":[{"type":"streamable-http","url":"https://a.example/mcp"}]}`),
+		"b/server.json": []byte(`{"name":"io.acme/b","remotes":[{"type":"streamable-http","url":"https://b.example/mcp"}]}`),
+	}
+	if _, _, _, err := api.ResolveLocalRecipe(noRoot, api.ArtifactSource{}); !errors.Is(err, api.ErrAmbiguousEntrypoint) {
+		t.Fatalf("two nested server.json without a root one: %v", err)
 	}
 }
