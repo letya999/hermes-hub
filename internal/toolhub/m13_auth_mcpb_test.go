@@ -280,13 +280,12 @@ func TestRemoteOAuthGenericFlow(t *testing.T) {
 	}
 	onboardingID := prepared["onboarding_id"].(string)
 
-	status, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboardingID})
-	if err != nil {
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	rawURL, _ := status["authorization_url"].(string)
+	rawURL := providerAuthURLOf(t, fix.store, onboardingID)
 	if rawURL == "" {
-		t.Fatalf("status lacks authorization_url: %v", status)
+		t.Fatal("onboarding lacks provider authorization url")
 	}
 	authURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -337,10 +336,12 @@ func TestRemoteOAuthStatusHandsAuthorizationURL(t *testing.T) {
 	if err != nil || prepared["phase"] != api.PhaseAwaitingOAuth {
 		t.Fatalf("prepare=%v err=%v", prepared, err)
 	}
-	status, _ := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	rawURL, _ := status["authorization_url"].(string)
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	rawURL := providerAuthURLOf(t, fix.store, prepared["onboarding_id"])
 	if rawURL == "" {
-		t.Fatalf("status lacks authorization_url: %v", status)
+		t.Fatal("onboarding lacks provider authorization url")
 	}
 	authURL, _ := url.Parse(rawURL)
 	if authURL.Query().Get("client_id") != "dcr-client" || authURL.Query().Get("resource") == "" || authURL.Query().Get("scope") != "mcp:read" {
@@ -365,8 +366,10 @@ func TestRemoteOAuthRefreshRetriesCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _ := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	authURL, _ := url.Parse(status["authorization_url"].(string))
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ := url.Parse(providerAuthURLOf(t, fix.store, prepared["onboarding_id"]))
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -412,8 +415,10 @@ func TestRemoteOAuthRefreshConcurrentRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _ := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	authURL, _ := url.Parse(status["authorization_url"].(string))
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ := url.Parse(providerAuthURLOf(t, fix.store, prepared["onboarding_id"]))
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -540,8 +545,10 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _ := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	authURL, _ := url.Parse(status["authorization_url"].(string))
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ := url.Parse(providerAuthURLOf(t, fix.store, prepared["onboarding_id"]))
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -566,11 +573,10 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	if err := fix.control.SubmitCredentials(bobOnb.OnboardingID, bobOnb.FormNonce, map[string]string{"ACCESS_TOKEN": "member-dummy"}); err != nil {
 		t.Fatalf("bob submit: %v", err)
 	}
-	bstatus, err := callControl(t, bob, "status", map[string]any{"onboarding_id": bobOnb.OnboardingID})
-	if err != nil {
+	if _, err := callControl(t, bob, "status", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callControl(t, bob, "confirm", map[string]any{"onboarding_id": bobOnb.OnboardingID, "nonce": bstatus["nonce"]}); err != nil {
+	if _, err := callControl(t, bob, "confirm", map[string]any{"onboarding_id": bobOnb.OnboardingID, "nonce": confirmNonceOf(t, fix.store, bobOnb.OnboardingID)}); err != nil {
 		t.Fatalf("bob confirm: %v", err)
 	}
 	if _, err := callControl(t, bob, "enable", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {

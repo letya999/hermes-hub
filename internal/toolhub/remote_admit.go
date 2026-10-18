@@ -61,10 +61,10 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	}
 	onboardingID := api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, seed)
 	if existing, err := c.Store.onboarding(onboardingID); err == nil && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved {
-		if err := c.refreshCredentialForm(&existing); err != nil {
+		if err := c.refreshCredentialForm(ctx, auth, &existing); err != nil {
 			return nil, err
 		}
-		if err := c.refreshConfirmation(&existing); err != nil {
+		if err := c.refreshConfirmation(ctx, auth, &existing); err != nil {
 			return nil, err
 		}
 		return c.statusBody(existing, false), nil

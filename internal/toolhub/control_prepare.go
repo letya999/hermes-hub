@@ -32,10 +32,10 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 			if err := c.refreshBrokerRequest(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
-			if err := c.refreshCredentialForm(&existing); err != nil {
+			if err := c.refreshCredentialForm(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
-			if err := c.refreshConfirmation(&existing); err != nil {
+			if err := c.refreshConfirmation(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
 			return c.statusBody(existing, false), nil

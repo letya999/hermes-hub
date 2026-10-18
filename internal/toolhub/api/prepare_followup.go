@@ -92,10 +92,40 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 }
 
 func credentialNoticeURL(onboarding Onboarding) string {
-	if onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" || onboarding.OnboardingID == "" {
+	return ActionURL(FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN")), onboarding)
+}
+
+// ActionURL resolves the user-facing link for the onboarding's pending action
+// against an explicit form origin. Selection order matches the channel notice
+// so elicitation and notices never disagree about which link is live.
+func ActionURL(origin string, onboarding Onboarding) string {
+	if onboarding.OnboardingID == "" {
 		return ""
 	}
-	return FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN")) + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
+	// A live remove link outranks other pending actions: the preview mints it
+	// while the onboarding still sits in its previous phase.
+	if onboarding.RemoveNonce != "" && onboarding.Phase != PhaseRemoved {
+		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.RemoveNonce)
+	}
+	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
+		return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.ConfirmationNonce)
+	}
+	// External action links (provider OAuth, broker connect) hop through
+	// /connect/ so the destination URL and its state never sit in chat text.
+	if onboarding.Phase == PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
+		if parsed, err := url.Parse(onboarding.ProviderAuthorizationURL); err == nil {
+			if state := parsed.Query().Get("state"); state != "" {
+				return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?state=" + url.QueryEscape(state)
+			}
+		}
+	}
+	if onboarding.Phase == PhaseAwaitingCreds && onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" {
+		return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?request=" + url.QueryEscape(onboarding.BrokerRequestID)
+	}
+	if onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" {
+		return ""
+	}
+	return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
 }
 
 func ErrString(text string) error {

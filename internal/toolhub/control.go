@@ -9,7 +9,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -114,9 +113,9 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "prepare_source":
 		return c.prepareSource(ctx, auth, args)
 	case "status":
-		return c.status(auth, args)
+		return c.status(ctx, auth, args)
 	case "required_credentials":
-		return c.requiredCredentials(auth, args)
+		return c.requiredCredentials(ctx, auth, args)
 	case "confirm":
 		return c.confirm(ctx, auth, args)
 	case "enable":
@@ -128,7 +127,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "revoke":
 		return c.revoke(auth, args)
 	case "remove":
-		return c.remove(auth, args)
+		return c.remove(ctx, auth, args)
 	case "diagnostics":
 		return c.diagnostics(ctx, auth, args)
 	case "grant_request":
@@ -138,7 +137,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	}
 }
 
-func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+func (c *ControlPlane) status(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	if api.ArgString(args, "onboarding_id") == "" && api.ArgString(args, "definition_id") == "" && api.ArgString(args, "selector") == "" && api.ArgString(args, "name") == "" && api.ArgString(args, "source") == "" && api.ArgString(args, "operation_id") == "" && api.ArgString(args, "request_key") == "" {
 		c.Store.mu.RLock()
 		var latest api.Onboarding
@@ -170,7 +169,7 @@ func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[
 	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		return nil, err
 	}
-	if err := c.refreshConfirmation(&onboarding); err != nil {
+	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil
@@ -353,7 +352,7 @@ func (c *ControlPlane) revoke(auth identity.Envelope, args map[string]any) (map[
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
@@ -376,9 +375,10 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 			if err := c.Store.PutOnboarding(onboarding); err != nil {
 				return nil, err
 			}
+			// The user confirms through the channel link, not a tool argument.
+			api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
 			body := c.statusBody(onboarding, false)
 			body["requires_confirmation"] = true
-			body["remove_nonce"] = onboarding.RemoveNonce
 			body["next_action"] = "confirm_remove"
 			body["instructions"] = "Removing this connector deletes its credentials, workspace and runtime state permanently. Repeat remove with remove_nonce to execute; ask the user to confirm first."
 			return body, nil
@@ -467,12 +467,6 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	}
 	if onboarding.BrokerRequestID != "" {
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		if onboarding.BrokerAuthorizationURL != "" {
-			body["authorization_url"] = onboarding.BrokerAuthorizationURL
-		}
-	}
-	if onboarding.Phase == api.PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
-		body["authorization_url"] = onboarding.ProviderAuthorizationURL
 	}
 	if withHints {
 		hints := make([]map[string]string, 0, len(onboarding.Required))
@@ -480,10 +474,6 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 			hints = append(hints, map[string]string{"name": hint.Name, "type": hint.Type, "hint": hint.Hint})
 		}
 		body["credentials"] = hints
-		if onboarding.FormNonce != "" {
-			body["form_path"] = "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
-			body["form_url"] = c.origin() + body["form_path"].(string)
-		}
 	}
 	switch onboarding.Phase {
 	case api.PhasePreparing:
@@ -498,7 +488,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		if onboarding.AdmissionPending {
 			body["tools_confirmed"] = false
 			if onboarding.BrokerContractID != "" {
-				body["instructions"] = "The server needs provider login before tools/list. Open the Credential Broker authorization_url, enter credentials there, then call status. Never ask for a session in chat."
+				body["instructions"] = "The server needs provider login before tools/list. The authorization link was already sent to the user — ask them to open it and finish the provider login, then call status. Never ask for a session in chat."
 				if strings.HasPrefix(onboarding.Error, "Проверка не прошла") {
 					body["next_action"] = "rotate"
 					body["instructions"] = "The Broker credential failed admission. Read the recorded error; rotate this onboarding to enter a fresh credential."
@@ -509,21 +499,21 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 				case strings.HasPrefix(onboarding.Error, "Проверяю поля"):
 					body["instructions"] = "A credential submit is being checked with the server. Tell the user to wait. Do not repeat an older form error and do not ask for a token in chat."
 				case strings.Contains(onboarding.Error, "набор") || strings.Contains(onboarding.Error, "Не заполнено") || strings.Contains(onboarding.Error, "рецепт"):
-					body["instructions"] = "The previous form submit was rejected before the server was contacted. Read error and tell the user that text. Send the current form URL from required_credentials. Do not invent a network, CORS, or host failure, and do not ask for a token in chat."
+					body["instructions"] = "The previous form submit was rejected before the server was contacted. Read error and tell the user that text. The current form link was re-sent through the channel notice. Do not invent a network, CORS, or host failure, and do not ask for a token in chat."
 				case strings.HasPrefix(onboarding.Error, "Проверка не прошла"):
-					body["instructions"] = "The credential check already ran. Read error and tell the user that text. Do not repeat an older rejection and do not ask for a token in chat. The form remains available from required_credentials."
+					body["instructions"] = "The credential check already ran. Read error and tell the user that text. Do not repeat an older rejection and do not ask for a token in chat. The form link sent through the channel remains usable."
 				}
 			}
 		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"
-		body["instructions"] = "Call confirm with onboarding_id and the nonce from this response, then call enable. No browser action is required."
+		body["instructions"] = "The confirmation link was sent to the user. Ask them to open it to finish connecting; afterwards call status to continue."
 		if onboarding.Error != "" {
 			body["instructions"] = "The last confirm or enable failed; read error and tell the user that text verbatim. Do not invent a runtime restart, controller outage, or network cause. Retry confirm with the nonce only after the recorded cause is addressed or looks transient; do not poll in a loop."
 		}
 	case api.PhaseAwaitingOAuth:
 		body["next_action"] = "authorize"
-		body["instructions"] = "Send authorization_url to the user. After the browser callback, call status to verify the connection."
+		body["instructions"] = "The authorization link was sent to the user. After the browser callback completes, call status to verify the connection."
 	case api.PhaseConfirmed:
 		body["next_action"] = "enable"
 		body["instructions"] = "Call enable with onboarding_id."
@@ -537,7 +527,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		body["error_code"] = onboarding.ErrorCode
 	}
 	if onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
-		body["nonce"] = onboarding.ConfirmationNonce
+		body["confirmation_sent"] = true
 	}
 	if onboarding.Phase == api.PhaseEnabled {
 		if definition, err := c.definitionOf(onboarding); err == nil {

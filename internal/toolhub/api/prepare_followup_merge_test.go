@@ -85,3 +85,20 @@ func TestPostPrepareNoticeContract(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", "http://127.0.0.1:1")
 	DeliverPrepareOutcome(context.Background(), auth, onboarding)
 }
+
+// CHG-0127 S0.3: external action links (OAuth authorize, broker connect) ride
+// the same notice channel as loopback links — via the /connect/ hop so the
+// provider URL and its state stay off the wire text.
+func TestCredentialNoticeURLActionLinks(t *testing.T) {
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+	oauth := Onboarding{OnboardingID: "onb-oa", Phase: PhaseAwaitingOAuth,
+		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-xyz&client_id=c"}
+	if got := credentialNoticeURL(oauth); got != "http://127.0.0.1:9999/connect/onb-oa?state=flow-xyz" {
+		t.Fatalf("oauth action link=%q", got)
+	}
+	broker := Onboarding{OnboardingID: "onb-br", Phase: PhaseAwaitingCreds,
+		BrokerRequestID: "req-1", BrokerAuthorizationURL: "https://broker.example.com/connect/req-1"}
+	if got := credentialNoticeURL(broker); got != "http://127.0.0.1:9999/connect/onb-br?request=req-1" {
+		t.Fatalf("broker action link=%q", got)
+	}
+}

@@ -307,7 +307,7 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if _, err := callControl(t, bob, "prepare_source", map[string]any{"definition_id": prepared["definition_id"], "version": "1.0.0"}); err == nil {
 		t.Fatal("cross-user catalog prepare allowed")
 	}
-	confirmed, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": prepared["nonce"]})
+	confirmed, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, prepared["onboarding_id"])})
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}

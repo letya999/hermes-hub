@@ -153,6 +153,7 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		delete(c.oauthFlows.flows, start.State)
 		return nil, err
 	}
+	api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -262,7 +263,7 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	if err := c.refreshConfirmation(&onboarding); err != nil {
+	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
 		return err
 	}
 	_, err = c.confirm(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce})

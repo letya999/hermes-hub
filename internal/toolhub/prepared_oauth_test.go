@@ -21,6 +21,20 @@ import (
 )
 
 func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
+	var noticed []map[string]any
+	noticer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/prepare-outcome" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			noticed = append(noticed, payload)
+		}
+		w.WriteHeader(200)
+	}))
+	defer noticer.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", noticer.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
 	entry, matched, err := api.PreparedForRepository("https://github.com/nspady/google-calendar-mcp", "")
 	if err != nil || !matched || entry.OAuth == nil {
 		t.Fatal("reviewed OAuth entry missing", err)
@@ -74,17 +88,25 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	if err != nil || body["phase"] != api.PhaseAwaitingOAuth {
 		t.Fatalf("handoff: %v %v", body, err)
 	}
-	authURL, _ := url.Parse(body["authorization_url"].(string))
+	authURL, _ := url.Parse(providerAuthURLOf(t, store, on.OnboardingID))
 	if authURL.Host != "accounts.google.com" || authURL.Query().Get("scope") != "https://www.googleapis.com/auth/calendar.readonly" || authURL.Query().Get("code_challenge") == "" {
 		t.Fatal("unsafe or incorrect OAuth URL")
+	}
+	var link string
+	for _, payload := range noticed {
+		if u, _ := payload["form_url"].(string); strings.Contains(u, "/connect/"+on.OnboardingID+"?state=") {
+			link = u
+		}
+	}
+	if link == "" || strings.Contains(link, "accounts.google.com") {
+		t.Fatalf("no /connect/ hop link reached the channel: %v", noticed)
 	}
 	var concurrent sync.WaitGroup
 	for range 4 {
 		concurrent.Add(1)
 		go func() {
 			defer concurrent.Done()
-			body, err := c.ensurePreparedOAuth(t.Context(), auth, on, d)
-			if err != nil || body["authorization_url"] != authURL.String() {
+			if _, err := c.ensurePreparedOAuth(t.Context(), auth, on, d); err != nil || providerAuthURLOf(t, store, on.OnboardingID) != authURL.String() {
 				t.Errorf("concurrent handoff changed URL: %v", err)
 			}
 		}()
@@ -96,11 +118,12 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	c.oauthFlows.mu.Lock()
 	clear(c.oauthFlows.flows) // simulate a ToolHub restart while the browser link is outstanding
 	c.oauthFlows.mu.Unlock()
-	resumed, err := c.status(auth, map[string]any{"onboarding_id": on.OnboardingID})
-	if err != nil || resumed["phase"] != api.PhaseAwaitingOAuth || resumed["authorization_url"] == authURL.String() {
+	resumed, err := c.status(context.Background(), auth, map[string]any{"onboarding_id": on.OnboardingID})
+	newRaw := providerAuthURLOf(t, store, on.OnboardingID)
+	if err != nil || resumed["phase"] != api.PhaseAwaitingOAuth || newRaw == "" || newRaw == authURL.String() {
 		t.Fatal("status did not reissue lost OAuth link", err)
 	}
-	authURL, _ = url.Parse(resumed["authorization_url"].(string))
+	authURL, _ = url.Parse(newRaw)
 	state := authURL.Query().Get("state")
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/token" || r.FormValue("code_verifier") == "" || r.FormValue("client_id") != "fixture.apps.googleusercontent.com" {

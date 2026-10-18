@@ -112,6 +112,7 @@ func (c *ControlPlane) ensureRemoteOAuth(auth identity.Envelope, onboarding api.
 		delete(c.oauthFlows.flows, start.State)
 		return nil, err
 	}
+	api.PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -192,7 +193,7 @@ func (c *ControlPlane) completeRemoteOAuth(ctx context.Context, flow *preparedOA
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	if err := c.refreshConfirmation(&onboarding); err != nil {
+	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
 		return err
 	}
 	if _, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {

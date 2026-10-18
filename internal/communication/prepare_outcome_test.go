@@ -13,6 +13,32 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
+// CHG-0127 S0.3: confirmation and removal links ride the same notice channel
+// as credential forms — all are loopback action pages the gateway may relay.
+func TestPrepareOutcomeLinkPaths(t *testing.T) {
+	for _, raw := range []string{
+		"http://127.0.0.1:8090/credentials/onboard-abc?nonce=n1",
+		"http://127.0.0.1:8090/confirm/onboard-abc?nonce=n2",
+		"http://127.0.0.1:8090/remove/onboard-abc?nonce=n3",
+		"http://localhost:8090/remove/onboard-abc?nonce=n4",
+		"http://127.0.0.1:8090/connect/onboard-abc?state=flow-xyz",
+		"http://127.0.0.1:8090/connect/onboard-abc?request=req-777",
+	} {
+		if !loopbackCredentialURL(raw) {
+			t.Fatalf("rejected action link %q", raw)
+		}
+	}
+	for _, raw := range []string{
+		"http://127.0.0.1:8090/evil/onboard-abc?nonce=n",
+		"https://attacker.example/remove/onboard-abc?nonce=n",
+		"http://127.0.0.1:8090/remove/onboard-abc",
+	} {
+		if loopbackCredentialURL(raw) {
+			t.Fatalf("accepted unsafe link %q", raw)
+		}
+	}
+}
+
 func TestPrepareNoticeWaitsForTelegramLogin(t *testing.T) {
 	cfg := testConfig(t)
 	gateway, err := New(cfg)

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -227,11 +228,10 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := callControl(t, session, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := callControl(t, session, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callControl(t, session, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := callControl(t, session, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if got := admissions.Load(); got != 1 {
@@ -434,16 +434,17 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	formURL, _ := required["form_url"].(string)
 	onboardingID, _ := prepared["onboarding_id"].(string)
-	if formURL == "" || !strings.Contains(formURL, "/credentials/"+onboardingID) || !strings.Contains(formURL, "nonce=") || !strings.HasPrefix(formURL, "http://127.0.0.1:8090/") {
-		t.Fatalf("production form_url=%q onboarding=%s", formURL, onboardingID)
+	if required["input"] != "localhost-form" || required["form_url"] != nil || required["form_path"] != nil || required["nonce"] != nil {
+		t.Fatalf("required_credentials leaked the form link: %v", required)
 	}
+	formOn := mustOnboarding(t, store, onboardingID)
+	formURL := "http://127.0.0.1:8090/credentials/" + onboardingID + "?nonce=" + formOn.FormNonce
 	got, _ := elicited.Load().(string)
 	if got != formURL {
-		t.Fatalf("elicit=%q form_url=%q", got, formURL)
+		t.Fatalf("elicit=%q want=%q", got, formURL)
 	}
-	assertRequiredCredentialsElicitsFormURL(t, store, auth, prepared["onboarding_id"].(string), formURL)
+	assertRequiredCredentialsElicitsFormURL(t, store, auth, onboardingID, formURL)
 }
 
 func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth identity.Envelope, onboardingID, wantURL string) {
@@ -480,27 +481,39 @@ func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth id
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
-	required, err := callControl(t, session, "required_credentials", map[string]any{"onboarding_id": onboardingID})
-	if err != nil {
+	if _, err := callControl(t, session, "required_credentials", map[string]any{"onboarding_id": onboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	formURL, _ := required["form_url"].(string)
 	got, _ := elicited.Load().(string)
-	if got == "" || got != formURL || got != wantURL {
-		t.Fatalf("elicit=%q form_url=%q want=%q", got, formURL, wantURL)
+	if got == "" || got != wantURL {
+		t.Fatalf("elicit=%q want=%q", got, wantURL)
 	}
 }
 
-func TestPendingCredentialElicitRequiresFormURLAndURLCap(t *testing.T) {
-	if pendingCredentialElicit(context.Background(), nil, map[string]any{"form_url": "http://127.0.0.1/credentials/x?nonce=n"}) != nil {
+func TestPendingCredentialElicitRequiresPendingActionAndURLCap(t *testing.T) {
+	store := NewStore()
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb-elicit", Phase: api.PhaseAwaitingCreds,
+		PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingCatalog, DefinitionID: "catalog-read", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now(),
+		FormNonce: "n1", FormExpires: time.Now().Add(time.Hour)}
+	if err := store.PutOnboarding(on); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, FormOrigin: "http://127.0.0.1:8090"}
+	body := map[string]any{"onboarding_id": "onb-elicit", "input": "localhost-form"}
+	if pendingCredentialElicit(context.Background(), nil, body, control) != nil {
 		t.Fatal("nil request elicited")
 	}
-	if pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, map[string]any{}) != nil {
-		t.Fatal("empty form_url elicited")
+	if pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, map[string]any{}, control) != nil {
+		t.Fatal("missing onboarding elicited")
 	}
-	fallback := pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, map[string]any{"form_url": "http://127.0.0.1/credentials/x?nonce=n"})
-	if fallback == nil || !strings.Contains(toolCallText(fallback, nil), "http://127.0.0.1/credentials/x") {
-		t.Fatal("unsupported client did not receive a protected form URL")
+	if pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, map[string]any{"onboarding_id": "onb-elicit"}, control) != nil {
+		t.Fatal("non-pending body elicited")
+	}
+	// A client without URL elicitation must never see the protected link in the
+	// result text — the channel notice remains its only delivery path.
+	if fallback := pendingCredentialElicit(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, body, control); fallback != nil {
+		t.Fatalf("unsupported client got a fallback result: %v", toolCallText(fallback, nil))
 	}
 	if clientSupportsURLElicitation(nil) {
 		t.Fatal("nil request advertised url elicitation")

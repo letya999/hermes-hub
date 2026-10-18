@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -153,21 +154,19 @@ func TestRemoveReportsCleanupIncompleteOnReleaseFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	blocked, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]})
+	blocked, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": removeNonceOf(t, store, prepared["onboarding_id"])})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,11 +225,10 @@ func TestRemoveReportsCleanupIncompleteOnCredentialDeleteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
@@ -244,11 +242,10 @@ func TestRemoveReportsCleanupIncompleteOnCredentialDeleteFailure(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	blocked, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]})
+	blocked, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": removeNonceOf(t, store, prepared["onboarding_id"])})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,11 +279,10 @@ func TestRevokeSurfacesCredentialTombstoneFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
@@ -341,6 +337,343 @@ func TestSetBindingStatusSurfacesStopFailure(t *testing.T) {
 	}
 }
 
+// CHG-0127 S0.3: nothing the model can read may carry a secret link
+// parameter — form/confirmation/remove nonces and OAuth state travel only in
+// the channel notice, never in an agent-facing tool result.
+func TestAgentFacingResultsCarryNoSecrets(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	seed := func(id, phase string, mutate func(*api.Onboarding)) string {
+		onboarding := api.Onboarding{
+			Schema: api.SchemaVersion, OnboardingID: id, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+			Mode: api.OnboardingCatalog, Phase: phase,
+			DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		}
+		if mutate != nil {
+			mutate(&onboarding)
+		}
+		if err := store.PutOnboarding(onboarding); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	secret := "NONCE-SECRET-VALUE"
+	cases := []struct {
+		op       string
+		selector map[string]any
+		leak     string
+	}{
+		{"status", map[string]any{"onboarding_id": seed("onb-creds", api.PhaseAwaitingCreds, func(o *api.Onboarding) { o.AdmissionPending = true; o.FormNonce = secret; o.FormExpires = time.Now().Add(time.Hour) })}, secret},
+		{"required_credentials", map[string]any{"onboarding_id": seed("onb-creds2", api.PhaseAwaitingCreds, func(o *api.Onboarding) { o.AdmissionPending = true; o.FormNonce = secret; o.FormExpires = time.Now().Add(time.Hour) })}, secret},
+		{"status", map[string]any{"onboarding_id": seed("onb-conf", api.PhaseAwaitingConfirm, func(o *api.Onboarding) { o.ConfirmationNonce = secret; o.ConfirmationExpires = time.Now().Add(time.Hour) })}, secret},
+		{"required_credentials", map[string]any{"onboarding_id": seed("onb-oauth", api.PhaseAwaitingOAuth, func(o *api.Onboarding) { o.ProviderAuthorizationURL = "https://as.example/authorize?state=" + secret })}, secret},
+	}
+	for _, tc := range cases {
+		body, err := control.Invoke(context.Background(), auth, tc.op, tc.selector)
+		if err != nil {
+			t.Fatalf("%s failed: %v", tc.op, err)
+		}
+		encoded, _ := json.Marshal(body)
+		if strings.Contains(string(encoded), tc.leak) {
+			t.Fatalf("%s leaked %q: %s", tc.op, tc.leak, encoded)
+		}
+		for _, key := range []string{"nonce", "remove_nonce", "form_url", "form_path", "authorization_url"} {
+			if _, present := body[key]; present {
+				t.Fatalf("%s exposed key %q: %s", tc.op, key, encoded)
+			}
+		}
+	}
+	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": "onb-conf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(preview)
+	if _, present := preview["remove_nonce"]; present {
+		t.Fatalf("remove preview leaked the nonce: %s", encoded)
+	}
+	latest, _ := store.onboarding("onb-conf")
+	if strings.Contains(string(encoded), latest.RemoveNonce) {
+		t.Fatalf("remove preview carried the minted nonce: %s", encoded)
+	}
+}
+
+func TestRemovePreviewSendsConfirmationLink(t *testing.T) {
+	var noticed []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/prepare-outcome" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			noticed = append(noticed, payload)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", server.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-remove-link", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		ConfirmationNonce: "c-nonce", ConfirmationExpires: time.Now().Add(time.Hour),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": "onb-remove-link"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, leaked := preview["remove_nonce"]; leaked {
+		t.Fatal("preview leaked the remove nonce")
+	}
+	if len(noticed) == 0 {
+		t.Fatal("remove preview did not notify the channel")
+	}
+	link, _ := noticed[len(noticed)-1]["form_url"].(string)
+	if !strings.Contains(link, "/remove/onb-remove-link") {
+		t.Fatalf("notice carried no remove link: %v", noticed[len(noticed)-1])
+	}
+	latest, _ := store.onboarding("onb-remove-link")
+	if !strings.Contains(link, "nonce="+latest.RemoveNonce) {
+		t.Fatalf("notice link does not carry the minted nonce: %q", link)
+	}
+}
+
+func TestExpiredConfirmationRenewalSendsLink(t *testing.T) {
+	var noticed []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/prepare-outcome" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			noticed = append(noticed, payload)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", server.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-expired-conf", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		ConfirmationNonce: "stale", ConfirmationExpires: time.Now().Add(-time.Hour),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": "onb-expired-conf"}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.onboarding("onb-expired-conf")
+	if err != nil || latest.ConfirmationNonce == "stale" || latest.ConfirmationNonce == "" {
+		t.Fatalf("expired nonce was not renewed: %+v", latest)
+	}
+	if len(noticed) == 0 {
+		t.Fatal("renewed confirmation did not notify the channel")
+	}
+	link, _ := noticed[len(noticed)-1]["form_url"].(string)
+	if !strings.Contains(link, "/confirm/onb-expired-conf") || !strings.Contains(link, "nonce="+latest.ConfirmationNonce) {
+		t.Fatalf("notice carried no confirm link: %v", noticed[len(noticed)-1])
+	}
+}
+
+func TestExpiredCredentialFormRenewalSendsLink(t *testing.T) {
+	var noticed []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/prepare-outcome" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			noticed = append(noticed, payload)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", server.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-expired-form", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds, AdmissionPending: true,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		FormNonce: "stale", FormExpires: time.Now().Add(-time.Hour),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "required_credentials", map[string]any{"onboarding_id": "onb-expired-form"}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.onboarding("onb-expired-form")
+	if err != nil || latest.FormNonce == "stale" || latest.FormNonce == "" {
+		t.Fatalf("expired form nonce was not renewed: %+v", latest)
+	}
+	if len(noticed) == 0 {
+		t.Fatal("renewed credential form did not notify the channel")
+	}
+	link, _ := noticed[len(noticed)-1]["form_url"].(string)
+	if !strings.Contains(link, "/credentials/onb-expired-form") || !strings.Contains(link, "nonce="+latest.FormNonce) {
+		t.Fatalf("notice carried no credentials link: %v", noticed[len(noticed)-1])
+	}
+}
+
+func TestConfirmLinkPageExecutesAuthorization(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	nonce := "confirm-link-nonce"
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-confirm-link", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		ConfirmationNonce: nonce, ConfirmationExpires: time.Now().Add(time.Hour),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &Gateway{Control: control}
+	rec := httptest.NewRecorder()
+	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/confirm/onb-confirm-link?nonce="+nonce, nil)
+	get.Host = "127.0.0.1"
+	gateway.serveConfirm(rec, get)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+		t.Fatalf("confirm page status=%d", rec.Code)
+	}
+	bad := httptest.NewRecorder()
+	badReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/confirm/onb-confirm-link?nonce=wrong", nil)
+	badReq.Host = "127.0.0.1"
+	gateway.serveConfirm(bad, badReq)
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong nonce status=%d", bad.Code)
+	}
+	post := httptest.NewRecorder()
+	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/confirm/onb-confirm-link?nonce="+nonce, nil)
+	postReq.Host = "127.0.0.1"
+	gateway.serveConfirm(post, postReq)
+	if post.Code != http.StatusOK {
+		t.Fatalf("confirm post status=%d body=%s", post.Code, post.Body.String())
+	}
+	latest, err := store.onboarding("onb-confirm-link")
+	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled) {
+		t.Fatalf("confirm link did not finish authorization: phase=%v err=%v", latest.Phase, err)
+	}
+}
+
+func TestRemoveLinkPageExecutesRemoval(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-remove-page", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseEnabled,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": "onb-remove-page"}); err != nil {
+		t.Fatal(err)
+	}
+	armed, err := store.onboarding("onb-remove-page")
+	if err != nil || armed.RemoveNonce == "" {
+		t.Fatalf("preview did not arm the nonce: %+v", armed)
+	}
+	gateway := &Gateway{Control: control}
+	rec := httptest.NewRecorder()
+	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/remove/onb-remove-page?nonce="+armed.RemoveNonce, nil)
+	get.Host = "127.0.0.1"
+	gateway.serveRemove(rec, get)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+		t.Fatalf("remove page status=%d", rec.Code)
+	}
+	bad := httptest.NewRecorder()
+	badReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/remove/onb-remove-page?nonce=wrong", nil)
+	badReq.Host = "127.0.0.1"
+	gateway.serveRemove(bad, badReq)
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong nonce status=%d", bad.Code)
+	}
+	post := httptest.NewRecorder()
+	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/remove/onb-remove-page?nonce="+armed.RemoveNonce, nil)
+	postReq.Host = "127.0.0.1"
+	gateway.serveRemove(post, postReq)
+	if post.Code != http.StatusOK {
+		t.Fatalf("remove post status=%d body=%s", post.Code, post.Body.String())
+	}
+	latest, err := store.onboarding("onb-remove-page")
+	if err != nil || latest.Phase != api.PhaseRemoved {
+		t.Fatalf("remove link did not finish removal: phase=%v err=%v", latest.Phase, err)
+	}
+}
+
 func TestRemovePurgeReleasesWorkloadWithPurgeFlag(t *testing.T) {
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
@@ -365,21 +698,19 @@ func TestRemovePurgeReleasesWorkloadWithPurgeFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": removeNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if len(purged) == 0 {
@@ -387,5 +718,130 @@ func TestRemovePurgeReleasesWorkloadWithPurgeFlag(t *testing.T) {
 	}
 	if len(kept) != 0 {
 		t.Fatalf("remove used keep-state release: %v", kept)
+	}
+}
+
+// The OAuth authorize URL and the Credential Broker connect URL are external —
+// they reach the user through a loopback /connect/ link that validates the
+// stored flow state (or broker request id) and only then redirects. Neither
+// URL nor its state ever appears in a tool result or in the channel text.
+func TestConnectLinkRedirectsToProviderURL(t *testing.T) {
+	store := NewStore()
+	control := &ControlPlane{Store: store, Now: time.Now}
+	auth := aliceAuth()
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-oauth-link", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingOAuth,
+		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-xyz&client_id=c&response_type=code",
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	brokerOn := onboarding
+	brokerOn.OnboardingID = "onb-broker-link"
+	brokerOn.Phase = api.PhaseAwaitingCreds
+	brokerOn.ProviderAuthorizationURL = ""
+	brokerOn.BrokerRequestID = "req-777"
+	brokerOn.BrokerAuthorizationURL = "https://broker.example.com/connect/req-777"
+	if err := store.PutOnboarding(brokerOn); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &Gateway{Control: control}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	good := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-oauth-link?state=flow-xyz", nil)
+	good.Host = "127.0.0.1"
+	rec := httptest.NewRecorder()
+	gateway.serveConnect(rec, good)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != onboarding.ProviderAuthorizationURL {
+		t.Fatalf("connect redirect=%d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	bad := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-oauth-link?state=other", nil)
+	bad.Host = "127.0.0.1"
+	badRec := httptest.NewRecorder()
+	gateway.serveConnect(badRec, bad)
+	if badRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong state status=%d", badRec.Code)
+	}
+	br := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-broker-link?request=req-777", nil)
+	br.Host = "127.0.0.1"
+	brRec := httptest.NewRecorder()
+	gateway.serveConnect(brRec, br)
+	if brRec.Code != http.StatusFound || brRec.Header().Get("Location") != brokerOn.BrokerAuthorizationURL {
+		t.Fatalf("broker connect redirect=%d %q", brRec.Code, brRec.Header().Get("Location"))
+	}
+	_ = client
+}
+
+// Minting a provider authorization URL must deliver the /connect/ hop link to
+// the channel — the model only sees the awaiting-oauth phase, never the URL.
+func TestOAuthStartSendsConnectLink(t *testing.T) {
+	var noticed []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/prepare-outcome" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			noticed = append(noticed, payload)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", server.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	fixture := newRemoteOAuthFixture(t)
+	fix := newRemoteControlFixture(t)
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
+	alice := fix.session(t, aliceToken)
+	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	var link string
+	for _, payload := range noticed {
+		if u, _ := payload["form_url"].(string); strings.Contains(u, "/connect/") {
+			link = u
+		}
+	}
+	if link == "" {
+		t.Fatalf("no /connect/ link reached the channel: %v", noticed)
+	}
+	if !strings.HasPrefix(link, "http://127.0.0.1:9999/connect/") || !strings.Contains(link, "state=") {
+		t.Fatalf("connect link=%q", link)
+	}
+	if strings.Contains(link, "accounts.") {
+		t.Fatalf("provider URL leaked into the channel notice: %q", link)
+	}
+}
+
+// Instructions must never direct the model at fields that no longer exist in
+// the body: no "send the nonce", no "send authorization_url", no "form URL
+// from required_credentials" — links travel by channel notice only.
+func TestInstructionsNeverReferenceRemovedFields(t *testing.T) {
+	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
+	cases := []api.Onboarding{
+		{OnboardingID: "o1", Phase: api.PhaseAwaitingConfirm, ConfirmationNonce: "n", ConfirmationExpires: time.Now().Add(time.Hour)},
+		{OnboardingID: "o2", Phase: api.PhaseAwaitingOAuth, ProviderAuthorizationURL: "https://accounts.example.com/a?state=s"},
+		{OnboardingID: "o3", Phase: api.PhaseAwaitingCreds, FormNonce: "f", FormExpires: time.Now().Add(time.Hour), AdmissionPending: true, BrokerContractID: "c1"},
+		{OnboardingID: "o4", Phase: api.PhaseAwaitingCreds, FormNonce: "f", FormExpires: time.Now().Add(time.Hour), Error: "Проверка не прошла: bad token", AdmissionPending: true},
+		{OnboardingID: "o5", Phase: api.PhaseAwaitingCreds, FormNonce: "f", FormExpires: time.Now().Add(time.Hour), Error: "Не заполнено: TOKEN", AdmissionPending: true},
+	}
+	for _, on := range cases {
+		body := control.statusBody(on, false)
+		text, _ := body["instructions"].(string)
+		lower := strings.ToLower(text)
+		for _, bad := range []string{"nonce from this response", "authorization_url", "from required_credentials", "send the form url", "send authorization"} {
+			if strings.Contains(lower, bad) {
+				t.Fatalf("%s instructions reference removed field %q: %q", on.Phase, bad, text)
+			}
+		}
 	}
 }

@@ -42,7 +42,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			}
 			notifyControlProgress(ctx, request, name, true, body)
 			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == api.PhaseAwaitingOAuth {
-				if pending := pendingCredentialElicit(ctx, request, body); pending != nil {
+				if pending := pendingCredentialElicit(ctx, request, body, g.Control); pending != nil {
 					return pending, nil
 				}
 			}
@@ -215,26 +215,42 @@ func notifyControlProgress(ctx context.Context, request *mcp.CallToolRequest, op
 
 const mcpProtocol20260728 = "2026-07-28"
 
-func pendingCredentialElicit(ctx context.Context, request *mcp.CallToolRequest, body map[string]any) *mcp.CallToolResult {
-	formURL, _ := body["form_url"].(string)
-	if formURL == "" {
-		formURL, _ = body["authorization_url"].(string)
+// pendingCredentialElicit resolves the protected action link server-side: the
+// model-facing body only carries hints (input/phase), so the URL is rebuilt
+// from the stored onboarding and reaches the user through the MCP client's own
+// URL-elicitation UI — never through result text. Clients without URL
+// elicitation get the hint body untouched; the channel notice remains the
+// fallback link path.
+func pendingCredentialElicit(ctx context.Context, request *mcp.CallToolRequest, body map[string]any, control *ControlPlane) *mcp.CallToolResult {
+	if request == nil || control == nil || control.Store == nil {
+		return nil
 	}
-	if formURL == "" || request == nil {
+	onboardingID, _ := body["onboarding_id"].(string)
+	if onboardingID == "" {
+		return nil
+	}
+	if body["input"] != "localhost-form" && body["phase"] != api.PhaseAwaitingOAuth {
+		return nil
+	}
+	onboarding, err := control.Store.onboarding(onboardingID)
+	if err != nil {
+		return nil
+	}
+	actionURL := api.ActionURL(control.origin(), onboarding)
+	if actionURL == "" {
 		return nil
 	}
 	if request.Params != nil && len(request.Params.InputResponses) > 0 {
 		return nil
 	}
 	message := "Open the protected credential form."
-	if _, ok := body["authorization_url"]; ok {
+	if body["phase"] == api.PhaseAwaitingOAuth {
 		message = "Open the protected credential or OAuth URL."
 	}
 	if !clientSupportsURLElicitation(request) {
-		encoded, _ := json.Marshal(body)
-		return &mcp.CallToolResult{StructuredContent: body, Content: []mcp.Content{&mcp.TextContent{Text: message + " " + formURL + "\n" + string(encoded)}}}
+		return nil
 	}
-	params := &mcp.ElicitParams{Mode: "url", Message: message, URL: formURL}
+	params := &mcp.ElicitParams{Mode: "url", Message: message, URL: actionURL}
 	// 2026-07-28 forbids standalone Session.Elicit during tools/call; URL
 	// elicitation must travel as InputRequests so the client receives form_url.
 	if request.ProtocolVersion() >= mcpProtocol20260728 {
@@ -390,6 +406,129 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Credentials проверены, MCP запущен и включён. Возвращаться в чат и писать «готово» не нужно."))
+}
+
+// serveConfirm is the user-facing authorization page the channel notice links
+// to. The model never sees the nonce: the page re-checks it against the stored
+// confirmation before running the same finishAuthorization the tool used.
+func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
+	if !loopbackHTTP(r) {
+		http.Error(w, "loopback only", http.StatusForbidden)
+		return
+	}
+	if g == nil || g.Control == nil {
+		http.NotFound(w, r)
+		return
+	}
+	onboardingID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/confirm/"), "/")
+	if onboardingID == "" || strings.Contains(onboardingID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	nonce := r.URL.Query().Get("nonce")
+	onboarding, err := g.Control.Store.onboarding(onboardingID)
+	if err != nil || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" || nonce != onboarding.ConfirmationNonce || onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodGet {
+		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подтверждение MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Подтверждение подключения</h1><p>Сервер `+html.EscapeString(onboarding.DefinitionID)+` будет подключён и получит доступ к сохранённым данным.</p><form method="post"><button type="submit">Подтвердить подключение</button></form></main></html>`)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := g.Control.finishAuthorization(r.Context(), onboardingID); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, credentialResultPage("Подтверждение не прошло", api.PublicPrepareError(err)))
+		return
+	}
+	_, _ = io.WriteString(w, credentialResultPage("Подключение подтверждено", "Возвращаться в чат и писать «готово» не нужно."))
+}
+
+// serveRemove is the destructive twin of serveConfirm: the channel notice
+// carries this link after a remove preview, and the page runs the same gated
+// executor the tool would — nonce and TTL checked before any cleanup starts.
+func (g *Gateway) serveRemove(w http.ResponseWriter, r *http.Request) {
+	if !loopbackHTTP(r) {
+		http.Error(w, "loopback only", http.StatusForbidden)
+		return
+	}
+	if g == nil || g.Control == nil {
+		http.NotFound(w, r)
+		return
+	}
+	onboardingID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/remove/"), "/")
+	if onboardingID == "" || strings.Contains(onboardingID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	nonce := r.URL.Query().Get("nonce")
+	onboarding, err := g.Control.Store.onboarding(onboardingID)
+	if err != nil || onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires) || onboarding.Phase == api.PhaseRemoved {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodGet {
+		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Удаление MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#b42318;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Удаление подключения</h1><p>Сервер `+html.EscapeString(onboarding.DefinitionID)+` будет отключён: сохранённые credentials, рабочее пространство и состояние удалятся безвозвратно.</p><form method="post"><button type="submit">Удалить подключение</button></form></main></html>`)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, err := g.Control.remove(r.Context(), onboardingEnvelope(onboarding), map[string]any{"onboarding_id": onboardingID, "remove_nonce": nonce}); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, credentialResultPage("Удаление не прошло", api.PublicPrepareError(err)))
+		return
+	}
+	_, _ = io.WriteString(w, credentialResultPage("Подключение удалено", "Сервер отключён, credentials и рабочее состояние удалены."))
+}
+
+// serveConnect is the loopback hop for external action links: the channel
+// notice carries /connect/<id>?state=<oauth-state> or ?request=<broker-id>,
+// the endpoint validates the parameter against the stored onboarding and only
+// then redirects to the provider/broker URL. The external URL and its state
+// never appear in a tool result or a channel message — only the loopback hop.
+func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
+	if !loopbackHTTP(r) {
+		http.Error(w, "loopback only", http.StatusForbidden)
+		return
+	}
+	if g == nil || g.Control == nil {
+		http.NotFound(w, r)
+		return
+	}
+	onboardingID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/connect/"), "/")
+	if onboardingID == "" || strings.Contains(onboardingID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	onboarding, err := g.Control.Store.onboarding(onboardingID)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if state := r.URL.Query().Get("state"); state != "" && onboarding.ProviderAuthorizationURL != "" {
+		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil && parsed.Query().Get("state") == state {
+			http.Redirect(w, r, onboarding.ProviderAuthorizationURL, http.StatusFound)
+			return
+		}
+	}
+	if request := r.URL.Query().Get("request"); request != "" && request == onboarding.BrokerRequestID && onboarding.BrokerAuthorizationURL != "" {
+		http.Redirect(w, r, onboarding.BrokerAuthorizationURL, http.StatusFound)
+		return
+	}
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
 func credentialResultPage(title, message string) string {

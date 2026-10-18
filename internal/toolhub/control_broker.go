@@ -133,6 +133,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		if err := c.Store.PutOnboarding(*onboarding); err != nil {
 			return err
 		}
+		api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
 	}
 	return c.refreshBrokerRequest(ctx, auth, onboarding)
 }

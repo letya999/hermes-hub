@@ -3,7 +3,7 @@ change: CHG-0127
 title: "M13 P0 — stabilize the current connector path (issue #281)"
 status: in_progress
 branch: feat/m14-toolhub-connector-platform
-updated: 2026-10-18
+updated: 2026-10-19
 phase: implementation
 adr: none
 spec: issue-281
@@ -14,9 +14,9 @@ github_issue: 281
 design_status: accepted
 implementation_status: in_progress
 slices:
-  S0.1-purge-release: not_started
-  S0.2-convergent-remove: not_started
-  S0.3-nonce-free-results: not_started
+  S0.1-purge-release: done
+  S0.2-convergent-remove: done
+  S0.3-nonce-free-results: done
   S0.4-ssrf-safe-client: not_started
   S0.5-scope-selection: not_started
   S0.6-env-injection-guard: not_started
@@ -29,7 +29,10 @@ validation:
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence:
+  - "1c54488 S0.1: purge flag through ControllerRelease removes deterministic state volumes; keep/disable preserves; absent workloads purge by name"
+  - "be17929 S0.2: PhaseCleanupIncomplete phase; remove propagates release/credential-delete failures into retryable cleanup_incomplete, no removed tombstone until converged; SetBindingStatus + tombstone + purge state-volume errors surfaced (was silently discarded)"
+  - "S0.3: agent-facing bodies carry no nonce/form_url/form_path/authorization_url; notices carry /credentials/ /confirm/ /remove/ /connect/ loopback links; /connect/<id> validates state/request against the record then 302s to provider/broker URL; elicitation resolves the link server-side; link refresh re-posts the notice"
 remaining:
   - "Finding 10: committed 11MB live snapshots in 16cb15c (.work/done/CHG-0107-dynamic-contracts/) — owner decision on history scrub before any push"
   - "Push to origin + CI image/containers gates require owner instruction"

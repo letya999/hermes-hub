@@ -100,6 +100,9 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
+	mux.Handle("/confirm/", http.HandlerFunc(g.serveConfirm))
+	mux.Handle("/remove/", http.HandlerFunc(g.serveRemove))
+	mux.Handle("/connect/", http.HandlerFunc(g.serveConnect))
 	mux.Handle("/grants/", http.HandlerFunc(g.serveGrantAck))
 	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
 	return mux, nil

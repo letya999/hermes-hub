@@ -223,7 +223,7 @@ func loopbackCredentialURL(raw string) bool {
 	default:
 		return false
 	}
-	return strings.HasPrefix(parsed.Path, "/credentials/")
+	return strings.HasPrefix(parsed.Path, "/credentials/") || strings.HasPrefix(parsed.Path, "/confirm/") || strings.HasPrefix(parsed.Path, "/remove/") || strings.HasPrefix(parsed.Path, "/connect/")
 }
 
 func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key, notice string, request prepareOutcomeRequest, waitingForLogin bool) error {

@@ -190,8 +190,8 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if len(stored.Definition.ProxyEnvironment) != 1 || stored.Definition.ProxyEnvironment[0] != "SLACK_MCP_PROXY" {
 		t.Fatalf("proxy environment not persisted on the draft: %+v", stored.Definition.ProxyEnvironment)
 	}
-	requiredBody, err := control.requiredCredentials(aliceAuth(), map[string]any{"onboarding_id": preparing.OnboardingID})
-	if err != nil || !strings.Contains(fmt.Sprint(requiredBody["form_url"]), "/credentials/"+preparing.OnboardingID) {
+	requiredBody, err := control.requiredCredentials(context.Background(), aliceAuth(), map[string]any{"onboarding_id": preparing.OnboardingID})
+	if err != nil || requiredBody["input"] != "localhost-form" {
 		t.Fatalf("required=%v err=%v", requiredBody, err)
 	}
 	gateway := &Gateway{Control: control}

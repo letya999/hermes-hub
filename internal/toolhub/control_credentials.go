@@ -7,7 +7,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -340,7 +339,7 @@ func (c *ControlPlane) persistFailure(onboarding api.Onboarding, errorText strin
 	return cause
 }
 
-func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+func (c *ControlPlane) requiredCredentials(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
@@ -351,20 +350,16 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		return nil, err
 	}
-	if err := c.refreshCredentialForm(&onboarding); err != nil {
+	if err := c.refreshCredentialForm(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	body := c.statusBody(onboarding, true)
 	if onboarding.Phase == api.PhaseAwaitingCreds && onboarding.FormNonce != "" && c.now().Before(onboarding.FormExpires) {
 		body["input"] = "localhost-form"
-		body["form_url"] = c.origin() + "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
 	}
 	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == api.PhaseAwaitingCreds {
 		body["input"] = "credential-broker"
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		body["authorization_url"] = onboarding.BrokerAuthorizationURL
-		delete(body, "form_url")
-		delete(body, "form_path")
 	}
 	if c.OAuth != nil {
 		body["oauth"] = "pkce"
@@ -375,7 +370,7 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 // refreshCredentialForm makes an idempotent resume useful after the original
 // loopback link expires. The old nonce is replaced, so an old URL cannot be
 // replayed while the same request key still identifies the onboarding.
-func (c *ControlPlane) refreshCredentialForm(onboarding *api.Onboarding) error {
+func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
 	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingCreds {
 		return nil
 	}
@@ -389,10 +384,14 @@ func (c *ControlPlane) refreshCredentialForm(onboarding *api.Onboarding) error {
 	onboarding.FormNonce = api.RandomNonce()
 	onboarding.FormExpires = now.Add(c.ttl())
 	onboarding.Revision++
-	return c.Store.PutOnboarding(*onboarding)
+	if err := c.Store.PutOnboarding(*onboarding); err != nil {
+		return err
+	}
+	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	return nil
 }
 
-func (c *ControlPlane) refreshConfirmation(onboarding *api.Onboarding) error {
+func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
 	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || (onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
 		return nil
 	}
@@ -400,7 +399,13 @@ func (c *ControlPlane) refreshConfirmation(onboarding *api.Onboarding) error {
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
-	return c.Store.PutOnboarding(*onboarding)
+	if err := c.Store.PutOnboarding(*onboarding); err != nil {
+		return err
+	}
+	// A fresh nonce means a fresh link — the channel must carry it because the
+	// tool result never will.
+	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	return nil
 }
 
 func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[string]string) error {

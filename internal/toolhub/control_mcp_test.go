@@ -296,7 +296,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if strings.Contains(string(encoded), "local://") || strings.Contains(strings.ToLower(string(encoded)), "token=") {
 		t.Fatalf("required_credentials leaked locator/secret: %s", encoded)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	enabled, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -344,11 +344,10 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selfStatus, err := callControl(t, alice, "status", map[string]any{"onboarding_id": self["onboarding_id"]})
-	if err != nil {
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": self["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	selfConfirm, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": self["onboarding_id"], "nonce": selfStatus["nonce"]})
+	selfConfirm, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": self["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, self["onboarding_id"])})
 	if err != nil {
 		t.Fatal(err)
 	}

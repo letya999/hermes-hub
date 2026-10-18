@@ -21,6 +21,20 @@ import (
 )
 
 func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
+	var noticed []map[string]any
+	noticer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/prepare-outcome" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			noticed = append(noticed, payload)
+		}
+		w.WriteHeader(200)
+	}))
+	defer noticer.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", noticer.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
 	var telegram api.PreparedEntry
 	entries, err := api.PreparedCatalog()
 	if err != nil {
@@ -152,12 +166,21 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	if _, err := control.acceptCredentialGate(t.Context(), auth, preparing, api.SourceReview{Definition: definition, AdmissionPending: true, AdmissionDetail: "login required"}); err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": preparing.OnboardingID})
-	if err != nil || credentials["input"] != "credential-broker" || credentials["form_url"] != nil || credentials["authorization_url"] == nil || admitCalls != 0 {
+	credentials, err := control.requiredCredentials(context.Background(), auth, map[string]any{"onboarding_id": preparing.OnboardingID})
+	if err != nil || credentials["input"] != "credential-broker" || credentials["form_url"] != nil || credentials["authorization_url"] != nil || credentials["broker_request_id"] == "" || admitCalls != 0 {
 		t.Fatalf("protected Broker form was bypassed: %+v %v", credentials, err)
 	}
+	var brokerLink string
+	for _, payload := range noticed {
+		if u, _ := payload["form_url"].(string); strings.Contains(u, "/connect/"+preparing.OnboardingID+"?request=") {
+			brokerLink = u
+		}
+	}
+	if brokerLink == "" || strings.Contains(brokerLink, "connect/request_1") {
+		t.Fatalf("broker connect link did not reach the channel as a loopback hop: %v", noticed)
+	}
 	ready.Store(true)
-	status, err := control.status(auth, map[string]any{"onboarding_id": preparing.OnboardingID})
+	status, err := control.status(context.Background(), auth, map[string]any{"onboarding_id": preparing.OnboardingID})
 	if err != nil || status["phase"] != api.PhaseAwaitingConfirm || status["tools_confirmed"] == false || admitCalls != 1 || grants.Load() != 1 || releases.Load() != 1 || revocations.Load() != 1 {
 		t.Fatalf("Broker admission did not complete and clean up: %+v %v (probe=%d grant=%d release=%d revoke=%d)", status, err, admitCalls, grants.Load(), releases.Load(), revocations.Load())
 	}
@@ -192,7 +215,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	if failed["tools_confirmed"] != false || !strings.HasPrefix(failed["error"].(string), "Проверка не прошла") || strings.Contains(failed["error"].(string), "fake-session") {
 		t.Fatalf("failed Broker admission was not reported: %+v", failed)
 	}
-	if _, err := control.status(auth, map[string]any{"onboarding_id": retry.OnboardingID}); err != nil || admitCalls != 2 {
+	if _, err := control.status(context.Background(), auth, map[string]any{"onboarding_id": retry.OnboardingID}); err != nil || admitCalls != 2 {
 		t.Fatalf("bad session was reprobed without rotation: %v (probes=%d)", err, admitCalls)
 	}
 	rotated, err := control.Rotate(auth, map[string]any{"onboarding_id": retry.OnboardingID})
@@ -204,7 +227,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		return definition, nil
 	}
 	rotatedReady.Store(true)
-	rotated, err = control.status(auth, map[string]any{"onboarding_id": retry.OnboardingID})
+	rotated, err = control.status(context.Background(), auth, map[string]any{"onboarding_id": retry.OnboardingID})
 	if err != nil || rotated["phase"] != api.PhaseAwaitingConfirm || admitCalls != 3 || grants.Load() != 4 || revocations.Load() != 3 {
 		t.Fatalf("rotated Broker credential was not admitted: %+v %v (probes=%d grants=%d revoked=%d)", rotated, err, admitCalls, grants.Load(), revocations.Load())
 	}
