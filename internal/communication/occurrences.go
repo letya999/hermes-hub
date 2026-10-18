@@ -298,7 +298,6 @@ func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
 				}
 				log.Printf("routine tick failed stage=%d: %s; work remains pending", i, cause)
 			}
-			return
 		}
 	}
 }

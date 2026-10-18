@@ -163,13 +163,19 @@ func (g *Gateway) HandleSlackEvents(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	fresh, err := g.spool.RememberEvent("slack", envelope.EventID)
-	if err != nil || !fresh {
+	seen, err := g.spool.EventSeen("slack", envelope.EventID)
+	if err != nil || seen {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	if err := g.ingestSlackEvent(r.Context(), envelope.TeamID, envelope.EventID, envelope.Event.Type, envelope.Event.Subtype, envelope.Event.User, envelope.Event.Text, envelope.Event.Channel, envelope.Event.ChannelType, envelope.Event.BotID, envelope.Event.UserProfile.Email, envelope.Event.UserProfile.DisplayName, envelope.Event.ThreadTS); err != nil {
 		http.Error(w, "rejected", http.StatusForbidden)
+		return
+	}
+	// The marker is durable only after the ingest is: a rejected event stays
+	// unseen so the provider's retry can deliver it once intake recovers.
+	if err := g.spool.MarkEvent("slack", envelope.EventID); err != nil {
+		http.Error(w, "event record failed", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -205,18 +211,33 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	return err
 }
 
-func (s *Spool) RememberEvent(provider, eventID string) (bool, error) {
+// EventSeen reports whether the event marker is already durable. The write
+// itself is MarkEvent — callers mark only after the event's payload is
+// durably ingested, otherwise a failed ingest would be deduped forever.
+func (s *Spool) EventSeen(provider, eventID string) (bool, error) {
 	if provider == "" || eventID == "" || strings.ContainsAny(eventID, "/\\") {
 		return false, errors.New("invalid event id")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sum := sha256.Sum256([]byte(provider + "\x00" + eventID))
-	path := filepath.Join(s.root, "events", hex.EncodeToString(sum[:])+".json")
-	if _, err := os.Stat(path); err == nil {
-		return false, nil
+	if _, err := os.Stat(s.eventMarkerPath(provider, eventID)); err == nil {
+		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	return true, atomicJSON(path, map[string]string{"provider": provider, "event_id": eventID})
+	return false, nil
+}
+
+func (s *Spool) MarkEvent(provider, eventID string) error {
+	if provider == "" || eventID == "" || strings.ContainsAny(eventID, "/\\") {
+		return errors.New("invalid event id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return atomicJSON(s.eventMarkerPath(provider, eventID), map[string]string{"provider": provider, "event_id": eventID})
+}
+
+func (s *Spool) eventMarkerPath(provider, eventID string) string {
+	sum := sha256.Sum256([]byte(provider + "\x00" + eventID))
+	return filepath.Join(s.root, "events", hex.EncodeToString(sum[:])+".json")
 }

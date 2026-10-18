@@ -144,6 +144,9 @@ func routinePage(items []Schedule, after string, limit int, kind, state, query s
 }
 
 func routineState(item Schedule) string {
+	if item.BlockedReason != "" {
+		return "blocked"
+	}
 	if !item.Enabled && item.NextDue.IsZero() {
 		return "completed"
 	}
@@ -322,6 +325,9 @@ func (s *Spool) editRoutine(id string, caller identity.Envelope, patch map[strin
 	if resume {
 		item.Enabled, item.Paused = true, false
 	}
+	// A successful owner edit is the documented unblock path: the schedule
+	// rejoins the tick on its next due.
+	item.BlockedReason, item.BlockedAt = "", time.Time{}
 	item.Revision++
 	item.UpdatedAt = now
 	if err := atomicJSON(s.schedulePath(id), item); err != nil {

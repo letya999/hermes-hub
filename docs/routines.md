@@ -149,6 +149,14 @@ has no future slots while its admitted work may still be pending. `/routines`
 distinguishes completion from pause and omits zero-year deadlines. Read deadlines
 include legacy snooze state.
 
+A schedule the tick cannot safely advance becomes `blocked`: unreadable
+schedule state and persistent owner-authorization failure stop the retry loop
+instead of spinning every interval. The card shows `blocked_reason`, the owner
+receives exactly one notice per cause at their verified home address, and a
+successful update or resume clears the block; delete retires the ID. A single
+denied occurrence record never blocks the schedule — stale records cannot
+poison a healthy routine.
+
 History state describes the occurrence; execution_state comes from a matching
 agent mapping, otherwise mismatched evidence is unavailable. delivery_state
 distinguishes queued, partial, delivered and uncertain; delivery_count includes

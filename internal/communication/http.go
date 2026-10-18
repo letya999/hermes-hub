@@ -135,11 +135,12 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, items)
 		}
 	case http.MethodPost:
-		var in Schedule
-		if decodeJSON(r, &in) != nil {
+		var draft RoutineDraft
+		if decodeJSON(r, &draft) != nil {
 			http.Error(w, "invalid schedule", http.StatusBadRequest)
 			return
 		}
+		in := draft.schedule()
 		in.Envelope = caller
 		in.UserID = caller.PrincipalID
 		in.ActorID = caller.PrincipalID

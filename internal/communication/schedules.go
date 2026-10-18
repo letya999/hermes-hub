@@ -2,6 +2,7 @@ package communication
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,8 +114,12 @@ type Schedule struct {
 	// LastFailureSHA256 dedupes owner-facing error deliveries: a routine that
 	// fails every tick with the same normalized error notifies once, and a
 	// success clears it so the next failure notifies again.
-	LastFailureSHA256 string        `json:"last_failure_sha256,omitempty"`
-	CatchUpWindow     time.Duration `json:"catch_up_window_ns"`
+	LastFailureSHA256 string `json:"last_failure_sha256,omitempty"`
+	// BlockedAt/BlockedReason mark a schedule the tick can no longer advance:
+	// the owner sees state "blocked" in routine_get and must edit or delete it.
+	BlockedAt     time.Time     `json:"blocked_at,omitempty"`
+	BlockedReason string        `json:"blocked_reason,omitempty"`
+	CatchUpWindow time.Duration `json:"catch_up_window_ns"`
 	// MaxRetries bounds probe-error retries for check occurrences (SPEC-0054
 	// R1.1): 0 means the default 3, values above 8 are rejected.
 	MaxRetries int `json:"max_retries,omitempty"`
@@ -142,6 +147,44 @@ type Schedule struct {
 	NativeCronRef string    `json:"native_cron_ref,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// RoutineDraft is the POST /v1/routines boundary: it carries only the fields
+// an owner may set at creation, so lifecycle, identity and routing internals
+// (revision, envelope, enabled, snoozed_until, task_id, ...) can never be
+// persisted straight from the request body.
+type RoutineDraft struct {
+	ScheduleID        string         `json:"schedule_id"`
+	OriginJobID       string         `json:"origin_job_id,omitempty"`
+	DestinationTaskID string         `json:"destination_task_id,omitempty"`
+	Channel           string         `json:"channel,omitempty"`
+	ChatID            int64          `json:"chat_id,omitempty"`
+	TopicID           int64          `json:"topic_id,omitempty"`
+	SlackChannel      string         `json:"slack_channel,omitempty"`
+	SlackThread       string         `json:"slack_thread,omitempty"`
+	Timezone          string         `json:"timezone"`
+	Expression        string         `json:"expression"`
+	Timing            *RoutineTiming `json:"timing,omitempty"`
+	IntervalAnchor    time.Time      `json:"interval_anchor,omitempty"`
+	JobKind           string         `json:"job_kind,omitempty"`
+	Probe             *WatchProbe    `json:"probe,omitempty"`
+	Expect            string         `json:"expect,omitempty"`
+	NotifyMode        string         `json:"notify_mode,omitempty"`
+	SourceIDs         []string       `json:"source_ids,omitempty"`
+	Input             string         `json:"input"`
+	CatchUpWindow     time.Duration  `json:"catch_up_window_ns,omitempty"`
+	MaxRetries        int            `json:"max_retries,omitempty"`
+	QuietFrom         string         `json:"quiet_from,omitempty"`
+	QuietTo           string         `json:"quiet_to,omitempty"`
+	DailyLimit        int            `json:"daily_limit,omitempty"`
+	Sink              string         `json:"sink,omitempty"`
+	DeliverMode       string         `json:"deliver_mode,omitempty"`
+	ArtifactName      string         `json:"artifact_name,omitempty"`
+	Delivery          string         `json:"delivery,omitempty"`
+}
+
+func (d RoutineDraft) schedule() Schedule {
+	return Schedule{ScheduleID: d.ScheduleID, OriginJobID: d.OriginJobID, DestinationTaskID: d.DestinationTaskID, Channel: d.Channel, ChatID: d.ChatID, TopicID: d.TopicID, SlackChannel: d.SlackChannel, SlackThread: d.SlackThread, Timezone: d.Timezone, Expression: d.Expression, Timing: d.Timing, IntervalAnchor: d.IntervalAnchor, JobKind: d.JobKind, Probe: d.Probe, Expect: d.Expect, NotifyMode: d.NotifyMode, SourceIDs: d.SourceIDs, Input: d.Input, CatchUpWindow: d.CatchUpWindow, MaxRetries: d.MaxRetries, QuietFrom: d.QuietFrom, QuietTo: d.QuietTo, DailyLimit: d.DailyLimit, Sink: d.Sink, DeliverMode: d.DeliverMode, ArtifactName: d.ArtifactName, Delivery: d.Delivery}
 }
 
 type ScheduleCreation struct {
@@ -513,15 +556,23 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 	if err != nil {
 		return err
 	}
+	// One unreadable record must not starve the rest of the queue: it moves to
+	// schedules/quarantine and the tick continues, reporting the failure after
+	// every other schedule had its pass.
+	var errs []error
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		item, err := s.loadScheduleLocked(strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
-			return err
+			if qerr := s.quarantineScheduleLocked(filepath.Join(s.root, "schedules", entry.Name())); qerr != nil {
+				return qerr
+			}
+			errs = append(errs, fmt.Errorf("schedule %s: %w", strings.TrimSuffix(entry.Name(), ".json"), err))
+			continue
 		}
-		if now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) || item.Delivery == "stream" {
+		if item.BlockedReason != "" || now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) || item.Delivery == "stream" {
 			continue
 		}
 		loc, err := time.LoadLocation(item.Timezone)
@@ -534,7 +585,10 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		}
 		if item.LastOccurrenceID != "" {
 			if !spoolIDPattern.MatchString(item.LastOccurrenceID) || len(item.LastOccurrenceID) > 160 {
-				return errors.New("invalid last occurrence ID")
+				if err := s.blockScheduleLocked(&item, "invalid last occurrence reference", now); err != nil {
+					return err
+				}
+				continue
 			}
 			lastPath := filepath.Join(s.root, "occurrences", item.LastOccurrenceID+".json")
 			body, err := os.ReadFile(lastPath)
@@ -595,6 +649,9 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			continue
 		}
 		if authorize != nil && authorize(occ.Job) != nil {
+			if err := s.blockScheduleLocked(&item, "owner authorization failed", now); err != nil {
+				return err
+			}
 			continue
 		}
 		occ.DueAt = due.UTC()
@@ -635,7 +692,51 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			return err
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// quarantineScheduleLocked moves an unreadable schedule record out of the hot
+// scan so the tick keeps serving every other owner.
+func (s *Spool) quarantineScheduleLocked(path string) error {
+	dir := filepath.Join(s.root, "schedules", "quarantine")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	return os.Rename(path, filepath.Join(dir, filepath.Base(path)))
+}
+
+// blockScheduleLocked marks a schedule the tick can no longer advance: the
+// state is visible as "blocked" in routine_get and the owner gets exactly one
+// outbox notification per normalized reason, deduped by LastFailureSHA256.
+// s.mu must be held.
+func (s *Spool) blockScheduleLocked(item *Schedule, reason string, now time.Time) error {
+	item.BlockedReason = reason
+	item.BlockedAt = now.UTC()
+	item.UpdatedAt = now.UTC()
+	sum := sha256.Sum256([]byte("blocked\x00" + item.ScheduleID + "\x00" + reason))
+	digest := hex.EncodeToString(sum[:])
+	if item.LastFailureSHA256 != digest {
+		item.LastFailureSHA256 = digest
+		text := "Рутина «" + item.ScheduleID + "» остановлена: " + reason + ". Откройте её через routine_get, исправьте и сделайте resume — или удалите."
+		d := Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
+		if item.Channel == "telegram_bot" {
+			// The notice goes to the owner's verified home, never to the
+			// schedule's own destination — a stale binding is exactly what
+			// may have caused the block.
+			target := item.Envelope.DeliveryTargetID
+			d.ConversationID, d.DeliveryTargetID = target, target
+			d.TaskID, d.TopicID = "", 0
+			d.ChatID, _ = strconv.ParseInt(strings.TrimPrefix(target, "telegram-"), 10, 64)
+		}
+		d, err := normalizeDelivery(d)
+		if err == nil {
+			if err := s.enqueueDeliveryLocked(d); err != nil {
+				return err
+			}
+			s.signal()
+		}
+	}
+	return atomicJSON(s.schedulePath(item.ScheduleID), item)
 }
 
 func (s *Spool) settleScheduleLocked(item *Schedule, loc *time.Location, due, now time.Time) error {

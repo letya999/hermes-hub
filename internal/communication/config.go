@@ -301,6 +301,9 @@ func ConfigFromEnv() (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
+		if config.BrokerApprove.Enabled() {
+			config.CredentialStore, config.CredentialKeyFile = "", ""
+		}
 		config.Workers = workersFromEnv()
 		config.SpoolRetention = spoolRetentionFromEnv()
 		config.MockDir = os.Getenv("HUB_MOCK_DIR")
@@ -341,6 +344,9 @@ func ConfigFromEnv() (Config, error) {
 	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
 	if err != nil {
 		return Config{}, err
+	}
+	if config.BrokerApprove.Enabled() {
+		config.CredentialStore, config.CredentialKeyFile = "", ""
 	}
 	config.ServiceEndpoints, err = serviceEndpointsFromEnv()
 	if err != nil {

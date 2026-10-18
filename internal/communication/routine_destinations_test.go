@@ -312,8 +312,10 @@ func TestRoutineCardDoesNotReportBrokenBindingsHealthy(t *testing.T) {
 			}
 			if field == "pointer" {
 				g.tickProactive(time.Date(2099, 1, 1, 10, 0, 0, 0, time.UTC))
+				// The routine blocks on the stale binding and the owner gets
+				// one notice — at their home, never through the stale topic.
 				d, err := g.spool.ClaimDelivery()
-				if err != nil || d != nil {
+				if err != nil || d == nil || d.TopicID != 0 || d.TaskID != "" {
 					t.Errorf("stale topic pointer admitted delivery: %+v %v", d, err)
 				}
 			}
