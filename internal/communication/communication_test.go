@@ -489,7 +489,7 @@ func TestToolHubJobDoneUsesPrincipalCredential(t *testing.T) {
 
 	g.config.Supervised = false
 	token := strings.Repeat("a", 32)
-	entries, err := json.Marshal(map[string]identity.Envelope{token: {PrincipalID: "alice"}})
+	entries, err := json.Marshal(map[string]identity.Envelope{token: identity.TelegramEnvelope("alice", 11, "alice", "policy-1")})
 	if err != nil {
 		t.Fatal(err)
 	}

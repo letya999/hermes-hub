@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -53,6 +54,10 @@ type Gateway struct {
 	// controlPolls counts control-loop mapping scans; an idle loop scans at
 	// most once per second (SPEC-0053 R2.3).
 	controlPolls atomic.Int64
+	// opsOnce/ops lazily build the commops engine (canary + health) — the
+	// ops plane reaches the gateway only through injected deps.
+	opsOnce sync.Once
+	ops     *commops.Engine
 }
 
 func New(config Config) (*Gateway, error) {

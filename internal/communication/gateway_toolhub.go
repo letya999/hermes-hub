@@ -6,12 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -184,13 +183,10 @@ func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
 // principal's inventory.
 func (g *Gateway) toolHubCredential(userID string) (token, principalHeader string) {
 	if path := strings.TrimSpace(g.config.ControlTokensFile); path != "" {
-		if body, err := os.ReadFile(path); err == nil {
-			var entries map[string]identity.Envelope
-			if json.Unmarshal(body, &entries) == nil {
-				for candidate, envelope := range entries {
-					if envelope.PrincipalID == userID && len(candidate) >= 32 {
-						return candidate, ""
-					}
+		if entries, err := serviceauth.ReadTokenEnvelopes(path); err == nil {
+			for candidate, envelope := range entries {
+				if envelope.PrincipalID == userID && len(candidate) >= 32 {
+					return candidate, ""
 				}
 			}
 		}

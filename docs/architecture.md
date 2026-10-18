@@ -216,7 +216,12 @@ sending, routine admission/authorization, envelope mapping, blocked-notice routi
 optional capabilities (`ChannelCaps`: typing presence, editable status, artifacts,
 destinations, routine-origin pinning) dispatch through `channelPlugins[id]` rather than
 provider-name switches. A new channel registers an adapter implementing that seam; core
-job, spool and schedule mechanics stay channel-neutral. Slack App credentials stay
+job, spool and schedule mechanics stay channel-neutral. The operational plane — the
+synthetic canary probe and the caller-scoped health block — lives in `internal/commops`,
+a leaf package that reaches the gateway only through injected `Deps` closures, so ops
+code cannot touch gateway internals. The shared enrolled-tokens file contract
+(`{"<token>": <envelope>}`) is owned by `internal/serviceauth`; authorization decisions
+stay local to each service. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
 media envelope, transcribe through the replaceable STT worker, and submit text to the
 same Hermes session. Spoken replies are a per-reply tool, not a mode: a `VOICE:` line in

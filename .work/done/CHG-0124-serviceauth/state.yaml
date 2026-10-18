@@ -1,0 +1,14 @@
+id: CHG-0124
+status: done
+branch: refactor/comm-plane-separation
+slices:
+  - S1: internal/serviceauth — ParseTokenEnvelopes/ReadTokenEnvelopes + contract tests
+  - S2: 3 production call sites switched (controlTokenAccepted, toolHubCredential, loadTokenEnvelopes)
+evidence: >
+  New TestToolHubCredentialRejectsPoisonedTokensFile (red→green);
+  TestToolHubJobDone fixture updated to a valid enrolled envelope;
+  toolhub + communication suites green; just check PASS, coverage 86.36%.
+notes: >
+  Behavior tightening: a tokens file with any malformed entry is now
+  rejected whole (fail-closed, matching ToolHub). e2e/tool_admission.go
+  keeps its own reader — test harness, not the security boundary.

@@ -5,13 +5,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
 )
 
 func (g *Gateway) Handler() http.Handler {
@@ -73,19 +73,12 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 	if path == "" {
 		return false
 	}
-	body, err := os.ReadFile(path)
-	if err != nil || len(body) > 1<<20 {
-		return false
-	}
-	var entries map[string]identity.Envelope
-	if err := json.Unmarshal(body, &entries); err != nil {
+	entries, err := serviceauth.ReadTokenEnvelopes(path)
+	if err != nil {
 		return false
 	}
 	env, ok := entries[token]
 	if !ok {
-		return false
-	}
-	if env.Validate(env.PrincipalID, env.ContextID, env.RuntimeID, env.PolicyVersion) != nil {
 		return false
 	}
 	user := g.user(env.PrincipalID)
