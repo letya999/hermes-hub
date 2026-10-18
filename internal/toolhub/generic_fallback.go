@@ -372,6 +372,13 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 	var mounts []api.Mount
 	for _, input := range definition.Credentials {
 		value := values[input.Name]
+		if input.Delivery == "file" || input.Delivery == "json" {
+			// The injector stages file-bound content as a sibling .secret — the
+			// env file carries env-line values only.
+			if staged, err := os.ReadFile(filepath.Join(workspace, input.Name+".secret")); err == nil {
+				value = string(staged)
+			}
+		}
 		if value == "" {
 			continue
 		}
@@ -390,7 +397,7 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 				mounts = append(mounts, api.Mount{Source: path, Target: input.Target, ReadOnly: true})
 				value = input.Target
 			}
-		} else if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
+		} else if input.Delivery == "json" && json.Valid([]byte(value)) {
 			path := filepath.Join(workspace, input.Name+".json")
 			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
 				return "", nil, err
@@ -398,6 +405,9 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 			target := "/run/credentials/" + input.Name + ".json"
 			mounts = append(mounts, api.Mount{Source: path, Target: target, ReadOnly: true})
 			value = target
+		}
+		if strings.ContainsAny(value, "\x00\r\n") {
+			return "", nil, fmt.Errorf("%w: env-line credential %s", api.ErrInvalid, input.Name)
 		}
 		body.WriteString(input.Name + "=" + value + "\n")
 	}

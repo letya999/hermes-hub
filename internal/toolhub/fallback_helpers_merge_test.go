@@ -9,9 +9,9 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-// materializeRuntimeCredentials: a CREDENTIALS-suffixed value holding valid
-// JSON is materialized as a read-only mount while the env file points at the
-// mount target.
+// materializeRuntimeCredentials: a json-delivery value holding valid JSON is
+// materialized as a read-only mount while the env file points at the mount
+// target — keyed on the declared delivery, not on a CREDENTIALS-looking name.
 func TestMaterializeRuntimeCredentials(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
@@ -19,7 +19,7 @@ func TestMaterializeRuntimeCredentials(t *testing.T) {
 	if err := os.WriteFile(envPath, []byte("PLAN_GOOGLE_CREDENTIALS={\"k\":1}\nPLAN_TOKEN=tok\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	definition := api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "PLAN_GOOGLE_CREDENTIALS"}, {Name: "PLAN_TOKEN"}}}
+	definition := api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "PLAN_GOOGLE_CREDENTIALS", Delivery: "json"}, {Name: "PLAN_TOKEN"}}}
 	env, mounts, err := materializeRuntimeCredentials(workspace, definition)
 	if err != nil {
 		t.Fatalf("materialize: %v", err)

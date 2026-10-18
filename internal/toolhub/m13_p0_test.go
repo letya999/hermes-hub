@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -854,5 +856,141 @@ func TestInstructionsNeverReferenceRemovedFields(t *testing.T) {
 				t.Fatalf("%s instructions reference removed field %q: %q", on.Phase, bad, text)
 			}
 		}
+	}
+}
+
+// CHG-0127 S0.6: env/header-bound credential values must never carry control
+// characters — a submitted newline would inject extra env lines into the
+// workload file. File delivery and valid JSON bodies stay multi-line.
+func TestSubmitRejectsCredentialLineInjection(t *testing.T) {
+	if _, err := filterSubmittedCredentials([]api.CredentialHint{{Name: "API_TOKEN", Delivery: "env"}},
+		map[string]string{"API_TOKEN": "ok\nEVIL_VAR=1"}); err == nil {
+		t.Fatal("newline in env credential accepted")
+	}
+	if _, err := filterSubmittedCredentials([]api.CredentialHint{{Name: "API_TOKEN", Delivery: "env"}},
+		map[string]string{"API_TOKEN": "ok\r\nEVIL_VAR=1"}); err == nil {
+		t.Fatal("CRLF in env credential accepted")
+	}
+	if _, err := filterSubmittedCredentials([]api.CredentialHint{{Name: "API_TOKEN", Delivery: "env"}},
+		map[string]string{"API_TOKEN": "ok\x00byte"}); err == nil {
+		t.Fatal("NUL in env credential accepted")
+	}
+	if _, err := filterSubmittedCredentials([]api.CredentialHint{{Name: "TLS_PEM", Delivery: "file"}},
+		map[string]string{"TLS_PEM": "-----BEGIN-----\nabc\n-----END-----"}); err != nil {
+		t.Fatalf("file-delivery newline rejected: %v", err)
+	}
+	if _, err := filterSubmittedCredentials([]api.CredentialHint{{Name: "GOOGLE_CREDENTIALS", Delivery: "json"}},
+		map[string]string{"GOOGLE_CREDENTIALS": "{\n  \"a\": 1\n}"}); err != nil {
+		t.Fatalf("valid JSON body rejected: %v", err)
+	}
+	if _, err := filterSubmittedCredentials([]api.CredentialHint{{Name: "GOOGLE_CREDENTIALS", Delivery: "json"}},
+		map[string]string{"GOOGLE_CREDENTIALS": "not json\nEVIL=1"}); err == nil {
+		t.Fatal("invalid JSON with newline accepted for env fallthrough")
+	}
+	// Alternative groups are covered too: a filled alternative with an
+	// injected newline must not slip through the second pass.
+	hints := []api.CredentialHint{
+		{Name: "BOT_TOKEN", Delivery: "env", AlternativeGroup: 1},
+		{Name: "OAUTH", Delivery: "env", AlternativeGroup: 1},
+	}
+	if _, err := filterSubmittedCredentials(hints, map[string]string{"BOT_TOKEN": "x\nINJECT=1", "OAUTH": "y"}); err == nil {
+		t.Fatal("alternative-group value with newline accepted")
+	}
+}
+
+// The optional-hints merge path in SubmitCredentials must apply the same
+// line-safety rule — an optional field is stored verbatim into the env file.
+func TestSubmitRejectsOptionalCredentialInjection(t *testing.T) {
+	store := NewStore()
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "form.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour, FormOrigin: "http://127.0.0.1:8090"}
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onboard-inj1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, SourceURL: "https://github.com/zereight/gitlab-mcp",
+		DefinitionID: "gitlab", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now(),
+		FormNonce:   api.RandomNonce(),
+		FormExpires: time.Now().Add(time.Hour),
+		Required:    []api.CredentialHint{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Secret: true, Delivery: "env"}},
+		Optional:    []api.CredentialHint{{Name: "GITLAB_PROJECT_ID", Delivery: "env"}},
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	err = control.SubmitCredentials(onboarding.OnboardingID, onboarding.FormNonce, map[string]string{
+		"GITLAB_PERSONAL_ACCESS_TOKEN": "tok",
+		"GITLAB_PROJECT_ID":            "42\nINJECTED=evil",
+	})
+	if !errors.Is(err, api.ErrInvalid) {
+		t.Fatalf("optional newline submit accepted: %v", err)
+	}
+}
+
+// CHG-0127 S0.6: file mounting is keyed on the declared delivery, not on a
+// CREDENTIALS-looking name — an undeclared input keeps its value inline and a
+// json-declared input mounts regardless of its name.
+func TestMaterializeMountsKeyOnDeliveryNotName(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "credentials.env"), []byte("SERVICE_ACCOUNT={\"k\":1}\nLOOKS_CREDENTIALS={\"x\":2}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	definition := api.ToolDefinition{Credentials: []api.CredentialInput{
+		{Name: "SERVICE_ACCOUNT", Delivery: "json"},
+		{Name: "LOOKS_CREDENTIALS"},
+	}}
+	env, mounts, err := materializeRuntimeCredentials(workspace, definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mounts) != 1 || mounts[0].Target != "/run/credentials/SERVICE_ACCOUNT.json" {
+		t.Fatalf("json delivery must mount by contract: %+v", mounts)
+	}
+	body, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "LOOKS_CREDENTIALS={\"x\":2}") {
+		t.Fatal("name-only input must stay inline")
+	}
+}
+
+// A multi-line file/json body stored as a sibling .secret file is what the
+// injector stages; materialize reads the content from the file, never an env
+// line.
+func TestMaterializeReadsSecretFiles(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "credentials.env"), []byte("API_TOKEN=tok\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "TLS_PEM.secret"), []byte("-----BEGIN-----\nabc\n-----END-----\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	definition := api.ToolDefinition{Credentials: []api.CredentialInput{
+		{Name: "TLS_PEM", Delivery: "file", Target: "/run/secrets/tls.pem"},
+		{Name: "API_TOKEN", Delivery: "env"},
+	}}
+	env, mounts, err := materializeRuntimeCredentials(workspace, definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mounts) != 1 || mounts[0].Target != "/run/secrets/tls.pem" {
+		t.Fatalf("file delivery must mount the staged secret: %+v", mounts)
+	}
+	staged, err := os.ReadFile(mounts[0].Source)
+	if err != nil || !strings.Contains(string(staged), "BEGIN") {
+		t.Fatalf("staged content: %q %v", staged, err)
+	}
+	body, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "BEGIN") {
+		t.Fatal("file content leaked into an env line")
 	}
 }

@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -118,6 +119,24 @@ func credentialGateHints(names []string, groups [][]string) []api.CredentialHint
 	return hints
 }
 
+// credentialValueLineSafe rejects control characters in values that land on
+// an env line or HTTP header: a newline injects sibling variables. File
+// delivery is exempt (content is written verbatim to a mounted file), and a
+// json-delivery field keeps newlines only when the value parses as JSON —
+// otherwise it would fall through to an env line.
+func credentialValueLineSafe(hint api.CredentialHint, value string) error {
+	if hint.Delivery == "file" {
+		return nil
+	}
+	if !strings.ContainsAny(value, "\x00\r\n") {
+		return nil
+	}
+	if hint.Delivery == "json" && json.Valid([]byte(value)) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s must not contain control characters", api.ErrInvalid, hint.Name)
+}
+
 func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]string) (map[string]string, error) {
 	alternatives := map[int][]api.CredentialHint{}
 	filtered := map[string]string{}
@@ -135,6 +154,9 @@ func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]st
 				continue
 			}
 			return nil, fmt.Errorf("%w: missing %s", api.ErrInvalid, hint.Name)
+		}
+		if err := credentialValueLineSafe(hint, value); err != nil {
+			return nil, err
 		}
 		filtered[hint.Name] = value
 	}
@@ -154,6 +176,9 @@ func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]st
 			if value == "" {
 				missing = true
 				continue
+			}
+			if err := credentialValueLineSafe(hint, value); err != nil {
+				return nil, err
 			}
 			filled[hint.Name] = value
 		}
@@ -437,6 +462,9 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	// other value; empty ones simply stay absent.
 	for _, hint := range onboarding.Optional {
 		if value := strings.TrimSpace(values[hint.Name]); value != "" {
+			if err := credentialValueLineSafe(hint, value); err != nil {
+				return err
+			}
 			filtered[hint.Name] = value
 		}
 	}
