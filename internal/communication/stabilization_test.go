@@ -252,50 +252,6 @@ func TestM10ProbeKindsAndFailure(t *testing.T) {
 	}
 }
 
-func TestM10KnowledgeSearchProvenanceAndDisabledUser(t *testing.T) {
-	c := testConfig(t)
-	c.ControlAuth = "token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(g.spool.root, "knowledge", "alice")
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(dir, "notes.md"), []byte("first\nneedle here\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest("GET", "/v1/knowledge?q=needle", nil)
-	req.Header.Set("Authorization", "Bearer token")
-	req.Header.Set("X-Hub-Principal", "alice")
-	rec := httptest.NewRecorder()
-	g.Handler().ServeHTTP(rec, req)
-	var out struct {
-		Fragments []KnowledgeFragment `json:"fragments"`
-	}
-	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || len(out.Fragments) != 1 || out.Fragments[0].Line != 2 || len(out.Fragments[0].SHA256) != 64 {
-		t.Fatalf("provenance: %d %s", rec.Code, rec.Body.String())
-	}
-	req.Header.Set("X-Hub-Context", "bob")
-	rec = httptest.NewRecorder()
-	g.Handler().ServeHTTP(rec, req)
-	if rec.Code != 403 {
-		t.Fatalf("foreign context=%d", rec.Code)
-	}
-	req.Header.Del("X-Hub-Context")
-	for i := range g.config.Users {
-		if g.config.Users[i].ID == "alice" {
-			g.config.Users[i].Enabled = false
-		}
-	}
-	rec = httptest.NewRecorder()
-	g.Handler().ServeHTTP(rec, req)
-	if rec.Code != 401 {
-		t.Fatalf("disabled user=%d", rec.Code)
-	}
-}
-
 func TestM10ScriptResultReceiptAndFailure(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	o.JobKind = "script"
@@ -674,60 +630,22 @@ func TestM10CapturedAttachmentsRemainReadableOnlyByOwner(t *testing.T) {
 }
 
 func TestM10EnrolledKnowledgeContextAndRevocation(t *testing.T) {
+	// The /v1/knowledge endpoint and its enrolled-token context resolution
+	// moved out of the gateway with CHG-0121: knowledge is read in-process
+	// from the runtime state dir. Context subdir coverage lives in
+	// internal/agenttools tests.
 	c := testConfig(t)
 	c.ControlAuth = "operator"
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.config.ControlTokensFile = filepath.Join(t.TempDir(), "tokens.json")
-	bound := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	bound.ContextID = "project"
-	save := func(tokens map[string]identity.Envelope) {
-		t.Helper()
-		body, err := json.Marshal(tokens)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = os.WriteFile(g.config.ControlTokensFile, body, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	save(map[string]identity.Envelope{"runtime-token": bound})
-	dir := filepath.Join(g.spool.root, "knowledge", "alice", "project")
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(dir, "notes.md"), []byte("context snapshot"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	call := func(contextID string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("GET", "/v1/knowledge/notes.md", nil)
-		r.Header.Set("Authorization", "Bearer runtime-token")
-		r.Header.Set("X-Hub-Principal", "bob")
-		r.Header.Set("X-Hub-Context", contextID)
-		w := httptest.NewRecorder()
-		g.Handler().ServeHTTP(w, r)
-		return w
-	}
-	if w := call("project"); w.Code != 200 || w.Body.String() != "context snapshot" || len(w.Header().Get("X-Hub-SHA256")) != 64 || w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("Content-Type") != "application/octet-stream" {
-		t.Fatalf("enrolled context=%d %s", w.Code, w.Body.String())
-	}
-	if w := call("alice"); w.Code != 403 {
-		t.Fatalf("foreign context=%d", w.Code)
-	}
-	save(map[string]identity.Envelope{})
-	if w := call("project"); w.Code != 401 {
-		t.Fatalf("revoked token=%d", w.Code)
-	}
-	save(map[string]identity.Envelope{"runtime-token": bound})
-	for i := range g.config.Users {
-		if g.config.Users[i].ID == "alice" {
-			g.config.Users[i].PolicyVersion = "policy-2"
-		}
-	}
-	if w := call("project"); w.Code != 401 {
-		t.Fatalf("stale enrolled policy=%d", w.Code)
+	req := httptest.NewRequest("GET", "/v1/knowledge", nil)
+	req.Header.Set("Authorization", "Bearer operator")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("knowledge endpoint still served: %d", rec.Code)
 	}
 }
 
@@ -957,73 +875,6 @@ func TestM10UsageLegacyAndCompleteUnterminatedRecord(t *testing.T) {
 	}
 	if err = s.RecordUsage(testJob("third", "user:alice"), "third", hubruntime.SessionUsage{}); err == nil {
 		t.Fatal("oversized corrupt record accepted")
-	}
-}
-
-func TestM10KnowledgeMissingOversizedAndBoundedSearch(t *testing.T) {
-	c := testConfig(t)
-	c.ControlAuth = "token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	call := func(target string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("GET", target, nil)
-		r.Header.Set("Authorization", "Bearer token")
-		r.Header.Set("X-Hub-Principal", "alice")
-		w := httptest.NewRecorder()
-		g.Handler().ServeHTTP(w, r)
-		return w
-	}
-	if w := call("/v1/knowledge"); w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" {
-		t.Fatalf("missing list=%d %s", w.Code, w.Body.String())
-	}
-	if w := call("/v1/knowledge/missing"); w.Code != 404 {
-		t.Fatalf("missing source=%d", w.Code)
-	}
-	dir := filepath.Join(g.spool.root, "knowledge", "alice")
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(dir, ".hidden"), []byte("needle"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.MkdirAll(filepath.Join(dir, "folder"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(dir, "large"), []byte(strings.Repeat("x", knowledgeLimit+1)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if w := call("/v1/knowledge/large"); w.Code != 404 {
-		t.Fatalf("oversized source=%d", w.Code)
-	}
-	if w := call("/v1/knowledge?q=" + strings.Repeat("x", 257)); w.Code != 400 {
-		t.Fatalf("oversized query=%d", w.Code)
-	}
-	if err = os.WriteFile(filepath.Join(dir, "notes"), []byte(strings.Repeat("needle\n", 12)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	w := call("/v1/knowledge?q=needle")
-	var out struct {
-		Fragments []KnowledgeFragment `json:"fragments"`
-	}
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.Fragments) != 8 {
-		t.Fatalf("fragment bound=%d %s", w.Code, w.Body.String())
-	}
-	if err = os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(dir, []byte("not directory"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if w := call("/v1/knowledge"); w.Code != 403 {
-		t.Fatalf("invalid owner directory=%d", w.Code)
-	}
-	if err = os.RemoveAll(g.spool.root); err != nil {
-		t.Fatal(err)
-	}
-	if w := call("/v1/knowledge"); w.Code != 500 {
-		t.Fatalf("missing spool=%d", w.Code)
 	}
 }
 
@@ -1289,15 +1140,10 @@ func TestM10ProactiveNeverRunsTwoOccurrencesOfOneScheduleInOnePass(t *testing.T)
 	}
 }
 
-func TestM10KnowledgeRevocationDuringContextResolution(t *testing.T) {
-	_, o, g := occurrenceFixture(t)
+func TestM10ControlTokenRevocationAndOwnerDeliveryIdentity(t *testing.T) {
+	_, _, g := occurrenceFixture(t)
 	g.config.ControlAuth = "operator"
 	g.config.ControlTokensFile = filepath.Join(t.TempDir(), "enrollment.json")
-	req := httptest.NewRequest("GET", "/v1/knowledge", nil)
-	req.Header.Set("Authorization", "Bearer enrolled")
-	if _, ok := g.knowledgeContext(req, o.Job.Envelope); ok {
-		t.Fatal("missing enrollment accepted")
-	}
 	body, err := json.Marshal(map[string]identity.Envelope{"enrolled": identity.TelegramEnvelope("bob", 22, "bob", "policy-1")})
 	if err != nil {
 		t.Fatal(err)
@@ -1305,11 +1151,10 @@ func TestM10KnowledgeRevocationDuringContextResolution(t *testing.T) {
 	if err := os.WriteFile(g.config.ControlTokensFile, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := g.knowledgeContext(req, o.Job.Envelope); ok {
-		t.Fatal("rebound token retained old context")
-	}
 	g.config.ControlAuth = "enrolled"
 	g.config.Users = []User{{ID: "alice", Enabled: true}}
+	req := httptest.NewRequest("GET", "/v1/tasks", nil)
+	req.Header.Set("Authorization", "Bearer enrolled")
 	req.Header.Set("X-Hub-Principal", "alice")
 	if _, ok := g.authorizeControl(req); ok {
 		t.Fatal("owner without delivery identity was accepted")

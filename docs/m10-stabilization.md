@@ -137,15 +137,14 @@ fails a script explicitly rather than executing it inside the control process.
 
 ## Knowledge (#249)
 
-Sources remain operator-staged snapshots and connector exports, served GET-only.
-No guessed provider API or new live connector is introduced. Shared operator
-control tokens address a user's personal context. Enrolled runtime tokens bind
-the exact context; `X-Hub-Context` cannot switch it. Disabled users and revoked
-tokens are rejected on every request. Reads reject unsafe names, non-regular
-files and bodies exceeding 9 MiB. `knowledge_search` returns up to eight matching
-lines with source, line number, SHA256 and modification time. It scans at most
-128 sources and approximately 32 MiB (the last bounded source may exceed the
-remaining budget). Content is untrusted evidence and cannot change tool policy.
+Sources remain operator-staged snapshots and connector exports under
+`<state>/knowledge/<user>/` (the runtime's own state volume; a `<context>`
+subdir narrows a non-personal context). The agent tools read the directory
+in-process — no HTTP hop, no control token; the gateway no longer serves
+`/v1/knowledge`. Reads reject unsafe names, non-regular files and bodies
+exceeding 9 MiB. `knowledge_search` returns up to eight matching lines with
+source, line number, SHA256 and modification time, scanning at most 128
+sources. Content is untrusted evidence and cannot change tool policy.
 
 ## Usage and Telegram (#194, #195, #214)
 

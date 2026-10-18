@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0121
+title: "Phase 1 slice 1b — knowledge moves from communication spool to runtime state"
+status: done
+branch: refactor/comm-plane-separation
+updated: 2026-10-18
+phase: implementation
+requirements: []
+depends_on:
+  - CHG-0118
+design_status: accepted
+implementation_status: done
+slices:
+  S1-agenttools-filesystem-knowledge: done
+  S2-gateway-endpoint-removal: done
+  S3-apply-state-target: done
+validation:
+  unit: pass
+  integration: pass
+  documents: done
+  just_check: pass
+  docker_check: not_required
+  red_team: done
+  live_acceptance: not_required
+evidence:
+  - "agenttools knowledge_list/read/search read <HUB_STATE>/knowledge/<principal>[/context] in-process via os.Root; no HTTP, no control token"
+  - "TestKnowledgeToolsReadOnly + TestM10KnowledgeClientProvenanceSearchAndLimits + TestKnowledgeContextSubdirNarrowsRoot rewritten against the filesystem contract"
+  - "internal/communication/knowledge.go deleted; /v1/knowledge routes removed; gateway test now asserts 404"
+  - "hubctl apply: knowledge entries require --state <dir> and land under <state>/knowledge/<user>/; routine-only applies unchanged"
+  - "SPEC-0048, SPEC-0049, docs/m10-stabilization.md, docs/e2e-acceptance.md updated to the runtime-state staging contract"
+remaining: []
+limitations:
+  - "Operator staging location changed from the gateway spool volume to the runtime state dir (spaces/<user>/runtime/knowledge) — existing staged files need a one-time move"
+  - "Shared operator control tokens can no longer read a user's knowledge over the control API — reads are principal-scoped in-process only"
+  - "The 32 MiB aggregate scan budget was dropped to the 128-source bound (per-source 9 MiB cap unchanged)"

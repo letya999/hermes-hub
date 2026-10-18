@@ -148,13 +148,14 @@ func run(ctx context.Context, args []string) error {
 		file := f.String("f", "", "desired-state file (yaml)")
 		profile := f.String("user", "me", "person identifier")
 		spoolDir := f.String("spool", "", "communication spool")
+		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *file == "" || *spoolDir == "" {
 			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
 		}
-		rep, err := applyFile(*spoolDir, *profile, *file)
+		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file)
 		if err != nil {
 			return err
 		}

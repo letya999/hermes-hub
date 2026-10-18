@@ -13,10 +13,10 @@ func TestM10RegressionApplyKnowledgeCannotEscapeUser(t *testing.T) {
 	if err := os.WriteFile(src, []byte("replacement"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	spool := filepath.Join(root, "spool")
-	_, err := applyKnowledge(spool, "alice", "../../victim.txt", src)
+	state := filepath.Join(root, "state")
+	_, err := applyKnowledge(state, "alice", "../../victim.txt", src)
 	if err == nil {
-		body, readErr := os.ReadFile(filepath.Join(spool, "victim.txt"))
+		body, readErr := os.ReadFile(filepath.Join(state, "victim.txt"))
 		t.Fatalf("PATH TRAVERSAL ACCEPTED: body=%q read=%v", body, readErr)
 	}
 }
@@ -36,6 +36,7 @@ func TestM10RegressionApplyDefaultKindIsIdempotent(t *testing.T) {
 func TestM10RegressionApplyDoesNotRecoverLiveOutbox(t *testing.T) {
 	root := t.TempDir()
 	spoolDir := filepath.Join(root, "spool")
+	stateDir := filepath.Join(root, "state")
 	s, err := communication.NewSpool(spoolDir)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +52,7 @@ func TestM10RegressionApplyDoesNotRecoverLiveOutbox(t *testing.T) {
 	if err := os.WriteFile(file, []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applyFile(spoolDir, "alice", file); err != nil {
+	if _, err := applyFile(spoolDir, stateDir, "alice", file); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(spoolDir, "outbox", "sending", "live-delivery.json")); err != nil {
