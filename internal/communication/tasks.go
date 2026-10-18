@@ -28,25 +28,6 @@ const (
 	taskStyleLimit = 1024
 )
 
-type Task struct {
-	Schema         int       `json:"schema"`
-	TaskID         string    `json:"task_id"`
-	Name           string    `json:"name"`
-	PrincipalID    string    `json:"principal_id"`
-	ContextID      string    `json:"context_id"`
-	Channel        string    `json:"channel"`
-	Peer           string    `json:"peer"`
-	ChatID         int64     `json:"chat_id"`
-	TopicID        int64     `json:"topic_id,omitempty"`
-	ConversationID string    `json:"conversation_id"`
-	Style          string    `json:"style,omitempty"`
-	StyleVersion   uint64    `json:"style_version,omitempty"`
-	Archived       bool      `json:"archived,omitempty"`
-	NameAuto       bool      `json:"name_auto,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
-
 func taskConversation(chatID int64, taskID string) string {
 	base := "telegram-" + strconv.FormatInt(chatID, 10)
 	if taskID == "" || taskID == defaultTaskID {

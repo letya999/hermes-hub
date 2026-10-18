@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/letya999/hermes-hub/internal/identity"
 	"net/http"
 	"os"
 	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 var ErrRoutineRevision = errors.New("routine revision changed; read current state before retrying")

@@ -33,7 +33,7 @@ func TestGatewayUsersDoNotInheritAnotherRuntimeIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if envelope := (User{ID: "bob"}).envelope(22); envelope.RuntimeID != "bob" {
+	if envelope := (User{ID: "bob"}).Envelope(22); envelope.RuntimeID != "bob" {
 		t.Fatal("global runtime redirected Bob")
 	}
 }

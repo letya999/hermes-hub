@@ -19,24 +19,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-// RoutineOccurrence is the durable handoff from a schedule owner. Recurrence
-// calculation belongs to that owner; each occurrence enters the ordinary queue.
-type RoutineOccurrence struct {
-	ScheduleID string    `json:"schedule_id"`
-	Revision   uint64    `json:"revision"`
-	DueAt      time.Time `json:"due_at"`
-	Job        Job       `json:"job"`
-	// JobKind mirrors the schedule kind. "reminder" occurrences deliver their
-	// text through the outbox directly — no ordinary job, no runtime, no model.
-	JobKind       string        `json:"job_kind,omitempty"`
-	CatchUpWindow time.Duration `json:"catch_up_window_ns,omitempty"`
-	// RetryCount counts probe-error retries (check kind, SPEC-0054 R1.1) and
-	// RetryAfter holds them back until the backoff deadline passes.
-	RetryCount int       `json:"retry_count,omitempty"`
-	RetryAfter time.Time `json:"retry_after,omitempty"`
-	State      string    `json:"state"`
-}
-
 func OccurrenceID(o RoutineOccurrence) string { return occurrenceID(o) }
 
 func occurrenceID(o RoutineOccurrence) string {

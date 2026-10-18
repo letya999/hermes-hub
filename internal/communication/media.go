@@ -149,7 +149,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 		media = message.Audio
 	}
 	topic := messageTopicID(message)
-	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
+	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if err := rejectMedia(envelope, g.config.MediaMaxDuration); err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, "Голосовое сообщение отклонено: слишком большое, длинное или неподдерживаемый тип.")
 	}
@@ -185,7 +185,7 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	if media == nil {
 		return nil
 	}
-	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
+	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if envelope.Size > mediaSizeLimit {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Файл слишком большой.")
 	}

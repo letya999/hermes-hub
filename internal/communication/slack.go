@@ -12,21 +12,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a
-// chat.postMessage target and never fill Envelope.DeliveryTargetID.
-var slackIMChannel = regexp.MustCompile(`^[CDG][A-Za-z0-9]{1,32}$`)
-var slackThreadTS = regexp.MustCompile(`^[0-9]{10,16}\.[0-9]{1,6}$`)
-
-func validSlackIMChannel(id string) bool { return slackIMChannel.MatchString(id) }
-func validSlackThread(ts string) bool    { return ts == "" || slackThreadTS.MatchString(ts) }
+// chat.postMessage target and never fill Envelope.DeliveryTargetID. The
+// validation rules themselves live with the slack adapter.
+func validSlackIMChannel(id string) bool { return channel.ValidSlackIMChannel(id) }
+func validSlackThread(ts string) bool    { return channel.ValidSlackThread(ts) }
 
 func limitSlackText(text string) string {
 	if r := []rune(text); len(r) > slackPartLimit {
@@ -202,7 +200,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	if text == "" {
 		return nil
 	}
-	envelope := user.slackEnvelope(teamID, slackUser)
+	envelope := user.SlackEnvelope(teamID, slackUser)
 	if envstore.LooksLikeEnv(text) {
 		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: "Секреты в Slack App канале отклонены.", CreatedAt: g.now().UTC()})
 	}

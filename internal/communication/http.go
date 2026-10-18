@@ -45,10 +45,10 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 		return identity.Envelope{}, false
 	}
 	if len(user.TelegramIDs) > 0 {
-		return user.envelope(user.TelegramIDs[0]), true
+		return user.Envelope(user.TelegramIDs[0]), true
 	}
 	if len(user.SlackIDs) > 0 {
-		return user.slackEnvelope(user.SlackIDs[0].TeamID, user.SlackIDs[0].UserID), true
+		return user.SlackEnvelope(user.SlackIDs[0].TeamID, user.SlackIDs[0].UserID), true
 	}
 	return identity.Envelope{}, false
 }
@@ -131,7 +131,7 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid schedule", http.StatusBadRequest)
 			return
 		}
-		in := draft.schedule()
+		in := draft.Schedule()
 		in.Envelope = caller
 		in.UserID = caller.PrincipalID
 		in.ActorID = caller.PrincipalID

@@ -19,12 +19,6 @@ import (
 // (SPEC-0059): each step maps the fetched bytes to new bytes, in order, and
 // the last step's output is the compared value. Steps are pure functions —
 // they never fetch, execute, or see the wall clock.
-type ExtractStep struct {
-	Kind     string `json:"kind"`
-	Selector string `json:"selector,omitempty"`
-	Pattern  string `json:"pattern,omitempty"`
-	Path     string `json:"path,omitempty"`
-}
 
 const extractMaxSteps = 8
 

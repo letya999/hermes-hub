@@ -311,7 +311,7 @@ func TestSlackEventMarkedOnlyAfterDurableIngest(t *testing.T) {
 		t.Fatalf("unmapped sender: %d", rec.Code)
 	}
 	// The mapping arrives later; the retry must ingest, not dedupe away.
-	g.slackUsers[SlackLink{TeamID: "tteam", UserID: "uuser"}.key()] = c.Users[0]
+	g.slackUsers[SlackLink{TeamID: "tteam", UserID: "uuser"}.Key()] = c.Users[0]
 	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("retry after failed ingest was deduped: %d", rec.Code)
 	}
@@ -417,7 +417,7 @@ func TestOccurrenceUsesScheduleConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := Job{Envelope: u.envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
+	job := Job{Envelope: u.Envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
 	occ := RoutineOccurrence{ScheduleID: "routine-fixture", Revision: 1, DueAt: time.Now().UTC(), Job: job}
 	if err := g.spool.PutOccurrence(occ, job.Envelope); err != nil {
 		t.Fatal(err)
@@ -464,7 +464,7 @@ func TestInFlightOccurrenceWithLegacyConversationSettles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := Job{Envelope: u.envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
+	job := Job{Envelope: u.Envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
 	occ := RoutineOccurrence{ScheduleID: "legacy-fixture", Revision: 1, DueAt: time.Now().UTC(), Job: job}
 	if err := g.spool.PutOccurrence(occ, job.Envelope); err != nil {
 		t.Fatal(err)
@@ -533,7 +533,7 @@ func TestRoutineRepeatedFailureDeliveredOnce(t *testing.T) {
 	fake := &fakeAPI{}
 	g.api = fake
 	u := c.Users[0]
-	caller := u.envelope(11)
+	caller := u.Envelope(11)
 	if _, err := g.spool.CreateSchedule(Schedule{ScheduleID: "failing-routine", Envelope: caller, OrganizationID: c.OrganizationID, UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 * * * *", Input: "fails every tick", JobKind: "agent"}, caller, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestFailedJobLogsFailed(t *testing.T) {
 	}
 	g.api = &fakeAPI{}
 	u := c.Users[0]
-	job := Job{Envelope: u.envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, Text: "boom"}
+	job := Job{Envelope: u.Envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, Text: "boom"}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}

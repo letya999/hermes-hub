@@ -40,6 +40,23 @@ communication (цикл: gateway диспетчеризует через рее�
 
 ## Порядок и критерии
 
+## Статус
+
+- [x] Шаг 1 `internal/commodel`: Job/Delivery/DeliveryButton/Task/User/
+  SlackLink/RoutineOccurrence/Schedule+сателлиты/RoutineDraft/JobMapping/
+  RunOutcome/PendingControl — методы экспортированы (`Envelope`,
+  `SlackEnvelope`, `MockEnvelope`, `Key`, `Schedule`, `JobFingerprint`,
+  `MappingFromJob`), communication держит `type X = commodel.X` алиасы.
+- [x] Шаг 2 `internal/channel`: Channel iface + Caps + контрактные ошибки
+  (`ErrUncertain`, `ErrDeliveryRetried`, `ErrRoutineDenied`,
+  `FormatMarkdown`, `TargetVerifier`) + адаптеры telegram/slack/mock за
+  Deps-швами (`TelegramDeps`, `SlackDeps`, `MockDeps`, lazy `API func()` —
+  nil-gateway pure-методы сохранены). Throttle/requeue/compose остались в
+  gateway (`sendEditReply`, `sendParts`, `voicePlan` …) — они gateway-
+  семантика, не канальная.
+- [x] Boundary-тесты: channel и commodel не импортируют services.
+- [ ] Шаг 3 `internal/routines` — следующий CHG (deps-шов к spool/runtime).
+
 - Каждый шаг — отдельный коммит с `just check` PASS и тем же покрытием.
 - Никаких дублирующих типов (`commodel.Delivery` vs `channel.Delivery`) —
   только алиасы, единый источник.

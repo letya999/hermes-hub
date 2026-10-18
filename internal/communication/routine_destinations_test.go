@@ -24,7 +24,7 @@ func destinationFixture(t *testing.T) (*Gateway, identity.Envelope, Task, Task) 
 		t.Fatal(err)
 	}
 	user := c.Users[0]
-	env := user.envelope(11)
+	env := user.Envelope(11)
 	a, _, err := g.spool.CreateTask(user, 11, 5, "alpha", false)
 	if err != nil {
 		t.Fatal(err)

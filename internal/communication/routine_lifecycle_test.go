@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/identity"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 func TestRoutineConcurrentEditsCommitOneRevision(t *testing.T) {
@@ -57,7 +58,7 @@ func TestRoutineSourceEditSeedsANewCheckBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.watchHTTP = source.Client()
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	in := Schedule{ScheduleID: "change-source", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "check", Probe: &WatchProbe{URL: source.URL + "/old"}, Expect: "changed"}
 	in, err = g.spool.CreateSchedule(in, env, "")
 	if err != nil {
@@ -196,7 +197,7 @@ func TestRoutineVersionedActionReturnsDurableCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	for _, action := range []string{"pause", "snooze", "delete"} {
 		in := Schedule{ScheduleID: "receipt-" + action, Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "reminder"}
 		if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
@@ -457,7 +458,7 @@ func TestRoutineCommandDistinguishesCompletedSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.api = &fakeAPI{}
-	in := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: c.Users[0].envelope(11)}}, "once:2100-01-01T10:00:00+03:00", 0)
+	in := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: c.Users[0].Envelope(11)}}, "once:2100-01-01T10:00:00+03:00", 0)
 	g.now = func() time.Time { return in.NextDue }
 	if err := g.spool.TickSchedules(in.NextDue, "", nil); err != nil {
 		t.Fatal(err)
@@ -729,7 +730,7 @@ func TestRoutineLifecycleActionsRejectStaleRevision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			env := c.Users[0].envelope(11)
+			env := c.Users[0].Envelope(11)
 			in := Schedule{ScheduleID: "revision-action", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "reminder"}
 			in, err = g.spool.CreateSchedule(in, env, "")
 			if err != nil {
@@ -762,7 +763,7 @@ func TestRoutineGetRetiredOwnerCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	in := Schedule{ScheduleID: "retired-read", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "reminder"}
 	in, err = g.spool.CreateSchedule(in, env, "")
 	if err != nil {
@@ -798,7 +799,7 @@ func TestRoutineSummaryPaginationDoesNotLoseLargeInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	for i := 0; i < 71; i++ {
 		in := Schedule{ScheduleID: fmt.Sprintf("page-%03d", i), Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: strings.Repeat("x", 2048), JobKind: "reminder"}
 		if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
@@ -870,7 +871,7 @@ func TestRoutineSummaryFiltersLifecycleState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	for i, kind := range []string{"reminder", "agent", "reminder"} {
 		in := Schedule{ScheduleID: fmt.Sprintf("filter-%d", i), Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "Europe/Moscow", Expression: "0 10 * * 5", Input: "fixture", JobKind: kind}
 		if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
@@ -914,7 +915,7 @@ func TestRoutinePreviewUsesActualSnoozedDueWithoutWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	now := time.Date(2100, 1, 1, 10, 0, 0, 0, time.UTC)
 	g.now = func() time.Time { return now }
 	in := Schedule{ScheduleID: "preview", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:15m", Input: "fixture", JobKind: "reminder"}
@@ -961,7 +962,7 @@ func TestRoutineSnoozeRejectsDeadlineBeforeNextRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	now := time.Date(2100, 1, 1, 10, 0, 0, 0, time.UTC)
 	g.now = func() time.Time { return now }
 	in := Schedule{ScheduleID: "snooze-early", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:15m", Input: "fixture", JobKind: "reminder"}
@@ -1194,13 +1195,13 @@ func TestRoutineTimingRejectsUnsafeConfiguration(t *testing.T) {
 		{"negative", "every:-1m", &RoutineTiming{}, ""},
 		{"too long", "every:9000h", &RoutineTiming{}, ""},
 		{"fractional", "every:60.5s", &RoutineTiming{}, ""},
-		{"equal window", "every:1m", &RoutineTiming{Windows: []RoutineWindow{{"14:00", "14:00"}}}, ""},
-		{"bad window", "every:1m", &RoutineTiming{Windows: []RoutineWindow{{"25:00", "16:00"}}}, ""},
+		{"equal window", "every:1m", &RoutineTiming{Windows: []RoutineWindow{{From: "14:00", To: "14:00"}}}, ""},
+		{"bad window", "every:1m", &RoutineTiming{Windows: []RoutineWindow{{From: "25:00", To: "16:00"}}}, ""},
 		{"many windows", "every:1m", &RoutineTiming{Windows: make([]RoutineWindow, 9)}, ""},
 		{"many times", "every:1m", &RoutineTiming{At: make([]string, 25)}, ""},
 		{"bad time", "every:1m", &RoutineTiming{At: []string{"25:00"}}, ""},
 		{"duplicate time", "every:1m", &RoutineTiming{At: []string{"17:00", "17:00"}}, ""},
-		{"duplicate window", "every:1m", &RoutineTiming{Windows: []RoutineWindow{{"14:00", "16:00"}, {"14:00", "16:00"}}}, ""},
+		{"duplicate window", "every:1m", &RoutineTiming{Windows: []RoutineWindow{{From: "14:00", To: "16:00"}, {From: "14:00", To: "16:00"}}}, ""},
 		{"cron timing", "0 10 * * *", &RoutineTiming{At: []string{"17:00"}}, ""},
 		{"stream timing", "every:1m", &RoutineTiming{At: []string{"17:00"}}, "stream"},
 		{"stream interval", "every:1m", nil, "stream"},
@@ -1276,7 +1277,7 @@ func TestRoutineIntervalWindowCadence(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"schedule_id":"window-test","timezone":"Europe/Moscow","expression":"every:15m","input":"fixture","job_kind":"reminder","channel":"telegram_bot","chat_id":11,"timing":{"windows":[{"from":"14:00","to":"16:00"}],"at":["17:00"]}}`), &in); err != nil {
 		t.Fatal(err)
 	}
-	in.Envelope = c.Users[0].envelope(11)
+	in.Envelope = c.Users[0].Envelope(11)
 	in.UserID, in.ActorID, in.ScopeID = "alice", "alice", "user:alice"
 	got, err := g.spool.createScheduleAt(in, in.Envelope, "", nil, now)
 	if err != nil {

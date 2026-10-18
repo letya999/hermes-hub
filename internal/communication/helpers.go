@@ -3,17 +3,12 @@ package communication
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"github.com/letya999/hermes-hub/internal/channel"
 	"strconv"
 	"time"
 )
 
-func limitTelegramText(text string) string {
-	runes := []rune(text)
-	if len(runes) <= 4000 {
-		return text
-	}
-	return string(runes[:4000])
-}
+func limitTelegramText(text string) string { return channel.LimitTelegramText(text) }
 
 func newID() string {
 	b := make([]byte, 16)

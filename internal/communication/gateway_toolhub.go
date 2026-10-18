@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/serviceauth"
-	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/serviceauth"
+	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // connectionsCommand answers /connections: the operator-facing connection
@@ -33,7 +34,7 @@ func (g *Gateway) connectionsCommand(user User, sender int64) string {
 // source, sink, last success/error and degraded state — owner-scoped via
 // ListSchedules, so a sibling's subscriptions never render (SPEC-0054 R5.5).
 func (g *Gateway) watchesCommand(user User, sender int64) string {
-	items, err := g.spool.ListSchedules(user.envelope(sender))
+	items, err := g.spool.ListSchedules(user.Envelope(sender))
 	if err != nil {
 		return "Список подписок недоступен."
 	}

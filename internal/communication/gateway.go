@@ -7,11 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/commops"
-	"github.com/letya999/hermes-hub/internal/diagnostics"
-	"github.com/letya999/hermes-hub/internal/envstore"
-	"github.com/letya999/hermes-hub/internal/identity"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"io"
 	"log"
 	"net/http"
@@ -23,6 +18,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/commops"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/identity"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 type Gateway struct {
@@ -108,7 +109,7 @@ func New(config Config) (*Gateway, error) {
 			users[id] = user
 		}
 		for _, link := range user.SlackIDs {
-			slackUsers[link.key()] = user
+			slackUsers[link.Key()] = user
 		}
 	}
 	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand)
@@ -300,7 +301,7 @@ func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) erro
 	if query.From != nil {
 		if user, ok := g.users[query.From.ID]; ok {
 			if jobID, requestID, choice, err := g.spool.ApprovalCallback(query.Data); err == nil {
-				caller := user.envelope(query.From.ID)
+				caller := user.Envelope(query.From.ID)
 				if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
 					caller.ConversationID = mapping.ConversationID
 					caller.DeliveryTargetID = mapping.DeliveryTargetID
@@ -390,7 +391,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		// conversation so an owner can act on another task's job; the verified
 		// sender identity still carries the proof.
 		callerForJob := func(jobID string) identity.Envelope {
-			env := user.envelope(message.From.ID)
+			env := user.Envelope(message.From.ID)
 			if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
 				env.ConversationID = mapping.ConversationID
 				env.DeliveryTargetID = mapping.DeliveryTargetID
@@ -420,7 +421,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			fields := strings.Fields(text)
 			answer := "Используйте /credentials <request-id> <код из формы Credential Broker>."
 			if len(fields) == 3 && g.config.BrokerApprove.Enabled() {
-				caller := user.envelope(message.From.ID)
+				caller := user.Envelope(message.From.ID)
 				client, err := g.config.BrokerApprove.New(caller, "broker:approve")
 				if err == nil {
 					err = client.Approve(ctx, fields[1], fields[2])
@@ -465,7 +466,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			}
 			return reply(answer)
 		case "routines":
-			items, err := g.spool.ListSchedules(user.envelope(message.From.ID))
+			items, err := g.spool.ListSchedules(user.Envelope(message.From.ID))
 			if err != nil {
 				return reply("Список напоминаний недоступен.")
 			}
@@ -695,7 +696,7 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 			values[key] = ""
 		}
 		slices.Sort(keys)
-		if form, formErr := g.createCredentialForm(user.envelope(user.TelegramIDs[0]), keys); formErr == nil {
+		if form, formErr := g.createCredentialForm(user.Envelope(user.TelegramIDs[0]), keys); formErr == nil {
 			reply = "Введите данные только в защищённой форме: " + form.FormURL
 		}
 	}

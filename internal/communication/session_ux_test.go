@@ -259,7 +259,7 @@ func TestNewForumTopicFollowsAutoTitle(t *testing.T) {
 	if !forumOpCalled(fake.forumOps, "create", -100123, 0, current.Name) {
 		t.Fatalf("topic name must match the task name: %+v", fake.forumOps)
 	}
-	job := Job{Envelope: user.envelope(11), ID: "j1", UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: -100123, TopicID: current.TopicID, TaskID: current.TaskID, Text: "x"}
+	job := Job{Envelope: user.Envelope(11), ID: "j1", UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: -100123, TopicID: current.TopicID, TaskID: current.TaskID, Text: "x"}
 	g.maybeAutoTitle(ctx, job)
 	if !forumOpCalled(fake.forumOps, "edit", -100123, current.TopicID, "Квартальный отчёт") {
 		t.Fatalf("forum topic not renamed with adopted title: %+v", fake.forumOps)
@@ -382,7 +382,7 @@ func TestAutoTitleAdoptsSessionTitleOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := Job{Envelope: user.envelope(11), ID: "j1", UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: 11, TaskID: auto.TaskID, Text: "x"}
+	job := Job{Envelope: user.Envelope(11), ID: "j1", UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "telegram_bot", ChatID: 11, TaskID: auto.TaskID, Text: "x"}
 	g.maybeAutoTitle(ctx, job)
 	renamed, err := g.spool.TaskByID(user, 11, auto.TaskID)
 	if err != nil || renamed.Name != "Обсуждение квартального отчёта" || renamed.NameAuto {

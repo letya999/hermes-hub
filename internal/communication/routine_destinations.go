@@ -101,7 +101,7 @@ func (s *Spool) bindRoutineDestinationLocked(in Schedule, caller identity.Envelo
 	if in.OriginJobID != "" {
 		var err error
 		source, err = s.loadMappingLocked(in.OriginJobID)
-		canonical := user.envelope(source.ChatID)
+		canonical := user.Envelope(source.ChatID)
 		if err != nil || source.PrincipalID != caller.PrincipalID || source.ContextID != caller.ContextID || source.RuntimeID != caller.RuntimeID || source.PolicyVersion != caller.PolicyVersion || source.Channel != "telegram_bot" || source.UserID != user.ID || source.ActorID != user.ID || source.ScopeID != "user:"+user.ID || source.OrganizationID != in.OrganizationID || source.ExternalIdentityID != canonical.ExternalIdentityID || source.DeliveryTargetID != canonical.DeliveryTargetID || !slices.Contains(user.TelegramIDs, source.ChatID) {
 			return Schedule{}, errors.New("routine origin unavailable in this context")
 		}
@@ -142,6 +142,6 @@ func (s *Spool) bindRoutineDestinationLocked(in Schedule, caller identity.Envelo
 		}
 	}
 	in.TaskID, in.TopicID, in.ChatID, in.Channel = task.TaskID, task.TopicID, task.ChatID, task.Channel
-	in.Envelope = user.envelope(task.ChatID)
+	in.Envelope = user.Envelope(task.ChatID)
 	return in, nil
 }

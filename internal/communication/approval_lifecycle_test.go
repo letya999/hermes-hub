@@ -3,8 +3,6 @@ package communication
 import (
 	"context"
 	"encoding/json"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/stack"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 func TestClosedApprovalNeverDelivered(t *testing.T) {

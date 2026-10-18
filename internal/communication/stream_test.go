@@ -132,7 +132,7 @@ func TestProgressLoopRunsDuringGatewayRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := g.user("alice")
-	job := Job{Envelope: user.envelope(11), ID: "loop-live", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "loop-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
+	job := Job{Envelope: user.Envelope(11), ID: "loop-live", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "loop-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}

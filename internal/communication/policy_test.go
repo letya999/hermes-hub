@@ -416,7 +416,7 @@ func TestBriefForeignWatchesExcluded(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
-	bobEnv := bob.envelope(22)
+	bobEnv := bob.Envelope(22)
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-foreign", Envelope: bobEnv, OrganizationID: o.Job.OrganizationID, UserID: "bob", ActorID: "bob", ScopeID: "user:bob", Channel: "telegram_bot", ChatID: 22, Timezone: "UTC", Expression: "0 * * * *", Input: "bob watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/b"}}, bobEnv, ""); err != nil {
 		t.Fatal(err)
 	}

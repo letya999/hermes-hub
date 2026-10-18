@@ -2,8 +2,9 @@ package communication
 
 import (
 	"context"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"strings"
+
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // botCommandInventory is the single source of truth for supported slash

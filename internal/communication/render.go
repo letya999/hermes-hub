@@ -5,6 +5,7 @@ package communication
 // of model text is escaped by the channel renderer and only our tags go out.
 
 import (
+	"github.com/letya999/hermes-hub/internal/channel"
 	"html"
 	"strconv"
 	"strings"
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	formatMarkdown = "markdown"
+	formatMarkdown = channel.FormatMarkdown
 
 	// Telegram counts message length in UTF-16 code units.
 	telegramPartLimit = 4000

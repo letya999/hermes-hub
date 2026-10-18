@@ -17,9 +17,9 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
-// ErrUncertain means the runtime may have completed the job before the HTTP
-// connection failed. The gateway must not blindly retry it.
-var ErrUncertain = errors.New("runtime result uncertain")
+// ErrUncertain (aliased in channel.go) means the runtime may have completed
+// the job before the HTTP connection failed. The gateway must not blindly
+// retry it; the error value is the channel contract's.
 
 type HTTPRunner struct {
 	JobsAPI bool

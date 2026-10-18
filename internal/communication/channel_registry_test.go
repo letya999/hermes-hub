@@ -84,7 +84,7 @@ func (r *recordingChannel) JobEnvelope(user User, chatID, sender int64) identity
 	if r.envelope != nil {
 		return r.envelope(user, chatID, sender)
 	}
-	return user.envelope(sender)
+	return user.Envelope(sender)
 }
 
 func registerTestChannel(t *testing.T, ch *recordingChannel) {
@@ -357,7 +357,7 @@ func TestInboundJobUsesChannelEnvelopeAndPresence(t *testing.T) {
 	fake := &recordingChannel{
 		caps: ChannelCaps{Typing: true},
 		envelope: func(user User, chatID, sender int64) identity.Envelope {
-			e := user.envelope(sender)
+			e := user.Envelope(sender)
 			e.ExternalIdentityID = "rec-ext"
 			return e
 		},

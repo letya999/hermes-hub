@@ -45,7 +45,7 @@ func TestWorkerRetriesFailedMessageJobOnce(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
 	user := c.Users[0]
-	job := Job{Envelope: user.envelope(11), ID: "telegram-x", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:x", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
+	job := Job{Envelope: user.Envelope(11), ID: "telegram-x", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "telegram:x", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}

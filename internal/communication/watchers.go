@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +14,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // WatchState is the durable baseline a watcher compares against. It lives in

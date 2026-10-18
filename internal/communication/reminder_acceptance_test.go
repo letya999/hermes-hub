@@ -148,7 +148,7 @@ func TestReminderCommandShowsOutcomeWithoutAgent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			created := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: c.Users[0].envelope(11)}}, "once:2100-01-01T10:00:00+03:00", 0)
+			created := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: c.Users[0].Envelope(11)}}, "once:2100-01-01T10:00:00+03:00", 0)
 			g.api = &fakeAPI{}
 			if tc.outcome == "uncertain" {
 				g.api = &fakeAPI{err: errors.New("unknown transport result")}
@@ -222,7 +222,7 @@ func TestReminderGatewayWithoutRuntimeAndLostTransportAnswer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			envelope := c.Users[0].envelope(11)
+			envelope := c.Users[0].Envelope(11)
 			created := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: envelope}}, "once:2100-01-01T10:00:00+03:00", 0)
 			g.now = func() time.Time { return created.NextDue }
 			g.tickProactive(created.NextDue)

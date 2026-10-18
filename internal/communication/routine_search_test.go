@@ -14,7 +14,7 @@ func TestRoutineSearchFiltersBeforePagingInsideOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.Users[0].envelope(11)
+	env := c.Users[0].Envelope(11)
 	for _, row := range []struct{ id, text, owner string }{
 		{"a-no-match", "other", "alice"}, {"b-friday", "FRIDAY report", "alice"},
 		{"c-friday", "private Friday", "bob"}, {"d-friday", "other", "alice"},

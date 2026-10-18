@@ -6,20 +6,7 @@ import (
 	"time"
 )
 
-type RoutineTiming struct {
-	Windows  []RoutineWindow `json:"windows,omitempty"`
-	At       []string        `json:"at,omitempty"`
-	Weekdays []int           `json:"weekdays,omitempty"`
-	StartAt  time.Time       `json:"start_at,omitempty"`
-	EndAt    time.Time       `json:"end_at,omitempty"`
-}
-
 var errRoutineExhausted = errors.New("routine has no future slot within its bounds")
-
-type RoutineWindow struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-}
 
 func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, error) {
 	if strings.HasPrefix(strings.TrimSpace(in.Expression), "every:") && in.Delivery == "stream" {

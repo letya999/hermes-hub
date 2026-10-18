@@ -367,7 +367,7 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	if !ok {
 		return "Измерение расхода недоступно для этого исполнителя."
 	}
-	envelope := user.envelope(sender)
+	envelope := user.Envelope(sender)
 	envelope.ConversationID = task.ConversationID
 	request := hubruntime.ExecuteRequest{
 		Envelope:       envelope,

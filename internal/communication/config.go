@@ -5,11 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/credentialbroker"
-	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"gopkg.in/yaml.v3"
 	"io"
 	"net/url"
 	"os"
@@ -18,6 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"gopkg.in/yaml.v3"
 )
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
@@ -28,55 +28,6 @@ var serviceNamePattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 var gatewayOwnedEnv = map[string]bool{
 	"TELEGRAM_BOT_TOKEN": true, "TELEGRAM_ALLOWED_USERS": true,
 	"SLACK_SIGNING_SECRET": true, "SLACK_BOT_TOKEN": true, "SLACK_APP_TOKEN": true, "SLACK_ALLOWED_USERS": true,
-}
-
-// SlackLink is a verified workspace+sender pair. Email and display name never fill it.
-type SlackLink struct {
-	TeamID string `yaml:"team_id" json:"team_id"`
-	UserID string `yaml:"user_id" json:"user_id"`
-}
-
-func (l SlackLink) key() string {
-	return strings.ToLower(strings.TrimSpace(l.TeamID)) + "/" + strings.ToLower(strings.TrimSpace(l.UserID))
-}
-
-// User is the stable internal user plus its channel bindings and runtime roots.
-type User struct {
-	RuntimeID      string            `yaml:"runtime_id,omitempty" json:"runtime_id,omitempty"`
-	PolicyVersion  string            `yaml:"policy_version,omitempty" json:"policy_version,omitempty"`
-	ID             string            `yaml:"id" json:"id"`
-	Enabled        bool              `yaml:"enabled" json:"enabled"`
-	TelegramIDs    []int64           `yaml:"telegram_ids" json:"telegram_ids"`
-	SlackIDs       []SlackLink       `yaml:"slack_ids,omitempty" json:"slack_ids,omitempty"`
-	StateDir       string            `yaml:"state_dir" json:"state_dir"`
-	WorkspaceDir   string            `yaml:"workspace_dir" json:"workspace_dir"`
-	Features       []string          `yaml:"features,omitempty" json:"features,omitempty"`
-	PolicyDisabled []string          `yaml:"policy_disabled,omitempty" json:"policy_disabled,omitempty"`
-	ConfiguredEnv  map[string]bool   `yaml:"-" json:"-"`
-	Env            map[string]string `yaml:"-" json:"-"`
-}
-
-// envelope binds each verified channel user independently of process-wide env.
-func (user User) envelope(externalID int64) identity.Envelope {
-	runtimeID, policy := user.RuntimeID, user.PolicyVersion
-	if runtimeID == "" {
-		runtimeID = user.ID
-	}
-	if policy == "" {
-		policy = envOr("HUB_POLICY_VERSION", "policy-1")
-	}
-	return identity.TelegramEnvelope(user.ID, externalID, runtimeID, policy)
-}
-
-func (user User) slackEnvelope(teamID, slackUser string) identity.Envelope {
-	runtimeID, policy := user.RuntimeID, user.PolicyVersion
-	if runtimeID == "" {
-		runtimeID = user.ID
-	}
-	if policy == "" {
-		policy = envOr("HUB_POLICY_VERSION", "policy-1")
-	}
-	return identity.SlackEnvelope(user.ID, teamID, slackUser, runtimeID, policy)
 }
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
@@ -206,7 +157,7 @@ func (c Config) Validate() error {
 			seenTelegram[telegramID] = true
 		}
 		for _, link := range user.SlackIDs {
-			key := link.key()
+			key := link.Key()
 			if link.TeamID == "" || link.UserID == "" || strings.ContainsAny(key, " \t@") || seenSlack[key] {
 				return fmt.Errorf("invalid or duplicate Slack identity %s/%s", link.TeamID, link.UserID)
 			}

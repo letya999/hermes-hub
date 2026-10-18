@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/diagnostics"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/diagnostics"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // editThrottle bounds status-message edits to one per interval per chat
@@ -209,7 +210,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			return
 		}
 		user := g.user(mapping.PrincipalID)
-		current := user.envelope(1)
+		current := user.Envelope(1)
 		if delivery.ApprovalRunID == "" || delivery.ApprovalGeneration == "" || delivery.ApprovalRunID != mapping.RunID || delivery.ApprovalGeneration != mapping.RuntimeGeneration || delivery.ConversationID != mapping.ConversationID || delivery.DeliveryTargetID != mapping.DeliveryTargetID || !user.Enabled || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion {
 			_ = g.spool.UncertainDelivery(delivery.ID)
 			return
@@ -223,7 +224,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		}
 		if found {
 			user := g.user(mapping.PrincipalID)
-			current := user.envelope(1)
+			current := user.Envelope(1)
 			if !user.Enabled || user.ID != mapping.PrincipalID || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion || (delivery.DeliveryTargetID != "" && delivery.DeliveryTargetID != mapping.DeliveryTargetID) {
 				_ = g.spool.UncertainDelivery(delivery.ID)
 				return
