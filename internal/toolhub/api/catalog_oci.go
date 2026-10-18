@@ -12,6 +12,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 func ExactCommitMetadata(value any) string {
@@ -358,7 +360,7 @@ func OciHTTPClient(registry, endpointHost string) *http.Client {
 		allowed["auth.docker.io"] = true
 		allowed["auth.docker.com"] = true
 	}
-	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+	return &http.Client{Transport: netguard.Transport(false), Timeout: 15 * time.Second, CheckRedirect: func(request *http.Request, _ []*http.Request) error {
 		host := strings.ToLower(request.URL.Hostname())
 		redirectAllowed := allowed[host]
 		if registry == "registry-1.docker.io" && strings.HasSuffix(host, ".cloudfront.docker.com") {

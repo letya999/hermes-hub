@@ -161,3 +161,10 @@ func TestOCIArtifactRejectsMissingOrDriftingEvidence(t *testing.T) {
 		t.Fatal("invalid tar accepted")
 	}
 }
+
+func TestOciHTTPClientBlocksPrivateRegistry(t *testing.T) {
+	client := OciHTTPClient("10.0.0.1", "10.0.0.1")
+	if _, err := client.Get("https://10.0.0.1/v2/"); err == nil || !strings.Contains(err.Error(), "netguard") {
+		t.Fatal("private registry dial not blocked", err)
+	}
+}

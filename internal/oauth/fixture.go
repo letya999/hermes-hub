@@ -122,6 +122,7 @@ func (f *Fixture) resource(w http.ResponseWriter, _ *http.Request) {
 
 func (f *Fixture) asMeta(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
+		"issuer":                        f.Server.URL,
 		"authorization_endpoint":        f.Server.URL + "/authorize",
 		"token_endpoint":                f.Server.URL + "/token",
 		"device_authorization_endpoint": f.Server.URL + "/device/code",

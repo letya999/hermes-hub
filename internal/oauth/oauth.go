@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 var (
@@ -70,8 +72,11 @@ type Broker struct {
 	Redirects []string
 	Secrets   credstore.Backend
 	HTTP      *http.Client
-	Now       func() time.Time
-	TTL       time.Duration
+	// AllowLoopback admits 127.0.0.0/8 metadata endpoints — the test fixture and
+	// local development authorization servers set it; production stays guarded.
+	AllowLoopback bool
+	Now           func() time.Time
+	TTL           time.Duration
 
 	mu      sync.Mutex
 	states  map[string]pending
@@ -116,7 +121,6 @@ func NewBroker(secrets credstore.Backend, redirects []string) *Broker {
 		Clients:   map[string]ClientCredential{},
 		Redirects: append([]string(nil), redirects...),
 		Secrets:   secrets,
-		HTTP:      &http.Client{Timeout: 10 * time.Second},
 		Now:       time.Now,
 		TTL:       10 * time.Minute,
 		states:    map[string]pending{},
@@ -418,6 +422,9 @@ func (b *Broker) DiscoverRemoteMCPAs(name, resourceURL string) (Provider, error)
 	if err != nil {
 		return Provider{}, err
 	}
+	if declared, _ := meta["issuer"].(string); !sameIssuer(declared, issuer) {
+		return Provider{}, fmt.Errorf("%w: issuer mismatch", ErrInvalid)
+	}
 	return b.registerDiscovered(name, resourceURL, resource, meta)
 }
 
@@ -434,11 +441,19 @@ func wellKnownURL(rawURL, suffix string) string {
 // secureDiscoveredURL is the fail-closed gate on every URL a metadata
 // document hands back: https, no embedded credentials, no fragment. Plain
 // http is admitted only for loopback issuers so local development and test
-// authorization servers still work.
+// authorization servers still work; IP literals outside loopback are refused
+// outright (metadata must name a host, not an address).
 func secureDiscoveredURL(raw string) bool {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return false
+	}
+	host := u.Hostname()
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if !addr.Unmap().IsLoopback() {
+			return false
+		}
+		return u.Scheme == "http" || u.Scheme == "https"
 	}
 	if u.Scheme == "https" {
 		return true
@@ -446,8 +461,22 @@ func secureDiscoveredURL(raw string) bool {
 	if u.Scheme != "http" {
 		return false
 	}
-	host := u.Hostname()
-	return host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost")
+	return host == "localhost" || strings.HasSuffix(host, ".localhost")
+}
+
+// sameIssuer implements the RFC 8414 §3.3 mix-up check: the issuer declared
+// inside AS metadata must identify the same origin+path the document was
+// fetched under.
+func sameIssuer(declared, expected string) bool {
+	d, err := url.Parse(strings.TrimSpace(declared))
+	if err != nil || d.Scheme == "" || d.Host == "" || d.RawQuery != "" || d.Fragment != "" {
+		return false
+	}
+	e, err := url.Parse(strings.TrimSpace(expected))
+	if err != nil {
+		return false
+	}
+	return d.Scheme == e.Scheme && strings.EqualFold(d.Host, e.Host) && strings.TrimSuffix(d.Path, "/") == strings.TrimSuffix(e.Path, "/")
 }
 
 // registerDiscovered builds the provider from the PRM document + AS metadata
@@ -636,6 +665,11 @@ func (b *Broker) postForm(endpoint string, form url.Values) (map[string]any, err
 }
 
 func (b *Broker) postFormClient(endpoint string, form url.Values, client ClientCredential) (map[string]any, error) {
+	if b.HTTP == nil {
+		if err := b.ready(); err != nil {
+			return nil, err
+		}
+	}
 	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -669,7 +703,12 @@ func (b *Broker) postFormClient(endpoint string, form url.Values, client ClientC
 }
 
 func (b *Broker) getJSON(endpoint string) (map[string]any, error) {
-	resp, err := b.HTTP.Get(endpoint) // #nosec G107 -- callers pass fixture or discovered HTTPS URLs.
+	if b.HTTP == nil {
+		if err := b.ready(); err != nil {
+			return nil, err
+		}
+	}
+	resp, err := b.HTTP.Get(endpoint) // #nosec G107 -- URLs already passed the netguard transport and secureDiscoveredURL.
 	if err != nil {
 		return nil, err
 	}
@@ -793,7 +832,7 @@ func (b *Broker) ready() error {
 		b.TTL = 10 * time.Minute
 	}
 	if b.HTTP == nil {
-		b.HTTP = &http.Client{Timeout: 10 * time.Second}
+		b.HTTP = netguard.Client(10*time.Second, b.AllowLoopback)
 	}
 	if b.states == nil {
 		b.states = map[string]pending{}

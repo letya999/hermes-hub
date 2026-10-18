@@ -654,7 +654,7 @@ func newRemoteOAuthFixture(t *testing.T) *remoteOAuthFixture {
 		_ = json.NewEncoder(w).Encode(map[string]any{"resource": issuer + "/mcp", "authorization_servers": []string{issuer}, "scopes_supported": []string{"mcp:read"}})
 	})
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token", "registration_endpoint": issuer + "/register", "scopes_supported": []string{"mcp:read"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token", "registration_endpoint": issuer + "/register", "scopes_supported": []string{"mcp:read"}})
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "dcr-client"})

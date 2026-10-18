@@ -373,9 +373,20 @@ func TestAgentFacingResultsCarryNoSecrets(t *testing.T) {
 		selector map[string]any
 		leak     string
 	}{
-		{"status", map[string]any{"onboarding_id": seed("onb-creds", api.PhaseAwaitingCreds, func(o *api.Onboarding) { o.AdmissionPending = true; o.FormNonce = secret; o.FormExpires = time.Now().Add(time.Hour) })}, secret},
-		{"required_credentials", map[string]any{"onboarding_id": seed("onb-creds2", api.PhaseAwaitingCreds, func(o *api.Onboarding) { o.AdmissionPending = true; o.FormNonce = secret; o.FormExpires = time.Now().Add(time.Hour) })}, secret},
-		{"status", map[string]any{"onboarding_id": seed("onb-conf", api.PhaseAwaitingConfirm, func(o *api.Onboarding) { o.ConfirmationNonce = secret; o.ConfirmationExpires = time.Now().Add(time.Hour) })}, secret},
+		{"status", map[string]any{"onboarding_id": seed("onb-creds", api.PhaseAwaitingCreds, func(o *api.Onboarding) {
+			o.AdmissionPending = true
+			o.FormNonce = secret
+			o.FormExpires = time.Now().Add(time.Hour)
+		})}, secret},
+		{"required_credentials", map[string]any{"onboarding_id": seed("onb-creds2", api.PhaseAwaitingCreds, func(o *api.Onboarding) {
+			o.AdmissionPending = true
+			o.FormNonce = secret
+			o.FormExpires = time.Now().Add(time.Hour)
+		})}, secret},
+		{"status", map[string]any{"onboarding_id": seed("onb-conf", api.PhaseAwaitingConfirm, func(o *api.Onboarding) {
+			o.ConfirmationNonce = secret
+			o.ConfirmationExpires = time.Now().Add(time.Hour)
+		})}, secret},
 		{"required_credentials", map[string]any{"onboarding_id": seed("onb-oauth", api.PhaseAwaitingOAuth, func(o *api.Onboarding) { o.ProviderAuthorizationURL = "https://as.example/authorize?state=" + secret })}, secret},
 	}
 	for _, tc := range cases {

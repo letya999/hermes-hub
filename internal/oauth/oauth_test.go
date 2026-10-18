@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 func authorizeCode(t *testing.T, authorizeURL string) string {
@@ -132,6 +133,7 @@ func TestSlackCaptureNeverStoresBotAndRequiresUserToken(t *testing.T) {
 	defer fixture.Close()
 	backend := testSecrets(t)
 	broker := NewBroker(backend, nil)
+	broker.HTTP = fixture.Client()
 	broker.Clients["slack"] = ClientCredential{ID: "fixture-client", Secret: "fixture-secret", BasicAuth: true}
 	tokens, err := broker.exchangeClient("slack", fixture.URL, url.Values{})
 	if err != nil {
@@ -287,7 +289,7 @@ func TestDiscoverRemoteMCPCapturesResourceRegistrationScopes(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"resource": server.URL, "authorization_servers": []string{server.URL}, "scopes_supported": []string{"mcp:read"}})
 	})
 	mux.HandleFunc(AuthorizationServerWellKnown, func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token", "registration_endpoint": server.URL + "/register"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token", "registration_endpoint": server.URL + "/register"})
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -438,7 +440,7 @@ func TestReadyDefaultsAudienceReplayAndDiscoveryErrors(t *testing.T) {
 	defer fixture.Close()
 	secrets := testSecrets(t)
 	redirect := "http://127.0.0.1/callback"
-	broker := &Broker{Secrets: secrets, Redirects: []string{redirect}, Providers: map[string]Provider{"fixture": fixture.Provider()}}
+	broker := &Broker{Secrets: secrets, Redirects: []string{redirect}, HTTP: fixture.Server.Client(), Providers: map[string]Provider{"fixture": fixture.Provider()}}
 	start, err := broker.StartAuthCode("alice", "alice", "google-work", "fixture", redirect)
 	if err != nil || start.State == "" {
 		t.Fatalf("ready defaults: %+v err=%v", start, err)
@@ -533,4 +535,91 @@ func TestReadyDefaultsAudienceReplayAndDiscoveryErrors(t *testing.T) {
 	if itoa(0) != "0" || !containsName([]string{"REFRESH_TOKEN"}, "REFRESH_TOKEN") || containsName(nil, "REFRESH_TOKEN") {
 		t.Fatal("helpers")
 	}
+}
+
+// CHG-0127 S0.4: discovery metadata is an SSRF surface — the PRM can name a
+// private issuer or redirect to one, and the broker must never dial it.
+func TestDiscoveryFailsClosedOnPrivateIssuer(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc(ProtectedResourceWellKnown, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"authorization_servers": []string{"https://10.0.0.1"}})
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+
+	broker := NewBroker(testSecrets(t), []string{"http://127.0.0.1/callback"})
+	broker.HTTP = netguard.Client(3*time.Second, true)
+	if _, err := broker.DiscoverRemoteMCPAs("bad-issuer", server.URL); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("private issuer accepted: %v", err)
+	}
+
+	var asHits int32
+	meta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asHits++
+	}))
+	defer meta.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == ProtectedResourceWellKnown {
+			http.Redirect(w, r, meta.URL, http.StatusFound)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer redirect.Close()
+	if _, err := broker.DiscoverRemoteMCPAs("redirect", redirect.URL); err == nil {
+		t.Fatal("cross-origin redirect to the AS document was followed")
+	}
+	if asHits != 0 {
+		t.Fatal("redirect target received a request")
+	}
+}
+
+// RFC 8414 §3.3: the AS metadata issuer must match the document origin it was
+// fetched from, otherwise a hostile PRM can bind an attacker AS to a trusted
+// resource.
+func TestDiscoveryIssuerMismatchRejected(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc(ProtectedResourceWellKnown, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"authorization_servers": []string{server.URL}})
+	})
+	mux.HandleFunc(AuthorizationServerWellKnown, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": "https://attacker.example",
+			"authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token"})
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+	broker := NewBroker(testSecrets(t), []string{"http://127.0.0.1/callback"})
+	broker.HTTP = server.Client()
+	if _, err := broker.DiscoverRemoteMCPAs("mismatch", server.URL); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("issuer mismatch accepted: %v", err)
+	}
+}
+
+// A broker without an injected client must default to the guarded transport —
+// loopback metadata endpoints are reachable only behind AllowLoopback.
+func TestBrokerDefaultClientIsGuarded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+	broker := NewBroker(testSecrets(t), nil)
+	if err := broker.ready(); err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := broker.HTTP.Get(server.URL); err == nil {
+		resp.Body.Close()
+		t.Fatal("default client reached loopback")
+	}
+	loose := NewBroker(testSecrets(t), nil)
+	loose.AllowLoopback = true
+	if err := loose.ready(); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := loose.HTTP.Get(server.URL)
+	if err != nil {
+		t.Fatalf("AllowLoopback client rejected loopback: %v", err)
+	}
+	resp.Body.Close()
 }

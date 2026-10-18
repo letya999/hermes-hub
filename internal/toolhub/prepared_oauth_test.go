@@ -134,6 +134,7 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	}))
 	defer provider.Close()
 	c.oauthFlows.mu.Lock()
+	c.oauthFlows.flows[state].broker.HTTP = provider.Client()
 	c.oauthFlows.flows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
 	c.oauthFlows.mu.Unlock()
 	c.OAuth = oauth.NewBroker(secrets, []string{c.origin() + "/oauth/callback"})
