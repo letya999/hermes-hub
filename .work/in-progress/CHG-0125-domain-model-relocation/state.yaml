@@ -2,16 +2,19 @@ change: CHG-0125-domain-model-relocation
 status: in-progress
 branch: refactor/comm-plane-separation
 done:
-  - internal/commodel — доменная модель (Job/Delivery/Task/User/Schedule/...)
-    с методами; алиасы в communication
-  - internal/channel — Channel iface + Caps + контрактные ошибки + адаптеры
-    telegram/slack/mock за Deps-швами
-  - internal/routines — чистая семантика расписаний (validate/cron/timing/
-    extract/recipes/ids) + DraftHooks для канала и скрипта
-  - boundary-тесты commodel/channel/routines + ID-золотники
+  - internal/commodel вЂ” Р»РёСЃС‚РѕРІР°СЏ РґРѕРјРµРЅРЅР°СЏ РјРѕРґРµР»СЊ (Job/Delivery/Task/User/Schedule/...)
+    + Р°Р»РёР°СЃС‹ РІ communication
+  - internal/channel вЂ” Channel iface + Caps + РєРѕРЅС‚СЂР°РєС‚РЅС‹Рµ РѕС€РёР±РєРё + Р°РґР°РїС‚РµСЂС‹
+    telegram/slack/mock Р·Р° Deps-С€РІР°РјРё
+  - internal/routines вЂ” РїР°РєРµС‚ СЃРµРјР°РЅС‚РёРєРё СЂР°СЃРїРёСЃР°РЅРёР№ (validate/cron/timing/
+    extract/recipes/ids) + DraftHooks РґР»СЏ РєР°РЅР°Р»Р° Рё СЃРєСЂРёРїС‚Р°
+  - boundary-С‚РµСЃС‚С‹ commodel/channel/routines + ID-Р·РѕР»РѕС‚РЅРёРєРё
+  - internal/channel/conformance_test.go вЂ” РєРѕРЅС‚СЂР°РєС‚РЅС‹Рµ РїСЂРѕРІРµСЂРєРё РєР°Р¶РґРѕРіРѕ
+    Р°РґР°РїС‚РµСЂР° РЅР° Р·Р°РіР»СѓС€РєР°С… deps (ID/Caps, normalize, ownership, admission)
+  - internal/routines/invariants_test.go вЂ” Р±Р°Р№С‚-С‚РѕС‡РЅС‹Р№ occurrence-id golden,
+    RoutineConversation, RoutineFailureDigest
 next:
-  - routines engine (TickSchedules/watchers/digests/proactive) — deps-шов,
-    отдельный CHG
-  - channeltest conformance harness — отдельный CHG
+  - routines engine (TickSchedules/watchers/digests/proactive) вЂ” deps-С€РѕРІ,
+    РѕС‚РґРµР»СЊРЅС‹Р№ CHG
 verification:
   - just check pending final run

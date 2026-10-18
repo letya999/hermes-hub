@@ -62,6 +62,12 @@ communication (цикл: gateway диспетчеризует через рее�
   DefaultCatchUp + DraftHooks{Channel,Script} (канал-реестр и Starlark
   остаются у владельца — инжектятся). commodel.IDPattern/ServiceNamePattern.
   ID-золотники фиксируют durable-форматы.
+- [x] Шаг 4 conformance + durable-id goldens: `internal/channel/conformance_test.go`
+  прогоняет контрактные проверки (ID/Caps, normalize-identity, occurrence
+  ownership, routine admission, telegram transport-ids) по каждому адаптеру
+  на заглушках deps — без gateway; `internal/routines/invariants_test.go`
+  фиксирует байт-точный occurrence-id golden, формат RoutineConversation и
+  job-id-инвариант RoutineFailureDigest.
 - [ ] Шаг 3b `internal/routines` engine (TickSchedules/occurrences/proactive/
   watchers/digests ~4k строк, Spool-методы) — следующий CHG (Deps-шов к
   spool/runtime/каналам по образцу commops).

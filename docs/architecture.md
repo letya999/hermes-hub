@@ -228,7 +228,13 @@ The operational plane — the synthetic canary probe and the caller-scoped healt
 block — lives in `internal/commops`, a leaf package that reaches the gateway only
 through injected `Deps` closures, so ops code cannot touch gateway internals. Each
 of `commodel`, `channel`, `routines`, `commops` and `serviceauth` carries a parser
-boundary test fixing the import direction. The shared enrolled-tokens file contract
+boundary test fixing the import direction. `internal/channel` also carries a
+conformance suite that exercises every registered adapter against stubbed deps —
+identity/normalize, capability declarations, occurrence-ownership validation and
+routine admission — so a new channel proves the contract without a gateway, and
+`internal/routines` freezes the durable id formats (occurrence hash inputs,
+routine conversation, failure digest) with byte-exact goldens. The shared
+enrolled-tokens file contract
 (`{"<token>": <envelope>}`) is owned by `internal/serviceauth`; authorization decisions
 stay local to each service. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
