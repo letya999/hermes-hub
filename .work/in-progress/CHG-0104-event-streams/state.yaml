@@ -7,7 +7,10 @@ slices:
   S6.3-supervisor-loop: done
   S6.4-agent-surface-and-docs: done
 just_check: green (85.35% own coverage; race+shuffle, vet, staticcheck, docs, actionlint)
-live_acceptance: unavailable (needs deployed connector + real account)
+live_acceptance: unavailable for stream mode 2026-10-18 — no wait-capable
+  connector enrolled for the local owner (telegram-mcp absent from inventory;
+  github tools are not wait-style). Poll-mode event subscriptions verified
+  live the same evening under CHG-0103 / issue #257 comment.
 notes: >
   Stream mode = hub-owned bounded long-poll loop per event schedule through
   the existing /v1/tool-call path (30s budget); no persistent-workload mode,
