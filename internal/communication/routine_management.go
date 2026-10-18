@@ -208,7 +208,7 @@ func (s *Spool) GetRoutine(id string, caller identity.Envelope) (RoutineCard, er
 		item.LastOccurrenceState, item.LastDeliveryState = s.reminderStateLocked(item)
 	}
 	card := RoutineCard{Schedule: item, State: state, WatchState: watch}
-	if item.Channel == "telegram_bot" {
+	if ch := channelFor(nil, item.Channel); ch != nil && ch.Caps().Destinations {
 		destination := s.routineDestinationLocked(item)
 		card.Destination = &destination
 	}

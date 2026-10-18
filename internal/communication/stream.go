@@ -155,11 +155,13 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			if text == strings.TrimSpace(mapping.Result) {
 				text = ""
 			}
-			if text != "" && job.Channel == "telegram_bot" {
-				// One editable status message per job (SPEC-0053 R2.2): the
-				// pending record coalesces to the latest text, and once sent
-				// the done record's message ID becomes the edit target.
-				id, markdown, statusDelivery = "job-"+job.ID+"-status", false, true
+			if text != "" {
+				if ch := channelFor(nil, job.Channel); ch != nil && ch.Caps().EditableStatus {
+					// One editable status message per job (SPEC-0053 R2.2): the
+					// pending record coalesces to the latest text, and once sent
+					// the done record's message ID becomes the edit target.
+					id, markdown, statusDelivery = "job-"+job.ID+"-status", false, true
+				}
 			}
 		}
 		if text != "" {

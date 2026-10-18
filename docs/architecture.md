@@ -210,7 +210,13 @@ authorized request. An uncertain result is never silently retried.
 
 Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
 channel sender (Telegram Bot API or Slack App Events API) to the configured user scope, persist jobs and replies in
-`/state/gateway`, and run one bounded invocation at a time. Slack App credentials stay
+`/state/gateway`, and run one bounded invocation at a time. Channel-specific behavior sits
+behind the `Channel` registry (`internal/communication/channel*.go`): delivery, artifact
+sending, routine admission/authorization, envelope mapping, blocked-notice routing and the
+optional capabilities (`ChannelCaps`: typing presence, editable status, artifacts,
+destinations, routine-origin pinning) dispatch through `channelPlugins[id]` rather than
+provider-name switches. A new channel registers an adapter implementing that seam; core
+job, spool and schedule mechanics stay channel-neutral. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
 media envelope, transcribe through the replaceable STT worker, and submit text to the
 same Hermes session. Spoken replies are a per-reply tool, not a mode: a `VOICE:` line in

@@ -719,14 +719,11 @@ func (s *Spool) blockScheduleLocked(item *Schedule, reason string, now time.Time
 		item.LastFailureSHA256 = digest
 		text := "Рутина «" + item.ScheduleID + "» остановлена: " + reason + ". Откройте её через routine_get, исправьте и сделайте resume — или удалите."
 		d := Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
-		if item.Channel == "telegram_bot" {
+		if ch := channelFor(nil, item.Channel); ch != nil {
 			// The notice goes to the owner's verified home, never to the
 			// schedule's own destination — a stale binding is exactly what
 			// may have caused the block.
-			target := item.Envelope.DeliveryTargetID
-			d.ConversationID, d.DeliveryTargetID = target, target
-			d.TaskID, d.TopicID = "", 0
-			d.ChatID, _ = strconv.ParseInt(strings.TrimPrefix(target, "telegram-"), 10, 64)
+			ch.RouteBlockedNotice(*item, &d)
 		}
 		d, err := normalizeDelivery(d)
 		if err == nil {
@@ -1049,11 +1046,10 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if strings.TrimSpace(in.Input) == "" || len(in.Input) > 64*1024 || envstore.LooksLikeEnv(in.Input) {
 		return errors.New("invalid routine input")
 	}
-	if in.Channel != "telegram_bot" && in.Channel != "slack_app" && in.Channel != "mock" {
+	if ch := channelFor(nil, in.Channel); ch == nil {
 		return errors.New("invalid schedule channel")
-	}
-	if in.Channel == "slack_app" && in.SlackChannel != "" && (!validSlackIMChannel(in.SlackChannel) || !validSlackThread(in.SlackThread)) {
-		return errors.New("invalid schedule channel")
+	} else if err := ch.ValidateSchedule(in); err != nil {
+		return err
 	}
 	if in.Timezone == "" {
 		return errors.New("timezone required")

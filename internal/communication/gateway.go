@@ -562,15 +562,12 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 }
 
 func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string) error {
-	envelope := user.envelope(sender)
-	if channel == "mock" {
-		envelope = user.mockEnvelope(chatID)
+	ch := g.channel(channel)
+	if ch == nil {
+		return errors.New("channel is not registered")
 	}
+	envelope := ch.JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
-	if channel == "telegram_bot" && chatID < 0 {
-		// Group forum jobs deliver to the group chat, not the sender's DM.
-		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(chatID, 10)
-	}
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
@@ -580,8 +577,8 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 		// a failed wake is harmless — /v1/jobs ensures again on dispatch.
 		go g.wakeRuntime(job)
 	}
-	if channel == "telegram_bot" {
-		_ = g.api.SendChatAction(ctx, chatID, task.TopicID, "typing")
+	if ch.Caps().Typing {
+		_ = ch.SendPresence(ctx, chatID, task.TopicID)
 	}
 	return nil
 }
@@ -626,7 +623,11 @@ func (g *Gateway) progressTick(ctx context.Context) {
 	}
 	for _, id := range ids {
 		m, found, err := g.spool.Mapping(id)
-		if err != nil || !found || m.Channel != "telegram_bot" || m.CancelRequested {
+		if err != nil || !found || m.CancelRequested {
+			continue
+		}
+		ch := g.channel(m.Channel)
+		if ch == nil || !ch.Caps().Typing {
 			continue
 		}
 		// Only an admitted run earns live progress: a queued or wedged job
@@ -634,7 +635,7 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		if m.RunID == "" {
 			continue
 		}
-		_ = g.api.SendChatAction(ctx, m.ChatID, m.TopicID, "typing")
+		_ = ch.SendPresence(ctx, m.ChatID, m.TopicID)
 		base := strings.TrimSpace(m.StatusText)
 		if base == "" {
 			base = "Выполняю запрос."

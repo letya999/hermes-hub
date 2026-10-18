@@ -147,22 +147,20 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 		if in.Channel == "" {
 			in.Channel = "telegram_bot"
 		}
-		if in.Channel == "telegram_bot" && in.ChatID == 0 {
-			user := g.user(caller.PrincipalID)
-			if len(user.TelegramIDs) > 0 {
-				in.ChatID = user.TelegramIDs[0]
-			}
+		ch := g.channel(in.Channel)
+		if ch == nil {
+			http.Error(w, "invalid schedule channel", http.StatusBadRequest)
+			return
 		}
-		if in.Channel == "mock" {
-			owner, err := g.mockLinkOwner(in.ChatID)
-			if err != nil || owner != caller.PrincipalID {
+		if prepared, err := ch.PrepareRoutine(&in, caller); err != nil {
+			if errors.Is(err, errRoutineDenied) {
 				http.Error(w, "mock chat not owned", http.StatusForbidden)
-				return
+			} else {
+				http.Error(w, err.Error(), http.StatusBadRequest)
 			}
-			// Mock-channel routines carry the mock envelope so occurrence
-			// authorization and delivery targeting stay coherent end to end.
-			in.Envelope = g.user(caller.PrincipalID).mockEnvelope(in.ChatID)
-			caller = in.Envelope
+			return
+		} else {
+			caller = prepared
 		}
 		in = normalizeScheduleDraft(in)
 		if err := validateScheduleDraft(in, caller); err != nil {

@@ -5,11 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/letya999/hermes-hub/internal/identity"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -35,29 +33,12 @@ func normalizeDelivery(d Delivery) (Delivery, error) {
 	if d.Channel == "" {
 		d.Channel = "telegram_bot"
 	}
-	switch d.Channel {
-	case "telegram_bot":
-		transportID := "telegram-" + strconv.FormatInt(d.ChatID, 10)
-		if d.ConversationID == "" {
-			d.ConversationID = transportID
-		}
-		if d.DeliveryTargetID == "" {
-			d.DeliveryTargetID = transportID
-		}
-		// Group forum chats carry negative ids; zero stays invalid.
-		if d.ChatID == 0 || !identity.ValidID(d.ConversationID) || d.DeliveryTargetID != transportID {
-			return d, errors.New("invalid delivery identity")
-		}
-	case "slack_app":
-		if !identity.ValidID(d.ConversationID) || !identity.ValidID(d.DeliveryTargetID) || d.DeliveryTargetID != d.ConversationID || !validSlackIMChannel(d.SlackChannel) || !validSlackThread(d.SlackThread) {
-			return d, errors.New("invalid delivery identity")
-		}
-	case "mock":
-		if d.ChatID == 0 {
-			return d, errors.New("invalid delivery identity")
-		}
-	default:
+	ch := channelFor(nil, d.Channel)
+	if ch == nil {
 		return d, errors.New("invalid delivery identity")
+	}
+	if err := ch.NormalizeDelivery(&d); err != nil {
+		return d, err
 	}
 	return d, nil
 }

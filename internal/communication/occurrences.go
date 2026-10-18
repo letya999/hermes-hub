@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -313,25 +312,11 @@ func (g *Gateway) authorizeOccurrence(job Job) error {
 	if !user.Enabled || user.ID != job.UserID || job.ActorID != user.ID || job.ScopeID != "user:"+user.ID || job.OrganizationID != g.config.OrganizationID || job.Trigger != "cron" {
 		return errors.New("routine owner unavailable")
 	}
-	switch job.Channel {
-	case "telegram_bot":
-		mapped, ok := g.users[job.ChatID]
-		if !ok || mapped.ID != user.ID || (configured && !slices.Contains(user.TelegramIDs, job.ChatID)) || !g.ownsRoutineEnvelope(job, user.envelope(job.ChatID)) {
-			return errors.New("routine policy changed")
-		}
-	case "slack_app":
-		if job.Envelope.PrincipalID != user.ID || !strings.HasPrefix(job.Envelope.ExternalIdentityID, "slack-") {
-			return errors.New("routine policy changed")
-		}
-	case "mock":
-		owner, err := g.mockLinkOwner(job.ChatID)
-		if err != nil || owner != user.ID || !g.ownsRoutineEnvelope(job, user.mockEnvelope(job.ChatID)) {
-			return errors.New("routine policy changed")
-		}
-	default:
+	ch := g.channel(job.Channel)
+	if ch == nil {
 		return errors.New("routine owner unavailable")
 	}
-	return nil
+	return ch.AuthorizeOccurrence(job, user, configured)
 }
 
 func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool {
@@ -392,21 +377,12 @@ func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {
 	if len(o.ScheduleID) > 80 || !spoolIDPattern.MatchString(o.ScheduleID) || o.Revision == 0 || o.DueAt.IsZero() || caller != o.Job.Envelope || caller.Validate(o.Job.UserID, o.Job.ContextID, o.Job.RuntimeID, o.Job.PolicyVersion) != nil || o.Job.ActorID != caller.PrincipalID || o.Job.ScopeID != "user:"+o.Job.UserID {
 		return errors.New("invalid occurrence ownership")
 	}
-	switch o.Job.Channel {
-	case "telegram_bot":
-		if o.Job.ChatID <= 0 || caller != identity.TelegramEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion) {
-			return errors.New("invalid occurrence ownership")
-		}
-	case "slack_app":
-		if !strings.HasPrefix(caller.ExternalIdentityID, "slack-") {
-			return errors.New("invalid occurrence ownership")
-		}
-	case "mock":
-		if o.Job.ChatID <= 0 || caller != identity.MockEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion) {
-			return errors.New("invalid occurrence ownership")
-		}
-	default:
+	ch := channelFor(nil, o.Job.Channel)
+	if ch == nil {
 		return errors.New("invalid occurrence ownership")
+	}
+	if err := ch.ValidateOccurrence(o, caller); err != nil {
+		return err
 	}
 	if strings.TrimSpace(o.Job.Text) == "" || len(o.Job.Text) > 64*1024 || o.Job.Sensitive || envstore.LooksLikeEnv(o.Job.Text) {
 		return errors.New("invalid routine input")

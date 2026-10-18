@@ -69,9 +69,11 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		if err != nil {
 			return RunOutcome{}, err
 		}
-		if ok && mapping.RoutineOriginVersion == 1 && mapping.MatchesJob(job) && job.Channel == "telegram_bot" {
-			body, _ := json.Marshal(map[string]string{"origin_job_id": job.ID})
-			origin = string(body)
+		if ok && mapping.RoutineOriginVersion == 1 && mapping.MatchesJob(job) {
+			if ch := channelFor(nil, job.Channel); ch != nil && ch.Caps().RoutineOrigin {
+				body, _ := json.Marshal(map[string]string{"origin_job_id": job.ID})
+				origin = string(body)
+			}
 		}
 		if ok && mapping.RunID != "" && mapping.SessionID != "" {
 			r.Resume = true

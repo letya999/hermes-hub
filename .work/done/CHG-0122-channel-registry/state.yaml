@@ -1,0 +1,27 @@
+change: CHG-0122
+title: "Channel registry — delivery and authorization dispatch polymorphically"
+status: done
+phase: phase-2
+slices:
+  - name: deliver-dispatch
+    state: done
+    notes: "deliverOne routes through channelPlugins registry; unregistered durable channel -> unrouted + uncertain, never telegram fallback"
+  - name: routine-auth-hooks
+    state: done
+    notes: "AuthorizeOccurrence/ValidateOccurrence via Channel; shared owner/scope checks stay in authorizeOccurrence"
+  - name: delivery-normalize
+    state: done
+    notes: "NormalizeDelivery per channel; normalizeDelivery defaults empty channel to telegram_bot (default-channel policy)"
+  - name: capabilities
+    state: done
+    notes: "ChannelCaps{Typing, EditableStatus, Artifacts, Destinations, RoutineOrigin}; progressTick/stream artifacts/destination-card/origin-pin consume caps"
+  - name: seams
+    state: done
+    notes: "DeliverArtifact, SendPresence, PrepareRoutine, RouteBlockedNotice, JobEnvelope, VerifyDeliveryTarget (optional iface)"
+deferred:
+  - "routine_destinations.go telegram invariants (user.envelope, TelegramIDs, topic tasks) — destinations are a telegram-bound feature; cap-consistency cosmetic only"
+  - "gateway_delivery.go telegram-gated diagnostic send log — production-channel diagnostics, not a mechanic"
+  - "queueDelivery/defaultTask/normalizeDelivery channel defaults — default-channel policy literals"
+  - "canary/health extraction — needs the operational deps interface; after channel seam landed"
+tests:
+  - channel_registry_test.go: 6 seam tests (unrouted, presence, editable status, artifacts, destination card, routine origin, verifier, prepare, blocked notice, inbound envelope)
