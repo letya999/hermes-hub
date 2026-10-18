@@ -34,7 +34,9 @@ communication (цикл: gateway диспетчеризует через рее�
    watchers/digests ~3.5k строк) — после появления модели и channel
    пакета; нужен ещё один deps-шов к spool/runtime/каналам.
 4. **import-boundary тест**: go list guard, чтобы каналы не тянули
-   gateway, а gateway не перечислял провайдеров.
+   gateway, а gateway не перечислял провайдеров. Начало положено:
+   `internal/commops` и `internal/serviceauth` уже несут parser-based
+   boundary-тесты (leaf-направление зафиксировано).
 
 ## Порядок и критерии
 
