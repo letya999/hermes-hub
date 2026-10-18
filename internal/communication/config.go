@@ -2,6 +2,7 @@ package communication
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
@@ -23,6 +24,7 @@ var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var telegramIDPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
 var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var spoolIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var serviceNamePattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 var gatewayOwnedEnv = map[string]bool{
 	"TELEGRAM_BOT_TOKEN": true, "TELEGRAM_ALLOWED_USERS": true,
 	"SLACK_SIGNING_SECRET": true, "SLACK_BOT_TOKEN": true, "SLACK_APP_TOKEN": true, "SLACK_ALLOWED_USERS": true,
@@ -132,6 +134,18 @@ type Config struct {
 	// MockDir relocates mock-channel capture outside the production spool;
 	// empty keeps the historical spool/mock-* location (SPEC-0053 R2.3).
 	MockDir string `yaml:"-"`
+	// ServiceEndpoints is the operator-registered catalog of probe services
+	// (external renderers, parser APIs like job_ftch): name → endpoint. The
+	// schedule draft names a key; URLs never come from the probe, so internal
+	// addresses stay an explicit operator decision (SPEC-0059 R5.5).
+	ServiceEndpoints map[string]ServiceEndpoint `yaml:"service_endpoints,omitempty"`
+}
+
+// ServiceEndpoint is one registered probe service: the URL the hub POSTs
+// the probe request to, and an optional bearer token for that endpoint.
+type ServiceEndpoint struct {
+	URL  string `json:"url" yaml:"url"`
+	Auth string `json:"auth,omitempty" yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -151,6 +165,11 @@ func (c Config) Validate() error {
 		}
 		if c.RuntimeAuth == "" {
 			return errors.New("runtime auth is required")
+		}
+	}
+	for name, endpoint := range c.ServiceEndpoints {
+		if err := validateServiceEndpoint(name, endpoint); err != nil {
+			return fmt.Errorf("service_endpoints: %w", err)
 		}
 	}
 	seenUsers, seenTelegram, seenSlack := map[string]bool{}, map[int64]bool{}, map[string]bool{}
@@ -323,8 +342,55 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config.ServiceEndpoints, err = serviceEndpointsFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	fillChannelSecrets(&config)
 	return config, nil
+}
+
+// serviceEndpointsFromEnv parses HUB_SERVICE_ENDPOINTS — a JSON object of
+// name → "url" or {"url","auth"} — into the registered probe-service catalog
+// used by render/service watcher kinds (SPEC-0059 R5.5).
+func serviceEndpointsFromEnv() (map[string]ServiceEndpoint, error) {
+	raw := strings.TrimSpace(os.Getenv("HUB_SERVICE_ENDPOINTS"))
+	if raw == "" {
+		return nil, nil
+	}
+	var entries map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &entries) != nil {
+		return nil, errors.New("HUB_SERVICE_ENDPOINTS must be a JSON object")
+	}
+	out := map[string]ServiceEndpoint{}
+	for name, encoded := range entries {
+		var endpoint ServiceEndpoint
+		var plain string
+		if json.Unmarshal(encoded, &plain) == nil {
+			endpoint.URL = plain
+		} else if json.Unmarshal(encoded, &endpoint) != nil {
+			return nil, fmt.Errorf("HUB_SERVICE_ENDPOINTS: %q must be a url or {url,auth}", name)
+		}
+		if err := validateServiceEndpoint(name, endpoint); err != nil {
+			return nil, fmt.Errorf("HUB_SERVICE_ENDPOINTS: %w", err)
+		}
+		out[name] = endpoint
+	}
+	return out, nil
+}
+
+// validateServiceEndpoint keeps every registration path (env JSON, YAML
+// config) on the same rules: a restricted name and a credential-free http(s)
+// URL, so a schedule key can never smuggle in its own target.
+func validateServiceEndpoint(name string, endpoint ServiceEndpoint) error {
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid service name %q", name)
+	}
+	u, err := url.Parse(endpoint.URL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+		return fmt.Errorf("%q must be an http(s) url without credentials", name)
+	}
+	return nil
 }
 
 // spoolRetentionFromEnv reads HUB_SPOOL_RETENTION as a duration; the default

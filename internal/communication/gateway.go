@@ -123,6 +123,7 @@ func New(config Config) (*Gateway, error) {
 	}
 	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	spool.JobDone = g.toolHubJobDone
+	spool.probeScript = g.runProbeScript
 	if config.TelegramAuthEnabled {
 		g.telegramAuth, err = newTelegramAuthState(config)
 		if err != nil {

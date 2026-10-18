@@ -2,6 +2,7 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0059](active/SPEC-0059-watcher-probe-pipeline.md) | Frozen: watcher fetch/extract pipeline, isolated script/command probes, snapshotted recipes |
 | [SPEC-0058](active/SPEC-0058-routine-destinations.md) | Frozen: routine destination discovery, binding, edits and history |
 | [SPEC-0057](active/SPEC-0057-compact-routine-tools.md) | Frozen: five-tool routine interface amendment |
 | [SPEC-0056](active/SPEC-0056-routine-lifecycle.md) | Frozen: owner routine lifecycle and interval windows |

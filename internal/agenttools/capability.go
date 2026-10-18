@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "4.0.0",
+		Version:      "5.0.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -65,7 +65,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			// restart-scheduled application. No arbitrary config writes.
 			tool("settings_get", "settings.read", "Show runtime self-setting overrides: the manageable key allowlist, current overrides and their effective values. Secret values are never shown.", api.ReadEffect, use("read", "settings"), opt("key")),
 			tool("settings_set", "settings.write", "Set one manageable runtime setting or reset it to the rendered default. Applies after the scheduled runtime restart.", api.WriteEffect, use("write", "settings"), str("key"), opt("value")),
-			tool("routine_create", "routines.create", routineDescriptions["routine_create"], api.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("origin_job_id"), opt("destination_task_id"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("tool"), opt("args"), opt("notify_mode"), opt("quiet_from"), opt("quiet_to"), arg("daily_limit", "integer", false), arg("max_retries", "integer", false), arg("source_ids", "array", false), arg("timing", "object", false)),
+			tool("routine_create", "routines.create", routineDescriptions["routine_create"], api.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("origin_job_id"), opt("destination_task_id"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("tool"), opt("args"), opt("service"), opt("steps"), opt("wait_for"), opt("needs"), opt("recipe"), opt("extract"), opt("probe_script"), opt("deliver_mode"), opt("artifact_name"), opt("notify_mode"), opt("quiet_from"), opt("quiet_to"), arg("daily_limit", "integer", false), arg("max_retries", "integer", false), arg("source_ids", "array", false), arg("timing", "object", false)),
 			tool("routine_list", "routines.list", routineDescriptions["routine_list"], api.ReadEffect, use("list", "routines"), arg("limit", "integer", false), opt("cursor"), opt("kind"), opt("state"), opt("query"), opt("view")),
 			tool("routine_get", "routines.list", routineDescriptions["routine_get"], api.ReadEffect, use("list", "routines"), str("id"), arg("include", "array", false), arg("history_limit", "integer", false), opt("history_cursor"), arg("preview_limit", "integer", false)),
 			tool("routine_edit", "routines.update", routineDescriptions["routine_edit"], api.WriteEffect, use("update", "routines"), str("id"), str("action"), arg("expected_revision", "integer", true), arg("patch", "object", false), opt("until"), opt("origin_job_id")),

@@ -6,6 +6,7 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0045](ADR-0045-watcher-probe-pipeline.md) | Accepted: watcher probe = fetch + deterministic extract pipeline; isolated script/command probes; snapshotted recipes |
 | [ADR-0044](ADR-0044-routine-destinations.md) | Accepted: verified task destinations and per-run origin for routine delivery |
 | [ADR-0043](ADR-0043-compact-routine-tools.md) | Accepted: five public routine tools; lifecycle operations retained internally |
 | [ADR-0042](ADR-0042-routine-lifecycle.md) | Accepted direction: routine lifecycle, revision fences and interval windows |

@@ -139,7 +139,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	}
 	toolBody := []byte(`{"events":[{"id":"m-1","text":"first mail"},{"id":"m-2","text":"second mail"}]}`)
 	toolCall := func(context.Context, string, *WatchProbe) ([]byte, error) { return toolBody, nil }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	seen := 0
@@ -167,7 +167,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	if err := s.DispatchDueOccurrences(eo.DueAt, g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := s.ClaimDelivery(); d != nil {
@@ -184,7 +184,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	}
 	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, func(context.Context, string, *WatchProbe) ([]byte, error) {
 		return nil, errors.New("403 forbidden")
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	state, err = s.EventStateOf("e1")

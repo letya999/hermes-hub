@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func TestM10ScriptIsolationHTTPContract(t *testing.T) {
 	if !reflect.DeepEqual(commands[1], []string{"rm", "-f", options["--name"]}) {
 		t.Fatalf("cleanup targeted another container: %v", commands[1])
 	}
-	source, err := base64.StdEncoding.DecodeString(args[len(args)-2])
+	source, err := base64.StdEncoding.DecodeString(args[len(args)-4])
 	if err != nil || string(source) != request.Text {
 		t.Fatalf("source transport=%q %v", source, err)
 	}
@@ -91,6 +92,119 @@ func TestM10ScriptIsolationHTTPContract(t *testing.T) {
 	runErr = errors.New("killed")
 	if got := call(string(body), "secret"); got.Code != 502 {
 		t.Fatalf("failure=%d", got.Code)
+	}
+}
+
+func TestScriptProbeInputAndWatchMount(t *testing.T) {
+	var commands [][]string
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "run" {
+			return []byte(`["value"]`), nil
+		}
+		return nil, nil
+	}, nil)
+	request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", Text: `emit(input())`}, DueAt: time.Now(), Input: "fetched-body", MountSpace: true}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/v1/script", strings.NewReader(string(body)))
+	r.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("script=%d %s", w.Code, w.Body.String())
+	}
+	args := commands[0]
+	decoded, err := base64.StdEncoding.DecodeString(args[len(args)-2])
+	if err != nil || string(decoded) != "fetched-body" {
+		t.Fatalf("input not transported: %q %v", decoded, err)
+	}
+	var mount string
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			mount = args[i+1]
+		}
+	}
+	wantSrc := filepath.Join(root, "watch")
+	if !strings.Contains(mount, "dst=/watch") || !strings.Contains(mount, "readonly") || !strings.Contains(mount, "src="+wantSrc) {
+		t.Fatalf("watch mount missing or wrong: %q", mount)
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, "workspace") {
+			t.Fatalf("mount leaks workspace: %q", arg)
+		}
+	}
+}
+
+func TestScriptProbeInputBounds(t *testing.T) {
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			return []byte(`["ok"]`), nil
+		}
+		return nil, nil
+	}, nil)
+	call := func(input string) *httptest.ResponseRecorder {
+		request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", Text: `emit(input())`}, DueAt: time.Now(), Input: input}
+		body, _ := json.Marshal(request)
+		r := httptest.NewRequest("POST", "/v1/script", strings.NewReader(string(body)))
+		r.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		m.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if got := call(strings.Repeat("x", 63*1024)); got.Code != 200 {
+		t.Fatalf("bounded input rejected: %d", got.Code)
+	}
+	if got := call(strings.Repeat("x", 64*1024+1)); got.Code != 400 {
+		t.Fatalf("oversized input accepted: %d", got.Code)
+	}
+}
+
+func TestScriptProbeNeedsTransportAndBounds(t *testing.T) {
+	var commands [][]string
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "run" {
+			return []byte(`["ok"]`), nil
+		}
+		return nil, nil
+	}, nil)
+	call := func(needs []string) *httptest.ResponseRecorder {
+		request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", Text: `emit("ok")`}, DueAt: time.Now(), Needs: needs}
+		body, _ := json.Marshal(request)
+		r := httptest.NewRequest("POST", "/v1/script", strings.NewReader(string(body)))
+		r.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		m.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if got := call([]string{"alpha", "beta"}); got.Code != 200 {
+		t.Fatalf("needs request rejected: %d %s", got.Code, got.Body.String())
+	}
+	args := commands[0]
+	tail := args[len(args)-2:]
+	got := []string{}
+	for _, encoded := range tail {
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatalf("need not base64: %v", err)
+		}
+		got = append(got, string(raw))
+	}
+	if !reflect.DeepEqual(got, []string{"alpha", "beta"}) {
+		t.Fatalf("needs argv=%v", got)
+	}
+	if got := call([]string{"a", "b", "c", "d", "e"}); got.Code != 400 {
+		t.Fatalf("five needs accepted: %d", got.Code)
+	}
+	large := strings.Repeat("x", 32*1024)
+	if got := call([]string{large, large, large, large}); got.Code != 200 {
+		t.Fatalf("large bounded needs rejected: %d", got.Code)
+	}
+	if got := call([]string{strings.Repeat("x", 64*1024+1)}); got.Code != 400 {
+		t.Fatalf("oversized need accepted: %d", got.Code)
 	}
 }
 

@@ -301,6 +301,53 @@ func (g *Gateway) toolCallProbeWithin(ctx context.Context, principalID string, p
 	return []byte(out.Text), nil
 }
 
+// serviceProbe POSTs a render/service probe to an operator-registered
+// endpoint from Config.ServiceEndpoints; the response body feeds the normal
+// extract chain (SPEC-0059 R5.4/R5.5). Endpoint URLs come only from operator
+// config — a probe can name a key but never reach an arbitrary address.
+func (g *Gateway) serviceProbe(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
+	endpoint, ok := g.config.ServiceEndpoints[probe.Service]
+	if !ok {
+		return nil, fmt.Errorf("probe service %q is not registered", probe.Service)
+	}
+	body, err := json.Marshal(map[string]any{
+		"kind":     probe.Kind,
+		"url":      probe.URL,
+		"args":     probe.Args,
+		"steps":    probe.Steps,
+		"wait_for": probe.WaitFor,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint.URL, "/"), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if endpoint.Auth != "" {
+		req.Header.Set("Authorization", "Bearer "+endpoint.Auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > 512*1024 {
+		return nil, errors.New("service probe response exceeds size limit")
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("probe service %q status %d", probe.Service, resp.StatusCode)
+	}
+	return raw, nil
+}
+
 // toolHubJobDone notifies ToolHub that a job reached a terminal status so
 // task-tier bounded-cli cells keyed by that job are released. Best-effort:
 // the caller already treats the job as done and the controller's own ladder

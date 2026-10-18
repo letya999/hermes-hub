@@ -22,7 +22,7 @@ var routineDescriptions = map[string]string{
 	"routine_resume":  "Resume an owned routine using expected_revision from get/list. Expired once schedules need a new due time first. This does not replay past occurrences.",
 	"routine_history": "Read a page of retained routine runs with separate occurrence, verified agent execution and delivery outcomes, including partial or uncertain multipart delivery. Pass next_cursor as cursor. Detail is retained 48h; summaries follow spool retention (normally 14d). Delivery is not a read receipt. Stream subscriptions expose current event_state in routine_get instead of occurrences.",
 	"routine_preview": "Read planned slots without running a probe, model or delivery. Includes next snoozed due then original cadence. limit is 1..20. State=paused means hypothetical dates until resume; completed/deleted have no future slots.",
-	"routine_create":  "Create owner/context routine. Pass origin_job_id from this run's routing reference for its session/topic, or destination_task_id from routine_list view=destinations for another; current requires origin_job_id. Do not guess chat/topic IDs. Default kind=agent; reminder sends exact text and deterministic actions never wake a model. after:180s resolves once; show deadline. once:RFC3339, five-field cron or every:15m (1m..8760h). timing: windows [{from:HH:MM,to:HH:MM}], weekdays [0..6], at [HH:MM], start_at/end_at. Preview dates. watcher: URL/regex capture or probe_kind=mcp_tool with tool/args JSON object string; baseline and unchanged values silent, changes show old/new. check: expect changed|unchanged|equals:value, URL/task:<id>/tool; bounded retries. script: Starlark; digest: sources; brief: optional synthesis. quiet_from/quiet_to and daily_limit govern notifications; notify_mode=agent escalates.",
+	"routine_create":  "Create owner/context routine. Pass origin_job_id from this run's routing reference or destination_task_id from routine_list view=destinations; current requires origin_job_id. Do not guess chat/topic IDs. Default kind=agent; reminder sends exact text; deterministic kinds never wake a model. after:180s resolves once; once:RFC3339, cron or every:15m (1m..8760h). timing windows/weekdays/at/start_at/end_at. watcher probe_kind: http url (regex capture or extract JSON steps css/html2text/grep/drop_regex/sort_lines/json_path/rss, recipe=rss_feed), mcp_tool|tool (tool+args JSON), script (probe_script via input(), one value), command (owner watch/ dir, no fetch), render|service (registered name; steps/wait_for JSON); needs JSON {tool,args} prefetch for script/command; deliver_mode=content|artifact(+artifact_name); baseline/unchanged silent, changes show old/new. check: expect changed|unchanged|equals:value on URL/task:<id>/tool. quiet_from/quiet_to and daily_limit govern notifications; notify_mode=agent escalates.",
 	"routine_list":    "Find compact owner/context routine cards in stable ID pages. view=destinations instead lists live owned session/task names with task_id, chat_id, topic_id and conversation_id for routing. Optional case-insensitive query searches ID/text (routine view) or task name/ID (destination view) before paging; kind/state filters apply to routine view. limit 1..100 default 20; pass next_cursor as cursor. Use routine_get for full text, destination availability, outcomes and errors. Inspect the same ID after uncertain creation before proposing a replacement.",
 	"routine_update":  "Edit patch using expected_revision from get/list; conflict means read and reconsider. Fields: input, expression, timezone, job_kind, probe, expect, max_retries, notify_mode, quiet_from, quiet_to, daily_limit, source_ids, sink, delivery, catch_up_window_ns, timing. Text retains due/pause/snooze; timing clears snooze and resets anchor, preserving pause. Kind change clears old action fields; supply complete target configuration. Clear optional probe/timing with null. once:RFC3339, five-field cron or every:15m; after: is creation-only. timing: windows [{from:HH:MM,to:HH:MM}], weekdays [0..6], at [HH:MM], start_at/end_at RFC3339. Opening inclusive, close exclusive, overnight allowed; extras form union. Identity/routing immutable.",
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
@@ -214,13 +214,53 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			create["timing"] = r.Timing
 		}
 		if kind == "watcher" || kind == "check" {
-			create["probe"] = map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex, "tool": r.Tool}
+			probe := map[string]any{"kind": r.ProbeKind, "url": r.URL, "regex": r.Regex, "tool": r.Tool}
+			if r.Recipe != "" {
+				probe["recipe"] = r.Recipe
+			}
+			if r.Extract != "" {
+				var steps []map[string]any
+				if err := json.Unmarshal([]byte(r.Extract), &steps); err != nil {
+					return nil, errors.New("extract must be a JSON array of steps")
+				}
+				probe["extract"] = steps
+			}
+			if r.ProbeScript != "" {
+				probe["script"] = r.ProbeScript
+			}
+			if r.Needs != "" {
+				var needs []map[string]any
+				if err := json.Unmarshal([]byte(r.Needs), &needs); err != nil {
+					return nil, errors.New("needs must be a JSON array of {tool,args}")
+				}
+				probe["needs"] = needs
+			}
+			if r.Service != "" {
+				probe["service"] = r.Service
+			}
+			if r.Steps != "" {
+				var steps []map[string]any
+				if err := json.Unmarshal([]byte(r.Steps), &steps); err != nil {
+					return nil, errors.New("steps must be a JSON array of browser actions")
+				}
+				probe["steps"] = steps
+			}
+			if r.WaitFor != "" {
+				probe["wait_for"] = r.WaitFor
+			}
 			if r.Args != "" {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(r.Args), &args); err != nil {
-					return nil, err
+					return nil, errors.New("args must be a JSON object")
 				}
-				create["probe"].(map[string]any)["args"] = args
+				probe["args"] = args
+			}
+			create["probe"] = probe
+			if r.DeliverMode != "" {
+				create["deliver_mode"] = r.DeliverMode
+			}
+			if r.ArtifactName != "" {
+				create["artifact_name"] = r.ArtifactName
 			}
 		}
 		if kind == "check" {

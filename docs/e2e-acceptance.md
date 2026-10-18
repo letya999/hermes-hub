@@ -4,6 +4,25 @@ last_verified: 2026-10-18
 ---
 # Sequential acceptance registry
 
+CHG-0116 (ADR-0045/SPEC-0059, issue #248 probe side) adds the watcher
+fetch → extract → compare pipeline: ordered extraction steps, isolated
+`kind=script`/`kind=command` probes (`input()`, owner `watch/` mount, file
+builtins) and snapshotted recipes. Coverage is unit/integration tests plus
+`just check`/`just security` on 2026-10-18; live dev-stack acceptance for
+css-extract, script-probe and command/file-watch probes has NOT been run —
+no entry below claims it. Deterministic unit coverage is not evidence of
+behavior in the real container.
+
+CHG-0117 (ADR-0045 D6–D10, SPEC-0059 R5) generalizes probe sources:
+`kind=tool` alias over the owner read-tool catalog, `needs[]` hub-prefetched
+tool calls for script/command probes, `deliver_mode` content/artifact, and
+`kind=render`/`kind=service` against operator-registered
+`service_endpoints`. Coverage is unit/integration tests (httptest doubles)
+plus `just check` on 2026-10-18. NO live acceptance has been run against a
+real render browser, job_ftch instance, MCP connector or ToolHub web_search
+— registering an endpoint and creating a render/service watcher against the
+real stack remains a manual verification step.
+
 CHG-0113 consolidates the current public routine surface into five tools.
 routine_edit dispatches update/pause/resume/snooze with revision checks;
 routine_get optionally includes bounded history and next_runs. E2E-013/014
@@ -15,6 +34,12 @@ the runtime executor with exactly five routine tools. All four edit actions,
 scoped search, revision conflict, invalid arguments, combined get and retirement
 passed; the future fixture was retired with zero external sends. This run used
 the existing legacy dev access mode, not a managed-profile migration.
+
+CHG-0114/0115 (ADR-0044/SPEC-0058, ADR-0042) add owned delivery destinations
+with origin pinning and correct early-snooze acceptance: destination
+discovery, create/move/delete with revision fences, origin job mapping and
+the HTTP 400 early-deadline rejection are recorded in the routine guide and
+their state records; real delivery evidence is one Telegram outbox send.
 
 CHG-0112 extends routine acceptance with ten business operations, revision fences,
 bounded list/history, kind/source conversion and interval/window evaluation. See
