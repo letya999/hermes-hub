@@ -221,9 +221,13 @@ admission/authorization, envelope mapping, blocked-notice routing and the option
 capabilities (`Caps`: typing presence, editable status, artifacts, destinations,
 routine-origin pinning) dispatch through `channelPlugins[id]` rather than
 provider-name switches. A new channel implements that seam and registers an adapter;
-core job, spool and schedule mechanics stay channel-neutral. Routine semantics —
-draft validation, cron/timing math, extract pipelines, recipes and durable ids —
-live in the leaf `internal/routines` (spool IO and dispatch stay with the gateway).
+core job, spool and schedule mechanics stay channel-neutral. Routine semantics and
+orchestration — draft validation, cron/timing math, extract pipelines, recipes,
+durable ids, and the `routines.Engine` driving schedule ticks, occurrences,
+watchers, digests, proactive runs, script execution, reminders and destination
+bindings — live in the leaf `internal/routines`. The engine shares the spool's
+mutex and root and reaches the gateway, channels and runtime through an
+injected `Deps` seam, so `internal/routines` never imports them back.
 The operational plane — the synthetic canary probe and the caller-scoped health
 block — lives in `internal/commops`, a leaf package that reaches the gateway only
 through injected `Deps` closures, so ops code cannot touch gateway internals. Each

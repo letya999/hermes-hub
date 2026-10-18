@@ -552,6 +552,25 @@ place, and prints a JSON report with paths, counts and checksums but no secret v
 message text, cookies or session contents. Rollback is restoring the untouched source
 into a new scope home; do not delete it until the new runtime is verified.
 
+Knowledge sources staged under the legacy `spool/knowledge/<principal>` tree are
+relocated the same way — offline, with the gateway stopped:
+
+```text
+hubctl spool migrate --spool <dir> --state <dir>          # dry-run report
+hubctl spool migrate --spool <dir> --state <dir> --apply
+```
+
+The command runs under `LockSpool`, copies (never moves) each
+`<spool>/knowledge/<principal>[/context]/<name>` into
+`<state>/knowledge/<principal>[/context]/`, and reports per principal what it
+copied, what already matched, and which names conflicted or were skipped
+(non-regular files, symlinks, invalid names, sources over 9 MiB). Existing
+targets are never overwritten. Because the source is left in place, a rollback
+to the previous image still finds its knowledge; delete `spool/knowledge` by
+hand only after the new release is verified. No other spool directory moved —
+`schedules`, `occurrences`, `watchers`, `digests`, `tasks`, `events`, `outbox`,
+`mappings`, `conversations`, `inbound` and `callbacks` keep their paths.
+
 Context data uses `hubctl context backup|restore|export|purge`. A verified snapshot
 covers Hermes home, workspace, connection metadata, ToolHub bindings, schedules and
 the communication delivery ledger. Plaintext secrets stay on `hubctl secret backup`

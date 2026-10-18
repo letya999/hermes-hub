@@ -3,7 +3,7 @@ id: CHG-0125
 title: "Domain model relocation — enabling internal/channel and internal/routines packages"
 type: refactor
 scope: internal/communication, internal/channel, internal/routines
-status: planned
+status: done
 ---
 
 # CHG-0125 — Phase 3 remainder: package moves (roadmap)

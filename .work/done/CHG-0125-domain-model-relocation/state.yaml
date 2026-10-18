@@ -1,5 +1,5 @@
 change: CHG-0125-domain-model-relocation
-status: in-progress
+status: done
 branch: refactor/comm-plane-separation
 done:
   - internal/commodel — листовая доменная модель (Job/Delivery/Task/User/Schedule/...)
@@ -20,8 +20,8 @@ done:
     schedules//occurrences//watchers//digests/, заимствование спула через
     Deps-замыкания; gateway-методы и эвент-плоскость остались в communication,
     *Spool держит форвардеры; engine_test.go фиксирует seam без communication)
-next:
-  - Ф5 spool-migration до снятия совместимых чтений (блокер релиз-пер-фазу)
-  - docs/channels.md + ADR по новым номерам (0044/0058 заняты)
+next: []
 verification:
   - just check PASS (coverage 86.39%, lint/docs/config clean)
+  - docs/channels.md + ADR-0046..0050 добавлены; architecture.md обновлён
+  - Ф5 вынесен в CHG-0126: hubctl spool migrate (knowledge → state, copy-not-move)

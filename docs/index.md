@@ -9,6 +9,7 @@ last_verified: 2026-10-07
 | Document | Purpose | Verified |
 |---|---|---|
 | [routines.md](routines.md) | Routine lifecycle, interval windows, scope, outcomes and acceptance | 2026-10-18 |
+| [channels.md](channels.md) | Channel adapter contract, Caps, registry dispatch, conformance and how to add a channel | 2026-10-18 |
 | [m10-stabilization.md](m10-stabilization.md) | Current file, routine, usage, knowledge and mock behavior | 2026-10-12 |
 | [ai-stp-compatibility.md](ai-stp-compatibility.md) | Pinned issue 181 compatibility research and corrections | 2026-10-11 |
 | [cli-policy.md](cli-policy.md) | Isolated terminal, private package installs and atomic operator catalog binding | 2026-10-12 |
