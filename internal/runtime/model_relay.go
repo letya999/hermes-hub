@@ -342,7 +342,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		// Same review-contract fences as the env relay: fixed paths only, no
 		// query strings, absolute-form targets or protocol upgrades.
 		known := (req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions") ||
-			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops")) ||
+			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops" || req.URL.Path == "/v1/quota")) ||
 			(req.Method == http.MethodPut && req.URL.Path == "/v1/model")
 		if !known || req.URL.RawPath != "" || req.URL.RawQuery != "" || req.URL.Scheme != "" || req.URL.Host != "" || req.Header.Get("Upgrade") != "" {
 			http.NotFound(w, req)
@@ -350,6 +350,10 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		if req.Method == http.MethodPut && req.URL.Path == "/v1/model" {
 			r.serveSelect(w, req)
+			return
+		}
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/quota" {
+			r.serveQuota(w, req)
 			return
 		}
 		file, err := r.current()

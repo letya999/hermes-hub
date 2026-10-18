@@ -58,7 +58,7 @@ func TestRenderEnvHelpers(t *testing.T) {
 		}
 	}
 	protected := runtimeProtectedEnvKeys(s)
-	if !slices.IsSorted(protected) || !slices.Contains(protected, "TELEGRAM_BOT_TOKEN") {
+	if !slices.IsSorted(protected) || !slices.Contains(protected, "TELEGRAM_BOT_TOKEN") || !slices.Contains(protected, "HUB_CLIPROXY_MGMT_KEY") {
 		t.Fatalf("protected keys: %v", protected)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("A_KEY=1\nEMPTY=\n# c\n"), 0600); err != nil {

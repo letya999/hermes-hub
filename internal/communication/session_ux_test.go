@@ -414,24 +414,17 @@ func TestAutoTitleAdoptsSessionTitleOnce(t *testing.T) {
 }
 
 func TestQuotaLinesRendersMeasuredBuckets(t *testing.T) {
-	var apiCallBody map[string]any
+	relayCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer mgmt-test" {
-			w.WriteHeader(http.StatusUnauthorized)
+		relayCalls++
+		if r.URL.Path != "/v1/quota" || r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer relay-test" {
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		switch r.URL.Path {
-		case "/v0/management/auth-files":
-			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{
-				{"provider": "antigravity", "auth_index": "idx-1", "project_id": "proj", "email": "u@example.com"},
-			}})
-		case "/v0/management/api-call":
-			_ = json.NewDecoder(r.Body).Decode(&apiCallBody)
-			body := `{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","resetTime":"2026-10-07T07:22:39Z","remainingFraction":0.924},{"window":"5h","resetTime":"2026-10-05T10:07:37Z","remainingFraction":0.988}]}]}`
-			_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 200, "body": body})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"lines": []string{
+			"Лимиты подписки (u@example.com):",
+			"  Gemini Models: weekly 92.4% (сброс 07.10 07:22 UTC).",
+		}})
 	}))
 	defer server.Close()
 
@@ -440,23 +433,21 @@ func TestQuotaLinesRendersMeasuredBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HUB_CLIPROXY_MGMT_URL", server.URL)
-	t.Setenv("HUB_CLIPROXY_MGMT_KEY", "mgmt-test")
-	t.Setenv("HUB_CLIPROXY_AUTH_INDEX", "")
+	t.Setenv("HUB_MODEL_RELAY_URL", server.URL)
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "relay-test")
 	lines := g.quotaLines(context.Background())
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"u@example.com", "Gemini Models", "92.4%", "98.8%", "07.10"} {
+	for _, want := range []string{"u@example.com", "Gemini Models", "92.4%", "07.10"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("quota line missing %q: %s", want, joined)
 		}
 	}
-	header, _ := apiCallBody["header"].(map[string]any)
-	if header["Authorization"] != "Bearer $TOKEN$" || header["User-Agent"] != "antigravity" {
-		t.Fatalf("api-call headers: %v", header)
-	}
 	// Cache hit: the second call returns the same lines without re-fetching.
 	if again := g.quotaLines(context.Background()); strings.Join(again, "\n") != joined {
 		t.Fatal("quota cache missed")
+	}
+	if relayCalls != 1 {
+		t.Fatalf("relay re-fetched inside cache TTL: %d", relayCalls)
 	}
 }
 
@@ -466,30 +457,15 @@ func TestQuotaLinesDisabledOrFailing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("HUB_MODEL_RELAY_URL", "")
 	if lines := g.quotaLines(context.Background()); len(lines) != 1 || !strings.Contains(lines[0], "не настроен") {
 		t.Fatalf("unconfigured quota status: %v", lines)
 	}
-	t.Setenv("HUB_CLIPROXY_MGMT_URL", "http://127.0.0.1:1")
-	t.Setenv("HUB_CLIPROXY_MGMT_KEY", "k")
+	t.Setenv("HUB_MODEL_RELAY_URL", "http://127.0.0.1:1")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "k")
 	lines := g.quotaLines(context.Background())
 	if len(lines) != 1 || !strings.Contains(lines[0], "недоступно") {
 		t.Fatalf("failure not reported honestly: %v", lines)
-	}
-}
-
-func TestQuotaSelectsOnlyActiveAntigravityCredential(t *testing.T) {
-	files := []cliproxyAuthFile{
-		{Provider: "codex", AuthIndex: "other"},
-		{Provider: "antigravity", AuthIndex: "disabled", Disabled: true},
-		{Provider: "antigravity", AuthIndex: "own"},
-	}
-	if selected, ok := pickAuthFile(files, ""); !ok || selected.AuthIndex != "own" {
-		t.Fatalf("unexpected default quota credential: %v %v", selected.Provider, ok)
-	}
-	for _, index := range []string{"other", "disabled", "missing"} {
-		if _, ok := pickAuthFile(files, index); ok {
-			t.Fatalf("accepted unrelated or disabled credential %q", index)
-		}
 	}
 }
 

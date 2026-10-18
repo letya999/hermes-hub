@@ -447,20 +447,19 @@ func TestUsageUpdateRunsBesideUpdatePoll(t *testing.T) {
 }
 
 func TestUsageOverviewIncludesQuotaWithoutBlockingPoll(t *testing.T) {
-	management := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v0/management/auth-files":
-			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{"provider": "antigravity", "auth_index": "own", "project_id": "own-project"}}})
-		case "/v0/management/api-call":
-			_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 200, "body": `{"groups":[{"displayName":"Gemini","buckets":[{"window":"weekly","remainingFraction":0.75}]}]}`})
-		default:
-			w.WriteHeader(http.StatusNotFound)
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/quota" || r.Header.Get("Authorization") != "Bearer test-key" {
+			w.WriteHeader(http.StatusForbidden)
+			return
 		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"lines": []string{
+			"Лимиты подписки (u@example.com):",
+			"  Gemini: weekly 75.0%.",
+		}})
 	}))
-	defer management.Close()
-	t.Setenv("HUB_CLIPROXY_MGMT_URL", management.URL)
-	t.Setenv("HUB_CLIPROXY_MGMT_KEY", "test-key")
-	t.Setenv("HUB_CLIPROXY_AUTH_INDEX", "")
+	defer relay.Close()
+	t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "test-key")
 	g, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)

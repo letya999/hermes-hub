@@ -304,6 +304,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		modelRelay["env_file"] = []any{
 			M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
+			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay."+s.Environment+".env")), "format": "raw"},
 			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
 		}
 		modelRelay["volumes"] = []any{

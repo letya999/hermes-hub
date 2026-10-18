@@ -1019,18 +1019,23 @@ back from the pinned Hermes session API; fields the upstream does not
 authoritatively expose — current-prompt context and the context window —
 render `unknown` instead of an estimate. Plain `/usage` reads the journal and
 provider quota without waking Hermes. When the operator configures
-`HUB_CLIPROXY_MGMT_URL`, `HUB_CLIPROXY_MGMT_KEY` and optionally
-`HUB_CLIPROXY_AUTH_INDEX` in the channel env file, `/usage` additionally
-queries the pinned CLIProxyAPI management surface (`auth-files`, then an
-authenticated `api-call` to the provider quota endpoint) and prints measured
-subscription limits with reset times; OAuth tokens stay inside the proxy. The
-result is cached for five minutes and failures render `недоступно` rather than
-a guess. Set these values in `secrets.<env>.env`: render regenerates
-`communication.<env>.env` and keeps the key out of the Hermes runtime. The
+`HUB_CLIPROXY_MGMT_KEY` (and optionally `HUB_CLIPROXY_MGMT_URL`,
+`HUB_CLIPROXY_AUTH_INDEX`) in `secrets.<env>.env`, the space's model-relay
+exposes `GET /v1/quota` — the same admin bearer that `/model` switching uses.
+The gateway's `/usage` calls that endpoint and prints the relay-rendered
+subscription limits with reset times; the relay queries the pinned CLIProxyAPI
+management surface (`auth-files`, then an authenticated `api-call` to the
+provider quota endpoint) so OAuth tokens stay inside the proxy. Without
+`HUB_CLIPROXY_MGMT_URL` the relay falls back to its own
+`HUB_MODEL_RELAY_CLIPROXY` address, so managed deployments only need the key.
+The result is cached by the gateway for five minutes and failures render
+`недоступно` rather than a guess. Render regenerates
+`model-relay.<env>.env` and keeps the management key out of both the
+communication env and the Hermes runtime. The
 CLIProxyAPI management key also enables privileged management endpoints, so
 use a strong private key and expose the proxy only to the local stack. In the
 proxy's private `config.yaml`, set `remote-management.secret-key` to that key
-and `remote-management.allow-remote: true` so the separate gateway container
+and `remote-management.allow-remote: true` so the separate relay container
 can reach it; the proxy stores the key as a hash after startup.
 Separately, every terminal job appends one measured input/output token
 entry to a durable per-scope usage journal; duplicate job/run pairs are ignored.
