@@ -1,0 +1,17 @@
+change: CHG-0125-domain-model-relocation
+status: in-progress
+branch: refactor/comm-plane-separation
+done:
+  - internal/commodel Ч доменна€ модель (Job/Delivery/Task/User/Schedule/...)
+    с методами; алиасы в communication
+  - internal/channel Ч Channel iface + Caps + контрактные ошибки + адаптеры
+    telegram/slack/mock за Deps-швами
+  - internal/routines Ч чиста€ семантика расписаний (validate/cron/timing/
+    extract/recipes/ids) + DraftHooks дл€ канала и скрипта
+  - boundary-тесты commodel/channel/routines + ID-золотники
+next:
+  - routines engine (TickSchedules/watchers/digests/proactive) Ч deps-шов,
+    отдельный CHG
+  - channeltest conformance harness Ч отдельный CHG
+verification:
+  - just check pending final run

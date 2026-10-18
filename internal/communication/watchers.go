@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -80,23 +79,6 @@ func (s *Spool) SeedWatchBaseline(id string, value string, now time.Time) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return atomicJSON(s.watchPath(id), WatchState{ScheduleID: id, Baseline: watchHash(value), Value: value})
-}
-
-// watchValue extracts the compared value — the first capture group of the
-// compiled regex, or the whole bounded body when no regex is given (hash the
-// extracted value, never the raw page).
-func watchValue(body []byte, re *regexp.Regexp) string {
-	if re == nil {
-		return string(body)
-	}
-	if m := re.FindSubmatch(body); len(m) > 1 {
-		for _, group := range m[1:] {
-			if len(group) > 0 {
-				return string(group)
-			}
-		}
-	}
-	return ""
 }
 
 // taskProbeValueLocked resolves a task: probe under the schedule owner's

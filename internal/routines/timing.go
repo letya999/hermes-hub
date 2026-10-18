@@ -1,14 +1,16 @@
-package communication
+package routines
 
 import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
-var errRoutineExhausted = errors.New("routine has no future slot within its bounds")
+var ErrExhausted = errors.New("routine has no future slot within its bounds")
 
-func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, error) {
+func NextSchedule(in commodel.Schedule, loc *time.Location, from time.Time) (time.Time, error) {
 	if strings.HasPrefix(strings.TrimSpace(in.Expression), "every:") && in.Delivery == "stream" {
 		return time.Time{}, errors.New("stream delivery does not use interval schedules")
 	}
@@ -19,7 +21,7 @@ func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, e
 		if len(in.Timing.Windows) > 8 || len(in.Timing.At) > 24 {
 			return time.Time{}, errors.New("timing exceeds bounds")
 		}
-		windows := map[RoutineWindow]bool{}
+		windows := map[commodel.RoutineWindow]bool{}
 		if !in.Timing.EndAt.IsZero() && !in.Timing.StartAt.IsZero() && !in.Timing.EndAt.After(in.Timing.StartAt) {
 			return time.Time{}, errors.New("end_at must follow start_at")
 		}
@@ -45,7 +47,7 @@ func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, e
 		}
 	}
 	if !strings.HasPrefix(strings.TrimSpace(in.Expression), "every:") {
-		return nextExpression(in.Expression, loc, from)
+		return NextExpression(in.Expression, loc, from)
 	}
 	d, err := time.ParseDuration(strings.TrimPrefix(strings.TrimSpace(in.Expression), "every:"))
 	if err != nil {
@@ -56,7 +58,7 @@ func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, e
 	}
 	p := in.Timing
 	if p == nil {
-		p = &RoutineTiming{}
+		p = &commodel.RoutineTiming{}
 	}
 	if !p.StartAt.IsZero() && from.Before(p.StartAt) {
 		from = p.StartAt.Add(-time.Nanosecond)
@@ -167,7 +169,7 @@ func nextSchedule(in Schedule, loc *time.Location, from time.Time) (time.Time, e
 		day = day.AddDate(0, 0, 1)
 	}
 	if best.IsZero() {
-		return best, errRoutineExhausted
+		return best, ErrExhausted
 	}
 	return best, nil
 }

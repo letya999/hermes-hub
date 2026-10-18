@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"io"
 	"net/url"
 	"os"
@@ -23,8 +24,8 @@ import (
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var telegramIDPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
 var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
-var spoolIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-var serviceNamePattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+var spoolIDPattern = commodel.IDPattern
+var serviceNamePattern = commodel.ServiceNamePattern
 var gatewayOwnedEnv = map[string]bool{
 	"TELEGRAM_BOT_TOKEN": true, "TELEGRAM_ALLOWED_USERS": true,
 	"SLACK_SIGNING_SECRET": true, "SLACK_BOT_TOKEN": true, "SLACK_APP_TOKEN": true, "SLACK_ALLOWED_USERS": true,

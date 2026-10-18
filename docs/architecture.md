@@ -210,16 +210,25 @@ authorized request. An uncertain result is never silently retried.
 
 Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
 channel sender (Telegram Bot API or Slack App Events API) to the configured user scope, persist jobs and replies in
-`/state/gateway`, and run one bounded invocation at a time. Channel-specific behavior sits
-behind the `Channel` registry (`internal/communication/channel*.go`): delivery, artifact
-sending, routine admission/authorization, envelope mapping, blocked-notice routing and the
-optional capabilities (`ChannelCaps`: typing presence, editable status, artifacts,
-destinations, routine-origin pinning) dispatch through `channelPlugins[id]` rather than
-provider-name switches. A new channel registers an adapter implementing that seam; core
-job, spool and schedule mechanics stay channel-neutral. The operational plane — the
-synthetic canary probe and the caller-scoped health block — lives in `internal/commops`,
-a leaf package that reaches the gateway only through injected `Deps` closures, so ops
-code cannot touch gateway internals. The shared enrolled-tokens file contract
+`/state/gateway`, and run one bounded invocation at a time. The durable domain model
+(`Job`, `Delivery`, `Task`, `User`, `Schedule`, `RoutineOccurrence`, `JobMapping`, …)
+lives in the leaf `internal/commodel`; `internal/communication` re-exports it through
+type aliases so its exported contract stays stable. Channel-specific behavior sits
+behind `internal/channel`: the `Channel` contract plus the telegram/slack/mock
+adapters, each reaching the gateway only through an injected `Deps` struct
+(`TelegramDeps`, `SlackDeps`, `MockDeps`). Delivery, artifact sending, routine
+admission/authorization, envelope mapping, blocked-notice routing and the optional
+capabilities (`Caps`: typing presence, editable status, artifacts, destinations,
+routine-origin pinning) dispatch through `channelPlugins[id]` rather than
+provider-name switches. A new channel implements that seam and registers an adapter;
+core job, spool and schedule mechanics stay channel-neutral. Routine semantics —
+draft validation, cron/timing math, extract pipelines, recipes and durable ids —
+live in the leaf `internal/routines` (spool IO and dispatch stay with the gateway).
+The operational plane — the synthetic canary probe and the caller-scoped health
+block — lives in `internal/commops`, a leaf package that reaches the gateway only
+through injected `Deps` closures, so ops code cannot touch gateway internals. Each
+of `commodel`, `channel`, `routines`, `commops` and `serviceauth` carries a parser
+boundary test fixing the import direction. The shared enrolled-tokens file contract
 (`{"<token>": <envelope>}`) is owned by `internal/serviceauth`; authorization decisions
 stay local to each service. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded

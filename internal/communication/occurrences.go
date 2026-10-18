@@ -2,37 +2,20 @@ package communication
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/envstore"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
-	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-func OccurrenceID(o RoutineOccurrence) string { return occurrenceID(o) }
-
-func occurrenceID(o RoutineOccurrence) string {
-	sum := sha256.Sum256([]byte(o.ScheduleID + "\x00" + strconv.FormatUint(o.Revision, 10) + "\x00" + o.DueAt.UTC().Format(time.RFC3339Nano)))
-	return "routine-" + hex.EncodeToString(sum[:])
-}
-
-// routineConversation isolates routine sessions: every occurrence of one
-// schedule shares a stable "routine-<id>" conversation instead of the owner's
-// interactive task conversation. TaskID/TopicID remain on the job for
-// delivery routing only.
-func routineConversation(scheduleID string) string {
-	return "routine-" + scheduleID
-}
 func (s *Spool) PutOccurrence(o RoutineOccurrence, caller identity.Envelope) error {
 	if err := validateOccurrence(o, caller); err != nil {
 		return err
@@ -345,14 +328,6 @@ func (g *Gateway) occurrenceFor(jobID string) (RoutineOccurrence, bool) {
 		return RoutineOccurrence{}, false
 	}
 	return o, true
-}
-
-// routineFailureDigest normalizes an owner-facing error text so repeated
-// occurrences of the same failure hash identically — the per-occurrence job
-// ID is stripped before hashing.
-func routineFailureDigest(jobID, message string) string {
-	sum := sha256.Sum256([]byte(strings.ReplaceAll(message, jobID, "")))
-	return hex.EncodeToString(sum[:])
 }
 
 func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {

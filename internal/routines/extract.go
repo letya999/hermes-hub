@@ -1,4 +1,8 @@
-package communication
+// Package routines owns the channel-neutral semantics of the routines
+// plane: schedule validation and calendar math, probe extract pipelines,
+// recipe expansion and durable record ids. The package is a leaf — engine
+// concerns (spool IO, dispatch, watchers) stay with their owner.
+package routines
 
 import (
 	"bytes"
@@ -13,6 +17,8 @@ import (
 
 	"github.com/andybalholm/cascadia"
 	"golang.org/x/net/html"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
 // ExtractStep is one deterministic transform in a probe extract pipeline
@@ -28,8 +34,8 @@ var extractStepKinds = map[string]bool{
 	"json_path": true, "rss": true,
 }
 
-// validateExtractStep rejects steps that can never extract at create time.
-func validateExtractStep(step ExtractStep) error {
+// ValidateExtractStep rejects steps that can never extract at create time.
+func ValidateExtractStep(step commodel.ExtractStep) error {
 	if !extractStepKinds[step.Kind] {
 		return errors.New("invalid extract step kind")
 	}
@@ -51,9 +57,9 @@ func validateExtractStep(step ExtractStep) error {
 	return nil
 }
 
-// extractValue reduces a fetched body to the compared watch value by running
+// ExtractValue reduces a fetched body to the compared watch value by running
 // the probe's extract steps in order.
-func extractValue(probe *WatchProbe, body []byte) (string, error) {
+func ExtractValue(probe *commodel.WatchProbe, body []byte) (string, error) {
 	if probe == nil {
 		return "", errors.New("probe required")
 	}
@@ -74,11 +80,11 @@ func extractValue(probe *WatchProbe, body []byte) (string, error) {
 		if re.NumSubexp() == 0 || re.FindSubmatch(body) == nil {
 			return "", errors.New("probe did not match")
 		}
-		return watchValue(body, re), nil
+		return WatchValue(body, re), nil
 	}
 	current := body
 	for i, step := range probe.Extract {
-		out, err := applyExtractStep(step, current)
+		out, err := ApplyExtractStep(step, current)
 		if err != nil {
 			return "", fmt.Errorf("extract step %d (%s): %w", i, step.Kind, err)
 		}
@@ -90,7 +96,7 @@ func extractValue(probe *WatchProbe, body []byte) (string, error) {
 	return string(current), nil
 }
 
-func applyExtractStep(step ExtractStep, in []byte) ([]byte, error) {
+func ApplyExtractStep(step commodel.ExtractStep, in []byte) ([]byte, error) {
 	switch step.Kind {
 	case "css":
 		sel, err := cascadia.Parse(step.Selector)
@@ -366,4 +372,21 @@ func nodeText(n *html.Node) string {
 	}
 	walk(n)
 	return b.String()
+}
+
+// WatchValue extracts the compared value — the first capture group of the
+// compiled regex, or the whole bounded body when no regex is given (hash the
+// extracted value, never the raw page).
+func WatchValue(body []byte, re *regexp.Regexp) string {
+	if re == nil {
+		return string(body)
+	}
+	if m := re.FindSubmatch(body); len(m) > 1 {
+		for _, group := range m[1:] {
+			if len(group) > 0 {
+				return string(group)
+			}
+		}
+	}
+	return ""
 }

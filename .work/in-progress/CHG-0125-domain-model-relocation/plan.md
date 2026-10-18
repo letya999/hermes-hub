@@ -55,7 +55,16 @@ communication (цикл: gateway диспетчеризует через рее�
   gateway (`sendEditReply`, `sendParts`, `voicePlan` …) — они gateway-
   семантика, не канальная.
 - [x] Boundary-тесты: channel и commodel не импортируют services.
-- [ ] Шаг 3 `internal/routines` — следующий CHG (deps-шов к spool/runtime).
+- [x] Шаг 3a `internal/routines` semantics: ScheduleIntent/ValidateSchedule(Draft)/
+  NormalizeScheduleDraft/ResolveRelativeReminder + NextSchedule/NextExpression/
+  NextCron + ExtractValue/ValidateExtractStep/ApplyExtractStep/WatchValue +
+  ExpandRecipe + OccurrenceID/RoutineConversation/RoutineFailureDigest +
+  DefaultCatchUp + DraftHooks{Channel,Script} (канал-реестр и Starlark
+  остаются у владельца — инжектятся). commodel.IDPattern/ServiceNamePattern.
+  ID-золотники фиксируют durable-форматы.
+- [ ] Шаг 3b `internal/routines` engine (TickSchedules/occurrences/proactive/
+  watchers/digests ~4k строк, Spool-методы) — следующий CHG (Deps-шов к
+  spool/runtime/каналам по образцу commops).
 
 - Каждый шаг — отдельный коммит с `just check` PASS и тем же покрытием.
 - Никаких дублирующих типов (`commodel.Delivery` vs `channel.Delivery`) —
