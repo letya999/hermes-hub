@@ -71,8 +71,14 @@ func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
 	if json.Unmarshal(b, &live) != nil || live.State != "failed" {
 		t.Fatalf("exhausted retries must settle failed: %+v", live)
 	}
+	// The exhausted probe surfaces one deduped owner alert, never one per
+	// retry attempt.
+	d, derr := s.ClaimDelivery()
+	if derr != nil || d == nil || !strings.Contains(d.Text, "probe failed") || !strings.Contains(d.Text, "source down") {
+		t.Fatalf("failed probe must alert the owner once: %+v %v", d, derr)
+	}
 	if d, _ := s.ClaimDelivery(); d != nil {
-		t.Fatalf("failed probe notified the user: %+v", d)
+		t.Fatalf("duplicate failure alert leaked: %+v", d)
 	}
 }
 
@@ -248,8 +254,13 @@ func TestCheckTaskProbeForeignTaskFails(t *testing.T) {
 	if json.Unmarshal(b, &live) != nil || live.State != "failed" {
 		t.Fatalf("foreign task must fail closed: %+v", live)
 	}
+	// The dead probe alerts the owner once; the text carries no task details.
+	d, derr := s.ClaimDelivery()
+	if derr != nil || d == nil || !strings.Contains(d.Text, "probe failed") {
+		t.Fatalf("foreign task must alert once: %+v %v", d, derr)
+	}
 	if d, _ := s.ClaimDelivery(); d != nil {
-		t.Fatalf("foreign task notified the user: %+v", d)
+		t.Fatalf("duplicate failure alert leaked: %+v", d)
 	}
 }
 

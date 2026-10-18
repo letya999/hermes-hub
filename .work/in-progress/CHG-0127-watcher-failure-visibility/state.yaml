@@ -1,0 +1,32 @@
+schema: 1
+change: CHG-0127
+title: Watcher failure visibility and quiet/drift fixes
+status: in_progress
+branch: refactor/comm-plane-separation
+updated: 2026-10-19
+phase: validation
+github_issue: 248
+design_status: implemented
+implementation_status: implemented
+slices:
+  S1-failure-visibility: completed
+  S2-vacuous-values: completed
+  S3-quiet-escalation: completed
+  S4-drift-noise: completed
+  S5-error-detail: completed
+validation:
+  documents: done
+  just_check: passed
+  docker_check: not_run
+  just_security: not_run
+  live_acceptance: partial
+evidence:
+  - "just check: all packages green, coverage 86.38% (>=85%)"
+  - "go test ./internal/routines ./internal/communication ./internal/agenttools: green"
+  - "live M13 run found the defects; fixes verified by unit/integration
+    tests, not re-run live — live re-acceptance pending"
+notes: >
+  Failure alerts dedupe per normalized error and reset after the first
+  successful probe. Agent escalation in quiet hours settles capped (cannot
+  defer a model wake like a delivery). Probe kinds bypass the binding-drift
+  check entirely.

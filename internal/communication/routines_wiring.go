@@ -189,6 +189,18 @@ func (s *Spool) loadWatchStateLocked(id string) (WatchState, error) {
 	return s.rt.LoadWatchStateLocked(id)
 }
 
+// watchLastError surfaces a watcher's durable probe failure in routine
+// listings — a dead source must not masquerade as a healthy quiet one.
+func (s *Spool) watchLastError(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadWatchStateLocked(id)
+	if err != nil {
+		return ""
+	}
+	return st.LastError
+}
+
 func (s *Spool) taskProbeValueLocked(principal, taskID string) (string, error) {
 	return s.rt.TaskProbeValueLocked(principal, taskID)
 }

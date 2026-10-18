@@ -104,19 +104,20 @@ func (s *Spool) PreviewRoutine(id string, caller identity.Envelope, count int, n
 }
 
 type RoutineSummary struct {
-	Kind     string    `json:"job_kind"`
-	Timezone string    `json:"timezone"`
-	ID       string    `json:"schedule_id"`
-	Revision uint64    `json:"revision"`
-	State    string    `json:"state"`
-	NextDue  time.Time `json:"next_due"`
+	Kind      string    `json:"job_kind"`
+	Timezone  string    `json:"timezone"`
+	ID        string    `json:"schedule_id"`
+	Revision  uint64    `json:"revision"`
+	State     string    `json:"state"`
+	NextDue   time.Time `json:"next_due"`
+	LastError string    `json:"last_error,omitempty"`
 }
 type RoutinePage struct {
 	Items      []RoutineSummary `json:"items"`
 	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
-func routinePage(items []Schedule, after string, limit int, kind, state, query string) RoutinePage {
+func routinePage(items []Schedule, after string, limit int, kind, state, query string, lastError func(id string) string) RoutinePage {
 	sort.Slice(items, func(i, j int) bool { return items[i].ScheduleID < items[j].ScheduleID })
 	out := RoutinePage{Items: []RoutineSummary{}}
 	query = strings.ToLower(query)
@@ -135,7 +136,11 @@ func routinePage(items []Schedule, after string, limit int, kind, state, query s
 			out.NextCursor = out.Items[len(out.Items)-1].ID
 			break
 		}
-		out.Items = append(out.Items, RoutineSummary{ID: item.ScheduleID, Revision: item.Revision, State: itemState, NextDue: item.NextDue, Kind: item.JobKind, Timezone: item.Timezone})
+		summary := RoutineSummary{ID: item.ScheduleID, Revision: item.Revision, State: itemState, NextDue: item.NextDue, Kind: item.JobKind, Timezone: item.Timezone}
+		if lastError != nil {
+			summary.LastError = lastError(item.ScheduleID)
+		}
+		out.Items = append(out.Items, summary)
 	}
 	return out
 }

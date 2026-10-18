@@ -121,6 +121,13 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 	active := map[string]string{}
 	blocked := map[string]bool{}
 	for _, o := range occurrences {
+		if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" {
+			// Probe kinds never admit jobs through this loop; the only
+			// mapping one can carry is the escalation product — a job
+			// deliberately rewritten at settle time, so the binding check
+			// below can only false-positive on it.
+			continue
+		}
 		mapping, err := e.deps.LoadMapping(o.Job.ID)
 		if os.IsNotExist(err) {
 			continue

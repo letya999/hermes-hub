@@ -1112,8 +1112,10 @@ func TestM10ProbeMissingCapturePreservesBaseline(t *testing.T) {
 	if err != nil || st.Value != "old" || st.LastError == "" {
 		t.Fatalf("failed capture replaced baseline: %+v %v", st, err)
 	}
-	if d, err := s.ClaimDelivery(); err != nil || d != nil {
-		t.Fatalf("false change notified: %+v %v", d, err)
+	// The failed capture alerts the owner once without touching the baseline.
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || !strings.Contains(d.Text, "probe failed") {
+		t.Fatalf("failed capture must alert the owner once: %+v %v", d, err)
 	}
 	if _, err := probeValue(nil, nil); err == nil {
 		t.Fatal("nil probe accepted")

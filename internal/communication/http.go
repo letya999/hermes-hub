@@ -121,7 +121,7 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.RawQuery != "" {
-			writeJSON(w, routinePage(items, r.URL.Query().Get("after"), limit, r.URL.Query().Get("kind"), r.URL.Query().Get("state"), r.URL.Query().Get("query")))
+			writeJSON(w, routinePage(items, r.URL.Query().Get("after"), limit, r.URL.Query().Get("kind"), r.URL.Query().Get("state"), r.URL.Query().Get("query"), g.spool.watchLastError))
 		} else {
 			writeJSON(w, items)
 		}

@@ -207,7 +207,7 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 			}
 			if in.Probe.Regex != "" {
 				if _, err := regexp.Compile(in.Probe.Regex); err != nil {
-					return errors.New("watch probe regex does not compile")
+					return fmt.Errorf("watch probe regex does not compile: %w", err)
 				}
 			}
 		}
@@ -307,7 +307,7 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		}
 		if in.Probe.Kind == "script" || in.Probe.Kind == "command" {
 			if err := hooks.Script(in.Probe.Script); err != nil {
-				return errors.New("probe script does not compile")
+				return fmt.Errorf("probe script does not compile: %w", err)
 			}
 		} else if in.Probe.Script != "" {
 			return errors.New("script requires a script or command probe kind")

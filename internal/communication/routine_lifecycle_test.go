@@ -908,6 +908,50 @@ func TestRoutineSummaryFiltersLifecycleState(t *testing.T) {
 	}
 }
 
+// A watcher whose probe is dead looks identical to a healthy one in the
+// compact list unless the summary carries the durable probe error.
+func TestRoutineSummarySurfacesWatchError(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "w-dead", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:5m", Input: "watch dzen", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com"}}
+	if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
+		t.Fatal(err)
+	}
+	st := WatchState{ScheduleID: "w-dead", LastError: "probe status 302"}
+	body, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(g.spool.root, "watchers"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(g.spool.root, "watchers", "w-dead.json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/v1/routines?limit=20&kind=watcher", nil)
+	r.Header.Set("Authorization", "Bearer control-token")
+	r.Header.Set("X-Hub-Principal", "alice")
+	w := httptest.NewRecorder()
+	g.Handler().ServeHTTP(w, r)
+	var got struct {
+		Items []struct {
+			ID        string `json:"schedule_id"`
+			LastError string `json:"last_error"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].ID != "w-dead" || got.Items[0].LastError != "probe status 302" {
+		t.Fatalf("summary lost the probe error: %s", w.Body.String())
+	}
+}
+
 func TestRoutinePreviewUsesActualSnoozedDueWithoutWriting(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"

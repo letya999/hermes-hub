@@ -295,8 +295,14 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 		return
 	}
 	result := ProbeResult{Watch: st, Occurrence: live}
+	if probeErr == nil && strings.TrimSpace(value) == "" {
+		// A vacuous value is a broken probe, not a baseline: an empty body
+		// or a capture that matched nothing must never seed sha256("").
+		probeErr = errors.New("probe produced empty value")
+	}
 	if probeErr != nil {
 		st.LastError = BoundedWatchText(probeErr.Error())
+		e.notifyProbeFailureLocked(live, st.LastError, now)
 		limit := schedule.MaxRetries
 		if limit <= 0 {
 			limit = 3
@@ -316,6 +322,7 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 		live.State = "failed"
 	} else {
 		st.LastSuccess, st.LastError = now.UTC(), ""
+		e.clearProbeFailureLocked(live.ScheduleID)
 		notify, text := false, live.Job.Text
 		if live.JobKind == "check" {
 			notify = (st.Baseline != "" && ((hash != st.Baseline && schedule.Expect == "changed") || (hash == st.Baseline && schedule.Expect == "unchanged"))) || (strings.HasPrefix(schedule.Expect, "equals:") && value == strings.TrimPrefix(schedule.Expect, "equals:"))
@@ -364,14 +371,22 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 			}
 		}
 		if notify && schedule.NotifyMode == "agent" {
-			// Semantic escalation is opt-in per revision: the change evidence
-			// reaches the model flagged untrusted, through the same idempotent
-			// job admission the agent kind uses (SPEC-0054 R2.3).
-			admitted := live.Job
-			admitted.Envelope.ConversationID = RoutineConversation(live.ScheduleID)
-			admitted.Text = "[untrusted watcher evidence] " + text
-			if _, err := e.deps.EnqueueJob(admitted); err != nil {
-				return
+			if QuietDefer(schedule, now).After(now) {
+				// An agent wake cannot be deferred like a delivery, so the
+				// quiet window suppresses it outright — capped, same as the
+				// daily-limit suppression above.
+				live.State = "capped"
+			} else {
+				// Semantic escalation is opt-in per revision: the change
+				// evidence reaches the model flagged untrusted, through the
+				// same idempotent job admission the agent kind uses
+				// (SPEC-0054 R2.3).
+				admitted := live.Job
+				admitted.Envelope.ConversationID = RoutineConversation(live.ScheduleID)
+				admitted.Text = "[untrusted watcher evidence] " + text
+				if _, err := e.deps.EnqueueJob(admitted); err != nil {
+					return
+				}
 			}
 		} else if notify {
 			prefix := "watch-"
@@ -401,6 +416,40 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 		return
 	}
 	_ = e.ApplyProbeResultLocked(result)
+}
+
+// notifyProbeFailureLocked surfaces a dead probe to the owner once per
+// distinct normalized error, riding the same LastFailureSHA256 dedupe as
+// routine job failures and blocked notices. Without it a broken source
+// looks like a quiet watch forever. e.mu must be held.
+func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason string, now time.Time) {
+	item, err := e.LoadScheduleLocked(o.ScheduleID)
+	if err != nil {
+		return
+	}
+	digest := RoutineFailureDigest(o.Job.ID, reason)
+	if item.LastFailureSHA256 == digest {
+		return
+	}
+	item.LastFailureSHA256 = digest
+	item.UpdatedAt = now.UTC()
+	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: item.Input + "\nprobe failed: " + reason, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
+	if nd, err := e.normalizeDelivery(d); err == nil {
+		_ = e.deps.EnqueueDelivery(nd)
+	}
+	_ = e.atomicJSON(e.SchedulePath(item.ScheduleID), item)
+}
+
+// clearProbeFailureLocked drops the stored failure digest after a probe
+// success so the next failure episode notifies again. e.mu must be held.
+func (e *Engine) clearProbeFailureLocked(scheduleID string) {
+	item, err := e.LoadScheduleLocked(scheduleID)
+	if err != nil || item.LastFailureSHA256 == "" {
+		return
+	}
+	item.LastFailureSHA256 = ""
+	item.UpdatedAt = time.Now().UTC()
+	_ = e.atomicJSON(e.SchedulePath(scheduleID), item)
 }
 
 // quietDefer reports when a delivery may leave the outbox: zero outside the
