@@ -1069,3 +1069,126 @@ func TestRemoteToolEffectHonorsReadOnlyHint(t *testing.T) {
 		t.Fatalf("readOnlyHint+destructiveHint classified %v", effects["reset_account"])
 	}
 }
+
+// CHG-0127 S0.8: enable readiness runs outside s.mu — principal A's slow
+// probe must not block principal B's Authorize.
+func TestEnableReadyDoesNotBlockOtherPrincipals(t *testing.T) {
+	store := NewStore()
+	defA := catalogReadDefinition()
+	defB := catalogReadDefinition()
+	defB.DefinitionID = "bob-tool"
+	for _, def := range []api.ToolDefinition{defA, defB} {
+		if err := store.RegisterDefinition(def); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "bob", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	bob := bobAuth()
+	bindingB, err := store.Enable(bob, defB.DefinitionID, defB.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.EnableReady(t.Context(), aliceAuth(), defA.DefinitionID, defA.Version, func(ctx context.Context, _ api.EffectiveBinding) error {
+			close(entered)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("readiness probe never entered")
+	}
+	authDone := make(chan error, 1)
+	go func() {
+		authDone <- store.Authorize(bob, bindingB.ToolBindingID, func(api.EffectiveBinding) error { return nil })
+	}()
+	select {
+	case err := <-authDone:
+		if err != nil {
+			t.Fatalf("authorize: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("authorize blocked behind another principal's readiness probe")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+}
+
+// CHG-0127 S0.8: the same unlocked window covers the existing-binding
+// re-enable path — a recheck probe must not hold s.mu either.
+func TestEnableReadyRecheckDoesNotBlockOtherPrincipals(t *testing.T) {
+	store := NewStore()
+	defA := catalogReadDefinition()
+	defB := catalogReadDefinition()
+	defB.DefinitionID = "bob-tool"
+	for _, def := range []api.ToolDefinition{defA, defB} {
+		if err := store.RegisterDefinition(def); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alice := aliceAuth()
+	bob := bobAuth()
+	if _, err := store.Enable(alice, defA.DefinitionID, defA.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Disable(alice, defA.DefinitionID, defA.Version); err != nil {
+		t.Fatal(err)
+	}
+	bindingB, err := store.Enable(bob, defB.DefinitionID, defB.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.EnableReady(t.Context(), alice, defA.DefinitionID, defA.Version, func(ctx context.Context, _ api.EffectiveBinding) error {
+			close(entered)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recheck probe never entered")
+	}
+	authDone := make(chan error, 1)
+	go func() {
+		authDone <- store.Authorize(bob, bindingB.ToolBindingID, func(api.EffectiveBinding) error { return nil })
+	}()
+	select {
+	case err := <-authDone:
+		if err != nil {
+			t.Fatalf("authorize: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("authorize blocked behind an existing-binding recheck probe")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+}

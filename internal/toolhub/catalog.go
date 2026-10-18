@@ -245,28 +245,39 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 			s.touchProjectionLocked(&stale)
 			s.bindings[stale.ToolBindingID] = stale
 		} else {
+			key := projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)
 			previous := *existing
-			previousProjection := s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)]
+			previousProjection := s.projectionRevisions[key]
 			if existing.Status != api.ActiveStatus {
 				existing.Status = api.ActiveStatus
 				existing.Revision++
 				s.touchProjectionLocked(existing)
 				s.bindings[existing.ToolBindingID] = *existing
 			}
+			// The recheck probe runs outside the store lock for the same
+			// reason the new-binding reservation does: a slow remote probe
+			// must not serialize other principals' store access. On failure
+			// only this reservation is rolled back (Revision compare-and-swap).
 			if ready != nil && existing.Status == api.ActiveStatus {
 				effective, err := s.resolveLocked(auth, existing.ToolBindingID)
+				reserved := existing.Revision
+				s.mu.Unlock()
 				if err == nil {
 					err = ready(ctx, effective)
 				}
 				if err != nil {
-					s.bindings[existing.ToolBindingID] = previous
-					s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] = previousProjection
+					s.mu.Lock()
+					if cur, ok := s.bindings[existing.ToolBindingID]; ok && cur.Revision == reserved {
+						s.bindings[existing.ToolBindingID] = previous
+						s.projectionRevisions[key] = previousProjection
+					}
 					s.mu.Unlock()
 					return api.ToolBinding{}, err
 				}
+				s.mu.Lock()
 			}
 			s.supersedeOtherBindingsLocked(auth, definitionID, existing.ToolBindingID)
-			result := *existing
+			result := s.bindings[existing.ToolBindingID]
 			s.mu.Unlock()
 			if err := s.persistAndNotify(); err != nil {
 				return api.ToolBinding{}, err
@@ -289,16 +300,25 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 		return api.ToolBinding{}, api.ErrRevoked
 	}
 	if ready != nil {
+		// Reserve the binding, then run readiness outside the store lock: a
+		// slow remote probe must not serialize every other principal's store
+		// access. A failed probe deletes only its own reservation (the
+		// compare-and-swap is Revision equality).
 		s.bindings[binding.ToolBindingID] = binding
 		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+		s.mu.Unlock()
 		if err == nil {
 			err = ready(ctx, effective)
 		}
 		if err != nil {
-			delete(s.bindings, binding.ToolBindingID)
+			s.mu.Lock()
+			if cur, ok := s.bindings[binding.ToolBindingID]; ok && cur.Revision == binding.Revision {
+				delete(s.bindings, binding.ToolBindingID)
+			}
 			s.mu.Unlock()
 			return api.ToolBinding{}, err
 		}
+		s.mu.Lock()
 	}
 	s.bindings[binding.ToolBindingID] = binding
 	s.supersedeOtherBindingsLocked(auth, definitionID, binding.ToolBindingID)
