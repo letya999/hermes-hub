@@ -9,17 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
 // Event is one discrete item extracted from a probe result.
-type Event struct {
-	ID   string
-	Text string
-	// Requeue carries the connector-native identifier arguments for the
-	// requeue hook when the event exposes them (telegram bursts carry
-	// chat_id and their requeue_event contract wants it, not event_id).
-	Requeue map[string]any
-}
+// Requeue carries the connector-native identifier arguments for the requeue
+// hook when the event exposes them (telegram bursts carry chat_id and their
+// requeue_event contract wants it, not event_id).
+type Event = commodel.Event
 
 // EventState is the durable seen-set of an event subscription
 // (spool/events/<scheduleID>.json) — replay across a restart cannot

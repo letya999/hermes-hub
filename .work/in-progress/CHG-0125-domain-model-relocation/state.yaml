@@ -3,7 +3,8 @@ status: in-progress
 branch: refactor/comm-plane-separation
 done:
   - internal/commodel — листовая доменная модель (Job/Delivery/Task/User/Schedule/...)
-    + алиасы в communication
+    + алиасы в communication; пополнена Event, TerminalStatus, TaskConversation,
+    DefaultTaskID, FileID, DefaultTask
   - internal/channel — Channel iface + Caps + контрактные ошибки + адаптеры
     telegram/slack/mock за Deps-швами
   - internal/routines — пакет семантики расписаний (validate/cron/timing/
@@ -13,8 +14,14 @@ done:
     адаптера на заглушках deps (ID/Caps, normalize, ownership, admission)
   - internal/routines/invariants_test.go — байт-точный occurrence-id golden,
     RoutineConversation, RoutineFailureDigest
+  - routines engine: schedules/occurrences/watchers/digests/proactive/
+    destinations/reminder/scriptrun переехали в internal/routines за
+    routines.Engine (общий *sync.Mutex + root спула, владение
+    schedules//occurrences//watchers//digests/, заимствование спула через
+    Deps-замыкания; gateway-методы и эвент-плоскость остались в communication,
+    *Spool держит форвардеры; engine_test.go фиксирует seam без communication)
 next:
-  - routines engine (TickSchedules/watchers/digests/proactive) — deps-шов,
-    отдельный CHG
+  - Ф5 spool-migration до снятия совместимых чтений (блокер релиз-пер-фазу)
+  - docs/channels.md + ADR по новым номерам (0044/0058 заняты)
 verification:
-  - just check pending final run
+  - just check PASS (coverage 86.39%, lint/docs/config clean)

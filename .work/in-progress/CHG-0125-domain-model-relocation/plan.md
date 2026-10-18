@@ -68,7 +68,7 @@ communication (цикл: gateway диспетчеризует через рее�
   на заглушках deps — без gateway; `internal/routines/invariants_test.go`
   фиксирует байт-точный occurrence-id golden, формат RoutineConversation и
   job-id-инвариант RoutineFailureDigest.
-- [ ] Шаг 3b `internal/routines` engine (TickSchedules/occurrences/proactive/
+- [x] Шаг 3b `internal/routines` engine (TickSchedules/occurrences/proactive/
   watchers/digests ~4k строк, Spool-методы) — следующий CHG (Deps-шов к
   spool/runtime/каналам по образцу commops).
 

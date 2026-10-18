@@ -1,4 +1,4 @@
-package communication
+package routines
 
 import (
 	"crypto/sha256"
@@ -11,93 +11,111 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or retired intent")
 var errScheduleExists = errors.New("schedule already exists or is unreadable")
 
+// ErrRoutineRevision rejects a mutation whose expected revision is stale —
+// the caller re-reads current state before retrying.
+var ErrRoutineRevision = errors.New("routine revision changed; read current state before retrying")
+
+// ErrRoutineSnoozeNotLater rejects a snooze that does not push the next run
+// further out.
+var ErrRoutineSnoozeNotLater = errors.New("snooze must be later than the next run")
+
+// EffectiveNextDue is the soonest instant a schedule may fire: its next slot
+// pushed past an active snooze window.
+func EffectiveNextDue(item commodel.Schedule) time.Time {
+	if !item.NextDue.IsZero() && item.NextDue.Before(item.SnoozedUntil) {
+		return item.SnoozedUntil
+	}
+	return item.NextDue
+}
+
 // A replay returns current state, never the enabled state at creation.
 // Retired IDs are never replayed or reactivated; their tombstones conflict.
 // Foreign-owner collisions and unreadable or legacy records fail closed
 // without exposing a receipt or the conflict kind.
-func (s *Spool) creationReplayLocked(in Schedule, caller identity.Envelope) (Schedule, bool, error) {
-	item, err := s.loadScheduleLocked(in.ScheduleID)
+func (e *Engine) CreationReplayLocked(in commodel.Schedule, caller identity.Envelope) (commodel.Schedule, bool, error) {
+	item, err := e.LoadScheduleLocked(in.ScheduleID)
 	retired := false
 	if os.IsNotExist(err) {
-		b, readErr := os.ReadFile(s.cancelPath(in.ScheduleID))
+		b, readErr := os.ReadFile(e.CancelPath(in.ScheduleID))
 		if os.IsNotExist(readErr) {
-			return Schedule{}, false, nil
+			return commodel.Schedule{}, false, nil
 		}
 		if readErr != nil || json.Unmarshal(b, &item) != nil {
-			return Schedule{}, true, errScheduleExists
+			return commodel.Schedule{}, true, errScheduleExists
 		}
 		retired = true
 	} else if err != nil {
-		return Schedule{}, true, errScheduleExists
+		return commodel.Schedule{}, true, errScheduleExists
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return Schedule{}, true, errScheduleExists
+		return commodel.Schedule{}, true, errScheduleExists
 	}
-	if retired || item.Creation == nil || item.Creation.IntentSHA256 != scheduleIntent(in) {
-		return Schedule{}, true, ErrScheduleConflict
+	if retired || item.Creation == nil || item.Creation.IntentSHA256 != ScheduleIntent(in) {
+		return commodel.Schedule{}, true, ErrScheduleConflict
 	}
 	return item, true, nil
 }
 
-func (s *Spool) CreateSchedule(in Schedule, caller identity.Envelope, nativeCron string) (Schedule, error) {
-	return s.createSchedule(in, caller, nativeCron, nil)
+func (e *Engine) CreateSchedule(in commodel.Schedule, caller identity.Envelope, nativeCron string) (commodel.Schedule, error) {
+	return e.createSchedule(in, caller, nativeCron, nil)
 }
 
-func (s *Spool) createSchedule(in Schedule, caller identity.Envelope, nativeCron string, initialValue *string) (Schedule, error) {
-	return s.createScheduleAt(in, caller, nativeCron, initialValue, time.Now().UTC())
+func (e *Engine) createSchedule(in commodel.Schedule, caller identity.Envelope, nativeCron string, initialValue *string) (commodel.Schedule, error) {
+	return e.CreateScheduleAt(in, caller, nativeCron, initialValue, time.Now().UTC())
 }
 
-func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time, routingUser ...User) (Schedule, error) {
-	in = normalizeScheduleDraft(in)
-	if err := validateScheduleDraft(in, caller); err != nil {
-		return Schedule{}, err
+func (e *Engine) CreateScheduleAt(in commodel.Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time, routingUser ...commodel.User) (commodel.Schedule, error) {
+	in = NormalizeScheduleDraft(in)
+	if err := ValidateScheduleDraft(in, caller, e.deps.Hooks); err != nil {
+		return commodel.Schedule{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if len(routingUser) > 0 && (in.OriginJobID != "" || in.DestinationTaskID != "") {
 		var err error
-		in, err = s.bindRoutineDestinationLocked(in, caller, routingUser[0])
+		in, err = e.BindRoutineDestinationLocked(in, caller, routingUser[0])
 		if err != nil {
-			return Schedule{}, err
+			return commodel.Schedule{}, err
 		}
 		caller = in.Envelope
 	}
 	in.OriginJobID, in.DestinationTaskID = "", ""
-	if item, found, err := s.creationReplayLocked(in, caller); found || err != nil {
+	if item, found, err := e.CreationReplayLocked(in, caller); found || err != nil {
 		return item, err
 	}
-	requested, intent := in.Expression, scheduleIntent(in)
+	requested, intent := in.Expression, ScheduleIntent(in)
 	var err error
-	in, err = resolveRelativeReminder(in, now)
+	in, err = ResolveRelativeReminder(in, now)
 	if err != nil {
-		return Schedule{}, err
+		return commodel.Schedule{}, err
 	}
 	in.InitialProbeValue = initialValue
 	if nativeCron == "unmigrated" {
-		return Schedule{}, errors.New("native Hermes cron is still the clock for this context")
+		return commodel.Schedule{}, errors.New("native Hermes cron is still the clock for this context")
 	}
-	if err := validateScheduleDraft(in, caller); err != nil {
-		return Schedule{}, err
+	if err := ValidateScheduleDraft(in, caller, e.deps.Hooks); err != nil {
+		return commodel.Schedule{}, err
 	}
 	loc, err := time.LoadLocation(in.Timezone)
 	if err != nil {
-		return Schedule{}, errors.New("invalid timezone")
+		return commodel.Schedule{}, errors.New("invalid timezone")
 	}
 	if strings.HasPrefix(strings.TrimSpace(in.Expression), "every:") && in.IntervalAnchor.IsZero() {
 		in.IntervalAnchor = now
 	}
-	next, err := nextSchedule(in, loc, now)
+	next, err := NextSchedule(in, loc, now)
 	if err != nil {
-		return Schedule{}, err
+		return commodel.Schedule{}, err
 	}
 	if in.CatchUpWindow <= 0 {
-		in.CatchUpWindow = defaultCatchUp
+		in.CatchUpWindow = DefaultCatchUp
 	}
 	if in.JobKind == "" {
 		in.JobKind = "agent"
@@ -108,37 +126,37 @@ func (s *Spool) createScheduleAt(in Schedule, caller identity.Envelope, nativeCr
 	in.NextDue = next
 	in.CreatedAt = now
 	in.UpdatedAt = now
-	in.Creation = &ScheduleCreation{RequestedExpression: requested, ResolvedDueAt: next, CreatedAt: now, IntentSHA256: intent}
-	path := s.schedulePath(in.ScheduleID)
-	if _, err := os.Stat(s.cancelPath(in.ScheduleID)); !os.IsNotExist(err) {
-		return Schedule{}, errors.New("schedule id was retired; use a new id")
+	in.Creation = &commodel.ScheduleCreation{RequestedExpression: requested, ResolvedDueAt: next, CreatedAt: now, IntentSHA256: intent}
+	path := e.SchedulePath(in.ScheduleID)
+	if _, err := os.Stat(e.CancelPath(in.ScheduleID)); !os.IsNotExist(err) {
+		return commodel.Schedule{}, errors.New("schedule id was retired; use a new id")
 	}
 	if _, err := os.Stat(path); err == nil {
-		return Schedule{}, errors.New("schedule already exists")
+		return commodel.Schedule{}, errors.New("schedule already exists")
 	}
-	if err := atomicJSON(path, in); err != nil {
-		return Schedule{}, err
+	if err := e.atomicJSON(path, in); err != nil {
+		return commodel.Schedule{}, err
 	}
 	return in, nil
 }
 
-func (s *Spool) ListSchedules(caller identity.Envelope) ([]Schedule, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(s.root, "schedules"))
+func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
 	if err != nil {
 		return nil, err
 	}
-	out := []Schedule{}
+	out := []commodel.Schedule{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.root, "schedules", entry.Name()))
+		b, err := os.ReadFile(filepath.Join(e.root, "schedules", entry.Name()))
 		if err != nil {
 			return nil, err
 		}
-		var item Schedule
+		var item commodel.Schedule
 		if json.Unmarshal(b, &item) != nil {
 			return nil, errors.New("invalid schedule")
 		}
@@ -146,23 +164,23 @@ func (s *Spool) ListSchedules(caller identity.Envelope) ([]Schedule, error) {
 			continue
 		}
 		if item.JobKind == "reminder" && item.LastOccurrenceID != "" {
-			item.LastOccurrenceState, item.LastDeliveryState = s.reminderStateLocked(item)
+			item.LastOccurrenceState, item.LastDeliveryState = e.ReminderStateLocked(item)
 		}
 		out = append(out, item)
-		out[len(out)-1].NextDue = effectiveRoutineNextDue(item)
+		out[len(out)-1].NextDue = EffectiveNextDue(item)
 	}
 	return out, nil
 }
 
-func (s *Spool) UpdateSchedule(id string, caller identity.Envelope, expression, input string, enabled *bool) (Schedule, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(id)
+func (e *Engine) UpdateSchedule(id string, caller identity.Envelope, expression, input string, enabled *bool) (commodel.Schedule, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(id)
 	if err != nil {
-		return Schedule{}, err
+		return commodel.Schedule{}, err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return Schedule{}, errors.New("schedule not owned")
+		return commodel.Schedule{}, errors.New("schedule not owned")
 	}
 	if expression != "" {
 		item.Expression = expression
@@ -178,30 +196,30 @@ func (s *Spool) UpdateSchedule(id string, caller identity.Envelope, expression, 
 			item.Paused = false
 		}
 	}
-	if err := validateScheduleDraft(item, caller); err != nil {
-		return Schedule{}, err
+	if err := ValidateScheduleDraft(item, caller, e.deps.Hooks); err != nil {
+		return commodel.Schedule{}, err
 	}
 	loc, err := time.LoadLocation(item.Timezone)
 	if err != nil {
-		return Schedule{}, err
+		return commodel.Schedule{}, err
 	}
-	next, err := nextSchedule(item, loc, time.Now().UTC())
+	next, err := NextSchedule(item, loc, time.Now().UTC())
 	if err != nil {
-		return Schedule{}, err
+		return commodel.Schedule{}, err
 	}
 	item.Revision++
 	item.NextDue = next
 	item.UpdatedAt = time.Now().UTC()
-	if err := atomicJSON(s.schedulePath(id), item); err != nil {
-		return Schedule{}, err
+	if err := e.atomicJSON(e.SchedulePath(id), item); err != nil {
+		return commodel.Schedule{}, err
 	}
 	return item, nil
 }
 
-func (s *Spool) PauseSchedule(id string, caller identity.Envelope, expected ...uint64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(id)
+func (e *Engine) PauseSchedule(id string, caller identity.Envelope, expected ...uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(id)
 	if err != nil {
 		return err
 	}
@@ -214,13 +232,13 @@ func (s *Spool) PauseSchedule(id string, caller identity.Envelope, expected ...u
 	}
 	item.Revision++
 	item.UpdatedAt = time.Now().UTC()
-	return atomicJSON(s.schedulePath(id), item)
+	return e.atomicJSON(e.SchedulePath(id), item)
 }
 
-func (s *Spool) DeleteSchedule(id string, caller identity.Envelope, expected ...uint64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(id)
+func (e *Engine) DeleteSchedule(id string, caller identity.Envelope, expected ...uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(id)
 	if err != nil {
 		return err
 	}
@@ -234,16 +252,16 @@ func (s *Spool) DeleteSchedule(id string, caller identity.Envelope, expected ...
 	item.Revision++
 	item.NextDue = time.Time{}
 	item.UpdatedAt = time.Now().UTC()
-	if err := atomicJSON(s.cancelPath(id), item); err != nil {
+	if err := e.atomicJSON(e.CancelPath(id), item); err != nil {
 		return err
 	}
-	return os.Remove(s.schedulePath(id))
+	return os.Remove(e.SchedulePath(id))
 }
 
-func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.Time, expected ...uint64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(id)
+func (e *Engine) SnoozeSchedule(id string, caller identity.Envelope, until time.Time, expected ...uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(id)
 	if err != nil {
 		return err
 	}
@@ -256,7 +274,7 @@ func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.T
 	if len(expected) > 0 && expected[0] != item.Revision {
 		return ErrRoutineRevision
 	}
-	if !item.NextDue.IsZero() && !until.After(effectiveRoutineNextDue(item)) {
+	if !item.NextDue.IsZero() && !until.After(EffectiveNextDue(item)) {
 		return ErrRoutineSnoozeNotLater
 	}
 	item.SnoozedUntil = until.UTC()
@@ -269,21 +287,21 @@ func (s *Spool) SnoozeSchedule(id string, caller identity.Envelope, until time.T
 	}
 	item.Revision++
 	item.UpdatedAt = time.Now().UTC()
-	return atomicJSON(s.schedulePath(id), item)
+	return e.atomicJSON(e.SchedulePath(id), item)
 }
 
-func (s *Spool) cancelPath(id string) string {
-	return filepath.Join(s.root, "schedules", spoolFileID(id)+".deleted")
+func (e *Engine) CancelPath(id string) string {
+	return filepath.Join(e.root, "schedules", commodel.FileID(id)+".deleted")
 }
 
 // RecordRoutineFailure stores the schedule's last failure digest and reports
 // whether this failure should notify the owner: only a digest that differs
 // from the stored one (or follows a success) is fresh. Schedules without a
 // durable record (externally owned clocks) cannot dedupe and always notify.
-func (s *Spool) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(scheduleID)
+func (e *Engine) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(scheduleID)
 	if os.IsNotExist(err) {
 		return true, nil
 	}
@@ -295,15 +313,15 @@ func (s *Spool) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
 	}
 	item.LastFailureSHA256 = digest
 	item.UpdatedAt = time.Now().UTC()
-	return true, atomicJSON(s.schedulePath(scheduleID), item)
+	return true, e.atomicJSON(e.SchedulePath(scheduleID), item)
 }
 
 // ClearRoutineFailure drops the stored failure digest after a success so the
 // next failure notifies again. Externally owned schedules are a no-op.
-func (s *Spool) ClearRoutineFailure(scheduleID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(scheduleID)
+func (e *Engine) ClearRoutineFailure(scheduleID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(scheduleID)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -315,27 +333,27 @@ func (s *Spool) ClearRoutineFailure(scheduleID string) error {
 	}
 	item.LastFailureSHA256 = ""
 	item.UpdatedAt = time.Now().UTC()
-	return atomicJSON(s.schedulePath(scheduleID), item)
+	return e.atomicJSON(e.SchedulePath(scheduleID), item)
 }
 
-func (s *Spool) occurrenceCurrentLocked(o RoutineOccurrence) bool {
-	if _, err := os.Stat(s.cancelPath(o.ScheduleID)); !os.IsNotExist(err) {
+func (e *Engine) OccurrenceCurrentLocked(o commodel.RoutineOccurrence) bool {
+	if _, err := os.Stat(e.CancelPath(o.ScheduleID)); !os.IsNotExist(err) {
 		return false
 	}
-	schedule, err := s.loadScheduleLocked(o.ScheduleID)
+	schedule, err := e.LoadScheduleLocked(o.ScheduleID)
 	if os.IsNotExist(err) {
 		return true // PutOccurrence also accepts externally owned recurrence clocks.
 	}
 	return err == nil && schedule.Revision == o.Revision && schedule.Envelope == o.Job.Envelope
 }
 
-func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(Job) error) error {
+func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(commodel.Job) error) error {
 	if nativeCron == "unmigrated" {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(s.root, "schedules"))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
 	if err != nil {
 		return err
 	}
@@ -347,9 +365,9 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		item, err := s.loadScheduleLocked(strings.TrimSuffix(entry.Name(), ".json"))
+		item, err := e.LoadScheduleLocked(strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
-			if qerr := s.quarantineScheduleLocked(filepath.Join(s.root, "schedules", entry.Name())); qerr != nil {
+			if qerr := e.quarantineScheduleLocked(filepath.Join(e.root, "schedules", entry.Name())); qerr != nil {
 				return qerr
 			}
 			errs = append(errs, fmt.Errorf("schedule %s: %w", strings.TrimSuffix(entry.Name(), ".json"), err))
@@ -367,21 +385,21 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			due = item.SnoozedUntil
 		}
 		if item.LastOccurrenceID != "" {
-			if !spoolIDPattern.MatchString(item.LastOccurrenceID) || len(item.LastOccurrenceID) > 160 {
-				if err := s.blockScheduleLocked(&item, "invalid last occurrence reference", now); err != nil {
+			if !commodel.IDPattern.MatchString(item.LastOccurrenceID) || len(item.LastOccurrenceID) > 160 {
+				if err := e.BlockScheduleLocked(&item, "invalid last occurrence reference", now); err != nil {
 					return err
 				}
 				continue
 			}
-			lastPath := filepath.Join(s.root, "occurrences", item.LastOccurrenceID+".json")
+			lastPath := filepath.Join(e.root, "occurrences", item.LastOccurrenceID+".json")
 			body, err := os.ReadFile(lastPath)
 			if err == nil {
-				var last RoutineOccurrence
+				var last commodel.RoutineOccurrence
 				if json.Unmarshal(body, &last) != nil || last.Job.ID != item.LastOccurrenceID {
-					if err := s.quarantineOccurrenceLocked(lastPath); err != nil {
+					if err := e.quarantineOccurrenceLocked(lastPath); err != nil {
 						return err
 					}
-					if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
+					if err := e.settleScheduleLocked(&item, loc, due, now); err != nil {
 						return err
 					}
 					continue
@@ -390,19 +408,19 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 				if last.JobKind == "reminder" && last.State == "pending" {
 					window := last.CatchUpWindow
 					if window <= 0 {
-						window = defaultCatchUp
+						window = DefaultCatchUp
 					}
 					outstanding = now.Sub(last.DueAt) <= window
 				}
 				if last.State == "dispatched" && last.JobKind == "agent" {
-					mapping, mappingErr := s.loadMappingLocked(last.Job.ID)
+					mapping, mappingErr := e.deps.LoadMapping(last.Job.ID)
 					if mappingErr != nil && !os.IsNotExist(mappingErr) {
 						return mappingErr
 					}
-					outstanding = mappingErr == nil && !terminalStatus(mapping.Status)
+					outstanding = mappingErr == nil && !commodel.TerminalStatus(mapping.Status)
 					if os.IsNotExist(mappingErr) {
 						for _, dir := range []string{"pending", "running"} {
-							_, statErr := os.Stat(filepath.Join(s.root, dir, spoolFileID(last.Job.ID)+".json"))
+							_, statErr := os.Stat(filepath.Join(e.root, dir, commodel.FileID(last.Job.ID)+".json"))
 							if statErr == nil {
 								outstanding = true
 							}
@@ -413,7 +431,7 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 					}
 				}
 				if last.Revision == item.Revision && outstanding {
-					if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
+					if err := e.settleScheduleLocked(&item, loc, due, now); err != nil {
 						return err
 					}
 					continue
@@ -424,15 +442,15 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		}
 		window := item.CatchUpWindow
 		if window <= 0 {
-			window = defaultCatchUp
+			window = DefaultCatchUp
 		}
-		job := Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
-		occ := RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job, CatchUpWindow: window}
-		if err := validateOccurrence(occ, item.Envelope); err != nil {
+		job := commodel.Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
+		occ := commodel.RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job, CatchUpWindow: window}
+		if err := ValidateOccurrence(occ, item.Envelope, e.deps.ChannelFor); err != nil {
 			continue
 		}
 		if authorize != nil && authorize(occ.Job) != nil {
-			if err := s.blockScheduleLocked(&item, "owner authorization failed", now); err != nil {
+			if err := e.BlockScheduleLocked(&item, "owner authorization failed", now); err != nil {
 				return err
 			}
 			continue
@@ -446,17 +464,17 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 		occ.Job.IdempotencyKey = occ.Job.ID
 		occ.Job.Trigger = "cron"
 		occ.Job.CreatedAt = due.UTC()
-		occPath := filepath.Join(s.root, "occurrences", occ.Job.ID+".json")
+		occPath := filepath.Join(e.root, "occurrences", occ.Job.ID+".json")
 		if _, err := os.Stat(occPath); err == nil {
 			item.LastOccurrenceID = occ.Job.ID
-			if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
+			if err := e.settleScheduleLocked(&item, loc, due, now); err != nil {
 				return err
 			}
 			continue
 		}
 		found := false
 		for _, dir := range []string{"receipts", "archive", "quarantine"} {
-			_, statErr := os.Stat(filepath.Join(s.root, "occurrences", dir, occ.Job.ID+".json"))
+			_, statErr := os.Stat(filepath.Join(e.root, "occurrences", dir, occ.Job.ID+".json"))
 			if statErr == nil {
 				found = true
 				break
@@ -466,12 +484,12 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 			}
 		}
 		if !found {
-			if err := atomicJSON(occPath, occ); err != nil {
+			if err := e.atomicJSON(occPath, occ); err != nil {
 				return err
 			}
 		}
 		item.LastOccurrenceID = occ.Job.ID
-		if err := s.settleScheduleLocked(&item, loc, due, now); err != nil {
+		if err := e.settleScheduleLocked(&item, loc, due, now); err != nil {
 			return err
 		}
 	}
@@ -480,8 +498,8 @@ func (s *Spool) TickSchedules(now time.Time, nativeCron string, authorize func(J
 
 // quarantineScheduleLocked moves an unreadable schedule record out of the hot
 // scan so the tick keeps serving every other owner.
-func (s *Spool) quarantineScheduleLocked(path string) error {
-	dir := filepath.Join(s.root, "schedules", "quarantine")
+func (e *Engine) quarantineScheduleLocked(path string) error {
+	dir := filepath.Join(e.root, "schedules", "quarantine")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
@@ -492,7 +510,7 @@ func (s *Spool) quarantineScheduleLocked(path string) error {
 // state is visible as "blocked" in routine_get and the owner gets exactly one
 // outbox notification per normalized reason, deduped by LastFailureSHA256.
 // s.mu must be held.
-func (s *Spool) blockScheduleLocked(item *Schedule, reason string, now time.Time) error {
+func (e *Engine) BlockScheduleLocked(item *commodel.Schedule, reason string, now time.Time) error {
 	item.BlockedReason = reason
 	item.BlockedAt = now.UTC()
 	item.UpdatedAt = now.UTC()
@@ -501,64 +519,64 @@ func (s *Spool) blockScheduleLocked(item *Schedule, reason string, now time.Time
 	if item.LastFailureSHA256 != digest {
 		item.LastFailureSHA256 = digest
 		text := "Рутина «" + item.ScheduleID + "» остановлена: " + reason + ". Откройте её через routine_get, исправьте и сделайте resume — или удалите."
-		d := Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
-		if ch := channelFor(nil, item.Channel); ch != nil {
+		d := commodel.Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
+		if ch := e.channelFor(item.Channel); ch != nil {
 			// The notice goes to the owner's verified home, never to the
 			// schedule's own destination — a stale binding is exactly what
 			// may have caused the block.
 			ch.RouteBlockedNotice(*item, &d)
 		}
-		d, err := normalizeDelivery(d)
+		d, err := e.normalizeDelivery(d)
 		if err == nil {
-			if err := s.enqueueDeliveryLocked(d); err != nil {
+			if err := e.deps.EnqueueDelivery(d); err != nil {
 				return err
 			}
-			s.signal()
+			e.deps.Signal()
 		}
 	}
-	return atomicJSON(s.schedulePath(item.ScheduleID), item)
+	return e.atomicJSON(e.SchedulePath(item.ScheduleID), item)
 }
 
-func (s *Spool) settleScheduleLocked(item *Schedule, loc *time.Location, due, now time.Time) error {
+func (e *Engine) settleScheduleLocked(item *commodel.Schedule, loc *time.Location, due, now time.Time) error {
 	if strings.HasPrefix(strings.TrimSpace(item.Expression), "once:") {
 		item.Enabled = false
 		item.Paused = true
 		item.NextDue = time.Time{}
 		item.UpdatedAt = now
-		return atomicJSON(s.schedulePath(item.ScheduleID), item)
+		return e.atomicJSON(e.SchedulePath(item.ScheduleID), item)
 	}
-	next, err := nextSchedule(*item, loc, now)
-	if errors.Is(err, errRoutineExhausted) {
+	next, err := NextSchedule(*item, loc, now)
+	if errors.Is(err, ErrExhausted) {
 		item.Enabled, item.Paused, item.NextDue = false, true, time.Time{}
 		item.UpdatedAt = now
-		return atomicJSON(s.schedulePath(item.ScheduleID), item)
+		return e.atomicJSON(e.SchedulePath(item.ScheduleID), item)
 	}
 	if err != nil {
-		if errors.Is(err, errRoutineExhausted) {
+		if errors.Is(err, ErrExhausted) {
 			item.Enabled = false
 			item.NextDue = time.Time{}
 			item.UpdatedAt = now
-			return atomicJSON(s.schedulePath(item.ScheduleID), item)
+			return e.atomicJSON(e.SchedulePath(item.ScheduleID), item)
 		}
 		return err
 	}
 	item.NextDue = next
 	item.UpdatedAt = now
-	return atomicJSON(s.schedulePath(item.ScheduleID), item)
+	return e.atomicJSON(e.SchedulePath(item.ScheduleID), item)
 }
 
-func (s *Spool) schedulePath(id string) string {
-	return filepath.Join(s.root, "schedules", spoolFileID(id)+".json")
+func (e *Engine) SchedulePath(id string) string {
+	return filepath.Join(e.root, "schedules", commodel.FileID(id)+".json")
 }
 
-func (s *Spool) loadScheduleLocked(id string) (Schedule, error) {
-	b, err := os.ReadFile(s.schedulePath(id))
+func (e *Engine) LoadScheduleLocked(id string) (commodel.Schedule, error) {
+	b, err := os.ReadFile(e.SchedulePath(id))
 	if err != nil {
-		return Schedule{}, err
+		return commodel.Schedule{}, err
 	}
-	var item Schedule
+	var item commodel.Schedule
 	if json.Unmarshal(b, &item) != nil || item.ScheduleID == "" {
-		return Schedule{}, errors.New("invalid schedule")
+		return commodel.Schedule{}, errors.New("invalid schedule")
 	}
 	return item, nil
 }

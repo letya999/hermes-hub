@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -28,9 +29,7 @@ type streamReceipt struct {
 	StatusDelivery bool `json:"status_delivery,omitempty"`
 }
 
-func terminalStatus(status string) bool {
-	return status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted"
-}
+func terminalStatus(status string) bool { return commodel.TerminalStatus(status) }
 
 func outcomeFromEvent(event hubruntime.ExecuteResponse) RunOutcome {
 	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text, Artifacts: event.Artifacts, Voice: event.Voice}

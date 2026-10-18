@@ -1,4 +1,4 @@
-package communication
+package routines
 
 import (
 	"context"
@@ -22,16 +22,16 @@ import (
 // clock — a script can only compute and call the host bindings declared
 // below. CPU is cut by a step budget, wall time by the caller's context.
 const (
-	scriptMaxSource    = 16 * 1024
+	ScriptMaxSource    = 16 * 1024
 	scriptMaxSteps     = 1_000_000
-	scriptMaxEmits     = 4
-	scriptMaxEmitBytes = 4 * 1024
+	ScriptMaxEmits     = 4
+	ScriptMaxEmitBytes = 4 * 1024
 )
 
 // ScriptSyntaxError reports why src would fail to compile under the runner's
 // file options — used to reject dead-on-arrival schedules at create time.
 func ScriptSyntaxError(src string) error {
-	if len(src) == 0 || len(src) > scriptMaxSource {
+	if len(src) == 0 || len(src) > ScriptMaxSource {
 		return errors.New("script source out of bounds")
 	}
 	_, _, err := starlark.SourceProgramOptions(scriptFileOptions(), "script.star", src, func(string) bool { return true })
@@ -59,7 +59,7 @@ func RunScriptProbe(ctx context.Context, src string, now time.Time, input, watch
 }
 
 func runScript(ctx context.Context, src string, now time.Time, input, watchRoot string, needs []string) ([]string, error) {
-	if len(src) == 0 || len(src) > scriptMaxSource {
+	if len(src) == 0 || len(src) > ScriptMaxSource {
 		return nil, errors.New("script source out of bounds")
 	}
 	emitted := []string{}
@@ -86,7 +86,7 @@ func runScript(ctx context.Context, src string, now time.Time, input, watchRoot 
 			if err := starlark.UnpackArgs("emit", args, nil, "text", &text); err != nil {
 				return nil, err
 			}
-			if len(emitted) >= scriptMaxEmits || len(text) > scriptMaxEmitBytes {
+			if len(emitted) >= ScriptMaxEmits || len(text) > ScriptMaxEmitBytes {
 				return nil, errors.New("emit budget exceeded")
 			}
 			emitted = append(emitted, text)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 // approvalButtonsLocked persists one durable callback record per choice and
@@ -72,10 +73,9 @@ type Spool struct {
 	// inFlight maps (principal, context) to the job currently allowed to run;
 	// held until the job's mapping reaches a terminal status. In-memory only,
 	// rebuilt from durable mappings on startup (ADR-0025).
-	inFlight             map[string]string
-	proactiveFlight      map[string]bool
-	activeMappings       map[string]bool // Lazily rebuilt; only this spool's writer changes mappings.
-	mappingDriftReported map[string]bool // One warning per corrupt active binding per process.
+	inFlight        map[string]string
+	proactiveFlight map[string]bool
+	activeMappings  map[string]bool // Lazily rebuilt; only this spool's writer changes mappings.
 	// notify coalesces wakeups for the worker/control/delivery loops so work
 	// starts on enqueue or completion instead of a poll tick (SPEC-0053 R2.3).
 	notify chan struct{}
@@ -91,6 +91,10 @@ type Spool struct {
 	// prefetched need results). Nil fails the probe — a script probe without
 	// the supervisor never runs in-process.
 	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
+	// rt is the routines engine (internal/routines) sharing this spool's
+	// mutex and root; it owns the schedules/occurrences/watchers/digests
+	// subtrees and borrows the rest of the spool through its Deps seam.
+	rt *routines.Engine
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -146,6 +150,22 @@ func OpenSpool(root string) (*Spool, error) {
 			return nil, err
 		}
 	}
+	s.rt = routines.NewEngine(root, &s.mu, routines.Deps{
+		Hooks:             scheduleDraftHooks,
+		EnqueueJob:        s.enqueueLocked,
+		EnqueueDelivery:   s.enqueueDeliveryLocked,
+		LoadMapping:       s.loadMappingLocked,
+		LoadTask:          s.loadTaskLocked,
+		ListTasks:         s.listTasksLocked,
+		TopicTask:         s.topicTaskLocked,
+		WriteDeliveryBlob: s.WriteDeliveryBlob,
+		NormalizeDelivery: normalizeDelivery,
+		WriteJSONAtomic:   atomicJSON,
+		Signal:            s.signal,
+		ChannelFor:        func(id string) routines.OccurrenceChannel { return channelFor(nil, id) },
+		ProbeScript:       func() routines.ProbeScriptFunc { return s.probeScript },
+		SettleEvents:      s.settleEvents,
+	})
 	return s, nil
 }
 

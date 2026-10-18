@@ -218,3 +218,12 @@ type RoutineOccurrence struct {
 	RetryAfter time.Time `json:"retry_after,omitempty"`
 	State      string    `json:"state"`
 }
+
+// Event is one discrete item extracted from a watch probe result.
+type Event struct {
+	ID   string
+	Text string
+	// Requeue carries the connector-native identifier arguments for the
+	// requeue hook when the event exposes them.
+	Requeue map[string]any
+}

@@ -128,3 +128,9 @@ func (mapping JobMapping) MatchesJob(job Job) bool {
 func MappingFromJob(job Job, now time.Time) JobMapping {
 	return JobMapping{RoutineOriginVersion: 1, IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: JobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
 }
+
+// TerminalStatus reports whether a job mapping reached a state nothing will
+// update again — completed, failed, cancelled or interrupted.
+func TerminalStatus(status string) bool {
+	return status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted"
+}

@@ -12,18 +12,14 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
-var ErrRoutineRevision = errors.New("routine revision changed; read current state before retrying")
+var ErrRoutineRevision = routines.ErrRoutineRevision
 var ErrRoutineNotOwned = errors.New("routine not found in this context")
-var ErrRoutineSnoozeNotLater = errors.New("snooze must be later than the next run")
+var ErrRoutineSnoozeNotLater = routines.ErrRoutineSnoozeNotLater
 
-func effectiveRoutineNextDue(item Schedule) time.Time {
-	if !item.NextDue.IsZero() && item.NextDue.Before(item.SnoozedUntil) {
-		return item.SnoozedUntil
-	}
-	return item.NextDue
-}
+func effectiveRoutineNextDue(item Schedule) time.Time { return routines.EffectiveNextDue(item) }
 
 func (g *Gateway) routineEditBaseline(ctx context.Context, id string, caller identity.Envelope, patch map[string]json.RawMessage) (*string, error) {
 	if _, changed := patch["probe"]; !changed {

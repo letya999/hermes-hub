@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
 // Task is a durable owner/context-scoped conversation unit. The binding is
@@ -21,7 +23,7 @@ import (
 // session: ConversationID feeds sessionIDFor, so each task owns a
 // deterministic upstream session. The implicit "default" task keeps the
 // legacy telegram-<chat> conversation and is materialized only on mutation.
-const defaultTaskID = "default"
+const defaultTaskID = commodel.DefaultTaskID
 
 const (
 	taskNameLimit  = 64
@@ -29,16 +31,10 @@ const (
 )
 
 func taskConversation(chatID int64, taskID string) string {
-	base := "telegram-" + strconv.FormatInt(chatID, 10)
-	if taskID == "" || taskID == defaultTaskID {
-		return base
-	}
-	return base + "-" + taskID
+	return commodel.TaskConversation(chatID, taskID)
 }
 
-func defaultTask(user User, chatID int64) Task {
-	return Task{Schema: 1, TaskID: defaultTaskID, Name: "default", PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", ChatID: chatID, ConversationID: taskConversation(chatID, defaultTaskID)}
-}
+func defaultTask(user User, chatID int64) Task { return commodel.DefaultTask(user, chatID) }
 
 // validTaskName bounds operator-chosen labels; they never reach a provider.
 func validTaskName(name string) bool {

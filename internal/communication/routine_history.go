@@ -5,12 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 type RoutineRun struct {
@@ -31,7 +31,7 @@ type routineHistoryReceipt struct {
 }
 
 func routineOwnsHistoryEnvelope(item Schedule, envelope identity.Envelope) bool {
-	return envelope.PrincipalID == item.Envelope.PrincipalID && envelope.ContextID == item.Envelope.ContextID && (envelope == item.Envelope || slices.Contains(item.PriorEnvelopes, envelope))
+	return routines.OwnsHistoryEnvelope(item, envelope)
 }
 
 type routineDeliveryKey struct {

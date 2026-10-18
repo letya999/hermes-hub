@@ -1,8 +1,6 @@
 package communication
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
 func (s *Spool) EnqueueDelivery(d Delivery) error {
@@ -199,13 +199,7 @@ func (s *Spool) move(from, to, id string) error {
 	return os.Rename(filepath.Join(s.root, from, fileID+".json"), filepath.Join(s.root, to, fileID+".json"))
 }
 
-func spoolFileID(id string) string {
-	if spoolIDPattern.MatchString(id) {
-		return id
-	}
-	hash := sha256.Sum256([]byte(id))
-	return "id-" + hex.EncodeToString(hash[:])
-}
+func spoolFileID(id string) string { return commodel.FileID(id) }
 
 func firstJSON(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
