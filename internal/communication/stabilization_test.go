@@ -114,7 +114,7 @@ func TestM10ProbeReceiptRecoversFailedOutboxWithoutRefetch(t *testing.T) {
 	}
 	calls := 0
 	fetch := func(context.Context, string) ([]byte, error) { calls++; return []byte("new"), nil }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(pending); err != nil {
@@ -123,7 +123,7 @@ func TestM10ProbeReceiptRecoversFailedOutboxWithoutRefetch(t *testing.T) {
 	if err := os.Rename(saved, pending); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -149,7 +149,7 @@ func TestM10DeleteDuringProbeDiscardsResult(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { close(started); <-release; return []byte("new"), nil })
+		done <- s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { close(started); <-release; return []byte("new"), nil }, nil, nil)
 	}()
 	select {
 	case <-started:
@@ -371,7 +371,7 @@ func TestM10DigestQuietSelectionAndRecovery(t *testing.T) {
 	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("new"), nil }); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("new"), nil }, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.ClaimDelivery(); err != nil || d != nil {
@@ -582,7 +582,7 @@ func TestM10RevokedProbeCannotUpdateOrDeliver(t *testing.T) {
 		}
 		return nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, authorize, func(context.Context, string) ([]byte, error) { revoked = true; return []byte("private new value"), nil }); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, authorize, func(context.Context, string) ([]byte, error) { revoked = true; return []byte("private new value"), nil }, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	st, err := s.loadWatchStateLocked(o.ScheduleID)
@@ -1253,7 +1253,7 @@ func TestM10ProbeMissingCapturePreservesBaseline(t *testing.T) {
 	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("login required"), nil }); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("login required"), nil }, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	st, err := s.loadWatchStateLocked(o.ScheduleID)

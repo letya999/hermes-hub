@@ -16,7 +16,7 @@ import (
 )
 
 var routineDescriptions = map[string]string{
-	"routine_create":  "Create an owner-scoped routine. kind=reminder delivers exact text; expression after:180s resolves once; show its deadline. kind=watcher polls a url plus regex capture, an extract JSON array (css/html2text/regex/grep/drop_regex/drop_lines/sort_lines/strip/json_path/rss), recipe=rss_feed, probe_kind=script (probe_script gets the body via input(), emits one value), probe_kind=command (probe_script reads the owner watch/ dir, no fetch), or probe_kind=mcp_tool: baseline/unchanged are silent, changes deliver old/new; errors surface in routine_list err. probes see raw HTML — JS pages stay blind. kind=check tests expect (changed|unchanged|equals:value) on a url or task:id; failed probes retry max_retries (default 3). kind=script runs bounded Starlark; digest/brief aggregate watches and tasks. Cron minimum 1 minute. quiet_from/quiet_to defer notifications in an HH:MM window; daily_limit (0..32) caps daily deliveries. notify_mode=agent escalates changes as untrusted evidence. Deterministic kinds never wake a model.",
+	"routine_create":  "Create an owner-scoped routine. kind=reminder delivers exact text; after:180s resolves once. kind=watcher reports old/new on change: probe_kind picks http url (regex capture or extract JSON array: css/html2text/grep/drop_regex/sort_lines/json_path/rss; recipe=rss_feed), mcp_tool|tool (tool + args JSON), script (probe_script gets body via input(), emits one value), command (reads owner watch/ dir, no fetch), render|service (registered service name; steps/wait_for JSON for browser actions). needs is a JSON array of {tool,args} prefetch calls for script/command (needs() builtin). deliver_mode=content repeats value each tick, artifact stages a file (artifact_name); baseline/unchanged stay silent, errors surface in routine_list err. kind=check tests expect (changed|unchanged|equals:value); failed probes retry max_retries (default 3). quiet_from/quiet_to defer notifications (HH:MM window); daily_limit caps daily deliveries. notify_mode=agent escalates as untrusted evidence. Deterministic kinds never wake a model.",
 	"routine_list":    "List owned routines and their current delivery state; the err field carries the real probe failure reason. Observe the same schedule ID after an uncertain create before proposing another routine.",
 	"routine_update":  "Update an owned routine schedule or text. Use an absolute once:RFC3339 expression or cron; after: is creation-only.",
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
@@ -129,7 +129,40 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			if r.ProbeScript != "" {
 				probe["script"] = r.ProbeScript
 			}
+			if r.Needs != "" {
+				var needs []map[string]any
+				if err := json.Unmarshal([]byte(r.Needs), &needs); err != nil {
+					return nil, errors.New("needs must be a JSON array of {tool,args}")
+				}
+				probe["needs"] = needs
+			}
+			if r.Service != "" {
+				probe["service"] = r.Service
+			}
+			if r.Steps != "" {
+				var steps []map[string]any
+				if err := json.Unmarshal([]byte(r.Steps), &steps); err != nil {
+					return nil, errors.New("steps must be a JSON array of browser actions")
+				}
+				probe["steps"] = steps
+			}
+			if r.WaitFor != "" {
+				probe["wait_for"] = r.WaitFor
+			}
+			if r.Args != "" {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(r.Args), &args); err != nil {
+					return nil, errors.New("args must be a JSON object")
+				}
+				probe["args"] = args
+			}
 			create["probe"] = probe
+			if r.DeliverMode != "" {
+				create["deliver_mode"] = r.DeliverMode
+			}
+			if r.ArtifactName != "" {
+				create["artifact_name"] = r.ArtifactName
+			}
 		}
 		if kind == "check" {
 			create["expect"] = r.Expect

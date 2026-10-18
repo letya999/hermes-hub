@@ -1,0 +1,33 @@
+schema: 1
+change: CHG-0114
+title: Probe source spectrum and delivery modes
+status: in_progress
+branch: feat/issue-248-watcher-probe-pipeline
+worktree: hermes-hub-248
+updated: 2026-10-18
+phase: validation
+adr: ADR-0043
+spec: SPEC-0057
+requirements: [R5.1, R5.2, R5.3, R5.4, R5.5]
+depends_on: [CHG-0113]
+github_issue: 248
+design_status: accepted
+implementation_status: implemented
+slices:
+  S1-tool-alias: completed
+  S2-needs: completed
+  S3-delivery-modes: completed
+  S4-render: completed
+  S5-service: completed
+validation:
+  documents: pending
+  just_check: pending
+  docker_check: not_run
+  just_security: pending
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+notes: >
+  kind=exec with egress-proxy stays deferred — hub-mediated needs[] plus
+  registered services cover the internet-facing script cases without
+  opening sandbox networking.

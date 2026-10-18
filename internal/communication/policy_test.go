@@ -714,7 +714,7 @@ func TestEventNotifyFanout(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(`{"events":[{"id":"a1","text":"first mail"},{"id":"b2","text":"second mail"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]bool{}
@@ -740,7 +740,7 @@ func TestEventNotifyFanout(t *testing.T) {
 	if err := s.DispatchDueOccurrences(now.Add(time.Hour), g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.ClaimDelivery(); err != nil || d != nil {
@@ -785,7 +785,7 @@ func TestEventAgentSinkBundles(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(`{"events":[{"id":"a1","text":"first mail"},{"id":"b2","text":"second mail"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
@@ -858,7 +858,7 @@ func TestEventSeenBounded(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(payload), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(s.eventPath("ev5"))
@@ -895,7 +895,7 @@ func TestEventDailyCap(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(`{"events":[{"id":"a1","text":"first"},{"id":"b2","text":"second"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -938,7 +938,7 @@ func TestEventBundleBounded(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(payload), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
@@ -985,7 +985,7 @@ func TestEventOverflowCounted(t *testing.T) {
 		}
 		return []byte(`{"events":[{"id":"a1","text":"first mail"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(s.eventPath("ev6"))
@@ -1033,7 +1033,7 @@ func TestEventNotifyCapOverflow(t *testing.T) {
 		}
 		return []byte(`{"events":[{"id":"e1","text":"m1"},{"id":"e2","text":"m2"},{"id":"e3","text":"m3"},{"id":"e4","text":"m4"},{"id":"e5","text":"m5"},{"id":"e6","text":"m6"},{"id":"e7","text":"m7"},{"id":"e8","text":"m8"},{"id":"e9","text":"m9"},{"id":"e10","text":"m10"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	delivered := 0
@@ -1087,7 +1087,7 @@ func TestEventDegradedOnAuthError(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return nil, errors.New("tool error: hub-mail-events-abc: is_error: 403 forbidden")
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(s.eventPath("ev3"))
@@ -1133,7 +1133,7 @@ func TestWatchesCommandLists(t *testing.T) {
 		}
 		return nil, errors.New("tool error: 403 forbidden")
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
@@ -1153,7 +1153,7 @@ func TestWatchesCommandLists(t *testing.T) {
 	if err := s.DispatchDueOccurrences(now.Add(time.Hour), g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	out = g.watchesCommand(user, 11)
@@ -1216,7 +1216,7 @@ func TestMCPToolProbeFeedsWatcher(t *testing.T) {
 		if err := s.DispatchDueOccurrences(occ.DueAt, g.authorizeOccurrence); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, noFetch, toolCall); err != nil {
+		if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, noFetch, toolCall, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

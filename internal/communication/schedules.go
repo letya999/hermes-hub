@@ -39,6 +39,33 @@ type WatchProbe struct {
 	// change existing schedules (SPEC-0057).
 	Recipe        string `json:"recipe,omitempty"`
 	RecipeVersion int    `json:"recipe_version,omitempty"`
+	// Needs declares read-tool calls the hub prefetches under the owner's
+	// grants before running a script/command probe; results reach the
+	// networkless script through the needs() builtin (SPEC-0057 R5.2).
+	Needs []ProbeNeed `json:"needs,omitempty"`
+	// Service names a registered internal endpoint for kind=service probes
+	// (SPEC-0057 R5.5); the URL comes from operator config, never the draft.
+	Service string `json:"service,omitempty"`
+	// Steps/WaitFor are the declarative browser pipeline for kind=render
+	// probes: replayed by the external render service before the extract
+	// chain sees the DOM (SPEC-0057 R5.4).
+	Steps   []RenderStep `json:"steps,omitempty"`
+	WaitFor string       `json:"wait_for,omitempty"`
+}
+
+// ProbeNeed is one hub-prefetched read-tool call for a script probe.
+type ProbeNeed struct {
+	Tool string         `json:"tool"`
+	Args map[string]any `json:"args,omitempty"`
+}
+
+// RenderStep is one declarative browser action the render service replays
+// before extraction; Evaluate runs page JS and stays bounded like a probe
+// script.
+type RenderStep struct {
+	Action   string `json:"action"`
+	Selector string `json:"selector,omitempty"`
+	Value    string `json:"value,omitempty"`
 }
 
 type Schedule struct {
@@ -98,6 +125,12 @@ type Schedule struct {
 	// Sink routes event-subscription output: "notify" fans events out to the
 	// outbox (default), "agent" bundles them into one untrusted-evidence job.
 	Sink string `json:"sink,omitempty"`
+	// DeliverMode selects what a watcher ships on each successful probe tick
+	// (SPEC-0057 R6): empty/"notify" delivers only on change (default),
+	// "content" delivers the probed value as text every tick, "artifact"
+	// stages the value as a file attachment named ArtifactName.
+	DeliverMode  string `json:"deliver_mode,omitempty"`
+	ArtifactName string `json:"artifact_name,omitempty"`
 	// Delivery selects how an event subscription is fed: empty/"poll" fires
 	// one occurrence per cron tick, "stream" runs a hub-owned bounded
 	// long-poll loop against the probe tool instead (no occurrences).
@@ -659,6 +692,33 @@ func validMCPProbe(probe *WatchProbe) error {
 	return nil
 }
 
+// validateProbeNeeds bounds hub-prefetched tool calls for script/command
+// probes (SPEC-0057 R5.2): at most four projected read tools, each with a
+// bounded args object. Other kinds cannot spend tool budget they never run.
+func validateProbeNeeds(probe *WatchProbe) error {
+	if len(probe.Needs) == 0 {
+		return nil
+	}
+	if probe.Kind != "script" && probe.Kind != "command" {
+		return errors.New("needs require a script or command probe kind")
+	}
+	if len(probe.Needs) > 4 {
+		return errors.New("probe needs exceed bounds")
+	}
+	for _, need := range probe.Needs {
+		if !probeToolPattern.MatchString(need.Tool) {
+			return errors.New("invalid need tool name")
+		}
+		if need.Args != nil {
+			b, err := json.Marshal(need.Args)
+			if err != nil || len(b) > 4*1024 {
+				return errors.New("need args exceed bounds")
+			}
+		}
+	}
+	return nil
+}
+
 // validTaskProbe reports whether url is a hub-internal task predicate
 // (task:<id>) — a verified source the probe resolves without any fetch
 // (SPEC-0054 R1.3).
@@ -672,6 +732,11 @@ func normalizeScheduleDraft(in Schedule) Schedule {
 	if in.Probe != nil {
 		probe := *in.Probe
 		probe.URL = strings.TrimSpace(probe.URL)
+		if probe.Kind == "tool" {
+			// "tool" is the readable alias for the same ToolHub path: any
+			// projected read tool, not only connector MCPs (SPEC-0057 R5.1).
+			probe.Kind = "mcp_tool"
+		}
 		in.Probe = &probe
 	}
 	return in
@@ -708,7 +773,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 			if !validTaskProbe(in.Probe.URL) {
 				return errors.New("invalid task probe")
 			}
-		} else {
+		} else if in.Probe.Kind != "service" {
 			u, err := url.Parse(in.Probe.URL)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 				return errors.New("check probe must be http(s)")
@@ -728,7 +793,7 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 			if err := validMCPProbe(in.Probe); err != nil {
 				return err
 			}
-		} else if in.Probe.Kind != "command" {
+		} else if in.Probe.Kind != "command" && in.Probe.Kind != "service" {
 			u, err := url.Parse(in.Probe.URL)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 				return errors.New("watch probe must be a plain http(s) url")
@@ -775,6 +840,15 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 	if in.Sink != "" && in.JobKind != "event" {
 		return errors.New("sink requires an event schedule")
 	}
+	if in.DeliverMode != "" && in.DeliverMode != "notify" && in.DeliverMode != "content" && in.DeliverMode != "artifact" {
+		return errors.New("invalid deliver mode")
+	}
+	if in.DeliverMode != "" && in.DeliverMode != "notify" && in.JobKind != "watcher" {
+		return errors.New("deliver mode requires a watcher")
+	}
+	if in.ArtifactName != "" && filepath.Base(in.ArtifactName) != in.ArtifactName {
+		return errors.New("invalid artifact name")
+	}
 	if in.Delivery != "" && in.Delivery != "poll" && in.Delivery != "stream" {
 		return errors.New("invalid event delivery")
 	}
@@ -788,8 +862,27 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 		if len(in.Probe.URL) > 2048 {
 			return errors.New("probe URL exceeds limit")
 		}
-		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" && in.Probe.Kind != "script" && in.Probe.Kind != "command" {
+		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" && in.Probe.Kind != "script" && in.Probe.Kind != "command" && in.Probe.Kind != "render" && in.Probe.Kind != "service" {
 			return errors.New("invalid probe kind")
+		}
+		if in.Probe.Kind == "render" || in.Probe.Kind == "service" {
+			if !serviceNamePattern.MatchString(in.Probe.Service) {
+				return errors.New("invalid probe service name")
+			}
+		}
+		if in.Probe.Kind == "render" {
+			u, err := url.Parse(in.Probe.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+				return errors.New("render probe must name an http(s) target url")
+			}
+			if len(in.Probe.Steps) > 8 {
+				return errors.New("render probe exceeds the browser step bound")
+			}
+			for _, step := range in.Probe.Steps {
+				if step.Action != "click" && step.Action != "fill" && step.Action != "scroll" && step.Action != "wait" && step.Action != "wait_for" && step.Action != "evaluate" {
+					return errors.New("invalid browser step action")
+				}
+			}
 		}
 		if in.Probe.Regex != "" {
 			re, err := regexp.Compile(in.Probe.Regex)
@@ -811,6 +904,9 @@ func validateScheduleDraft(in Schedule, caller identity.Envelope) error {
 			}
 		} else if in.Probe.Script != "" {
 			return errors.New("script requires a script or command probe kind")
+		}
+		if err := validateProbeNeeds(in.Probe); err != nil {
+			return err
 		}
 		if in.Probe.Kind == "github_issue" {
 			u, err := url.Parse(in.Probe.URL)

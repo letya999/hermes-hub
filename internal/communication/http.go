@@ -180,6 +180,13 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "check source unreachable", http.StatusBadGateway)
 					return
 				}
+			} else if in.Probe.Kind == "render" || in.Probe.Kind == "service" {
+				var err error
+				body, err = g.serviceProbe(r.Context(), caller.PrincipalID, in.Probe)
+				if err != nil {
+					http.Error(w, "check source unreachable", http.StatusBadGateway)
+					return
+				}
 			} else if strings.HasPrefix(in.Probe.URL, "task:") {
 				g.spool.mu.Lock()
 				state, taskErr := g.spool.taskProbeValueLocked(caller.PrincipalID, strings.TrimPrefix(in.Probe.URL, "task:"))

@@ -285,7 +285,7 @@ func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
 		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
 		func() error { return g.spool.RunDueScripts(ctx, now, g.authorizeOccurrence, g.runIsolatedScript) },
 		func() error {
-			return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch, g.toolCallProbe)
+			return g.spool.ProbeDueOccurrencesContext(ctx, now, g.authorizeOccurrence, g.fetchWatch, g.toolCallProbe, g.serviceProbe)
 		},
 		func() error { return g.spool.DispatchDueOccurrences(now, g.authorizeOccurrence) },
 	}

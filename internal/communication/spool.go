@@ -178,10 +178,10 @@ type Spool struct {
 	// ToolHub cell controller can reap task-tier cells keyed by the job.
 	JobDone func(jobID, principalID string)
 	// probeScript, when set, runs a watcher script probe inside the isolated
-	// script runtime: (occurrence, source, fetched input, mount-space flag).
-	// Nil fails the probe — a script probe without the supervisor never runs
-	// in-process.
-	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool) (string, error)
+	// script runtime: (occurrence, source, fetched input, mount-space flag,
+	// prefetched need results). Nil fails the probe — a script probe without
+	// the supervisor never runs in-process.
+	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a

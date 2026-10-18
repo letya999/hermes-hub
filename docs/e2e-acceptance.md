@@ -13,6 +13,16 @@ css-extract, script-probe and command/file-watch probes has NOT been run —
 no entry below claims it. Deterministic unit coverage is not evidence of
 behavior in the real container.
 
+CHG-0114 (ADR-0043 D6–D10, SPEC-0057 R5) generalizes probe sources:
+`kind=tool` alias over the owner read-tool catalog, `needs[]` hub-prefetched
+tool calls for script/command probes, `deliver_mode` content/artifact, and
+`kind=render`/`kind=service` against operator-registered
+`service_endpoints`. Coverage is unit/integration tests (httptest doubles)
+plus `just check` on 2026-10-18. NO live acceptance has been run against a
+real render browser, job_ftch instance, MCP connector or ToolHub web_search
+— registering an endpoint and creating a render/service watcher against the
+real stack remains a manual verification step.
+
 Issue #247 reminder acceptance was repeated on 2026-10-17 with the rebuilt local/dev
 gateway: E2E-081 passed against the real Bot API in 6.5 seconds, with the exact saved
 text, bound delivery receipt, no firing job in the agent queue and fixture cleanup.

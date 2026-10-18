@@ -66,8 +66,21 @@ script with only the owner's `spaces/<user>/watch` directory bind-mounted
 read-only at `/watch` and bounded `read_file`/`list_dir`/`hash_path` builtins
 confined to that root. `probe.recipe` expands builtin presets into snapshotted
 schedule fields at create time; explicit fields win and unknown recipes are
-rejected. Browser rendering is an opt-in external service and stays out of the
-base image. `github_issue` accepts the exact public
+rejected. `kind=tool` normalizes to `mcp_tool`: the ToolHub path already
+limits probes to read-effect tools under owner grants, so projected read
+tools (file_read, knowledge_search, web_search, MCP connectors) are lawful
+sources. `kind=script`/`kind=command` may declare `needs[]` — at most four
+read-tool calls the hub prefetches under the owner binding and exposes via
+the `needs()` builtin (each result truncated to 64 KiB); a failed need
+settles as a probe error and the container stays networkless.
+`deliver_mode` picks notify (default), content (value every tick) or
+artifact (value staged as a durable outbox file, `artifact_name`-named).
+`kind=render` and `kind=service` POST a bounded structured request —
+kind/url/args/steps/wait_for — to an operator-registered
+`service_endpoints` entry (never a schedule-supplied URL); render steps are
+a declarative browser-action list, and the ≤512 KiB response flows through
+the same extract chain. Check-kind baseline seeding uses the same service
+path. `github_issue` accepts the exact public
 GitHub issue REST URL and compares only `state`; it needs no account and supports
 no private repositories. Checks accept `changed`, `unchanged` or `equals:<value>`.
 Creation validates ownership before its baseline request; schedule and initial

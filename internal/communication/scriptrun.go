@@ -47,17 +47,18 @@ func scriptFileOptions() *syntax.FileOptions {
 // RunScript evaluates src and returns the texts passed to emit(). `now` is
 // the only clock the script sees (time_now()), keeping runs replayable.
 func RunScript(ctx context.Context, src string, now time.Time) ([]string, error) {
-	return runScript(ctx, src, now, "", "")
+	return runScript(ctx, src, now, "", "", nil)
 }
 
 // RunScriptProbe evaluates a watcher probe script: input() returns the
-// fetched/extracted body and, when watchRoot is set, file builtins read the
-// owner's mounted watch/ directory (SPEC-0057).
-func RunScriptProbe(ctx context.Context, src string, now time.Time, input, watchRoot string) ([]string, error) {
-	return runScript(ctx, src, now, input, watchRoot)
+// fetched/extracted body, needs() returns hub-prefetched tool results and,
+// when watchRoot is set, file builtins read the owner's mounted watch/
+// directory (SPEC-0057 R5.2).
+func RunScriptProbe(ctx context.Context, src string, now time.Time, input, watchRoot string, needs []string) ([]string, error) {
+	return runScript(ctx, src, now, input, watchRoot, needs)
 }
 
-func runScript(ctx context.Context, src string, now time.Time, input, watchRoot string) ([]string, error) {
+func runScript(ctx context.Context, src string, now time.Time, input, watchRoot string, needs []string) ([]string, error) {
 	if len(src) == 0 || len(src) > scriptMaxSource {
 		return nil, errors.New("script source out of bounds")
 	}
@@ -93,6 +94,13 @@ func runScript(ctx context.Context, src string, now time.Time, input, watchRoot 
 		}),
 		"input": starlark.NewBuiltin("input", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
 			return starlark.String(input), nil
+		}),
+		"needs": starlark.NewBuiltin("needs", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
+			values := make([]starlark.Value, 0, len(needs))
+			for _, n := range needs {
+				values = append(values, starlark.String(n))
+			}
+			return starlark.NewList(values), nil
 		}),
 	}
 	if watchRoot != "" {

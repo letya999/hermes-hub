@@ -53,6 +53,9 @@ func TestConfigValidateAndMediaServices(t *testing.T) {
 		{"dup-policy-disabled", valid(func(c *Config) { c.Users[0].PolicyDisabled = []string{"telegram", "telegram"} })},
 		{"unknown-policy-disabled", valid(func(c *Config) { c.Users[0].PolicyDisabled = []string{"not-a-service"} })},
 		{"no-users", valid(func(c *Config) { c.Users = nil })},
+		{"service-name", valid(func(c *Config) { c.ServiceEndpoints = map[string]ServiceEndpoint{"Bad Name!": {URL: "http://x"}} })},
+		{"service-scheme", valid(func(c *Config) { c.ServiceEndpoints = map[string]ServiceEndpoint{"svc": {URL: "ftp://x"}} })},
+		{"service-creds", valid(func(c *Config) { c.ServiceEndpoints = map[string]ServiceEndpoint{"svc": {URL: "http://u:p@x"}} })},
 	}
 	for _, tc := range cases {
 		if err := tc.cfg.Validate(); err == nil {
@@ -181,5 +184,37 @@ func TestConfigValidateAndMediaServices(t *testing.T) {
 	}
 	if !allowedAudioMIME("audio/ogg;codecs=opus") || allowedAudioMIME("text/plain") {
 		t.Fatal("audio mime gate wrong")
+	}
+}
+
+// HUB_SERVICE_ENDPOINTS registers probe services (render/service kinds);
+// names are restricted so a schedule can only ever pick an operator key.
+func TestServiceEndpointsFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "42")
+	t.Setenv("HUB_USER_ID", "me")
+	t.Setenv("HUB_STATE", filepath.Join(dir, "state"))
+	t.Setenv("HUB_WORKSPACE", filepath.Join(dir, "ws"))
+	t.Setenv("HUB_SERVICE_ENDPOINTS", `{"browserless":{"url":"http://render:3000","auth":"tok"},"jobftch":"http://jobftch:8000"}`)
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServiceEndpoints["browserless"].URL != "http://render:3000" || cfg.ServiceEndpoints["browserless"].Auth != "tok" {
+		t.Fatalf("endpoint object lost: %+v", cfg.ServiceEndpoints)
+	}
+	if cfg.ServiceEndpoints["jobftch"].URL != "http://jobftch:8000" {
+		t.Fatalf("string endpoint form lost: %+v", cfg.ServiceEndpoints)
+	}
+	for _, raw := range []string{
+		`{"bad name":{"url":"http://x"}}`,
+		`{"svc":{"url":"ftp://x"}}`,
+		`{"svc":{"url":"http://u:p@x"}}`,
+		`{not json`,
+	} {
+		t.Setenv("HUB_SERVICE_ENDPOINTS", raw)
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Fatalf("invalid endpoint map accepted: %s", raw)
+		}
 	}
 }

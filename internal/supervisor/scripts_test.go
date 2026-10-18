@@ -162,6 +162,52 @@ func TestScriptProbeInputBounds(t *testing.T) {
 	}
 }
 
+func TestScriptProbeNeedsTransportAndBounds(t *testing.T) {
+	var commands [][]string
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "run" {
+			return []byte(`["ok"]`), nil
+		}
+		return nil, nil
+	}, nil)
+	call := func(needs []string) *httptest.ResponseRecorder {
+		request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", Text: `emit("ok")`}, DueAt: time.Now(), Needs: needs}
+		body, _ := json.Marshal(request)
+		r := httptest.NewRequest("POST", "/v1/script", strings.NewReader(string(body)))
+		r.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		m.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if got := call([]string{"alpha", "beta"}); got.Code != 200 {
+		t.Fatalf("needs request rejected: %d %s", got.Code, got.Body.String())
+	}
+	args := commands[0]
+	tail := args[len(args)-2:]
+	got := []string{}
+	for _, encoded := range tail {
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatalf("need not base64: %v", err)
+		}
+		got = append(got, string(raw))
+	}
+	if !reflect.DeepEqual(got, []string{"alpha", "beta"}) {
+		t.Fatalf("needs argv=%v", got)
+	}
+	if got := call([]string{"a", "b", "c", "d", "e"}); got.Code != 400 {
+		t.Fatalf("five needs accepted: %d", got.Code)
+	}
+	large := strings.Repeat("x", 32*1024)
+	if got := call([]string{large, large, large, large}); got.Code != 200 {
+		t.Fatalf("large bounded needs rejected: %d", got.Code)
+	}
+	if got := call([]string{strings.Repeat("x", 64*1024+1)}); got.Code != 400 {
+		t.Fatalf("oversized need accepted: %d", got.Code)
+	}
+}
+
 func TestM10UsageLookupDoesNotWakeStoppedRuntime(t *testing.T) {
 	commands := 0
 	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { commands++; return nil, nil }, nil)

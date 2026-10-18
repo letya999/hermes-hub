@@ -49,24 +49,33 @@ type Input struct {
 	archiveSourceNames []string
 	archiveOutput      *os.Root
 	archiveOutputPath  string
-	Kind               string   `json:"kind,omitempty"`
-	URL                string   `json:"url,omitempty"`
-	Regex              string   `json:"regex,omitempty"`
-	ProbeKind          string   `json:"probe_kind,omitempty"`
-	Recipe             string   `json:"recipe,omitempty"`
-	Extract            string   `json:"extract,omitempty"`
-	ProbeScript        string   `json:"probe_script,omitempty"`
-	Tool               string   `json:"tool,omitempty"`
-	NotifyMode         string   `json:"notify_mode,omitempty"`
-	SourceIDs          []string `json:"source_ids,omitempty"`
-	Expect             string   `json:"expect,omitempty"`
-	QuietFrom          string   `json:"quiet_from,omitempty"`
-	QuietTo            string   `json:"quiet_to,omitempty"`
-	DailyLimit         int      `json:"daily_limit,omitempty"`
-	MaxRetries         int      `json:"max_retries,omitempty"`
-	Sink               string   `json:"sink,omitempty"`
-	Delivery           string   `json:"delivery,omitempty"`
-	Args               string   `json:"args,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	URL                string `json:"url,omitempty"`
+	Regex              string `json:"regex,omitempty"`
+	ProbeKind          string `json:"probe_kind,omitempty"`
+	Recipe             string `json:"recipe,omitempty"`
+	Extract            string `json:"extract,omitempty"`
+	ProbeScript        string `json:"probe_script,omitempty"`
+	// Needs is a JSON array of {"tool","args"} read-tool calls the hub runs
+	// before a script/command probe so needs() returns their results.
+	Needs        string `json:"needs,omitempty"`
+	DeliverMode  string `json:"deliver_mode,omitempty"`
+	ArtifactName string `json:"artifact_name,omitempty"`
+	// Steps is a JSON array of declarative browser actions for render probes;
+	// WaitFor is the terminal wait condition the render service honors.
+	Steps      string   `json:"steps,omitempty"`
+	WaitFor    string   `json:"wait_for,omitempty"`
+	Tool       string   `json:"tool,omitempty"`
+	NotifyMode string   `json:"notify_mode,omitempty"`
+	SourceIDs  []string `json:"source_ids,omitempty"`
+	Expect     string   `json:"expect,omitempty"`
+	QuietFrom  string   `json:"quiet_from,omitempty"`
+	QuietTo    string   `json:"quiet_to,omitempty"`
+	DailyLimit int      `json:"daily_limit,omitempty"`
+	MaxRetries int      `json:"max_retries,omitempty"`
+	Sink       string   `json:"sink,omitempty"`
+	Delivery   string   `json:"delivery,omitempty"`
+	Args       string   `json:"args,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root

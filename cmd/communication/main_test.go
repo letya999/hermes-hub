@@ -51,3 +51,16 @@ func TestScriptHelperProbeInputAndWatch(t *testing.T) {
 		t.Fatal("file builtins must not exist without the watch mount")
 	}
 }
+
+func TestScriptHelperNeeds(t *testing.T) {
+	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	due := time.Now().UTC().Format(time.RFC3339Nano)
+	var out bytes.Buffer
+	if err := runScriptHelper([]string{encode(`emit(needs()[0] + "|" + needs()[1])`), due, encode(""), "-", encode("alpha"), encode("beta")}, &out); err != nil || out.String() != "[\"alpha|beta\"]\n" {
+		t.Fatalf("needs helper=%q %v", out.String(), err)
+	}
+	out.Reset()
+	if err := runScriptHelper([]string{encode(`emit("ok")`), due, encode(""), "-", encode("a"), encode("b"), encode("c"), encode("d"), encode("e")}, &out); err == nil {
+		t.Fatal("more than four needs accepted")
+	}
+}

@@ -55,3 +55,37 @@ expensive last resort and keeps the compared artifact canonical.
   cadence modest.
 - The `watch/` directory is the explicit, owner-controlled boundary for
   file-state probes; nothing else in the space is visible to probe scripts.
+
+## Amendment 2026-10-18 (CHG-0114): generalized probe sources and delivery modes
+
+Scope of issue #248 widened from URL polling to "any source the owner can
+read": internal tools, memory/knowledge stores, web search, files,
+browser-rendered pages and external parser services such as job_ftch.
+
+- **D6**: `kind=tool` normalizes to `mcp_tool`. The ToolHub `/v1/tool-call`
+  path already enforces read-effect tools under owner grants, so the whole
+  projected read catalog (file_read, knowledge_search, web_search, MCP
+  connectors) becomes probe sources without new plumbing. Probes may never
+  exceed what the owner's agent could call.
+- **D7**: Sandbox stays networkless; internet access is hub-mediated.
+  `probe.needs[]` (≤4 read-tool calls) are prefetched under owner grants
+  before the container spawns and reach Starlark via `needs()` in declared
+  order (each ≤64 KiB). A failed need aborts the probe as an error. This
+  covers "script that needs web search / a fetched page" without opening
+  sandbox networking; a dedicated egress-proxy executor (`kind=exec`) stays
+  deliberately deferred.
+- **D8**: Delivery is a separate axis: `deliver_mode` = `notify` (default),
+  `content` (report the value every tick), `artifact` (stage the value as a
+  durable outbox blob and deliver it as a file, `artifact_name`-named).
+  `schedule.delivery` was already taken by event subscriptions, hence the
+  distinct field name.
+- **D9**: Heavy parsers stay outside the hub. `kind=render` (browser steps:
+  click/fill/scroll/wait/wait_for/evaluate + wait_for condition) and
+  `kind=service` (URL-less internal APIs like job_ftch) both POST a
+  bounded structured request to an **operator-registered** endpoint from
+  `service_endpoints` config — never a URL supplied by the schedule. This
+  keeps internal addressing an explicit operator decision and makes D5's
+  "opt-in external service" concrete without shipping a renderer.
+- **D10**: Baseline seeding uses the same source path as ticks: check-kind
+  creation routes render/service probes through `serviceProbe` so the
+  baseline reflects what the watcher will actually compare.

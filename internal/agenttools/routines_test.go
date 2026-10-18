@@ -305,6 +305,92 @@ func TestRoutineCreateForwardsProbePipeline(t *testing.T) {
 	}
 }
 
+// needs and deliver_mode ride the same create surface: a script probe gets
+// hub-prefetched tool results via needs() and report modes ship the value
+// every tick or as a staged file (SPEC-0057 R5.2/R6).
+func TestRoutineCreateForwardsNeedsAndDeliver(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"search-report"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	ctx := context.Background()
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "search-report", Timezone: "UTC", Expression: "0 9 * * *", Text: "morning search", Kind: "watcher", ProbeKind: "command", ProbeScript: `emit(needs()[0])`, Needs: `[{"tool":"web_search","args":{"q":"LLM news"}}]`, DeliverMode: "content"}); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ := request["probe"].(map[string]any)
+	needs, _ := probe["needs"].([]any)
+	if len(needs) != 1 || needs[0].(map[string]any)["tool"] != "web_search" {
+		t.Fatalf("needs lost: %v", request)
+	}
+	if request["deliver_mode"] != "content" {
+		t.Fatalf("deliver_mode lost: %v", request)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "file-report", Timezone: "UTC", Expression: "0 9 * * *", Text: "send file", Kind: "watcher", ProbeKind: "command", ProbeScript: `emit(read_file("r.md"))`, DeliverMode: "artifact", ArtifactName: "report.md"}); err != nil {
+		t.Fatal(err)
+	}
+	if request["deliver_mode"] != "artifact" || request["artifact_name"] != "report.md" {
+		t.Fatalf("artifact fields lost: %v", request)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "bad-needs", Timezone: "UTC", Expression: "0 9 * * *", Text: "x", Kind: "watcher", ProbeKind: "command", ProbeScript: `emit(1)`, Needs: `[{"tool":`}); err == nil {
+		t.Fatal("malformed needs accepted")
+	}
+}
+
+// render/service probes name an operator-registered service; browser steps
+// travel as a JSON array for the render contract (SPEC-0057 R5.4/R5.5).
+func TestRoutineCreateForwardsRenderAndService(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"spa"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	ctx := context.Background()
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "spa", Timezone: "UTC", Expression: "*/30 * * * *", Text: "watch spa", Kind: "watcher", ProbeKind: "render", URL: "https://spa.example.com", Service: "browserless", Steps: `[{"action":"click","selector":"#go"}]`, WaitFor: "networkidle"}); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ := request["probe"].(map[string]any)
+	steps, _ := probe["steps"].([]any)
+	if probe["kind"] != "render" || probe["service"] != "browserless" || probe["wait_for"] != "networkidle" || len(steps) != 1 {
+		t.Fatalf("render probe lost: %v", request)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "svc", Timezone: "UTC", Expression: "0 9 * * *", Text: "jobs", Kind: "watcher", ProbeKind: "service", Service: "jobftch", Args: `{"tenant":"alice"}`}); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ = request["probe"].(map[string]any)
+	args, _ := probe["args"].(map[string]any)
+	if probe["kind"] != "service" || probe["service"] != "jobftch" || args["tenant"] != "alice" {
+		t.Fatalf("service probe lost: %v", request)
+	}
+	if _, err := v.Routine(ctx, "routine_create", Input{ID: "bad-steps", Timezone: "UTC", Expression: "0 9 * * *", Text: "x", Kind: "watcher", ProbeKind: "render", URL: "https://x", Service: "s", Steps: `[{"action":`}); err == nil {
+		t.Fatal("malformed steps accepted")
+	}
+	// The LLM-facing schema must expose the pipeline fields or the agent can
+	// never pass them.
+	declared := map[string]bool{}
+	for _, spec := range HubToolsDefinition().Tools {
+		if spec.Name != "routine_create" {
+			continue
+		}
+		for _, a := range spec.Arguments {
+			declared[a.Name] = true
+		}
+	}
+	for _, want := range []string{"needs", "deliver_mode", "artifact_name", "service", "steps", "wait_for", "args", "recipe", "extract", "probe_script"} {
+		if !declared[want] {
+			t.Fatalf("routine_create schema missing %q", want)
+		}
+	}
+}
+
 // watch_subscribe is an event-subscription routine: the create payload must
 // carry job_kind=event, an mcp_tool probe with parsed JSON args, and the
 // requested sink — the agent never constructs the probe envelope itself.

@@ -47,3 +47,39 @@ Decision: [ADR-0043](../../docs/adr/ADR-0043-watcher-probe-pipeline.md).
   service, not part of the base image; this spec does not ship it. LLM
   evaluation of diffs stays opt-in escalation (`notify_mode=agent`) and is
   never the deterministic change detector.
+
+## Amendment 2026-10-18 (CHG-0114): probe source spectrum and delivery modes
+
+- R5.1: `probe.kind=tool` is accepted as an alias and normalized to
+  `mcp_tool` at create time. The ToolHub `/v1/tool-call` path already
+  restricts probes to read-effect tools under the owner's grants, so any
+  projected read tool (file_read, knowledge_search, web_search connectors,
+  MCP such as job_ftch) is a lawful probe source without new plumbing.
+- R5.2: `probe.needs` is a JSON array of at most 4 `{tool, args}` read-tool
+  calls, lawful only on `script`/`command` kinds. The hub prefetches them
+  under the owner binding before spawning the sandbox; each result is
+  truncated to 64 KiB and exposed inside Starlark via `needs()` in declared
+  order. A failed need aborts the run and settles as a probe error; the
+  script container itself stays networkless.
+- R5.3: `schedule.deliver_mode` is `notify` (default: old/new on change),
+  `content` (the probed value is delivered every successful tick) or
+  `artifact` (the value is staged as a durable outbox blob and delivered as
+  a file each tick; `artifact_name` sets the filename and rejects path
+  traversal). Non-notify modes require a watcher/check context; unknown
+  modes are rejected at create.
+- R5.4: `probe.kind=render` ships the *contract*, not a renderer: the hub
+  POSTs `{kind, url, args, steps, wait_for}` to an operator-registered
+  endpoint and feeds the bounded (512 KiB) response through the normal
+  extract chain. `steps` is a declarative browser-action array (≤8 entries;
+  actions click/fill/scroll/wait/wait_for/evaluate) replayed by
+  the service before extraction. The render endpoint stays opt-in and out
+  of the base image.
+- R5.5: `probe.kind=service` addresses internal services (job_ftch API,
+  custom crawlers) the same way, without requiring a target URL. Both
+  kinds resolve the target exclusively from the operator-registered
+  `service_endpoints` catalog (YAML or `HUB_SERVICE_ENDPOINTS` env JSON:
+  `name → url | {url, auth}`); names match `^[a-z0-9_-]{1,64}$`, URLs are
+  http(s) with a host and no embedded credentials, and a schedule can never
+  supply the endpoint itself. Unregistered names, non-2xx and oversized
+  responses are probe errors. The same service path seeds the baseline for
+  `job_kind=check` creation.

@@ -132,7 +132,7 @@ func TestScriptProbeFeedsBodyToIsolatedRunner(t *testing.T) {
 	caller := o.Job.Envelope
 	var gotSrc, gotInput string
 	var gotMount bool
-	s.probeScript = func(_ context.Context, _ RoutineOccurrence, src, input string, mountSpace bool) (string, error) {
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, src, input string, mountSpace bool, _ []string) (string, error) {
 		gotSrc, gotInput, gotMount = src, input, mountSpace
 		return "extracted-value", nil
 	}
@@ -167,7 +167,7 @@ func TestCommandProbeMountsSpaceAndNeverFetches(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	var gotMount bool
-	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, _ string, mountSpace bool) (string, error) {
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, _ string, mountSpace bool, _ []string) (string, error) {
 		gotMount = mountSpace
 		return "dir-state-hash", nil
 	}
@@ -235,7 +235,7 @@ func TestScriptProbeAppliesExtractBeforeInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotInput string
-	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, input string, _ bool) (string, error) {
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, input string, _ bool, _ []string) (string, error) {
 		gotInput = input
 		return input, nil
 	}
@@ -363,7 +363,7 @@ func TestProbeScriptRunnerContractsSingleEmit(t *testing.T) {
 	g.config.Supervised = true
 	g.config.RuntimeURL = srv.URL
 	g.config.RuntimeAuth = "token"
-	value, err := g.runProbeScript(context.Background(), o, "emit(input())", "fetched-body", true)
+	value, err := g.runProbeScript(context.Background(), o, "emit(input())", "fetched-body", true, nil)
 	if err != nil || value != "value" {
 		t.Fatalf("probe script=%q %v", value, err)
 	}
@@ -371,7 +371,30 @@ func TestProbeScriptRunnerContractsSingleEmit(t *testing.T) {
 		t.Fatalf("input/mount lost in transport: %q %v", gotInput, gotMount)
 	}
 	response = `["a","b"]`
-	if _, err = g.runProbeScript(context.Background(), o, "src", "", false); err == nil {
+	if _, err = g.runProbeScript(context.Background(), o, "src", "", false, nil); err == nil {
 		t.Fatal("multi-emit probe accepted")
+	}
+}
+
+func TestProbeScriptRunnerForwardsNeeds(t *testing.T) {
+	_, o, g := occurrenceFixture(t)
+	var gotNeeds []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request hubruntime.ScriptRequest
+		if json.NewDecoder(r.Body).Decode(&request) != nil {
+			t.Error("bad script request")
+		}
+		gotNeeds = request.Needs
+		_, _ = w.Write([]byte(`["value"]`))
+	}))
+	defer srv.Close()
+	g.config.Supervised = true
+	g.config.RuntimeURL = srv.URL
+	g.config.RuntimeAuth = "token"
+	if _, err := g.runProbeScript(context.Background(), o, "emit(needs()[0])", "", false, []string{"alpha", "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotNeeds) != 2 || gotNeeds[0] != "alpha" || gotNeeds[1] != "beta" {
+		t.Fatalf("needs lost in transport: %v", gotNeeds)
 	}
 }

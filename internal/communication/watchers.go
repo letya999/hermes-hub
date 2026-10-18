@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
@@ -119,15 +120,11 @@ func watchHash(value string) string {
 // re-validates the occurrence is still probing (crash-safe: a stale probing
 // occurrence is probed again — delivery ids dedupe).
 func (s *Spool) ProbeDueOccurrences(now time.Time, fetch func(context.Context, string) ([]byte, error)) error {
-	return s.ProbeDueOccurrencesContext(context.Background(), now, nil, fetch)
+	return s.ProbeDueOccurrencesContext(context.Background(), now, nil, fetch, nil, nil)
 }
 
-func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error), toolCalls ...func(context.Context, string, *WatchProbe) ([]byte, error)) error {
-	var toolCall func(context.Context, string, *WatchProbe) ([]byte, error)
-	if len(toolCalls) > 0 {
-		toolCall = toolCalls[0]
-	}
-	return s.processProactive(ctx, "probing", func(o RoutineOccurrence) { s.probeOne(ctx, o, now, authorize, fetch, toolCall) })
+func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *WatchProbe) ([]byte, error), serviceCall func(context.Context, string, *WatchProbe) ([]byte, error)) error {
+	return s.processProactive(ctx, "probing", func(o RoutineOccurrence) { s.probeOne(ctx, o, now, authorize, fetch, toolCall, serviceCall) })
 }
 
 // fetchWatch is the live probe: one GET, caches bypassed, body capped at
@@ -158,7 +155,7 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 	return body, err
 }
 
-func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) {
+func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time, authorize func(Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *WatchProbe) ([]byte, error), serviceCall func(context.Context, string, *WatchProbe) ([]byte, error)) {
 	if o.RetryAfter.After(now) {
 		return // bounded check retry waiting out its backoff (R1.1)
 	}
@@ -194,7 +191,12 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 			s.settleProbe(o, schedule, "", "", now, errors.New("command probe runtime unavailable"), authorize)
 			return
 		}
-		value, valueErr := s.probeScript(ctx, o, schedule.Probe.Script, "", true)
+		needs, needsErr := prefetchNeeds(ctx, o.Job.PrincipalID, schedule.Probe, toolCall)
+		if needsErr != nil {
+			s.settleProbe(o, schedule, "", "", now, needsErr, authorize)
+			return
+		}
+		value, valueErr := s.probeScript(ctx, o, schedule.Probe.Script, "", true, needs)
 		s.settleProbe(o, schedule, value, watchHash(value), now, valueErr, authorize)
 		return
 	}
@@ -218,6 +220,15 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 			fetchErr = errors.New("tool-call probe path unavailable")
 		} else {
 			body, fetchErr = toolCall(ctx, o.Job.PrincipalID, schedule.Probe)
+		}
+	} else if schedule.Probe.Kind == "render" || schedule.Probe.Kind == "service" {
+		// Registered-service probe: an operator-declared endpoint (external
+		// renderer, parser API) answers for the probe; the response body
+		// feeds the normal extract chain (SPEC-0057 R5.4/R5.5).
+		if serviceCall == nil {
+			fetchErr = errors.New("service probe path unavailable")
+		} else {
+			body, fetchErr = serviceCall(ctx, o.Job.PrincipalID, schedule.Probe)
 		}
 	} else {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -258,7 +269,12 @@ func (s *Spool) probeOne(ctx context.Context, o RoutineOccurrence, now time.Time
 			}
 			input = []byte(fragment)
 		}
-		value, valueErr := s.probeScript(ctx, o, schedule.Probe.Script, string(input), false)
+		needs, needsErr := prefetchNeeds(ctx, o.Job.PrincipalID, schedule.Probe, toolCall)
+		if needsErr != nil {
+			s.settleProbe(o, schedule, "", "", now, needsErr, authorize)
+			return
+		}
+		value, valueErr := s.probeScript(ctx, o, schedule.Probe.Script, string(input), false, needs)
 		s.settleProbe(o, schedule, value, watchHash(value), now, valueErr, authorize)
 		return
 	}
@@ -368,6 +384,13 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 			notify = schedule.NotifyMode != "digest"
 			live.State = "dispatched"
 		}
+		if live.JobKind == "watcher" && (schedule.DeliverMode == "content" || schedule.DeliverMode == "artifact") {
+			// Report modes ship the probed value on every successful tick,
+			// baseline included; the change tracker still advances (R6).
+			notify = true
+			live.State = "dispatched"
+			text = fmt.Sprintf("%s\n%s", live.Job.Text, boundedWatchText(value))
+		}
 		if notify && schedule.DailyLimit > 0 {
 			day := now.UTC().Format("2006-01-02")
 			if loc, err := time.LoadLocation(schedule.Timezone); err == nil {
@@ -400,11 +423,21 @@ func (s *Spool) settleProbe(o RoutineOccurrence, schedule Schedule, value, hash 
 			if live.JobKind == "check" {
 				prefix = "check-"
 			}
-			d, err := normalizeDelivery(Delivery{ID: prefix + live.Job.ID, OccurrenceID: live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: text, NotBefore: quietDefer(schedule, now), CreatedAt: now.UTC()})
+			d := Delivery{ID: prefix + live.Job.ID, OccurrenceID: live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: text, NotBefore: quietDefer(schedule, now), CreatedAt: now.UTC()}
+			if schedule.DeliverMode == "artifact" {
+				// The emitted value is the file body; staging rides the
+				// artifact blob path channels already drain (SPEC-0037).
+				blob, blobErr := s.WriteDeliveryBlob(d.ID, schedule.ArtifactName, []byte(value))
+				if blobErr != nil {
+					return
+				}
+				d.Artifacts = []hubruntime.ArtifactRef{{Name: schedule.ArtifactName, Blob: blob}}
+			}
+			nd, err := normalizeDelivery(d)
 			if err != nil {
 				return
 			}
-			result.Delivery = &d
+			result.Delivery = &nd
 		}
 	}
 	result.Watch, result.Occurrence = st, live
@@ -460,4 +493,29 @@ func boundedWatchText(value string) string {
 
 func probeValue(probe *WatchProbe, body []byte) (string, error) {
 	return extractValue(probe, body)
+}
+
+// prefetchNeeds runs a script probe's declared tool needs through the same
+// read-only ToolHub path as mcp_tool probes (SPEC-0057 R5.2): the sandboxed
+// script stays networkless while owner-granted results arrive as needs().
+// A failed need is a probe error — partial data never reaches the script.
+func prefetchNeeds(ctx context.Context, principal string, probe *WatchProbe, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) ([]string, error) {
+	if len(probe.Needs) == 0 {
+		return nil, nil
+	}
+	if toolCall == nil {
+		return nil, errors.New("tool-call probe path unavailable")
+	}
+	results := make([]string, 0, len(probe.Needs))
+	for _, need := range probe.Needs {
+		out, err := toolCall(ctx, principal, &WatchProbe{Kind: "mcp_tool", Tool: need.Tool, Args: need.Args})
+		if err != nil {
+			return nil, fmt.Errorf("probe need %s failed: %w", need.Tool, err)
+		}
+		if len(out) > 64*1024 {
+			out = out[:64*1024]
+		}
+		results = append(results, string(out))
+	}
+	return results, nil
 }

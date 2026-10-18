@@ -12,4 +12,8 @@ type ScriptRequest struct {
 	// MountSpace mounts the owner's spaces/<user>/watch directory read-only
 	// at /watch for file-state probes. Never caller-supplied paths.
 	MountSpace bool `json:"mount_space,omitempty"`
+	// Needs carries hub-prefetched read-tool results into the isolated
+	// runtime as the needs() builtin (SPEC-0057 R5.2). Max four entries,
+	// each bounded; the container still has no network or tool access.
+	Needs []string `json:"needs,omitempty"`
 }

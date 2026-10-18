@@ -23,11 +23,21 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request hubruntime.ScriptRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 384*1024))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF || len(request.Text) == 0 || len(request.Text) > 16*1024 || request.DueAt.IsZero() || request.Trigger != "cron" {
+	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF || len(request.Text) == 0 || len(request.Text) > 16*1024 || len(request.Input) > 64*1024 || request.DueAt.IsZero() || request.Trigger != "cron" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid script request"})
 		return
+	}
+	if len(request.Needs) > 4 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid script request"})
+		return
+	}
+	for _, need := range request.Needs {
+		if len(need) > 64*1024 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid script request"})
+			return
+		}
 	}
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
@@ -59,6 +69,9 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--mount", "type=bind,src="+watchDir+",dst=/watch,readonly")
 	}
 	args = append(args, "--entrypoint", "communication-hub", m.cfg.Image, "--script", base64.StdEncoding.EncodeToString([]byte(request.Text)), request.DueAt.UTC().Format(time.RFC3339Nano), base64.StdEncoding.EncodeToString([]byte(request.Input)), map[bool]string{true: "/watch", false: "-"}[request.MountSpace])
+	for _, need := range request.Needs {
+		args = append(args, base64.StdEncoding.EncodeToString([]byte(need)))
+	}
 	out, err := m.command(ctx, args...)
 	var emitted []string
 	if err != nil || len(out) > 128*1024 || json.Unmarshal(out, &emitted) != nil || len(emitted) > 4 {
