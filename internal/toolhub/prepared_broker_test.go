@@ -208,7 +208,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	if err != nil || rotated["phase"] != api.PhaseAwaitingConfirm || admitCalls != 3 || grants.Load() != 4 || revocations.Load() != 3 {
 		t.Fatalf("rotated Broker credential was not admitted: %+v %v (probes=%d grants=%d revoked=%d)", rotated, err, admitCalls, grants.Load(), revocations.Load())
 	}
-	control.Release = func(context.Context, string) error { return nil }
+	control.Release = func(context.Context, api.ControllerRelease) error { return nil }
 	reauth, err := control.Store.OnboardingFor(auth, retry.OnboardingID)
 	if err != nil {
 		t.Fatal(err)

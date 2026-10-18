@@ -28,8 +28,8 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	}
 	root := t.TempDir()
 	var released []string
-	control := &ControlPlane{Store: store, WorkloadRoot: root, Now: time.Now, Release: func(_ context.Context, workloadID string) error {
-		released = append(released, workloadID)
+	control := &ControlPlane{Store: store, WorkloadRoot: root, Now: time.Now, Release: func(_ context.Context, release api.ControllerRelease) error {
+		released = append(released, release.WorkloadID)
 		return nil
 	}}
 	auth := aliceAuth()

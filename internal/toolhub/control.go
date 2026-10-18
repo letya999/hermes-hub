@@ -40,7 +40,8 @@ type ControlPlane struct {
 	// Release asks the workload controller to stop a running workload. Revoke
 	// and remove use it so a cut connector does not keep a materialized
 	// credential alive in a running container until the idle TTL fires.
-	Release func(context.Context, string) error
+	// Purge additionally drops the workload's named state volumes.
+	Release func(context.Context, api.ControllerRelease) error
 	// CLIRelease drops bounded-cli sandbox cells by principal/binding/job
 	// selector: disable and revoke kill warm cells, the /v1 job-end route
 	// kills task cells. Nil leaves cells to the controller's own ladder.
@@ -341,7 +342,7 @@ func (c *ControlPlane) revoke(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	if err := c.cutAuthorization(onboarding); err != nil {
+	if err := c.cutAuthorization(onboarding, false); err != nil {
 		return nil, err
 	}
 	onboarding.Phase = api.PhaseRevoked
@@ -384,7 +385,7 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 		return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
 	}
 	onboarding.RemoveNonce = ""
-	_ = c.cutAuthorization(onboarding)
+	_ = c.cutAuthorization(onboarding, true)
 	// Remove deletes the owner's ciphertext, not just revokes it — a revoked
 	// marker still leaves the secret recoverable. A credential owned by
 	// someone else (shared policy store owner) is left untouched: removing

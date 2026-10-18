@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0127
+title: "M13 P0 — stabilize the current connector path (issue #281)"
+status: in_progress
+branch: feat/m14-toolhub-connector-platform
+updated: 2026-10-18
+phase: implementation
+adr: none
+spec: issue-281
+requirements: [S0.1, S0.2, S0.3, S0.4, S0.5, S0.6, S0.7, S0.8, S0.9]
+depends_on: []
+github_milestone: "M13 — ToolHub Connector Platform"
+github_issue: 281
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S0.1-purge-release: not_started
+  S0.2-convergent-remove: not_started
+  S0.3-nonce-free-results: not_started
+  S0.4-ssrf-safe-client: not_started
+  S0.5-scope-selection: not_started
+  S0.6-env-injection-guard: not_started
+  S0.7-remote-effect-fail-closed: not_started
+  S0.8-ready-outside-lock: not_started
+  S0.9-deterministic-resolution: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "Finding 10: committed 11MB live snapshots in 16cb15c (.work/done/CHG-0107-dynamic-contracts/) — owner decision on history scrub before any push"
+  - "Push to origin + CI image/containers gates require owner instruction"
+limitations: []

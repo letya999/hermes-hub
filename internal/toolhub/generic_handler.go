@@ -34,13 +34,19 @@ func (c *genericController) handler(token string) http.Handler {
 			}
 			c.mu.Lock()
 			if workload, ok := c.workloads[release.WorkloadID]; ok {
-				if err := c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful); err != nil {
+				if err := c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful && !release.Purge); err != nil {
 					c.mu.Unlock()
 					http.Error(w, "workload release failed", http.StatusServiceUnavailable)
 					return
 				}
 				delete(c.workloads, release.WorkloadID)
 				c.config.Budget.Release(release.WorkloadID)
+			} else if release.Purge {
+				if err := c.purgeWorkloadByName(r.Context(), release.WorkloadID); err != nil {
+					c.mu.Unlock()
+					http.Error(w, "workload purge failed", http.StatusServiceUnavailable)
+					return
+				}
 			}
 			c.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)

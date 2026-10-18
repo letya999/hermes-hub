@@ -34,6 +34,10 @@ type ControllerPlan struct {
 
 type ControllerRelease struct {
 	WorkloadID string `json:"workload_id"`
+	// Purge removes the workload's named state volumes (refresh tokens,
+	// checkpointed session state). Disable/revoke leave it false so a later
+	// enable resumes the state; remove passes true.
+	Purge bool `json:"purge,omitempty"`
 }
 
 // AdmissionReceipt is the controller's proof that the workload was started
@@ -293,7 +297,7 @@ func SubmitPlan(ctx context.Context, client *http.Client, endpoint, token string
 	return receipt, nil
 }
 
-func ControllerAdmissionReleaserFromEnv() (func(context.Context, string) error, error) {
+func ControllerAdmissionReleaserFromEnv() (func(context.Context, ControllerRelease) error, error) {
 	endpoint := os.Getenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT")
 	if endpoint == "" {
 		return nil, nil
@@ -303,11 +307,11 @@ func ControllerAdmissionReleaserFromEnv() (func(context.Context, string) error, 
 	}
 	token := os.Getenv("HUB_TOOLHIVE_ADMISSION_TOKEN")
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return func(ctx context.Context, workloadID string) error {
-		if workloadID == "" {
+	return func(ctx context.Context, release ControllerRelease) error {
+		if release.WorkloadID == "" {
 			return fmt.Errorf("%w: empty workload release", ErrInvalid)
 		}
-		body, err := json.Marshal(ControllerRelease{WorkloadID: workloadID})
+		body, err := json.Marshal(release)
 		if err != nil {
 			return err
 		}

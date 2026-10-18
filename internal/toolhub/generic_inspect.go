@@ -7,6 +7,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -178,6 +179,37 @@ func (c *genericController) CleanupIdle(ctx context.Context, now time.Time) []st
 		delete(c.workloads, id)
 	}
 	return ids
+}
+
+// purgeWorkloadByName removes the leftover resources of a workload the
+// controller map no longer records (idle-stopped earlier, state lost in a
+// restart). Names derive deterministically from the workload ID, so a purge
+// never touches foreign objects: the workload and companion containers plus
+// every `<id>-state-N` volume carrying the state label.
+func (c *genericController) purgeWorkloadByName(ctx context.Context, workloadID string) error {
+	resources := genericFallbackResources(workloadID)
+	var firstErr error
+	note := func(_ []byte, err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	note(c.docker(ctx, "rm", "--force", workloadID, resources.ProxyName, resources.RelayName, resources.BridgeSeed))
+	filters := []string{"volume", "ls", "-q", "--filter", "label=hermes-hub.role=generic-mcp-state"}
+	if label := c.scopeLabel(); label != "" {
+		filters = append(filters, "--filter", "label="+label)
+	}
+	listed, err := c.docker(ctx, filters...)
+	if err != nil {
+		note(nil, err)
+	} else {
+		for _, name := range strings.Fields(string(listed)) {
+			if strings.HasPrefix(name, workloadID+"-state-") {
+				note(c.docker(ctx, "volume", "rm", name))
+			}
+		}
+	}
+	return firstErr
 }
 
 func (c *genericController) removeWorkload(ctx context.Context, workload genericWorkload, keepState bool) error {

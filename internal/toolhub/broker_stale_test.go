@@ -107,7 +107,7 @@ func TestCutAuthorizationToleratesMissingBrokerCredential(t *testing.T) {
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: NewStore(), Broker: &cfg, Now: time.Now}
 	onboarding := api.Onboarding{OnboardingID: "onboard-stale", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", BrokerCredentialID: "credential_gone"}
-	if err := control.cutAuthorization(onboarding); err != nil {
+	if err := control.cutAuthorization(onboarding, false); err != nil {
 		t.Fatalf("revoke aborted on an already-absent credential: %v", err)
 	}
 }

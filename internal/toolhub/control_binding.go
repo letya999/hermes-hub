@@ -324,7 +324,7 @@ func (c *ControlPlane) rotateLocal(auth identity.Envelope, onboarding api.Onboar
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
+func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding, purge bool) error {
 	if onboarding.BindingID != "" {
 		if err := c.Store.SetBindingStatus(onboarding.BindingID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
 			return err
@@ -355,7 +355,7 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
 		}
 		_ = c.Secrets.SetStatus(onboarding.Locator, owner, credstore.StatusRevoked)
 	}
-	c.releaseBindingWorkloads(onboarding)
+	c.releaseBindingWorkloads(onboarding, purge)
 	return nil
 }
 
@@ -363,7 +363,7 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
 // Recorded workload instances cover every class; the deterministic recompute
 // covers admissions whose record is gone (e.g. a store snapshot predating the
 // record or a controller that kept the containers after losing its own map).
-func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding) {
+func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge bool) {
 	if c.CLIRelease != nil && onboarding.BindingID != "" && identity.ValidID(onboarding.PrincipalID) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -380,7 +380,7 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding) {
 		released[workloadID] = true
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = c.Release(ctx, workloadID)
+		_ = c.Release(ctx, api.ControllerRelease{WorkloadID: workloadID, Purge: purge})
 	}
 	for _, workloadID := range c.Store.WorkloadIDsForBinding(onboarding.BindingID) {
 		release(workloadID)
@@ -459,7 +459,7 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 				return api.ToolBinding{}, fmt.Errorf("%w: rotation requires workload release", api.ErrIsolation)
 			}
 			workloadID := api.WorkloadInstanceID(definition.DefinitionID, api.PerUser, auth.ContextID+":"+auth.PrincipalID+":"+connection.ConnectionID, "")
-			if err := c.Release(ctx, workloadID); err != nil {
+			if err := c.Release(ctx, api.ControllerRelease{WorkloadID: workloadID}); err != nil {
 				return api.ToolBinding{}, err
 			}
 		}

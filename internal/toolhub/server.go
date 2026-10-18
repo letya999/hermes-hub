@@ -32,9 +32,20 @@ type EndpointConfig struct {
 	RecipeCatalogs []api.RecipeCatalog
 	BrokerControl  *credentialbroker.Config
 	BrokerRuntime  *credentialbroker.Config
-	Release        func(context.Context, string) error
+	Release        func(context.Context, api.ControllerRelease) error
 	// CLIRelease drops bounded-cli cells by principal/binding/job selector.
 	CLIRelease func(context.Context, api.CliReleaseRequest) error
+}
+
+// wrapKeepRelease adapts the controller releaser to the backend's keep-state
+// release hook: backend probe cleanup never purges state volumes.
+func wrapKeepRelease(release func(context.Context, api.ControllerRelease) error) func(context.Context, string) error {
+	if release == nil {
+		return nil
+	}
+	return func(ctx context.Context, workloadID string) error {
+		return release(ctx, api.ControllerRelease{WorkloadID: workloadID})
+	}
 }
 
 func EndpointConfigFromEnv() (EndpointConfig, error) {
@@ -130,7 +141,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		TokensFile: os.Getenv("HUB_TOOLHUB_TOKENS_FILE"),
 		Backend: api.RoutingBackend{
 			Provider: api.PersonalProviderBackend{},
-			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: api.EnvOr("HUB_STATE", "/state")},
+			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: wrapKeepRelease(release), Root: api.EnvOr("HUB_STATE", "/state")},
 			CLI:      cli,
 			Agent:    agentBackendFromEnv(),
 		},

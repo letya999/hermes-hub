@@ -95,7 +95,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	}))
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	c := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Release: func(context.Context, string) error { return nil }}
+	c := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Release: func(context.Context, api.ControllerRelease) error { return nil }}
 	// Require readiness so the normal Broker version-upgrade path mints a new
 	// binding grant instead of the legacy no-controller shortcut.
 	c.Ready = func(context.Context, api.EffectiveBinding) error { return nil }

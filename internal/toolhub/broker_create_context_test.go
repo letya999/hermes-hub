@@ -365,7 +365,7 @@ func TestBrokerRevokeSharedCarriesContextManager(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := control.cutAuthorization(onboarding); err != nil {
+	if err := control.cutAuthorization(onboarding, false); err != nil {
 		t.Fatal(err)
 	}
 	if contextManager == nil || !*contextManager {
