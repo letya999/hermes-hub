@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -950,5 +951,75 @@ func TestConnectorInstallPrepared(t *testing.T) {
 	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
 	if err != nil || (onboarding.Mode != api.OnboardingSelfInstall && onboarding.Mode != api.OnboardingRemote) {
 		t.Fatalf("prepared install onboarding: %v %+v", err, onboarding)
+	}
+}
+
+// S3.7: the control listener serves the same facade over HTTP —
+// control-token auth selects the principal through X-Hub-Principal and the
+// journal answers operation lookups.
+func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{
+		Store: store, Control: &ControlPlane{Store: store, Now: time.Now},
+		ControlToken: "control-plane-token-which-is-32-chars!",
+		Backend:      api.RoutingBackend{},
+		Tokens:       map[string]identity.Envelope{"alice-principal-token-0000000000000": auth},
+	}
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(method, path, body, token, principal string) (*httptest.ResponseRecorder, map[string]any) {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if principal != "" {
+			req.Header.Set("X-Hub-Principal", principal)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		var payload map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &payload)
+		return w, payload
+	}
+	// disable goes through the same facade: done result, journaled operation.
+	w, payload := call(http.MethodPost, "/v1/connectors/google-work:disable", "", "control-plane-token-which-is-32-chars!", "alice")
+	if w.Code != http.StatusOK || payload["operation_id"] == "" || payload["state"] != api.OpStateDone {
+		t.Fatalf("disable over HTTP: %d %v", w.Code, payload)
+	}
+	operationID, _ := payload["operation_id"].(string)
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseDisabled {
+		t.Fatalf("onboarding after HTTP disable: %v %+v", err, onboarding)
+	}
+	// /v1/operations/<id> returns the same journaled record.
+	w, payload = call(http.MethodGet, "/v1/operations/"+operationID, "", "control-plane-token-which-is-32-chars!", "alice")
+	if w.Code != http.StatusOK || payload["operation_id"] != operationID || payload["state"] != api.OpStateDone {
+		t.Fatalf("operation lookup: %d %v", w.Code, payload)
+	}
+	// install journals through the same facade and returns the uniform shape.
+	w, payload = call(http.MethodPost, "/v1/connectors:install", `{"target":"github"}`, "control-plane-token-which-is-32-chars!", "alice")
+	if w.Code != http.StatusOK || payload["operation_id"] == "" || payload["state"] == "" {
+		t.Fatalf("install over HTTP: %d %v", w.Code, payload)
+	}
+	// The control token without a principal, a wrong token, and a foreign
+	// operation id all fail closed.
+	for _, tc := range []struct{ method, path, token, principal string }{
+		{http.MethodPost, "/v1/connectors/x:disable", "", "alice"},
+		{http.MethodPost, "/v1/connectors/x:disable", "control-plane-token-which-is-32-chars!", ""},
+		{http.MethodPost, "/v1/connectors/x:disable", "mallory-token-00000000000000000000000", "alice"},
+		{http.MethodGet, "/v1/operations/" + operationID, "control-plane-token-which-is-32-chars!", "mallory"},
+	} {
+		w, _ := call(tc.method, tc.path, "", tc.token, tc.principal)
+		if w.Code == http.StatusOK {
+			t.Fatalf("%+v answered 200", tc)
+		}
 	}
 }

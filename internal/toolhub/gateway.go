@@ -97,6 +97,9 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle(DefaultEndpointPath, g.protect())
 	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
+	mux.Handle("/v1/connectors:install", http.HandlerFunc(g.serveConnectorInstall))
+	mux.Handle("/v1/connectors/", http.HandlerFunc(g.serveConnectorVerb))
+	mux.Handle("/v1/operations/", http.HandlerFunc(g.serveOperation))
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
@@ -184,6 +187,81 @@ func (g *Gateway) serveConnectors(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": views})
+}
+
+// connectorFacadeResult runs one connector_* verb through the shared facade
+// for the authenticated envelope and writes the uniform OperationResult.
+func (g *Gateway) connectorFacadeResult(w http.ResponseWriter, r *http.Request, tool string, args map[string]any) {
+	if g.Control == nil {
+		http.Error(w, "control plane unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	auth, ok := g.connectorAuth(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	result, err := g.Control.InvokeConnector(r.Context(), auth, tool, args)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, api.ErrUnauthorized) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, api.ErrNotFound) || errors.Is(err, api.ErrInvalid) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, "connector operation failed", status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+// serveConnectorInstall is POST /v1/connectors:install — the control-plane
+// surface for the connector_install verb, same facade as the agent tool.
+func (g *Gateway) serveConnectorInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.Header.Get("Origin") != "" {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var args map[string]any
+	if r.Body != nil {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxGatewayBodyBytes))
+		if decoder.Decode(&args) != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+	}
+	g.connectorFacadeResult(w, r, "connector_install", args)
+}
+
+// serveConnectorVerb maps POST /v1/connectors/{id}:disable onto the
+// connector_disable facade verb — same code path as the agent tool.
+func (g *Gateway) serveConnectorVerb(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.Header.Get("Origin") != "" {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id, found := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v1/connectors/"), ":disable")
+	if !found || id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	g.connectorFacadeResult(w, r, "connector_disable", map[string]any{"target": id})
+}
+
+// serveOperation is GET /v1/operations/{id} — the journaled operation record
+// through the same connector_status facade verb.
+func (g *Gateway) serveOperation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.Header.Get("Origin") != "" {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/operations/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	g.connectorFacadeResult(w, r, "connector_status", map[string]any{"operation_id": id})
 }
 
 // serveToolCall is the deterministic-probe path: the same auth as the

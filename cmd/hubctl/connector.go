@@ -160,6 +160,13 @@ func runConnector(ctx context.Context, args []string) error {
 	onboardingID := f.String("onboarding", "", "pending onboarding ID for link/confirm")
 	origin := f.String("origin", "", "human action link origin (default: HUB_PUBLIC_ORIGIN or the toolhub listener)")
 	confirm := f.Bool("confirm", false, "link: also confirm an awaiting-confirmation onboarding for scripts")
+	profileID := f.String("profile", "", "capability profile carrying the connectors bundle for facade verbs")
+	envID := f.String("env", "dev", "capability profile environment")
+	generation := f.Uint64("generation", 0, "capability profile generation")
+	target := f.String("target", "", "connector selector for facade verbs")
+	operationID := f.String("operation", "", "operation ID for connector status")
+	query := f.String("query", "", "connector search query")
+	writesOn := f.Bool("on", false, "allow-writes: enable write tools (omit to disable)")
 
 	if err := f.Parse(args[1:]); err != nil {
 		return err
@@ -177,6 +184,9 @@ func runConnector(ctx context.Context, args []string) error {
 		*runtimeID = *user
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *user, ExternalIdentityID: *user, ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "connector", DeliveryTargetID: "connector", PolicyVersion: *policy}
+	if *profileID != "" {
+		auth.CapabilityProfile, auth.Environment, auth.Generation = *profileID, *envID, *generation
+	}
 	if err := auth.Validate(*user, *contextID, *runtimeID, *policy); err != nil {
 		return err
 	}
@@ -193,7 +203,7 @@ func runConnector(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if args[0] == "status" {
+	if args[0] == "status" && *target == "" && *operationID == "" {
 		catalog, err := registry.Catalog(auth)
 		if err != nil {
 			return err
@@ -219,6 +229,37 @@ func runConnector(ctx context.Context, args []string) error {
 			return nil
 		}
 		return connectorConfirm(ctx, registry, auth, onboarding)
+	}
+	// Facade verbs run the identical code path the agent connector_* tools
+	// and the control listener use; the connectors capability bundle on the
+	// caller's profile admits them.
+	facadeTool := map[string]string{
+		"list": "connector_list", "disable": "connector_disable", "enable": "connector_enable",
+		"search": "connector_search", "reauth": "connector_reauth", "remove": "connector_remove",
+		"install": "connector_install", "allow-writes": "connector_allow_writes",
+	}[args[0]]
+	if args[0] == "status" && *target != "" {
+		facadeTool = "connector_status"
+	}
+	if facadeTool != "" {
+		facadeArgs := map[string]any{}
+		if *target != "" {
+			facadeArgs["target"] = *target
+		}
+		if *query != "" {
+			facadeArgs["query"] = *query
+		}
+		if args[0] == "allow-writes" {
+			facadeArgs["on"] = *writesOn
+		}
+		result, err := (&toolhub.ControlPlane{Store: registry}).InvokeConnector(ctx, auth, facadeTool, facadeArgs)
+		if err != nil {
+			return err
+		}
+		if err := registry.Save(*registryPath); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	if err := ensureCredentialKey(*keyPath); err != nil {
 		return err

@@ -106,3 +106,140 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 		t.Fatalf("phase after --confirm: %q", onboarding.Phase)
 	}
 }
+
+// CHG-0130 S3.7: hubctl connector <verb> runs the same facade the agent
+// surface calls — the connectors capability bundle admits the verbs for the
+// operator-selected profile.
+func TestConnectorFacadeVerbsCLI(t *testing.T) {
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "registry.json")
+	keyFile := filepath.Join(t.TempDir(), "key")
+	secretFile := filepath.Join(t.TempDir(), "store.enc")
+	registry := toolhub.NewStore()
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example",
+		Members: []string{"alice"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(),
+		Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&policy, "", policy.IssuedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.PutCapabilityPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "alice-default",
+		PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", Environment: "dev", Generation: 1,
+		PolicyVersion: "policy-1", PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
+		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "fixture",
+		Status: api.ActiveStatus, Connectors: api.ConnectorsPersonal}
+	if err := api.Confirm(&profile, "", profile.IssuedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.PutCapabilityProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "wri", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:    api.DefinitionSource{URL: "https://wri.example.com/mcp", TLSMode: "required"},
+		Tools:     []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}},
+		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "user-owned"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"wri.example.com"}},
+		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	}
+	if err := registry.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "wri",
+		Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: "wri",
+		Revision: 1, Status: api.ActiveStatus}
+	if err := registry.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice",
+		DefinitionID: "wri", DefinitionVersion: "1.0.0", ConnectionID: connection.ConnectionID, ConnectionRevision: 1,
+		PolicyVersion: "policy-1", WorkloadClass: api.PerUser, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	if err := registry.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.PutOnboarding(api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-wri", Mode: api.OnboardingSelfInstall,
+		PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", PolicyVersion: "policy-1",
+		DefinitionID: "wri", DefinitionVersion: "1.0.0", Phase: api.PhaseEnabled,
+		BindingID: binding.ToolBindingID, ConnectionID: connection.ConnectionID,
+		Revision: 1, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"--user", "alice", "--toolhub-store", storePath, "--store", secretFile, "--key-file", keyFile,
+		"--profile", "alice-default", "--env", "dev", "--generation", "1"}
+	out, err := captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"list"}, base...))
+	})
+	if err != nil || !strings.Contains(out, `"state":"done"`) || !strings.Contains(out, "onb-wri") {
+		t.Fatalf("list output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"status"}, append(base, "--target", "wri")...))
+	})
+	if err != nil || !strings.Contains(out, `"state":"done"`) || !strings.Contains(out, "wri") {
+		t.Fatalf("status output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"disable"}, append(base, "--target", "wri")...))
+	})
+	if err != nil || !strings.Contains(out, `"operation_id"`) || !strings.Contains(out, `"state":"done"`) {
+		t.Fatalf("disable output=%q err=%v", out, err)
+	}
+	reloaded, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := reloaded.OnboardingFor(aliceAuth(), "onb-wri")
+	if err != nil || onboarding.Phase != api.PhaseDisabled {
+		t.Fatalf("phase after CLI disable: %v %q", err, onboarding.Phase)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"enable"}, append(base, "--target", "wri")...))
+	})
+	if err != nil || !strings.Contains(out, `"state":"done"`) {
+		t.Fatalf("enable output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"search"}, append(base, "--query", "github")...))
+	})
+	if err != nil || !strings.Contains(out, `"candidates"`) {
+		t.Fatalf("search output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"reauth"}, append(base, "--target", "wri")...))
+	})
+	if err != nil || !strings.Contains(out, `"link_sent":true`) {
+		t.Fatalf("reauth output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"remove"}, append(base, "--target", "wri")...))
+	})
+	if err != nil || !strings.Contains(out, `"link_sent":true`) {
+		t.Fatalf("remove output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"install"}, append(base, "--target", "github")...))
+	})
+	if err != nil || !strings.Contains(out, `"operation_id"`) {
+		t.Fatalf("install output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"allow-writes"}, append(base, "--target", "wri")...))
+	})
+	if err != nil || !strings.Contains(out, `"state":"done"`) {
+		t.Fatalf("allow-writes off output=%q err=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"allow-writes"}, append(base, "--target", "wri", "--on")...))
+	})
+	if err != nil || !strings.Contains(out, `"link_sent":true`) {
+		t.Fatalf("allow-writes on output=%q err=%v", out, err)
+	}
+}
