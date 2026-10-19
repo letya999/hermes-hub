@@ -122,7 +122,10 @@ func TestRecipeResolverIgnoresNameOnlyCatalogAndRunsCatalogsConcurrently(t *test
 	}
 }
 
-func TestRecipeResolverPassesImageAndVersionHintsToCatalogs(t *testing.T) {
+func TestRecipeResolverQueriesCatalogsWithSourceOnlyLookup(t *testing.T) {
+	// The catalog answer must not depend on repository files: image/version
+	// hints parsed out of repo metadata are low-rank and never reach the
+	// lookup — only source-derived identity does.
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	source := api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
 	var seen api.RecipeLookup
@@ -133,8 +136,11 @@ func TestRecipeResolverPassesImageAndVersionHintsToCatalogs(t *testing.T) {
 	_, err := resolver.Resolve(context.Background(), source, resolverContext(t, map[string]string{
 		"server.json": `{"repository":"https://github.com/acme/weather","packages":[{"registryType":"oci","identifier":"ghcr.io/acme/weather:1.0.0","version":"1.0.0"}]}`,
 	}))
-	if err != nil || len(seen.ImageHints) != 1 || seen.ImageHints[0] != "ghcr.io/acme/weather:1.0.0" || len(seen.VersionHints) != 1 || seen.VersionHints[0] != "1.0.0" {
-		t.Fatalf("catalog hints=%+v err=%v", seen, err)
+	if err != nil || seen.Repository != source.Repository || seen.CommitSHA != commit || seen.Owner != "acme" || seen.Name != "weather" {
+		t.Fatalf("catalog lookup lost source identity: %+v err=%v", seen, err)
+	}
+	if len(seen.ImageHints) != 0 || len(seen.VersionHints) != 0 {
+		t.Fatalf("catalog lookup received repo-derived hints: %+v", seen)
 	}
 }
 
@@ -584,5 +590,82 @@ func TestComposeLaunchBranches(t *testing.T) {
 	list := api.ComposeEnvironmentFields([]any{"API_TOKEN=example", "OTHER_KEY"})
 	if len(list) != 2 {
 		t.Fatalf("env list form=%+v", list)
+	}
+}
+
+func TestResolveQueriesRegistriesBeforeRepoFiles(t *testing.T) {
+	// Repo-derived image/version hints reach the lookup only after the first
+	// catalog pass; a catalog observing them at call time proves repository
+	// metadata was consulted before the registry answer existed.
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	source := api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
+	var sawRepoHints atomic.Bool
+	resolver := api.RecipeResolver{Catalogs: []api.RecipeCatalog{testRecipeCatalogFunc(func(_ context.Context, lookup api.RecipeLookup) ([]api.RecipeCandidate, error) {
+		if len(lookup.ImageHints) > 0 || len(lookup.VersionHints) > 0 {
+			sawRepoHints.Store(true)
+		}
+		return nil, nil
+	})}}
+	dockerfile := "FROM ghcr.io/acme/base@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nENTRYPOINT [\"/server\"]\n"
+	if _, err := resolver.Resolve(context.Background(), source, resolverContext(t, map[string]string{"Dockerfile": dockerfile})); err != nil {
+		t.Fatal(err)
+	}
+	if sawRepoHints.Load() {
+		t.Fatal("catalog lookup received repo-derived hints: repository files were consulted before the catalog answer existed")
+	}
+}
+
+func TestResolveLedgerPersistsFetches(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	source := api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
+	resolver := api.RecipeResolver{Catalogs: []api.RecipeCatalog{testRecipeCatalogFunc(func(context.Context, api.RecipeLookup) ([]api.RecipeCandidate, error) {
+		return []api.RecipeCandidate{
+			{Source: "mcp-registry", Repository: source.Repository, CommitSHA: commit, LaunchRank: api.RankL3, CredentialRank: api.RankR2, Launch: api.LaunchRecipe{Artifact: "ghcr.io/acme/weather", Digest: digest, Transport: api.ContainerMCP}, Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{{Name: "API_TOKEN", Required: true, Secret: true, Delivery: "env"}}}},
+			{Source: "mcp-registry", Repository: "https://github.com/evil/weather", CommitSHA: commit, LaunchRank: api.RankL3, Launch: api.LaunchRecipe{Artifact: "ghcr.io/evil/weather", Digest: digest, Transport: api.ContainerMCP}},
+		}, nil
+	})}}
+	resolution, err := resolver.Resolve(context.Background(), source, resolverContext(t, map[string]string{"README.md": "needs API_TOKEN"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept, ignored int
+	for _, entry := range resolution.Ledger {
+		if entry.Source != "mcp-registry" {
+			continue
+		}
+		if entry.Digest == "" || entry.FetchedAt == "" {
+			t.Fatalf("fetched claim lacks digest/fetched_at: %+v", entry)
+		}
+		if entry.Ignored {
+			ignored++
+		} else {
+			kept++
+		}
+	}
+	if kept == 0 {
+		t.Fatalf("matched catalog candidate left no ledger entries: %+v", resolution.Ledger)
+	}
+	if ignored == 0 {
+		t.Fatalf("mismatched catalog candidate was not recorded as ignored: %+v", resolution.Ledger)
+	}
+}
+
+func TestResolveDisagreeingRepoClaimsStayDraft(t *testing.T) {
+	// Ranked resolution makes "credential sources disagree" an explanation,
+	// not a review trigger: the higher-rank file decides deterministically.
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	source := api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
+	resolution, err := (api.RecipeResolver{}).Resolve(context.Background(), source, resolverContext(t, map[string]string{
+		"server.json":   `{"repository":"https://github.com/acme/weather","remotes":[{"url":"https://mcp.example/weather"}],"environment":{"API_TOKEN":"required"}}`,
+		".env.example":  "# API_TOKEN is optional here\nAPI_TOKEN=\n",
+		"README.md":     "docs",
+		"main.go":       "package main",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.State == "review" {
+		t.Fatalf("rank-resolvable disagreement forced review: %+v", resolution)
 	}
 }

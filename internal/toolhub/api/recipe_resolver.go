@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 type RecipeResolver struct {
@@ -43,6 +45,16 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	resolution := RecipeResolution{Source: source, State: "draft"}
 	resolution.Evidence = contextEvidence(scopedFiles)
 
+	// Catalogs are consulted first with source-derived lookup data only:
+	// registry answers outrank repository files on both ladders, so a repo
+	// hint must never steer which catalog record wins. Repository files are
+	// parsed afterwards and contribute low-rank claims and warnings.
+	candidates := LookupCatalogs(ctx, r.Catalogs, lookup)
+	fetchedAt := time.Now().UTC().Format(time.RFC3339)
+	for _, candidate := range candidates {
+		resolution.Ledger = append(resolution.Ledger, candidateLedgerEntries(candidate, !CandidateMatches(candidate, source), fetchedAt)...)
+	}
+
 	localLaunch, localConnection, warnings, err := ResolveLocalRecipe(scopedFiles, source)
 	if err != nil {
 		return RecipeResolution{}, err
@@ -50,12 +62,7 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	resolution.Launch = localLaunch
 	resolution.Connection = localConnection
 	resolution.Warnings = append(resolution.Warnings, warnings...)
-	lookup.ImageHints = recipeImageHints(localLaunch, scopedFiles)
-	if localLaunch.Version != "" {
-		lookup.VersionHints = []string{localLaunch.Version}
-	}
 
-	candidates := LookupCatalogs(ctx, r.Catalogs, lookup)
 	for _, candidate := range candidates {
 		if !CandidateMatches(candidate, source) {
 			resolution.Warnings = append(resolution.Warnings, "catalog candidate ignored: repository or commit did not match the pinned source")
@@ -81,8 +88,10 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	if !HasLaunch(resolution.Launch) {
 		resolution.Warnings = append(resolution.Warnings, "no complete launch recipe was proven; existing language fallback remains required")
 	}
+	// Ranked claims settle disagreements deterministically, so a disagreeing
+	// warning never decides review; conflicts and unsafe directives still do.
 	for _, warning := range resolution.Warnings {
-		if strings.Contains(warning, "conflict") || strings.Contains(warning, "disagree") || strings.Contains(warning, "unsafe") {
+		if strings.Contains(warning, "conflict") || strings.Contains(warning, "unsafe") {
 			resolution.State = "review"
 		}
 	}
@@ -91,6 +100,43 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	}
 	slices.Sort(resolution.Warnings)
 	return resolution, nil
+}
+
+// candidateLedgerEntries decomposes one fetched catalog response into ledger
+// claims — one per launch attribute and credential field — so resolution can
+// be replayed without repeating the fetch. Mismatched candidates stay in the
+// ledger flagged ignored.
+func candidateLedgerEntries(candidate RecipeCandidate, ignored bool, fetchedAt string) []LedgerEntry {
+	body, _ := json.Marshal(candidate)
+	sum := sha256.Sum256(body)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	source := candidate.Source
+	if source == "" {
+		source = "catalog"
+	}
+	ref := candidate.Repository
+	if candidate.CommitSHA != "" {
+		ref += "@" + candidate.CommitSHA
+	}
+	quote := func(value string) string {
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
+	}
+	var entries []LedgerEntry
+	entry := func(claim Claim, rank Rank) {
+		entries = append(entries, LedgerEntry{Claim: claim, Source: source, Ref: ref, Rank: rank, Digest: digest, FetchedAt: fetchedAt, Ignored: ignored})
+	}
+	if candidate.Launch.Artifact != "" {
+		entry(Claim{Attribute: "artifact", Value: quote(candidate.Launch.Artifact)}, candidate.LaunchRank)
+	}
+	if candidate.Launch.Endpoint != "" {
+		entry(Claim{Attribute: "endpoint", Value: quote(candidate.Launch.Endpoint)}, candidate.LaunchRank)
+	}
+	for _, field := range candidate.Connection.Fields {
+		required, secret := field.Required, field.Secret
+		entry(Claim{Field: field.Name, Required: &required, Secret: &secret, Delivery: field.Delivery, Target: field.Target}, candidate.CredentialRank)
+	}
+	return entries
 }
 
 func LookupCatalogs(ctx context.Context, catalogs []RecipeCatalog, lookup RecipeLookup) []RecipeCandidate {

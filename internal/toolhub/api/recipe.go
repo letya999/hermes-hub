@@ -129,6 +129,12 @@ type RecipeCandidate struct {
 	Launch     LaunchRecipe     `json:"launch"`
 	Connection ConnectionRecipe `json:"connection,omitempty"`
 	Evidence   []RecipeEvidence `json:"evidence,omitempty"`
+	// Source names the producing catalog for ledger provenance;
+	// LaunchRank/CredentialRank place the candidate's claims on the
+	// source ladders (empty ranks resolve as the weakest claim).
+	Source         string `json:"source,omitempty"`
+	LaunchRank     Rank   `json:"launch_rank,omitempty"`
+	CredentialRank Rank   `json:"credential_rank,omitempty"`
 }
 
 type RecipeCatalog interface {
@@ -142,6 +148,10 @@ type RecipeResolution struct {
 	Evidence   []RecipeEvidence `json:"evidence,omitempty"`
 	Warnings   []string         `json:"warnings,omitempty"`
 	State      string           `json:"state"`
+	// Ledger is the reproducible record of every external claim consulted:
+	// catalog responses land here (kept or ignored) before repository-file
+	// claims, so re-resolution is auditable without repeating fetches.
+	Ledger []LedgerEntry `json:"ledger,omitempty"`
 }
 
 func ScopeRecipeContext(files map[string][]byte, subfolder string) (map[string][]byte, error) {
