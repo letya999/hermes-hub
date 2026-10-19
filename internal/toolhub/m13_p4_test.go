@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -608,6 +609,46 @@ func TestProbeDoesNotBlockStore(t *testing.T) {
 		}
 	case <-deadline:
 		t.Fatal("enable did not converge")
+	}
+}
+
+// S4.5: snapshot writes compact terminal records — aged operations and
+// tombstone onboardings leave the file; fresh tombstones survive.
+func TestCompactionBoundsSnapshot(t *testing.T) {
+	store := NewStore()
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	for i := 0; i < 10000; i++ {
+		store.operations[fmt.Sprintf("op-%d", i)] = api.Operation{
+			Schema: api.SchemaVersion, OperationID: fmt.Sprintf("op-%d", i), Intent: api.OpIntentInstall,
+			Target: "x", PrincipalID: "alice", State: api.OpStateDone, CreatedAt: old, UpdatedAt: old,
+		}
+	}
+	store.onboardings["dead-old"] = api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "dead-old", PrincipalID: "alice", Phase: api.PhaseRemoved, Revision: 1, CreatedAt: old}
+	store.onboardings["dead-new"] = api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "dead-new", PrincipalID: "alice", Phase: api.PhaseRemoved, Revision: 1, CreatedAt: time.Now()}
+	store.operations["op-fresh"] = api.Operation{Schema: api.SchemaVersion, OperationID: "op-fresh", Intent: api.OpIntentInstall, Target: "x", PrincipalID: "alice", State: api.OpStateDone, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	store.operations["op-failed"] = api.Operation{Schema: api.SchemaVersion, OperationID: "op-failed", Intent: api.OpIntentInstall, Target: "x", PrincipalID: "alice", State: api.OpStateFailed, ErrorCode: api.OpCodeProbeFailed, CreatedAt: old, UpdatedAt: old}
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.operations) != 1 {
+		t.Fatalf("terminal ops not compacted: %d", len(store.operations))
+	}
+	if _, ok := store.operations["op-failed"]; ok {
+		t.Fatal("aged failed op survived compaction")
+	}
+	if _, ok := store.onboardings["dead-old"]; ok {
+		t.Fatal("aged tombstone survived compaction")
+	}
+	if _, ok := store.onboardings["dead-new"]; !ok {
+		t.Fatal("fresh tombstone compacted")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "op-9999") {
+		t.Fatal("snapshot file still carries aged operations")
 	}
 }
 

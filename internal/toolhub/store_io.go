@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // storeStamp is the observed identity of the on-disk snapshot: the file's
@@ -66,6 +67,7 @@ func (s *Store) saveLocked(path string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	s.compactLocked(time.Now())
 	state := snapshot{Schema: api.SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
@@ -311,6 +313,23 @@ func Load(path string) (*Store, error) {
 	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
 	store.diskStamp = stamp
 	return store, nil
+}
+
+// compactLocked deletes terminal records past their retention windows so a
+// long-lived store stays bounded: removed onboardings older than 30 days
+// and done operations older than 7 days. Live state is untouched. s.mu
+// must be held.
+func (s *Store) compactLocked(now time.Time) {
+	for id, onboarding := range s.onboardings {
+		if onboarding.Phase == api.PhaseRemoved && now.Sub(onboarding.CreatedAt) > 30*24*time.Hour {
+			delete(s.onboardings, id)
+		}
+	}
+	for id, op := range s.operations {
+		if (op.State == api.OpStateDone || op.State == api.OpStateFailed) && now.Sub(op.UpdatedAt) > 7*24*time.Hour {
+			delete(s.operations, id)
+		}
+	}
 }
 
 func (s *Store) persist() error {
