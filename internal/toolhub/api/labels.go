@@ -1,11 +1,15 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 )
 
 // Ownership label keys stamped on every Docker resource the hub creates.
@@ -98,6 +102,25 @@ type Finalizer struct {
 	State    string `json:"state"`
 	Attempts int    `json:"attempts,omitempty"`
 	Error    string `json:"error,omitempty"`
+}
+
+// ToolSurfaceDigest pins the exact tool surface a binding admitted —
+// name, input schema and effect per tool, sorted by name — so a drifted
+// tools/list is detectable by a single sha256 comparison.
+func ToolSurfaceDigest(tools []ToolSpec) string {
+	type pinnedTool struct {
+		Name   string          `json:"name"`
+		Schema json.RawMessage `json:"schema,omitempty"`
+		Effect Effect          `json:"effect"`
+	}
+	pinned := make([]pinnedTool, 0, len(tools))
+	for _, tool := range tools {
+		pinned = append(pinned, pinnedTool{Name: tool.Name, Schema: tool.InputSchema, Effect: tool.Effect})
+	}
+	slices.SortFunc(pinned, func(a, b pinnedTool) int { return strings.Compare(a.Name, b.Name) })
+	body, _ := json.Marshal(pinned)
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // WorkspaceOwnershipFile is the marker file a materialized workload

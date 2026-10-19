@@ -248,6 +248,10 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 			key := projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)
 			previous := *existing
 			previousProjection := s.projectionRevisions[key]
+			if existing.ToolDigest == "" {
+				existing.ToolDigest = api.ToolSurfaceDigest(definition.Tools)
+				s.bindings[existing.ToolBindingID] = *existing
+			}
 			if existing.Status != api.ActiveStatus {
 				existing.Status = api.ActiveStatus
 				existing.Revision++
@@ -294,7 +298,7 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 			return result, nil
 		}
 	}
-	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1, ToolDigest: api.ToolSurfaceDigest(definition.Tools)}
 	if connection != nil {
 		binding.ConnectionID, binding.ConnectionRevision = connection.ConnectionID, connection.Revision
 		binding.CredentialRefID, binding.CredentialRevision = credential.CredentialRefID, credential.Revision

@@ -283,6 +283,9 @@ type ToolBinding struct {
 	Status             Status        `json:"status"`
 	Revision           uint64        `json:"revision"`
 	ProjectionRevision uint64        `json:"projection_revision"`
+	// ToolDigest pins the admitted tool surface (names, schemas, effects) so
+	// a later drift is detectable by one comparison.
+	ToolDigest string `json:"tool_digest,omitempty"`
 }
 
 type WorkloadInstance struct {

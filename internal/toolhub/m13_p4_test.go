@@ -652,6 +652,43 @@ func TestCompactionBoundsSnapshot(t *testing.T) {
 	}
 }
 
+// S4.6: enable pins the admitted tool surface on the binding; a drifted
+// tools/list marks the connection degraded and notifies the owner.
+func TestToolSurfaceDriftDegrades(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	binding, err := store.EnableReady(context.Background(), auth, "google-work", "2.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ToolDigest == "" {
+		t.Fatal("enable did not pin the tool surface")
+	}
+	drifted := append([]api.ToolSpec(nil), store.definitions[definitionKey("google-work", "2.0.0")].Tools...)
+	drifted[0].Name = "search-renamed"
+	var notices []string
+	r := &Reconciler{
+		Store:     store,
+		Scan:      func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
+		Purge:     func(context.Context, string, string) error { return nil },
+		CredAlive: func(context.Context, string) (bool, error) { return true, nil },
+		Surface:   func(context.Context, api.Connection) ([]api.ToolSpec, error) { return drifted, nil },
+		Notify: func(_ context.Context, principal, kind string, _ map[string]any) error {
+			notices = append(notices, kind+":"+principal)
+			return nil
+		},
+	}
+	if err := r.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	connection, _ := store.connectionFor("google-work")
+	if connection.Status != api.DegradedStatus {
+		t.Fatalf("tool drift not degraded: %s", connection.Status)
+	}
+	if !containsString(notices, "drift:alice") {
+		t.Fatalf("notices=%v", notices)
+	}
+}
+
 func containsString(list []string, want string) bool {
 	for _, item := range list {
 		if item == want {
