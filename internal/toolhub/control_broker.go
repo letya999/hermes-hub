@@ -114,6 +114,16 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 				consumerID = credential.ConsumerID
 			}
 		}
+		// A pinned reviewed contract can be absent from the broker catalog —
+		// fresh volumes, ledger resets, and the auth-gated prepare path reach
+		// request creation without bindReviewedContract. Register the embedded
+		// contract before asking for a request; RegisterContract is idempotent
+		// for a digest-matching catalog entry.
+		if reviewed, ok, rerr := api.PreparedContractFor(definition.CredentialContractID, definition.CredentialContractRevision); rerr == nil && ok {
+			if _, rerr := control.RegisterContract(ctx, reviewed); rerr != nil {
+				return fmt.Errorf("register credential broker contract %s@%d: %w", reviewed.ID, reviewed.Revision, rerr)
+			}
+		}
 		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
 			ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
 			ConnectionID: connectionID, ConsumerID: consumerID, RotateCredentialID: rotateTarget,

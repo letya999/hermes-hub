@@ -10,6 +10,7 @@ import (
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -24,6 +25,13 @@ func TestRefreshBrokerRequestHealsExpiredRequest(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_old":
 			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_old", Status: "expired", AuthorizationURL: "http://127.0.0.1/connect/request_old"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			var input brokerv1.CreateRequest
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {

@@ -17,8 +17,100 @@ import (
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 )
+
+// The auth-gated prepare path reached CreateRequest without ever registering
+// the pinned reviewed contract, so a broker with an empty catalog rejected the
+// request with invalid_request (live: telegram-session@1, onboard-628cfde9).
+// The gate must register the embedded contract before asking for a request.
+func TestCredentialGateRegistersPinnedContract(t *testing.T) {
+	entries, err := api.PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var telegram api.PreparedEntry
+	for _, entry := range entries {
+		if entry.ID == "telegram" {
+			telegram = entry
+		}
+	}
+	definition := statefulContainerDefinition()
+	definition.DefinitionID = "telegram-mcp"
+	definition.Source.Repository = telegram.Source.Repository
+	definition.Source.CommitSHA = telegram.Source.CommitSHA
+	definition.Source.Command = telegram.Entrypoint[0]
+	definition.Source.Args = telegram.Entrypoint[1:]
+	definition.Credentials = telegram.Connection.CredentialInputs()
+	definition.CredentialContractID = telegram.ContractID
+	definition.CredentialContractRevision = telegram.ContractRevision
+	definition.CredentialContractEnv = map[string]string{}
+	for _, field := range telegram.Connection.Fields {
+		definition.CredentialContractEnv[field.Name] = field.Name
+	}
+	definition.RuntimeEnvironment = api.CloneMap(telegram.RuntimeEnvironment)
+	definition.Tools = []api.ToolSpec{{Name: "list_accounts", Effect: api.ReadEffect}}
+	if err := definition.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "broker.key")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var registered atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 1 {
+				t.Errorf("registered contract is not the reviewed telegram-session@1: %+v %v", c, err)
+			}
+			registered.Store(true)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			if !registered.Load() {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(brokerv1.Error{Code: "invalid_request"})
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 1, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_1"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 1, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	control := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now}
+	preparing, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "telegram-gate", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, api.SourceReview{Definition: definition, AdmissionPending: true, AdmissionDetail: "login required"})
+	if err != nil {
+		t.Fatalf("gated prepare failed on unregistered contract: %v", err)
+	}
+	if !registered.Load() {
+		t.Fatal("gated prepare never registered the pinned reviewed contract")
+	}
+	if body["phase"] != api.PhaseAwaitingCreds {
+		t.Fatalf("unexpected phase after gated prepare: %+v", body)
+	}
+	stored, err := control.Store.OnboardingFor(aliceAuth(), preparing.OnboardingID)
+	if err != nil || stored.BrokerRequestID != "request_1" {
+		t.Fatalf("broker request was not created: %+v %v", stored, err)
+	}
+}
 
 func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	var telegram api.PreparedEntry
@@ -71,6 +163,13 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 1 {
+				t.Errorf("registered contract is not the reviewed telegram-session@1: %+v %v", c, err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			requestID := "request_1"
 			if requests.Add(1) == 2 {

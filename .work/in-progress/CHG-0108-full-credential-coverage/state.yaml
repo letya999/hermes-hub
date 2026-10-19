@@ -197,3 +197,24 @@ slices:
       rejected launching a separate headless Chrome. just check passed with
       own Go statement coverage 85.81% and all lint/docs/config gates green.
     status: partial
+
+  - id: live-defect-2026-gated-prepare-skips-contract-registration
+    summary: >
+      Telegram is the first prepared connector with auth_before_tools_list, so its
+      prepare returns through acceptCredentialGate before bindReviewedContract runs.
+      ensureBrokerRequest then called CreateRequest for telegram-session@1 while the
+      contract was absent from the broker catalog — four live POST /v1/requests
+      attempts returned 400 invalid_request and the client reported "ToolHub
+      unavailable" (backoff, not a crash). ensureBrokerRequest now registers the
+      pinned reviewed contract via api.PreparedContractFor + RegisterContract before
+      CreateRequest (idempotent on digest match). Regression test drives the gated
+      prepare path against a broker whose catalog starts empty and asserts
+      /v1/contracts precedes /v1/requests with telegram-session@1; stale-request and
+      extras fixtures gained /v1/contracts handlers. Verified live on the dev stack:
+      fresh prepare logged POST /v1/contracts then /v1/requests, onboarding reached
+      awaiting-credentials with broker_request_id r7c06059c... and a protected
+      authorization_url; the previously stuck onboard-628cfde90e84e8e2666c9984 and
+      the verification onboarding were revoked through the public MCP op (remove is
+      internal-only and not granted). ToolHub rebuilt via dev-rebuild, container
+      healthy.
+    status: fixed

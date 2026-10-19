@@ -45,6 +45,13 @@ func TestBrokerRequestCarriesDiscoveredOptionalExtras(t *testing.T) {
 	var created brokerv1.CreateRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/contracts" {
+			var c brokercontract.Contract
+			_ = json.NewDecoder(r.Body).Decode(&c)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/requests" {
 			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
 				t.Error(err)

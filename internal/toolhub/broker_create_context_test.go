@@ -15,6 +15,7 @@ import (
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -75,6 +76,13 @@ func TestBrokerRequestSharedCarriesContextManager(t *testing.T) {
 	var contextManager *bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/contracts" {
+			var c contract.Contract
+			_ = json.NewDecoder(r.Body).Decode(&c)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/requests" {
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])

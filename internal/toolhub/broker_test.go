@@ -36,6 +36,13 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			requests++
 			var input brokerv1.CreateRequest
@@ -493,6 +500,13 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_old":
 			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_old", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "expired", AuthorizationURL: "https://broker.example/connect/request_old"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			var in map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&in)
@@ -783,6 +797,13 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
 					_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", ConnectionID: "conn-existing", Status: scenario})
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+					var c contract.Contract
+					if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+						t.Error(err)
+					}
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(c)
 				case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 					requests++
 					_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_2", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "conn-existing", Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_2"})
