@@ -6,6 +6,7 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0052](ADR-0052-browser-workloads-as-connectors.md) | Accepted: browsers as ordinary connectors — web egress, per-connection profile isolation, one-time owner viewer links, staged toolsets, bounded shm budget; agent-browser stays blocked |
 | [ADR-0051](ADR-0051-team-connections.md) | Accepted: operator-published Team records, team-owned connections with member bindings, shareable credential/connection modes, not_permitted member lifecycle, sender-attributed audit |
 | [ADR-0049](ADR-0049-ownership-finalizers.md) | Accepted: ownership labels on spawned resources, persisted finalizer ladder with verified-zero receipts, one reconciler, revoke-wins commit, bounded store compaction |
 | [ADR-0050](ADR-0050-ci-built-connector-images.md) | Accepted: catalog tiers T0/T1/T2, CI-built digest-pinned images with zero-build admission, deterministic `connector import` under --confirm, staged toolset projection, bounded prefetch |

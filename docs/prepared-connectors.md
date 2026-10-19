@@ -330,6 +330,51 @@ recipe, user-token Broker overlay and provider preflight; the current Slack
 data OAuth path remains opt-in. `careergo` is blocked pending an exact MCP
 source, license, tool contract and JobFetch import API. No credentials or
 approval may be inferred from these catalog placeholders.
+`agent-browser` is blocked pending a reviewed runnable connector image: no
+published image exists for the `vercel-labs/agent-browser` source, so the
+entry stays discoverable with its reason, runbook and handoff — it is never
+installable. The installable browser connector is `playwright-mcp` below.
+
+## Playwright MCP (browser)
+
+Source: [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp),
+commit `ab6d67cbf8b619338f096980806fdbe29432cc4d` (Apache-2.0). T0 zero-build
+entry running the digest-pinned MCR image
+`mcr.microsoft.com/playwright/mcp@sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb`
+with `--caps vision,pdf` and a bounded `--idle-timeout`. A browser is an
+ordinary connector: `install` / `enable` / `disable` / `reauth` / `remove`,
+the operation journal, ownership labels, finalizers and verified-zero cleanup
+behave exactly as on any other connection, and the pre-existing hub-owned
+`browser` / `browser_guest` runtime is untouched.
+
+Each connection gets an isolated workload — a per-connection Chromium with
+its own `connection-state` browser profile (plus a `downloads` subdirectory),
+so removing the connector removes the profile through the usual finalizer.
+Web egress is `egress_class: web`: arbitrary outbound HTTPS through the
+audited per-workload proxy, deny-first on private, loopback, link-local,
+CGNAT, metadata and hub-internal destinations, with per-request DNS checks;
+connection metadata may carry bounded `egress_allow` / `egress_deny`
+refinements where deny always wins.
+
+Default projection is read-only (`browser_navigate`, `browser_snapshot`,
+tabs, wait, …). Interaction tools are the `act` toolset and additionally
+need the human-confirmed `connector_allow_writes` step; `eval`
+(`browser_evaluate`) and `network` (`browser_network_requests`, …) are their
+own toolsets and stay hidden until enabled — on both the list and the
+dispatch path. An optional `browser-session` Broker contract imports a
+Playwright storage-state file (and origin allow/block lists) through the
+protected form; no token or link material reaches the model.
+
+`connector_status` on a web connection mints a one-time, short-TTL,
+owner-bound viewer link delivered on the owner's channel — `GET
+/viewer/<connection>?t=<nonce>` serves the viewer exactly once (410 gone on
+reuse or expiry, 403 on a wrong nonce); it is never an unauthenticated
+published port. Chromium needs a larger `/dev/shm`, so the definition
+carries a bounded `shm_size_mib` budget (1024 MiB here, capped globally and
+never above workload memory): the Docker fallback passes `--shm-size` to the
+workload container only, and the ToolHive path forwards the flag only after
+its capability probe advertises it — otherwise it fails closed or falls
+back.
 
 ## Notion
 

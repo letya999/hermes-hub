@@ -26,24 +26,30 @@ Depends on: CHG-0128, CHG-0130, CHG-0131, CHG-0132, CHG-0133
 ### S8.3 Owner-bound viewer link
 - `Store.MintViewerLink(auth, connectionID)` arms a one-time, short-TTL
   nonce on the owner-scoped connection; a second mint replaces the nonce.
-- `GET /connect/<connection>?t=<nonce>` serves the viewer only to the live
+- `GET /viewer/<connection>?t=<nonce>` serves the viewer only to the live
   nonce inside the TTL; a spent or expired nonce answers 410 gone, a wrong
   nonce 403 — the link is never a published port without authentication.
 
 ### S8.4 T0 browser recipes
-- `agent-browser` and `playwright-mcp` prepared entries: tier t0,
-  digest-pinned CI image, `stateful` browser profile on `state_target`
-  (connection state volume), read-profile toolset projected by default,
-  interaction tools gated behind `connector_allow_writes`, `eval` behind
-  its own toolset, egress_class `web`, optional `file` storage-state
-  credential through the reviewed `browser-session` Broker contract.
+- `playwright-mcp` prepared entry: tier t0, digest-pinned MCR image,
+  pinned source commit, `stateful` browser profile on the connection-state
+  volume, read-profile tools projected by default, interaction tools (`act`
+  toolset) gated behind `connector_allow_writes`, `eval` and `network`
+  behind their own toolsets, egress_class `web`, optional file
+  storage-state credential through the reviewed `browser-session` Broker
+  contract.
+- `agent-browser` stays in `blocked.json` — no reviewed runnable image
+  exists for its source (reason, runbook, handoff, never installable).
 
 ### S8.5 Budgets
-- `WorkloadPolicy.ShmMiB` adds `--shm-size` to the workload run when set —
-  Chromium needs shared memory beyond the default 64 MiB; bounded at
-  validation. CPU/memory/PID/timeout/output caps come from the existing
-  execution policy; profile volume and downloads ride the existing
-  finalizer ladder.
+- `ExecutionPolicy.ShmSizeMiB` adds `--shm-size` to the workload run when
+  set — Chromium needs shared memory beyond the default 64 MiB; bounded at
+  validation (global cap, never above workload memory) and compared in
+  execution equality. Docker fallback passes the flag to the workload
+  container only; the ToolHive path forwards it only when its capability
+  probe advertises it — else fails closed or falls back. CPU/memory/PID/
+  timeout/output caps come from the existing execution policy; profile
+  volume and downloads ride the existing finalizer ladder.
 
 ### S8.6 Docs + closeout
 - `docs/prepared-connectors.md` browser section; ADR "Browser workloads as
@@ -57,6 +63,6 @@ Depends on: CHG-0128, CHG-0130, CHG-0131, CHG-0132, CHG-0133
 - Live site login through the viewer.
 
 ## Done checklist
-- [ ] Tests red then green per slice; `just check` green.
-- [ ] ADR appended; docs updated.
-- [ ] Live acceptance deferred honestly.
+- [x] Tests red then green per slice; `just check` green.
+- [x] ADR appended; docs updated.
+- [x] Live acceptance deferred honestly.

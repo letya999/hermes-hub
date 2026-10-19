@@ -143,3 +143,36 @@ reconnect while in-flight calls finish on their resolved snapshot;
 the shared rows once. `connector_list` shows team connections with a
 `team` badge and call audit carries the channel `JobEnvelope` sender as
 `sender_id` plus `team_id`, `connection_id` and `binding_id` attribution.
+
+## Browser workloads (M13 P8)
+
+Browsers are ordinary connectors: install/enable/disable/reauth/remove,
+operation journal, ownership labels and finalizers apply unchanged; the
+hub-owned `browser`/`browser_guest` runtime is untouched. Container-MCP
+workloads may declare `egress_class: web` — arbitrary outbound HTTPS
+through the audited per-workload proxy, deny-first on private, loopback,
+link-local, CGNAT, metadata and hub-internal destinations with
+per-request DNS checks; connection metadata may carry bounded
+`egress_allow`/`egress_deny` refinements, deny always winning. Web
+definitions list reviewed extra deny entries in `egress`, not allowed
+hosts.
+
+Each connection owns an isolated Chromium whose profile lives on the
+`connection-state` volume (removed by the ordinary finalizer). The viewer
+is a one-time, short-TTL, owner-bound nonce minted by `connector_status`
+and delivered on the owner's channel — `GET /viewer/<id>?t=<nonce>`
+serves it once (410 reused/expired, 403 wrong); it is never a published
+port and never reaches the model.
+
+The T0 `playwright-mcp` entry is digest-pinned (MCR image, pinned source
+commit, `--caps vision,pdf`); default projection is read-only while
+`act`, `eval` and `network` are separate toolsets, `act` additionally
+gated by `connector_allow_writes`. All projection paths — self-install
+list and dispatch included — iterate `ProjectedToolSpecs(binding)`. The
+optional `browser-session` Broker contract imports a storage-state file
+and origin lists. `agent-browser` stays blocked: no reviewed runnable
+image. `ShmSizeMiB` is a bounded execution budget (1024 MiB for
+Chromium), validated against a global cap and workload memory, compared
+in execution equality, expressed as `--shm-size` on the workload
+container only — the ToolHive path forwards it only when its capability
+probe advertises the flag, else fails closed or falls back.
