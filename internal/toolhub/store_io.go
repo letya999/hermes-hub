@@ -279,6 +279,21 @@ func Load(path string) (*Store, error) {
 		if err := onboarding.Validate(); err != nil {
 			return nil, err
 		}
+		if onboarding.EmbeddedRecipe != nil {
+			// Pre-digest records stored the resolution inline; move it under
+			// its content digest so the embedded form never writes back.
+			digest, err := api.ResolutionDigest(*onboarding.EmbeddedRecipe)
+			if err != nil {
+				return nil, fmt.Errorf("%w: persisted recipe", api.ErrInvalid)
+			}
+			if _, known := store.recipes[digest]; !known {
+				store.recipes[digest] = *onboarding.EmbeddedRecipe
+			}
+			if onboarding.RecipeDigest == "" {
+				onboarding.RecipeDigest = digest
+			}
+			onboarding.EmbeddedRecipe = nil
+		}
 		store.onboardings[onboarding.OnboardingID] = onboarding
 	}
 	for _, op := range state.Operations {

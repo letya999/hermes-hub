@@ -178,6 +178,10 @@ type Onboarding struct {
 	// snapshot recipes/<sha256>; the resolution itself is never embedded.
 	RecipeDigest string            `json:"recipe_digest,omitempty"`
 	Recipe       *RecipeResolution `json:"-"`
+	// EmbeddedRecipe carries pre-digest records that stored the resolution
+	// inline under "recipe"; store load re-homes it under its content digest
+	// and clears the field, so it is never serialized again.
+	EmbeddedRecipe *RecipeResolution `json:"recipe,omitempty"`
 	// CredentialSources records every distinct metadata source the recipe
 	// discovered credential declarations in. When several are present the
 	// caller may ask the user which one to trust and replay prepare_source
