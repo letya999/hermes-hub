@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -54,5 +56,177 @@ func TestRecipeContainsNoSecrets(t *testing.T) {
 	}
 	if err := clean.Validate(); err != nil {
 		t.Fatalf("clean recipe rejected: %v", err)
+	}
+}
+
+func boolp(v bool) *bool { return &v }
+
+func credEntry(field string, required bool, rank Rank, source string) LedgerEntry {
+	return LedgerEntry{
+		Claim:  Claim{Field: field, Required: boolp(required), Secret: boolp(true), Delivery: "env"},
+		Source: source,
+		Rank:   rank,
+	}
+}
+
+func TestLedgerR2OverridesR6(t *testing.T) {
+	entries := []LedgerEntry{
+		credEntry("API_TOKEN", true, RankR6, ".env.example"),
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(false), Secret: boolp(true), Delivery: "env"}, Source: "mcp-registry", Rank: RankR2},
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range recipe.Credentials.Fields {
+		if f.Name == "API_TOKEN" && f.Required {
+			t.Fatal("R6 requiredness beat the R2 registry claim")
+		}
+	}
+}
+
+func TestLedgerSameRankAmbiguous(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(true), Delivery: "env"}, Source: "registry-a", Rank: RankR2},
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(false), Delivery: "env"}, Source: "registry-b", Rank: RankR2},
+	}
+	_, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if !errors.Is(err, ErrAmbiguousCredentialContract) {
+		t.Fatalf("same-rank disagreement: %v", err)
+	}
+}
+
+func TestLedgerR1ResolvesAmbiguity(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(true), Delivery: "env"}, Source: "registry-a", Rank: RankR2},
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(false), Delivery: "env"}, Source: "registry-b", Rank: RankR2},
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(false), Secret: boolp(true), Delivery: "env"}, Source: "operator", Rank: RankR1},
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatalf("R1 must close the same-rank conflict: %v", err)
+	}
+	for _, f := range recipe.Credentials.Fields {
+		if f.Name == "API_TOKEN" && f.Required {
+			t.Fatal("R1 optional claim lost")
+		}
+	}
+}
+
+func TestLedgerLowerRankCannotRequire(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(false), Delivery: "env"}, Source: "mcp-registry", Rank: RankR2},
+		credEntry("API_TOKEN", true, RankR6, ".env.example"),
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range recipe.Credentials.Fields {
+		if f.Name == "API_TOKEN" && f.Required {
+			t.Fatal("lower rank strengthened required")
+		}
+	}
+}
+
+func TestLedgerR6OnlyNeverRequired(t *testing.T) {
+	entries := []LedgerEntry{
+		credEntry("FOO_TOKEN", true, RankR6, ".env.example"),
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recipe.Credentials.Fields) != 1 {
+		t.Fatalf("fields=%+v", recipe.Credentials.Fields)
+	}
+	f := recipe.Credentials.Fields[0]
+	if f.Required || !f.Unverified {
+		t.Fatalf("R6-only field must be optional and unverified: %+v", f)
+	}
+	if recipe.Trust != TrustT2 {
+		t.Fatalf("trust=%s, R6-only contract must be T2", recipe.Trust)
+	}
+}
+
+func TestLedgerTrustTiers(t *testing.T) {
+	t0, err := ResolveLedger(RecipeSubject{Kind: SubjectContainerMCP, Ref: "r@1"}, []LedgerEntry{
+		{Claim: Claim{Attribute: "artifact", Value: `"img@sha256:x"`}, Source: "hub-catalog", Rank: RankL0},
+		{Claim: Claim{Field: "T", Required: boolp(true), Delivery: "env"}, Source: "hub-catalog", Rank: RankR0},
+	})
+	if err != nil || t0.Trust != TrustT0 {
+		t.Fatalf("T0: %v %s", err, t0.Trust)
+	}
+	t1, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, []LedgerEntry{
+		{Claim: Claim{Attribute: "endpoint", Value: `"https://x.example/mcp"`}, Source: "mcp-registry", Rank: RankL3},
+		{Claim: Claim{Field: "T", Required: boolp(true), Delivery: "env"}, Source: "toolhive", Rank: RankR4},
+	})
+	if err != nil || t1.Trust != TrustT1 {
+		t.Fatalf("T1: %v %s", err, t1.Trust)
+	}
+}
+
+func TestLedgerLaunchAmbiguous(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Attribute: "endpoint", Value: `"https://a.example/mcp"`}, Source: "registry-a", Rank: RankL3},
+		{Claim: Claim{Attribute: "endpoint", Value: `"https://b.example/mcp"`}, Source: "registry-b", Rank: RankL3},
+	}
+	_, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if !errors.Is(err, ErrAmbiguousEntrypoint) {
+		t.Fatalf("same-rank launch disagreement: %v", err)
+	}
+}
+
+func TestLedgerIgnoredNeverInfluences(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Field: "EVIL", Required: boolp(true), Delivery: "env"}, Source: "forged-catalog", Rank: RankR0, Ignored: true},
+		{Claim: Claim{Field: "T", Required: boolp(true), Delivery: "env"}, Source: "mcp-registry", Rank: RankR2},
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range recipe.Credentials.Fields {
+		if f.Name == "EVIL" {
+			t.Fatal("ignored ledger entry influenced the recipe")
+		}
+	}
+}
+
+func TestResolveLedgerIsDeterministic(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Attribute: "endpoint", Value: `"https://x.example/mcp"`}, Source: "mcp-registry", Rank: RankL3},
+		credEntry("B_TOKEN", true, RankR2, "mcp-registry"),
+		credEntry("A_TOKEN", true, RankR3, "server.json"),
+		{Claim: Claim{Field: "OPT", Required: boolp(false), Delivery: "env"}, Source: "x", Rank: RankR6},
+	}
+	subject := RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}
+	first, err := ResolveLedger(subject, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		shuffled := slices.Clone(entries)
+		for j := range shuffled {
+			k := (i + j) % len(shuffled)
+			shuffled[j], shuffled[k] = shuffled[k], shuffled[j]
+		}
+		got, err := ResolveLedger(subject, shuffled)
+		if err != nil || got.Digest() != first.Digest() {
+			t.Fatalf("iteration %d: digest differs or err=%v", i, err)
+		}
+	}
+}
+
+func TestLedgerR3KeepsDeclaredRequired(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Field: "API_TOKEN", Required: boolp(true), Secret: boolp(true), Delivery: "env"}, Source: "server.json", Rank: RankR3},
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectRemoteMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recipe.Credentials.Fields) != 1 || !recipe.Credentials.Fields[0].Required || recipe.Credentials.Fields[0].Unverified {
+		t.Fatalf("author-declared R3 field must stay required: %+v", recipe.Credentials.Fields)
 	}
 }

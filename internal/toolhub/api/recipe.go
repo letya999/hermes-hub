@@ -37,6 +37,9 @@ type ConnectionField struct {
 	Delivery    string `json:"delivery"`
 	Target      string `json:"target,omitempty"`
 	Alternative string `json:"alternative,omitempty"`
+	// Unverified marks a field whose only support is heuristic (R6/hint)
+	// rank; the credential form renders it as a suggestion, not a contract.
+	Unverified bool `json:"unverified,omitempty"`
 	// Source names the metadata file this declaration came from
 	// (server.json, docker/.env.example, ...) or "catalog" for catalog
 	// candidates. It lets callers pick one authoritative source when
