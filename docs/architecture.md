@@ -482,6 +482,18 @@ operator-configured `credential_mount_root`, starts a one-call workload, and
 exposes `/release` to remove it before the Broker runtime lease is released.
 A separate Broker container therefore needs an explicitly shared runtime
 directory; with no shared root, file delivery remains fail closed.
+Since M13 P6 the Broker is the single credential authority for connector and
+CLI credentials (ADR-0022 amendment): submitted values are validated at the
+form boundary by per-field `format`/`max_length`; OAuth refresh serializes on
+a durable `(connection, provider)` lease stored beside the registry so
+concurrent calls never double-spend a rotating refresh token; `proxy`
+delivery exposes only a `hub-managed` stub in workload environment while the
+egress-proxy plan carries the real reference and allowlisted host; a
+credential-relevant recipe drift (`hermes-hub.credential-recipe` pin)
+revokes the stored material and moves the connection to `reauth`; and
+`hubctl credentials migrate` re-anchors contract-bound local references onto
+broker credentials through the reviewed request flow, with `--rollback`
+restoring the preserved legacy locator.
 
 The stage-2 opt-in surface is recorded in [SPEC-0018](../specs/active/SPEC-0018-toolhub-stage2.md).
 When `HUB_TOOLHUB_STORE` is explicitly configured, `service_catalog`,

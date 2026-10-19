@@ -39,6 +39,6 @@ Depends on: CHG-0128 (recipes), CHG-0129 (action surface), CHG-0130 (journal), C
 - Live OAuth against providers; fixture AS only.
 
 ## Done checklist
-- [ ] Tests red then green per slice; `just check` green.
-- [ ] ADR appended; docs updated.
-- [ ] Live acceptance deferred honestly to owner deploy.
+- [x] Tests red then green per slice; `just check` green.
+- [x] ADR appended; docs updated.
+- [x] Live acceptance deferred honestly to owner deploy.
