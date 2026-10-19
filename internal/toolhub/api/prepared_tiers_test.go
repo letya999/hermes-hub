@@ -1,6 +1,9 @@
 package api
 
 import (
+	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,5 +58,47 @@ func TestPreparedEntryTierValidation(t *testing.T) {
 	}
 	if _, err := ParsePreparedCatalog([]byte(entry(`"image": {"ref": "ghcr.io/x/notion", "digest": "latest"}`))); err == nil {
 		t.Fatal("mutable image digest accepted")
+	}
+}
+
+// S5.2: T0 admission is born pinned — a prepared entry that carries a
+// CI-built image digest never reaches the restricted builder.
+func TestT0AdmissionSkipsBuilder(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	provenance := "sha256:" + strings.Repeat("c", 64)
+	sbom := "sha256:" + strings.Repeat("d", 64)
+	entry := PreparedEntry{
+		ID: "notion", Name: "Notion", Tier: TierT0,
+		Image:      &PinnedImage{Ref: "ghcr.io/letya999/hermes-hub-connectors/notion@" + digest, Digest: digest, Provenance: provenance, SBOM: sbom},
+		Source:     ArtifactSource{Repository: "https://github.com/makenotion/notion-mcp-server", CommitSHA: "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
+		Language:   "node",
+		Entrypoint: []string{"node", "/app/bin/cli.mjs"},
+		Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "NOTION_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Target: "NOTION_TOKEN"}}},
+		ContractID: "notion-token", ContractRevision: 1,
+		Egress:     []string{"api.notion.com"},
+	}
+	oldLookup, oldBuild, oldPull, oldList := preparedLookup, restrictedBuild, PublishedImagePull, PublishedMCPToolList
+	t.Cleanup(func() { preparedLookup, restrictedBuild, PublishedImagePull, PublishedMCPToolList = oldLookup, oldBuild, oldPull, oldList })
+	preparedLookup = func(ArtifactSource) (PreparedEntry, bool, error) { return entry, true, nil }
+	builds := 0
+	restrictedBuild = func(context.Context, ArtifactRecipe, []byte, RestrictedBuildConfig) (StoredOCIArtifact, error) {
+		builds++
+		return StoredOCIArtifact{}, fmt.Errorf("build must not run for a pinned image")
+	}
+	PublishedImagePull = func(context.Context, string, string) error { return nil }
+	PublishedMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return []ToolSpec{{Name: "API-get-self", Effect: ReadEffect}}, nil
+	}
+	dir := t.TempDir()
+	seccomp, err := filepath.Abs(filepath.Join("..", "..", "..", "docker", "seccomp-buildkit-rootless.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := DefaultSourceReviewerWithCatalogs(dir, seccomp, nil)(context.Background(), entry.Source, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 0 || review.Definition.Source.Digest != digest {
+		t.Fatalf("builds=%d digest=%q", builds, review.Definition.Source.Digest)
 	}
 }

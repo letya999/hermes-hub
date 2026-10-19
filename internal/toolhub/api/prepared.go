@@ -336,6 +336,10 @@ func PreparedCredentialGate(source ArtifactSource) error {
 	return &CredentialGate{Names: names, Detail: "Provider login is required before this MCP can list tools; enter credentials in the protected Broker form, then verify the read probe."}
 }
 
+// preparedLookup is the catalog seam admission paths call; tests pin a
+// catalog entry here without touching the embedded catalog.
+var preparedLookup = PreparedForSource
+
 func PreparedForSource(source ArtifactSource) (PreparedEntry, bool, error) {
 	entries, err := PreparedCatalog()
 	for _, entry := range entries {

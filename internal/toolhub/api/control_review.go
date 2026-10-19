@@ -35,6 +35,13 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 		if selected != nil && (!CandidateMatches(*selected, source) || selected.Launch.Transport != ContainerMCP || !DigestPattern.MatchString(selected.Launch.Digest)) {
 			return SourceReview{}, fmt.Errorf("%w: selected registry artifact does not match the exact source", ErrInvalid)
 		}
+		if pinned, matched, pinErr := preparedLookup(source); pinErr != nil {
+			return SourceReview{}, pinErr
+		} else if matched && pinned.Image != nil {
+			// T0: the CI-built image is the reviewed artifact — admission
+			// resolves the pin and never fetches sources or runs a build.
+			return admitPinnedPrepared(ctx, source, pinned)
+		}
 		contextBytes, err := FetchRepositoryRecipeContext(ctx, source, 64<<20)
 		if err != nil {
 			return SourceReview{}, err
@@ -130,6 +137,46 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			Effects: EffectNames(imported.Definition), ReviewDigest: imported.Definition.Source.ReviewDigest, Recipe: &resolution,
 		}, nil
 	}
+}
+
+// admitPinnedPrepared admits a catalog-pinned T0 entry: the CI-built image,
+// its attestations and the reviewed connection recipe form a ready
+// resolution, so admission only needs the published-artifact path.
+func admitPinnedPrepared(ctx context.Context, source ArtifactSource, prepared PreparedEntry) (SourceReview, error) {
+	pin := prepared.Image
+	repository, _, _ := strings.Cut(pin.Ref, "@")
+	resolution := RecipeResolution{
+		Source: source,
+		State:  "ready",
+		Launch: LaunchRecipe{
+			Transport:  ContainerMCP,
+			Artifact:   repository,
+			Digest:     pin.Digest,
+			Entrypoint: append([]string(nil), prepared.Entrypoint...),
+			Network:    append([]string(nil), prepared.Egress...),
+		},
+		Connection: prepared.Connection,
+		Evidence: []RecipeEvidence{
+			{Source: "oci", Digest: pin.Provenance, Detail: "provenance attestation"},
+			{Source: "oci", Digest: pin.SBOM, Detail: "sbom attestation"},
+		},
+	}
+	config := NormalizeArtifactImportConfig(prepared.Apply(DefaultSelfInstallConfig(source)))
+	published, err := ImportPublishedArtifact(source, config, resolution, config.Execution.Egress)
+	if err != nil {
+		return SourceReview{}, err
+	}
+	admitted, _, err := PreflightPublishedArtifact(ctx, published)
+	if err != nil {
+		if review, ok := ReviewFromCredentialGate(admitted, err, &resolution); ok {
+			return review, nil
+		}
+		return SourceReview{}, err
+	}
+	return SourceReview{
+		Definition: admitted.Definition, Permissions: ToolNames(admitted.Definition),
+		Effects: EffectNames(admitted.Definition), ReviewDigest: admitted.Definition.Source.ReviewDigest, Recipe: &resolution,
+	}, nil
 }
 
 func DefaultSelfInstallConfig(source ArtifactSource) ArtifactImportConfig {

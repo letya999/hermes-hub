@@ -57,7 +57,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if err != nil {
 		return ImportedArtifact{}, err
 	}
-	artifact, err := BuildRestrictedOCI(ctx, recipe, generated, build)
+	artifact, err := restrictedBuild(ctx, recipe, generated, build)
 	if err != nil {
 		return ImportedArtifact{}, err
 	}

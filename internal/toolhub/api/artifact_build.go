@@ -33,6 +33,10 @@ type artifactDockerRun func(context.Context, io.Reader, ...string) ([]byte, erro
 // buildkitd.lock. Even without the cache, parallel builds thrash the host.
 var restrictedBuildMu sync.Mutex
 
+// restrictedBuild is the build seam — admission for a catalog-pinned image
+// never reaches it, and tests assert that by spying.
+var restrictedBuild = BuildRestrictedOCI
+
 // validateBuildContext runs the pre-build context gates. The digest-pinned
 // mcpb bundle is itself the reviewed unit — vendored node_modules ships
 // PEM/token test fixtures that are not credentials — so the repo-context
