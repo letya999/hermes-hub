@@ -285,7 +285,7 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	nonce := r.URL.Query().Get("nonce")
+	nonce := linkToken(r)
 	if r.Method == http.MethodGet {
 		onboarding, err := g.Control.Store.onboarding(onboardingID)
 		if err != nil || onboarding.Phase != api.PhaseAwaitingCreds || onboarding.FormNonce == "" || nonce != onboarding.FormNonce || onboarding.FormExpires.IsZero() || g.Control.now().After(onboarding.FormExpires) {
@@ -425,8 +425,13 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	nonce := r.URL.Query().Get("nonce")
+	nonce := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
+	if err == nil && onboarding.ConfirmationNonce != "" && nonce == onboarding.ConfirmationNonce && (onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires)) {
+		// The link was already spent: dead link, not a forged token.
+		goneLinkPage(w)
+		return
+	}
 	if err != nil || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" || nonce != onboarding.ConfirmationNonce || onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -466,8 +471,12 @@ func (g *Gateway) serveRemove(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	nonce := r.URL.Query().Get("nonce")
+	nonce := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
+	if err == nil && onboarding.RemoveNonce != "" && nonce == onboarding.RemoveNonce && (onboarding.Phase == api.PhaseRemoved || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires)) {
+		goneLinkPage(w)
+		return
+	}
 	if err != nil || onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires) || onboarding.Phase == api.PhaseRemoved {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -529,6 +538,15 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
+}
+
+// goneLinkPage answers a spent or dead one-time link: 410 with a hint to
+// request a fresh link rather than retry the burnt token.
+func goneLinkPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusGone)
+	_, _ = io.WriteString(w, credentialResultPage("Ссылка уже использована", "Эта одноразовая ссылка больше не действует. Попросите прислать fresh link — модель может вызвать status или remove заново."))
 }
 
 func credentialResultPage(title, message string) string {
@@ -845,6 +863,15 @@ func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, `{"status":"ready"}`)
+}
+
+// linkToken reads the one-time link token: ?t= is the canonical parameter,
+// ?nonce= remains accepted on the same validation path for links already sent.
+func linkToken(r *http.Request) string {
+	if t := r.URL.Query().Get("t"); t != "" {
+		return t
+	}
+	return r.URL.Query().Get("nonce")
 }
 
 func loopbackHTTP(r *http.Request) bool {

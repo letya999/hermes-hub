@@ -387,7 +387,8 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 			return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
 		}
 	}
-	onboarding.RemoveNonce = ""
+	// Keep the spent nonce as a tombstone: a replayed link matches it and gets
+	// a 410 "fresh link" page instead of an opaque 401.
 	cleanupErr := c.cutAuthorization(onboarding, true)
 	// Remove deletes the owner's ciphertext, not just revokes it — a revoked
 	// marker still leaves the secret recoverable. A credential owned by
