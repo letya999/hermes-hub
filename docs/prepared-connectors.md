@@ -105,6 +105,29 @@ connection and binding rows and the workspace, leaving a scrubbed onboarding
 tombstone for idempotent replay. Shared immutable artifacts must not be
 deleted while another owner uses them.
 
+
+## Recipe digests and source ledgers (M13)
+
+Resolution is ledger-driven: every consulted source — prepared catalog, MCP
+Registry, ToolHive, Docker MCP Catalog, `server.json`/MCPB manifests and
+repo hints — records ranked claims (launch ladder L0–L6/hint, credential
+ladder R0–R7) with its response digest and fetch time in the resolution
+ledger. Catalogs are queried before repository files, so a repo hint can
+never outrank a registry answer; mismatched candidates stay in the ledger
+flagged `ignored`. Two disagreeing same-rank claims fail closed
+(`ambiguous_entrypoint` / `ambiguous_credential_contract`) instead of
+first-wins, and `credential_source` now records an owner-words (R7) ledger
+entry naming the confirmed source rather than silently picking a file.
+
+The resolved recipe is content-addressed: identical claim sets always pin
+the same sha256 digest, and the store keeps one shared copy under
+`recipes/<sha256>` — onboardings carry `recipe_digest` only. Trust derives
+from the weakest winning rank: T0 prepared-catalog-only, T1 registry-grade
+launch plus authoritative credentials, T2 anything heuristic. A golden
+corpus of recorded real targets (`internal/toolhub/api/testdata/corpus/`)
+pins every recipe digest; `GOLDEN_UPDATE=1` re-pins after an intentional
+model change.
+
 ## Bundle IDs and one-operation start
 
 Call ToolHub `prepare_source` once with the repository URL shown in a ready

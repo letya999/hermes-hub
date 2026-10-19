@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -111,28 +110,6 @@ func ContainsFold(values []string, wanted string) bool {
 		}
 	}
 	return false
-}
-
-func recipeImageHints(launch LaunchRecipe, files map[string][]byte) []string {
-	var hints []string
-	add := func(value string) {
-		value = strings.Trim(value, "\"'`.,;()[]{}<>")
-		if _, err := ParseOCIReference(value); err == nil {
-			hints = AppendUnique(hints, value)
-		}
-	}
-	add(launch.Artifact)
-	for name, data := range files {
-		base := strings.ToLower(path.Base(name))
-		lowerName := strings.ToLower(name)
-		if !strings.HasPrefix(base, "dockerfile") && base != "server.json" && base != "manifest.json" && base != "compose.yaml" && base != "compose.yml" && !strings.HasPrefix(base, "docker-compose.") && !strings.HasPrefix(lowerName, ".github/workflows/") && !strings.Contains(lowerName, "/.github/workflows/") {
-			continue
-		}
-		for _, token := range strings.Fields(string(data)) {
-			add(token)
-		}
-	}
-	return hints
 }
 
 type OciRegistryClient struct {

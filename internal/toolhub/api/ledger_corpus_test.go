@@ -12,11 +12,11 @@ import (
 // corpusFixture records one real target's claims exactly as its upstream
 // metadata states them; expect_digest pins the resolved recipe.
 type corpusFixture struct {
-	Target       string         `json:"target"`
-	Subject      RecipeSubject  `json:"subject"`
-	Provenance   []string       `json:"provenance"`
-	Entries      []LedgerEntry  `json:"entries"`
-	ExpectDigest string         `json:"expect_digest"`
+	Target       string        `json:"target"`
+	Subject      RecipeSubject `json:"subject"`
+	Provenance   []string      `json:"provenance"`
+	Entries      []LedgerEntry `json:"entries"`
+	ExpectDigest string        `json:"expect_digest"`
 }
 
 func shuffleEntries(entries []LedgerEntry) []LedgerEntry {
