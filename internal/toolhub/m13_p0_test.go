@@ -309,7 +309,9 @@ func TestRevokeSurfacesCredentialTombstoneFailure(t *testing.T) {
 
 type errStopper struct{}
 
-func (errStopper) Stop(string) error { return errors.New("runtime unreachable") }
+var errRuntimeUnreachable = errors.New("runtime unreachable")
+
+func (errStopper) Stop(string) error { return errRuntimeUnreachable }
 
 func TestSetBindingStatusSurfacesStopFailure(t *testing.T) {
 	store := NewStore()
@@ -337,7 +339,7 @@ func TestSetBindingStatusSurfacesStopFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus)
-	if err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+	if err == nil || !errors.Is(err, errRuntimeUnreachable) {
 		t.Fatalf("stop failure was silently discarded or masked: %v", err)
 	}
 }
@@ -1285,26 +1287,26 @@ func storeWithRunningBindingWorkload(t *testing.T) (*Store, api.ToolBinding) {
 func TestStopFailureSurfacesOnEveryCaller(t *testing.T) {
 	t.Run("SetConnectionStatus", func(t *testing.T) {
 		store, _ := storeWithRunningBindingWorkload(t)
-		if err := store.SetConnectionStatus("google-work", api.DisabledStatus); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+		if err := store.SetConnectionStatus("google-work", api.DisabledStatus); err == nil || !errors.Is(err, errRuntimeUnreachable) {
 			t.Fatalf("SetConnectionStatus discarded stop failure: %v", err)
 		}
 	})
 	t.Run("MarkDegraded", func(t *testing.T) {
 		store, _ := storeWithRunningBindingWorkload(t)
-		if err := store.MarkDegraded("google-work"); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+		if err := store.MarkDegraded("google-work"); err == nil || !errors.Is(err, errRuntimeUnreachable) {
 			t.Fatalf("MarkDegraded discarded stop failure: %v", err)
 		}
 	})
 	t.Run("RemoveBindingRecords", func(t *testing.T) {
 		store, binding := storeWithRunningBindingWorkload(t)
-		if err := store.RemoveBindingRecords(binding.ToolBindingID); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+		if err := store.RemoveBindingRecords(binding.ToolBindingID); err == nil || !errors.Is(err, errRuntimeUnreachable) {
 			t.Fatalf("RemoveBindingRecords discarded stop failure: %v", err)
 		}
 	})
 	t.Run("RotateCredentialRecord", func(t *testing.T) {
 		store, _ := storeWithRunningBindingWorkload(t)
 		reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 2), ConnectionID: "google-work", Revision: 2, Backend: "local", Locator: "local://alice/google/2", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
-		if _, err := store.RotateCredentialRecord(reference); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+		if _, err := store.RotateCredentialRecord(reference); err == nil || !errors.Is(err, errRuntimeUnreachable) {
 			t.Fatalf("RotateCredentialRecord discarded stop failure: %v", err)
 		}
 	})
@@ -1331,7 +1333,7 @@ func TestStopFailureSurfacesOnEveryCaller(t *testing.T) {
 		if err := other.Save(path); err != nil {
 			t.Fatal(err)
 		}
-		if err := live.Reload(); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+		if err := live.Reload(); err == nil || !errors.Is(err, errRuntimeUnreachable) {
 			t.Fatalf("Reload discarded stop failure: %v", err)
 		}
 	})

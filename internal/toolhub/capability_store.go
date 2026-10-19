@@ -234,13 +234,18 @@ func (s *Store) managedSelfInstallsLocked(auth identity.Envelope, profile api.Ca
 // selfInstallWritesLocked reports whether the owning onboarding enabled
 // write-effect tools through the human-confirmed connector_allow_writes
 // step. Default off.
-func (s *Store) selfInstallWritesLocked(bindingID string) bool {
+func (s *Store) selfInstallOnboardingLocked(bindingID string) (api.Onboarding, bool) {
 	for _, onboarding := range s.onboardings {
 		if onboarding.BindingID == bindingID {
-			return onboarding.WritesEnabled
+			return onboarding, true
 		}
 	}
-	return false
+	return api.Onboarding{}, false
+}
+
+func (s *Store) selfInstallWritesLocked(bindingID string) bool {
+	onboarding, ok := s.selfInstallOnboardingLocked(bindingID)
+	return ok && onboarding.WritesEnabled
 }
 
 func (s *Store) managedSelfInstallToolsLocked(auth identity.Envelope, profile api.CapabilityProfile) []api.ProjectedTool {
@@ -432,9 +437,13 @@ func (s *Store) managedSelectionLocked(auth identity.Envelope, profile api.Capab
 	if found == nil || api.DefinitionDigest(found.Definition) != selection.ImplementationDigest {
 		return api.ProjectedTool{}, api.EffectiveBinding{}, api.ErrUnauthorized
 	}
-	for _, tool := range found.Definition.Tools {
+	onboarding, selfInstall := s.selfInstallOnboardingLocked(found.Binding.ToolBindingID)
+	for _, tool := range found.Definition.ProjectedToolSpecs(found.Binding) {
 		if tool.Name != selection.ToolName || tool.CapabilityID != selection.CapabilityID {
 			continue
+		}
+		if selfInstall && tool.Effect == api.WriteEffect && !onboarding.WritesEnabled {
+			break
 		}
 		limits, scopes, allowed := api.CapabilityDecision(profile, policy, selection, tool, arguments, projection)
 		if !allowed {

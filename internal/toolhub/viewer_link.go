@@ -65,6 +65,9 @@ func (s *Store) MintViewerLink(auth identity.Envelope, connectionID, operationID
 	s.viewerLinks[connectionID] = link
 	if err := s.persistViewerLinksLocked(); err != nil {
 		delete(s.viewerLinks, connectionID)
+		if path := s.viewerLinksPath(); path != "" {
+			_ = os.Remove(path)
+		}
 		return "", time.Time{}, err
 	}
 	return link.Nonce, link.ExpiresAt, nil
@@ -96,6 +99,12 @@ func (s *Store) SpendViewerLink(connectionID, nonce string, now time.Time) (api.
 	link.Used = true
 	s.viewerLinks[connectionID] = link
 	if err := s.persistViewerLinksLocked(); err != nil {
+		// Fail closed: the in-memory mark denies re-use while running, and the
+		// stale ledger would leave the nonce spendable after a restart — drop
+		// it so a failed spend can never replay (unspent links expire anyway).
+		if path := s.viewerLinksPath(); path != "" {
+			_ = os.Remove(path)
+		}
 		return api.Connection{}, err
 	}
 	return connection, nil

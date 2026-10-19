@@ -88,7 +88,9 @@ func TestViewerLinkLifecycle(t *testing.T) {
 }
 
 // S8.3: GET /viewer/<id>?t=<nonce> serves the owner viewer once — a repeat
-// visit gets 410 gone, a wrong nonce 403.
+// visit gets 410 gone, a wrong nonce 403. The drive goes through PublicMux:
+// the delivered link targets HUB_PUBLIC_ORIGIN, so the public listener is
+// the only routing that matters.
 func TestServeViewerLinkContract(t *testing.T) {
 	store := NewStore()
 	if err := store.RegisterDefinition(browserDefinition()); err != nil {
@@ -102,23 +104,23 @@ func TestServeViewerLinkContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateway := &Gateway{Control: control}
+	public := (&Gateway{Control: control}).PublicMux()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/viewer/conn-browser?t="+nonce, nil)
-	req.Host = "127.0.0.1"
-	gateway.serveViewer(rec, req)
+	req := httptest.NewRequest(http.MethodGet, "https://hub.example.com/viewer/conn-browser?t="+nonce, nil)
+	req.Host = "hub.example.com"
+	public.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("viewer status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	again := httptest.NewRecorder()
-	gateway.serveViewer(again, req)
+	public.ServeHTTP(again, req)
 	if again.Code != http.StatusGone {
 		t.Fatalf("reused link status=%d", again.Code)
 	}
 	forged := httptest.NewRecorder()
-	forgedReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/viewer/conn-browser?t=forged", nil)
-	forgedReq.Host = "127.0.0.1"
-	gateway.serveViewer(forged, forgedReq)
+	forgedReq := httptest.NewRequest(http.MethodGet, "https://hub.example.com/viewer/conn-browser?t=forged", nil)
+	forgedReq.Host = "hub.example.com"
+	public.ServeHTTP(forged, forgedReq)
 	if forged.Code != http.StatusForbidden {
 		t.Fatalf("forged nonce status=%d", forged.Code)
 	}
@@ -309,7 +311,7 @@ func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
 		Tools: []api.ToolSpec{
 			{Name: "browser_navigate", Effect: api.ReadEffect},
 			{Name: "browser_snapshot", Effect: api.ReadEffect},
-			{Name: "browser_click", Effect: api.WriteEffect},
+			{Name: "browser_click", Effect: api.WriteEffect, CapabilityID: "browser.act", Uses: []api.CapabilityUse{{Action: "act", Resource: "browser"}}},
 			{Name: "browser_evaluate", Effect: api.WriteEffect},
 		},
 		Toolsets:        map[string][]string{"act": {"browser_click"}, "eval": {"browser_evaluate"}},
@@ -364,5 +366,88 @@ func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
 	clickName := api.ProjectedToolName(definition.DefinitionID, definition.Version, "browser_click")
 	if _, _, err := store.managedSelfInstallToolLocked(auth, profile, clickName); err != nil {
 		t.Fatalf("confirmed act tool must dispatch: %v", err)
+	}
+}
+
+// A capability selection names an exact tool, but the binding's staged
+// toolsets still bound what a grant can reach: a selection for an excluded
+// tool stays hidden until its toolset is enabled, and a write-effect tool on
+// a self-installed binding still needs the confirmed allow-writes step.
+func TestManagedSelectionHonorsToolsetGating(t *testing.T) {
+	store, auth, policy, profile := managedStore(t)
+	definition := remoteDefinition()
+	definition.DefinitionID = "browser-mcp"
+	definition.Tools = []api.ToolSpec{
+		{Name: "browser_navigate", Effect: api.ReadEffect},
+		{Name: "browser_click", Effect: api.WriteEffect, CapabilityID: "browser.act", Uses: []api.CapabilityUse{{Action: "act", Resource: "browser"}}},
+	}
+	definition.Toolsets = map[string][]string{"act": {"browser_click"}}
+	definition.DefaultEnabled = []string{"browser_navigate"}
+	definition.DefaultExcluded = []string{"browser_click"}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	credential := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("browser-conn", 1), ConnectionID: "browser-conn", Revision: 1, Backend: "local", Locator: "local://alice/browser/1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
+	if err := store.PutCredentialReference(credential); err != nil {
+		t.Fatal(err)
+	}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "browser-conn", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: credential.CredentialRefID, Revision: 1, Status: api.ActiveStatus}
+	if err := store.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	rule := api.CapabilityRule{CapabilityID: "browser.act", ImplementationDigest: api.DefinitionDigest(definition), Action: "act", Resource: "browser", ConnectionID: binding.ConnectionID, Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
+	policy.Revision++
+	policy.Ceiling = append(policy.Ceiling, rule)
+	policy.Defaults = append(policy.Defaults, rule)
+	if err := putPolicy(t, store, policy); err != nil {
+		t.Fatal(err)
+	}
+	selection := api.CapabilitySelection{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		ImplementationDigest: rule.ImplementationDigest, ToolName: "browser_click", Name: "browser_click_sel", ConnectionID: binding.ConnectionID}
+	profile.Revision++
+	profile.PolicyRevision = policy.Revision
+	profile.Selections = append(profile.Selections, selection)
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	names := func() []string {
+		out := []string{}
+		if tools, err := store.ListProjectedTools(auth); err == nil {
+			for _, tool := range tools {
+				out = append(out, tool.Name)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	// The grant exists but the tool's toolset is off — the selection must not
+	// widen the surface past the binding's enabled toolsets.
+	for _, name := range names() {
+		if strings.Contains(name, "browser_click") {
+			t.Fatalf("toolset-excluded tool projected via selection: %v", names())
+		}
+	}
+	if _, _, err := store.managedSelectionLocked(auth, profile, policy, selection, nil, false); err == nil {
+		t.Fatal("toolset-excluded tool dispatchable via selection")
+	}
+	if err := store.EnableToolsets(auth, binding.ToolBindingID, []string{"act"}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, name := range names() {
+		if strings.Contains(name, "browser_click") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("enabled toolset tool not projected: %v", names())
+	}
+	if _, _, err := store.managedSelectionLocked(auth, profile, policy, selection, nil, false); err != nil {
+		t.Fatalf("granted tool must dispatch with its toolset on: %v", err)
 	}
 }

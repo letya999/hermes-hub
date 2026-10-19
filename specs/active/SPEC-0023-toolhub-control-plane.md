@@ -143,6 +143,16 @@ reconnect while in-flight calls finish on their resolved snapshot;
 the shared rows once. `connector_list` shows team connections with a
 `team` badge and call audit carries the channel `JobEnvelope` sender as
 `sender_id` plus `team_id`, `connection_id` and `binding_id` attribution.
+Operator surfaces: `hubctl capability --kind team` publishes the confirmed
+record, `--kind team-share` mints the shared connection under an
+operator-supplied credential locator, `--kind team-drop` removes it.
+
+Team connections coexist with the older `shared` workload class rather
+than replacing it: `shared` grants every caller of a shared credential
+policy the same implicit workload, while a team connection enumerates its
+membership in a reviewed record and denies non-members on every call.
+New connectors that need multi-principal access should prefer team
+connections; the `shared` class stays for existing policies.
 
 ## Browser workloads (M13 P8)
 

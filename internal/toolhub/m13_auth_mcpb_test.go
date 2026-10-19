@@ -695,8 +695,19 @@ func TestRefreshLeaseRevokeWinsInsideAdmission(t *testing.T) {
 	// refresh's status checks.
 	revoked := make(chan error, 1)
 	go func() { revoked <- store.SetConnectionStatus("google-work", api.RevokedStatus) }()
-	for i := 0; i < 200; i++ {
-		time.Sleep(10 * time.Millisecond)
+	// Deterministic queue detection: while the admission read lock is held a
+	// TryRLock succeeds unless a writer is already waiting on it.
+	queued := false
+	for i := 0; i < 2000 && !queued; i++ {
+		if store.mu.TryRLock() {
+			store.mu.RUnlock()
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		queued = true
+	}
+	if !queued {
+		t.Fatal("writer never queued behind the admission lock")
 	}
 	close(transport.hold)
 	select {
