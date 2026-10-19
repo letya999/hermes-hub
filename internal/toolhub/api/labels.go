@@ -83,6 +83,15 @@ const (
 	FinalizerFailed  = "failed"
 )
 
+// LabeledResource is one live object returned by a label-scoped scan —
+// Kind groups the object class ("container", "volume", "network", "image")
+// and Labels carries the observed ownership label set.
+type LabeledResource struct {
+	Kind   string            `json:"kind"`
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
 // Finalizer is one idempotent remove step recorded on the onboarding.
 type Finalizer struct {
 	Name     string `json:"name"`

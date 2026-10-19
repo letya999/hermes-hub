@@ -12,9 +12,9 @@ github_issue: 285
 design_status: accepted
 implementation_status: in_progress
 slices:
-  S4.1-ownership-labels: not_started
-  S4.2-finalizer-ladder: not_started
-  S4.3-reconciler: not_started
+  S4.1-ownership-labels: done
+  S4.2-finalizer-ladder: done
+  S4.3-reconciler: in_progress
   S4.4-connection-locks: not_started
   S4.5-store-compaction: not_started
   S4.6-tool-surface-digest: not_started

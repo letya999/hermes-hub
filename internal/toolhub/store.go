@@ -152,6 +152,34 @@ func (s *Store) PutConnection(connection api.Connection) error {
 	return nil
 }
 
+// HasConnection reports whether a connection record exists in the store —
+// the reconciler uses it to tell orphans from desired resources.
+func (s *Store) HasConnection(id string) bool {
+	_, ok := s.connectionFor(id)
+	return ok
+}
+
+// connectionFor returns a connection record by id without an identity
+// check; internal reconciliation paths only.
+func (s *Store) connectionFor(id string) (api.Connection, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	connection, ok := s.connections[id]
+	return connection, ok
+}
+
+// Connections returns a snapshot of every connection record — the
+// reconciler's desired-state list.
+func (s *Store) Connections() []api.Connection {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]api.Connection, 0, len(s.connections))
+	for _, connection := range s.connections {
+		out = append(out, connection)
+	}
+	return out
+}
+
 func (s *Store) hasDefinitionID(id string) bool {
 	for key := range s.definitions {
 		if strings.HasPrefix(key, id+"@") {

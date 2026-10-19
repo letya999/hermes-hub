@@ -400,6 +400,161 @@ func TestRemoveSweepsLeftoversAndReceiptCounts(t *testing.T) {
 	}
 }
 
+// S4.3: the reconciler scans hub-labelled resources, purges objects whose
+// owner connection is absent from the store, and never touches foreign or
+// unlabelled objects.
+func TestReconcilerPurgesOrphans(t *testing.T) {
+	store, _, _, _ := managedStore(t)
+	universe := []api.LabeledResource{
+		{Kind: "container", Name: "w-orphan", Labels: map[string]string{api.LabelConnection: "conn-gone"}},
+		{Kind: "volume", Name: "v-orphan", Labels: map[string]string{api.LabelConnection: "conn-gone"}},
+		{Kind: "container", Name: "w-live", Labels: map[string]string{api.LabelConnection: "google-work"}},
+		{Kind: "volume", Name: "foreign", Labels: map[string]string{"app": "other"}},
+	}
+	var purged []string
+	r := &Reconciler{
+		Store:   store,
+		MaxScan: 10,
+		Scan: func(_ context.Context, selector map[string]string) ([]api.LabeledResource, error) {
+			var out []api.LabeledResource
+			for _, res := range universe {
+				match := true
+				for key, want := range selector {
+					got, ok := res.Labels[key]
+					if !ok || (want != "" && got != want) {
+						match = false
+						break
+					}
+				}
+				if match {
+					out = append(out, res)
+				}
+			}
+			return out, nil
+		},
+		Purge: func(_ context.Context, kind, name string) error {
+			purged = append(purged, kind+"/"+name)
+			kept := universe[:0]
+			for _, res := range universe {
+				if res.Kind == kind && res.Name == name {
+					continue
+				}
+				kept = append(kept, res)
+			}
+			universe = kept
+			return nil
+		},
+	}
+	if err := r.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(purged) != 2 || !containsString(purged, "container/w-orphan") || !containsString(purged, "volume/v-orphan") {
+		t.Fatalf("purged=%v", purged)
+	}
+	if containsString(purged, "volume/foreign") || containsString(purged, "container/w-live") {
+		t.Fatalf("foreign/live object purged: %v", purged)
+	}
+}
+
+// S4.3: a live connection whose broker credential is gone is degraded and
+// the owner is notified for reauth; the reconciler never re-mints secrets.
+func TestReconcilerDegradesMissingCredential(t *testing.T) {
+	store, _, _, _ := managedStore(t)
+	var notices []string
+	r := &Reconciler{
+		Store:     store,
+		Scan:      func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
+		Purge:     func(context.Context, string, string) error { return nil },
+		CredAlive: func(context.Context, string) (bool, error) { return false, nil },
+		Notify: func(_ context.Context, principal, kind string, _ map[string]any) error {
+			notices = append(notices, kind+":"+principal)
+			return nil
+		},
+	}
+	if err := r.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	connection, ok := store.connectionFor("google-work")
+	if !ok || connection.Status != api.DegradedStatus {
+		t.Fatalf("connection=%+v ok=%v", connection, ok)
+	}
+	if !containsString(notices, "reauth:alice") {
+		t.Fatalf("notices=%v", notices)
+	}
+	if _, ok := store.credentials[connection.CredentialRefID]; !ok {
+		t.Fatal("credential record dropped — reconciler must not re-mint")
+	}
+}
+
+// S4.3: a recipe-digest change under a live connection marks it degraded —
+// writes hide until a human confirms the new surface.
+func TestReconcilerRecipeDrift(t *testing.T) {
+	store, _, _, _ := managedStore(t)
+	connection, ok := store.connectionFor("google-work")
+	if !ok {
+		t.Fatal("seeded connection missing")
+	}
+	connection.Metadata[api.LabelRecipe] = "sha256:pinned"
+	if err := store.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	var notices []string
+	r := &Reconciler{
+		Store:     store,
+		Scan:      func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
+		Purge:     func(context.Context, string, string) error { return nil },
+		CredAlive: func(context.Context, string) (bool, error) { return true, nil },
+		Resolve:   func(context.Context, api.Connection) (string, error) { return "sha256:drifted", nil },
+		Notify: func(_ context.Context, principal, kind string, _ map[string]any) error {
+			notices = append(notices, kind+":"+principal)
+			return nil
+		},
+	}
+	if err := r.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := store.connectionFor("google-work")
+	if after.Status != api.DegradedStatus {
+		t.Fatalf("drift not degraded: %s", after.Status)
+	}
+	if !containsString(notices, "drift:alice") {
+		t.Fatalf("notices=%v", notices)
+	}
+}
+
+// S4.3: MaxScan bounds each pass — leftover orphans converge on the next
+// pass instead of starving the loop.
+func TestReconcilerMaxScanBoundsPass(t *testing.T) {
+	store, _, _, _ := managedStore(t)
+	var purged int
+	r := &Reconciler{
+		Store:   store,
+		MaxScan: 1,
+		Scan: func(context.Context, map[string]string) ([]api.LabeledResource, error) {
+			return []api.LabeledResource{
+				{Kind: "container", Name: "a", Labels: map[string]string{api.LabelConnection: "gone"}},
+				{Kind: "container", Name: "b", Labels: map[string]string{api.LabelConnection: "gone"}},
+			}, nil
+		},
+		Purge: func(context.Context, string, string) error { purged++; return nil },
+	}
+	if err := r.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if purged != 1 {
+		t.Fatalf("MaxScan ignored: purged=%d", purged)
+	}
+}
+
+func containsString(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 func containsLabel(argv []string, want string) bool {
 	for i, arg := range argv {
 		if arg == "--label" && i+1 < len(argv) && argv[i+1] == want {
