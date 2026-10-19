@@ -104,3 +104,49 @@ func TestT0AdmissionSkipsBuilder(t *testing.T) {
 		t.Fatalf("builds=%d digest=%q", builds, review.Definition.Source.Digest)
 	}
 }
+
+// S5.4: catalog toolsets ride the entry into the admitted definition so the
+// binding-level projection can gate the non-default sets.
+func TestPreparedEntryToolsetsCarry(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	body := `[{
+		"id": "notion", "name": "Notion", "license": "MIT", "tier": "t0",
+		"image": {"ref": "ghcr.io/letya999/hermes-hub-connectors/notion@` + digest + `", "digest": "` + digest + `",
+			"provenance": "sha256:` + strings.Repeat("c", 64) + `", "sbom": "sha256:` + strings.Repeat("d", 64) + `"},
+		"source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
+		"language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
+		"connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
+		"contract_id": "notion-token", "contract_revision": 1,
+		"egress": ["api.notion.com"], "read_tools": ["API-get-self"], "probe_tool": "API-get-self",
+		"toolsets": {"pages": ["API-get-page", "API-patch-page"]},
+		"default_enabled": ["API-get-self"], "default_excluded": ["API-patch-page"],
+		"runbook": "docs/prepared-connectors.md#notion",
+		"handoff": "Install notion."
+	}]`
+	entries, err := ParsePreparedCatalog([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := entries[0].Apply(DefaultSelfInstallConfig(entries[0].Source))
+	if len(config.Toolsets["pages"]) != 2 || len(config.DefaultEnabled) != 1 || len(config.DefaultExcluded) != 1 {
+		t.Fatalf("config toolsets=%+v", config.Toolsets)
+	}
+	pin := entries[0].Image
+	repository, _, _ := strings.Cut(pin.Ref, "@")
+	resolution := RecipeResolution{
+		Source: entries[0].Source, State: "ready",
+		Launch:     LaunchRecipe{Transport: ContainerMCP, Artifact: repository, Digest: pin.Digest, Entrypoint: entries[0].Entrypoint},
+		Connection: entries[0].Connection,
+		Evidence: []RecipeEvidence{
+			{Source: "oci", Digest: pin.Provenance, Detail: "provenance attestation"},
+			{Source: "oci", Digest: pin.SBOM, Detail: "sbom attestation"},
+		},
+	}
+	imported, err := ImportPublishedArtifact(entries[0].Source, config, resolution, entries[0].Egress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imported.Definition.Toolsets["pages"]) != 2 || imported.Definition.DefaultEnabled[0] != "API-get-self" || imported.Definition.DefaultExcluded[0] != "API-patch-page" {
+		t.Fatalf("definition toolsets=%+v", imported.Definition.Toolsets)
+	}
+}

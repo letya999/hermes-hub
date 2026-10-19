@@ -40,7 +40,7 @@ func (s *Store) ListProjectedTools(auth identity.Envelope) ([]api.ProjectedTool,
 			}
 			return nil, err
 		}
-		for _, tool := range effective.Definition.Tools {
+		for _, tool := range effective.Definition.ProjectedToolSpecs(effective.Binding) {
 			name := api.ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, tool.Name)
 			if seen[name] {
 				return nil, fmt.Errorf("%w: projected tool %s has multiple bindings", api.ErrConflict, name)

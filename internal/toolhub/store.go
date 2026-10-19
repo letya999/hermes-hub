@@ -6,6 +6,9 @@ package toolhub
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"slices"
+
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
@@ -234,7 +237,7 @@ func (s *Store) PutBinding(binding api.ToolBinding) error {
 	if binding.ToolBindingID != expectedID {
 		return fmt.Errorf("%w: nondeterministic binding id", api.ErrInvalid)
 	}
-	if existing, ok := s.bindings[binding.ToolBindingID]; ok && existing != binding {
+	if existing, ok := s.bindings[binding.ToolBindingID]; ok && !reflect.DeepEqual(existing, binding) {
 		return fmt.Errorf("%w: binding is immutable within a revision", api.ErrConflict)
 	}
 	key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
@@ -594,6 +597,27 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 	}
 	effective.WorkloadID = api.WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")
 	return effective, nil
+}
+
+// EnableToolsets stages a binding's extra projected toolsets: the binding
+// mutates in place with a revision bump, and the owning projection advances
+// so cached tool lists refresh.
+func (s *Store) EnableToolsets(auth identity.Envelope, bindingID string, sets []string) error {
+	s.mu.Lock()
+	binding, ok := s.bindings[bindingID]
+	if !ok || binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID {
+		s.mu.Unlock()
+		return api.ErrNotFound
+	}
+	key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
+	binding.EnabledToolsets = append([]string(nil), sets...)
+	slices.Sort(binding.EnabledToolsets)
+	binding.Revision++
+	s.projectionRevisions[key]++
+	binding.ProjectionRevision = s.projectionRevisions[key]
+	s.bindings[bindingID] = binding
+	s.mu.Unlock()
+	return s.persistAndNotify()
 }
 
 // PutRecipe stores a resolution under its content digest; identical content

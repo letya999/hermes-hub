@@ -58,6 +58,49 @@ type ToolDefinition struct {
 	Workload         WorkloadPolicy  `json:"workload"`
 	Execution        ExecutionPolicy `json:"execution"`
 	Health           HealthProbe     `json:"health"`
+	// Toolsets groups the surface for staged projection: DefaultEnabled is
+	// the set an install projects, DefaultExcluded tools stay hidden until a
+	// binding explicitly enables a toolset containing them. Empty metadata
+	// means the whole surface projects (pre-toolset definitions).
+	Toolsets        map[string][]string `json:"toolsets,omitempty"`
+	DefaultEnabled  []string            `json:"default_enabled,omitempty"`
+	DefaultExcluded []string            `json:"default_excluded,omitempty"`
+}
+
+// ProjectedToolSpecs filters a definition's surface for one binding: the
+// default-enabled set plus the members of the binding's enabled toolsets.
+// default_excluded suppresses a tool only from the default projection — an
+// explicitly enabled toolset still surfaces it. Definitions without any
+// toolset metadata project the whole surface (pre-toolset records).
+func (d ToolDefinition) ProjectedToolSpecs(binding ToolBinding) []ToolSpec {
+	if len(d.Toolsets) == 0 && len(d.DefaultEnabled) == 0 && len(d.DefaultExcluded) == 0 {
+		return d.Tools
+	}
+	enabled := map[string]bool{}
+	for _, name := range d.DefaultEnabled {
+		enabled[name] = true
+	}
+	for _, set := range binding.EnabledToolsets {
+		for _, name := range d.Toolsets[set] {
+			enabled[name] = true
+		}
+	}
+	excluded := map[string]bool{}
+	for _, name := range d.DefaultExcluded {
+		excluded[name] = true
+	}
+	for _, set := range binding.EnabledToolsets {
+		for _, name := range d.Toolsets[set] {
+			delete(excluded, name)
+		}
+	}
+	out := make([]ToolSpec, 0, len(d.Tools))
+	for _, tool := range d.Tools {
+		if enabled[tool.Name] && !excluded[tool.Name] {
+			out = append(out, tool)
+		}
+	}
+	return out
 }
 
 type DefinitionSource struct {

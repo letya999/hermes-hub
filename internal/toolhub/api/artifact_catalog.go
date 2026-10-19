@@ -136,6 +136,9 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 	imported := ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}
 	imported.Definition.RuntimeEnvironment = config.RuntimeEnvironment
 	imported.Definition.ProxyEnvironment = append([]string(nil), config.ProxyEnvironment...)
+	imported.Definition.Toolsets = config.Toolsets
+	imported.Definition.DefaultEnabled = append([]string(nil), config.DefaultEnabled...)
+	imported.Definition.DefaultExcluded = append([]string(nil), config.DefaultExcluded...)
 	review, err := ReviewDigestForImported(imported)
 	if err != nil {
 		return ImportedArtifact{}, err

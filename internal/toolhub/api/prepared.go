@@ -68,8 +68,13 @@ type PreparedEntry struct {
 	Name    string   `json:"name"`
 	// Tier defaults to t0 for embedded reviewed entries; the catalog may pin
 	// it explicitly, and T0 entries require an image digest.
-	Tier               string                     `json:"tier,omitempty"`
-	Image              *PinnedImage               `json:"image,omitempty"`
+	Tier  string       `json:"tier,omitempty"`
+	Image *PinnedImage `json:"image,omitempty"`
+	// Toolsets/DefaultEnabled/DefaultExcluded stage the projected surface:
+	// install projects the default read set, other sets join on enable.
+	Toolsets           map[string][]string        `json:"toolsets,omitempty"`
+	DefaultEnabled     []string                   `json:"default_enabled,omitempty"`
+	DefaultExcluded    []string                   `json:"default_excluded,omitempty"`
 	Source             ArtifactSource             `json:"source"`
 	License            string                     `json:"license"`
 	Language           string                     `json:"language"`
@@ -386,6 +391,12 @@ func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConf
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
 	config.Execution.TCPForwards = append([]TCPForward(nil), entry.TCPForwards...)
 	config.Workload.Stateful = entry.Stateful
+	config.Toolsets = map[string][]string{}
+	for set, tools := range entry.Toolsets {
+		config.Toolsets[set] = append([]string(nil), tools...)
+	}
+	config.DefaultEnabled = append([]string(nil), entry.DefaultEnabled...)
+	config.DefaultExcluded = append([]string(nil), entry.DefaultExcluded...)
 	if entry.Image != nil {
 		// Definitions carry the repository separately from the digest pin:
 		// "repo@sha256:…" splits into Image + Digest at admission.

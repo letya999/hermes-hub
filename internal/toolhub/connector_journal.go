@@ -137,6 +137,29 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 		}
 		return api.OperationResult{OperationID: op.OperationID, State: api.OpStateFailed, Code: op.ErrorCode, Summary: intent + " " + target}, nil
 	}
+	if intent == api.OpIntentEnable {
+		// connector_enable … toolsets=[issues] widens the projected surface
+		// beyond the install-time default read set.
+		if raw, ok := args["toolsets"].([]any); ok && len(raw) > 0 {
+			sets := make([]string, 0, len(raw))
+			for _, item := range raw {
+				if name, ok := item.(string); ok {
+					sets = append(sets, name)
+				}
+			}
+			if len(sets) > 0 {
+				onboarding, err := c.Store.OnboardingFor(auth, resolved.OnboardingID)
+				if err != nil {
+					return api.OperationResult{}, err
+				}
+				if onboarding.BindingID != "" {
+					if err := c.Store.EnableToolsets(auth, onboarding.BindingID, sets); err != nil {
+						return api.OperationResult{}, err
+					}
+				}
+			}
+		}
+	}
 	markStep(&op, api.OpStepApply, api.OpStepDone)
 	markStep(&op, api.OpStepNotify, api.OpStepDone)
 	op.State = api.OpStateDone

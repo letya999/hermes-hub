@@ -286,6 +286,9 @@ type ToolBinding struct {
 	// ToolDigest pins the admitted tool surface (names, schemas, effects) so
 	// a later drift is detectable by one comparison.
 	ToolDigest string `json:"tool_digest,omitempty"`
+	// EnabledToolsets names the definition's toolsets this binding projects
+	// beyond the default-enabled set.
+	EnabledToolsets []string `json:"enabled_toolsets,omitempty"`
 }
 
 type WorkloadInstance struct {
