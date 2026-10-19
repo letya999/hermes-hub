@@ -2,100 +2,189 @@ package agenttools
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
 )
 
+const knowledgeLimit = 9 << 20
+
+type knowledgeItem struct {
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"mod_time"`
+}
+
+type knowledgeFragment struct {
+	Source     string    `json:"source"`
+	Line       int       `json:"line"`
+	Text       string    `json:"text"`
+	SHA256     string    `json:"sha256"`
+	ModifiedAt time.Time `json:"modified_at"`
+}
+
+// knowledgeRoot resolves the staged knowledge directory inside this
+// runtime's state volume: knowledge/<principal>, narrowed to the
+// context subdir when the operator staged one. Foreign principal
+// directories are unreachable — the path derives from the runtime's own
+// identity, never a parameter.
+func (t *Tools) knowledgeRoot() (*os.Root, error) {
+	if t.StateDir == "" {
+		return nil, fmt.Errorf("knowledge unavailable")
+	}
+	envelope := runtimeEnvelope()
+	base, err := os.OpenRoot(t.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge unavailable")
+	}
+	defer base.Close()
+	dir := "knowledge/" + envelope.PrincipalID
+	if info, err := base.Lstat(dir); err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		return nil, fmt.Errorf("invalid knowledge owner directory")
+	}
+	root, err := base.OpenRoot(dir)
+	if err == nil && envelope.ContextID != envelope.PrincipalID {
+		parent := root
+		root, err = parent.OpenRoot(envelope.ContextID)
+		_ = parent.Close()
+	}
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("knowledge unavailable")
+	}
+	return root, nil
+}
+
+func readKnowledgeSource(root *os.Root, name string) ([]byte, fs.FileInfo, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\:`+"\x00") || strings.HasPrefix(name, ".") {
+		return nil, nil, fmt.Errorf("invalid source name")
+	}
+	info, err := root.Lstat(name)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("source is not a regular file")
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > knowledgeLimit {
+		return nil, nil, fmt.Errorf("source exceeds read limit")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, knowledgeLimit+1))
+	if err != nil || len(body) > knowledgeLimit {
+		return nil, nil, fmt.Errorf("source exceeds read limit")
+	}
+	return body, info, nil
+}
+
 // knowledgeList returns the caller's staged read-only knowledge sources.
-func (t *Tools) knowledgeList(ctx context.Context) (map[string]any, error) {
-	body, err := t.knowledgeGet(ctx, "")
+func (t *Tools) knowledgeList(_ context.Context) (map[string]any, error) {
+	root, err := t.knowledgeRoot()
 	if err != nil {
 		return nil, err
 	}
-	var items []any
-	if err := json.Unmarshal(body, &items); err != nil {
-		return nil, err
+	if root == nil {
+		return map[string]any{"items": []any{}}, nil
+	}
+	defer root.Close()
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return nil, fmt.Errorf("knowledge unavailable")
+	}
+	items := []any{}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > knowledgeLimit {
+			continue
+		}
+		items = append(items, knowledgeItem{Name: entry.Name(), Size: info.Size(), ModTime: info.ModTime().UTC()})
 	}
 	return map[string]any{"items": items}, nil
 }
 
 // knowledgeRead returns one staged source as tool output — the content never
 // lands in the workspace.
-func (t *Tools) knowledgeRead(ctx context.Context, r Input) (map[string]any, error) {
-	body, headers, err := t.knowledgeFetch(ctx, r.Name, "")
+func (t *Tools) knowledgeRead(_ context.Context, r Input) (map[string]any, error) {
+	root, err := t.knowledgeRoot()
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"name": r.Name, "content": string(body), "sha256": headers.Get("X-Hub-SHA256"), "modified_at": headers.Get("Last-Modified"), "context_id": headers.Get("X-Hub-Context")}, nil
+	if root == nil {
+		return nil, fmt.Errorf("knowledge unavailable")
+	}
+	defer root.Close()
+	body, info, err := readKnowledgeSource(root, r.Name)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge source unavailable")
+	}
+	sum := sha256.Sum256(body)
+	return map[string]any{"name": r.Name, "content": string(body), "sha256": hex.EncodeToString(sum[:]), "modified_at": info.ModTime().UTC().Format(time.RFC3339), "context_id": runtimeEnvelope().ContextID}, nil
 }
 
-func (t *Tools) knowledgeSearch(ctx context.Context, query string) (map[string]any, error) {
+func boundedKnowledgeText(value string) string {
+	runes := []rune(value)
+	if len(runes) > 1024 {
+		return string(runes[:1024]) + "…"
+	}
+	return value
+}
+
+func (t *Tools) knowledgeSearch(_ context.Context, query string) (map[string]any, error) {
 	if strings.TrimSpace(query) == "" || len(query) > 256 {
 		return nil, fmt.Errorf("a query of at most 256 bytes is required")
 	}
-	body, _, err := t.knowledgeFetch(ctx, "", query)
+	root, err := t.knowledgeRoot()
 	if err != nil {
 		return nil, err
 	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+	if root == nil {
+		return map[string]any{"fragments": []knowledgeFragment{}, "scanned": 0, "scan_limit": 128, "context_id": runtimeEnvelope().ContextID}, nil
 	}
-	return result, nil
-}
-
-func (t *Tools) knowledgeGet(ctx context.Context, name string) ([]byte, error) {
-	body, _, err := t.knowledgeFetch(ctx, name, "")
-	return body, err
-}
-
-func (t *Tools) knowledgeFetch(ctx context.Context, name, query string) ([]byte, http.Header, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	path := "/v1/knowledge"
-	if name != "" {
-		path += "/" + url.PathEscape(name)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(t.CommunicationURL, "/")+path, nil)
+	defer root.Close()
+	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
-		return nil, nil, err
+		return nil, fmt.Errorf("knowledge unavailable")
 	}
-	if t.CommunicationAuth != "" {
-		req.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
+	query = strings.ToLower(strings.TrimSpace(query))
+	hits := []knowledgeFragment{}
+	scanned := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > knowledgeLimit {
+			continue
+		}
+		if len(hits) >= 8 || scanned >= 128 {
+			continue
+		}
+		scanned++
+		body, info, err := readKnowledgeSource(root, entry.Name())
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(body)
+		for line, text := range strings.Split(string(body), "\n") {
+			if strings.Contains(strings.ToLower(text), query) {
+				hits = append(hits, knowledgeFragment{Source: entry.Name(), Line: line + 1, Text: boundedKnowledgeText(text), SHA256: hex.EncodeToString(sum[:]), ModifiedAt: info.ModTime().UTC()})
+				if len(hits) >= 8 {
+					break
+				}
+			}
+		}
 	}
-	principal := os.Getenv("HUB_PRINCIPAL_ID")
-	if principal == "" {
-		principal = os.Getenv("HUB_USER_ID")
-	}
-	req.Header.Set("X-Hub-Principal", principal)
-	req.Header.Set("X-Hub-Context", runtimeEnvelope().ContextID)
-	client := t.HTTP
-	if client == nil {
-		client = http.DefaultClient
-	}
-	if query != "" {
-		values := req.URL.Query()
-		values.Set("q", query)
-		req.URL.RawQuery = values.Encode()
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("knowledge request rejected: %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, (9<<20)+1))
-	if err == nil && len(body) > 9<<20 {
-		return nil, nil, fmt.Errorf("knowledge response exceeds size limit")
-	}
-	return body, resp.Header, err
+	return map[string]any{"fragments": hits, "scanned": scanned, "scan_limit": 128, "context_id": runtimeEnvelope().ContextID}, nil
 }

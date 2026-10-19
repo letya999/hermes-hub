@@ -1,0 +1,54 @@
+schema: 1
+change: CHG-0095
+title: Recovery and visibility (M19 stage 3)
+status: verified-live
+branch: feat/m19-execution-chain-reliability
+updated: 2026-10-14
+phase: accepted
+adr: ADR-0036
+spec: SPEC-0053
+requirements: [R3.1, R3.2, R3.3, R3.4, R3.5, R3.6]
+depends_on: [CHG-0092, CHG-0094]
+github_milestone: https://github.com/letya999/hermes-hub/milestone/20
+github_issue: https://github.com/letya999/hermes-hub/issues/264
+related_issues: ["#193", "#206", "#74"]
+design_status: accepted
+implementation_status: verified_live
+slices:
+  S3.1-job-state-machine: done
+  S3.2-unconfirmed-reconciler: done
+  S3.3-poison-update-quarantine: done
+  S3.4-synthetic-canary: done
+  S3.5-structured-logs-trace: done
+  S3.6-status-health: done
+validation:
+  documents: done
+  just_check: pass
+  docker_check: passed_with_stt_decode
+  chaos_matrix: pass_all_12_fault_cases_and_305_second_heartbeat
+  red_team: partial_unit_and_real_contract
+  live_drain: stopped_zero_leases_after_scoped_docker_cleanup
+  live_supervisor_update: container_running_authenticated_restart_2_854_seconds
+  final_source_check: pass
+  final_source_coverage: 85.33
+  canary_live: two_run_failed_rounds_one_owner_notice_one_recovery_notice
+  owner_live: thirty_texts_one_photo_one_final_send_each
+  evidence_file: evidence.md
+evidence:
+  - S3.1: phases.go transition table + Unconfirmed flag; TestJobPhaseTransitions, TestLegacyRecordsMapToPhases green.
+  - S3.2: supervisor reconcileUnconfirmed (30s floor, run-budget timeout cause, /v1/observe + /v1/readmit replay); gateway UncertainSince anchor, notice suppression in-window, RequeueObservations(supervised) for unknown admission, resume 409 stays uncertain. Tests green in supervisor+communication+runtime packages.
+  - S3.3: quarantine/<update_id>.json on update error (id+class+time, no content), offset advances, dir capped at 1000; TestHandleUpdateErrorQuarantinesAndContinues, TestQuarantineHasNoContentByDefault, eviction test green.
+  - S3.4: internal/communication/canary.go — own mock conversation + fixed prompt, surface pre-check (missing file_list => surface class), exactly-one file_list tool.start check, mock-outbox delivery check, HUB_CANARY_INTERVAL opt-in, canary.jsonl bounded journal, one notice per failure class + recovery notice, canaryLoop wired into Run. All TestCanary* + TestRunStartsCanaryWhenConfigured green; package race-clean.
+  - S3.5: internal/diagnostics/log.go JSON logger + JobFields; diagnostics HTTP middleware migrated to JSON; trace.go merges supervisor/space/Docker sources by job/run/session identity, sorts, redacts, refuses cross-principal; hubctl trace <job_id> dispatched pre-compose. Gateway + supervisor lifecycle lines migrated.
+  - S3.6: internal/communication/health.go — /status caller-scoped health block: 24h p50/p95 received→delivered latency, unconfirmed+failed counts, supervisor restart counter via runtime surface, avg input tokens/call. TestStatusHealthWithNoData + populated fixture green.
+  - "Final-source just check PASS: race+shuffle, 85.32% own statement coverage, format/vet/staticcheck/docs/actionlint/deployment contracts. Log .local/m19-container-final-check.log."
+  - docker gate diagnosis: hermes-contract new-job/reap race fixed (heartbeat frames no longer clobber bound run identity; replayed uncertain records surface ErrUncertain; devcheck uses production /v1/resume recovery path). gateway-lifecycle blocked on a pre-existing wake leak: the /v1/wake handler called m.Ensure (+1 lease ref) and never ReleaseBinding'd, so each wake held a lease forever — every runtime pinned busy, post-delivery restarts busy-skipped. Fix: wake releases its Ensure ref; regression asserted in TestWakeIsIdempotentAndCarriesNoText (leases=0/idle after wake). Fixture pinned explicit 5m WarmTTL since spec default is now 30m. Standalone gateway-lifecycle PASS end-to-end incl. five-minute idle shutdown and cold restore.
+  - "Chaos draft was not run: global runtime selection, ambiguous supervisor selection, file count instead of effect count and unsynchronized delivery timing invalidate its acceptance claims. See evidence.md."
+  - "Continuation: exact-payload runtime admission receipts; real pinned-Hermes readmit returns the original run/session with one append-only tool effect. Missing/expired/foreign receipts fail closed."
+  - "Continuation: exact run-budget boundary, durable interrupted replay, legacy interrupted-response repair, retry of failed idle cleanup, and release/sweep principal-isolation regression tests."
+  - "Live aggregate: 835 terminal job records and zero leases; the first full Docker gate removed the exited residue container during its scoped cleanup, then the old supervisor recorded stopped. 26 legacy interrupted responses still need the tested load repair. Host binary replacement rejected by automatic approval review (blocked by policy)."
+  - docs: operations.md recovery/trace/canary sections; SPEC-0031 amendment cross-reference.
+remaining: []
+limitations:
+  - External provider side effects that already happened stay explicitly unknown; no exactly-once claim beyond local receipts.
+  - Never-admitted-anywhere jobs (no supervisor record) stay uncertain until the budget notice — resume 409 cannot distinguish that from ownership mismatch safely.

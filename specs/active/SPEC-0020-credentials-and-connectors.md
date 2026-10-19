@@ -103,8 +103,11 @@ Live Google/Slack/Jira login is not required to satisfy this specification.
 policy revision, credential revision, outcome, and correlation among
 communication job, Hermes run and tool call. ToolHub records `job_id` and
 `hermes_run_id` from `X-Hub-Job-ID` / `X-Hub-Run-ID` on the MCP request and
-generates `tool_call_id` per call. The communication worker appends job events
-with `job_id` and `hermes_run_id` when a ledger is configured. Prompts, message
+generates `tool_call_id` per call. Job-side correlation lives in the gateway's
+structured `job outcome` log records (`job_id`, `run_id`, principal, status);
+the encrypted store and audit ledger are ToolHub/runtime-owned — communication
+ignores `HUB_CREDENTIAL_STORE`, `HUB_CREDENTIAL_KEY_FILE` and `HUB_AUDIT_LEDGER`.
+Prompts, message
 bodies, tokens, ciphertext and tool results are rejected by schema. Users may
 list their own events. Credential mutations and tool admission fail closed when
 the ledger cannot be written.
@@ -117,6 +120,6 @@ values, inject-after-authorize through `NewEndpointHandler` against a real
 ciphertext store, MCP file inject without HTTP secret leakage, shared-static
 denial, terminal exposure reversal, open-session revoke before backend from
 `hubctl secret` and chat intercept, workload stop, degraded rotate,
-communication job/run/call ledger correlation, group rejection, OAuth
+ToolHub job/run/call ledger correlation, group rejection, OAuth
 state/redirect/refresh, official endpoint constants, and owner-scoped activity
 listing. They do not claim live provider login or live ToolHive/VPS isolation.

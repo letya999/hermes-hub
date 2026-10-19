@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ var sourcePaths = []string{".github", ".work", "cmd", "config", "docker", "docs"
 var buildBinary = build
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: go run ./cmd/package VERSION")
 		os.Exit(2)

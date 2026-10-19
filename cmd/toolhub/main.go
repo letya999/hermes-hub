@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +18,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "hub-toolhub:", err)
 		os.Exit(1)
@@ -51,7 +54,7 @@ func run() error {
 		go diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second, scope)
 	}
 	refresher := handler.(interface{ RefreshProjection() error })
-	restartNotify := toolhub.RuntimeRestartNotifierFromEnv()
+	restartNotify := api.RuntimeRestartNotifierFromEnv()
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()

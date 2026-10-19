@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,8 +82,8 @@ mcp_servers:
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("migration implicitly granted catalog access: %+v, %v", entries, err)
 	}
-	grant := toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")
-	if err := toolhub.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
+	grant := api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")
+	if err := api.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.PutGrant(grant); err != nil {
@@ -211,25 +212,25 @@ func TestPreserveLegacyUserMCP(t *testing.T) {
 	if err := preserveLegacyUserMCP(root, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := toolhub.LoadGovernance(govPath)
+	doc, err := api.LoadGovernance(govPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := doc.Evaluate("alice", "", toolhub.SectionUserMCP, nil, time.Now()); !d.Allowed() {
+	if d := doc.Evaluate("alice", "", api.SectionUserMCP, nil, time.Now()); !d.Allowed() {
 		t.Fatalf("migration allow missing: %+v", d)
 	}
-	if d := doc.Evaluate("bob", "", toolhub.SectionUserMCP, nil, time.Now()); d.Allowed() {
+	if d := doc.Evaluate("bob", "", api.SectionUserMCP, nil, time.Now()); d.Allowed() {
 		t.Fatalf("migration allow leaked: %+v", d)
 	}
 	// Second run is a no-op — the existing document is authoritative.
 	doc.Revision = 99
-	if err := toolhub.SaveGovernance(govPath, doc); err != nil {
+	if err := api.SaveGovernance(govPath, doc); err != nil {
 		t.Fatal(err)
 	}
 	if err := preserveLegacyUserMCP(root, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	reloaded, _ := toolhub.LoadGovernance(govPath)
+	reloaded, _ := api.LoadGovernance(govPath)
 	if reloaded.Revision != 99 {
 		t.Fatal("existing governance doc was rewritten")
 	}

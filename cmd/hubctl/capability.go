@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func runCapability(args []string) error {
 		return runCapabilityTools(*settingsPath, *set, *confirm)
 	}
 	if *kind == "connectors" {
-		manifest := toolhub.RecommendedConnectorManifest()
+		manifest := api.RecommendedConnectorManifest()
 		if err := manifest.Validate(); err != nil {
 			return err
 		}
@@ -57,18 +58,18 @@ func runCapability(args []string) error {
 		return errors.New("capability requires --file for policy, profile, group and preview")
 	}
 	if *kind == "group" {
-		var group toolhub.CapabilityGroup
+		var group api.CapabilityGroup
 		if err := readCapabilityRecord(*file, &group); err != nil {
 			return err
 		}
-		if err := toolhub.ValidateCapabilityGroup(group); err != nil {
+		if err := api.ValidateCapabilityGroup(group); err != nil {
 			return err
 		}
 		canonical, err := json.Marshal(group)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "review digest: %s\n", toolhub.ConfirmationDigest(group))
+		fmt.Fprintf(os.Stderr, "review digest: %s\n", api.ConfirmationDigest(group))
 		_, err = os.Stdout.Write(append(canonical, '\n'))
 		return err
 	}
@@ -89,12 +90,12 @@ func runCapability(args []string) error {
 	}
 	var id string
 	var revision uint64
-	var status toolhub.Status
+	var status api.Status
 	if *kind == "preview" {
 		// Read-only old-to-new diff on the same evaluator dispatch uses. No
 		// store write, no confirmation gate — the operator previews the draft,
 		// then runs --kind profile --confirm to apply exactly what was shown.
-		var candidate toolhub.CapabilityProfile
+		var candidate api.CapabilityProfile
 		if err := readCapabilityRecord(*file, &candidate); err != nil {
 			return err
 		}
@@ -130,7 +131,7 @@ func runCapability(args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": definition.DefinitionID, "revision": definition.Version, "binding": binding.ToolBindingID})
 	}
 	if *kind == "policy" {
-		var record toolhub.CapabilityPolicy
+		var record api.CapabilityPolicy
 		if err := readCapabilityRecord(*file, &record); err != nil {
 			return err
 		}
@@ -142,7 +143,7 @@ func runCapability(args []string) error {
 		}
 		id, revision, status = record.PolicyID, record.Revision, record.Status
 	} else {
-		var record toolhub.CapabilityProfile
+		var record api.CapabilityProfile
 		if err := readCapabilityRecord(*file, &record); err != nil {
 			return err
 		}
@@ -166,12 +167,12 @@ func runCapability(args []string) error {
 // review digest and refuses; with --confirm it stamps issuer+time+digest so the
 // durable record binds the exact reviewed bytes to the operator identity.
 func confirmRecord(confirmed bool, issuer string, record any) error {
-	digest := toolhub.ConfirmationDigest(record)
+	digest := api.ConfirmationDigest(record)
 	if !confirmed {
 		fmt.Fprintf(os.Stderr, "review digest: %s\nre-run with --issuer %s --confirm to commit\n", digest, issuer)
 		return errors.New("record not confirmed")
 	}
-	if err := toolhub.Confirm(record, issuer, time.Now()); err != nil {
+	if err := api.Confirm(record, issuer, time.Now()); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "confirmed digest: %s\n", digest)

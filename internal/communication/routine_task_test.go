@@ -16,7 +16,7 @@ func TestNamedTaskRoutineSurvivesAdmissionAndRejectsForeignConversation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := Job{Envelope: u.envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
+	job := Job{Envelope: u.Envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
 	if err := g.authorizeOccurrence(job); err != nil {
 		t.Fatal("pre-admission", err)
 	}
@@ -31,8 +31,11 @@ func TestNamedTaskRoutineSurvivesAdmissionAndRejectsForeignConversation(t *testi
 	if err != nil || claimed == nil {
 		t.Fatal(err)
 	}
-	if claimed.ConversationID != task.ConversationID {
-		t.Fatal("task not bound")
+	if claimed.ConversationID != routineConversation(occ.ScheduleID) {
+		t.Fatalf("routine session not isolated: %q", claimed.ConversationID)
+	}
+	if claimed.TaskID != task.TaskID || claimed.TopicID != task.TopicID {
+		t.Fatal("task delivery binding lost")
 	}
 	if err := g.authorizeOccurrence(*claimed); err != nil {
 		t.Fatal("owned task rejected after admission", err)

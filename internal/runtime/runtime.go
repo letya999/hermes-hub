@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -295,6 +296,7 @@ func superviseOnce(mode string) (bool, error) {
 	}
 
 	var children []*exec.Cmd
+	var childrenMu sync.Mutex
 	type childExit struct {
 		name string
 		err  error
@@ -303,6 +305,7 @@ func superviseOnce(mode string) (bool, error) {
 	remaining := 0
 	var server *http.Server
 	serverErr := make(chan error, 1)
+	var browserStop, browserDone chan struct{}
 	startWithEnv := func(extra map[string]string, name string, args ...string) error {
 		cmd := command(name, args...)
 		configureProcess(cmd)
@@ -316,8 +319,10 @@ func superviseOnce(mode string) (bool, error) {
 		if err := cmd.Start(); err != nil {
 			return err
 		}
+		childrenMu.Lock()
 		children = append(children, cmd)
 		remaining++
+		childrenMu.Unlock()
 		go func() { exits <- childExit{name, cmd.Wait()} }()
 		return nil
 	}
@@ -328,38 +333,59 @@ func superviseOnce(mode string) (bool, error) {
 		if server != nil {
 			shutdownRuntimeServer(server)
 		}
-		_ = os.Remove(filepath.Join(state, "runtime.json"))
-		for i := len(children) - 1; i >= 0; i-- {
-			stopProcess(children[i])
+		if browserStop != nil {
+			// Join the deferred browser start first: it appends to children
+			// and must not outlive the teardown that kills them.
+			close(browserStop)
+			<-browserDone
 		}
-		for range remaining {
+		_ = os.Remove(filepath.Join(state, "runtime.json"))
+		childrenMu.Lock()
+		stopped := append([]*exec.Cmd{}, children...)
+		drain := remaining
+		childrenMu.Unlock()
+		for i := len(stopped) - 1; i >= 0; i-- {
+			stopProcess(stopped[i])
+		}
+		for range drain {
 			<-exits
 		}
 	}()
 
 	browser := os.Getenv("HUB_BROWSER") == "true" || os.Getenv("HUB_MEET") == "true"
-	if browser {
+	startBrowser := func(stop <-chan struct{}) error {
 		if err := clearDisplayLocks(); err != nil {
-			return false, err
+			return err
 		}
 		if err := clearBrowserLocks(filepath.Join(state, "browser")); err != nil {
-			return false, err
+			return err
 		}
 		if err := os.Setenv("DISPLAY", ":99"); err != nil {
-			return false, err
+			return err
 		}
 		if err := start("Xvfb", ":99", "-screen", "0", "1440x900x24", "-nolisten", "tcp"); err != nil {
-			return false, err
+			return err
 		}
-		if err := waitForDisplay(":99"); err != nil {
-			return false, err
+		if err := waitForDisplay(":99", stop); err != nil {
+			return err
 		}
 		for _, command := range [][]string{{"fluxbox"}, {"x11vnc", "-display", ":99", "-localhost", "-forever", "-shared", "-nopw"}, {"websockify", "--web=/usr/share/novnc", "0.0.0.0:6080", "127.0.0.1:5900"}, {"chromium", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage", "--password-store=basic", "--user-data-dir=/state/browser", "--remote-debugging-port=9222", "--remote-debugging-address=127.0.0.1", "about:blank"}} {
+			select {
+			case <-stop:
+				return errStopped
+			default:
+			}
 			if err := start(command[0], command[1:]...); err != nil {
-				return false, err
+				return err
 			}
 		}
-		if err := waitForBrowser(); err != nil {
+		return waitForBrowser(stop)
+	}
+	// Meet keeps an eager display: the join flow needs a live browser before
+	// Hermes admits work. Plain browser starts after readiness so a text-only
+	// run is never gated on Xvfb/Chromium.
+	if os.Getenv("HUB_MEET") == "true" {
+		if err := startBrowser(nil); err != nil {
 			return false, err
 		}
 	}
@@ -398,14 +424,28 @@ func superviseOnce(mode string) (bool, error) {
 		}()
 	}
 	status := marker{PIDs: []int{os.Getpid()}, Browser: browser}
+	childrenMu.Lock()
 	for _, child := range children {
 		status.PIDs = append(status.PIDs, child.Process.Pid)
 	}
+	childrenMu.Unlock()
 	body, _ := json.Marshal(status)
 	if err := os.WriteFile(filepath.Join(state, "runtime.json"), body, 0660); err != nil {
 		return false, err
 	}
 
+	if browser && os.Getenv("HUB_MEET") != "true" {
+		browserStop, browserDone = make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(browserDone)
+			if err := startBrowser(browserStop); err != nil && !errors.Is(err, errStopped) {
+				select {
+				case serverErr <- err:
+				case <-browserStop:
+				}
+			}
+		}()
+	}
 	signals := make(chan os.Signal, 1)
 	signalNotify(signals)
 	defer signalStop(signals)
@@ -434,7 +474,9 @@ func superviseOnce(mode string) (bool, error) {
 			}
 			return false, nil
 		case exit := <-exits:
+			childrenMu.Lock()
 			remaining--
+			childrenMu.Unlock()
 			if exit.err == nil {
 				// A clean exit still loses the incident if it is reported as
 				// %!w(<nil>): say which child chose to stop.
@@ -560,9 +602,16 @@ func sweepBrowserOutput(dir string) {
 	}
 }
 
-func waitForBrowser() error {
+var errStopped = errors.New("stopped")
+
+func waitForBrowser(stop <-chan struct{}) error {
 	client := http.Client{Timeout: time.Second}
 	for range 600 {
+		select {
+		case <-stop:
+			return errStopped
+		default:
+		}
 		response, err := client.Get(browserURL)
 		if err == nil {
 			if err := response.Body.Close(); err != nil {
@@ -577,8 +626,13 @@ func waitForBrowser() error {
 	return errors.New("chromium CDP did not start")
 }
 
-func waitForDisplay(display string) error {
+func waitForDisplay(display string, stop <-chan struct{}) error {
 	for range 100 {
+		select {
+		case <-stop:
+			return errStopped
+		default:
+		}
 		if displayProbe(display) == nil {
 			return nil
 		}

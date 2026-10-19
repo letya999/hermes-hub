@@ -74,14 +74,14 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 	if rec := post("carol", "control-token"); rec.Code != http.StatusBadRequest {
 		t.Fatalf("slack-only=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec := post("alice", "control-token"); rec.Code != http.StatusNoContent {
+	if rec := post("alice", "control-token"); rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec := post("alice", "control-token"); rec.Code != http.StatusNoContent {
+	if rec := post("alice", "control-token"); rec.Code != http.StatusOK {
 		t.Fatalf("repeat=%d", rec.Code)
 	}
 	body["form_url"] = "http://127.0.0.1:8090/credentials/onboard-abc?nonce=one"
-	if rec := post("alice", "control-token"); rec.Code != http.StatusNoContent {
+	if rec := post("alice", "control-token"); rec.Code != http.StatusOK {
 		t.Fatalf("fresh form=%d body=%s", rec.Code, rec.Body.String())
 	}
 	pending, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
@@ -108,7 +108,7 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 	}
 	body["phase"] = "failed"
 	body["detail"] = "tools list empty"
-	if rec := post("alice", "control-token"); rec.Code != http.StatusNoContent {
+	if rec := post("alice", "control-token"); rec.Code != http.StatusOK {
 		t.Fatalf("failed outcome=%d body=%s", rec.Code, rec.Body.String())
 	}
 	failedNotice := false
@@ -133,6 +133,11 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 		t.Fatalf("invalid definition=%d", rec.Code)
 	}
 	body["definition_id"] = "user-mcp"
+	body["credential_intake"] = strings.Repeat("x", 41)
+	if rec := post("alice", "control-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversized credential_intake=%d", rec.Code)
+	}
+	delete(body, "credential_intake")
 	get := httptest.NewRequest(http.MethodGet, "/v1/prepare-outcome", nil)
 	get.Header.Set("Authorization", "Bearer control-token")
 	get.Header.Set("X-Hub-Principal", "alice")
@@ -164,7 +169,7 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 	req.Header.Set("X-Hub-Principal", "alice")
 	rec = httptest.NewRecorder()
 	gateway.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("form notice=%d body=%s", rec.Code, rec.Body.String())
 	}
 	sawLink, sawHold := false, false
@@ -250,6 +255,7 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 		}
 		return len(entries)
 	}
+
 	contains := func(hay []string, needle string) bool {
 		for _, item := range hay {
 			if strings.Contains(item, needle) {
@@ -259,10 +265,10 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 		return false
 	}
 
-	if rec := post(); rec.Code != http.StatusNoContent {
+	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("prepare-started=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec := post(); rec.Code != http.StatusNoContent {
+	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("repeat=%d", rec.Code)
 	}
 	got := notices()
@@ -275,7 +281,7 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 
 	body["phase"] = "awaiting-credentials"
 	body["event"] = "credentials-check"
-	if rec := post(); rec.Code != http.StatusNoContent {
+	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("credentials-check=%d", rec.Code)
 	}
 	got = notices()
@@ -288,7 +294,7 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 
 	body["event"] = "credentials-rejected"
 	body["detail"] = "auth.test failed"
-	if rec := post(); rec.Code != http.StatusNoContent {
+	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("rejected=%d", rec.Code)
 	}
 	got = notices()
@@ -296,20 +302,20 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 		t.Fatalf("rejection notice=%v", got)
 	}
 	body["detail"] = "server timeout"
-	if rec := post(); rec.Code != http.StatusNoContent {
+	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("second rejection=%d", rec.Code)
 	}
 	got = notices()
 	if !contains(got, "Причина: server timeout") || len(got) != 4 {
 		t.Fatalf("distinct rejection reasons must each notify: %v", got)
 	}
-	if rec := post(); rec.Code != http.StatusNoContent || len(notices()) != 4 {
+	if rec := post(); rec.Code != http.StatusOK || len(notices()) != 4 {
 		t.Fatal("same rejection reason must dedup")
 	}
 
 	body["event"] = "binding-failed"
 	body["detail"] = "workload admission refused"
-	if rec := post(); rec.Code != http.StatusNoContent {
+	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("binding-failed=%d", rec.Code)
 	}
 	if got = notices(); !contains(got, "повторное подтверждение пройдёт без формы") {
@@ -329,7 +335,7 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 	body["event"] = ""
 	body["detail"] = ""
 	body["tools"] = 15
-	if rec := post(); rec.Code != http.StatusNoContent {
+	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("enabled=%d", rec.Code)
 	}
 	got = notices()

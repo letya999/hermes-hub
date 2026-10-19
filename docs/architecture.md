@@ -1,6 +1,6 @@
 ---
 description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 ---
 # Architecture
 
@@ -36,12 +36,29 @@ complete tuples at fixed revisions; a policy update invalidates old profiles.
 Human consent, runtime provisioning, unified local routing and execution isolation are
 still open. See the current limits in [operations](operations.md).
 
-The managed Compose candidate assigns each user/environment an internal agent
-network. Hermes reaches ToolHub and a per-user model relay there; the relay
-forwards only chat completions for the selected model to CLIProxy on the shared control network.
+Managed Compose assigns each user/environment an internal agent network.
+Hermes reaches ToolHub and a per-user model relay there. The ToolHub relay
+exposes MCP plus the caller-scoped connector inventory used by readiness;
+the model relay forwards chat completions only for the selected model and
+returns only that model from CLIProxy's read-only catalog. The ladder is no
+longer env-hardcoded: layered registries (`spaces/models.yaml`, the
+organization's `models.yaml`, then the owner's own) merge into
+`generated/models.<env>.yaml`, mounted read-only at `/run/models.yaml`.
+Each logical model names an ordered ladder of `{provider, model}` hops with
+per-hop provider model ids; providers hold fixed endpoints plus `key_env`
+references into the space's secrets file — never literal keys. A hop cools
+down for a minute after a quota/auth/provider failure and every attempt is
+logged as an audit receipt. Owners granted a model (`owners:`) can switch it
+from chat: `/model` in the communication gateway calls the space's own
+`model-relay-<user>:8318` admin endpoint (`PUT /v1/model`, bearer from
+`model-relay.auth`), which persists the choice to `model-select.json`; the
+relay re-reads the registry when the file changes.
+`spaces/profiles.yaml` still overlays model, model_url and cliproxy topology
+per owner (default → named → the owner's own file), and `cliproxy: dedicated`
+renders a secondary space its own proxy instead of the shared infra one.
 CLIProxy, broker and sibling runtimes are not directly attached to the agent
-network. Managed launch still refuses until supervised network lifecycle,
-immutable extension content and private executors are proven in real containers.
+network. Managed launch requires supervised network lifecycle, immutable
+extension content and private executors.
 
 M5 stage-2 Calendar and Slack data calls use opt-in stateless `provider-api`
 definitions behind the same ToolHub authorization/injection/audit gateway.
@@ -71,6 +88,10 @@ Telegram IDs are transport links, never filesystem or authorization keys.
 Hermes owns reasoning, chat, tool selection, memory, skills and hooks. Go owns
 space initialization, strict configuration, organization policy resolution, Docker
 lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
+A routine's clock, execution and delivery remain separate durable records. The
+[routine lifecycle](routines.md) exposes owner/context-scoped business operations
+through ToolHub with revision fences, bounded discovery/history and interval
+windows; ADR-0042 records decisions and CHG-0112 the acceptance boundary.
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
 using files and tools; web retrieval uses the Hermes `web` toolset with
@@ -189,7 +210,37 @@ authorized request. An uncertain result is never silently retried.
 
 Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
 channel sender (Telegram Bot API or Slack App Events API) to the configured user scope, persist jobs and replies in
-`/state/gateway`, and run one bounded invocation at a time. Slack App credentials stay
+`/state/gateway`, and run one bounded invocation at a time. The durable domain model
+(`Job`, `Delivery`, `Task`, `User`, `Schedule`, `RoutineOccurrence`, `JobMapping`, …)
+lives in the leaf `internal/commodel`; `internal/communication` re-exports it through
+type aliases so its exported contract stays stable. Channel-specific behavior sits
+behind `internal/channel`: the `Channel` contract plus the telegram/slack/mock
+adapters, each reaching the gateway only through an injected `Deps` struct
+(`TelegramDeps`, `SlackDeps`, `MockDeps`). Delivery, artifact sending, routine
+admission/authorization, envelope mapping, blocked-notice routing and the optional
+capabilities (`Caps`: typing presence, editable status, artifacts, destinations,
+routine-origin pinning) dispatch through `channelPlugins[id]` rather than
+provider-name switches. A new channel implements that seam and registers an adapter;
+core job, spool and schedule mechanics stay channel-neutral. Routine semantics and
+orchestration — draft validation, cron/timing math, extract pipelines, recipes,
+durable ids, and the `routines.Engine` driving schedule ticks, occurrences,
+watchers, digests, proactive runs, script execution, reminders and destination
+bindings — live in the leaf `internal/routines`. The engine shares the spool's
+mutex and root and reaches the gateway, channels and runtime through an
+injected `Deps` seam, so `internal/routines` never imports them back.
+The operational plane — the synthetic canary probe and the caller-scoped health
+block — lives in `internal/commops`, a leaf package that reaches the gateway only
+through injected `Deps` closures, so ops code cannot touch gateway internals. Each
+of `commodel`, `channel`, `routines`, `commops` and `serviceauth` carries a parser
+boundary test fixing the import direction. `internal/channel` also carries a
+conformance suite that exercises every registered adapter against stubbed deps —
+identity/normalize, capability declarations, occurrence-ownership validation and
+routine admission — so a new channel proves the contract without a gateway, and
+`internal/routines` freezes the durable id formats (occurrence hash inputs,
+routine conversation, failure digest) with byte-exact goldens. The shared
+enrolled-tokens file contract
+(`{"<token>": <envelope>}`) is owned by `internal/serviceauth`; authorization decisions
+stay local to each service. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
 media envelope, transcribe through the replaceable STT worker, and submit text to the
 same Hermes session. Spoken replies are a per-reply tool, not a mode: a `VOICE:` line in
@@ -205,10 +256,10 @@ multiple users, organizations and channels explicit without adding external IAM 
 
 [ADR-0014](adr/ADR-0014-scale-to-zero-context-runtimes.md) replaces the proposed
 permanently resident per-user compute with one warm runtime per active execution
-context. A host-side Go supervisor receives the trusted job envelope, deduplicates
+context. A Go supervisor receives the trusted job envelope, deduplicates
 starts by `(principal_id, context_id, runtime mode)`, launches the pinned runtime with
 only that context's mounts and waits for authenticated Hermes readiness. The runtime
-is reused while busy and for five minutes after its final lease by default, then its
+is reused while busy and for thirty minutes after its final lease by default, then its
 compute is stopped while the context home remains intact.
 
 The communication hub and supervisor remain small always-on control-plane services.
@@ -217,11 +268,98 @@ channel credential or authority to derive identity from message content. Registe
 users do not create resident runtimes. Reconciliation restores only contexts with
 runnable work, due routines, pending approvals or explicit always-on leases.
 
+Execution selection `http://supervisor:8876` renders the supervisor in the existing
+control image within the main Compose stack. Its trusted spaces/Docker access
+remains separate from user runtimes. Container mode uses private runtime/control
+relay DNS and translates only bind sources contained by the configured spaces
+root. Host mode remains available; writers must never overlap during migration.
+See [ADR-0040](adr/ADR-0040-single-stack-supervisor.md).
+
+The communication spool wakes workers after durable changes and retains a
+one-second safety tick. Its control loop indexes nonterminal mappings, updates
+that index after successful durable writes, and rebuilds it on reopen. Each
+indexed mapping is reread under the spool lock before lifecycle decisions;
+terminal history does not need to be decoded on every control tick.
+
 Routine definitions and delivery targets are durable hub records. A due occurrence
 becomes the same authenticated, idempotent job used for interactive work and wakes the
 owning context. Hermes performs the agent run but does not remain alive merely to own
 a clock. Existing native Hermes cron is migrated explicitly or pins that context on
 until migration; dual scheduling is forbidden.
+
+Deterministic routine kinds (reminder, watcher, check, digest, script) never start a
+runtime or call a model at fire time: reminder text goes straight to the outbox,
+watcher/check occurrences run one bounded probe, digest aggregates owner watch states
+into one message. After downtime an occurrence inside its `catch_up_window` (default
+one hour) still fires; outside it settles `missed`. A `check` whose probe errors
+re-probes at most `max_retries` times (default three, `retry_after` backoff) before
+settling `failed` — an unverifiable predicate never reads as false. `task:<id>`
+probes verify the owner's own task state without a fetch. Deliveries re-validate the
+occurrence and owner before sending, and a transport answer lost mid-send leaves the
+delivery failed/uncertain rather than claimed sent.
+
+Watcher, check and digest deliveries respect the owner's notification policy:
+`quiet_from`/`quiet_to` set an owner-timezone HH:MM window inside which the outbox
+entry stays pending until the window end; `daily_limit` (0..32) caps same-day
+watcher/check notifications — an over-cap occurrence settles `capped` while its
+baseline still advances. `notify_mode=digest` feeds the daily digest;
+`notify_mode=agent` escalates only a real change as an untrusted-evidence job
+through ordinary idempotent admission — never on reminder, script or digest kinds.
+
+A `mcp_tool` probe polls the owner's connectors without a public URL: ToolHub
+exposes `POST /v1/tool-call` for the control plane (owner-pinned credential,
+`X-Hub-Principal`, read-effect tools only, bounded arguments and response), and
+the probe compares the returned text like any other watch value. An `is_error`
+tool result is a probe error, not a value — the occurrence retries/settles
+through the same policy path. This keeps connector state verifiable without
+publishing credentials or letting model output stand in for evidence.
+
+A `brief` routine is the one deterministic kind that may wake the agent: it
+assembles an authorized snapshot — the owner's watch sources changed since
+its cursor, sources named unavailable (never "no changes"), and open tasks —
+into bounded lines. An empty slot delivers a fixed "nothing new" message with
+no model call. A non-empty slot admits one routine-conversation job whose
+text carries the snapshot flagged untrusted; the durable cursor prevents
+re-reporting and the job file dedups crash replay.
+
+An `event` routine is a hub-owned subscription to a connector's event feed:
+each occurrence probes one projected read tool (usually `mcp_tool`) and the
+deterministic extractor turns the result into discrete events — `{events:[…]}`
+or a bare array items keyed by `id`/`event_id`/`message_id` else a stable
+content hash; any other value is one event keyed by its hash. The durable
+`spool/events/<id>.json` state holds a bounded 512-entry seen-set (FIFO),
+last success/error, a `degraded` flag set by 401/403-shaped connector
+errors, and an `overflow` counter. `sink=notify` (default) fans out one
+deterministically-id'd outbox delivery per unseen event under the same
+quiet-window and daily-cap policy; `sink=agent` admits one job bundling the
+new events flagged untrusted, bounded to 8 KiB with the rest left unseen for
+the next occurrence. An event the sink cannot admit stays unseen, increments
+`overflow`, and is best-effort requeued to the connector by id only through
+`requeue_tool`. `watch_subscribe`/`watch_list`/`watch_pause`/`watch_delete`
+are the agent surface — create goes through the ordinary routine path with
+`job_kind=event`, the others operate only on event-kind schedules — and
+`/watches` is the owner-facing listing (id, source, sink, last success/error,
+degraded, overflow).
+
+An event schedule can opt into `delivery=stream` (event kind plus an
+`mcp_tool` probe only). Stream schedules produce no occurrences —
+`TickSchedules` skips them and the expression stays as a dormant cadence.
+Instead the gateway's stream supervisor keeps one `streamPoll` goroutine per
+live stream schedule, reconciled every two seconds: each round re-reads the
+schedule (pause, snooze, delete or a lost grant stops the loop on live
+durable state), issues one bounded wait-call through the same read-only
+`/v1/tool-call` path under a 30s budget, and settles the returned batch
+through the identical durable pipeline — authorization, extractor, seen-set
+dedup, sink fanout and requeue all reuse the poll-mode machinery. A healthy
+round loops straight into the next wait call, so a connector wait tool like
+`wait_for_settled_message` keeps an outstanding call and batches arrive in
+seconds, not a cron minute; a blocked round (probe error, lost
+authorization, malformed body) paces with 1s-to-30s exponential backoff.
+When the subscriber gives no wait bound the hub injects one inside the call
+budget (`max_wait_ms`/`timeout` on wait-style tool names); explicit bounds
+are honored. There is still no persistent connector workload or push
+ingress — the loop is repeated bounded requests, not an open stream — but
+the connector's own pending-event state makes the gap lossless.
 
 Hermes terminal can read credentials in its own user runtime: this is an isolated
 organization/user deployment boundary, not a public hostile-tenant service. A user's
@@ -292,7 +430,10 @@ created anonymous per-user workload IDs and `per-user/<context>/<definition>`
 directories are not reused or automatically moved/deleted. The existing
 credential-bearing Telegram/controller path remains connection-scoped. The generic
 Docker fallback gives each binding its own workload ID, network, volumes and
-`credentials.env`; shared stateful or credential-bearing workloads stay denied.
+`credentials.env`; shared stateful workloads stay denied, and a shared
+credential-bearing workload exists only where a `Shared` definition carries the
+reviewed `sharable` flag under an operator shared-credential policy — members
+then resolve the policy owner's single connection and workload.
 Live Docker 95-plus-5 used 100 sequential unique networks, volumes and
 containers (95 distinct owner env-files + 5 of one shared file). One hundred
 users means one hundred **registered** bindings and a bounded live set

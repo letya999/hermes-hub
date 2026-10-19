@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,14 +33,14 @@ func httptestNewRelease(t *testing.T, tag string, assets []string, payload strin
 	return server
 }
 
-func cliImportConfig() ArtifactImportConfig {
-	return ArtifactImportConfig{
+func cliImportConfig() api.ArtifactImportConfig {
+	return api.ArtifactImportConfig{
 		DefinitionID: "rg", Version: "1.0.0", Image: "hermes-cli-artifact/rg",
 		Entrypoint: []string{"/usr/local/bin/rg"},
-		Tools:      []ToolSpec{{Name: "run", Effect: ReadEffect}},
-		Workload:   WorkloadPolicy{Class: PerUser, Rationale: "r"},
-		Execution:  ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: []string{"127.0.0.1"}},
-		Health:     HealthProbe{Kind: "exec", Value: "/usr/local/bin/rg", TimeoutSeconds: 5},
+		Tools:      []api.ToolSpec{{Name: "run", Effect: api.ReadEffect}},
+		Workload:   api.WorkloadPolicy{Class: api.PerUser, Rationale: "r"},
+		Execution:  api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: []string{"127.0.0.1"}},
+		Health:     api.HealthProbe{Kind: "exec", Value: "/usr/local/bin/rg", TimeoutSeconds: 5},
 	}
 }
 
@@ -50,40 +51,40 @@ func TestImportCLIReleaseArtifactPipeline(t *testing.T) {
 	asset := tarGzFixture(t, map[string]string{"rg-14/rg": "ELF"})
 	server := releaseServer(t, "rg-14.tar.gz", asset, nil, "")
 	defer server.Close()
-	source, err := parseGitHubReleaseSource("github-release:BurntSushi/ripgrep@14.1.1", "rg-*", "", "")
+	source, err := api.ParseGitHubReleaseSource("github-release:BurntSushi/ripgrep@14.1.1", "rg-*", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Non-absolute builder paths fail closed before any docker call — that is
 	// the observable boundary of this unit test.
-	build := RestrictedBuildConfig{SeccompPath: "relative", ArtifactDirectory: t.TempDir(), MaxArtifactBytes: 1 << 20}
+	build := api.RestrictedBuildConfig{SeccompPath: "relative", ArtifactDirectory: t.TempDir(), MaxArtifactBytes: 1 << 20}
 	_, err = ImportCLIReleaseArtifact(context.Background(), source, cliImportConfig(), build, server.Client(), server.URL)
-	if !errors.Is(err, ErrInvalid) {
+	if !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("expected builder-path rejection after full release pipeline, got %v", err)
 	}
 }
 
 func TestImportCLIReleaseArtifactRejects(t *testing.T) {
-	source := ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "tool"}
+	source := api.ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "tool"}
 	config := cliImportConfig()
 	for _, tc := range []struct {
 		name   string
-		source ArtifactSource
-		mutate func(*ArtifactImportConfig)
+		source api.ArtifactSource
+		mutate func(*api.ArtifactImportConfig)
 	}{
-		{"no-tag", ArtifactSource{Repository: "https://github.com/o/r", Asset: "tool"}, nil},
-		{"no-asset", ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0"}, nil},
-		{"mutable-image", source, func(c *ArtifactImportConfig) { c.Image = "img@sha256:x" }},
-		{"no-entrypoint", source, func(c *ArtifactImportConfig) { c.Entrypoint = nil }},
-		{"relative-entrypoint", source, func(c *ArtifactImportConfig) { c.Entrypoint = []string{"tool"} }},
-		{"two-token-entrypoint", source, func(c *ArtifactImportConfig) { c.Entrypoint = []string{"/a", "/b"} }},
+		{"no-tag", api.ArtifactSource{Repository: "https://github.com/o/r", Asset: "tool"}, nil},
+		{"no-asset", api.ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0"}, nil},
+		{"mutable-image", source, func(c *api.ArtifactImportConfig) { c.Image = "img@sha256:x" }},
+		{"no-entrypoint", source, func(c *api.ArtifactImportConfig) { c.Entrypoint = nil }},
+		{"relative-entrypoint", source, func(c *api.ArtifactImportConfig) { c.Entrypoint = []string{"tool"} }},
+		{"two-token-entrypoint", source, func(c *api.ArtifactImportConfig) { c.Entrypoint = []string{"/a", "/b"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := config
 			if tc.mutate != nil {
 				tc.mutate(&c)
 			}
-			if _, err := ImportCLIReleaseArtifact(context.Background(), tc.source, c, RestrictedBuildConfig{}, nil, ""); !errors.Is(err, ErrInvalid) {
+			if _, err := ImportCLIReleaseArtifact(context.Background(), tc.source, c, api.RestrictedBuildConfig{}, nil, ""); !errors.Is(err, api.ErrInvalid) {
 				t.Fatalf("admitted: %v", err)
 			}
 		})
@@ -92,25 +93,25 @@ func TestImportCLIReleaseArtifactRejects(t *testing.T) {
 
 func TestImportCLIArtifactRejects(t *testing.T) {
 	config := cliImportConfig()
-	source := ArtifactSource{Repository: "https://github.com/o/r", CommitSHA: strings.Repeat("a", 40)}
+	source := api.ArtifactSource{Repository: "https://github.com/o/r", CommitSHA: strings.Repeat("a", 40)}
 	for _, tc := range []struct {
 		name   string
-		source ArtifactSource
-		mutate func(*ArtifactImportConfig)
+		source api.ArtifactSource
+		mutate func(*api.ArtifactImportConfig)
 	}{
-		{"unpinned-source", ArtifactSource{Repository: "https://github.com/o/r"}, nil},
-		{"release-source", ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "x"}, nil},
-		{"mutable-image", source, func(c *ArtifactImportConfig) { c.Image = "img@sha256:x" }},
-		{"no-entrypoint", source, func(c *ArtifactImportConfig) { c.Entrypoint = nil }},
-		{"relative-entrypoint", source, func(c *ArtifactImportConfig) { c.Entrypoint = []string{"tool"} }},
-		{"two-token-entrypoint", source, func(c *ArtifactImportConfig) { c.Entrypoint = []string{"/a", "/b"} }},
+		{"unpinned-source", api.ArtifactSource{Repository: "https://github.com/o/r"}, nil},
+		{"release-source", api.ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "x"}, nil},
+		{"mutable-image", source, func(c *api.ArtifactImportConfig) { c.Image = "img@sha256:x" }},
+		{"no-entrypoint", source, func(c *api.ArtifactImportConfig) { c.Entrypoint = nil }},
+		{"relative-entrypoint", source, func(c *api.ArtifactImportConfig) { c.Entrypoint = []string{"tool"} }},
+		{"two-token-entrypoint", source, func(c *api.ArtifactImportConfig) { c.Entrypoint = []string{"/a", "/b"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := config
 			if tc.mutate != nil {
 				tc.mutate(&c)
 			}
-			if _, err := ImportCLIArtifact(context.Background(), tc.source, c, RestrictedBuildConfig{}); !errors.Is(err, ErrInvalid) {
+			if _, err := ImportCLIArtifact(context.Background(), tc.source, c, api.RestrictedBuildConfig{}); !errors.Is(err, api.ErrInvalid) {
 				t.Fatalf("admitted: %v", err)
 			}
 		})
@@ -128,17 +129,17 @@ func TestCLIArtifactSourceRelease(t *testing.T) {
 	// Release fields on a non-release source fail closed.
 	if _, err := c.cliArtifactSource(context.Background(), map[string]any{
 		"source": githubCommitURL(), "asset": "tool",
-	}); !errors.Is(err, ErrInvalid) {
+	}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("commit source carrying release fields admitted: %v", err)
 	}
 }
 
 func TestReleaseHelpers(t *testing.T) {
-	if client := releaseHTTPClient(); client == nil || client.Timeout == 0 {
+	if client := api.ReleaseHTTPClient(); client == nil || client.Timeout == 0 {
 		t.Fatal("releaseHTTPClient")
 	}
 	// The redirect policy follows github-owned https hops only.
-	client := releaseHTTPClient()
+	client := api.ReleaseHTTPClient()
 	req := func(raw string) *http.Request {
 		r, err := http.NewRequest(http.MethodGet, raw, nil)
 		if err != nil {
@@ -162,16 +163,16 @@ func TestReleaseHelpers(t *testing.T) {
 			t.Fatalf("redirect %s via=%d: allowed=%v want=%v", tc.url, tc.via, allowed, tc.want)
 		}
 	}
-	if githubAPIBase() != "https://api.github.com" {
+	if api.GithubAPIBase() != "https://api.github.com" {
 		t.Fatal("apiBase")
 	}
-	if got := normalizeDigestPrefix(strings.Repeat("a", 64)); got != "sha256:"+strings.Repeat("a", 64) {
+	if got := api.NormalizeDigestPrefix(strings.Repeat("a", 64)); got != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatalf("normalize=%q", got)
 	}
-	if got := normalizeDigestPrefix(""); got != "" {
+	if got := api.NormalizeDigestPrefix(""); got != "" {
 		t.Fatalf("empty=%q", got)
 	}
-	if !isChecksumAsset("checksums.txt") || !isChecksumAsset("SHA256SUMS") || isChecksumAsset("tool.tar.gz") {
+	if !api.IsChecksumAsset("checksums.txt") || !api.IsChecksumAsset("SHA256SUMS") || api.IsChecksumAsset("tool.tar.gz") {
 		t.Fatal("isChecksumAsset")
 	}
 }
@@ -187,22 +188,22 @@ func TestMemberMatch(t *testing.T) {
 		{"tool", "dir/tool", false},
 		{"dir/x", "tool", false},
 	} {
-		if got := memberMatch(tc.member, tc.want); got != tc.ok {
+		if got := api.MemberMatch(tc.member, tc.want); got != tc.ok {
 			t.Fatalf("memberMatch(%q,%q)=%v", tc.member, tc.want, got)
 		}
 	}
 }
 
 func TestGenerateCLIReleaseRecipeValidation(t *testing.T) {
-	if _, _, err := generateCLIReleaseRecipe("tool", []byte("ELF"), nil, ""); !errors.Is(err, ErrInvalid) {
+	if _, _, err := api.GenerateCLIReleaseRecipe("tool", []byte("ELF"), nil, ""); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("relative binary admitted: %v", err)
 	}
-	if _, _, err := generateCLIReleaseRecipe("/usr/local/bin/tool", nil, nil, ""); !errors.Is(err, ErrInvalid) {
+	if _, _, err := api.GenerateCLIReleaseRecipe("/usr/local/bin/tool", nil, nil, ""); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("empty binary admitted: %v", err)
 	}
 	// An oversized checksum record degrades to no lock entry; the recipe then
 	// fails its own verification — still fail-closed.
-	if _, _, err := generateCLIReleaseRecipe("/usr/local/bin/tool", []byte("ELF"), make([]byte, (4<<20)+1), ""); err == nil {
+	if _, _, err := api.GenerateCLIReleaseRecipe("/usr/local/bin/tool", []byte("ELF"), make([]byte, (4<<20)+1), ""); err == nil {
 		t.Fatal("oversized checksum record admitted")
 	}
 }
@@ -210,58 +211,58 @@ func TestGenerateCLIReleaseRecipeValidation(t *testing.T) {
 func TestReleaseFetchErrors(t *testing.T) {
 	server := releaseServer(t, "a", []byte("x"), nil, "")
 	defer server.Close()
-	source := ArtifactSource{Repository: "https://github.com/BurntSushi/ripgrep", Tag: "missing", Asset: "a"}
-	if _, _, _, _, _, err := fetchReleaseBinary(context.Background(), source, server.Client(), server.URL, "x"); err == nil {
+	source := api.ArtifactSource{Repository: "https://github.com/BurntSushi/ripgrep", Tag: "missing", Asset: "a"}
+	if _, _, _, _, _, err := api.FetchReleaseBinary(context.Background(), source, server.Client(), server.URL, "x"); err == nil {
 		t.Fatal("missing tag admitted")
 	}
 	// Non-2xx statuses surface as plain fetch errors.
-	if err := fetchReleaseJSON(context.Background(), server.Client(), server.URL+"/nope", new(any)); err == nil {
+	if err := api.FetchReleaseJSON(context.Background(), server.Client(), server.URL+"/nope", new(any)); err == nil {
 		t.Fatal("404 metadata admitted")
 	}
-	if _, err := fetchReleaseBytes(context.Background(), server.Client(), server.URL+"/nope", 10); err == nil {
+	if _, err := api.FetchReleaseBytes(context.Background(), server.Client(), server.URL+"/nope", 10); err == nil {
 		t.Fatal("404 download admitted")
 	}
 	// Asset pattern matching zero and many assets both fail closed.
 	server2 := httptestNewRelease(t, "1.0", []string{"a-1", "a-2"}, "")
 	defer server2.Close()
-	if _, _, _, _, _, err := fetchReleaseBinary(context.Background(), ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "a-*"}, server2.Client(), server2.URL, "a"); !errors.Is(err, ErrStale) {
+	if _, _, _, _, _, err := api.FetchReleaseBinary(context.Background(), api.ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "a-*"}, server2.Client(), server2.URL, "a"); !errors.Is(err, api.ErrStale) {
 		t.Fatalf("ambiguous asset admitted: %v", err)
 	}
-	if _, _, _, _, _, err := fetchReleaseBinary(context.Background(), ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "missing"}, server2.Client(), server2.URL, "a"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, _, _, err := api.FetchReleaseBinary(context.Background(), api.ArtifactSource{Repository: "https://github.com/o/r", Tag: "1.0", Asset: "missing"}, server2.Client(), server2.URL, "a"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("missing asset admitted: %v", err)
 	}
 }
 
 func TestContextHasDockerfile(t *testing.T) {
-	if contextHasDockerfile(languageContext(t, map[string]string{"Dockerfile": "FROM x"})) != true {
+	if api.ContextHasDockerfile(languageContext(t, map[string]string{"Dockerfile": "FROM x"})) != true {
 		t.Fatal("dockerfile missed")
 	}
-	if contextHasDockerfile(languageContext(t, map[string]string{"go.mod": "module m", "Dockerfile.bak": "FROM x"})) {
+	if api.ContextHasDockerfile(languageContext(t, map[string]string{"go.mod": "module m", "Dockerfile.bak": "FROM x"})) {
 		t.Fatal("false positive")
 	}
-	if contextHasDockerfile([]byte("not a tar")) {
+	if api.ContextHasDockerfile([]byte("not a tar")) {
 		t.Fatal("malformed context")
 	}
 }
 
-// Shared artifact installs promote to the catalog after the definition is
+// shared artifact installs promote to the catalog after the definition is
 // registered — the same gate the direct-command path uses.
 func TestFinishCLIArtifactSharedPromotes(t *testing.T) {
 	fix := controlCLIFixture(t, true)
 	fix.control.PrepareSyncWindow = -1
 	operator := identity.TelegramEnvelope("operator", 3, "runtime", "policy-1")
-	if err := putGrant(t, fix.store, OperatorControlGrant("operator", "install_shared")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorControlGrant("operator", "install_shared")); err != nil {
 		t.Fatal(err)
 	}
 	fix.control.CLIArtifacts = &CLIArtifactPipeline{
-		Build: func(context.Context, ArtifactSource, ArtifactImportConfig) (ImportedArtifact, error) {
-			return ImportedArtifact{
-				Recipe: ArtifactRecipe{Entrypoint: []string{"/usr/local/bin/tool"}},
-				Definition: ToolDefinition{Source: DefinitionSource{
+		Build: func(context.Context, api.ArtifactSource, api.ArtifactImportConfig) (api.ImportedArtifact, error) {
+			return api.ImportedArtifact{
+				Recipe: api.ArtifactRecipe{Entrypoint: []string{"/usr/local/bin/tool"}},
+				Definition: api.ToolDefinition{Source: api.DefinitionSource{
 					Image:        "hermes-cli-artifact/shared-tool",
 					RecipeDigest: "sha256:" + strings.Repeat("4", 64), ReviewDigest: "sha256:" + strings.Repeat("5", 64),
 				}},
-				Artifact: StoredOCIArtifact{ArchiveDigest: "sha256:" + strings.Repeat("1", 64), Evidence: OCIArtifactEvidence{ImageManifestDigest: "sha256:" + strings.Repeat("9", 64)}},
+				Artifact: api.StoredOCIArtifact{ArchiveDigest: "sha256:" + strings.Repeat("1", 64), Evidence: api.OCIArtifactEvidence{ImageManifestDigest: "sha256:" + strings.Repeat("9", 64)}},
 			}, nil
 		},
 	}
@@ -274,11 +275,11 @@ func TestFinishCLIArtifactSharedPromotes(t *testing.T) {
 	if _, err := fix.control.prepareCLIArtifact(context.Background(), operator, spec, "sh-1", true); err != nil {
 		t.Fatalf("shared artifact install denied: %v", err)
 	}
-	if pub := fix.store.publications[definitionKey("shared-tool", "1.0.0")]; pub.Visibility != PublicationCatalog {
+	if pub := fix.store.publications[definitionKey("shared-tool", "1.0.0")]; pub.Visibility != api.PublicationCatalog {
 		t.Fatalf("publication=%+v", pub)
 	}
 	definition := fix.store.definitions[definitionKey("shared-tool", "1.0.0")]
-	if definition.Workload.Class != Shared || definition.Source.Command != "/usr/local/bin/tool" {
+	if definition.Workload.Class != api.Shared || definition.Source.Command != "/usr/local/bin/tool" {
 		t.Fatalf("definition=%+v", definition)
 	}
 }

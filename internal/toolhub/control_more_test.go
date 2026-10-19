@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -47,18 +48,18 @@ func TestGoogleOAuthFormAcceptsFileOrExplicitValues(t *testing.T) {
 		t.Fatalf("manual value=%q err=%v", value, err)
 	}
 
-	hints := credentialFormHints([]CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}, {Name: "HOST"}, {Name: "PORT"}, {Name: "TRANSPORT"}})
+	hints := credentialFormHints([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}, {Name: "HOST"}, {Name: "PORT"}, {Name: "TRANSPORT"}})
 	if len(hints) != 1 || hints[0].Name != "GOOGLE_OAUTH_CREDENTIALS" {
 		t.Fatalf("visible hints=%+v", hints)
 	}
 }
 
 func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
-	if _, err := (&ControlPlane{}).Invoke(context.Background(), aliceAuth(), "status", nil); !errors.Is(err, ErrInvalid) {
+	if _, err := (&ControlPlane{}).Invoke(context.Background(), aliceAuth(), "status", nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("nil store: %v", err)
 	}
 	store := NewStore()
-	grantTestControlOperations(t, store, "alice", ControlOperations...)
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
 	control := &ControlPlane{Store: store, Listen: "https://127.0.0.1:9", Now: time.Now, ConfirmationTTL: time.Minute}
 	if control.origin() != "https://127.0.0.1:9" {
 		t.Fatalf("origin=%s", control.origin())
@@ -67,35 +68,35 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if !strings.HasPrefix(control.origin(), "http://127.0.0.1:8090") {
 		t.Fatalf("listen origin=%s", control.origin())
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "unknown", nil); !errors.Is(err, ErrInvalid) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "unknown", nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("unknown op: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{}); !errors.Is(err, ErrInvalid) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("empty prepare: %v", err)
 	}
-	if _, err := ParseGitHubSource("http://github.com/x/y/commit/0123456789abcdef0123456789abcdef01234567"); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ParseGitHubSource("http://github.com/x/y/commit/0123456789abcdef0123456789abcdef01234567"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal("insecure github accepted")
 	}
-	if _, err := ParseGitHubSource("https://github.com/x/y"); !errors.Is(err, ErrInvalid) {
+	if _, err := api.ParseGitHubSource("https://github.com/x/y"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal("unpinned github accepted")
 	}
-	src, err := ParseGitHubSource("https://github.com/example/mcp/tree/0123456789abcdef0123456789abcdef01234567")
+	src, err := api.ParseGitHubSource("https://github.com/example/mcp/tree/0123456789abcdef0123456789abcdef01234567")
 	if err != nil || src.CommitSHA == "" {
 		t.Fatalf("tree url: %+v %v", src, err)
 	}
 	if err := store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("catalog without grant: %v", err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
+	if err := putGrant(t, store, api.Grant{Schema: api.SchemaVersion, GrantID: "grant-selfalice", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil); !errors.Is(err, ErrInvalid) {
+	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil, false, ""); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("nil reviewer: %v", err)
 	}
 	control.Reviewer = fixtureReviewer(userMCPDefinition())
@@ -119,10 +120,10 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err != nil || st["onboarding_id"] != prepared["onboarding_id"] {
 		t.Fatalf("status by definition=%v err=%v", st, err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": "wrong"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": "wrong"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bad nonce: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": st["nonce"], "tools": []any{"missing-tool"}}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": st["nonce"], "tools": []any{"missing-tool"}}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("tool escalation: %v", err)
 	}
 	direct := catalogReadDefinition()
@@ -130,10 +131,10 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err := store.RegisterDefinition(direct); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "enable", map[string]any{"definition_id": "catalog-direct", "version": "1.0.0", "memory_mib": 999999}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "enable", map[string]any{"definition_id": "catalog-direct", "version": "1.0.0", "memory_mib": 999999}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("enable budget: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "enable", map[string]any{"definition_id": "catalog-direct", "version": "1.0.0", "timeout_seconds": 999, "max_pids": 999, "output_bytes": 1 << 30}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "enable", map[string]any{"definition_id": "catalog-direct", "version": "1.0.0", "timeout_seconds": 999, "max_pids": 999, "output_bytes": 1 << 30}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("enable other budget: %v", err)
 	}
 	enabled, err := control.Invoke(context.Background(), aliceAuth(), "enable", map[string]any{"definition_id": "catalog-direct", "version": "1.0.0"})
@@ -141,10 +142,10 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 		t.Fatalf("enable by definition=%v err=%v", enabled, err)
 	}
 	_ = control.publicationForCheck(catalogReadDefinition())
-	if err := store.PutPublication(DefinitionPublication{DefinitionID: "catalog-read", Version: "1.0.0", Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
+	if err := store.PutPublication(api.DefinitionPublication{DefinitionID: "catalog-read", Version: "1.0.0", Visibility: api.PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Enable(bobAuth(), "catalog-read", "1.0.0"); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Enable(bobAuth(), "catalog-read", "1.0.0"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bob enabled alice user publication: %v", err)
 	}
 	entries, err := store.Catalog(bobAuth())
@@ -156,22 +157,22 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 			t.Fatal("bob catalog listed alice user publication")
 		}
 	}
-	if err := (&Grant{Schema: SchemaVersion, GrantID: "grant-bad", Kind: GrantKind("nope"), PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}).Validate(); err == nil {
+	if err := (&api.Grant{Schema: api.SchemaVersion, GrantID: "grant-bad", Kind: api.GrantKind("nope"), PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}).Validate(); err == nil {
 		t.Fatal("invalid grant kind")
 	}
-	if err := (DefinitionPublication{}).Validate(); err == nil {
+	if err := (api.DefinitionPublication{}).Validate(); err == nil {
 		t.Fatal("empty publication")
 	}
-	if err := (SharedCredentialPolicy{Schema: SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "loc", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "model", Status: ActiveStatus}).Validate(); err == nil {
+	if err := (api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "loc", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "model", Status: api.ActiveStatus}).Validate(); err == nil {
 		t.Fatal("model shared policy")
 	}
-	if err := store.PutSharedCredentialPolicy(SharedCredentialPolicy{Schema: SchemaVersion, PolicyID: "policy-ok", DefinitionID: "catalog-read", Locator: "local://shared/1", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: ActiveStatus}); err != nil {
+	if err := store.PutSharedCredentialPolicy(api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-ok", DefinitionID: "catalog-read", Locator: "local://shared/1", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PromoteToCatalog("missing", "1.0.0", "operator"); !errors.Is(err, ErrNotFound) {
+	if err := store.PromoteToCatalog("missing", "1.0.0", "operator"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("promote missing: %v", err)
 	}
-	if err := store.PromoteToCatalog("catalog-read", "1.0.0", "model"); !errors.Is(err, ErrUnauthorized) {
+	if err := store.PromoteToCatalog("catalog-read", "1.0.0", "model"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("promote model: %v", err)
 	}
 
@@ -184,7 +185,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	control.Secrets = secrets
-	if err := control.SubmitCredentials("missing", "x", nil); !errors.Is(err, ErrNotFound) {
+	if err := control.SubmitCredentials("missing", "x", nil); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("submit missing: %v", err)
 	}
 	credDef := remoteDefinition()
@@ -192,7 +193,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err := store.RegisterDefinition(credDef); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "oauth-mcp", "1.0.0")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, "alice", "oauth-mcp", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	oauthPrep, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": "oauth-mcp", "version": "1.0.0", "request_key": "oauth-1"})
@@ -204,14 +205,14 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 		t.Fatalf("oauth required=%v err=%v", reqd, err)
 	}
 	onboarding, _ := store.onboarding(oauthPrep["onboarding_id"].(string))
-	if err := control.SubmitCredentials(onboarding.OnboardingID, "bad", map[string]string{"GOOGLE_TOKEN": "x"}); !errors.Is(err, ErrUnauthorized) {
+	if err := control.SubmitCredentials(onboarding.OnboardingID, "bad", map[string]string{"GOOGLE_TOKEN": "x"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bad form nonce: %v", err)
 	}
 
 	fixture := oauth.NewFixture()
 	t.Cleanup(fixture.Close)
-	gateway := &Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{Text: "ok"}, nil
+	gateway := &Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
 	}), Tokens: map[string]identity.Envelope{aliceToken: aliceAuth()}, Control: control}
 	handler, err := gateway.Handler()
 	if err != nil {
@@ -279,41 +280,45 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 		t.Fatalf("missing onboarding callback=%d", rec.Code)
 	}
 
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "disable", map[string]any{"onboarding_id": "missing-onboard"}); !errors.Is(err, ErrNotFound) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "disable", map[string]any{"onboarding_id": "missing-onboard"}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("disable missing: %v", err)
 	}
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "revoke", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+	preview, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
 		t.Fatal(err)
 	}
-	hints := credentialHints(ToolDefinition{Credentials: []CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}, {Name: "CALL_TOKEN", Required: true, PerRequest: true}}})
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]}); err != nil {
+		t.Fatal(err)
+	}
+	hints := credentialHints(api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}, {Name: "CALL_TOKEN", Required: true, PerRequest: true}}})
 	if len(hints) != 2 || hints[0].Type != "oauth" || hints[1].Type != "string" || hints[1].Secret {
 		t.Fatalf("hints=%v", hints)
 	}
-	if argInt(map[string]any{"cpu_millis": int64(3)}, "cpu_millis") != 3 || argInt(map[string]any{"cpu_millis": 4}, "cpu_millis") != 4 {
+	if api.ArgInt(map[string]any{"cpu_millis": int64(3)}, "cpu_millis") != 3 || api.ArgInt(map[string]any{"cpu_millis": 4}, "cpu_millis") != 4 {
 		t.Fatal("argInt types")
 	}
-	if argInt(nil, "cpu_millis") != 0 || argInt(map[string]any{"cpu_millis": 1.5}, "cpu_millis") != 1 || argInt(map[string]any{"cpu_millis": "x"}, "cpu_millis") != 0 {
+	if api.ArgInt(nil, "cpu_millis") != 0 || api.ArgInt(map[string]any{"cpu_millis": 1.5}, "cpu_millis") != 1 || api.ArgInt(map[string]any{"cpu_millis": "x"}, "cpu_millis") != 0 {
 		t.Fatal("argInt fallbacks")
 	}
-	if got := argStrings(map[string]any{"effects": []string{"read"}}, "effects"); len(got) != 1 {
+	if got := api.ArgStrings(map[string]any{"effects": []string{"read"}}, "effects"); len(got) != 1 {
 		t.Fatalf("argStrings=%v", got)
 	}
-	if argStrings(nil, "effects") != nil || argStrings(map[string]any{"effects": 1}, "effects") != nil {
+	if api.ArgStrings(nil, "effects") != nil || api.ArgStrings(map[string]any{"effects": 1}, "effects") != nil {
 		t.Fatal("argStrings fallbacks")
 	}
 }
 
 func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	store := NewStore()
-	grantTestControlOperations(t, store, "alice", ControlOperations...)
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
 	definition := catalogReadDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	key, err := credstore.GenerateKey()
@@ -330,16 +335,16 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("enable before confirm: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"definition_id": "missing-def"}); !errors.Is(err, ErrNotFound) {
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"definition_id": "missing-def"}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("enable missing definition id only: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"definition_id": "missing-def", "version": "1.0.0"}); !errors.Is(err, ErrNotFound) {
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"definition_id": "missing-def", "version": "1.0.0"}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("enable unknown definition: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), bobAuth(), "enable", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), bobAuth(), "enable", map[string]any{"definition_id": "catalog-read", "version": "1.0.0"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bob enable catalog without grant: %v", err)
 	}
 
@@ -363,28 +368,28 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 		t.Fatalf("enable rematerialize=%v err=%v", enabled, err)
 	}
 
-	orphan := Onboarding{
-		Schema: SchemaVersion, OnboardingID: "onboard-orphan", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
-		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: OnboardingCatalog, DefinitionID: "no-such-def",
-		DefinitionVersion: "1.0.0", Phase: PhaseConfirmed, Revision: 1, CreatedAt: time.Now().UTC(),
+	orphan := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onboard-orphan", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, DefinitionID: "no-such-def",
+		DefinitionVersion: "1.0.0", Phase: api.PhaseConfirmed, Revision: 1, CreatedAt: time.Now().UTC(),
 	}
 	if err := store.PutOnboarding(orphan); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": "onboard-orphan"}); !errors.Is(err, ErrNotFound) {
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": "onboard-orphan"}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("enable missing definitionOf: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "disable", map[string]any{"onboarding_id": "onboard-orphan"}); !errors.Is(err, ErrNotFound) {
+	if _, err := control.Invoke(context.Background(), auth, "disable", map[string]any{"onboarding_id": "onboard-orphan"}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("disable without binding: %v", err)
 	}
 
 	credDef := catalogReadDefinition()
 	credDef.DefinitionID = "secret-mcp"
-	credDef.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	credDef.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
 	if err := store.RegisterDefinition(credDef); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, store, OperatorGrant(GrantDefinition, "alice", "secret-mcp", "1.0.0")); err != nil {
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, "alice", "secret-mcp", "1.0.0")); err != nil {
 		t.Fatal(err)
 	}
 	credPrep, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "secret-mcp", "version": "1.0.0", "request_key": "secret-1"})
@@ -411,79 +416,79 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), auth, "revoke", map[string]any{"onboarding_id": credOn.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.StartOAuth(auth, credOn.OnboardingID, "http://127.0.0.1/callback"); !errors.Is(err, ErrInvalid) {
+	if _, err := control.StartOAuth(auth, credOn.OnboardingID, "http://127.0.0.1/callback"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("nil oauth start: %v", err)
 	}
-	if err := control.HandleOAuthCallback(auth, credOn.OnboardingID, "state", "code", "http://127.0.0.1/callback"); !errors.Is(err, ErrInvalid) {
+	if err := control.HandleOAuthCallback(auth, credOn.OnboardingID, "state", "code", "http://127.0.0.1/callback"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("nil oauth callback: %v", err)
 	}
 
-	if err := (Grant{Schema: SchemaVersion, GrantID: "grant-id", PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}).Validate(); err == nil {
+	if err := (api.Grant{Schema: api.SchemaVersion, GrantID: "grant-id", PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}).Validate(); err == nil {
 		t.Fatal("missing kind accepted")
 	}
-	if err := (Grant{Schema: 0, GrantID: "grant-id", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}).Validate(); err == nil {
+	if err := (api.Grant{Schema: 0, GrantID: "grant-id", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}).Validate(); err == nil {
 		t.Fatal("bad schema accepted")
 	}
-	if err := (Grant{Schema: SchemaVersion, GrantID: "grant-id", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "hermes", Status: ActiveStatus, Revision: 1}).Validate(); err == nil {
+	if err := (api.Grant{Schema: api.SchemaVersion, GrantID: "grant-id", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "hermes", Status: api.ActiveStatus, Revision: 1}).Validate(); err == nil {
 		t.Fatal("hermes issuer accepted")
 	}
-	if err := (Grant{Schema: SchemaVersion, GrantID: "grant-id", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: Status("nope"), Revision: 1}).Validate(); err == nil {
+	if err := (api.Grant{Schema: api.SchemaVersion, GrantID: "grant-id", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: api.Status("nope"), Revision: 1}).Validate(); err == nil {
 		t.Fatal("bad grant status accepted")
 	}
-	if err := (Grant{Schema: SchemaVersion, GrantID: "grant-id", Kind: GrantCatalogDefault, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1, DefinitionID: "catalog-read"}).Validate(); err == nil {
+	if err := (api.Grant{Schema: api.SchemaVersion, GrantID: "grant-id", Kind: api.GrantCatalogDefault, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1, DefinitionID: "catalog-read"}).Validate(); err == nil {
 		t.Fatal("catalog grant with definition accepted")
 	}
-	if err := (Grant{Schema: SchemaVersion, GrantID: "grant-id", Kind: GrantDefinition, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1, DefinitionID: "catalog-read"}).Validate(); err == nil {
+	if err := (api.Grant{Schema: api.SchemaVersion, GrantID: "grant-id", Kind: api.GrantDefinition, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1, DefinitionID: "catalog-read"}).Validate(); err == nil {
 		t.Fatal("definition grant without version accepted")
 	}
-	if err := (Grant{Schema: SchemaVersion, GrantID: "grant-id", Kind: GrantSharedCredential, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}).Validate(); err == nil {
+	if err := (api.Grant{Schema: api.SchemaVersion, GrantID: "grant-id", Kind: api.GrantSharedCredential, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}).Validate(); err == nil {
 		t.Fatal("shared-credential grant without definition accepted")
 	}
-	sharedGrant := OperatorGrant(GrantSharedCredential, "alice", "catalog-read", "")
+	sharedGrant := api.OperatorGrant(api.GrantSharedCredential, "alice", "catalog-read", "")
 	mustConfirm(t, &sharedGrant)
 	if err := sharedGrant.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	first := OperatorGrant(GrantSelfInstall, "dave", "", "")
+	first := api.OperatorGrant(api.GrantSelfInstall, "dave", "", "")
 	if err := putGrant(t, store, first); err != nil {
 		t.Fatal(err)
 	}
 	conflict := first
-	conflict.Status = DisabledStatus
-	if err := putGrant(t, store, conflict); !errors.Is(err, ErrConflict) {
+	conflict.Status = api.DisabledStatus
+	if err := putGrant(t, store, conflict); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("grant conflict: %v", err)
 	}
-	if err := store.PutPublication(DefinitionPublication{DefinitionID: "missing-pub", Version: "1.0.0", Visibility: PublicationCatalog}); !errors.Is(err, ErrNotFound) {
+	if err := store.PutPublication(api.DefinitionPublication{DefinitionID: "missing-pub", Version: "1.0.0", Visibility: api.PublicationCatalog}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("publication missing definition: %v", err)
 	}
-	if err := (Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: "nope", Phase: PhaseReview, Revision: 1}).Validate(); err == nil {
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: "nope", Phase: api.PhaseReview, Revision: 1}).Validate(); err == nil {
 		t.Fatal("bad onboarding mode accepted")
 	}
-	if err := (Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: OnboardingCatalog, Phase: "nope", Revision: 1}).Validate(); err == nil {
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: "nope", Revision: 1}).Validate(); err == nil {
 		t.Fatal("bad onboarding phase accepted")
 	}
-	if err := (Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: OnboardingCatalog, Phase: PhaseReview, Revision: 1, DefinitionID: "BAD"}).Validate(); err == nil {
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseReview, Revision: 1, DefinitionID: "BAD"}).Validate(); err == nil {
 		t.Fatal("bad onboarding definition accepted")
 	}
-	if err := (Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: OnboardingCatalog, Phase: PhaseReview, Revision: 1, DefinitionVersion: "v"}).Validate(); err == nil {
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseReview, Revision: 1, DefinitionVersion: "v"}).Validate(); err == nil {
 		t.Fatal("bad onboarding version accepted")
 	}
-	if err := (SharedCredentialPolicy{Schema: 0, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: ActiveStatus}).Validate(); err == nil {
+	if err := (api.SharedCredentialPolicy{Schema: 0, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: api.ActiveStatus}).Validate(); err == nil {
 		t.Fatal("bad shared policy schema accepted")
 	}
-	if err := (SharedCredentialPolicy{Schema: SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: ActiveStatus}).Validate(); err == nil {
+	if err := (api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: api.ActiveStatus}).Validate(); err == nil {
 		t.Fatal("empty shared locator accepted")
 	}
-	if err := (SharedCredentialPolicy{Schema: SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: Status("nope")}).Validate(); err == nil {
+	if err := (api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: api.Status("nope")}).Validate(); err == nil {
 		t.Fatal("bad shared status accepted")
 	}
-	if err := (SharedCredentialPolicy{Schema: SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: nil, IssuedBy: "operator", Status: ActiveStatus}).Validate(); err == nil {
+	if err := (api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: nil, IssuedBy: "operator", Status: api.ActiveStatus}).Validate(); err == nil {
 		t.Fatal("empty shared principals accepted")
 	}
-	if err := (SharedCredentialPolicy{Schema: SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: []string{"alice", "alice"}, IssuedBy: "operator", Status: ActiveStatus}).Validate(); err == nil {
+	if err := (api.SharedCredentialPolicy{Schema: api.SchemaVersion, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: []string{"alice", "alice"}, IssuedBy: "operator", Status: api.ActiveStatus}).Validate(); err == nil {
 		t.Fatal("duplicate shared principal accepted")
 	}
-	if err := (DefinitionPublication{DefinitionID: "catalog-read", Version: "1.0.0", Visibility: PublicationUser}).Validate(); err == nil {
+	if err := (api.DefinitionPublication{DefinitionID: "catalog-read", Version: "1.0.0", Visibility: api.PublicationUser}).Validate(); err == nil {
 		t.Fatal("user publication without owner accepted")
 	}
 }
@@ -499,15 +504,15 @@ func TestMaterializeBindingRotatesExistingOwnerConnection(t *testing.T) {
 	if err := store.RegisterDefinition(v2); err != nil {
 		t.Fatal(err)
 	}
-	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: credstore.BackendLocal, Locator: "old-locator", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus}
+	old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: credstore.BackendLocal, Locator: "old-locator", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
 	if err := store.PutCredentialReference(old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: v1.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: v1.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	control := &ControlPlane{Store: store, Ready: func(context.Context, EffectiveBinding) error { return nil }}
-	binding, err := control.materializeBinding(context.Background(), aliceAuth(), Onboarding{OnboardingID: "onboard-new", Locator: "new-locator", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}, v2)
+	control := &ControlPlane{Store: store, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	binding, err := control.materializeBinding(context.Background(), aliceAuth(), api.Onboarding{OnboardingID: "onboard-new", Locator: "new-locator", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}}}, v2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,29 +521,29 @@ func TestMaterializeBindingRotatesExistingOwnerConnection(t *testing.T) {
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	if len(store.connections) != 1 || store.connections["conn-existing"].Revision != 2 || store.credentials[old.CredentialRefID].Status != RevokedStatus || store.credentials[binding.CredentialRefID].Locator != "new-locator" {
+	if len(store.connections) != 1 || store.connections["conn-existing"].Revision != 2 || store.credentials[old.CredentialRefID].Status != api.RevokedStatus || store.credentials[binding.CredentialRefID].Locator != "new-locator" {
 		t.Fatalf("credential rotation state is inconsistent")
 	}
 }
 
-func (c *ControlPlane) publicationForCheck(definition ToolDefinition) DefinitionPublication {
+func (c *ControlPlane) publicationForCheck(definition api.ToolDefinition) api.DefinitionPublication {
 	if c == nil || c.Store == nil {
-		return DefinitionPublication{}
+		return api.DefinitionPublication{}
 	}
 	return c.Store.publicationFor(definition)
 }
 
 func TestStatusBodyExposesNextAction(t *testing.T) {
 	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
-	confirm := control.statusBody(Onboarding{OnboardingID: "onboard-1", Phase: PhaseAwaitingConfirm, ConfirmationNonce: "nonce-1"}, false)
+	confirm := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseAwaitingConfirm, ConfirmationNonce: "nonce-1"}, false)
 	if confirm["next_action"] != "confirm" || confirm["nonce"] != "nonce-1" || confirm["instructions"] == "" {
 		t.Fatalf("awaiting-confirm status lacks next step: %v", confirm)
 	}
-	enable := control.statusBody(Onboarding{OnboardingID: "onboard-1", Phase: PhaseConfirmed}, false)
+	enable := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseConfirmed}, false)
 	if enable["next_action"] != "enable" {
 		t.Fatalf("confirmed status lacks enable hint: %v", enable)
 	}
-	creds := control.statusBody(Onboarding{OnboardingID: "onboard-1", Phase: PhaseAwaitingCreds}, false)
+	creds := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseAwaitingCreds}, false)
 	if creds["next_action"] != "submit_credentials" {
 		t.Fatalf("awaiting-credentials status lacks submit hint: %v", creds)
 	}
@@ -546,24 +551,24 @@ func TestStatusBodyExposesNextAction(t *testing.T) {
 
 func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
 	store := NewStore()
-	if err := putGrant(t, store, Grant{Schema: SchemaVersion, GrantID: "grant-selfalice", Kind: GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: ActiveStatus, Revision: 1}); err != nil {
+	if err := putGrant(t, store, api.Grant{Schema: api.SchemaVersion, GrantID: "grant-selfalice", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})
 	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: 10 * time.Minute,
-		Reviewer: func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+		Reviewer: func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 			<-release
-			return SourceReview{}, errors.New("build blew up")
+			return api.SourceReview{}, errors.New("build blew up")
 		}}
 	done := make(chan error, 1)
 	go func() {
-		_, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "req-wake", nil)
+		_, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "req-wake", nil, false, "")
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if existing, ok := store.FindOnboardingByKey(aliceAuth(), "req-wake"); ok {
-			if existing.Phase != PhasePreparing {
+			if existing.Phase != api.PhasePreparing {
 				t.Fatalf("mid-flight phase=%s", existing.Phase)
 			}
 			break
@@ -578,7 +583,7 @@ func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
 		t.Fatal("failed review accepted")
 	}
 	existing, ok := store.FindOnboardingByKey(aliceAuth(), "req-wake")
-	if !ok || existing.Phase != PhaseFailed {
+	if !ok || existing.Phase != api.PhaseFailed {
 		t.Fatalf("failed prepare left phase=%v ok=%v", existing.Phase, ok)
 	}
 }

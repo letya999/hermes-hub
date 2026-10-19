@@ -12,21 +12,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a
-// chat.postMessage target and never fill Envelope.DeliveryTargetID.
-var slackIMChannel = regexp.MustCompile(`^[CDG][A-Za-z0-9]{1,32}$`)
-var slackThreadTS = regexp.MustCompile(`^[0-9]{10,16}\.[0-9]{1,6}$`)
-
-func validSlackIMChannel(id string) bool { return slackIMChannel.MatchString(id) }
-func validSlackThread(ts string) bool    { return ts == "" || slackThreadTS.MatchString(ts) }
+// chat.postMessage target and never fill Envelope.DeliveryTargetID. The
+// validation rules themselves live with the slack adapter.
+func validSlackIMChannel(id string) bool { return channel.ValidSlackIMChannel(id) }
+func validSlackThread(ts string) bool    { return channel.ValidSlackThread(ts) }
 
 func limitSlackText(text string) string {
 	if r := []rune(text); len(r) > slackPartLimit {
@@ -163,13 +161,19 @@ func (g *Gateway) HandleSlackEvents(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	fresh, err := g.spool.RememberEvent("slack", envelope.EventID)
-	if err != nil || !fresh {
+	seen, err := g.spool.EventSeen("slack", envelope.EventID)
+	if err != nil || seen {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	if err := g.ingestSlackEvent(r.Context(), envelope.TeamID, envelope.EventID, envelope.Event.Type, envelope.Event.Subtype, envelope.Event.User, envelope.Event.Text, envelope.Event.Channel, envelope.Event.ChannelType, envelope.Event.BotID, envelope.Event.UserProfile.Email, envelope.Event.UserProfile.DisplayName, envelope.Event.ThreadTS); err != nil {
 		http.Error(w, "rejected", http.StatusForbidden)
+		return
+	}
+	// The marker is durable only after the ingest is: a rejected event stays
+	// unseen so the provider's retry can deliver it once intake recovers.
+	if err := g.spool.MarkEvent("slack", envelope.EventID); err != nil {
+		http.Error(w, "event record failed", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -196,7 +200,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	if text == "" {
 		return nil
 	}
-	envelope := user.slackEnvelope(teamID, slackUser)
+	envelope := user.SlackEnvelope(teamID, slackUser)
 	if envstore.LooksLikeEnv(text) {
 		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: "Секреты в Slack App канале отклонены.", CreatedAt: g.now().UTC()})
 	}
@@ -205,18 +209,33 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	return err
 }
 
-func (s *Spool) RememberEvent(provider, eventID string) (bool, error) {
+// EventSeen reports whether the event marker is already durable. The write
+// itself is MarkEvent — callers mark only after the event's payload is
+// durably ingested, otherwise a failed ingest would be deduped forever.
+func (s *Spool) EventSeen(provider, eventID string) (bool, error) {
 	if provider == "" || eventID == "" || strings.ContainsAny(eventID, "/\\") {
 		return false, errors.New("invalid event id")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sum := sha256.Sum256([]byte(provider + "\x00" + eventID))
-	path := filepath.Join(s.root, "events", hex.EncodeToString(sum[:])+".json")
-	if _, err := os.Stat(path); err == nil {
-		return false, nil
+	if _, err := os.Stat(s.eventMarkerPath(provider, eventID)); err == nil {
+		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	return true, atomicJSON(path, map[string]string{"provider": provider, "event_id": eventID})
+	return false, nil
+}
+
+func (s *Spool) MarkEvent(provider, eventID string) error {
+	if provider == "" || eventID == "" || strings.ContainsAny(eventID, "/\\") {
+		return errors.New("invalid event id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return atomicJSON(s.eventMarkerPath(provider, eventID), map[string]string{"provider": provider, "event_id": eventID})
+}
+
+func (s *Spool) eventMarkerPath(provider, eventID string) string {
+	sum := sha256.Sum256([]byte(provider + "\x00" + eventID))
+	return filepath.Join(s.root, "events", hex.EncodeToString(sum[:])+".json")
 }

@@ -1,0 +1,33 @@
+schema: 1
+change: CHG-0114
+title: Routine delivery destinations
+status: done
+updated: 2026-10-18
+phase: accepted
+implementation_status: complete
+adr: ADR-0044
+spec: SPEC-0058
+depends_on: [CHG-0113]
+validation:
+  just_check: passed
+  go_statement_coverage: 86.36%
+  deployed_mcp: passed; five routine tools and destination create/edit/get/list/delete through actual runtime ToolHub client
+  image_contract: passed; final hermes-runtime stdio reminder contract
+  secret_scan: passed; Gitleaks on communication, agenttools and docs
+  docs: passed
+evidence:
+  - Accepted ADR-0044 and SPEC-0058 define owned destination discovery, pinned origin, explicit target and historical audience.
+  - Routine tools remain five at immutable hub-agent-tools 4.0.0; agent can list live owned destinations, create to current or a selected session, inspect, move and delete routines.
+  - Origin job mapping pins the source task and Telegram topic independently of mutable /use; explicit target IDs resolve only among the owner's verified live tasks.
+  - Destination moves require expected revision, retain timing and history, and leave already admitted occurrences addressed to their original audience.
+  - Archive, revocation and corrupt topic-binding cases fail closed; regressions cover creation races, old occurrences and legacy mapping compatibility.
+  - Supported dev-rebuild completed for communication-hub and hermes-runtime; selected running containers use their new dev images and communication endpoint is healthy.
+  - Actual Hermes MCP client via ToolHub listed five routine tools, listed owned destinations, created a future fixture, moved it, rejected a stale edit, inspected the card and deleted it.
+  - Actual origin_job_id fixture matched the persisted source task, chat and topic; independent follow-up confirmed its tombstone and no active fixture.
+  - No fixture reached its firing time; external Telegram sends in this change were zero.
+  - Final just check passed race/shuffle package tests, 86.36 percent own Go statement coverage, formatting, vet, tidy diff, staticcheck, gosec, docs, actionlint and deployment configuration contract.
+remaining: []
+limitations:
+  - Two-topic physical Telegram delivery remains a user manual acceptance check; this change sent no live message.
+  - Full multi-image Docker CI gate and production rollout were not run locally.
+  - Live dev uses legacy access policy; managed policy contracts are automated, with no live managed-profile migration claimed.

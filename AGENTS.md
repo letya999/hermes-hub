@@ -18,7 +18,11 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
   `just docker-check` cleans on success.
   After any other local Docker build, run `just docker-clean`; use `--deep` only for an intentional cold-cache reset.
   Never use broad system/volume prunes that could delete another project's data. Keep optional integrations out of the base image.
-- Significant changes use .work/in-progress/CHG-NNNN-name/{plan.md,state.yaml}.
+- For local Go edits in a running dev stack, use `go run ./cmd/hubctl dev-rebuild --dir spaces/<user> --env dev <service>`
+  (see docs/operations.md). Verify the selected container runs the new `hermes-hub-dev-<user>-<service>:local`
+  image and check its service endpoint. Supervised `hermes-runtime` uses its dev image on the next spawn;
+  a full `hubctl up` returns Compose services to their base images.
+- Significant changes use .work/in-progress/CHG-NNNN-name/{plan.md,state.yaml}; plan new milestones with .work/milestone-playbook.md.
   Update docs/specs affected by behavior. Accepted ADRs are appended, not rewritten.
 - Do not claim integration success from mock tests. Do not add a provider with a guessed API.
 - Keep integrations opt-in. User namespace is spaces/<user>; dev/prod is Docker/env selection with separate volumes. No unsolicited framework/database/queue dependencies.

@@ -96,7 +96,7 @@ func TestUncertainHoldsOnlyOwnContext(t *testing.T) {
 	}
 	// RequeueObservations returns the admitted run to pending; only it may
 	// re-claim the held context key.
-	if err := s.RequeueObservations(time.Now().Add(time.Hour)); err != nil {
+	if err := s.RequeueObservations(time.Now().Add(time.Hour), false); err != nil {
 		t.Fatal(err)
 	}
 	if got := claimID(t, s); got != "a1" {

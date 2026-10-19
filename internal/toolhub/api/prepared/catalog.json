@@ -1,0 +1,204 @@
+[
+  {
+    "id": "notion", "name": "Notion", "license": "MIT",
+    "source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
+    "language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
+    "connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
+    "contract_id": "notion-token", "contract_revision": 1, "stateful": false,
+    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-retrieve-a-page"], "probe_tool": "API-get-self",
+    "runbook": "docs/prepared-connectors.md#notion",
+    "handoff": "Install https://github.com/makenotion/notion-mcp-server; reuse my existing Notion connection. Enter NOTION_TOKEN only in the protected Broker form. Verify a read of the shared root/pages; do not create or edit pages."
+  },
+  {
+    "id": "google-calendar", "name": "Google Calendar", "license": "MIT",
+    "source": {"repository": "https://github.com/nspady/google-calendar-mcp", "commit_sha": "7c788f58e8b00db66ddd0eccd81fdc3dda0ecf9b"},
+    "language": "node", "entrypoint": ["node", "/app/build/index.js"],
+    "connection": {"fields": [{"name": "GOOGLE_OAUTH_CREDENTIALS", "type": "json", "required": true, "secret": true, "delivery": "file", "target": "/run/mcp-secrets/google/client.json"}]},
+    "contract_id": "google-file-session", "contract_revision": 1, "stateful": true,
+    "state_target": "/home/mcp/.config/google-calendar",
+    "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
+    "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
+    "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"], "probe_tool": "list-calendars",
+    "oauth": {"provider": "google", "scopes": ["https://www.googleapis.com/auth/calendar.readonly"], "client_input": "GOOGLE_OAUTH_CREDENTIALS", "token_file": "runtime_session.json", "token_account": "normal", "token_format": "google-calendar-account-map"},
+    "runbook": "docs/prepared-connectors.md#google-calendar",
+    "handoff": "Install https://github.com/nspady/google-calendar-mcp; reuse my existing OAuth client and token state through Broker. Never paste OAuth JSON or tokens in chat. Verify list-calendars and list-events for my account."
+  },
+  {
+    "id": "github", "name": "GitHub", "license": "MIT",
+    "source": {"repository": "https://github.com/github/github-mcp-server", "commit_sha": "85598ba6e1256f7ebf4867b95d63b833c4549264"},
+    "language": "go", "entrypoint": ["/app/mcp-server", "stdio"],
+    "connection": {"fields": [{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITHUB_PERSONAL_ACCESS_TOKEN"}]},
+    "contract_id": "github-pat", "contract_revision": 1, "stateful": false,
+    "egress": ["api.github.com"], "read_tools": ["get_me", "get_file_contents"], "probe_tool": "get_me",
+    "runbook": "docs/prepared-connectors.md#github",
+    "handoff": "Install https://github.com/github/github-mcp-server; reuse my existing Broker token. Verify get_me and a read of an authorized repository. Build with the generated Go recipe. Do not mutate issues, pull requests or files."
+  },
+  {
+    "id": "gitlab", "name": "GitLab", "license": "MIT",
+    "source": {"repository": "https://github.com/zereight/gitlab-mcp", "commit_sha": "3e826c33a0c9a6cf4b5626450cbfa668f0984bd0"},
+    "language": "node", "entrypoint": ["node", "/app/build/index.js"],
+    "connection": {"fields": [
+      {"name": "GITLAB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITLAB_PERSONAL_ACCESS_TOKEN"},
+      {"name": "GITLAB_TOKEN", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "GITLAB_TOKEN"},
+      {"name": "GITLAB_API_URL", "type": "url", "required": false, "secret": false, "delivery": "env", "target": "GITLAB_API_URL"},
+      {"name": "GITLAB_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GITLAB_ENDPOINT"}
+    ]},
+    "contract_id": "gitlab-pat", "contract_revision": 2, "stateful": false,
+    "tcp_forwards": [
+      {"listen": 18929, "target_env": "GITLAB_ENDPOINT"}
+    ],
+    "egress": ["gitlab.com"], "read_tools": ["whoami"], "probe_tool": "whoami",
+    "runbook": "docs/prepared-connectors.md#gitlab",
+    "handoff": "Install https://github.com/zereight/gitlab-mcp; reuse or rotate my existing Broker connection. Confirm the HTTPS GITLAB_API_URL in the protected form; for a plain-HTTP self-hosted host give the real host:port as GITLAB_ENDPOINT and point GITLAB_API_URL at the managed forward http://127.0.0.1:18929. Then verify whoami on that host. Do not create another owner connection or change provider data."
+  },
+  {
+    "id": "atlassian", "name": "Atlassian (Jira + Confluence)", "license": "MIT",
+    "source": {"repository": "https://github.com/sooperset/mcp-atlassian", "commit_sha": "0a5d2427144d72f5aade07d4fabd385421cec401"},
+    "language": "python", "entrypoint": ["/opt/venv/bin/mcp-atlassian"],
+    "connection": {"fields": [
+      {"name": "JIRA_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "JIRA_URL"},
+      {"name": "JIRA_USERNAME", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "JIRA_USERNAME"},
+      {"name": "JIRA_API_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "JIRA_API_TOKEN"},
+      {"name": "CONFLUENCE_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "CONFLUENCE_URL"},
+      {"name": "CONFLUENCE_USERNAME", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "CONFLUENCE_USERNAME"},
+      {"name": "CONFLUENCE_API_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "CONFLUENCE_API_TOKEN"}
+    ]},
+    "contract_id": "atlassian-env", "contract_revision": 2, "stateful": false,
+    "credential_groups": [["JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"], ["CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"]],
+    "egress": ["atlassian.net", "atlassian.com"], "read_tools": ["jira_get_all_projects", "jira_get_user_profile", "jira_get_issue", "jira_search", "confluence_list_page_templates", "confluence_get_page", "confluence_search"],
+    "probe_tools": [{"tool": "jira_get_all_projects", "env": "JIRA_URL"}, {"tool": "confluence_list_page_templates", "env": "CONFLUENCE_URL"}],
+    "runbook": "docs/prepared-connectors.md#atlassian",
+    "handoff": "Install https://github.com/sooperset/mcp-atlassian; reuse or rotate my existing Broker connection. Fill the Jira block, the Confluence block or both in the protected Broker form; each URL host becomes an egress destination. Verify jira_get_all_projects or confluence_list_page_templates, then do not change provider data without an explicit instruction."
+  },
+  {
+    "id": "txttsql", "name": "TXT-to-SQL (primary SQL)", "license": "AGPL-3.0-only",
+    "source": {"repository": "https://github.com/letya999/txttsql-mcp", "commit_sha": "da0e9acad492ae6e27cda6659ceaf1efb9f00ba7"},
+    "language": "rust", "entrypoint": ["/app/target/release/txttsql-mcp", "--config", "/app/config.toml"],
+    "connection": {"fields": [
+      {"name": "TXTTSQL_SOURCES", "type": "json", "required": true, "secret": true, "delivery": "env", "target": "TXTTSQL_SOURCES"},
+      {"name": "TXTTSQL_ENDPOINT", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TXTTSQL_ENDPOINT"},
+      {"name": "TXTTSQL_ENDPOINT_2", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "TXTTSQL_ENDPOINT_2"},
+      {"name": "TXTTSQL_ENDPOINT_3", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "TXTTSQL_ENDPOINT_3"},
+      {"name": "TXTTSQL_PASSWORD_1", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "TXTTSQL_PASSWORD_1"},
+      {"name": "TXTTSQL_PASSWORD_2", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "TXTTSQL_PASSWORD_2"},
+      {"name": "TXTTSQL_PASSWORD_3", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "TXTTSQL_PASSWORD_3"},
+      {"name": "TXTTSQL_CONFIG", "type": "file", "required": false, "secret": true, "delivery": "file", "target": "/app/config.toml"},
+      {"name": "TXTTSQL_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/txttsql/ca.pem"}
+    ]},
+    "contract_id": "txttsql-sql", "contract_revision": 1, "stateful": false,
+    "tcp_forwards": [
+      {"listen": 15432, "target_env": "TXTTSQL_ENDPOINT"},
+      {"listen": 15433, "target_env": "TXTTSQL_ENDPOINT_2"},
+      {"listen": 15434, "target_env": "TXTTSQL_ENDPOINT_3"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["list_sources", "list_tables", "describe_table", "validate_sql", "execute_sql"],
+    "probe_tool": "list_sources",
+    "runbook": "docs/prepared-connectors.md#txt-to-sql",
+    "handoff": "Install https://github.com/letya999/txttsql-mcp as the reviewed read-only SQL engine. In the protected Broker form paste the sources JSON pointing each source at its managed forward (127.0.0.1:15432/15433/15434) and give the real host:port endpoints; database names, schemas and roles stay inside the sources JSON, not tool arguments. Verify list_sources, then do not change provider data without an explicit instruction."
+  },
+  {
+    "id": "dbhub", "aliases": ["sql"], "name": "DBHub (fallback SQL)", "license": "MIT",
+    "source": {"repository": "https://github.com/bytebase/dbhub", "commit_sha": "8c09c868894f1ea011565ec35215ac36e5638c1f"},
+    "language": "node", "entrypoint": ["node", "/app/dist/index.js"],
+    "connection": {"fields": [
+      {"name": "DSN", "type": "string", "required": true, "secret": true, "delivery": "env", "target": "DSN"},
+      {"name": "DBHUB_ENDPOINT", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "DBHUB_ENDPOINT"},
+      {"name": "DBHUB_SSH_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "DBHUB_SSH_ENDPOINT"},
+      {"name": "SSH_HOST", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "SSH_HOST"},
+      {"name": "SSH_PORT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "SSH_PORT"},
+      {"name": "SSH_USER", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "SSH_USER"},
+      {"name": "SSH_PASSWORD", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "SSH_PASSWORD"},
+      {"name": "SSH_KEY", "type": "token", "required": false, "secret": true, "delivery": "file", "target": "/run/dbhub/id_rsa"},
+      {"name": "SSH_PASSPHRASE", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "SSH_PASSPHRASE"},
+      {"name": "DBHUB_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/dbhub/ca.pem"}
+    ]},
+    "contract_id": "dbhub-sql", "contract_revision": 1, "stateful": false,
+    "preflight_environment": {"DSN": "sqlite:///:memory:"},
+    "tcp_forwards": [
+      {"listen": 15432, "target_env": "DBHUB_ENDPOINT"},
+      {"listen": 15433, "target_env": "DBHUB_SSH_ENDPOINT"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["execute_sql", "search_objects"],
+    "runbook": "docs/prepared-connectors.md#dbhub",
+    "handoff": "Install https://github.com/bytebase/dbhub as the fallback read-only SQL engine. In the protected Broker form paste the DSN aimed at the managed forward (127.0.0.1:15432) and give the real host:port endpoint; a read-only database role is mandatory because env-mode DBHub runs without its TOML read-only policy. Verify a SELECT against the real database, then do not change provider data without an explicit instruction."
+  },
+  {
+    "id": "grafana", "name": "Grafana", "license": "Apache-2.0",
+    "source": {"repository": "https://github.com/grafana/mcp-grafana", "commit_sha": "45cfa5d0288fbe0a26a01d7129b9a641ca738546"},
+    "language": "go", "entrypoint": ["/app/mcp-server", "--enabled-tools=search,datasource,dashboard,folder,alerting,prometheus,loki", "--disable-write"],
+    "connection": {"fields": [
+      {"name": "GRAFANA_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "GRAFANA_URL"},
+      {"name": "GRAFANA_SERVICE_ACCOUNT_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GRAFANA_SERVICE_ACCOUNT_TOKEN"},
+      {"name": "GRAFANA_ORG_ID", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GRAFANA_ORG_ID"},
+      {"name": "GRAFANA_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GRAFANA_ENDPOINT"}
+    ]},
+    "contract_id": "grafana-sat", "contract_revision": 1, "stateful": false,
+    "environment": ["GRAFANA_SOCKS5_PROXY"],
+    "runtime_environment": {"GRAFANA_USAGE_STATS": "disabled", "GRAFANA_LOKI_GUARDRAIL_MODE": "enforce"},
+    "tcp_forwards": [
+      {"listen": 13000, "target_env": "GRAFANA_ENDPOINT"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["list_datasources", "search_dashboards", "get_dashboard_by_uid", "get_dashboard_summary", "list_dashboard_versions", "list_alert_groups", "query_prometheus", "query_loki_logs"],
+    "probe_tool": "list_datasources",
+    "runbook": "docs/prepared-connectors.md#grafana",
+    "handoff": "Install https://github.com/grafana/mcp-grafana with my existing Grafana service account. In the protected Broker form give the Grafana base URL and service account token, optionally the organization ID; for a plain-HTTP Grafana also give the real host:port endpoint and set the URL to the managed forward http://127.0.0.1:13000. Verify list_datasources and a bounded read; dashboard or datasource changes stay a separate explicit instruction."
+  },
+  {
+    "id": "prometheus", "name": "Prometheus", "license": "Apache-2.0",
+    "source": {"repository": "https://github.com/prometheus/prometheus-mcp", "commit_sha": "cd0e5527617abd4cd8ec360ad901c002304ab247"},
+    "language": "go", "entrypoint": ["/app/mcp-server"],
+    "connection": {"fields": [
+      {"name": "MCP_SERVER_PROMETHEUS_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "MCP_SERVER_PROMETHEUS_URL"},
+      {"name": "PROMETHEUS_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PROMETHEUS_ENDPOINT"}
+    ]},
+    "contract_id": "prometheus-url", "contract_revision": 2, "stateful": false,
+    "context_sources": [
+      {"source": {"repository": "https://github.com/prometheus/docs", "commit_sha": "bd8a3f4fe92454ea0709895d6d9c771b8e86e710"}, "into": "cmd/prometheus-mcp/external/docs"}
+    ],
+    "runtime_environment": {"MCP_SERVER_DOCS_AUTO_UPDATE": "false", "MCP_SERVER_PROMETHEUS_TRUNCATION_LIMIT": "500", "MCP_SERVER_MCP_TOOLS": "list_targets"},
+    "tcp_forwards": [
+      {"listen": 19090, "target_env": "PROMETHEUS_ENDPOINT"}
+    ],
+    "egress": ["127.0.0.1"], "read_tools": ["query", "range_query", "metric_metadata", "label_names", "label_values", "series", "list_targets", "docs_list", "docs_read", "docs_search", "runbooks_list", "runbooks_read"],
+    "probe_tool": "list_targets",
+    "runbook": "docs/prepared-connectors.md#prometheus",
+    "handoff": "Install https://github.com/prometheus/prometheus-mcp with my Prometheus endpoint. In the protected Broker form give the Prometheus base URL and, for a plain-HTTP target, the real host:port endpoint with the URL set to the managed forward http://127.0.0.1:19090. Verify list_targets and a bounded query; TSDB admin tools stay disabled."
+  },
+  {
+    "id": "datalens", "name": "DataLens", "license": "MIT",
+    "source": {"repository": "https://github.com/datalens-tech/datalens-mcp", "commit_sha": "96b3d6baf8839c4ff5ef4adb4c10a720c5c00e74"},
+    "language": "node", "entrypoint": ["node", "/app/dist/index.js"],
+    "connection": {"fields": [
+      {"name": "DATALENS_ORG_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "DATALENS_ORG_ID"},
+      {"name": "DATALENS_API_AUTH_HEADER", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "DATALENS_API_AUTH_HEADER"},
+      {"name": "DATALENS_API_URL", "type": "url", "required": false, "secret": false, "delivery": "env", "target": "DATALENS_API_URL"}
+    ]},
+    "contract_id": "datalens-auth", "contract_revision": 1, "stateful": false,
+    "preflight_network": true,
+    "runtime_environment": {"DATALENS_YC_STATIC_AUTH": "1", "DATALENS_MAX_RESPONSE_CHARS": "100000", "NODE_USE_ENV_PROXY": "1"},
+    "egress": ["api.datalens.tech", "registry.npmjs.org"],
+    "read_tools": ["list_commands", "describe_commands", "invoke_read_command"], "probe_tool": "list_commands",
+    "runbook": "docs/prepared-connectors.md#datalens",
+    "handoff": "Install https://github.com/datalens-tech/datalens-mcp; reuse or rotate my existing Broker connection. In the protected Broker form give the organization ID and the Authorization header value — Bearer <iam-token> for cloud (IAM tokens expire in 12h) or OAuth <token> with an API URL override for an internal installation. Verify list_commands and one read through invoke_read_command, for example getWorkbooksList. Workbook, dashboard and entry changes stay a separate explicit instruction."
+  },
+  {
+    "id": "telegram", "name": "Personal Telegram", "license": "Apache-2.0",
+    "source": {"repository": "https://github.com/letya999/telegram-mcp", "commit_sha": "26f1632b2b07cca16fa8f172fe645477921db9ed"},
+    "language": "python", "python_extras": ["proxy"], "entrypoint": ["/opt/venv/bin/telegram-mcp"],
+    "connection": {"fields": [
+      {"name": "TELEGRAM_API_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TELEGRAM_API_ID"},
+      {"name": "TELEGRAM_API_HASH", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "TELEGRAM_API_HASH"},
+      {"name": "TELEGRAM_SESSION_STRING", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "TELEGRAM_SESSION_STRING"},
+      {"name": "TELEGRAM_EXPECTED_USER_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TELEGRAM_EXPECTED_USER_ID"}
+    ]},
+    "contract_id": "telegram-session", "contract_revision": 2, "stateful": false,
+    "auth_before_tools_list": true,
+    "runtime_environment": {"TELEGRAM_EXPOSED_TOOLS": "read-only", "TELEGRAM_TRANSCRIBE": "off", "TELEGRAM_DEVICE_MODEL": "hermes-hub ToolHub"},
+    "proxy_environment": ["TELEGRAM_PROXY_HOST", "TELEGRAM_PROXY_PORT"],
+    "egress": ["91.108.56.0/22", "91.108.4.0/22", "91.108.8.0/22", "91.108.16.0/22", "91.108.12.0/22", "149.154.160.0/20", "91.105.192.0/23", "91.108.20.0/22", "185.76.151.0/24"],
+    "read_tools": ["list_accounts", "get_chats", "list_chats", "get_chat", "get_history", "get_messages", "list_messages", "search_messages", "search_global", "wait_for_new_message", "wait_for_settled_message", "requeue_event", "incoming_feed_status"],
+    "probe_tool": "list_accounts",
+    "runbook": "docs/prepared-connectors.md#personal-telegram",
+    "handoff": "Call prepare_source once with https://github.com/letya999/telegram-mcp. Enter API ID, API hash, a personal StringSession and expected numeric user ID only in the protected Broker form. Verify list_accounts and a bounded history read. Bot credentials and provider writes are outside this read-only entry."
+  }
+]

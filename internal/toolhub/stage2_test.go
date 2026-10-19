@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,9 +20,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type backendFunc func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error)
+type backendFunc func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error)
 
-func (f backendFunc) Call(ctx context.Context, binding EffectiveBinding, tool ToolSpec, args map[string]any) (BackendResult, error) {
+func (f backendFunc) Call(ctx context.Context, binding api.EffectiveBinding, tool api.ToolSpec, args map[string]any) (api.BackendResult, error) {
 	return f(ctx, binding, tool, args)
 }
 
@@ -34,13 +35,13 @@ func TestProjectedToolsUseCurrentAuthorization(t *testing.T) {
 	if _, effective, err := store.ResolveProjectedTool(auth, projected[0].Name); err != nil || effective.Binding.ToolBindingID != binding.ToolBindingID {
 		t.Fatalf("projected resolve=%+v err=%v", effective, err)
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	if tools, err := store.ListProjectedTools(auth); err != nil || len(tools) != 0 {
 		t.Fatalf("disabled projection=%+v err=%v", tools, err)
 	}
-	if _, _, err := store.ResolveProjectedTool(auth, projected[0].Name); !errors.Is(err, ErrNotFound) {
+	if _, _, err := store.ResolveProjectedTool(auth, projected[0].Name); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("disabled call was not denied: %v", err)
 	}
 }
@@ -48,33 +49,33 @@ func TestProjectedToolsUseCurrentAuthorization(t *testing.T) {
 func TestProjectionAndLifecycleDenyPaths(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	for _, name := range []string{"", "bad name", strings.Repeat("x", 129)} {
-		if _, _, err := store.ResolveProjectedTool(auth, name); !errors.Is(err, ErrInvalid) {
+		if _, _, err := store.ResolveProjectedTool(auth, name); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("invalid projected name %q: %v", name, err)
 		}
 	}
 	badAuth := auth
 	badAuth.Schema = 2
-	if _, err := store.ListProjectedTools(badAuth); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.ListProjectedTools(badAuth); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid list identity: %v", err)
 	}
-	if _, _, err := store.ResolveProjectedTool(auth, "missing-tool"); !errors.Is(err, ErrNotFound) {
+	if _, _, err := store.ResolveProjectedTool(auth, "missing-tool"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("missing projected tool: %v", err)
 	}
-	shared := EffectiveBinding{Binding: ToolBinding{ContextID: "alice", WorkloadClass: Shared}, Definition: remoteDefinition()}
-	shared.Definition.Workload.Class = Shared
-	if _, err := OpenWorkloadWorkspace(t.TempDir(), shared, "job-1"); !errors.Is(err, ErrUnauthorized) {
+	shared := api.EffectiveBinding{Binding: api.ToolBinding{ContextID: "alice", WorkloadClass: api.Shared}, Definition: remoteDefinition()}
+	shared.Definition.Workload.Class = api.Shared
+	if _, err := api.OpenWorkloadWorkspace(t.TempDir(), shared, "job-1"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("shared job state accepted: %v", err)
 	}
-	if _, err := OpenWorkloadWorkspace(t.TempDir(), EffectiveBinding{Binding: binding, Definition: remoteDefinition()}, "job-1"); !errors.Is(err, ErrInvalid) {
+	if _, err := api.OpenWorkloadWorkspace(t.TempDir(), api.EffectiveBinding{Binding: binding, Definition: remoteDefinition()}, "job-1"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("per-user job state accepted: %v", err)
 	}
-	invalidClass := EffectiveBinding{Binding: binding, Definition: remoteDefinition()}
+	invalidClass := api.EffectiveBinding{Binding: binding, Definition: remoteDefinition()}
 	invalidClass.Definition.Workload.Class = "unknown"
-	if _, err := OpenWorkloadWorkspace(t.TempDir(), invalidClass, ""); !errors.Is(err, ErrInvalid) {
+	if _, err := api.OpenWorkloadWorkspace(t.TempDir(), invalidClass, ""); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("unknown workload class accepted: %v", err)
 	}
-	perJob := EffectiveBinding{Binding: ToolBinding{ContextID: "alice", WorkloadClass: PerJob}, Definition: boundedCLIDefinition()}
-	if _, err := OpenWorkloadWorkspace(t.TempDir(), perJob, "bad job"); !errors.Is(err, ErrInvalid) {
+	perJob := api.EffectiveBinding{Binding: api.ToolBinding{ContextID: "alice", WorkloadClass: api.PerJob}, Definition: boundedCLIDefinition()}
+	if _, err := api.OpenWorkloadWorkspace(t.TempDir(), perJob, "bad job"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("invalid job id accepted: %v", err)
 	}
 }
@@ -85,12 +86,12 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 	handler, err := (&Gateway{
 		Store:  store,
 		Tokens: map[string]identity.Envelope{"01234567890123456789012345678901": auth},
-		Backend: backendFunc(func(_ context.Context, effective EffectiveBinding, tool ToolSpec, args map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(_ context.Context, effective api.EffectiveBinding, tool api.ToolSpec, args map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
 			if effective.Connection == nil || effective.Connection.Owner.ID != "alice" || tool.Name != "search" || args["query"] != "hello" {
 				t.Fatalf("backend received untrusted or wrong binding: %+v %s %+v", effective, tool.Name, args)
 			}
-			return BackendResult{Text: "provider result"}, nil
+			return api.BackendResult{Text: "provider result"}, nil
 		}),
 	}).Handler()
 	if err != nil {
@@ -108,7 +109,7 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 	if err != nil || len(tools.Tools) != 2 {
 		t.Fatalf("tools/list=%+v err=%v", tools, err)
 	}
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "hello"}})
 	if err != nil || result.IsError || calls.Load() != 1 {
 		t.Fatalf("tools/call=%+v err=%v calls=%d", result, err, calls.Load())
@@ -116,7 +117,7 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"connection_id": "foreign"}}); err == nil {
 		t.Fatal("authority argument was accepted")
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, RevokedStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.RevokedStatus); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "stale"}}); err == nil {
@@ -126,21 +127,21 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 
 func TestGatewayCallBoundsBackendResult(t *testing.T) {
 	store, auth, binding := seededStore(t)
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	backendError := errors.New("backend unavailable")
 	for _, tc := range []struct {
 		name   string
-		result BackendResult
+		result api.BackendResult
 		err    error
 		want   error
 	}{
 		{name: "backend", err: backendError, want: backendError},
-		{name: "text limit", result: BackendResult{Text: strings.Repeat("x", MaxOutputBytes+1)}, want: ErrInvalid},
-		{name: "resource limit", result: BackendResult{Content: []mcp.Content{&mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "file:///readme", Text: strings.Repeat("x", MaxOutputBytes+1)}}}}, want: ErrInvalid},
-		{name: "structured limit", result: BackendResult{Structured: strings.Repeat("x", MaxOutputBytes+1)}, want: ErrInvalid},
+		{name: "text limit", result: api.BackendResult{Text: strings.Repeat("x", api.MaxOutputBytes+1)}, want: api.ErrInvalid},
+		{name: "resource limit", result: api.BackendResult{Content: []mcp.Content{&mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "file:///readme", Text: strings.Repeat("x", api.MaxOutputBytes+1)}}}}, want: api.ErrInvalid},
+		{name: "structured limit", result: api.BackendResult{Structured: strings.Repeat("x", api.MaxOutputBytes+1)}, want: api.ErrInvalid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+			gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 				return tc.result, tc.err
 			})}
 			_, err := gateway.call(context.Background(), auth, name, nil)
@@ -149,12 +150,12 @@ func TestGatewayCallBoundsBackendResult(t *testing.T) {
 			}
 		})
 	}
-	if err := store.SetBindingStatus(binding.ToolBindingID, DisabledStatus); err != nil {
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{}, nil
-	})}).call(context.Background(), auth, name, nil); !errors.Is(err, ErrNotFound) {
+	if _, err := (&Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{}, nil
+	})}).call(context.Background(), auth, name, nil); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("gateway did not recheck disabled binding: %v", err)
 	}
 }
@@ -170,23 +171,23 @@ func (t testBearerTransport) RoundTrip(request *http.Request) (*http.Response, e
 	copyRequest := request.Clone(request.Context())
 	copyRequest.Header.Set("Authorization", "Bearer "+t.token)
 	if t.jobID != "" {
-		copyRequest.Header.Set(HeaderJobID, t.jobID)
+		copyRequest.Header.Set(api.HeaderJobID, t.jobID)
 	}
 	if t.runID != "" {
-		copyRequest.Header.Set(HeaderRunID, t.runID)
+		copyRequest.Header.Set(api.HeaderRunID, t.runID)
 	}
 	return t.base.RoundTrip(copyRequest)
 }
 
 func TestPrivateBackendEndpointValidation(t *testing.T) {
 	for _, value := range []string{"http://127.0.0.1:4483/mcp", "http://host.docker.internal:8090/mcp", "http://vmcp/mcp"} {
-		if err := ValidateBackendEndpoint(value); err != nil {
+		if err := api.ValidateBackendEndpoint(value); err != nil {
 			t.Fatalf("private endpoint %q rejected: %v", value, err)
 		}
 	}
 	embeddedUserinfo := (&url.URL{Scheme: "http", Host: "127.0.0.1", Path: "/mcp", User: url.UserPassword("user", "pass")}).String()
 	for _, value := range []string{"https://evil.example/mcp", embeddedUserinfo, "http://127.0.0.1/mcp?token=secret"} {
-		if err := ValidateBackendEndpoint(value); err == nil {
+		if err := api.ValidateBackendEndpoint(value); err == nil {
 			t.Fatalf("unsafe endpoint %q accepted", value)
 		}
 	}
@@ -214,14 +215,14 @@ func TestMCPBackendUsesPrivateMCPContract(t *testing.T) {
 	connection := *effective.Connection
 	connection.Metadata = map[string]string{"mcp_endpoint": httpServer.URL + "/mcp"}
 	effective.Connection = &connection
-	result, err := (MCPBackend{HTTPClient: httpServer.Client(), Token: "backend-token"}).Call(context.Background(), effective, effective.Definition.Tools[0], map[string]any{})
+	result, err := (api.MCPBackend{HTTPClient: httpServer.Client(), Token: "backend-token"}).Call(context.Background(), effective, effective.Definition.Tools[0], map[string]any{})
 	if err != nil || result.Text != "backend result" || len(result.Content) != 2 {
 		t.Fatalf("MCP backend result=%+v err=%v", result, err)
 	}
-	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return result, nil
 	})}
-	forwarded, err := gateway.call(t.Context(), auth, ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, effective.Definition.Tools[0].Name), map[string]any{})
+	forwarded, err := gateway.call(t.Context(), auth, api.ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, effective.Definition.Tools[0].Name), map[string]any{})
 	if err != nil || len(forwarded.Content) != 2 || forwarded.Content[1].(*mcp.EmbeddedResource).Resource.Text != "repository file" {
 		t.Fatal("gateway discarded embedded resource", err)
 	}
@@ -229,7 +230,7 @@ func TestMCPBackendUsesPrivateMCPContract(t *testing.T) {
 
 func TestLegacyMCPRoundTripperPinsCompatibleProtocol(t *testing.T) {
 	called := false
-	transport := legacyMCPRoundTripper{base: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+	transport := api.LegacyMCPRoundTripper{Base: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		called = true
 		if got := request.Header.Get("MCP-Protocol-Version"); got != legacyMCPVersion {
 			t.Fatalf("protocol header=%q", got)
@@ -247,26 +248,26 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
 func TestMCPBackendDenyPathsAndBearer(t *testing.T) {
-	if _, err := (MCPBackend{}).Call(context.Background(), EffectiveBinding{}, ToolSpec{Name: "search"}, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := (api.MCPBackend{}).Call(context.Background(), api.EffectiveBinding{}, api.ToolSpec{Name: "search"}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("missing connection accepted: %v", err)
 	}
-	connection := &Connection{Metadata: map[string]string{}}
-	effective := EffectiveBinding{Connection: connection}
-	if _, err := (MCPBackend{}).Call(context.Background(), effective, ToolSpec{Name: "search"}, nil); !errors.Is(err, ErrInvalid) {
+	connection := &api.Connection{Metadata: map[string]string{}}
+	effective := api.EffectiveBinding{Connection: connection}
+	if _, err := (api.MCPBackend{}).Call(context.Background(), effective, api.ToolSpec{Name: "search"}, nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("missing backend endpoint accepted: %v", err)
 	}
-	if schema := cliInputSchema(ToolSpec{Name: "query", Arguments: []CLIArgument{{Name: "text", Flag: "--text", Type: "string", Required: true}}}); schema["additionalProperties"] != false {
+	if schema := api.CliInputSchema(api.ToolSpec{Name: "query", Arguments: []api.CLIArgument{{Name: "text", Flag: "--text", Type: "string", Required: true}}}); schema["additionalProperties"] != false {
 		t.Fatalf("CLI schema permits undeclared arguments: %#v", schema)
 	}
 }
 
 func TestContainerMCPRequiresExternalAdmission(t *testing.T) {
 	definition := statefulContainerDefinition()
-	effective := EffectiveBinding{Definition: definition, Connection: &Connection{Metadata: map[string]string{"mcp_endpoint": "http://127.0.0.1:4483/mcp"}}}
-	if _, err := (MCPBackend{}).Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	effective := api.EffectiveBinding{Definition: definition, Connection: &api.Connection{Metadata: map[string]string{"mcp_endpoint": "http://127.0.0.1:4483/mcp"}}}
+	if _, err := (api.MCPBackend{}).Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("container execution without controller was admitted: %v", err)
 	}
-	if _, err := (MCPBackend{Admission: func(context.Context, EffectiveBinding) error { return errors.New("limits unavailable") }}).Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	if _, err := (api.MCPBackend{Admission: func(context.Context, api.EffectiveBinding) error { return errors.New("limits unavailable") }}).Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("controller denial was not fail-closed: %v", err)
 	}
 }
@@ -280,9 +281,9 @@ func TestContainerMCPUsesControllerEndpointWithoutConnection(t *testing.T) {
 	httpServer := httptest.NewServer(backendHandler)
 	defer httpServer.Close()
 	definition := statefulContainerDefinition()
-	effective := EffectiveBinding{Definition: definition, WorkloadID: "fixture-workload"}
-	result, err := (MCPBackend{HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
-		return AdmissionReceipt{WorkloadID: "fixture-workload", State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+	effective := api.EffectiveBinding{Definition: definition, WorkloadID: "fixture-workload"}
+	result, err := (api.MCPBackend{HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
+		return api.AdmissionReceipt{WorkloadID: "fixture-workload", State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
 	}}).Call(context.Background(), effective, definition.Tools[0], nil)
 	if err != nil || result.Text != "controller endpoint" {
 		t.Fatalf("controller endpoint result=%+v err=%v", result, err)
@@ -292,25 +293,25 @@ func TestContainerMCPUsesControllerEndpointWithoutConnection(t *testing.T) {
 func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
 	definition := statefulContainerDefinition()
 	root := t.TempDir()
-	effective := EffectiveBinding{
-		Binding:    ToolBinding{ToolBindingID: "bind-ready", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
-		Definition: definition, Connection: &Connection{ConnectionID: "stateful", Metadata: map[string]string{}}, WorkloadID: "ready-workload",
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: "bind-ready", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: api.PerUser},
+		Definition: definition, Connection: &api.Connection{ConnectionID: "stateful", Metadata: map[string]string{}}, WorkloadID: "ready-workload",
 	}
-	backend := MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, got EffectiveBinding) (AdmissionReceipt, error) {
-		workspace, err := OpenWorkloadWorkspace(root, got, "")
+	backend := api.MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, got api.EffectiveBinding) (api.AdmissionReceipt, error) {
+		workspace, err := api.OpenWorkloadWorkspace(root, got, "")
 		if err != nil {
-			return AdmissionReceipt{}, err
+			return api.AdmissionReceipt{}, err
 		}
 		data, err := os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
 		if err != nil || string(data) != "SERVICE_TOKEN=fixture-secret" {
-			return AdmissionReceipt{}, fmt.Errorf("credentials not ready: %q: %v", data, err)
+			return api.AdmissionReceipt{}, fmt.Errorf("credentials not ready: %q: %v", data, err)
 		}
-		return AdmissionReceipt{WorkloadID: got.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+		return api.AdmissionReceipt{WorkloadID: got.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
 	}}
 	if err := backend.EnsureReady(context.Background(), effective, map[string]string{"SERVICE_TOKEN": "fixture-secret"}); err != nil {
 		t.Fatal(err)
 	}
-	workspace, err := OpenWorkloadWorkspace(root, effective, "")
+	workspace, err := api.OpenWorkloadWorkspace(root, effective, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,8 +319,8 @@ func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
 		t.Fatalf("ready credentials were removed: %v", err)
 	}
 	denied := backend
-	denied.AdmissionVerifier = func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
-		return AdmissionReceipt{}, errors.New("denied")
+	denied.AdmissionVerifier = func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
+		return api.AdmissionReceipt{}, errors.New("denied")
 	}
 	if err := denied.EnsureReady(context.Background(), effective, map[string]string{"SERVICE_TOKEN": "new-secret"}); err == nil {
 		t.Fatal("denied readiness accepted")
@@ -335,14 +336,14 @@ func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
 		// failed first admission does not leave a new credentials file behind.
 		t.Fatal("fresh denied readiness accepted")
 	}
-	freshWorkspace, err := OpenWorkloadWorkspace(fresh.Root, effective, "")
+	freshWorkspace, err := api.OpenWorkloadWorkspace(fresh.Root, effective, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(freshWorkspace.Path, "credentials.env")); !os.IsNotExist(err) {
 		t.Fatalf("failed fresh readiness left credentials: %v", err)
 	}
-	noProof := MCPBackend{Root: t.TempDir(), Admission: func(context.Context, EffectiveBinding) error { return nil }}
+	noProof := api.MCPBackend{Root: t.TempDir(), Admission: func(context.Context, api.EffectiveBinding) error { return nil }}
 	if err := noProof.EnsureReady(context.Background(), effective, nil); err == nil {
 		t.Fatal("admission without receipt accepted")
 	}
@@ -351,25 +352,25 @@ func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
 func TestContainerMCPFileCredentialReadinessQuiescesAndWipes(t *testing.T) {
 	definition := statefulContainerDefinition()
 	root := t.TempDir()
-	effective := EffectiveBinding{
-		Binding:    ToolBinding{ToolBindingID: "bind-file-ready", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
-		Definition: definition, Connection: &Connection{ConnectionID: "stateful", Metadata: map[string]string{}}, WorkloadID: "ready-file-workload",
-		CredentialMounts: []Mount{{Source: "/run/broker-materialized/lease/client.json", Target: "/run/mcp-secrets/client.json", ReadOnly: true}},
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: "bind-file-ready", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: api.PerUser},
+		Definition: definition, Connection: &api.Connection{ConnectionID: "stateful", Metadata: map[string]string{}}, WorkloadID: "ready-file-workload",
+		CredentialMounts: []api.Mount{{Source: "/run/broker-materialized/lease/client.json", Target: "/run/mcp-secrets/client.json", ReadOnly: true}},
 	}
 	releases := 0
-	backend := MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, got EffectiveBinding) (AdmissionReceipt, error) {
+	backend := api.MCPBackend{Root: root, AdmissionVerifier: func(_ context.Context, got api.EffectiveBinding) (api.AdmissionReceipt, error) {
 		if len(got.CredentialMounts) != 1 || got.CredentialMounts[0].Target != "/run/mcp-secrets/client.json" {
-			return AdmissionReceipt{}, errors.New("file mount was not admitted")
+			return api.AdmissionReceipt{}, errors.New("file mount was not admitted")
 		}
-		workspace, err := OpenWorkloadWorkspace(root, got, "")
+		workspace, err := api.OpenWorkloadWorkspace(root, got, "")
 		if err != nil {
-			return AdmissionReceipt{}, err
+			return api.AdmissionReceipt{}, err
 		}
 		data, err := os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
 		if err != nil || string(data) != "SERVICE_TOKEN=/run/mcp-secrets/client.json" {
-			return AdmissionReceipt{}, fmt.Errorf("file path was not delivered: %q: %v", data, err)
+			return api.AdmissionReceipt{}, fmt.Errorf("file path was not delivered: %q: %v", data, err)
 		}
-		return AdmissionReceipt{WorkloadID: got.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+		return api.AdmissionReceipt{WorkloadID: got.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
 	}, AdmissionRelease: func(_ context.Context, workloadID string) error {
 		if workloadID != effective.WorkloadID {
 			return errors.New("wrong workload released")
@@ -383,7 +384,7 @@ func TestContainerMCPFileCredentialReadinessQuiescesAndWipes(t *testing.T) {
 	if releases != 1 {
 		t.Fatalf("file credential workload releases=%d", releases)
 	}
-	workspace, err := OpenWorkloadWorkspace(root, effective, "")
+	workspace, err := api.OpenWorkloadWorkspace(root, effective, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,8 +395,8 @@ func TestContainerMCPFileCredentialReadinessQuiescesAndWipes(t *testing.T) {
 	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); err == nil {
 		t.Fatal("workload release failure accepted as ready")
 	}
-	backend.AdmissionVerifier = func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
-		return AdmissionReceipt{WorkloadID: "foreign-workload", State: "running", Enforced: true}, nil
+	backend.AdmissionVerifier = func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
+		return api.AdmissionReceipt{WorkloadID: "foreign-workload", State: "running", Enforced: true}, nil
 	}
 	backend.AdmissionRelease = func(_ context.Context, workloadID string) error {
 		if workloadID != effective.WorkloadID {
@@ -404,17 +405,17 @@ func TestContainerMCPFileCredentialReadinessQuiescesAndWipes(t *testing.T) {
 		releases++
 		return nil
 	}
-	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); !errors.Is(err, ErrIsolation) || releases != 2 {
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); !errors.Is(err, api.ErrIsolation) || releases != 2 {
 		t.Fatalf("invalid admission proof left workload running: releases=%d err=%v", releases, err)
 	}
 	backend.AdmissionRelease = nil
-	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); !errors.Is(err, ErrIsolation) {
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "/run/mcp-secrets/client.json"}); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("file credential readiness without a stop path: %v", err)
 	}
 }
 
 func TestPreparedReadinessRequiresSafeProviderResult(t *testing.T) {
-	entries, err := PreparedCatalog()
+	entries, err := api.PreparedCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,23 +435,23 @@ func TestPreparedReadinessRequiresSafeProviderResult(t *testing.T) {
 	defer httpServer.Close()
 	definition := statefulContainerDefinition()
 	definition.Source.Repository, definition.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
-	definition.Tools = []ToolSpec{{Name: entry.ProbeTool, Effect: ReadEffect}}
-	effective := EffectiveBinding{
-		Binding:    ToolBinding{ToolBindingID: "bind-provider-probe", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
-		Definition: definition, Connection: &Connection{ConnectionID: "provider", Metadata: map[string]string{}}, WorkloadID: "provider-probe-workload",
+	definition.Tools = []api.ToolSpec{{Name: entry.ProbeTool, Effect: api.ReadEffect}}
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: "bind-provider-probe", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: api.PerUser},
+		Definition: definition, Connection: &api.Connection{ConnectionID: "provider", Metadata: map[string]string{}}, WorkloadID: "provider-probe-workload",
 	}
 	releases := 0
-	backend := MCPBackend{Root: t.TempDir(), HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
-		return AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+	backend := api.MCPBackend{Root: t.TempDir(), HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
+		return api.AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
 	}, AdmissionRelease: func(context.Context, string) error { releases++; return nil }}
 	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "fixture-only"}); err != nil || calls != 1 || releases != 0 {
 		t.Fatalf("safe provider result did not prove readiness: calls=%d releases=%d err=%v", calls, releases, err)
 	}
 	denied = true
-	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "invalid-fixture"}); !errors.Is(err, ErrUnauthorized) || calls != 2 || releases != 1 {
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"SERVICE_TOKEN": "invalid-fixture"}); !errors.Is(err, api.ErrUnauthorized) || calls != 2 || releases != 1 {
 		t.Fatalf("provider denial was accepted: calls=%d releases=%d err=%v", calls, releases, err)
 	}
-	workspace, err := OpenWorkloadWorkspace(backend.Root, effective, "")
+	workspace, err := api.OpenWorkloadWorkspace(backend.Root, effective, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,15 +459,15 @@ func TestPreparedReadinessRequiresSafeProviderResult(t *testing.T) {
 		t.Fatalf("probe retained an environment file: %v", err)
 	}
 	effective.Definition.Tools = nil
-	if err := backend.EnsureReady(t.Context(), effective, nil); !errors.Is(err, ErrStale) {
+	if err := backend.EnsureReady(t.Context(), effective, nil); !errors.Is(err, api.ErrStale) {
 		t.Fatalf("missing reviewed provider probe accepted: %v", err)
 	}
 	effective.Definition = definition
 	denied = false
 	definition.Source.Repository, definition.Source.CommitSHA = entries[1].Source.Repository, entries[1].Source.CommitSHA
-	definition.Tools = []ToolSpec{{Name: entries[1].ProbeTool, Effect: ReadEffect}}
+	definition.Tools = []api.ToolSpec{{Name: entries[1].ProbeTool, Effect: api.ReadEffect}}
 	effective.Definition = definition
-	effective.CredentialMounts = []Mount{{Source: "/run/broker-materialized/lease/client.json", Target: "/run/mcp-secrets/client.json", ReadOnly: true}}
+	effective.CredentialMounts = []api.Mount{{Source: "/run/broker-materialized/lease/client.json", Target: "/run/mcp-secrets/client.json", ReadOnly: true}}
 	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"GOOGLE_OAUTH_CREDENTIALS": "/run/mcp-secrets/client.json"}); err != nil || calls != 3 || releases != 2 {
 		t.Fatalf("file credential probe did not stop the workload before checkpoint: calls=%d releases=%d err=%v", calls, releases, err)
 	}
@@ -476,11 +477,11 @@ func TestPreparedReadinessRequiresSafeProviderResult(t *testing.T) {
 }
 
 func TestPreparedProbeCandidateSelectsByDeliveredCredential(t *testing.T) {
-	entries, err := PreparedCatalog()
+	entries, err := api.PreparedCatalog()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var entry PreparedEntry
+	var entry api.PreparedEntry
 	for _, candidate := range entries {
 		if candidate.ID == "atlassian" {
 			entry = candidate
@@ -489,7 +490,7 @@ func TestPreparedProbeCandidateSelectsByDeliveredCredential(t *testing.T) {
 	if len(entry.ProbeTools) != 2 || len(entry.CredentialGroups) != 2 {
 		t.Fatalf("atlassian entry lost its alternatives: %+v", entry)
 	}
-	config := entry.apply(defaultSelfInstallConfig(entry.Source))
+	config := entry.Apply(api.DefaultSelfInstallConfig(entry.Source))
 	if len(config.CredentialGroups) != 2 {
 		t.Fatal("prepared credential groups did not reach the import config")
 	}
@@ -506,13 +507,13 @@ func TestPreparedProbeCandidateSelectsByDeliveredCredential(t *testing.T) {
 	defer httpServer.Close()
 	definition := statefulContainerDefinition()
 	definition.Source.Repository, definition.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
-	definition.Tools = []ToolSpec{{Name: "jira_get_all_projects", Effect: ReadEffect}, {Name: "confluence_list_page_templates", Effect: ReadEffect}}
-	effective := EffectiveBinding{
-		Binding:    ToolBinding{ToolBindingID: "bind-atlassian-probe", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: PerUser},
-		Definition: definition, Connection: &Connection{ConnectionID: "provider", Metadata: map[string]string{}}, WorkloadID: "atlassian-probe-workload",
+	definition.Tools = []api.ToolSpec{{Name: "jira_get_all_projects", Effect: api.ReadEffect}, {Name: "confluence_list_page_templates", Effect: api.ReadEffect}}
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: "bind-atlassian-probe", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", WorkloadClass: api.PerUser},
+		Definition: definition, Connection: &api.Connection{ConnectionID: "provider", Metadata: map[string]string{}}, WorkloadID: "atlassian-probe-workload",
 	}
-	backend := MCPBackend{Root: t.TempDir(), HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, EffectiveBinding) (AdmissionReceipt, error) {
-		return AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+	backend := api.MCPBackend{Root: t.TempDir(), HTTPClient: httpServer.Client(), AdmissionVerifier: func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
+		return api.AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, Endpoint: httpServer.URL + "/mcp", ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
 	}}
 	jiraEnv := map[string]string{"JIRA_URL": "x", "JIRA_USERNAME": "x", "JIRA_API_TOKEN": "x"}
 	if err := backend.EnsureReady(t.Context(), effective, jiraEnv); err != nil || called["jira_get_all_projects"] != 1 || called["confluence_list_page_templates"] != 0 {
@@ -522,7 +523,7 @@ func TestPreparedProbeCandidateSelectsByDeliveredCredential(t *testing.T) {
 	if err := backend.EnsureReady(t.Context(), effective, confluenceEnv); err != nil || called["confluence_list_page_templates"] != 1 {
 		t.Fatalf("confluence block did not select the confluence probe: called=%v err=%v", called, err)
 	}
-	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"UNRELATED": "x"}); !errors.Is(err, ErrStale) {
+	if err := backend.EnsureReady(t.Context(), effective, map[string]string{"UNRELATED": "x"}); !errors.Is(err, api.ErrStale) {
 		t.Fatalf("probe without a delivered credential group was accepted: %v", err)
 	}
 }
@@ -534,7 +535,7 @@ func TestWorkloadWorkspacePersistenceAndJobCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	userWorkspace, err := OpenWorkloadWorkspace(root, effective, "")
+	userWorkspace, err := api.OpenWorkloadWorkspace(root, effective, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,19 +546,19 @@ func TestWorkloadWorkspacePersistenceAndJobCleanup(t *testing.T) {
 	if err := userWorkspace.Cleanup(); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := OpenWorkloadWorkspace(root, effective, "")
+	restarted, err := api.OpenWorkloadWorkspace(root, effective, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if body, err := os.ReadFile(filepath.Join(restarted.Path, "state")); err != nil || string(body) != "preserve" {
 		t.Fatalf("per-user state did not survive restart: %q %v", body, err)
 	}
-	jobEffective := EffectiveBinding{Binding: ToolBinding{ContextID: "alice", WorkloadClass: PerJob}, Definition: boundedCLIDefinition()}
-	job, err := OpenWorkloadWorkspace(root, jobEffective, "job-1")
+	jobEffective := api.EffectiveBinding{Binding: api.ToolBinding{ContextID: "alice", WorkloadClass: api.PerJob}, Definition: boundedCLIDefinition()}
+	job, err := api.OpenWorkloadWorkspace(root, jobEffective, "job-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Path == "" || !containedPath(root, job.Path) {
+	if job.Path == "" || !api.ContainedPath(root, job.Path) {
 		t.Fatalf("job workspace escaped root: %q", job.Path)
 	}
 	if err := job.Cleanup(); err != nil {
@@ -570,15 +571,15 @@ func TestWorkloadWorkspacePersistenceAndJobCleanup(t *testing.T) {
 
 func TestCLIRunnerSubmitsExecRequest(t *testing.T) {
 	definition := testCLIDefinition("rg", []string{"--no-heading"})
-	definition.Workload.Class = PerUser
+	definition.Workload.Class = api.PerUser
 	root := t.TempDir()
-	runner := CLIRunner{Root: root}
+	runner := api.CLIRunner{Root: root}
 	effective := cliCallEffective(definition)
-	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("missing exec channel was not denied: %v", err)
 	}
 	var checked atomic.Bool
-	execFn, captured := runnerExecStub(t, func(req *cliExecRequest) {
+	execFn, captured := runnerExecStub(t, func(req *api.CliExecRequest) {
 		checked.Store(req.Command == "rg" && req.Args[0] == "--no-heading" && req.Principal == "alice" && req.BindingID == "bind-alice" && req.Workspace.Scope == "binding" && strings.HasPrefix(req.Workspace.Path, root))
 	})
 	runner.Exec = execFn
@@ -586,22 +587,22 @@ func TestCLIRunnerSubmitsExecRequest(t *testing.T) {
 	if err != nil || result.IsError || !checked.Load() || result.Text != "ok" {
 		t.Fatalf("cli result=%+v err=%v request=%+v", result, err, captured)
 	}
-	if _, err := cliArguments(nil, definition.Tools[0], map[string]any{"foreign": "value"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := api.CliArguments(nil, definition.Tools[0], map[string]any{"foreign": "value"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("undeclared CLI argument=%v", err)
 	}
-	if _, err := cliArguments(nil, definition.Tools[0], map[string]any{"query": "$(touch /tmp/pwned)"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := api.CliArguments(nil, definition.Tools[0], map[string]any{"query": "$(touch /tmp/pwned)"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("undeclared shell-like argument=%v", err)
 	}
 }
 
 func TestCLIArgumentSchemaAndRunnerDenyPaths(t *testing.T) {
-	tool := ToolSpec{Name: "query", Effect: ReadEffect, Arguments: []CLIArgument{
+	tool := api.ToolSpec{Name: "query", Effect: api.ReadEffect, Arguments: []api.CLIArgument{
 		{Name: "text", Flag: "--text", Type: "string", Required: true},
 		{Name: "count", Flag: "--count", Type: "integer"},
 		{Name: "ratio", Flag: "--ratio", Type: "number"},
 		{Name: "verbose", Flag: "--verbose", Type: "boolean"},
 	}}
-	args, err := cliArguments([]string{"list"}, tool, map[string]any{"text": "hello", "count": float64(2), "ratio": 1.5, "verbose": false})
+	args, err := api.CliArguments([]string{"list"}, tool, map[string]any{"text": "hello", "count": float64(2), "ratio": 1.5, "verbose": false})
 	if err != nil || strings.Join(args, " ") != "list --text hello --count 2 --ratio 1.5 --verbose=false" {
 		t.Fatalf("CLI args=%v err=%v", args, err)
 	}
@@ -613,65 +614,65 @@ func TestCLIArgumentSchemaAndRunnerDenyPaths(t *testing.T) {
 		{"text": "hello", "verbose": "true"},
 		{"text": "bad\nvalue"},
 	} {
-		if _, err := cliArguments(nil, tool, values); err == nil {
+		if _, err := api.CliArguments(nil, tool, values); err == nil {
 			t.Fatalf("invalid CLI args accepted: %#v", values)
 		}
 	}
-	if got := redactOutput("token=secret", map[string]string{"TOKEN": "secret"}); got != "token=[REDACTED]" {
+	if got := api.RedactOutput("token=secret", map[string]string{"TOKEN": "secret"}); got != "token=[REDACTED]" {
 		t.Fatalf("output was not redacted: %q", got)
 	}
 	for _, command := range []string{"sh", "bash", "cmd", "powershell", "sh -c", "cmd.exe", "powershell.exe", "bash.exe", "pwsh.exe", "script.bat", "script.cmd"} {
-		if validCommand(command) {
+		if api.ValidCommand(command) {
 			t.Fatalf("shell command accepted: %q", command)
 		}
 	}
-	if !validCommand(os.Args[0]) || validCommand("bad;command") {
+	if !api.ValidCommand(os.Args[0]) || api.ValidCommand("bad;command") {
 		t.Fatal("direct command validation regression")
 	}
 	invalid := boundedCLIDefinition()
-	invalid.Tools[0].Arguments = []CLIArgument{{Name: "query", Flag: "-q", Type: "string"}}
+	invalid.Tools[0].Arguments = []api.CLIArgument{{Name: "query", Flag: "-q", Type: "string"}}
 	if err := invalid.Validate(); err == nil {
 		t.Fatal("invalid CLI argument schema accepted")
 	}
 
 	root := t.TempDir()
 	definition := testCLIDefinition("rg", []string{"--no-heading"})
-	definition.Workload.Class = PerUser
+	definition.Workload.Class = api.PerUser
 	effective := cliCallEffective(definition)
 	execFn, _ := runnerExecStub(t, nil)
-	runner := CLIRunner{Root: root, Exec: execFn}
-	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"not-allowed": "x"}); !errors.Is(err, ErrUnauthorized) {
+	runner := api.CLIRunner{Root: root, Exec: execFn}
+	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"not-allowed": "x"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid environment key accepted: %v", err)
 	}
 	listed := runner
 	listed.AllowedEnvironment = map[string]bool{"GITLAB_TOKEN": true}
-	if _, err := listed.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"NOT_ALLOWED": "x"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := listed.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"NOT_ALLOWED": "x"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unallowlisted environment accepted: %v", err)
 	}
 	// The controller reports output-limit as a completed response flag; the
 	// runner maps it to the typed error.
-	runner.Exec = func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+	runner.Exec = func(ctx context.Context, req api.CliExecRequest) (api.CliExecResponse, error) {
 		response, _ := execFn(ctx, req)
 		response.Error = "output-limit"
 		return response, nil
 	}
-	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, ErrOutputLimit) {
+	if _, err := runner.Call(context.Background(), effective, definition.Tools[0], nil); !errors.Is(err, api.ErrOutputLimit) {
 		t.Fatalf("CLI output limit was not enforced: %v", err)
 	}
-	definition.Transport = RemoteMCP
-	if _, err := runner.Call(context.Background(), cliCallEffective(definition), definition.Tools[0], nil); !errors.Is(err, ErrInvalid) {
+	definition.Transport = api.RemoteMCP
+	if _, err := runner.Call(context.Background(), cliCallEffective(definition), definition.Tools[0], nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("wrong CLI transport accepted: %v", err)
 	}
 }
 
-func testCLIDefinition(command string, args []string) ToolDefinition {
-	return ToolDefinition{
-		Schema: SchemaVersion, DefinitionID: "test-cli", Version: "1.0.0", Transport: BoundedCLI,
-		Source:    DefinitionSource{Command: command, Args: args},
-		Workload:  WorkloadPolicy{Class: PerJob, Rationale: "test process is cleaned after one job"},
-		Execution: ExecutionPolicy{TimeoutSeconds: 5, OutputBytes: 4096, CPUMillis: 100, MemoryMiB: 64, MaxPIDs: 8, Egress: []string{"test.invalid"}},
-		Health:    HealthProbe{Kind: "exec", Value: command, TimeoutSeconds: 1},
-		Tools:     []ToolSpec{{Name: "run", Effect: ReadEffect}},
+func testCLIDefinition(command string, args []string) api.ToolDefinition {
+	return api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "test-cli", Version: "1.0.0", Transport: api.BoundedCLI,
+		Source:    api.DefinitionSource{Command: command, Args: args},
+		Workload:  api.WorkloadPolicy{Class: api.PerJob, Rationale: "test process is cleaned after one job"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 5, OutputBytes: 4096, CPUMillis: 100, MemoryMiB: 64, MaxPIDs: 8, Egress: []string{"test.invalid"}},
+		Health:    api.HealthProbe{Kind: "exec", Value: command, TimeoutSeconds: 1},
+		Tools:     []api.ToolSpec{{Name: "run", Effect: api.ReadEffect}},
 	}
 }
 
@@ -679,12 +680,12 @@ func TestCLIRunnerCancellationReachesController(t *testing.T) {
 	// The runner never spawns a process; the call context is the only
 	// cancellation signal and it must reach the controller request.
 	definition := testCLIDefinition("rg", nil)
-	definition.Workload.Class = PerUser
+	definition.Workload.Class = api.PerUser
 	entered := make(chan struct{})
-	runner := CLIRunner{Root: t.TempDir(), Exec: func(ctx context.Context, req cliExecRequest) (cliExecResponse, error) {
+	runner := api.CLIRunner{Root: t.TempDir(), Exec: func(ctx context.Context, req api.CliExecRequest) (api.CliExecResponse, error) {
 		close(entered)
 		<-ctx.Done()
-		return cliExecResponse{}, ctx.Err()
+		return api.CliExecResponse{}, ctx.Err()
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
@@ -705,13 +706,13 @@ func TestCLIRunnerCancellationReachesController(t *testing.T) {
 
 func TestGatewayCallHoldsAdmissionFence(t *testing.T) {
 	store, auth, binding := seededStore(t)
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		close(entered)
 		<-release
-		return BackendResult{Text: "ok"}, nil
+		return api.BackendResult{Text: "ok"}, nil
 	})}
 	done := make(chan error, 1)
 	go func() {
@@ -720,7 +721,7 @@ func TestGatewayCallHoldsAdmissionFence(t *testing.T) {
 	}()
 	<-entered
 	revoked := make(chan error, 1)
-	go func() { revoked <- store.SetBindingStatus(binding.ToolBindingID, RevokedStatus) }()
+	go func() { revoked <- store.SetBindingStatus(binding.ToolBindingID, api.RevokedStatus) }()
 	select {
 	case err := <-revoked:
 		t.Fatalf("revocation overtook admitted gateway call: %v", err)
@@ -733,17 +734,17 @@ func TestGatewayCallHoldsAdmissionFence(t *testing.T) {
 	if err := <-revoked; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "hello"}); !errors.Is(err, ErrNotFound) {
+	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "hello"}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("revoked binding still callable: %v", err)
 	}
 }
 
 func TestGatewayAuditOmitsSecrets(t *testing.T) {
 	store, auth, _ := seededStore(t)
-	name := ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	var events []map[string]string
-	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{Text: "ok"}, nil
+	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
 	}), Audit: func(event string, fields map[string]string) {
 		copied := map[string]string{"event": event}
 		for key, value := range fields {
@@ -765,7 +766,7 @@ func TestGatewayAuditOmitsSecrets(t *testing.T) {
 		if strings.Contains(blob, "super-secret-token") || strings.Contains(blob, "local://") || strings.Contains(blob, "GOOGLE_TOKEN") {
 			t.Fatalf("audit leaked secret material: %+v", event)
 		}
-		if event["principal_id"] != "alice" || event["binding_id"] == "" || event["backend"] != string(RemoteMCP) {
+		if event["principal_id"] != "alice" || event["binding_id"] == "" || event["backend"] != string(api.RemoteMCP) {
 			t.Fatalf("audit missing identity: %+v", event)
 		}
 	}
@@ -773,17 +774,17 @@ func TestGatewayAuditOmitsSecrets(t *testing.T) {
 
 func TestRoutingBackendDispatchesCLIAndMCP(t *testing.T) {
 	var mcpCalls, cliCalls atomic.Int32
-	backend := RoutingBackend{
-		MCP: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+	backend := api.RoutingBackend{
+		MCP: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			mcpCalls.Add(1)
-			return BackendResult{Text: "mcp"}, nil
+			return api.BackendResult{Text: "mcp"}, nil
 		}),
-		CLI: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		CLI: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			cliCalls.Add(1)
-			return BackendResult{Text: "cli"}, nil
+			return api.BackendResult{Text: "cli"}, nil
 		}),
 	}
-	cliEffective := EffectiveBinding{Definition: boundedCLIDefinition()}
+	cliEffective := api.EffectiveBinding{Definition: boundedCLIDefinition()}
 	if result, err := backend.Call(context.Background(), cliEffective, cliEffective.Definition.Tools[0], nil); err != nil || result.Text != "cli" || cliCalls.Load() != 1 || mcpCalls.Load() != 0 {
 		t.Fatalf("cli dispatch result=%+v err=%v mcp=%d cli=%d", result, err, mcpCalls.Load(), cliCalls.Load())
 	}
@@ -795,14 +796,14 @@ func TestRoutingBackendDispatchesCLIAndMCP(t *testing.T) {
 	if result, err := backend.Call(context.Background(), effective, effective.Definition.Tools[0], nil); err != nil || result.Text != "mcp" || mcpCalls.Load() != 1 {
 		t.Fatalf("mcp dispatch result=%+v err=%v mcp=%d", result, err, mcpCalls.Load())
 	}
-	if _, err := (RoutingBackend{}).Call(context.Background(), cliEffective, cliEffective.Definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	if _, err := (api.RoutingBackend{}).Call(context.Background(), cliEffective, cliEffective.Definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("missing CLI backend error=%v", err)
 	}
-	runner := CLIRunner{Root: t.TempDir()}
-	if _, err := runner.Call(context.Background(), cliEffective, cliEffective.Definition.Tools[0], nil); !errors.Is(err, ErrIsolation) {
+	runner := api.CLIRunner{Root: t.TempDir()}
+	if _, err := runner.Call(context.Background(), cliEffective, cliEffective.Definition.Tools[0], nil); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("CLI without a controller channel error=%v", err)
 	}
-	if _, err := (RoutingBackend{CLI: backend.CLI}).Call(context.Background(), effective, effective.Definition.Tools[0], nil); !errors.Is(err, ErrInvalid) {
+	if _, err := (api.RoutingBackend{CLI: backend.CLI}).Call(context.Background(), effective, effective.Definition.Tools[0], nil); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("missing MCP backend error=%v", err)
 	}
 }
@@ -811,18 +812,18 @@ type envCaptureBackend struct {
 	env map[string]string
 }
 
-func (e *envCaptureBackend) Call(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any) (BackendResult, error) {
+func (e *envCaptureBackend) Call(ctx context.Context, effective api.EffectiveBinding, tool api.ToolSpec, arguments map[string]any) (api.BackendResult, error) {
 	return e.CallEnv(ctx, effective, tool, arguments, nil)
 }
 
-func (e *envCaptureBackend) CallEnv(_ context.Context, _ EffectiveBinding, _ ToolSpec, _ map[string]any, environment map[string]string) (BackendResult, error) {
+func (e *envCaptureBackend) CallEnv(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, _ map[string]any, environment map[string]string) (api.BackendResult, error) {
 	e.env = environment
-	return BackendResult{Text: "mcp-env"}, nil
+	return api.BackendResult{Text: "mcp-env"}, nil
 }
 
 func TestRoutingBackendPassesEnvToMCP(t *testing.T) {
 	capture := &envCaptureBackend{}
-	backend := RoutingBackend{MCP: capture}
+	backend := api.RoutingBackend{MCP: capture}
 	store, auth, binding := seededStore(t)
 	effective, err := store.Resolve(auth, binding.ToolBindingID)
 	if err != nil {
@@ -838,17 +839,17 @@ func TestRoutingBackendPassesEnvToMCP(t *testing.T) {
 func TestCLIRunnerNilAllowlistAcceptsCredentialKeys(t *testing.T) {
 	root := t.TempDir()
 	definition := testCLIDefinition("rg", nil)
-	definition.Workload.Class = PerUser
+	definition.Workload.Class = api.PerUser
 	effective := cliCallEffective(definition)
 	execFn, captured := runnerExecStub(t, nil)
-	runner := CLIRunner{Root: root, Exec: execFn}
-	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"not-valid": "x"}); !errors.Is(err, ErrUnauthorized) {
+	runner := api.CLIRunner{Root: root, Exec: execFn}
+	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"not-valid": "x"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid env key accepted: %v", err)
 	}
 	if _, err := runner.CallEnv(context.Background(), effective, definition.Tools[0], nil, map[string]string{"GOOGLE_TOKEN": "from-admit"}); err != nil {
 		t.Fatalf("nil allowlist denied credential key: %v", err)
 	}
-	if !contains(captured.Env, "GOOGLE_TOKEN=from-admit") {
+	if !api.Contains(captured.Env, "GOOGLE_TOKEN=from-admit") {
 		t.Fatalf("credential env not forwarded to controller: %v", captured.Env)
 	}
 }
@@ -857,8 +858,8 @@ func TestGatewayRejectsBadAuthenticationBeforeMCP(t *testing.T) {
 	store, auth, _ := seededStore(t)
 	validToken := "01234567890123456789012345678901"
 	newHandler := func() http.Handler {
-		handler, err := (&Gateway{Store: store, Tokens: map[string]identity.Envelope{validToken: auth}, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-			return BackendResult{}, nil
+		handler, err := (&Gateway{Store: store, Tokens: map[string]identity.Envelope{validToken: auth}, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{}, nil
 		})}).Handler()
 		if err != nil {
 			t.Fatal(err)
@@ -883,14 +884,14 @@ func TestGatewayRejectsBadAuthenticationBeforeMCP(t *testing.T) {
 			t.Fatalf("gateway status=%d want=%d for %#v", response.Code, tc.status, tc)
 		}
 	}
-	if _, err := (&Gateway{Store: store, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{}, nil
-	})}).Handler(); !errors.Is(err, ErrInvalid) {
+	if _, err := (&Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{}, nil
+	})}).Handler(); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("missing token map accepted: %v", err)
 	}
-	if _, err := (&Gateway{Store: store, Tokens: map[string]identity.Envelope{"short": auth}, Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
-		return BackendResult{}, nil
-	})}).Handler(); !errors.Is(err, ErrInvalid) {
+	if _, err := (&Gateway{Store: store, Tokens: map[string]identity.Envelope{"short": auth}, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{}, nil
+	})}).Handler(); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("short token accepted: %v", err)
 	}
 }
@@ -902,26 +903,26 @@ func TestAdmittedProviderResourceOwnerDoesNotSelectAuthority(t *testing.T) {
 	definition.Tools[0].InputSchema = json.RawMessage(`{"type":"object","properties":{"owner":{"type":"string"},"principal_id":{"type":"string"}}}`)
 	store.definitions[key] = definition
 	calls := 0
-	gateway := Gateway{Store: store, Backend: backendFunc(func(_ context.Context, effective EffectiveBinding, _ ToolSpec, args map[string]any) (BackendResult, error) {
+	gateway := Gateway{Store: store, Backend: backendFunc(func(_ context.Context, effective api.EffectiveBinding, _ api.ToolSpec, args map[string]any) (api.BackendResult, error) {
 		calls++
 		if effective.Connection.Owner.ID != auth.PrincipalID || args["owner"] != "repository-org" {
 			t.Fatal("resource owner changed authority")
 		}
-		return BackendResult{Text: "ok"}, nil
+		return api.BackendResult{Text: "ok"}, nil
 	})}
-	name := ProjectedToolName(definition.DefinitionID, definition.Version, definition.Tools[0].Name)
+	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, definition.Tools[0].Name)
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"owner": "repository-org"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range []map[string]any{{"principal_id": "other"}, {"user": "other"}, {"credential_ref": "other"}, {"Owner": "other"}} {
-		if _, err := gateway.call(context.Background(), auth, name, args); !errors.Is(err, ErrUnauthorized) {
+		if _, err := gateway.call(context.Background(), auth, name, args); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("authority accepted: %v", err)
 		}
 	}
 	if calls != 1 {
 		t.Fatalf("backend calls=%d", calls)
 	}
-	if err := RejectAuthorityArguments(map[string]any{"owner": "repository-org"}); !errors.Is(err, ErrUnauthorized) {
+	if err := api.RejectAuthorityArguments(map[string]any{"owner": "repository-org"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatal("control-plane guard weakened")
 	}
 }

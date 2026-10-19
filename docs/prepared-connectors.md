@@ -4,7 +4,7 @@ last_verified: 2026-10-07
 ---
 # Prepared connectors
 
-The reviewed [catalog](../internal/toolhub/prepared/catalog.json) records exact
+The reviewed [catalog](../internal/toolhub/api/prepared/catalog.json) records exact
 commits, licenses, inferred entrypoints, credential overlays, Broker contracts,
 runtime settings, egress, read tools and user handoffs. New entries require data,
 not provider branches. `context_sources` merges another exact-pinned GitHub
@@ -17,9 +17,9 @@ the definition and bound into the review digest. A reviewed entry may declare
 probe then runs with egress and placeholder credentials, matching what the
 credentialed probe already does. Unprepared sources keep `--network none`.
 Live evidence is tracked in
-[CHG-0036](../.work/in-progress/CHG-0036-repository-driven-toolhub/plan.md).
+[CHG-0036](../.work/done/CHG-0036-repository-driven-toolhub/plan.md).
 
-Reviewed Broker contracts ship in `internal/toolhub/prepared/contracts/` and
+Reviewed Broker contracts ship in `internal/toolhub/api/prepared/contracts/` and
 are validated with their prepared entries. Provision them into the Broker's
 configured contracts directory before enrollment; the Broker control API does
 not expose contract registration. Missing contracts are deployment errors,
@@ -91,11 +91,19 @@ ordinary arguments; runtime identity and credential selectors remain reserved.
 For replacement, explicitly call `rotate` with the existing `onboarding_id`,
 complete the Broker form, confirm and enable. The old owner workload stops
 before new credentials are admitted. Ambiguous active connections fail closed.
-`status` resumes onboarding; retry transient failures with the same request key.
+`status` resumes onboarding; retry transient failures with the same request key
+(`operation_id` resolves an onboarding by that key). Lifecycle operations also
+accept a conversational `selector` — the definition id, the exact source
+repository URL or its basename — which fails closed with a candidate list when
+ambiguous instead of guessing.
 Upgrade by reviewing the new SHA and catalog data, retaining the old artifact
 and evidence. `disable` removes projection, `revoke` denies further access and
-releases the workload, and `remove` also cleans its workspace. Shared immutable
-artifacts must not be deleted while another owner uses them.
+releases the workload, and `remove` is destructive two-phase: a bare call
+returns a preview with `requires_confirmation` and a `remove_nonce`; only the
+nonce-carrying repeat deletes the credential ciphertext, unreferenced
+connection and binding rows and the workspace, leaving a scrubbed onboarding
+tombstone for idempotent replay. Shared immutable artifacts must not be
+deleted while another owner uses them.
 
 ## Bundle IDs and one-operation start
 
@@ -150,10 +158,11 @@ local copy. Enter the resulting StringSession and numeric `get_me().id` only
 in the Broker form. For the same account, the local `job_ftch` login helper's
 `Authenticated as: ... id=...` output is another way to obtain that ID. The
 fork's generator creates a new session; it does not convert an existing
-`.session` file. Set `telegram_auth: true` alongside `ingress: [telegram]`
-and render/build the dev stack to enable an opt-in Communication Hub image.
-That image also offers
-a local QR page when ToolHub sends a Telegram Broker credential request. It
+`.session` file. On stacks with `ingress: [telegram]` the standard
+Communication Hub already offers a local QR page when ToolHub sends a
+credential request whose reviewed contract declares `intake: telegram_qr`
+(the `telegram-session` contract does); set `telegram_auth: false` to disable
+it. The QR flow
 uses Go MTProto in the same gateway process, shows the QR only at the
 loopback-bound page, handles a two-step password there and creates a new
 Telethon-compatible StringSession in memory. After the owner confirms the
@@ -209,6 +218,21 @@ Handoff: “Install the pinned `letya999/telegram-mcp` personal connector with
 `prepare_source`. I will enter API ID, API hash, a separate StringSession and
 expected user ID only in the protected form. Verify `list_accounts` and a
 bounded history read; leave sends and deletes disabled.”
+
+The read set also carries four event tools for hub event subscriptions:
+`wait_for_new_message` and `wait_for_settled_message` return a bounded batch
+of new events for one poll, `requeue_event` puts one dropped event back by
+its id only, and `incoming_feed_status` reports feed health. An event
+subscription (`watch_subscribe`) polls one of these projected read tools at
+its own schedule cadence through ToolHub's read-only `/v1/tool-call`; the
+hub deduplicates event ids in its durable seen-set, fans out deliveries or
+one bundled agent job, and marks the subscription degraded on a connector
+auth failure. With `delivery=stream` the hub keeps one bounded wait call
+outstanding per live subscription, so `wait_for_settled_message`-class
+tools deliver settled bursts in seconds without a persistent workload;
+otherwise the source is polled at the subscription's cadence. There is
+still no always-on push ingress, and `requeue_event` receives only the
+event id or chat id, never owner content.
 
 ## Blocked bundle entries
 
@@ -272,8 +296,12 @@ Broker token; verify identity and a safe repository read.”
 Source: [zereight/gitlab-mcp](https://github.com/zereight/gitlab-mcp). Both bin
 aliases resolve to `build/index.js`. Generated Node build ignores upstream cache
 mounts as installation authority. Broker: `gitlab-pat`, delivering
-`GITLAB_PERSONAL_ACCESS_TOKEN`, compatibility alias `GITLAB_TOKEN` and non-secret
-`GITLAB_API_URL`. Confirm the intended HTTPS API URL in the protected form;
+`GITLAB_PERSONAL_ACCESS_TOKEN`, compatibility alias `GITLAB_TOKEN`, non-secret
+`GITLAB_API_URL` and `GITLAB_ENDPOINT` — the real host:port of a plain-HTTP
+self-hosted instance behind the managed loopback forward on `18929`. Upstream
+env knobs the contract does not declare (for example `GITLAB_PROJECT_ID` from
+`docker/.env.example`) stay optional extras, never required form inputs.
+Confirm the intended HTTPS API URL in the protected form;
 its host becomes an egress destination. Secrets, authenticated URLs and URLs
 with queries cannot expand egress. Verify current-user/whoami after rotation.
 On failure, check credentials and the confirmed host on the same connection;

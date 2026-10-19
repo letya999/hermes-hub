@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +37,13 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			requests++
 			var input brokerv1.CreateRequest
@@ -79,7 +88,7 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "broker-test", definition, "", "")
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-test", definition, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +99,7 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Phase != PhaseAwaitingConfirm || stored.Locator != "credential_1" {
+	if stored.Phase != api.PhaseAwaitingConfirm || stored.Locator != "credential_1" {
 		t.Fatalf("broker request did not become ready: %+v", stored)
 	}
 	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.ConfirmationNonce}); err != nil {
@@ -115,14 +124,14 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if err := injection.Cleanup(); err != nil {
 		t.Fatal(err)
 	}
-	reinstall, err := control.newOnboarding(auth, OnboardingCatalog, "reinstall", definition, "", "")
+	reinstall, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := control.ensureBrokerRequest(t.Context(), auth, &reinstall, definition); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 1 || reinstall.BrokerCredentialID != "credential_1" || reinstall.Phase != PhaseAwaitingConfirm {
+	if requests != 1 || reinstall.BrokerCredentialID != "credential_1" || reinstall.Phase != api.PhaseAwaitingConfirm {
 		t.Fatal("reinstall created new enrollment")
 	}
 	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": reinstall.ConfirmationNonce}); err != nil {
@@ -153,11 +162,11 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 
 func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	noop := brokerRuntimeInjector(nil, nil)
-	injection, err := noop(t.Context(), EffectiveBinding{})
+	injection, err := noop(t.Context(), api.EffectiveBinding{})
 	if err != nil || injection.Environment == nil || injection.Cleanup != nil {
 		t.Fatalf("non-broker binding: injection=%+v err=%v", injection, err)
 	}
-	effective := EffectiveBinding{Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1"}, WorkloadID: "workload_1"}
+	effective := api.EffectiveBinding{Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1"}, WorkloadID: "workload_1"}
 	for _, pair := range [][2]*credentialbroker.Config{{nil, nil}, {{}, nil}, {nil, {}}} {
 		if _, err := brokerRuntimeInjector(pair[0], pair[1])(t.Context(), effective); err == nil {
 			t.Fatal("incomplete broker runtime configuration accepted")
@@ -166,19 +175,19 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	if _, err := brokerRuntimeInjector(&credentialbroker.Config{}, &credentialbroker.Config{})(t.Context(), effective); err == nil {
 		t.Fatal("disabled broker runtime accepted")
 	}
-	local := func(context.Context, EffectiveBinding) (CredentialInjection, error) {
-		return CredentialInjection{Environment: map[string]string{"TOKEN": "local"}}, nil
+	local := func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
+		return api.CredentialInjection{Environment: map[string]string{"TOKEN": "local"}}, nil
 	}
-	broker := func(context.Context, EffectiveBinding) (CredentialInjection, error) {
-		return CredentialInjection{Environment: map[string]string{"TOKEN": "broker"}}, nil
+	broker := func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
+		return api.CredentialInjection{Environment: map[string]string{"TOKEN": "broker"}}, nil
 	}
-	localBinding := EffectiveBinding{Credential: &CredentialReference{Backend: "local"}}
-	brokerBinding := EffectiveBinding{Credential: &CredentialReference{Backend: "credential-broker"}}
-	credentialFreeBinding := EffectiveBinding{Definition: ToolDefinition{Credentials: nil}}
+	localBinding := api.EffectiveBinding{Credential: &api.CredentialReference{Backend: "local"}}
+	brokerBinding := api.EffectiveBinding{Credential: &api.CredentialReference{Backend: "credential-broker"}}
+	credentialFreeBinding := api.EffectiveBinding{Definition: api.ToolDefinition{Credentials: nil}}
 	for _, test := range []struct {
 		name string
-		fn   CredentialInjector
-		b    EffectiveBinding
+		fn   api.CredentialInjector
+		b    api.EffectiveBinding
 		want string
 	}{
 		{"both-local", mergeCredentialInjectors(local, broker, false), localBinding, "local"},
@@ -194,9 +203,9 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 			}
 		})
 	}
-	contractedLocal := EffectiveBinding{
-		Definition: ToolDefinition{CredentialContractID: "github-pat", Credentials: []CredentialInput{{Name: "TOKEN", Required: true}}},
-		Credential: &CredentialReference{Backend: "local"},
+	contractedLocal := api.EffectiveBinding{
+		Definition: api.ToolDefinition{CredentialContractID: "github-pat", Credentials: []api.CredentialInput{{Name: "TOKEN", Required: true}}},
+		Credential: &api.CredentialReference{Backend: "local"},
 	}
 	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), contractedLocal); err == nil {
 		t.Fatal("broker-only mode accepted a local reference for a contracted definition")
@@ -209,7 +218,7 @@ func TestCredentialBrokerInjectorAndModeSelection(t *testing.T) {
 	if err != nil || len(injection.Environment) != 0 || injection.Cleanup != nil {
 		t.Fatalf("broker-only mode rejected a credential-free definition: injection=%+v err=%v", injection, err)
 	}
-	credentialRequiredWithoutRef := EffectiveBinding{Definition: ToolDefinition{Credentials: []CredentialInput{{Name: "TOKEN", Required: true}}}}
+	credentialRequiredWithoutRef := api.EffectiveBinding{Definition: api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "TOKEN", Required: true}}}}
 	if _, err := mergeCredentialInjectors(local, broker, true)(t.Context(), credentialRequiredWithoutRef); err == nil {
 		t.Fatal("broker-only mode accepted a credential-free binding for a credentialed definition")
 	}
@@ -270,9 +279,9 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	effective := EffectiveBinding{
-		Binding:    ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
-		Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: []string{"TOKEN"}, BrokerEnv: map[string]string{"TOKEN": "TARGET"}},
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: []string{"TOKEN"}, BrokerEnv: map[string]string{"TOKEN": "TARGET"}},
 		WorkloadID: "workload_1",
 	}
 	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
@@ -305,8 +314,8 @@ func TestCredentialBrokerRuntimeFailsClosedOnDeliveryProblems(t *testing.T) {
 		t.Fatal("mount without required environment delivery was accepted")
 	}
 	mode = "missing"
-	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil {
-		t.Fatal("missing broker environment was accepted")
+	if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); err == nil || !errors.Is(err, api.ErrCredentialDelivery) {
+		t.Fatalf("missing broker environment was accepted or misclassified: %v", err)
 	}
 	if _, err := brokerRuntimeInjector(&cfg, &credentialbroker.Config{URL: server.URL, KeyFile: filepath.Join(t.TempDir(), "missing.key"), KeyID: "toolhub", Issuer: "hermes-toolhub"})(t.Context(), effective); err == nil {
 		t.Fatal("runtime signing key failure was ignored")
@@ -360,17 +369,17 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	names := []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN", "CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"}
-	credentials := make([]CredentialInput, len(names))
+	credentials := make([]api.CredentialInput, len(names))
 	brokerEnv := map[string]string{}
 	for index, name := range names {
-		credentials[index] = CredentialInput{Name: name, Required: true}
+		credentials[index] = api.CredentialInput{Name: name, Required: true}
 		brokerEnv[name] = name
 	}
-	effective := EffectiveBinding{
-		Binding: ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
-		Definition: ToolDefinition{DefinitionID: "atlassian", Credentials: credentials,
+	effective := api.EffectiveBinding{
+		Binding: api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Definition: api.ToolDefinition{DefinitionID: "atlassian", Credentials: credentials,
 			CredentialGroups: [][]string{{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, {"CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"}}},
-		Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: names, BrokerEnv: brokerEnv},
+		Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: names, BrokerEnv: brokerEnv},
 		WorkloadID: "workload_1",
 	}
 	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
@@ -384,7 +393,7 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 	}
 	for _, incomplete := range []string{"partial", "empty"} {
 		mode = incomplete
-		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, ErrIsolation) {
+		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, api.ErrIsolation) || !errors.Is(err, api.ErrCredentialDelivery) {
 			t.Fatalf("incomplete alternative groups accepted (%s): %v", incomplete, err)
 		}
 	}
@@ -393,7 +402,7 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	auth := aliceAuth()
 	definition := remoteDefinition()
-	if err := (&ControlPlane{}).ensureBrokerRequest(t.Context(), auth, &Onboarding{}, definition); err != nil {
+	if err := (&ControlPlane{}).ensureBrokerRequest(t.Context(), auth, &api.Onboarding{}, definition); err != nil {
 		t.Fatal(err)
 	}
 	if err := (&ControlPlane{}).refreshBrokerRequest(t.Context(), auth, nil); err != nil {
@@ -401,7 +410,7 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	}
 	definition.CredentialContractID = ""
 	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: "https://broker.example"}}
-	if err := control.ensureBrokerRequest(t.Context(), auth, &Onboarding{}, definition); err == nil {
+	if err := control.ensureBrokerRequest(t.Context(), auth, &api.Onboarding{}, definition); err == nil {
 		t.Fatal("missing reviewed contract accepted")
 	}
 	store := NewStore()
@@ -410,11 +419,11 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	if err := store.RegisterDefinition(stored); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := Onboarding{
-		Schema: SchemaVersion, OnboardingID: "onboard_broker_status", PrincipalID: auth.PrincipalID,
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onboard_broker_status", PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: OnboardingCatalog, DefinitionID: "github-work", DefinitionVersion: "1.0.0",
-		Phase: PhaseAwaitingCreds, Required: []CredentialHint{{Name: "TOKEN", Type: "token"}},
+		Mode: api.OnboardingCatalog, DefinitionID: "github-work", DefinitionVersion: "1.0.0",
+		Phase: api.PhaseAwaitingCreds, Required: []api.CredentialHint{{Name: "TOKEN", Type: "token"}},
 		BrokerRequestID: "request_1", BrokerAuthorizationURL: "https://broker.example/connect/request_1",
 		Revision: 1, CreatedAt: time.Now(),
 	}
@@ -429,12 +438,12 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 	if _, err := control.status(auth, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&ControlPlane{}).ensureBrokerGrant(t.Context(), auth, definition, onboarding, ToolBinding{}); err == nil {
+	if _, err := (&ControlPlane{}).ensureBrokerGrant(t.Context(), auth, definition, onboarding, api.ToolBinding{}); err == nil {
 		t.Fatal("missing broker configuration accepted")
 	}
 	onboarding.BrokerCredentialID = "credential_1"
 	control.Broker = &credentialbroker.Config{URL: "https://broker.example"}
-	if _, err := control.ensureBrokerGrant(t.Context(), auth, definition, onboarding, ToolBinding{WorkloadClass: PerJob}); err == nil {
+	if _, err := control.ensureBrokerGrant(t.Context(), auth, definition, onboarding, api.ToolBinding{WorkloadClass: api.PerJob}); err == nil {
 		t.Fatal("per-job broker grant accepted")
 	}
 }
@@ -442,26 +451,26 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 func TestCredentialBrokerContractValidation(t *testing.T) {
 	cases := []struct {
 		name string
-		edit func(*ToolDefinition)
+		edit func(*api.ToolDefinition)
 	}{
-		{"revision-without-contract", func(d *ToolDefinition) { d.CredentialContractRevision = 1 }},
-		{"invalid-contract-id", func(d *ToolDefinition) { d.CredentialContractID = "bad/id"; d.CredentialContractRevision = 1 }},
-		{"invalid-input-name", func(d *ToolDefinition) {
+		{"revision-without-contract", func(d *api.ToolDefinition) { d.CredentialContractRevision = 1 }},
+		{"invalid-contract-id", func(d *api.ToolDefinition) { d.CredentialContractID = "bad/id"; d.CredentialContractRevision = 1 }},
+		{"invalid-input-name", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 			d.CredentialContractEnv = map[string]string{"BAD-NAME": "TARGET"}
 		}},
-		{"unknown-input-name", func(d *ToolDefinition) {
+		{"unknown-input-name", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 			d.CredentialContractEnv = map[string]string{"OTHER_TOKEN": "TARGET"}
 		}},
-		{"invalid-target-name", func(d *ToolDefinition) {
+		{"invalid-target-name", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 			d.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "BAD-NAME"}
 		}},
-		{"missing-required-mapping", func(d *ToolDefinition) {
+		{"missing-required-mapping", func(d *api.ToolDefinition) {
 			d.CredentialContractID = "github-pat"
 			d.CredentialContractRevision = 1
 		}},
@@ -492,6 +501,13 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_old":
 			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_old", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "expired", AuthorizationURL: "https://broker.example/connect/request_old"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			var in map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&in)
@@ -505,6 +521,19 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// A re-minted request is dead to the owner unless the channel is told:
+	// the QR invite or form link must be delivered again, not just stored.
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/remint"})
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
 	auth := aliceAuth()
 	definition := remoteDefinition()
 	definition.CredentialContractID = "github-pat"
@@ -515,7 +544,7 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "broker-regen", definition, "", "")
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-regen", definition, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,8 +558,11 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body["broker_request_id"] != "request_new" || body["authorization_url"] != "https://broker.example/connect/request_new" {
+	if body["broker_request_id"] != "request_new" || body["signin_url"] != "http://localhost:8081/telegram-auth/remint" {
 		t.Fatalf("dead link was not replaced: %v", body)
+	}
+	if notice["broker_request_id"] != "request_new" {
+		t.Fatalf("owner was not told about the re-minted request: %v", notice)
 	}
 	stored, err := store.OnboardingFor(auth, onboarding.OnboardingID)
 	if err != nil {
@@ -539,8 +571,380 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	if stored.BrokerAttempts != 1 || stored.BrokerRequestID != "request_new" {
 		t.Fatalf("unexpected regeneration state: %+v", stored)
 	}
+	if stored.ChannelAuthURL != "http://localhost:8081/telegram-auth/remint" {
+		t.Fatalf("channel sign-in link not recorded: %+v", stored)
+	}
 	if len(idempotencyKeys) != 1 || idempotencyKeys[0] == stored.OnboardingID {
 		t.Fatalf("retry must use a fresh idempotency key: %v", idempotencyKeys)
+	}
+}
+
+// A request the broker no longer has (ledger reset, volume drift) is re-minted
+// on demand — and the owner must be told, or the QR invite is never issued.
+func TestCredentialBrokerMissingRequestRegeneratesAndNotifies(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_new", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_new"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_new":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_new", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_new"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-missing", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_gone"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_gone"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	if notice["broker_request_id"] != "request_new" {
+		t.Fatalf("owner was not told about the re-minted request: %v", notice)
+	}
+}
+
+// A still-pending request also deserves a re-notice: the QR invite it produced
+// has a shorter TTL than the request itself, so asking again must re-deliver
+// the link instead of leaving the owner with the dead page.
+func TestCredentialBrokerPendingRequestReNotifies(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_live" {
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_live"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/tok123"})
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-pending", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_live"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_live"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if notice["broker_request_id"] != "request_live" {
+		t.Fatalf("owner was not re-notified about the live request: %v", notice)
+	}
+	if body["signin_url"] != "http://localhost:8081/telegram-auth/tok123" {
+		t.Fatalf("channel sign-in link missing from the tool result: %v", body["signin_url"])
+	}
+}
+
+// A pending request with less life left than a QR invite's TTL would mint a
+// link that dies before the owner finishes scanning; treat it as dead and
+// re-mint instead.
+func TestCredentialBrokerDyingRequestRegenerates(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_dying":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_dying", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_dying", ExpiresAt: time.Now().Add(5 * time.Minute)})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_fresh", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_fresh", ExpiresAt: time.Now().Add(15 * time.Minute)})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_fresh":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_fresh", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_fresh", ExpiresAt: time.Now().Add(15 * time.Minute)})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-dying", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_dying"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_dying"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["broker_request_id"] != "request_fresh" {
+		t.Fatalf("dying request was not replaced: %v", body)
+	}
+	if notice["broker_request_id"] != "request_fresh" {
+		t.Fatalf("owner was not told about the re-minted request: %v", notice)
+	}
+}
+
+// For a contract declaring QR intake the status result must steer the agent to
+// the channel notice, not parrot the Broker form URL as the primary path —
+// otherwise the user keeps clicking the wrong link.
+func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_live" {
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", ContractID: "telegram-session", ContractRevision: 2, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_live", ExpiresAt: time.Now().Add(15 * time.Minute)})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/qr-abc"})
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "telegram-session"
+	definition.CredentialContractRevision = 2
+	definition.CredentialContractEnv = map[string]string{
+		"TELEGRAM_API_ID":           "TELEGRAM_API_ID",
+		"TELEGRAM_API_HASH":         "TELEGRAM_API_HASH",
+		"TELEGRAM_SESSION_STRING":   "TELEGRAM_SESSION_STRING",
+		"TELEGRAM_EXPECTED_USER_ID": "TELEGRAM_EXPECTED_USER_ID",
+	}
+	definition.Credentials = nil
+	for name := range definition.CredentialContractEnv {
+		definition.Credentials = append(definition.Credentials, api.CredentialInput{Name: name, Required: true})
+	}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_live"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_live"
+	onboarding.BrokerContractID = "telegram-session"
+	onboarding.BrokerContractRevision = 2
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["signin_url"] != "http://localhost:8081/telegram-auth/qr-abc" {
+		t.Fatalf("channel sign-in link missing from the tool result: %v", body["signin_url"])
+	}
+	if _, parrotable := body["authorization_url"]; parrotable {
+		t.Fatalf("form URL still exposed for the agent to parrot: %v", body["authorization_url"])
+	}
+	instructions, _ := body["instructions"].(string)
+	if !strings.Contains(instructions, "signin_url") || strings.Contains(instructions, "open the credential URL") {
+		t.Fatalf("QR intake still pushes the form as primary path: %q", instructions)
+	}
+}
+
+// A stale informational error (admission-pending noise recorded before the
+// channel link existed) must not suppress signin_url: with neither URL in the
+// result the agent reconstructs the Broker connect URL from broker_request_id.
+func TestStatusQRIntakeKeepsSignInURLWithStaleError(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_live" {
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", ContractID: "telegram-session", ContractRevision: 2, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_live", ExpiresAt: time.Now().Add(15 * time.Minute)})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/stale-err"})
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "telegram-session"
+	definition.CredentialContractRevision = 2
+	definition.CredentialContractEnv = map[string]string{
+		"TELEGRAM_API_ID":           "TELEGRAM_API_ID",
+		"TELEGRAM_API_HASH":         "TELEGRAM_API_HASH",
+		"TELEGRAM_SESSION_STRING":   "TELEGRAM_SESSION_STRING",
+		"TELEGRAM_EXPECTED_USER_ID": "TELEGRAM_EXPECTED_USER_ID",
+	}
+	definition.Credentials = nil
+	for name := range definition.CredentialContractEnv {
+		definition.Credentials = append(definition.Credentials, api.CredentialInput{Name: name, Required: true})
+	}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_live"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_live"
+	onboarding.BrokerContractID = "telegram-session"
+	onboarding.BrokerContractRevision = 2
+	onboarding.ChannelAuthURL = "http://localhost:8081/telegram-auth/stale-err"
+	onboarding.AdmissionPending = true
+	onboarding.Error = "Provider login is required before this MCP can list tools; enter credentials in the protected Broker form, then verify the read probe."
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.status(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["signin_url"] != "http://localhost:8081/telegram-auth/stale-err" {
+		t.Fatalf("stale informational error suppressed the channel sign-in link: %v", body)
+	}
+	if _, parrotable := body["authorization_url"]; parrotable {
+		t.Fatalf("form URL still exposed for the agent to parrot: %v", body["authorization_url"])
+	}
+	instructions, _ := body["instructions"].(string)
+	if strings.Contains(instructions, "authorization_url") || strings.Contains(instructions, "fallback") {
+		t.Fatalf("instructions still name the Broker form; the agent will parrot it: %q", instructions)
 	}
 }
 
@@ -573,12 +977,21 @@ func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(catalog)
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/contracts" {
+			var in contract.Contract
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			in.Storage = "local"
+			catalog = append(catalog, in)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(in)
+			return
+		}
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
 
 	definition := remoteDefinition()
-	definition.Credentials = []CredentialInput{
+	definition.Credentials = []api.CredentialInput{
 		{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true},
 		{Name: "GITLAB_TOKEN", Required: true},
 		{Name: "GITLAB_API_URL"},
@@ -596,7 +1009,7 @@ func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
 	}
 
 	bound := remoteDefinition()
-	bound.Credentials = []CredentialInput{
+	bound.Credentials = []api.CredentialInput{
 		{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true},
 		{Name: "GITLAB_TOKEN", Required: true},
 		{Name: "GITLAB_API_URL"},
@@ -668,7 +1081,7 @@ func TestBindReviewedContractKeepsPinnedRevision(t *testing.T) {
 	}))
 	defer server.Close()
 	definition := remoteDefinition()
-	definition.Credentials = []CredentialInput{
+	definition.Credentials = []api.CredentialInput{
 		{Name: "JIRA_URL", Required: true}, {Name: "JIRA_USERNAME", Required: true}, {Name: "JIRA_API_TOKEN", Required: true},
 		{Name: "CONFLUENCE_URL", Required: true}, {Name: "CONFLUENCE_USERNAME", Required: true}, {Name: "CONFLUENCE_API_TOKEN", Required: true},
 	}
@@ -721,16 +1134,16 @@ func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+	old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
 	if err := store.PutCredentialReference(old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error { return nil }}
-	onboarding := Onboarding{OnboardingID: "onboard-new", Locator: "credential_2", BrokerCredentialID: "credential_2", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	onboarding := api.Onboarding{OnboardingID: "onboard-new", Locator: "credential_2", BrokerCredentialID: "credential_2", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}}}
 	binding, err := control.materializeBinding(t.Context(), auth, onboarding, definition)
 	if err != nil {
 		t.Fatalf("broker rotation rejected: %v", err)
@@ -747,7 +1160,7 @@ func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
 	if reference.Backend != "credential-broker" || reference.BrokerGrantID != "grant_2" || reference.BrokerEnv["GOOGLE_TOKEN"] != "GOOGLE_TOKEN" {
 		t.Fatalf("rotated reference lost broker fields: %+v", reference)
 	}
-	if store.credentials[old.CredentialRefID].Status != RevokedStatus {
+	if store.credentials[old.CredentialRefID].Status != api.RevokedStatus {
 		t.Fatal("previous credential reference was not revoked")
 	}
 }
@@ -773,6 +1186,13 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
 					_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", ConnectionID: "conn-existing", Status: scenario})
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+					var c contract.Contract
+					if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+						t.Error(err)
+					}
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(c)
 				case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 					requests++
 					_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_2", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "conn-existing", Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_2"})
@@ -794,16 +1214,16 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 			if err := store.RegisterDefinition(definition); err != nil {
 				t.Fatal(err)
 			}
-			old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+			old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
 			if err := store.PutCredentialReference(old); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+			if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 				t.Fatal(err)
 			}
 			cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 			control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-			onboarding, err := control.newOnboarding(auth, OnboardingCatalog, "reinstall", definition, "", "")
+			onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -811,12 +1231,12 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "active" {
-				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Phase != PhaseAwaitingConfirm {
+				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Phase != api.PhaseAwaitingConfirm {
 					t.Fatalf("live credential was not reused: requests=%d onboarding=%+v", requests, onboarding)
 				}
 				return
 			}
-			if requests != 1 || onboarding.BrokerRequestID != "request_2" || onboarding.BrokerCredentialID == "credential_1" || onboarding.Phase == PhaseAwaitingConfirm {
+			if requests != 1 || onboarding.BrokerRequestID != "request_2" || onboarding.BrokerCredentialID == "credential_1" || onboarding.Phase == api.PhaseAwaitingConfirm {
 				t.Fatalf("revoked credential was reused: requests=%d onboarding=%+v", requests, onboarding)
 			}
 		})
@@ -869,22 +1289,22 @@ func TestMaterializeBindingRegrantsForNewDefinitionVersion(t *testing.T) {
 	if err := store.RegisterDefinition(upgraded); err != nil {
 		t.Fatal(err)
 	}
-	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
+	old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-existing", 1), ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerGrantID: "grant_1"}
 	if err := store.PutCredentialReference(old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-existing", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: stale.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: stale.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: stale.DefinitionID, DefinitionVersion: stale.Version, ConnectionID: "conn-existing", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: stale.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: 1}
-	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: stale.DefinitionID, DefinitionVersion: stale.Version, ConnectionID: "conn-existing", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: stale.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, EffectiveBinding) error { return nil }}
-	onboarding := Onboarding{OnboardingID: "onboard-upgrade", Locator: "credential_1", BrokerCredentialID: "credential_1", Required: []CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	onboarding := api.Onboarding{OnboardingID: "onboard-upgrade", Locator: "credential_1", BrokerCredentialID: "credential_1", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}}}
 	next, err := control.materializeBinding(t.Context(), auth, onboarding, upgraded)
 	if err != nil {
 		t.Fatalf("upgrade materialization rejected: %v", err)
@@ -917,24 +1337,24 @@ func TestEnableAfterRevokeAllowsNewConnection(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	old := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-old", 1), ConnectionID: "conn-old", Revision: 1, Backend: credstore.BackendLocal, Locator: "old", Keys: []string{"GOOGLE_TOKEN"}, Status: RevokedStatus}
+	old := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-old", 1), ConnectionID: "conn-old", Revision: 1, Backend: credstore.BackendLocal, Locator: "old", Keys: []string{"GOOGLE_TOKEN"}, Status: api.RevokedStatus}
 	if err := store.PutCredentialReference(old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-old", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: RevokedStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-old", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.RevokedStatus}); err != nil {
 		t.Fatal(err)
 	}
-	tombstone := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: "conn-old", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: RevokedStatus, Revision: 2}
-	tombstone.ToolBindingID = DeterministicBindingID(tombstone.PrincipalID, tombstone.ContextID, tombstone.RuntimeID, tombstone.DefinitionID, tombstone.DefinitionVersion, tombstone.ConnectionID, tombstone.CredentialRefID)
+	tombstone := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: "conn-old", ConnectionRevision: 1, CredentialRefID: old.CredentialRefID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.RevokedStatus, Revision: 2}
+	tombstone.ToolBindingID = api.DeterministicBindingID(tombstone.PrincipalID, tombstone.ContextID, tombstone.RuntimeID, tombstone.DefinitionID, tombstone.DefinitionVersion, tombstone.ConnectionID, tombstone.CredentialRefID)
 	store.mu.Lock()
 	store.bindings[tombstone.ToolBindingID] = tombstone
 	store.mu.Unlock()
 
-	next := CredentialReference{Schema: SchemaVersion, CredentialRefID: CredentialReferenceID("conn-new", 1), ConnectionID: "conn-new", Revision: 1, Backend: credstore.BackendLocal, Locator: "new", Keys: []string{"GOOGLE_TOKEN"}, Status: ActiveStatus}
+	next := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("conn-new", 1), ConnectionID: "conn-new", Revision: 1, Backend: credstore.BackendLocal, Locator: "new", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
 	if err := store.PutCredentialReference(next); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: "conn-new", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: next.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-new", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: next.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
 	binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
@@ -965,7 +1385,7 @@ func TestCredentialEgressHosts(t *testing.T) {
 		"PASSWORD_ENDPOINT": "db.example.com:5432",
 		"TOKEN_ENDPOINT":    "db.example.com:5432",
 	}
-	hosts := credentialEgressHosts(env)
+	hosts := api.CredentialEgressHosts(env)
 	want := map[string]bool{"gitlab.example.com": true, "self.host:8443": true, "db.internal.example.com:5432": true, "10.0.0.9:5432": true}
 	if len(hosts) != len(want) {
 		t.Fatalf("credentialEgressHosts=%v", hosts)
@@ -975,8 +1395,55 @@ func TestCredentialEgressHosts(t *testing.T) {
 			t.Fatalf("unexpected egress host %q", host)
 		}
 	}
-	merged := mergeEgressHosts([]string{"gitlab.com", "GITLAB.EXAMPLE.COM"}, hosts)
+	merged := api.MergeEgressHosts([]string{"gitlab.com", "GITLAB.EXAMPLE.COM"}, hosts)
 	if len(merged) != 5 {
 		t.Fatalf("mergeEgressHosts did not dedupe: %v", merged)
+	}
+}
+
+// An all-optional definition submits only some contract fields; the injector
+// must not reject the lease just because other optional env entries stayed
+// empty — required coverage is already checked by CredentialsSatisfied.
+func TestBrokerRuntimeInjectorSkipsBlankOptionalInputs(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/leases":
+			_ = json.NewEncoder(w).Encode(brokerv1.Lease{ID: "lease_1", GrantID: "grant_1", CredentialID: "credential_1", Revision: 1})
+		case "/v1/runtime/leases/lease_1/materialize":
+			_ = json.NewEncoder(w).Encode(brokerv1.Materialized{LeaseID: "lease_1", Env: map[string]string{"TOOL_TIER": "core"}})
+		case "/v1/runtime/leases/lease_1/release":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	definition := remoteDefinition()
+	definition.Credentials = []api.CredentialInput{
+		{Name: "TOOL_TIER"},
+		{Name: "GOOGLE_OAUTH_CLIENT_ID"},
+	}
+	effective := api.EffectiveBinding{
+		Definition: definition,
+		Binding:    api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: []string{"TOOL_TIER", "GOOGLE_OAUTH_CLIENT_ID"}, BrokerEnv: map[string]string{"TOOL_TIER": "TOOL_TIER", "GOOGLE_OAUTH_CLIENT_ID": "GOOGLE_OAUTH_CLIENT_ID"}},
+		WorkloadID: "workload_1",
+	}
+	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
+	if err != nil {
+		t.Fatalf("optional blank credential rejected: %v", err)
+	}
+	if injection.Environment["TOOL_TIER"] != "core" || len(injection.Environment) != 1 {
+		t.Fatalf("unexpected environment: %v", injection.Environment)
 	}
 }

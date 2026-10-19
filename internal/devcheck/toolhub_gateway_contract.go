@@ -3,6 +3,7 @@ package devcheck
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,32 +26,32 @@ func ToolHubGatewayContract(ctx context.Context) error {
 	if endpoint == "" || remoteTool == "" || statefulTool == "" || digest == "" {
 		return fmt.Errorf("set TOOLHIVE_VMCP_ENDPOINT, TOOLHIVE_REMOTE_TOOL, TOOLHIVE_STATEFUL_TOOL and TOOLHIVE_STATEFUL_IMAGE_DIGEST")
 	}
-	if err := toolhub.ValidateBackendEndpoint(endpoint); err != nil {
+	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
 		return err
 	}
-	admission, err := toolhub.ControllerAdmissionVerifierFromEnv()
+	admission, err := api.ControllerAdmissionVerifierFromEnv()
 	if err != nil || admission == nil {
 		return fmt.Errorf("set HUB_TOOLHIVE_ADMISSION_ENDPOINT to a controller returning an enforcement receipt: %v", err)
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "contract-user", ExternalIdentityID: "contract-transport", ContextID: "contract-user", RuntimeID: "contract-runtime", ConversationID: "contract-conversation", DeliveryTargetID: "contract-delivery", PolicyVersion: "contract-policy"}
 	store := toolhub.NewStore()
-	remoteDefinition := gatewayProbeDefinition("remote-fixture", toolhub.RemoteMCP, remoteTool, toolhub.Shared, false, "https://remote-fixture.invalid/mcp", "")
-	statefulDefinition := gatewayProbeDefinition("stateful-fixture", toolhub.ContainerMCP, statefulTool, toolhub.PerUser, true, "", digest)
-	for _, definition := range []toolhub.ToolDefinition{remoteDefinition, statefulDefinition} {
+	remoteDefinition := gatewayProbeDefinition("remote-fixture", api.RemoteMCP, remoteTool, api.Shared, false, "https://remote-fixture.invalid/mcp", "")
+	statefulDefinition := gatewayProbeDefinition("stateful-fixture", api.ContainerMCP, statefulTool, api.PerUser, true, "", digest)
+	for _, definition := range []api.ToolDefinition{remoteDefinition, statefulDefinition} {
 		if err := store.RegisterDefinition(definition); err != nil {
 			return err
 		}
 	}
-	remoteConnection := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: "remote-connection", Owner: toolhub.OwnerRef{Type: toolhub.ContextOwner, ID: auth.ContextID}, DefinitionID: remoteDefinition.DefinitionID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": endpoint}}
-	statefulConnection := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: "stateful-connection", Owner: toolhub.OwnerRef{Type: toolhub.ContextOwner, ID: auth.ContextID}, DefinitionID: statefulDefinition.DefinitionID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": endpoint}}
-	for _, connection := range []toolhub.Connection{remoteConnection, statefulConnection} {
+	remoteConnection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "remote-connection", Owner: api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}, DefinitionID: remoteDefinition.DefinitionID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": endpoint}}
+	statefulConnection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "stateful-connection", Owner: api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}, DefinitionID: statefulDefinition.DefinitionID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": endpoint}}
+	for _, connection := range []api.Connection{remoteConnection, statefulConnection} {
 		if err := store.PutConnection(connection); err != nil {
 			return err
 		}
 	}
 	remoteBinding := gatewayProbeBinding(auth, remoteDefinition, remoteConnection)
 	statefulBinding := gatewayProbeBinding(auth, statefulDefinition, statefulConnection)
-	for _, binding := range []toolhub.ToolBinding{remoteBinding, statefulBinding} {
+	for _, binding := range []api.ToolBinding{remoteBinding, statefulBinding} {
 		if err := store.PutBinding(binding); err != nil {
 			return err
 		}
@@ -60,7 +61,7 @@ func ToolHubGatewayContract(ctx context.Context) error {
 	if gatewayToken == "" {
 		gatewayToken = strings.Repeat("g", 32)
 	}
-	handler, err := (&toolhub.Gateway{Store: store, Backend: toolhub.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}, Tokens: map[string]identity.Envelope{gatewayToken: auth}}).Handler()
+	handler, err := (&toolhub.Gateway{Store: store, Backend: api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}, Tokens: map[string]identity.Envelope{gatewayToken: auth}}).Handler()
 	if err != nil {
 		return err
 	}
@@ -80,11 +81,11 @@ func ToolHubGatewayContract(ctx context.Context) error {
 		return fmt.Errorf("ToolHub gateway tools/list: %w", err)
 	}
 	want := []struct {
-		binding toolhub.ToolBinding
+		binding api.ToolBinding
 		name    string
 	}{
-		{remoteBinding, toolhub.ProjectedToolName(remoteDefinition.DefinitionID, remoteDefinition.Version, remoteTool)},
-		{statefulBinding, toolhub.ProjectedToolName(statefulDefinition.DefinitionID, statefulDefinition.Version, statefulTool)},
+		{remoteBinding, api.ProjectedToolName(remoteDefinition.DefinitionID, remoteDefinition.Version, remoteTool)},
+		{statefulBinding, api.ProjectedToolName(statefulDefinition.DefinitionID, statefulDefinition.Version, statefulTool)},
 	}
 	for _, candidate := range want {
 		if !hasMCPTool(listed.Tools, candidate.name) {
@@ -98,7 +99,7 @@ func ToolHubGatewayContract(ctx context.Context) error {
 	if _, err := session.CallTool(connectCtx, &mcp.CallToolParams{Name: want[0].name, Arguments: map[string]any{"context_id": "foreign-user"}}); err == nil {
 		return fmt.Errorf("ToolHub gateway accepted a model-supplied authority argument")
 	}
-	if err := store.SetBindingStatus(statefulBinding.ToolBindingID, toolhub.RevokedStatus); err != nil {
+	if err := store.SetBindingStatus(statefulBinding.ToolBindingID, api.RevokedStatus); err != nil {
 		return err
 	}
 	if _, err := session.CallTool(connectCtx, &mcp.CallToolParams{Name: want[1].name, Arguments: map[string]any{}}); err == nil {
@@ -108,27 +109,27 @@ func ToolHubGatewayContract(ctx context.Context) error {
 	return nil
 }
 
-func gatewayProbeDefinition(id string, transport toolhub.Transport, name string, class toolhub.WorkloadClass, stateful bool, url, digest string) toolhub.ToolDefinition {
-	source := toolhub.DefinitionSource{URL: url, TLSMode: "required"}
-	health := toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5}
-	if transport == toolhub.ContainerMCP {
-		source = toolhub.DefinitionSource{Image: "hermes-toolhive-fixture", Digest: digest}
-		health = toolhub.HealthProbe{Kind: "exec", Value: "fixture", TimeoutSeconds: 5}
+func gatewayProbeDefinition(id string, transport api.Transport, name string, class api.WorkloadClass, stateful bool, url, digest string) api.ToolDefinition {
+	source := api.DefinitionSource{URL: url, TLSMode: "required"}
+	health := api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5}
+	if transport == api.ContainerMCP {
+		source = api.DefinitionSource{Image: "hermes-toolhive-fixture", Digest: digest}
+		health = api.HealthProbe{Kind: "exec", Value: "fixture", TimeoutSeconds: 5}
 	}
-	mounts := []toolhub.Mount(nil)
+	mounts := []api.Mount(nil)
 	if stateful {
-		mounts = []toolhub.Mount{{Source: "connection-state", Target: "/var/lib/hermes-fixture"}}
+		mounts = []api.Mount{{Source: "connection-state", Target: "/var/lib/hermes-fixture"}}
 	}
-	workload := toolhub.WorkloadPolicy{Class: class, Stateful: stateful, Rationale: "contract probe"}
-	if transport == toolhub.ContainerMCP {
+	workload := api.WorkloadPolicy{Class: class, Stateful: stateful, Rationale: "contract probe"}
+	if transport == api.ContainerMCP {
 		workload.ToolHiveVersion = "v0.48.0"
 		workload.SidecarImages = []string{"ghcr.io/stacklok/toolhive/egress-proxy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	}
-	return toolhub.ToolDefinition{Schema: toolhub.SchemaVersion, DefinitionID: id, Version: "1.0.0", Transport: transport, Source: source, Tools: []toolhub.ToolSpec{{Name: name, Effect: toolhub.ReadEffect}}, Workload: workload, Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 4096, CPUMillis: 250, MemoryMiB: 64, MaxPIDs: 32, Egress: []string{"127.0.0.1"}, Mounts: mounts}, Health: health}
+	return api.ToolDefinition{Schema: api.SchemaVersion, DefinitionID: id, Version: "1.0.0", Transport: transport, Source: source, Tools: []api.ToolSpec{{Name: name, Effect: api.ReadEffect}}, Workload: workload, Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 4096, CPUMillis: 250, MemoryMiB: 64, MaxPIDs: 32, Egress: []string{"127.0.0.1"}, Mounts: mounts}, Health: health}
 }
 
-func gatewayProbeBinding(auth identity.Envelope, definition toolhub.ToolDefinition, connection toolhub.Connection) toolhub.ToolBinding {
-	return toolhub.ToolBinding{Schema: toolhub.SchemaVersion, ToolBindingID: toolhub.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, connection.ConnectionID, ""), PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: toolhub.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+func gatewayProbeBinding(auth identity.Envelope, definition api.ToolDefinition, connection api.Connection) api.ToolBinding {
+	return api.ToolBinding{Schema: api.SchemaVersion, ToolBindingID: api.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, connection.ConnectionID, ""), PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 }
 
 func hasMCPTool(tools []*mcp.Tool, name string) bool {

@@ -98,9 +98,9 @@ func nativeContractProvider() (*httptest.Server, string, error) {
 		}
 		fmt.Printf("Native provider fixture: contract=%t approval=%t tool_result=%t stream=%t\n", strings.TrimSpace(input) == "contract probe", strings.TrimSpace(input) == "approval probe", hasToolResult, request.Stream)
 		if request.Stream && !hasToolResult && (input == "contract probe" || input == "approval probe") {
-			command := "printf HUB_TOOL_SECRET_CANARY"
+			command := "printf '1\\n' >> /workspace/contract-executions; printf HUB_TOOL_SECRET_CANARY"
 			if strings.TrimSpace(input) == "approval probe" {
-				command = "mkdir -p /workspace/hub-approval-probe && chmod -R 777 /workspace/hub-approval-probe && printf HUB_TOOL_SECRET_CANARY"
+				command = "mkdir -p /workspace/hub-approval-probe && chmod -R 777 /workspace/hub-approval-probe && printf 'HUB_TOOL_%s\\n' SECRET_CANARY"
 			}
 			arguments, _ := json.Marshal(map[string]string{"command": command})
 			message := map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"index": 0, "id": "probe-terminal", "type": "function", "function": map[string]any{"name": "terminal", "arguments": string(arguments)}}}}
@@ -274,6 +274,9 @@ func HermesNativeContract(ctx context.Context, image string) error {
 	}
 	if err := expectHermesHTTP(ctx, out, name, key, http.MethodGet, "/api/sessions/"+sessionID, http.StatusOK); err != nil {
 		return fmt.Errorf("session resume after restart failed: %w", err)
+	}
+	if err := sttDecodeSmoke(ctx, image, "/opt/hermes/.venv/bin/python"); err != nil {
+		return err
 	}
 	if err := fasterWhisperFixtureSmoke(ctx, image); err != nil {
 		fmt.Printf("faster-whisper fixture on shipped image unavailable: %v\n", err)
@@ -506,6 +509,24 @@ func validateHermesCapabilities(response contractHTTPResponse) error {
 	return nil
 }
 
+func sttDecodeSmoke(ctx context.Context, image, python string) error {
+	program := `import io,wave
+from faster_whisper.audio import decode_audio
+b=io.BytesIO()
+w=wave.open(b,'wb')
+w.setparams((1,2,16000,16000,'NONE','not compressed'))
+w.writeframes(bytes(32000))
+w.close()
+b.seek(0)
+assert len(decode_audio(b)) == 16000
+`
+	out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", "none", "--entrypoint", python, image, "-c", program).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("shipped faster-whisper/PyAV cannot decode WAV: %w: %s", err, out)
+	}
+	return nil
+}
+
 func fasterWhisperFixtureSmoke(ctx context.Context, image string) error {
 	id, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Output()
 	if err != nil {
@@ -520,11 +541,14 @@ func fasterWhisperFixtureSmoke(ctx context.Context, image string) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
+	if err := os.Chmod(dir, 0755); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "hello.wav"), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "hello.wav"), data, 0644); err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "/usr/local/bin/hub-stt", "-v", dir+":/fixture:ro", image, "/fixture/hello.wav", "audio/wav")

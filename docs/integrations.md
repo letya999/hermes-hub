@@ -4,6 +4,11 @@ last_verified: 2026-10-07
 ---
 # Integration contracts
 
+Local STT pins faster-whisper 1.2.1 with PyAV 18.1.0 in both the runtime and
+standalone STT image. PyAV 19 removed the decoder argument used by that
+faster-whisper release. The native contract and standalone STT CI gate decode
+a synthetic WAV without network access so dependency skew cannot silently pass.
+
 Manager instructions for the owner's local PC:
 [local-accounts-manager.md](local-accounts-manager.md). Local deployment is
 prepared, not logged in; existing Hermes defaults are unchanged.
@@ -164,7 +169,10 @@ SETUID capabilities, unconfined seccomp, privileged mode, host
 network/PID, Docker socket and host mounts. The integration gate also
 proves the controlled dependency path: the builder is attached only to an
 internal network, while a pinned ToolHive egress proxy is dual-attached and
-permits an explicit TLS package-host allowlist. A real pinned base-image build
+permits an explicit TLS package-host allowlist. The builder daemon resolves
+`docker.io` through a generated `buildkitd.toml` mirror list (`mirror.gcr.io`
+first, Hub as fallback) so anonymous Hub rate limits cannot stall every
+build; digest-pinned bases keep integrity on either path. A real pinned base-image build
 exported an OCI archive with SLSA provenance and SPDX SBOM from a pinned scanner.
 Restricted BuildKit is allowed 25 minutes so a conventional Rust recipe can finish cargo
 through the allowlist proxy; the MCP runtime timeout is unchanged.
@@ -270,14 +278,21 @@ companion/relay front stays the only externally visible endpoint. Heuristic env 
 (`.env.example`, Compose
 `environment`) mark only secret-class names required; an uncommented empty
 non-secret knob stays optional, while explicit manifest `isRequired` flags are
-authoritative. Required credentials must be covered by a reviewed Credential
+authoritative. Required credentials must be covered by a Credential
 Broker contract whose deliveries produce the matching env names; one contract
 field may deliver the same secret under several env spellings when upstream
 declarations disagree. Deliveries targeting optional declared inputs are wired
 into the workload env mapping as well, so optional values entered at onboarding
 reach the server; a definition bound before this rule is backfilled on the next
-`prepare_source` from the same contract. The operator installs contracts under
-the broker `contracts_dir`. Runtime materialization rejects a missing delivery
+`prepare_source` from the same contract. Contracts come from two sources: the
+operator may install reviewed contracts under the broker `contracts_dir`, and
+ToolHub synthesizes and registers `dyn-` contracts over the signed
+`broker:control` API for declared inputs that are contract-coverable — `env`
+(empty), `file` and `json` deliveries. Local-plane inputs (`http_header`,
+`brokered`, OAuth-minted, per-request) are satisfied by their own planes and
+never need a contract. A Sharable `Shared` definition synthesizes an
+`allow_shared` contract; routes, broker-side OAuth and broker state stay
+operator-only. Runtime materialization rejects a missing delivery
 for any referenced input, even when another input produced a file mount. A
 file-credential workload must pass admission before its binding is projected;
 writable state is checkpointed only after that workload is stopped. Cleanup
@@ -412,7 +427,7 @@ destination feeds both the Squid ACL and the forwarder; the model cannot
 choose destinations through tool arguments.
 Do not label an artifact trusted on the basis of recipe validation or a claimed
 tool list alone. Track remaining evidence in
-`.work/in-progress/CHG-0025-trusted-artifacts/verification.md`.
+`.work/done/CHG-0025-trusted-artifacts/verification.md`.
 
 ## ToolHub Calendar (M5 stage 2)
 
@@ -463,9 +478,11 @@ key-file, key-ID and issuer variables to enable Broker-only credentials. The
 signing key files must be private files visible in the corresponding Hub
 containers; no key is committed to the repository.
 
-For every credential-bearing MCP definition, add the reviewed contract fields
+For every credential-bearing MCP definition, the contract fields
 `credential_contract_id`, `credential_contract_revision` and an explicit
-`credential_contract_env` mapping. ToolHub creates the Broker request and
+`credential_contract_env` mapping are bound at review/bind time — either from a
+covering catalog/`contracts_dir` contract or from a `dyn-` contract ToolHub
+registers from the declared inputs. ToolHub creates the Broker request and
 grant, Communication Hub accepts `/credentials <request-id> <code>`, and the
 runtime acquires/materializes/releases a lease. The generated Compose stack
 sets `BROKER_DIRECT_FORM=1` on the broker service, so the connect link opens
@@ -635,8 +652,15 @@ volume, short in-memory cache with the lease released right after
 materialization). The runtime env never contains `FAL_KEY`. Engines are
 `remote` (any
 OpenAI-compatible upstream such as CLIProxy, default upstream
-`http://cliproxy:8317`) and `fal` (`fal.run` images, `queue.fal.run` video
-jobs). Images answer synchronously; video submits return a job id for
+`http://cliproxy:8317`), `fal` (`fal.run` images, `queue.fal.run` video
+jobs) and `command` (a local runner: `HUB_MEDIA_COMMAND` reads the prompt on
+stdin, writes media bytes to stdout, model/kind/size arrive via
+`HUB_MEDIA_REQUEST_*` env — the self-hosted slot for wrapper scripts).
+`HUB_MEDIA_ENGINES` lists engines in fallback order and
+`HUB_MEDIA_MODEL_ROUTES` maps a logical model id to ordered
+`engine:provider_id` hops; every attempt is logged and a job persists the
+accepting engine's handle so restarts resume polling without resubmitting.
+Images answer synchronously; video submits return a job id for
 `media_fetch`, persist under `HUB_MEDIA_DATA`, resume provider polling after a
 restart and expire by `HUB_MEDIA_JOB_TTL`. Outside a stack the embedded
 direct-provider path stays as fallback and `FAL_KEY` enters the runtime env
@@ -767,7 +791,7 @@ cannot satisfy a needed source.
 
 | Component | Source / pin | Contract |
 |---|---|---|
-| Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server |
+| Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server. Pin predates upstream separation of tool-level `isError` results from transport failures for the MCP circuit breaker (PRs 67340/17016 closed unmerged, 68455 open); hub-side tools already mark expected failures as `isError`, and the pin is revisited once an upstream fix lands — residual risk tracked under CHG-0093 |
 | Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
 | Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai; hub `hub-web` plugin adds `web_providers` + `web_search_multi` fan-out + `web_cache` cleanup | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
 | Telegram account | [letya999/telegram-mcp](https://github.com/letya999/telegram-mcp), `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults to `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate |

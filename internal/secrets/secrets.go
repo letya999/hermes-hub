@@ -5,6 +5,7 @@ package secrets
 import (
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"slices"
@@ -210,11 +211,11 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 		return Injection{}, ErrNotConfigured
 	}
 	var injected Injection
-	err := s.Registry.AuthorizeProjected(auth, projectedName, func(_ toolhub.ProjectedTool, effective toolhub.EffectiveBinding) error {
-		if effective.Definition.Workload.Class == toolhub.Shared {
+	err := s.Registry.AuthorizeProjected(auth, projectedName, func(_ api.ProjectedTool, effective api.EffectiveBinding) error {
+		if effective.Definition.Workload.Class == api.Shared && !effective.Definition.Workload.Sharable {
 			for _, input := range effective.Definition.Credentials {
 				if !input.PerRequest {
-					return fmt.Errorf("%w: static credentials cannot be shared", toolhub.ErrUnauthorized)
+					return fmt.Errorf("%w: static credentials cannot be shared", api.ErrUnauthorized)
 				}
 			}
 		}
@@ -241,12 +242,12 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 			}
 			injected.Env[key] = value
 		}
-		workspace, err := toolhub.OpenWorkloadWorkspace(workloadRoot, effective, jobID)
+		workspace, err := api.OpenWorkloadWorkspace(workloadRoot, effective, jobID)
 		if err != nil {
 			return err
 		}
 		if workspace.Path != "" && len(injected.Env) > 0 {
-			if err := toolhub.WriteWorkloadEnvFile(workspace.Path, injected.Env); err != nil {
+			if err := api.WriteWorkloadEnvFile(workspace.Path, injected.Env); err != nil {
 				_ = workspace.Cleanup()
 				return err
 			}
@@ -343,7 +344,7 @@ func (s *Service) publishRegistry(owner, locator string, names []string, revoke 
 	refs := s.Registry.ConnectionsForSecret(locator, owner, names)
 	for _, ref := range refs {
 		if revoke {
-			if err := s.Registry.SetConnectionStatus(ref.ConnectionID, toolhub.RevokedStatus); err != nil {
+			if err := s.Registry.SetConnectionStatus(ref.ConnectionID, api.RevokedStatus); err != nil {
 				_ = s.Registry.MarkDegraded(ref.ConnectionID)
 				return err
 			}

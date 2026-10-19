@@ -35,7 +35,7 @@ deterministic and durable.
    The gateway control loop runs the whole chain in `tickProactive` — no
    separate watcher daemon.
 3. The live fetch is bounded: one GET, `Cache-Control: no-cache`, 2xx only,
-   body capped at 256 KiB, 10 s timeout. It never touches the model.
+   body capped at 1 MiB, 10 s timeout. It never touches the model.
 4. Durable per-schedule state (`spool/watchers/<id>.json`): baseline hash,
    current value, previous value, changed_at. The first successful probe
    seeds the baseline silently. An equal hash settles `no_change` at zero
@@ -74,14 +74,15 @@ deterministic and durable.
 ## Read-only knowledge sources (#249)
 
 1. Knowledge is operator-staged per-user files under
-   `spool/knowledge/<user>/` — documents, saved pages, connector exports.
-   The hub serves them read-only through the control API: `GET
-   /v1/knowledge` lists `{name,size,mod_time}` for the caller's own
-   directory, `GET /v1/knowledge/<name>` returns the bytes plus
-   `X-Hub-Name`. Foreign directories are unreachable by construction —
-   the path derives from the authenticated principal, not a parameter.
+   `<state>/knowledge/<user>/` in the runtime's own state volume —
+   documents, saved pages, connector exports; a `<context>` subdir narrows
+   staging for a non-personal context. The agent tools read the directory
+   in-process: `knowledge_list` reports `{name,size,mod_time}` and
+   `knowledge_read` returns the bytes plus sha256 and modified_at.
+   Foreign directories are unreachable by construction — the path
+   derives from the runtime's own principal identity, not a parameter.
    Path separators in names are rejected; non-regular files are never
-   served. Writes are not part of the contract (GET only).
+   served. Writes are not part of the contract (staging only).
 2. Agent surface: `knowledge_list` and `knowledge_read` (read effect in
    the ToolHub catalog). Content returns as tool output only — nothing is
    written into the workspace.

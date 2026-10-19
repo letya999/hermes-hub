@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"html"
 	"io"
 	"net"
@@ -21,7 +22,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 	if g == nil || g.Control == nil || server == nil {
 		return
 	}
-	for _, op := range ControlOperations {
+	for _, op := range api.ControlOperations {
 		if !allowed[op] {
 			continue
 		}
@@ -31,7 +32,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			arguments := map[string]any{}
 			if request != nil && len(request.Params.Arguments) > 0 {
 				if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
-					return nil, fmt.Errorf("%w: tool arguments: %v", ErrInvalid, err)
+					return nil, fmt.Errorf("%w: tool arguments: %v", api.ErrInvalid, err)
 				}
 			}
 			notifyControlProgress(ctx, request, name, false, nil)
@@ -40,7 +41,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 				return nil, err
 			}
 			notifyControlProgress(ctx, request, name, true, body)
-			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == PhaseAwaitingOAuth {
+			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == api.PhaseAwaitingOAuth {
 				if pending := pendingCredentialElicit(ctx, request, body); pending != nil {
 					return pending, nil
 				}
@@ -64,7 +65,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			Arguments map[string]any `json:"arguments"`
 		}
 		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil || strings.TrimSpace(arguments.Tool) == "" {
-			return nil, fmt.Errorf("%w: invoke arguments", ErrInvalid)
+			return nil, fmt.Errorf("%w: invoke arguments", api.ErrInvalid)
 		}
 		return g.call(ctx, auth, arguments.Tool, arguments.Arguments)
 	})
@@ -74,6 +75,10 @@ func controlToolContract(name string) (string, map[string]any) {
 	properties := map[string]any{
 		"onboarding_id": map[string]any{"type": "string", "description": "Exact onboarding_id returned by prepare_source."},
 		"definition_id": map[string]any{"type": "string", "description": "Connector definition ID. Use this to resume an earlier onboarding when its onboarding_id is unknown."},
+		"selector":      map[string]any{"type": "string", "description": "Conversational connector name: a definition_id, the source repository URL or its basename (for example search-mcp). Use when the user names a connector instead of quoting an id. Refuses ambiguous matches; retry with the source URL or onboarding_id."},
+		"name":          map[string]any{"type": "string", "description": "Alias of selector."},
+		"source":        map[string]any{"type": "string", "description": "Alias of selector — pass the exact source repository URL."},
+		"operation_id":  map[string]any{"type": "string", "description": "Request key from the original install call; resolves the matching onboarding for status checks."},
 		"version":       map[string]any{"type": "string"},
 	}
 	description := "ToolHub control operation " + name + ". Identity is taken from the authenticated request; owner, locator, backend and policy arguments are rejected."
@@ -85,13 +90,15 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["source"] = map[string]any{"type": "string", "description": "GitHub repository URL of a hosted MCP server connector. To install a command-line tool (ripgrep, bat, jq, fd, …) put a cli spec object in cli instead — never a bare repo URL here."}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
+		properties["credential_source"] = map[string]any{"type": "string", "description": "Authoritative metadata file for the credential recipe when sources disagree (for example server.json or .env.example). The status credential_sources list names the discovered choices; replay prepare_source with the same request_key to switch sources on the existing onboarding."}
 		properties["remote_url"] = map[string]any{"type": "string", "description": "Public HTTPS remote MCP endpoint for a user-owned connector (for example https://api.githubcopilot.com/mcp/). Only the endpoint's official URL on the user's explicit request; private, IP-literal, redirecting or non-MCP targets are refused."}
 		properties["name"] = map[string]any{"type": "string", "description": "Optional remote-* connector id derived from the endpoint host when omitted."}
 		properties["tools"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional allowlist of advertised remote tool names to expose; omit to expose every advertised tool."}
+		properties["scope"] = map[string]any{"type": "string", "enum": []string{"owner", "shared"}, "description": "owner (default) scopes the connector to the caller. shared is operator-only (install_shared grant): the connector becomes catalog-visible and every member binds one shared connection and credential via a shared-credential policy — for endpoints where one service account serves everyone."}
 		properties["credentials"] = map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Credential names to collect through the protected form (for example GITHUB_TOKEN). Each becomes an Authorization: Bearer header unless it names its own header."}
 		properties["telegram_send"] = map[string]any{"type": "boolean", "description": "Only on the user's explicit request to enable sending: true with the enabled Telegram onboarding_id upgrades that owner's existing session to reads plus send_message. No new login. Then confirm the returned nonce and enable."}
 		properties["cli"] = map[string]any{"type": "object", "description": "Only on the user's explicit request for an owner-scoped bounded CLI: a declarative spec with name, command (an executable from the operator allowlist — shell names are admitted only when the operator put them there), optional args (long-option tokens only), tools (name/effect plus typed arguments; a --flag name renders a flag, omitting flag renders a positional operand that then requires a pattern regexp), optional credentials and egress. With source plus binary instead of command, onboards an immutable artifact: default to github-release:owner/repo@latest — popular tools (bat, fd, jq, eza, sd, yq, fzf, age) all ship prebuilt linux-amd64 assets (asset is a glob on the release assets, e.g. *x86_64-unknown-linux-musl.tar.gz or jq-linux-amd64 for a bare binary — on a miss the error lists available asset names; member names the binary inside an archive and defaults to the tool name; digest optional). Use a commit-pinned GitHub URL only after the release path fails, since source builds cover just a single-package Go or Rust layout. Never a command string, path or script."}
-		description += " For every explicit install/add request for a hosted MCP server containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. For an explicit request to add a personal command-line tool, pass the declarative spec in cli — not the source field. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
+		description += " For every explicit install/add request for a hosted MCP server containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. For an explicit request to add a personal command-line tool, pass the declarative spec in cli — not the source field. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. If the user only asks to resend the protected link or asks how an earlier install is doing — not for a fresh install — call status or required_credentials with the connector's definition_id instead: it resumes the latest onboarding and reissues a live link when the old one expired, without rebuilding. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
 		cli := properties["cli"].(map[string]any)
 		cli["properties"], cli["required"], cli["additionalProperties"] = cliInstallProperties(), []string{"name", "tools"}, false
 		cli["oneOf"] = []any{
@@ -101,6 +108,10 @@ func controlToolContract(name string) (string, map[string]any) {
 		cli["examples"] = []any{map[string]any{"name": "jq", "source": "github-release:jqlang/jq@latest", "asset": "jq-linux-amd64", "binary": "/usr/local/bin/jq", "args": []string{"--version"}, "tools": []any{map[string]any{"name": "version", "effect": "read"}}}}
 	case "rotate", "disable", "revoke", "remove":
 		description += " Call this only when the user's current message explicitly requests this lifecycle action; never use it to prepare or retry an install."
+		if name == "remove" {
+			properties["remove_nonce"] = map[string]any{"type": "string", "description": "Confirmation token from the previous remove preview response."}
+			description += " Remove is destructive: the first call returns a preview with remove_nonce; ask the user to confirm, then call remove again with that remove_nonce."
+		}
 	case "diagnostics":
 		properties = map[string]any{
 			"tail":     map[string]any{"type": "integer", "description": "Newest lines to return, 1-500 (default 200).", "minimum": 1, "maximum": 500},
@@ -118,7 +129,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		}
 		description = "Request activation of a host-created tool governance grant. Call only when the user's current message explicitly asks to enable a denied tool section. Returns a protected acknowledge URL — the user opens it to activate the grant; the URL alone does not grant anything."
 	case "status", "required_credentials":
-		description += " Pass onboarding_id, or pass definition_id to resume the latest onboarding for that connector."
+		description += " Pass onboarding_id, definition_id, a selector/name/source naming the connector, or the operation_id (request_key) of the original call."
 		if name == "status" {
 			description += " With no selector, status returns the latest onboarding for the authenticated user."
 		}
@@ -196,7 +207,7 @@ func notifyControlProgress(ctx context.Context, request *mcp.CallToolRequest, op
 			progress, message = 1, "ToolHub operation completed"
 		}
 	}
-	if phase, _ := body["phase"].(string); done && phase == PhaseFailed {
+	if phase, _ := body["phase"].(string); done && phase == api.PhaseFailed {
 		message = "MCP installation failed"
 	}
 	_ = request.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: progress, Total: 1, Message: message})
@@ -261,17 +272,17 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 	nonce := r.URL.Query().Get("nonce")
 	if r.Method == http.MethodGet {
 		onboarding, err := g.Control.Store.onboarding(onboardingID)
-		if err != nil || onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" || nonce != onboarding.FormNonce || onboarding.FormExpires.IsZero() || g.Control.now().After(onboarding.FormExpires) {
+		if err != nil || onboarding.Phase != api.PhaseAwaitingCreds || onboarding.FormNonce == "" || nonce != onboarding.FormNonce || onboarding.FormExpires.IsZero() || g.Control.now().After(onboarding.FormExpires) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		cspNonce := randomNonce()
+		cspNonce := api.RandomNonce()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		var b strings.Builder
 		b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение MCP</title><style>
-:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
+:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}.tag{display:inline;margin:0 0 0 6px;font-size:12px}.opt{display:flex;align-items:center;gap:8px;margin:-14px 0 18px;font-weight:400;color:#52606d;font-size:14px}.opt input{display:inline;width:auto;margin:0;padding:0}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
 </style><main class="panel"><h1>Подключение MCP</h1><p>` + html.EscapeString(credentialFormIntro(onboarding.Required)) + `</p>`)
 		hints := credentialFormHints(onboarding.Required)
 		separate := credentialHintsUseAlternatives(hints)
@@ -287,9 +298,9 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 				b.WriteString("<details><summary>Другой способ авторизации</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
 			}
 		}
-		writeCredentialFields(&b, hints, onboarding.FormNonce)
+		writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce)
 		if !separate {
-			b.WriteString("<button type=\"submit\">Сохранить и продолжить</button></form>")
+			b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></form>`)
 		}
 		// The submit blocks on a real server probe; a silent 30+ seconds reads
 		// as a refresh loop. Swap the inputs for an honest waiting state while
@@ -335,6 +346,30 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// File-delivery fields arrive as multipart parts, not form values; the
+	// uploaded content is the credential.
+	for _, hint := range onboarding.Required {
+		if hint.Delivery != "file" || values[hint.Name] != "" {
+			continue
+		}
+		file, _, ferr := r.FormFile(hint.Name)
+		if ferr == http.ErrMissingFile {
+			continue
+		}
+		if ferr != nil {
+			http.Error(w, "invalid file upload", http.StatusBadRequest)
+			return
+		}
+		data, ferr := io.ReadAll(io.LimitReader(file, (64<<10)+1))
+		file.Close()
+		if ferr != nil || len(data) > 64<<10 {
+			http.Error(w, "invalid file upload", http.StatusBadRequest)
+			return
+		}
+		if len(strings.TrimSpace(string(data))) > 0 {
+			values[hint.Name] = string(data)
+		}
+	}
 	if googleOAuthRequired(onboarding.Required) {
 		value, err := googleOAuthFormValue(r)
 		if err != nil {
@@ -361,7 +396,7 @@ func credentialResultPage(title, message string) string {
 	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>` + html.EscapeString(title) + `</h1><p>` + html.EscapeString(message) + `</p></main></html>`
 }
 
-func credentialFormIntro(hints []CredentialHint) string {
+func credentialFormIntro(hints []api.CredentialHint) string {
 	if googleOAuthRequired(hints) {
 		return "Выберите готовый JSON-файл Google или введите Client ID и Client Secret отдельно. Данные сохранятся в защищённом хранилище и не попадут в чат."
 	}
@@ -371,15 +406,16 @@ func credentialFormIntro(hints []CredentialHint) string {
 	return "Введите запрошенные поля. Они сохранятся в защищённом хранилище и не попадут в чат."
 }
 
-func writeCredentialFields(b *strings.Builder, hints []CredentialHint, nonce string) {
+func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string) {
 	if !credentialHintsUseAlternatives(hints) {
 		for _, hint := range hints {
 			b.WriteString(credentialFieldMarkup(hint))
 		}
+		writeOptionalCredentialFields(b, optional)
 		return
 	}
-	groups := map[int][]CredentialHint{}
-	var plain []CredentialHint
+	groups := map[int][]api.CredentialHint{}
+	var plain []api.CredentialHint
 	var order []int
 	for _, hint := range hints {
 		if hint.AlternativeGroup <= 0 {
@@ -403,18 +439,32 @@ func writeCredentialFields(b *strings.Builder, hints []CredentialHint, nonce str
 		if index > 0 {
 			b.WriteString(`<details><summary>Другой набор: ` + html.EscapeString(legend) + `</summary>`)
 		}
-		group := append(append([]CredentialHint{}, plain...), groups[id]...)
+		group := append(append([]api.CredentialHint{}, plain...), groups[id]...)
 		b.WriteString(`<form method="post" enctype="multipart/form-data"><input type="hidden" name="nonce" value="` + html.EscapeString(nonce) + `"><fieldset><legend>`)
 		b.WriteString(html.EscapeString(legend))
 		b.WriteString("</legend>")
 		for _, hint := range group {
 			b.WriteString(credentialFieldMarkup(hint))
 		}
-		b.WriteString(`<button type="submit">Сохранить и продолжить</button></fieldset></form>`)
+		writeOptionalCredentialFields(b, optional)
+		b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></fieldset></form>`)
 		if index > 0 {
 			b.WriteString(`</details>`)
 		}
 	}
+}
+
+// writeOptionalCredentialFields renders discovered non-required inputs so the
+// owner can fill them in the same submit without them gating the form.
+func writeOptionalCredentialFields(b *strings.Builder, optional []api.CredentialHint) {
+	if len(optional) == 0 {
+		return
+	}
+	b.WriteString(`<details><summary>Необязательные параметры</summary>`)
+	for _, hint := range credentialFormHints(optional) {
+		b.WriteString(optionalCredentialFieldMarkup(hint))
+	}
+	b.WriteString(`</details>`)
 }
 
 func credentialSubmitPage(err error) (int, string, string) {
@@ -425,10 +475,10 @@ func credentialSubmitPage(err error) (int, string, string) {
 		}
 		return http.StatusServiceUnavailable, "Подключение не завершено", "Данные сохранены. Завершить привязку из формы не удалось: " + reason + " Повторите подтверждение в чате."
 	}
-	if errors.Is(err, ErrUnauthorized) && credentialLinkRejected(err) {
+	if errors.Is(err, api.ErrUnauthorized) && credentialLinkRejected(err) {
 		return http.StatusUnauthorized, "Ссылка устарела", "Форма больше не действует. Данные не сохранены. Попросите в чате новую ссылку."
 	}
-	if errors.Is(err, ErrInvalid) {
+	if errors.Is(err, api.ErrInvalid) {
 		return http.StatusBadRequest, "Форма заполнена не так", credentialFormRejection(err)
 	}
 	reason := strings.TrimPrefix(credentialProbeFailure(err), "Проверка не прошла. ")
@@ -443,7 +493,7 @@ func credentialLinkRejected(err error) bool {
 	return strings.Contains(text, "form nonce") || strings.Contains(text, "expired form") || strings.Contains(text, "credentials not expected")
 }
 
-func credentialFieldMarkup(hint CredentialHint) string {
+func credentialFieldMarkup(hint api.CredentialHint) string {
 	label := html.EscapeString(credentialFieldLabel(hint))
 	inputName := html.EscapeString(hint.Name)
 	inputType := "password"
@@ -462,8 +512,11 @@ func credentialFieldMarkup(hint CredentialHint) string {
 	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 		return `<fieldset><legend>Данные OAuth-клиента Google</legend><label>Выберите скачанный JSON-файл<input type="file" name="google_oauth_file" accept=".json,application/json"></label><small>Подойдёт файл с именем вроде client_secret_….apps.googleusercontent.com.json.</small><details><summary>Или ввести значения вручную</summary><label>Client ID<input type="text" name="google_oauth_client_id" autocomplete="off"></label><label>Client Secret<input type="password" name="google_oauth_client_secret" autocomplete="off"></label></details></fieldset>`
 	}
+	if hint.Delivery == "file" {
+		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + "</label>"
+	}
 	if hint.Delivery == "json" || strings.EqualFold(hint.Type, "json") {
-		return "<label>" + label + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + "</label>"
+		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + "</label>"
 	}
 	autocomplete := "off"
 	switch inputType {
@@ -476,10 +529,42 @@ func credentialFieldMarkup(hint CredentialHint) string {
 	if hint.AlternativeGroup > 0 {
 		required = ""
 	}
-	return "<label>" + label + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + "</label>"
+	tag := "необязательное"
+	opt := ""
+	if required != "" {
+		tag = "обязательное"
+		opt = `<label class="opt"><input type="checkbox" name="opt:` + inputName + `" value="1"> Поле не требуется — запустить без него</label>`
+	}
+	return "<label>" + label + " <small class=\"tag\">" + tag + "</small>" + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + "</label>" + opt
 }
 
-func credentialHintsUseAlternatives(hints []CredentialHint) bool {
+// optionalCredentialFieldMarkup renders a discovered non-required input: same
+// control, no required attribute, explicit "необязательное" tag.
+func optionalCredentialFieldMarkup(hint api.CredentialHint) string {
+	label := html.EscapeString(credentialFieldLabel(hint)) + " <small class=\"tag\">необязательное</small>"
+	inputName := html.EscapeString(hint.Name)
+	if hint.Delivery == "file" {
+		return "<label>" + label + `<input type="file" name="` + inputName + `">` + credentialFieldHint(hint) + "</label>"
+	}
+	if hint.Delivery == "json" || strings.EqualFold(hint.Type, "json") {
+		return "<label>" + label + "<textarea name=\"" + inputName + "\" autocomplete=\"off\"></textarea>" + credentialFieldHint(hint) + "</label>"
+	}
+	inputType := "text"
+	if hint.Secret {
+		inputType = "password"
+	}
+	switch strings.ToLower(hint.Type) {
+	case "email":
+		inputType = "email"
+	case "url":
+		inputType = "url"
+	case "number", "integer":
+		inputType = "number"
+	}
+	return "<label>" + label + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"off\">" + credentialFieldHint(hint) + "</label>"
+}
+
+func credentialHintsUseAlternatives(hints []api.CredentialHint) bool {
 	for _, hint := range hints {
 		if hint.AlternativeGroup > 0 {
 			return true
@@ -488,8 +573,8 @@ func credentialHintsUseAlternatives(hints []CredentialHint) bool {
 	return false
 }
 
-func credentialFormHints(hints []CredentialHint) []CredentialHint {
-	visible := make([]CredentialHint, 0, len(hints))
+func credentialFormHints(hints []api.CredentialHint) []api.CredentialHint {
+	visible := make([]api.CredentialHint, 0, len(hints))
 	for _, hint := range hints {
 		switch strings.ToUpper(hint.Name) {
 		case "HOST", "PORT", "TRANSPORT":
@@ -500,7 +585,7 @@ func credentialFormHints(hints []CredentialHint) []CredentialHint {
 	return visible
 }
 
-func applyCredentialDefaults(hints []CredentialHint, values map[string]string) {
+func applyCredentialDefaults(hints []api.CredentialHint, values map[string]string) {
 	defaults := map[string]string{"HOST": "127.0.0.1", "PORT": "3000", "TRANSPORT": "stdio"}
 	for _, hint := range hints {
 		if value := defaults[strings.ToUpper(hint.Name)]; value != "" && values[hint.Name] == "" {
@@ -509,7 +594,7 @@ func applyCredentialDefaults(hints []CredentialHint, values map[string]string) {
 	}
 }
 
-func googleOAuthRequired(hints []CredentialHint) bool {
+func googleOAuthRequired(hints []api.CredentialHint) bool {
 	for _, hint := range hints {
 		if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 			return true
@@ -555,14 +640,14 @@ func googleOAuthFormValue(r *http.Request) (string, error) {
 	return string(data), nil
 }
 
-func credentialFieldLabel(hint CredentialHint) string {
+func credentialFieldLabel(hint api.CredentialHint) string {
 	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 		return "Файл OAuth-клиента Google (JSON)"
 	}
 	return strings.ReplaceAll(strings.TrimSpace(hint.Name), "_", " ")
 }
 
-func credentialFieldHint(hint CredentialHint) string {
+func credentialFieldHint(hint api.CredentialHint) string {
 	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
 		return "<small>Вставьте содержимое файла gcp-oauth.keys.json, скачанного для OAuth client ID типа Desktop app. Email, host, port и transport здесь не нужны.</small>"
 	}

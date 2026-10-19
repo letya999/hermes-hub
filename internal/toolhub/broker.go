@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -18,80 +21,80 @@ import (
 // admitWithBrokerCredential uses a short-lived owner-bound grant for the
 // tools/list probe. The permanent workload grant is created only after the
 // confirmed tool contract is bound to this owner.
-func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth identity.Envelope, onboarding Onboarding, definition ToolDefinition, credentialID string) (admitted ToolDefinition, resultErr error) {
+func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition, credentialID string) (admitted api.ToolDefinition, resultErr error) {
 	if c.Broker == nil || !c.Broker.Enabled() || c.BrokerRuntime == nil || !c.BrokerRuntime.Enabled() || c.AdmitWithCredentials == nil || credentialID == "" {
-		return ToolDefinition{}, fmt.Errorf("%w: Broker admission unavailable", ErrIsolation)
+		return api.ToolDefinition{}, fmt.Errorf("%w: Broker admission unavailable", api.ErrIsolation)
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, definition.Workload.Class == api.Shared)
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
-	bindingID := deterministicID("admission", onboarding.OnboardingID, credentialID)
-	workloadID := deterministicID("probe", onboarding.OnboardingID, randomNonce())
+	bindingID := api.DeterministicID("admission", onboarding.OnboardingID, credentialID)
+	workloadID := api.DeterministicID("probe", onboarding.OnboardingID, api.RandomNonce())
 	grant, err := control.Grant(ctx, credentialID, brokerv1.GrantRequest{
 		ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
-		BindingID: bindingID, WorkloadID: workloadID, Execution: "dedicated", IdempotencyKey: randomNonce(),
+		BindingID: bindingID, WorkloadID: workloadID, Execution: "dedicated", IdempotencyKey: api.RandomNonce(),
 	})
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := control.Do(cleanupCtx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.ID)+"/revoke", nil, nil); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker grant revoke: %v", ErrIsolation, err))
+		if err := control.Do(cleanupCtx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.ID)+"/revoke", nil, nil); err != nil && !brokerclient.IsNotFound(err) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker grant revoke: %v", api.ErrIsolation, err))
 		}
 	}()
-	effective := EffectiveBinding{
-		Binding:    ToolBinding{ToolBindingID: bindingID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion},
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: bindingID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion},
 		WorkloadID: workloadID, Definition: definition,
-		Credential: &CredentialReference{Backend: "credential-broker", BrokerGrantID: grant.ID, BrokerEnv: cloneMap(definition.CredentialContractEnv), Keys: requiredCredentialNames(definition)},
+		Credential: &api.CredentialReference{Backend: "credential-broker", BrokerGrantID: grant.ID, BrokerEnv: api.CloneMap(definition.CredentialContractEnv), Keys: requiredCredentialNames(definition)},
 	}
 	injection, err := brokerRuntimeInjector(c.Broker, c.BrokerRuntime)(ctx, effective)
 	if err != nil {
-		return ToolDefinition{}, err
+		return api.ToolDefinition{}, err
 	}
 	defer func() {
 		if err := injection.Cleanup(); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker lease release: %v", ErrIsolation, err))
+			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker lease release: %v", api.ErrIsolation, err))
 		}
 	}()
 	if len(injection.Mounts) != 0 {
-		return ToolDefinition{}, fmt.Errorf("%w: credentialed tools/list does not support Broker file mounts", ErrIsolation)
+		return api.ToolDefinition{}, fmt.Errorf("%w: credentialed tools/list does not support Broker file mounts", api.ErrIsolation)
 	}
 	admitted, err = c.AdmitWithCredentials(ctx, definition, injection.Environment)
 	if err != nil {
 		// The upstream error can echo a submitted StringSession. Keep it out of
 		// onboarding state and channel responses.
-		return ToolDefinition{}, fmt.Errorf("%w: authenticated tools/list failed", ErrIsolation)
+		return api.ToolDefinition{}, fmt.Errorf("%w: authenticated tools/list failed", api.ErrIsolation)
 	}
 	return admitted, nil
 }
 
-func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config) CredentialInjector {
-	return func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
+func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config) api.CredentialInjector {
+	return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
 		if effective.Credential == nil || effective.Credential.Backend != "credential-broker" {
-			return CredentialInjection{Environment: map[string]string{}}, nil
+			return api.CredentialInjection{Environment: map[string]string{}}, nil
 		}
 		if controlConfig == nil || runtimeConfig == nil || effective.Credential.BrokerGrantID == "" {
-			return CredentialInjection{}, fmt.Errorf("%w: credential broker runtime is not configured", ErrIsolation)
+			return api.CredentialInjection{}, fmt.Errorf("%w: credential broker runtime is not configured", api.ErrIsolation)
 		}
 		if effective.WorkloadID == "" {
-			return CredentialInjection{}, fmt.Errorf("%w: workload identity", ErrIsolation)
+			return api.CredentialInjection{}, fmt.Errorf("%w: workload identity", api.ErrIsolation)
 		}
 		auth := effectiveBrokerEnvelope(effective)
 		control, err := controlConfig.NewForBinding(auth, "broker:control", effective.Binding.ToolBindingID, effective.WorkloadID)
 		if err != nil {
-			return CredentialInjection{}, err
+			return api.CredentialInjection{}, err
 		}
 		runtime, err := runtimeConfig.NewForBinding(auth, "broker:runtime", effective.Binding.ToolBindingID, effective.WorkloadID)
 		if err != nil {
-			return CredentialInjection{}, err
+			return api.CredentialInjection{}, err
 		}
 		lease, err := control.Acquire(ctx, brokerv1.AcquireLease{GrantID: effective.Credential.BrokerGrantID, TTLSeconds: 120})
 		if err != nil {
-			return CredentialInjection{}, err
+			return api.CredentialInjection{}, err
 		}
 		released := false
 		release := func(checkpoint, quiesced bool) error {
@@ -105,7 +108,7 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 		materialized, err := runtime.Materialize(ctx, lease.ID)
 		if err != nil {
 			_ = release(false, false)
-			return CredentialInjection{}, err
+			return api.CredentialInjection{}, err
 		}
 		environment := map[string]string{}
 		for input, target := range effective.Credential.BrokerEnv {
@@ -113,28 +116,47 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 				environment[input] = value
 			}
 		}
+		// Request-scoped extras deliver under the input name itself: a value the
+		// owner filled on the form reaches the workload without a contract edit.
+		for _, input := range effective.Definition.Credentials {
+			if input.PerRequest {
+				continue
+			}
+			if _, mapped := environment[input.Name]; !mapped {
+				if value := materialized.Env[input.Name]; value != "" {
+					environment[input.Name] = value
+				}
+			}
+		}
 		// The contract may deliver alternative credential groups (e.g. a Jira
 		// block or a Confluence block): a complete group satisfies the member
 		// keys of the other alternatives, but never missing standalone keys.
-		if !effective.Definition.credentialsSatisfied(func(name string) bool { return environment[name] != "" }) {
+		if !effective.Definition.CredentialsSatisfied(func(name string) bool { return environment[name] != "" }) {
 			_ = release(false, false)
-			return CredentialInjection{}, fmt.Errorf("%w: broker delivery does not satisfy %s", ErrIsolation, effective.Definition.DefinitionID)
+			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery does not satisfy %s", api.ErrIsolation, api.ErrCredentialDelivery, effective.Definition.DefinitionID)
 		}
 		for _, input := range effective.Credential.Keys {
-			if environment[input] == "" && !groupedCredentialInput(effective.Definition, input) {
-				_ = release(false, false)
-				return CredentialInjection{}, fmt.Errorf("%w: broker delivery %s", ErrIsolation, input)
+			if environment[input] != "" || api.GroupedCredentialInput(effective.Definition, input) {
+				continue
 			}
+			// Optional inputs the user left blank in the form are legitimately
+			// absent; required coverage was already enforced by the satisfied
+			// check above. Undeclared or required names still fail closed.
+			if slices.ContainsFunc(effective.Definition.Credentials, func(c api.CredentialInput) bool { return c.Name == input && !c.Required }) {
+				continue
+			}
+			_ = release(false, false)
+			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery %s", api.ErrIsolation, api.ErrCredentialDelivery, input)
 		}
-		mounts := make([]Mount, 0, len(materialized.Mounts))
+		mounts := make([]api.Mount, 0, len(materialized.Mounts))
 		var checkpoint func() error
 		for _, mount := range materialized.Mounts {
-			mounts = append(mounts, Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
+			mounts = append(mounts, api.Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
 			if !mount.ReadOnly {
 				checkpoint = func() error { return release(true, true) }
 			}
 		}
-		return CredentialInjection{Environment: environment, Mounts: mounts, Checkpoint: checkpoint, Cleanup: func() error {
+		return api.CredentialInjection{Environment: environment, Mounts: mounts, Checkpoint: checkpoint, Cleanup: func() error {
 			clear(environment)
 			clear(materialized.Env)
 			return release(false, false)
@@ -142,7 +164,7 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 	}
 }
 
-func effectiveBrokerEnvelope(effective EffectiveBinding) identity.Envelope {
+func effectiveBrokerEnvelope(effective api.EffectiveBinding) identity.Envelope {
 	return identity.Envelope{
 		Schema: identity.Schema, PrincipalID: effective.Binding.PrincipalID,
 		ExternalIdentityID: effective.Binding.PrincipalID, ContextID: effective.Binding.ContextID,
@@ -151,14 +173,14 @@ func effectiveBrokerEnvelope(effective EffectiveBinding) identity.Envelope {
 	}
 }
 
-func mergeCredentialInjectors(local, broker CredentialInjector, brokerOnly bool) CredentialInjector {
+func mergeCredentialInjectors(local, broker api.CredentialInjector, brokerOnly bool) api.CredentialInjector {
 	if brokerOnly {
-		return func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
+		return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
 			if effective.Credential == nil {
 				if len(effective.Definition.Credentials) == 0 {
-					return CredentialInjection{Environment: map[string]string{}}, nil
+					return api.CredentialInjection{Environment: map[string]string{}}, nil
 				}
-				return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
+				return api.CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", api.ErrUnauthorized)
 			}
 			if strings.EqualFold(effective.Credential.Backend, "credential-broker") {
 				return broker(ctx, effective)
@@ -168,7 +190,7 @@ func mergeCredentialInjectors(local, broker CredentialInjector, brokerOnly bool)
 			if effective.Definition.CredentialContractID == "" && local != nil && strings.EqualFold(effective.Credential.Backend, credstore.BackendLocal) {
 				return local(ctx, effective)
 			}
-			return CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", ErrUnauthorized)
+			return api.CredentialInjection{}, fmt.Errorf("%w: credential reference must be migrated to Credential Broker", api.ErrUnauthorized)
 		}
 	}
 	if local == nil {
@@ -177,7 +199,7 @@ func mergeCredentialInjectors(local, broker CredentialInjector, brokerOnly bool)
 	if broker == nil {
 		return local
 	}
-	return func(ctx context.Context, effective EffectiveBinding) (CredentialInjection, error) {
+	return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
 		if effective.Credential != nil && strings.EqualFold(effective.Credential.Backend, "credential-broker") {
 			return broker(ctx, effective)
 		}

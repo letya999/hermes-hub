@@ -18,6 +18,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	cfg, err := mediasvc.ConfigFromEnv(mediasvc.RoleSTT)
 	if err != nil {
 		log.Fatalf("config: %v", err)

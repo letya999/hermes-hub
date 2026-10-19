@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/audit"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 func TestSlackConnectorCLIUserOAuthWriteReceiptRefreshRevoke(t *testing.T) {
@@ -83,7 +83,7 @@ func TestSlackConnectorCLIUserOAuthWriteReceiptRefreshRevoke(t *testing.T) {
 	if err := os.WriteFile(input, []byte(`{"channel":"D1","text":"fixture"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, append([]string{"connector", "call"}, append(base, "--tool", toolhub.ProjectedToolName("slack-data-write", "1.0.0", "send"), "--from-file", input)...)); err != nil {
+	if err := run(ctx, append([]string{"connector", "call"}, append(base, "--tool", api.ProjectedToolName("slack-data-write", "1.0.0", "send"), "--from-file", input)...)); err != nil {
 		t.Fatal(err)
 	}
 	ledger, err := audit.Open(filepath.Join(filepath.Dir(storePath), "audit.jsonl"))

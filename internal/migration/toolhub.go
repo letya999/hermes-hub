@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -136,60 +137,60 @@ func MigrateToolHub(options ToolHubMigrationOptions) (ToolHubMigrationReport, er
 	return report, nil
 }
 
-func importMCP(name string, server stack.MCPServer, disabled []string, auth identity.Envelope) (toolhub.ToolDefinition, *toolhub.Connection, *toolhub.CredentialReference, toolhub.ToolBinding, string, error) {
+func importMCP(name string, server stack.MCPServer, disabled []string, auth identity.Envelope) (api.ToolDefinition, *api.Connection, *api.CredentialReference, api.ToolBinding, string, error) {
 	if server.Tools == nil || len(server.Tools.Include) == 0 {
-		return toolhub.ToolDefinition{}, nil, nil, toolhub.ToolBinding{}, "explicit tools.include is required; discovery is not migration evidence", nil
+		return api.ToolDefinition{}, nil, nil, api.ToolBinding{}, "explicit tools.include is required; discovery is not migration evidence", nil
 	}
-	definition := toolhub.ToolDefinition{Schema: toolhub.SchemaVersion, DefinitionID: name, Version: "1.0.0", Tools: make([]toolhub.ToolSpec, 0, len(server.Tools.Include)), Workload: toolhub.WorkloadPolicy{Class: toolhub.PerUser, Rationale: "legacy owner-scoped MCP connection"}, Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32}, Health: toolhub.HealthProbe{TimeoutSeconds: 5}}
+	definition := api.ToolDefinition{Schema: api.SchemaVersion, DefinitionID: name, Version: "1.0.0", Tools: make([]api.ToolSpec, 0, len(server.Tools.Include)), Workload: api.WorkloadPolicy{Class: api.PerUser, Rationale: "legacy owner-scoped MCP connection"}, Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32}, Health: api.HealthProbe{TimeoutSeconds: 5}}
 	for _, toolName := range server.Tools.Include {
 		if !regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`).MatchString(toolName) {
-			return toolhub.ToolDefinition{}, nil, nil, toolhub.ToolBinding{}, "invalid explicit tool name", nil
+			return api.ToolDefinition{}, nil, nil, api.ToolBinding{}, "invalid explicit tool name", nil
 		}
-		definition.Tools = append(definition.Tools, toolhub.ToolSpec{Name: toolName, Effect: toolhub.ReadEffect})
+		definition.Tools = append(definition.Tools, api.ToolSpec{Name: toolName, Effect: api.ReadEffect})
 	}
-	slices.SortFunc(definition.Tools, func(a, b toolhub.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(definition.Tools, func(a, b api.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
 	var host string
 	keys := credentialKeys(server)
 	if server.URL != "" {
-		definition.Transport = toolhub.RemoteMCP
-		definition.Source = toolhub.DefinitionSource{URL: server.URL, TLSMode: "required"}
+		definition.Transport = api.RemoteMCP
+		definition.Source = api.DefinitionSource{URL: server.URL, TLSMode: "required"}
 		definition.Health.Kind, definition.Health.Value = "http", "/health"
 		if parsedHost, err := hostFromURL(server.URL); err != nil {
-			return toolhub.ToolDefinition{}, nil, nil, toolhub.ToolBinding{}, "invalid HTTPS URL", nil
+			return api.ToolDefinition{}, nil, nil, api.ToolBinding{}, "invalid HTTPS URL", nil
 		} else {
 			host = parsedHost
 		}
 	} else {
-		definition.Transport = toolhub.BoundedCLI
-		definition.Source = toolhub.DefinitionSource{Command: server.Command, Args: append([]string(nil), server.Args...)}
-		definition.Workload.Class = toolhub.PerJob
+		definition.Transport = api.BoundedCLI
+		definition.Source = api.DefinitionSource{Command: server.Command, Args: append([]string(nil), server.Args...)}
+		definition.Workload.Class = api.PerJob
 		definition.Health.Kind, definition.Health.Value = "exec", server.Command
 		host = "127.0.0.1"
 	}
 	definition.Execution.Egress = []string{host}
-	definition.Credentials = make([]toolhub.CredentialInput, 0, len(keys))
+	definition.Credentials = make([]api.CredentialInput, 0, len(keys))
 	for _, key := range keys {
-		definition.Credentials = append(definition.Credentials, toolhub.CredentialInput{Name: key, Required: true, PerRequest: definition.Workload.Class == toolhub.Shared})
+		definition.Credentials = append(definition.Credentials, api.CredentialInput{Name: key, Required: true, PerRequest: definition.Workload.Class == api.Shared})
 	}
 	connectionID := stableConnectionID(name)
-	var reference *toolhub.CredentialReference
-	var connection *toolhub.Connection
+	var reference *api.CredentialReference
+	var connection *api.Connection
 	if len(keys) > 0 {
-		ref := toolhub.CredentialReference{Schema: toolhub.SchemaVersion, CredentialRefID: toolhub.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: "legacy-env", Locator: "runtime-env", Keys: keys, Status: toolhub.ActiveStatus}
+		ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: "legacy-env", Locator: "runtime-env", Keys: keys, Status: api.ActiveStatus}
 		reference = &ref
-		conn := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: connectionID, Owner: toolhub.OwnerRef{Type: toolhub.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: name, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: toolhub.ActiveStatus, Metadata: map[string]string{"legacy_name": name}}
+		conn := api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: name, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"legacy_name": name}}
 		connection = &conn
 	}
-	status := toolhub.ActiveStatus
+	status := api.ActiveStatus
 	if slices.Contains(disabled, name) {
-		status = toolhub.DisabledStatus
+		status = api.DisabledStatus
 	}
-	binding := toolhub.ToolBinding{Schema: toolhub.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: name, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: status, Revision: 1, ProjectionRevision: 1}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: name, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: status, Revision: 1, ProjectionRevision: 1}
 	if connection != nil {
 		binding.ConnectionID, binding.ConnectionRevision = connection.ConnectionID, connection.Revision
 		binding.CredentialRefID, binding.CredentialRevision = reference.CredentialRefID, reference.Revision
 	}
-	binding.ToolBindingID = toolhub.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	return definition, connection, reference, binding, "", nil
 }
 
@@ -300,7 +301,7 @@ func preserveLegacyUserMCP(dir, user string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return toolhub.SaveGovernance(path, toolhub.MigrationSeed(user, []string{toolhub.SectionUserMCP}, time.Now().UTC()))
+	return api.SaveGovernance(path, api.MigrationSeed(user, []string{api.SectionUserMCP}, time.Now().UTC()))
 }
 
 // spaceDeclaresMCP reports whether the space's workspace.yaml or legacy

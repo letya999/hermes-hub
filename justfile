@@ -12,17 +12,29 @@ default:
     @just --list
 
 # Complete local CI; no Node/Jest orchestration.
-check: go-check lint docs-check
+check: go-check lint docs-check config-check
+
+# Actual Compose interpolation/schema validation with synthetic credentials;
+# no daemon, containers, provider accounts or user spaces are accessed.
+config-check:
+    go test -tags integration -run TestDeploymentConfigurationContract -count=1 ./internal/stack
 
 go-check:
-    go test -race -shuffle=on -count=1 "-coverprofile=coverage.out" ./...
-    go run ./cmd/devcheck coverage coverage.out 85
+    # Per-package floor 75: keeps an internal/ package from hiding behind
+    # another package's tests under -coverpkg=./... (lowest today ~80%).
+    go run ./cmd/devcheck covergo coverage.out 85 75
 
 lint:
     go run ./cmd/devcheck format
     go vet ./...
+    go mod tidy -diff
     # v0.8.1 cannot import Go 1.27.2 export data; pin the updated importer.
     go run honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20261009230814-452d5bb86b45 ./...
+    # moby-style pragmatism: G101/G204/G30x are structural noise here (exec is the
+    # product, workspace paths are computed, shared dirs are 0755/0660 on purpose);
+    # G104/G110 stay enabled and are #nosec'd per site.
+    # devcheck scopes both Go modules and avoids PowerShell 5 hanging on gosec.
+    go run ./cmd/devcheck gosec
 
 docs-check:
     go run ./cmd/devcheck docs
@@ -35,7 +47,7 @@ security:
     go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
     npm --prefix docker/browser audit --omit=dev --audit-level=high
 
-build:
+build: config-check
     go build -buildvcs=false -trimpath -o bin/hubctl ./cmd/hubctl
     go build -buildvcs=false -trimpath -o bin/hub-runtime ./cmd/runtime
     go build -buildvcs=false -trimpath -o bin/toolhub ./cmd/toolhub
@@ -53,6 +65,7 @@ docker-check target="prod":
     docker run --rm --entrypoint docker hermes-hub:test-control --version
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
+    go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
     go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
@@ -65,12 +78,15 @@ docker-check target="prod":
 docker-pull target="prod":
     go run ./cmd/devcheck docker-pull hermes-hub:test {{target}}
     go run ./cmd/devcheck docker-pull hermes-hub:test-control {{target}}-control
+    go run ./cmd/devcheck docker-pull hermes-hub-cli-tools:test cli-tools
+    go run ./cmd/devcheck docker-pull hermes-hub-cell-proxy:test cell-proxy
 
 # Same gate as docker-check but on the pulled image: no local build stage.
 docker-check-prebuilt target="prod": (docker-pull target)
     docker run --rm --entrypoint docker hermes-hub:test-control --version
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
+    go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
     go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test

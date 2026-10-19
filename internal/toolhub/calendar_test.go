@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -57,38 +58,38 @@ func TestCalendarShippedAuthorizeInjectAndHTTP(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id":"event1","items":[]}`)
 	}))
 	defer fixture.Close()
-	provider := CalendarBackend{HTTP: &http.Client{Transport: calendarFixtureTransport{fixture.URL, http.DefaultTransport}}}
+	provider := api.CalendarBackend{HTTP: &http.Client{Transport: calendarFixtureTransport{fixture.URL, http.DefaultTransport}}}
 	for _, write := range []bool{false, true} {
-		d := CalendarDefinition(write)
+		d := api.CalendarDefinition(write)
 		if err := store.RegisterDefinition(d); err != nil {
 			t.Fatal(err)
 		}
 		locator, _ := secrets.NewLocator()
-		scope := CalendarReadScope
+		scope := api.CalendarReadScope
 		if write {
-			scope = CalendarWriteScope
+			scope = api.CalendarWriteScope
 		}
 		if err := secrets.Put(locator, "alice", map[string]string{"ACCESS_TOKEN": "alice-token", "OAUTH_SCOPE": scope}); err != nil {
 			t.Fatal(err)
 		}
-		ref := CredentialReference{Schema: 1, CredentialRefID: CredentialReferenceID(d.DefinitionID, 1), ConnectionID: d.DefinitionID, Revision: 1, Backend: "local", Locator: locator, Keys: []string{"ACCESS_TOKEN", "OAUTH_SCOPE"}, Status: ActiveStatus}
+		ref := api.CredentialReference{Schema: 1, CredentialRefID: api.CredentialReferenceID(d.DefinitionID, 1), ConnectionID: d.DefinitionID, Revision: 1, Backend: "local", Locator: locator, Keys: []string{"ACCESS_TOKEN", "OAUTH_SCOPE"}, Status: api.ActiveStatus}
 		if err := store.PutCredentialReference(ref); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.PutConnection(Connection{Schema: 1, ConnectionID: d.DefinitionID, Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: ActiveStatus, Metadata: map[string]string{"google_sub": "subject1"}}); err != nil {
+		if err := store.PutConnection(api.Connection{Schema: 1, ConnectionID: d.DefinitionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"google_sub": "subject1"}}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Enable(auth, d.DefinitionID, d.Version); err != nil {
 			t.Fatal(err)
 		}
 	}
-	gateway := &Gateway{Store: store, Backend: RoutingBackend{Provider: provider}, Injector: func(_ context.Context, e EffectiveBinding) (CredentialInjection, error) {
-		env, err := DecryptAuthorized(secrets, e)
-		return CredentialInjection{Environment: env}, err
+	gateway := &Gateway{Store: store, Backend: api.RoutingBackend{Provider: provider}, Injector: func(_ context.Context, e api.EffectiveBinding) (api.CredentialInjection, error) {
+		env, err := api.DecryptAuthorized(secrets, e)
+		return api.CredentialInjection{Environment: env}, err
 	}}
 	for _, name := range []string{"list", "get", "create", "update", "delete"} {
 		write := name == "create" || name == "update" || name == "delete"
-		d := CalendarDefinition(write)
+		d := api.CalendarDefinition(write)
 		args := map[string]any{"calendar_id": "primary"}
 		if name == "get" || name == "update" || name == "delete" {
 			args["event_id"] = "event1"
@@ -96,12 +97,12 @@ func TestCalendarShippedAuthorizeInjectAndHTTP(t *testing.T) {
 		if name == "create" || name == "update" {
 			args["event_json"] = `{"attendees":[{"email":"fixture@example.invalid"}]}`
 		}
-		result, err := gateway.CallAuthorized(context.Background(), auth, ProjectedToolName(d.DefinitionID, d.Version, name), args)
+		result, err := gateway.CallAuthorized(context.Background(), auth, api.ProjectedToolName(d.DefinitionID, d.Version, name), args)
 		if err != nil || result == nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	name := ProjectedToolName("google-calendar-read", "1.0.0", "list")
+	name := api.ProjectedToolName("google-calendar-read", "1.0.0", "list")
 	for _, args := range []map[string]any{{"calendar_id": "../bob"}, {"calendar_id": "primary", "connection_id": "bob"}, {"calendar_id": "primary", "extra": "evil"}} {
 		if _, err := gateway.call(context.Background(), auth, name, args); err == nil {
 			t.Fatal("malformed accepted")
@@ -112,7 +113,7 @@ func TestCalendarShippedAuthorizeInjectAndHTTP(t *testing.T) {
 	if _, err := gateway.call(context.Background(), bob, name, map[string]any{"calendar_id": "primary"}); err == nil {
 		t.Fatal("cross owner accepted")
 	}
-	if err := store.SetConnectionStatus("google-calendar-read", RevokedStatus); err != nil {
+	if err := store.SetConnectionStatus("google-calendar-read", api.RevokedStatus); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"calendar_id": "primary"}); err == nil {
@@ -122,16 +123,16 @@ func TestCalendarShippedAuthorizeInjectAndHTTP(t *testing.T) {
 		t.Fatalf("unexpected provider calls: %d", calls)
 	}
 	// A transport-shaped token never satisfies personal data inputs.
-	d := CalendarDefinition(false)
+	d := api.CalendarDefinition(false)
 	communication := NewStore()
 	if err := communication.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}
-	ref := CredentialReference{Schema: 1, CredentialRefID: CredentialReferenceID("bot-only", 1), ConnectionID: "bot-only", Revision: 1, Backend: "local", Locator: "fixture-bot", Keys: []string{"SLACK_BOT_TOKEN"}, Status: ActiveStatus}
+	ref := api.CredentialReference{Schema: 1, CredentialRefID: api.CredentialReferenceID("bot-only", 1), ConnectionID: "bot-only", Revision: 1, Backend: "local", Locator: "fixture-bot", Keys: []string{"SLACK_BOT_TOKEN"}, Status: api.ActiveStatus}
 	if err := communication.PutCredentialReference(ref); err != nil {
 		t.Fatal(err)
 	}
-	if err := communication.PutConnection(Connection{Schema: 1, ConnectionID: "bot-only", Owner: OwnerRef{Type: PrincipalOwner, ID: "alice"}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := communication.PutConnection(api.Connection{Schema: 1, ConnectionID: "bot-only", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := communication.Enable(auth, d.DefinitionID, d.Version); err == nil {
@@ -140,10 +141,10 @@ func TestCalendarShippedAuthorizeInjectAndHTTP(t *testing.T) {
 }
 
 func TestCalendarTrustBoundaryFailures(t *testing.T) {
-	d := CalendarDefinition(true)
-	e := EffectiveBinding{Definition: d, Connection: &Connection{Metadata: map[string]string{"google_sub": "subject1"}}}
-	env := map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": CalendarWriteScope}
-	var tool ToolSpec
+	d := api.CalendarDefinition(true)
+	e := api.EffectiveBinding{Definition: d, Connection: &api.Connection{Metadata: map[string]string{"google_sub": "subject1"}}}
+	env := map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": api.CalendarWriteScope}
+	var tool api.ToolSpec
 	for _, spec := range d.Tools {
 		if spec.Name == "update" {
 			tool = spec
@@ -157,19 +158,19 @@ func TestCalendarTrustBoundaryFailures(t *testing.T) {
 		{"calendar_id": "primary", "event_id": "/bad", "event_json": `{"summary":"fixture"}`},
 		{"calendar_id": false}, {"owner_id": "bob"}, {"calendar_id": "primary", "x": true},
 	} {
-		if _, err := (CalendarBackend{}).CallEnv(context.Background(), e, tool, args, env); err == nil {
+		if _, err := (api.CalendarBackend{}).CallEnv(context.Background(), e, tool, args, env); err == nil {
 			t.Fatal("invalid accepted")
 		}
 	}
-	if _, err := (CalendarBackend{}).Call(context.Background(), e, tool, valid); err == nil {
+	if _, err := (api.CalendarBackend{}).Call(context.Background(), e, tool, valid); err == nil {
 		t.Fatal("missing credential accepted")
 	}
-	if _, err := (CalendarBackend{}).CallEnv(context.Background(), e, tool, valid, map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": CalendarReadScope}); err == nil {
+	if _, err := (api.CalendarBackend{}).CallEnv(context.Background(), e, tool, valid, map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": api.CalendarReadScope}); err == nil {
 		t.Fatal("read token writes")
 	}
 	unknown := tool
 	unknown.Name = "unknown"
-	if _, err := (CalendarBackend{}).CallEnv(context.Background(), e, unknown, valid, env); err == nil {
+	if _, err := (api.CalendarBackend{}).CallEnv(context.Background(), e, unknown, valid, env); err == nil {
 		t.Fatal("unknown tool")
 	}
 	for _, response := range []struct {
@@ -182,7 +183,7 @@ func TestCalendarTrustBoundaryFailures(t *testing.T) {
 			w.WriteHeader(response.status)
 			_, _ = io.WriteString(w, response.body)
 		}))
-		provider := CalendarBackend{HTTP: &http.Client{Transport: calendarFixtureTransport{fixture.URL, http.DefaultTransport}}}
+		provider := api.CalendarBackend{HTTP: &http.Client{Transport: calendarFixtureTransport{fixture.URL, http.DefaultTransport}}}
 		if _, err := provider.CallEnv(context.Background(), e, tool, valid, env); err == nil {
 			t.Fatal("bad response accepted")
 		}
@@ -192,7 +193,7 @@ func TestCalendarTrustBoundaryFailures(t *testing.T) {
 		http.Redirect(w, r, "https://other.example.invalid", http.StatusFound)
 	}))
 	defer fixture.Close()
-	provider := CalendarBackend{HTTP: &http.Client{Transport: calendarFixtureTransport{fixture.URL, http.DefaultTransport}}}
+	provider := api.CalendarBackend{HTTP: &http.Client{Transport: calendarFixtureTransport{fixture.URL, http.DefaultTransport}}}
 	if _, err := provider.CallEnv(context.Background(), e, tool, valid, env); err == nil {
 		t.Fatal("redirect accepted")
 	}
@@ -202,18 +203,18 @@ func TestCalendarTrustBoundaryFailures(t *testing.T) {
 		t.Fatal("cancelled request accepted")
 	}
 	for _, value := range []string{"", ".", "..", strings.Repeat("x", 129), "a\\b", "x\x00"} {
-		if calendarResource(value) {
+		if api.CalendarResource(value) {
 			t.Fatal(value)
 		}
 	}
-	read := CalendarDefinition(false)
-	readEffective := EffectiveBinding{Definition: read, Connection: &Connection{Metadata: map[string]string{"google_sub": "subject1"}}}
+	read := api.CalendarDefinition(false)
+	readEffective := api.EffectiveBinding{Definition: read, Connection: &api.Connection{Metadata: map[string]string{"google_sub": "subject1"}}}
 	for _, token := range []any{true, strings.Repeat("x", 2049)} {
-		if _, err := provider.CallEnv(context.Background(), readEffective, read.Tools[0], map[string]any{"calendar_id": "primary", "page_token": token}, map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": CalendarReadScope}); err == nil {
+		if _, err := provider.CallEnv(context.Background(), readEffective, read.Tools[0], map[string]any{"calendar_id": "primary", "page_token": token}, map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": api.CalendarReadScope}); err == nil {
 			t.Fatal("bad pagination accepted")
 		}
 	}
-	if _, err := provider.CallEnv(context.Background(), readEffective, read.Tools[0], map[string]any{"calendar_id": "primary", "page_token": "next"}, map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": CalendarReadScope}); err == nil {
+	if _, err := provider.CallEnv(context.Background(), readEffective, read.Tools[0], map[string]any{"calendar_id": "primary", "page_token": "next"}, map[string]string{"ACCESS_TOKEN": "fixture", "OAUTH_SCOPE": api.CalendarReadScope}); err == nil {
 		t.Fatal("redirect pagination accepted")
 	}
 }
@@ -244,7 +245,7 @@ func TestOwnedConnectionLifecycleLookupIsolation(t *testing.T) {
 		t.Fatal("invalid identity")
 	}
 	store.mu.Lock()
-	store.credentials = map[string]CredentialReference{}
+	store.credentials = map[string]api.CredentialReference{}
 	store.mu.Unlock()
 	if _, _, err := store.OwnedConnection(auth, "google-work"); err == nil {
 		t.Fatal("missing credential accepted")
@@ -252,34 +253,34 @@ func TestOwnedConnectionLifecycleLookupIsolation(t *testing.T) {
 }
 
 func TestProviderAPIManifestValidation(t *testing.T) {
-	for _, mutate := range []func(*ToolDefinition){
-		func(d *ToolDefinition) { d.Workload.Stateful = true },
-		func(d *ToolDefinition) { d.Credentials = nil },
-		func(d *ToolDefinition) { d.Execution.Egress = []string{"other.example.invalid"} },
-		func(d *ToolDefinition) { d.Tools[0].Arguments[0].Flag = "--evil" },
-		func(d *ToolDefinition) { d.Source.URL = "http://www.googleapis.com" },
-		func(d *ToolDefinition) { d.Source.TLSMode = "" },
-		func(d *ToolDefinition) { d.Health.Kind = "exec" },
+	for _, mutate := range []func(*api.ToolDefinition){
+		func(d *api.ToolDefinition) { d.Workload.Stateful = true },
+		func(d *api.ToolDefinition) { d.Credentials = nil },
+		func(d *api.ToolDefinition) { d.Execution.Egress = []string{"other.example.invalid"} },
+		func(d *api.ToolDefinition) { d.Tools[0].Arguments[0].Flag = "--evil" },
+		func(d *api.ToolDefinition) { d.Source.URL = "http://www.googleapis.com" },
+		func(d *api.ToolDefinition) { d.Source.TLSMode = "" },
+		func(d *api.ToolDefinition) { d.Health.Kind = "exec" },
 	} {
-		d := CalendarDefinition(false)
+		d := api.CalendarDefinition(false)
 		mutate(&d)
 		if err := d.Validate(); err == nil {
 			t.Fatal("unsafe provider manifest accepted")
 		}
 	}
-	e := EffectiveBinding{Definition: CalendarDefinition(false)}
-	if _, err := (RoutingBackend{}).Call(context.Background(), e, e.Definition.Tools[0], nil); err == nil {
+	e := api.EffectiveBinding{Definition: api.CalendarDefinition(false)}
+	if _, err := (api.RoutingBackend{}).Call(context.Background(), e, e.Definition.Tools[0], nil); err == nil {
 		t.Fatal("missing backend accepted")
 	}
 }
 
 func TestProviderReceiptControlCharactersAreNotAuditMetadata(t *testing.T) {
 	for _, value := range []string{"a\tb", "a\x1bb", "a\u0085b", "a\x00b", "a\nb"} {
-		if SafeReceipt(value) != "" {
+		if api.SafeReceipt(value) != "" {
 			t.Fatal("control receipt accepted")
 		}
 	}
-	if SafeReceipt(" T1:D1:1234567890.000001 ") != "T1:D1:1234567890.000001" {
+	if api.SafeReceipt(" T1:D1:1234567890.000001 ") != "T1:D1:1234567890.000001" {
 		t.Fatal("valid receipt dropped")
 	}
 }
@@ -298,7 +299,7 @@ func TestRegistryConcurrentSnapshotDoesNotLoseRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.SetConnectionStatus("google-work", RevokedStatus); err != nil {
+	if err := first.SetConnectionStatus("google-work", api.RevokedStatus); err != nil {
 		t.Fatal(err)
 	}
 	if err := second.SetTerminalExposure("google-work", true); err == nil {
@@ -309,7 +310,7 @@ func TestRegistryConcurrentSnapshotDoesNotLoseRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, _, err := fresh.OwnedConnection(auth, "google-work")
-	if err != nil || c.Status != RevokedStatus {
+	if err != nil || c.Status != api.RevokedStatus {
 		t.Fatal("revocation lost", err)
 	}
 	if err := NewStore().Save(path); err == nil {

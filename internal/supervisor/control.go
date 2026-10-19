@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -62,6 +63,7 @@ func (m *Manager) control(w http.ResponseWriter, r *http.Request) {
 		latest.CancelRequested = true
 		if !latest.Dispatching && latest.Response.RunID == "" && !terminalRunStatus(latest.Status) {
 			latest.Status = "cancelled"
+			transitionJobPhase(jobKey, &latest, phaseCancelled)
 			latest.Response = hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: latest.Generation, Status: "cancelled", LastEvent: "run.cancelled"}
 		}
 		m.jobs[jobKey] = latest
@@ -263,6 +265,11 @@ func (m *Manager) ExpireUncertain(ctx context.Context, now time.Time) {
 		if record.Status != "uncertain" {
 			continue
 		}
+		if record.Unconfirmed && !record.UnconfirmedSince.IsZero() && now.Before(record.UnconfirmedSince.Add(hubruntime.RunBudget())) {
+			// The reconciler owns this record until the run budget lapses:
+			// expiring it now would pre-empt observe/readmit settlement.
+			continue
+		}
 		owner := "job:" + executeJobKey(record.Request)
 		expired, hasLease := false, false
 		for _, entry := range m.items {
@@ -289,21 +296,18 @@ func (m *Manager) ExpireUncertain(ctx context.Context, now time.Time) {
 		// durable cancel can never reach it — interrupt instead of replaying a
 		// cancel that fails on generation mismatch forever.
 		ownerEntry := m.items[uncertainOwnerKey(record)]
-		if ownerEntry == nil || (record.Generation != "" && ownerEntry.Generation != record.Generation) {
+		if ownerEntry == nil || (record.Generation != "" && ownerEntry.Generation != record.Generation) || record.Response.RunID == "" {
+			previous := record
 			record.Status = "interrupted"
+			record.Response.Status, record.Response.LastEvent = "interrupted", "run.interrupted"
+			transitionJobPhase(key, &record, phaseInterrupted)
+			record.Unconfirmed, record.UnconfirmedSince = false, time.Time{}
 			record.UpdatedAt = now.UTC()
 			m.jobs[key] = record
-			_ = m.persistLocked()
-			continue
-		}
-		if record.Response.RunID == "" {
-			// The run never reported an ID: nothing can observe or cancel it
-			// through the durable path, so it can never settle on its own.
-			// Interrupt the record; sweepStaleLeases releases the hold.
-			record.Status = "interrupted"
-			record.UpdatedAt = now.UTC()
-			m.jobs[key] = record
-			_ = m.persistLocked()
+			if err := m.persistLocked(); err != nil {
+				m.jobs[key] = previous
+				log.Printf("supervisor expiry job_id=%q persistence failed: %v", key, err)
+			}
 			continue
 		}
 		targets = append(targets, record)
@@ -501,7 +505,7 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 		}
 	}
 	if settings.CapabilityMode != "managed" && strings.TrimSpace(settings.GlobalSkillsDir) == "" {
-		settings.GlobalSkillsDir = filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills")
+		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills"))
 	}
 	if err := settings.Validate(); err != nil {
 		return err

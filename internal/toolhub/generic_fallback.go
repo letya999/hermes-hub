@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,7 +33,7 @@ type genericImageConfig struct {
 	Cmd        []string `json:"Cmd"`
 }
 
-func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan controllerPlan) (workload genericWorkload, err error) {
+func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan api.ControllerPlan) (workload genericWorkload, err error) {
 	definition := c.config.Definition
 	if c.config.DynamicDefinitions {
 		definition = plan.Definition
@@ -44,18 +45,18 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 			err = fmt.Errorf("%s: %w", step, err)
 		}
 	}()
-	if definition.Workload.Class == Shared && (definition.Workload.Stateful || len(definition.Credentials) != 0 || len(plan.Execution.Mounts) != 0) {
-		return genericWorkload{}, fmt.Errorf("%w: shared Docker fallback cannot retain state or credentials", ErrIsolation)
+	if definition.Workload.Class == api.Shared && (definition.Workload.Stateful || len(plan.Execution.Mounts) != 0 || (!definition.Workload.Sharable && slices.ContainsFunc(definition.Credentials, func(input api.CredentialInput) bool { return !input.PerRequest }))) {
+		return genericWorkload{}, fmt.Errorf("%w: shared Docker fallback cannot retain state or credentials", api.ErrIsolation)
 	}
 	for _, mount := range plan.Execution.Mounts {
 		if mount.Source != "connection-state" && mount.Source != "job-state" {
-			return genericWorkload{}, fmt.Errorf("%w: Docker fallback supports only named state volumes", ErrIsolation)
+			return genericWorkload{}, fmt.Errorf("%w: Docker fallback supports only named state volumes", api.ErrIsolation)
 		}
 	}
-	if definition.Workload.Stateful && len(plan.Execution.Mounts) == 0 && !slices.ContainsFunc(plan.CredentialMounts, func(m Mount) bool { return !m.ReadOnly }) {
-		return genericWorkload{}, fmt.Errorf("%w: stateful Docker fallback requires a named state volume", ErrIsolation)
+	if definition.Workload.Stateful && len(plan.Execution.Mounts) == 0 && !slices.ContainsFunc(plan.CredentialMounts, func(m api.Mount) bool { return !m.ReadOnly }) {
+		return genericWorkload{}, fmt.Errorf("%w: stateful Docker fallback requires a named state volume", api.ErrIsolation)
 	}
-	bridgeBinary, err := resolveLinuxBridgeBinary(c.config.BridgeBinary)
+	bridgeBinary, err := api.ResolveLinuxBridgeBinary(c.config.BridgeBinary)
 	if err != nil {
 		return genericWorkload{}, err
 	}
@@ -103,13 +104,13 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		}
 		_ = os.RemoveAll(remoteState)
 	}
-	if noSymlinkPath(remoteState) == nil {
+	if api.NoSymlinkPath(remoteState) == nil {
 		// Orphaned state from a killed controller admit: all resources are
 		// named after this workload ID, so reclaim them instead of wedging
 		// every future admission of the same binding.
 		cleanup()
-		if noSymlinkPath(remoteState) == nil {
-			return genericWorkload{}, fmt.Errorf("%w: existing ToolHive fallback state", ErrIsolation)
+		if api.NoSymlinkPath(remoteState) == nil {
+			return genericWorkload{}, fmt.Errorf("%w: existing ToolHive fallback state", api.ErrIsolation)
 		}
 	}
 	if err := os.Mkdir(remoteState, 0700); err != nil {
@@ -143,7 +144,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		// for read-only tools on a fresh volume.
 		_, _ = c.docker(ctx, "run", "--rm", "--user", "0:0", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--mount", "type=volume,source="+volume+",target=/state", "--entrypoint", "chmod", imageRef, "0777", "/state")
 	}
-	proxyConfig, err := genericProxyConfig(plan.Execution.Egress)
+	proxyConfig, err := api.GenericProxyConfig(plan.Execution.Egress)
 	if err != nil {
 		return genericWorkload{}, err
 	}
@@ -179,12 +180,12 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	step = "bridge-config"
 	configBytes, err := json.Marshal(struct {
-		Listen       string       `json:"listen"`
-		TokenEnv     string       `json:"token_env"`
-		Command      []string     `json:"command"`
-		AllowedTools []string     `json:"allowed_tools"`
-		Transport    string       `json:"transport,omitempty"`
-		TCPForwards  []TCPForward `json:"tcp_forwards,omitempty"`
+		Listen       string           `json:"listen"`
+		TokenEnv     string           `json:"token_env"`
+		Command      []string         `json:"command"`
+		AllowedTools []string         `json:"allowed_tools"`
+		Transport    string           `json:"transport,omitempty"`
+		TCPForwards  []api.TCPForward `json:"tcp_forwards,omitempty"`
 	}{genericBridgeListen, "", command, definitionToolNames(definition.Tools), definition.Source.NetworkTransport, plan.Execution.TCPForwards})
 	if err != nil {
 		return genericWorkload{}, err
@@ -215,16 +216,18 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	bridgeArgs := append([]string{"create", "--name", plan.WorkloadID, "--network", network, "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m", "--tmpfs", "/run:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m", "--env", "HOME=/tmp", "--env", "HTTP_PROXY=http://" + proxyIP + ":3128", "--env", "HTTPS_PROXY=http://" + proxyIP + ":3128", "--env", "NO_PROXY=127.0.0.1,localhost", "--env", "NODE_USE_ENV_PROXY=1", "--entrypoint", "/hermes-bridge/hubctl"}, limits...)
 	if len(definition.Credentials) > 0 {
 		if plan.WorkspacePath == "" {
-			return genericWorkload{}, fmt.Errorf("%w: credential-bearing fallback requires an owner workspace", ErrUnauthorized)
+			return genericWorkload{}, fmt.Errorf("%w: credential-bearing fallback requires an owner workspace", api.ErrUnauthorized)
 		}
 		credentialEnv, credentialMounts, materializeErr := materializeRuntimeCredentials(plan.WorkspacePath, definition)
 		if materializeErr != nil {
 			return genericWorkload{}, materializeErr
 		}
-		if _, err = readGenericSecrets(credentialEnv, definition); err != nil {
-			return genericWorkload{}, err
+		if credentialEnv != "" {
+			if _, err = api.ReadGenericSecrets(credentialEnv, definition); err != nil {
+				return genericWorkload{}, err
+			}
+			bridgeArgs = append(bridgeArgs, "--env-file", credentialEnv)
 		}
-		bridgeArgs = append(bridgeArgs, "--env-file", credentialEnv)
 		plan.CredentialMounts = append(plan.CredentialMounts, credentialMounts...)
 	}
 	for i, mount := range plan.Execution.Mounts {
@@ -235,14 +238,14 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		bridgeArgs = append(bridgeArgs, "--mount", mountSpec)
 	}
 	for _, mount := range plan.CredentialMounts {
-		spec := "type=bind,source=" + dockerBindSource(mount.Source) + ",target=" + mount.Target
+		spec := "type=bind,source=" + api.DockerBindSource(mount.Source) + ",target=" + mount.Target
 		if mount.ReadOnly {
 			spec += ",readonly"
 		}
 		bridgeArgs = append(bridgeArgs, "--mount", spec)
 	}
-	bridgeArgs = append(bridgeArgs, runtimeEnvironmentArgs(definition)...)
-	bridgeArgs = append(bridgeArgs, proxyEnvironmentArgs(definition, "http://"+proxyIP+":3128")...)
+	bridgeArgs = append(bridgeArgs, api.RuntimeEnvironmentArgs(definition)...)
+	bridgeArgs = append(bridgeArgs, api.ProxyEnvironmentArgs(definition, "http://"+proxyIP+":3128")...)
 	bridgeArgs = append(append(bridgeArgs, c.scopeLabelArgs()...), "--mount", "type=volume,source="+bridgeVol+",target=/hermes-bridge,readonly", imageRef, "companion", "--config", "/hermes-bridge/config.json")
 	if _, err := c.docker(ctx, bridgeArgs...); err != nil {
 		return genericWorkload{}, err
@@ -300,9 +303,9 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	ready, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := waitLocalWorkload(ready, func() error {
+	if err := api.WaitLocalWorkload(ready, func() error {
 		client := mcp.NewClient(&mcp.Implementation{Name: "toolhub-readiness", Version: "1"}, nil)
-		session, err := client.Connect(ready, &mcp.StreamableClientTransport{Endpoint: endpoint, DisableStandaloneSSE: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: legacyMCPRoundTripper{base: http.DefaultTransport}}}, nil)
+		session, err := client.Connect(ready, &mcp.StreamableClientTransport{Endpoint: endpoint, DisableStandaloneSSE: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: api.LegacyMCPRoundTripper{Base: http.DefaultTransport}}}, nil)
 		if err != nil {
 			return err
 		}
@@ -312,7 +315,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 			return err
 		}
 		if len(listed.Tools) == 0 {
-			return fmt.Errorf("%w: workload tools/list is empty", ErrIsolation)
+			return fmt.Errorf("%w: workload tools/list is empty", api.ErrIsolation)
 		}
 		return nil
 	}); err != nil {
@@ -353,26 +356,47 @@ func writeWorldReadableTemp(dir, pattern, content string) (string, error) {
 	return name, nil
 }
 
-func materializeRuntimeCredentials(workspace string, definition ToolDefinition) (string, []Mount, error) {
+func materializeRuntimeCredentials(workspace string, definition api.ToolDefinition) (string, []api.Mount, error) {
 	source := filepath.Join(workspace, "credentials.env")
-	values, err := readGenericSecrets(source, definition)
+	if _, err := os.Lstat(source); os.IsNotExist(err) && definition.CredentialsSatisfied(func(string) bool { return false }) {
+		if workspace == "" || api.NoSymlinkPath(workspace) != nil {
+			return "", nil, api.ErrIsolation
+		}
+		return "", nil, nil
+	}
+	values, err := api.ReadGenericSecrets(source, definition)
 	if err != nil {
 		return "", nil, err
 	}
 	var body strings.Builder
-	var mounts []Mount
+	var mounts []api.Mount
 	for _, input := range definition.Credentials {
 		value := values[input.Name]
 		if value == "" {
 			continue
 		}
-		if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
+		if input.Delivery == "file" {
+			if value != input.Target {
+				// Reviewed contract: the submitted content is a file the workload
+				// reads at Target. Mount it read-only and hand the container the
+				// path — never the content — through the env var. When the env
+				// already carries Target the file arrives through the Broker
+				// lease mount in the plan; staging a second bind on the same
+				// target makes docker create fail on the duplicate mount point.
+				path := filepath.Join(workspace, input.Name+".secret")
+				if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+					return "", nil, err
+				}
+				mounts = append(mounts, api.Mount{Source: path, Target: input.Target, ReadOnly: true})
+				value = input.Target
+			}
+		} else if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
 			path := filepath.Join(workspace, input.Name+".json")
 			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
 				return "", nil, err
 			}
 			target := "/run/credentials/" + input.Name + ".json"
-			mounts = append(mounts, Mount{Source: path, Target: target, ReadOnly: true})
+			mounts = append(mounts, api.Mount{Source: path, Target: target, ReadOnly: true})
 			value = target
 		}
 		body.WriteString(input.Name + "=" + value + "\n")
@@ -426,11 +450,11 @@ func (c *genericController) publishedPort(ctx context.Context, name string) (int
 	line := strings.TrimSpace(strings.SplitN(string(body), "\n", 2)[0])
 	_, port, err := net.SplitHostPort(line)
 	if err != nil {
-		return 0, fmt.Errorf("%w: relay port mapping", ErrIsolation)
+		return 0, fmt.Errorf("%w: relay port mapping", api.ErrIsolation)
 	}
 	value, err := strconv.Atoi(port)
 	if err != nil || value < 1 || value > 65535 {
-		return 0, fmt.Errorf("%w: relay port mapping", ErrIsolation)
+		return 0, fmt.Errorf("%w: relay port mapping", api.ErrIsolation)
 	}
 	return value, nil
 }
@@ -458,7 +482,7 @@ func parseToolHiveLogEndpoint(path string) string {
 		if strings.HasPrefix(raw, "http://0.0.0.0:") {
 			raw = "http://127.0.0.1:" + strings.TrimPrefix(raw, "http://0.0.0.0:")
 		}
-		if ValidateBackendEndpoint(raw) == nil && strings.HasPrefix(raw, "http://127.0.0.1:") {
+		if api.ValidateBackendEndpoint(raw) == nil && strings.HasPrefix(raw, "http://127.0.0.1:") {
 			return raw
 		}
 	}
@@ -478,7 +502,7 @@ func (c *genericController) toolHiveEndpoint(ctx context.Context, stateRoot, nam
 		URL  string `json:"url"`
 	}
 	if json.Unmarshal(body, &rows) != nil {
-		return "", fmt.Errorf("%w: ToolHive endpoint missing", ErrIsolation)
+		return "", fmt.Errorf("%w: ToolHive endpoint missing", api.ErrIsolation)
 	}
 	for _, row := range rows {
 		if row.Name != name {
@@ -491,33 +515,33 @@ func (c *genericController) toolHiveEndpoint(ctx context.Context, stateRoot, nam
 		if strings.HasPrefix(endpoint, "http://0.0.0.0:") {
 			endpoint = "http://127.0.0.1:" + strings.TrimPrefix(endpoint, "http://0.0.0.0:")
 		}
-		if ValidateBackendEndpoint(endpoint) == nil && strings.HasPrefix(endpoint, "http://127.0.0.1:") {
+		if api.ValidateBackendEndpoint(endpoint) == nil && strings.HasPrefix(endpoint, "http://127.0.0.1:") {
 			return endpoint, nil
 		}
 	}
-	return "", fmt.Errorf("%w: ToolHive endpoint missing", ErrIsolation)
+	return "", fmt.Errorf("%w: ToolHive endpoint missing", api.ErrIsolation)
 }
 
 func (c *genericController) requireLocalLinuxDocker(ctx context.Context) error {
 	host, err := c.docker(ctx, "context", "inspect", "--format", "{{(index .Endpoints \"docker\").Host}}")
 	if err != nil || (!strings.HasPrefix(strings.TrimSpace(string(host)), "npipe://") && !strings.HasPrefix(strings.TrimSpace(string(host)), "unix://")) {
-		return fmt.Errorf("%w: local Docker context required", ErrIsolation)
+		return fmt.Errorf("%w: local Docker context required", api.ErrIsolation)
 	}
 	osType, err := c.docker(ctx, "info", "--format", "{{.OSType}}")
 	if err != nil || strings.TrimSpace(string(osType)) != "linux" {
-		return fmt.Errorf("%w: local Linux Docker runtime required", ErrIsolation)
+		return fmt.Errorf("%w: local Linux Docker runtime required", api.ErrIsolation)
 	}
 	return nil
 }
 
-func (c *genericController) resolveArtifactImage(ctx context.Context, plan controllerPlan) (string, error) {
+func (c *genericController) resolveArtifactImage(ctx context.Context, plan api.ControllerPlan) (string, error) {
 	pinned := plan.Image + "@" + plan.Digest
-	if id, err := c.docker(ctx, "image", "inspect", pinned, "--format", "{{.Id}}"); err == nil && dockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
+	if id, err := c.docker(ctx, "image", "inspect", pinned, "--format", "{{.Id}}"); err == nil && api.DockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
 		return pinned, nil
 	}
 	// docker load tags the local name. The daemon image ID can differ from
 	// the OCI manifest digest recorded at review.
-	if id, err := c.docker(ctx, "image", "inspect", plan.Image, "--format", "{{.Id}}"); err == nil && dockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
+	if id, err := c.docker(ctx, "image", "inspect", plan.Image, "--format", "{{.Id}}"); err == nil && api.DockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
 		return plan.Image, nil
 	}
 	if _, err := c.docker(ctx, "image", "inspect", pinned); err == nil {
@@ -530,23 +554,23 @@ func (c *genericController) resolveArtifactImage(ctx context.Context, plan contr
 	if digest := strings.TrimSpace(definition.Source.ArchiveDigest); digest != "" && strings.TrimSpace(c.config.StateRoot) != "" {
 		// A pruned daemon image is recoverable: the verified quarantine tar
 		// under the state root is the durable copy review attested.
-		if _, err := storedArtifactLoader(ctx, filepath.Join(c.config.StateRoot, "artifacts"), digest, plan.Image, 8<<30); err == nil {
-			if id, inspectErr := c.docker(ctx, "image", "inspect", plan.Image, "--format", "{{.Id}}"); inspectErr == nil && dockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
+		if _, err := api.StoredArtifactLoader(ctx, filepath.Join(c.config.StateRoot, "artifacts"), digest, plan.Image, 8<<30); err == nil {
+			if id, inspectErr := c.docker(ctx, "image", "inspect", plan.Image, "--format", "{{.Id}}"); inspectErr == nil && api.DockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
 				return plan.Image, nil
 			}
 		}
 	}
 	if definition.Source.Repository != "" && definition.Source.ArchiveDigest == "" {
 		if _, err := c.docker(ctx, "pull", "--quiet", pinned); err == nil {
-			if id, inspectErr := c.docker(ctx, "image", "inspect", pinned, "--format", "{{.Id}}"); inspectErr == nil && dockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
+			if id, inspectErr := c.docker(ctx, "image", "inspect", pinned, "--format", "{{.Id}}"); inspectErr == nil && api.DockerImageIDPattern.MatchString(strings.TrimSpace(string(id))) {
 				return pinned, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("%w: reviewed artifact image unavailable", ErrIsolation)
+	return "", fmt.Errorf("%w: reviewed artifact image unavailable", api.ErrIsolation)
 }
 
-func artifactImageMatches(configImage string, plan controllerPlan, resolved string) bool {
+func artifactImageMatches(configImage string, plan api.ControllerPlan, resolved string) bool {
 	pinned := plan.Image + "@" + plan.Digest
 	for _, candidate := range []string{pinned, plan.Image, plan.Image + ":latest", resolved} {
 		if candidate != "" && configImage == candidate {
@@ -556,7 +580,7 @@ func artifactImageMatches(configImage string, plan controllerPlan, resolved stri
 	return false
 }
 
-func (c *genericController) artifactCommand(ctx context.Context, imageRef string, definitions ...ToolDefinition) ([]string, error) {
+func (c *genericController) artifactCommand(ctx context.Context, imageRef string, definitions ...api.ToolDefinition) ([]string, error) {
 	definition := c.config.Definition
 	if len(definitions) > 0 {
 		definition = definitions[0]
@@ -564,38 +588,38 @@ func (c *genericController) artifactCommand(ctx context.Context, imageRef string
 	if definition.Source.Command != "" {
 		args := definition.Source.Args
 		if definition.Source.NetworkTransport == "" {
-			args = stdioTransportArgs(args)
+			args = api.StdioTransportArgs(args)
 		}
 		return validateArtifactCommand(append([]string{definition.Source.Command}, args...))
 	}
 	body, err := c.docker(ctx, "image", "inspect", imageRef, "--format", "{{json .Config}}")
 	if err != nil {
-		return nil, fmt.Errorf("%w: immutable artifact image unavailable", ErrIsolation)
+		return nil, fmt.Errorf("%w: immutable artifact image unavailable", api.ErrIsolation)
 	}
 	var config genericImageConfig
 	if json.Unmarshal(body, &config) != nil {
-		return nil, ErrIsolation
+		return nil, api.ErrIsolation
 	}
 	command := append(append([]string(nil), config.Entrypoint...), config.Cmd...)
 	if definition.Source.NetworkTransport == "" {
-		command = stdioTransportArgs(command)
+		command = api.StdioTransportArgs(command)
 	}
 	return validateArtifactCommand(command)
 }
 
 func validateArtifactCommand(command []string) ([]string, error) {
-	if len(command) == 0 || len(command) > 32 || !validCommand(command[0]) {
-		return nil, fmt.Errorf("%w: immutable artifact entrypoint required", ErrIsolation)
+	if len(command) == 0 || len(command) > 32 || !api.ValidCommand(command[0]) {
+		return nil, fmt.Errorf("%w: immutable artifact entrypoint required", api.ErrIsolation)
 	}
 	for _, arg := range command {
 		if len(arg) > 256 || strings.ContainsAny(arg, "\x00\r\n") || strings.Contains(arg, "${") {
-			return nil, fmt.Errorf("%w: unsafe artifact entrypoint", ErrIsolation)
+			return nil, fmt.Errorf("%w: unsafe artifact entrypoint", api.ErrIsolation)
 		}
 	}
 	return command, nil
 }
 
-func definitionToolNames(tools []ToolSpec) []string {
+func definitionToolNames(tools []api.ToolSpec) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Name)

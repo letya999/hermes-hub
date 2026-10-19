@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -16,9 +17,9 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
-// ErrUncertain means the runtime may have completed the job before the HTTP
-// connection failed. The gateway must not blindly retry it.
-var ErrUncertain = errors.New("runtime result uncertain")
+// ErrUncertain (aliased in channel.go) means the runtime may have completed
+// the job before the HTTP connection failed. The gateway must not blindly
+// retry it; the error value is the channel contract's.
 
 type HTTPRunner struct {
 	JobsAPI bool
@@ -33,11 +34,28 @@ type HTTPRunner struct {
 	Voice bool
 }
 
-const defaultHTTPRunTimeout = 30 * time.Minute
+// submitRetryBase is the first backoff step for provably unadmitted
+// submissions (dial/connect refused, 503); it doubles up to 20 s.
+var submitRetryBase = time.Second
 
-// unavailableRetryDelay backs off between supervisor 503 retries; a var so
-// tests do not wait on the real delay.
-var unavailableRetryDelay = 20 * time.Second
+// coldStartBudget bounds submission retries while the supervisor is down or
+// still booting (HUB_COLD_START_BUDGET seconds, default 4 min); a var so tests
+// do not wait on the real budget.
+var coldStartBudget = func() time.Duration {
+	return durationSecondsFromEnv("HUB_COLD_START_BUDGET", 4*time.Minute)
+}
+
+// retryableSubmitError reports whether client.Do failed before the request
+// could reach the supervisor: refused dial or DNS failure only. Anything once
+// the connection may have carried bytes stays uncertain.
+func retryableSubmitError(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return op.Op == "dial"
+	}
+	var dns *net.DNSError
+	return errors.As(err, &dns)
+}
 
 func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 	outcome, err := r.RunOutcome(ctx, job)
@@ -45,12 +63,24 @@ func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 }
 
 func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error) {
+	origin := ""
 	if r.Spool != nil {
 		mapping, ok, err := r.Spool.Mapping(job.ID)
 		if err != nil {
 			return RunOutcome{}, err
 		}
+		if ok && mapping.RoutineOriginVersion == 1 && mapping.MatchesJob(job) {
+			if ch := channelFor(nil, job.Channel); ch != nil && ch.Caps().RoutineOrigin {
+				body, _ := json.Marshal(map[string]string{"origin_job_id": job.ID})
+				origin = string(body)
+			}
+		}
 		if ok && mapping.RunID != "" && mapping.SessionID != "" {
+			r.Resume = true
+		}
+		if ok && r.JobsAPI && !mapping.UncertainSince.IsZero() && !terminalStatus(mapping.Status) {
+			// Admission was never confirmed: /v1/resume replays the
+			// supervisor's settled record or reports it still unknown.
 			r.Resume = true
 		}
 	}
@@ -75,18 +105,19 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 			return RunOutcome{}, styleErr
 		}
 	}
-	// The artifact-delivery contract lives on the host-side tools server in
-	// unmanaged deployments; managed runtimes see only ToolHub, so the channel
-	// itself advertises it. Models otherwise conclude chat cannot take files.
-	if instructions != "" {
-		instructions += "\n"
+	if origin != "" {
+		instructions += "\nCurrent run routing reference: " + origin
 	}
-	instructions += "Files written under the workspace `artifacts/` directory (documents, images, videos) are delivered to the chat automatically when the run finishes — no marker needed; the workspace original is preserved after delivery. To attach a file produced in an earlier run or stored elsewhere in the workspace, put `MEDIA: <workspace path>` on its own line in the reply; marker lines are routing metadata and never shown. When a message carries `[file ... inbox=<id>]`, call `inbox_fetch` with that id first to materialize the file under `inbox/`. Never tell the user that the chat cannot receive file attachments."
+	// SPEC-0053 R1.8: the static channel contract (artifacts, MEDIA, inbox,
+	// listing, reminder guidance) lives in the rendered effective SOUL — the
+	// per-run instructions field carries only per-run data: presentation style
+	// and voice availability.
 	if r.Voice {
-		// The VOICE: marker convention lives on the host-side tools server in
-		// unmanaged deployments; managed runtimes see only ToolHub, so the
-		// channel itself advertises it whenever synthesis is configured.
-		instructions += "\n"
+		// The VOICE: marker convention is per-run data: it is advertised only
+		// when the gateway actually has a synthesizer configured.
+		if instructions != "" {
+			instructions += "\n"
+		}
 		instructions += "To answer with a voice message, put `VOICE: <spoken text>` on its own line in the reply — the channel synthesizes and sends it as a voice message; when VOICE: is the only line, the reply is voice-only and no text message is sent. Do that when the user asks for a spoken or voice answer; otherwise answer in text. Synthesized audio is never stored."
 	}
 	body, err := json.Marshal(hubruntime.ExecuteRequest{
@@ -116,37 +147,59 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		path = "/v1/resume"
 	}
 	var response *http.Response
-	// A supervised runtime that is still booting answers 503 ("runtime
-	// unavailable") — the job provably never reached it, so a bounded retry is
-	// safe and keeps wake-up messages from dying on a slow cold start.
-	for attempt := 0; ; attempt++ {
+	httpClient := r.client()
+	if r.Spool != nil {
+		// Stream hops carry no total client timeout: jobCtx's run budget is
+		// the cap and the idle deadline abandons silent hops.
+		httpClient = r.streamClient()
+	}
+	// A supervisor that is down or still booting (dial/DNS failure, or 503)
+	// provably never admitted the job, so retrying inside the cold-start
+	// budget is safe; anything past response headers stays uncertain.
+	deadline := time.Now().Add(coldStartBudget())
+	delay := submitRetryBase
+	for {
 		req, reqErr := http.NewRequestWithContext(jobCtx, http.MethodPost, strings.TrimRight(r.URL, "/")+path, bytes.NewReader(body))
 		if reqErr != nil {
 			return RunOutcome{}, reqErr
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+r.Auth)
+		if job.ID != "" {
+			req.Header.Set("X-Hub-Job-ID", job.ID)
+		}
 		if r.Spool != nil {
 			req.Header.Set("Accept", hubruntime.RunStreamContentType)
 		}
-		response, err = r.client().Do(req)
-		if err != nil {
-			return RunOutcome{}, fmt.Errorf("%w: %v", ErrUncertain, err)
-		}
-		if response.StatusCode != http.StatusServiceUnavailable || attempt >= 3 {
+		response, err = httpClient.Do(req)
+		if err == nil && response.StatusCode != http.StatusServiceUnavailable {
 			break
 		}
-		_ = response.Body.Close()
+		if err != nil && !retryableSubmitError(err) {
+			return RunOutcome{}, fmt.Errorf("%w: %v", ErrUncertain, err)
+		}
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		if !time.Now().Before(deadline) {
+			return RunOutcome{}, fmt.Errorf("runtime_unavailable: supervisor unreachable within the cold-start budget")
+		}
 		select {
 		case <-jobCtx.Done():
 			return RunOutcome{}, fmt.Errorf("%w: %v", ErrUncertain, jobCtx.Err())
-		case <-time.After(unavailableRetryDelay):
+		case <-time.After(delay):
+		}
+		delay *= 2
+		if delay > 20*time.Second {
+			delay = 20 * time.Second
 		}
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK && response.Header.Get("Content-Type") == hubruntime.RunStreamContentType {
 		var last hubruntime.ExecuteResponse
-		err := hubruntime.ReadRunStream(response.Body, func(event hubruntime.ExecuteResponse) error {
+		// Any byte resets the idle deadline; silence cancels jobCtx, which
+		// aborts the in-flight body read.
+		err := hubruntime.ReadRunStream(hubruntime.IdleReader(response.Body, hubruntime.StreamIdleDeadline(), cancel), func(event hubruntime.ExecuteResponse) error {
 			if event.JobID != job.ID {
 				return errors.New("stream job identity mismatch")
 			}
@@ -166,7 +219,17 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 			if err := r.Spool.RecordStreamEvent(job, event); err != nil {
 				return err
 			}
+			// Transport-only frames (heartbeats) carry no run identity; keep the
+			// bound run/session so a mid-stream break stays holdable, not
+			// mistaken for never-admitted.
+			prevRun, prevSession := last.RunID, last.SessionID
 			last = event
+			if last.RunID == "" {
+				last.RunID = prevRun
+			}
+			if last.SessionID == "" {
+				last.SessionID = prevSession
+			}
 			return nil
 		})
 		outcome := outcomeFromEvent(last)
@@ -194,13 +257,21 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		if terminalStatus(failure.Status) && failure.JobID == job.ID {
 			r.meterUsage(jobCtx, job, failure.RunID)
 		}
-		if failure.Status == "uncertain" {
+		if failure.Status == "uncertain" || (r.Resume && response.StatusCode == http.StatusConflict) {
+			// A resume conflict only says the outcome is not observable yet —
+			// the reconciler may still settle it, so it stays uncertain.
 			return outcome, fmt.Errorf("%w: runtime returned HTTP %d", ErrUncertain, response.StatusCode)
 		}
 		return outcome, fmt.Errorf("runtime returned HTTP %d", response.StatusCode)
 	}
 	var result hubruntime.ExecuteResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024+64*1024)).Decode(&result); err != nil || (strings.TrimSpace(result.Text) == "" && (result.Status == "completed" || !terminalStatus(result.Status))) {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024+64*1024)).Decode(&result); err != nil {
+		return RunOutcome{}, errors.New("runtime returned an invalid response")
+	}
+	if result.Status == "uncertain" {
+		return outcomeFromEvent(result), ErrUncertain
+	}
+	if strings.TrimSpace(result.Text) == "" && (result.Status == "completed" || !terminalStatus(result.Status)) {
 		return RunOutcome{}, errors.New("runtime returned an invalid response")
 	}
 	if terminalStatus(result.Status) && result.JobID == job.ID {
@@ -220,7 +291,11 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 				if err != nil || !ok {
 					return RunOutcome{}, ErrUncertain
 				}
-				if mapping.RuntimeGeneration != result.RuntimeGeneration {
+				// A run-bound mapping rebinds to a replacement generation
+				// before replaying; a never-admitted mapping has nothing to
+				// rebind — RecordStreamEvent records the first-seen run
+				// identity from the settled replay itself.
+				if mapping.RunID != "" && mapping.RuntimeGeneration != result.RuntimeGeneration {
 					if err := r.Spool.RebindObservation(job, result); err != nil {
 						return RunOutcome{}, ErrUncertain
 					}
@@ -310,6 +385,9 @@ func (r HTTPRunner) fetchArtifact(ctx context.Context, job Job, name string) ([]
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+r.Auth)
+	if job.ID != "" {
+		req.Header.Set("X-Hub-Job-ID", job.ID)
+	}
 	response, err := r.client().Do(req)
 	if err != nil {
 		return nil, err
@@ -343,6 +421,9 @@ func (r HTTPRunner) SessionUsage(ctx context.Context, request hubruntime.Execute
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+r.Auth)
+	if request.JobID != "" {
+		req.Header.Set("X-Hub-Job-ID", request.JobID)
+	}
 	// The supervisor ensures the runtime before forwarding, so a cold spawn
 	// rides inside this request — the budget must cover container start.
 	client := &http.Client{Timeout: 120 * time.Second}
@@ -368,7 +449,7 @@ func (r HTTPRunner) timeout() time.Duration {
 	if r.Limit > 0 {
 		return r.Limit
 	}
-	return defaultHTTPRunTimeout
+	return hubruntime.RunBudget()
 }
 
 func (r HTTPRunner) client() *http.Client {
@@ -376,6 +457,15 @@ func (r HTTPRunner) client() *http.Client {
 		return r.HTTP
 	}
 	return &http.Client{Timeout: r.timeout() + 5*time.Second}
+}
+
+// streamClient serves run-stream hops: no total timeout, since the run budget
+// in jobCtx bounds the job and the idle deadline cuts silent streams.
+func (r HTTPRunner) streamClient() *http.Client {
+	if r.HTTP != nil {
+		return r.HTTP
+	}
+	return &http.Client{}
 }
 
 // runtimeRestart returns the restart hook. Unsupervised gateways restart the
@@ -400,6 +490,9 @@ func runtimeRestart(url, auth string, supervised bool) func(context.Context, hub
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+auth)
+		if request.JobID != "" {
+			req.Header.Set("X-Hub-Job-ID", request.JobID)
+		}
 		response, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 		if err != nil {
 			return err

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,14 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestTelegramConnectorCLIAccountBindCallRevoke(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HUB_STATE", root)
-	deployment := toolhub.ToolDefinition{Source: toolhub.DefinitionSource{Image: "ghcr.io/fixture/telegram-account", Digest: "sha256:" + strings.Repeat("1", 64)}, Workload: toolhub.WorkloadPolicy{ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/fixture/sidecar@sha256:" + strings.Repeat("2", 64)}}, Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 65536, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"telegram.org"}, Mounts: []toolhub.Mount{{Source: "connection-state", Target: "/run/connector"}}}, Health: toolhub.HealthProbe{Kind: "exec", Value: "/opt/telegram/.venv/bin/python", TimeoutSeconds: 5}}
+	deployment := api.ToolDefinition{Source: api.DefinitionSource{Image: "ghcr.io/fixture/telegram-account", Digest: "sha256:" + strings.Repeat("1", 64)}, Workload: api.WorkloadPolicy{ToolHiveVersion: "v0.48.0", SidecarImages: []string{"ghcr.io/fixture/sidecar@sha256:" + strings.Repeat("2", 64)}}, Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 65536, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"telegram.org"}, Mounts: []api.Mount{{Source: "connection-state", Target: "/run/connector"}}}, Health: api.HealthProbe{Kind: "exec", Value: "/opt/telegram/.venv/bin/python", TimeoutSeconds: 5}}
 	manifest := filepath.Join(t.TempDir(), "deployment.json")
 	raw, _ := json.Marshal(deployment)
 	if err := os.WriteFile(manifest, raw, 0600); err != nil {
@@ -52,9 +52,9 @@ func TestTelegramConnectorCLIAccountBindCallRevoke(t *testing.T) {
 			return
 		}
 		var plan struct {
-			WorkloadID    string                  `json:"workload_id"`
-			WorkspacePath string                  `json:"workspace_path"`
-			Execution     toolhub.ExecutionPolicy `json:"execution"`
+			WorkloadID    string              `json:"workload_id"`
+			WorkspacePath string              `json:"workspace_path"`
+			Execution     api.ExecutionPolicy `json:"execution"`
 		}
 		if json.NewDecoder(r.Body).Decode(&plan) != nil {
 			t.Error("invalid plan")
@@ -63,7 +63,7 @@ func TestTelegramConnectorCLIAccountBindCallRevoke(t *testing.T) {
 		if err != nil || !strings.Contains(string(body), "fixture-session") {
 			t.Error("credentials not injected before admission")
 		}
-		_ = json.NewEncoder(w).Encode(toolhub.AdmissionReceipt{WorkloadID: plan.WorkloadID, State: "running", Enforced: true, ImageDigest: deployment.Source.Digest, SidecarImages: deployment.Workload.SidecarImages, Execution: plan.Execution})
+		_ = json.NewEncoder(w).Encode(api.AdmissionReceipt{WorkloadID: plan.WorkloadID, State: "running", Enforced: true, ImageDigest: deployment.Source.Digest, SidecarImages: deployment.Workload.SidecarImages, Execution: plan.Execution})
 	}))
 	defer fixture.Close()
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", fixture.URL+"/admit")
@@ -92,7 +92,7 @@ func TestTelegramConnectorCLIAccountBindCallRevoke(t *testing.T) {
 		if !write {
 			_ = os.WriteFile(callInput, []byte(`{"peer_id":7}`), 0600)
 		}
-		callArgs := append(append([]string{}, args...), "--from-file", callInput, "--tool", toolhub.ProjectedToolName(id, "1.0.0", name))
+		callArgs := append(append([]string{}, args...), "--from-file", callInput, "--tool", api.ProjectedToolName(id, "1.0.0", name))
 		if err := run(context.Background(), append([]string{"connector", "call"}, callArgs...)); err != nil {
 			t.Fatal(err)
 		}

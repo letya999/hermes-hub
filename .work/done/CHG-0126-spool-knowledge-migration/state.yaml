@@ -1,0 +1,32 @@
+schema: 1
+change: CHG-0126
+title: "Phase 5 — spool migration: knowledge relocation to runtime state"
+status: done
+branch: refactor/comm-plane-separation
+updated: 2026-10-18
+phase: done
+requirements: []
+depends_on:
+  - CHG-0121
+design_status: accepted
+implementation_status: done
+slices:
+  S1-spool-migrate-command: done
+validation:
+  unit: pass
+  integration: pass
+  documents: done
+  just_check: pass
+  docker_check: not_required
+  red_team: done
+  live_acceptance: not_required
+evidence:
+  - "hubctl spool migrate --spool <dir> --state <dir> [--apply]; dry-run default"
+  - "TestSpoolMigrateKnowledge + TestSpoolMigrateCLI + TestSpoolMigrateGuards green: copy-not-move, conflicts not overwritten, symlinks/oversize/invalid dirs skipped, idempotent rerun, source preserved for rollback"
+  - "ADR-0050 фиксирует семантику; docs/operations.md описывает команду"
+  - "just check PASS (coverage 86.37%)"
+next: []
+notes:
+  - "Единственная релокация on-disk данных за Ф1–Ф3: spool/knowledge -> state/knowledge."
+  - "Миграция копирует, не переносит — откат на старый образ сохраняет knowledge."
+  - "Остальные каталоги spool читаются по прежним путям, миграция не нужна."

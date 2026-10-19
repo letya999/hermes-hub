@@ -67,11 +67,11 @@ func TestExternalAliasAndBackendFailures(t *testing.T) {
 	r = f.request(alice, "pat", "input", "input_request")
 	cookie := f.pair(alice, r)
 	p.writeFail = true
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}); !errors.Is(e, ErrUnavailable) {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil); !errors.Is(e, ErrUnavailable) {
 		t.Fatal(e)
 	}
 	p.writeFail = false
-	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}); e != nil {
+	if e = f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil); e != nil {
 		t.Fatal(e)
 	}
 	r, _ = f.b.GetRequest(alice, r.ID)

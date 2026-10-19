@@ -51,6 +51,14 @@ func New(cfg Config) (*Broker, error) {
 		if r.Kind != "mutation.v1" || strictjson.Decode(r.Data, &m) != nil {
 			return nil, ErrUnavailable
 		}
+		// A journaled dynamic contract must never silently shadow a file-catalog
+		// contract under the same id@revision.
+		if m.Contract != nil {
+			ck := key(m.Contract.Contract.ID, m.Contract.Contract.Revision)
+			if existing, ok := b.catalog[ck]; ok && existing.Digest() != m.Contract.Contract.Digest() {
+				return nil, ErrConflict
+			}
+		}
 		b.apply(m, r.Sequence)
 	}
 	// Reviewed contract revisions are immutable. Configuration drift cannot silently
@@ -99,6 +107,9 @@ func (b *Broker) apply(m mutation, seq uint64) {
 	}
 	if m.OAuth != nil {
 		b.oauth[m.OAuth.StateHash] = *m.OAuth
+	}
+	if m.Contract != nil {
+		b.catalog[key(m.Contract.Contract.ID, m.Contract.Contract.Revision)] = m.Contract.Contract
 	}
 	m.Audit.Sequence = seq
 	b.events = append(b.events, m.Audit)

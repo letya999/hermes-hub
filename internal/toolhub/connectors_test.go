@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,7 +22,7 @@ func TestConnectorsListsOnlyCallerProjection(t *testing.T) {
 	g := &Gateway{
 		Store:        store,
 		ControlToken: "control-plane-token-which-is-32-chars!",
-		Backend:      RoutingBackend{},
+		Backend:      api.RoutingBackend{},
 		Tokens: map[string]identity.Envelope{
 			"alice-principal-token-0000000000000": auth,
 			"bob-principal-token-000000000000000": bob,
@@ -95,11 +96,11 @@ func TestConnectorsListsOnlyCallerProjection(t *testing.T) {
 func TestCLIJobReleasePinsPrincipalAndJob(t *testing.T) {
 	store, auth, _ := seededStore(t)
 	bob := identity.TelegramEnvelope("bob", 8, "runtime-bob", "policy-1")
-	var got cliReleaseRequest
+	var got api.CliReleaseRequest
 	g := &Gateway{
 		Store:        store,
 		ControlToken: "control-plane-token-which-is-32-chars!",
-		Backend:      RoutingBackend{},
+		Backend:      api.RoutingBackend{},
 		Tokens: map[string]identity.Envelope{
 			"alice-principal-token-0000000000000": auth,
 			"bob-principal-token-000000000000000": bob,
@@ -108,7 +109,7 @@ func TestCLIJobReleasePinsPrincipalAndJob(t *testing.T) {
 			"alice-principal-token-0000000000000": {auth: auth},
 			"bob-principal-token-000000000000000": {auth: bob},
 		},
-		CLIRelease: func(_ context.Context, release cliReleaseRequest) error {
+		CLIRelease: func(_ context.Context, release api.CliReleaseRequest) error {
 			got = release
 			return nil
 		},
@@ -136,7 +137,7 @@ func TestCLIJobReleasePinsPrincipalAndJob(t *testing.T) {
 		t.Fatalf("release=%+v", got)
 	}
 	// The control-plane bearer selects the principal through the header.
-	got = cliReleaseRequest{}
+	got = api.CliReleaseRequest{}
 	if w := call("control-plane-token-which-is-32-chars!", "bob", `{"job_id":"job-2"}`); w.Code != http.StatusNoContent {
 		t.Fatalf("control release: %d", w.Code)
 	}
@@ -173,7 +174,7 @@ func TestCLIJobReleasePinsPrincipalAndJob(t *testing.T) {
 func TestRuntimeRestartNotifierPrimesDiffsAndRetries(t *testing.T) {
 	var posts []string
 	var fail bool
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/restart-request" || r.Header.Get("Authorization") != "Bearer control-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -187,13 +188,13 @@ func TestRuntimeRestartNotifierPrimesDiffsAndRetries(t *testing.T) {
 		posts = append(posts, body["principal_id"])
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer api.Close()
-	n := &RuntimeRestartNotifier{URL: api.URL, Token: "control-token"}
-	snapshot := []ProjectionTarget{{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", Revision: 2}}
+	defer srv.Close()
+	n := &api.RuntimeRestartNotifier{URL: srv.URL, Token: "control-token"}
+	snapshot := []api.ProjectionTarget{{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", Revision: 2}}
 	if err := n.Notify(snapshot); err != nil || len(posts) != 0 {
 		t.Fatalf("first snapshot must prime, not notify: %v %v", err, posts)
 	}
-	snapshot = append(snapshot, ProjectionTarget{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", Revision: 1})
+	snapshot = append(snapshot, api.ProjectionTarget{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", Revision: 1})
 	snapshot[0].Revision = 3
 	if err := n.Notify(snapshot); err != nil || len(posts) != 2 {
 		t.Fatalf("changed+new targets notified once: %v %v", err, posts)
@@ -223,17 +224,17 @@ func TestProjectionRevisionsSnapshotsBoundTargets(t *testing.T) {
 	}
 }
 
-// RuntimeRestartNotifierFromEnv stays nil without the supervisor pair, so
+// runtimerestartnotifierfromenv stays nil without the supervisor pair, so
 // unmanaged deployments keep the file-marker contract.
 func TestRuntimeRestartNotifierFromEnvRequiresSupervisor(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
 	t.Setenv("HUB_COMMUNICATION_AUTH", "")
-	if RuntimeRestartNotifierFromEnv() != nil {
+	if api.RuntimeRestartNotifierFromEnv() != nil {
 		t.Fatal("notifier without supervisor config")
 	}
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://supervisor:8876/")
 	t.Setenv("HUB_COMMUNICATION_AUTH", "token")
-	n := RuntimeRestartNotifierFromEnv()
+	n := api.RuntimeRestartNotifierFromEnv()
 	if n == nil || n.URL != "http://supervisor:8876" || n.Token != "token" {
 		t.Fatalf("notifier env: %+v", n)
 	}

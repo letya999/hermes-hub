@@ -3,6 +3,7 @@ package oauth
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -272,6 +273,90 @@ func TestRemoteMCPDiscoveryUsesWellKnown(t *testing.T) {
 	}
 	if !strings.HasSuffix(ProtectedResourceWellKnown, "oauth-protected-resource") || !strings.HasSuffix(AuthorizationServerWellKnown, "oauth-authorization-server") {
 		t.Fatal("RFC well-known paths drifted")
+	}
+}
+
+// Remote-MCP discovery must carry the PRM resource/scope data and the AS
+// registration endpoint into the provider, and the authorize URL must send
+// RFC8707 `resource` so the issued token is audience-bound to this server.
+func TestDiscoverRemoteMCPCapturesResourceRegistrationScopes(t *testing.T) {
+	var server *httptest.Server
+	var tokenResource string
+	mux := http.NewServeMux()
+	mux.HandleFunc(ProtectedResourceWellKnown, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": server.URL, "authorization_servers": []string{server.URL}, "scopes_supported": []string{"mcp:read"}})
+	})
+	mux.HandleFunc(AuthorizationServerWellKnown, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token", "registration_endpoint": server.URL + "/register"})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		uris, _ := body["redirect_uris"].([]any)
+		if len(uris) == 0 {
+			http.Error(w, "no redirect", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "dcr-client-1"})
+	})
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		code := "code-" + r.URL.Query().Get("state")
+		target, _ := url.Parse(r.URL.Query().Get("redirect_uri"))
+		q := target.Query()
+		q.Set("code", code)
+		q.Set("state", r.URL.Query().Get("state"))
+		target.RawQuery = q.Encode()
+		http.Redirect(w, r, target.String(), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(body))
+		tokenResource = form.Get("resource")
+		if form.Get("grant_type") != "authorization_code" || form.Get("code") == "" || form.Get("code_verifier") == "" {
+			http.Error(w, "invalid_grant", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at-1", "refresh_token": "rt-1", "token_type": "Bearer", "expires_in": 3600})
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+
+	broker := NewBroker(testSecrets(t), []string{"http://127.0.0.1/callback"})
+	broker.HTTP = server.Client()
+	provider, err := broker.DiscoverRemoteMCPAs("remote-mcp-test", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.Resource != server.URL || provider.RegistrationURL != server.URL+"/register" {
+		t.Fatalf("provider=%+v", provider)
+	}
+	client, err := broker.RegisterClient("remote-mcp-test", "http://127.0.0.1/callback")
+	if err != nil || client.ID != "dcr-client-1" {
+		t.Fatalf("DCR client=%+v err=%v", client, err)
+	}
+	start, err := broker.StartAuth(AuthRequest{Principal: "u", Context: "c", Connection: "conn", Provider: "remote-mcp-test", Redirect: "http://127.0.0.1/callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(start.AuthorizeURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Query().Get("resource"); got != server.URL {
+		t.Fatalf("authorize URL lacks RFC8707 resource: %s", start.AuthorizeURL)
+	}
+	if got := parsed.Query().Get("client_id"); got != "dcr-client-1" {
+		t.Fatalf("authorize URL lacks DCR client_id: %s", start.AuthorizeURL)
+	}
+	if got := parsed.Query().Get("scope"); got != "mcp:read" {
+		t.Fatalf("authorize URL lacks discovered scopes: %s", start.AuthorizeURL)
+	}
+	code := "code-" + parsed.Query().Get("state")
+	if _, err := broker.HandleCallback("u", "c", "conn", parsed.Query().Get("state"), code, "http://127.0.0.1/callback"); err != nil {
+		t.Fatalf("token exchange rejected: %v", err)
+	}
+	if tokenResource != server.URL {
+		t.Fatalf("token request lacked RFC8707 resource: %q", tokenResource)
 	}
 }
 

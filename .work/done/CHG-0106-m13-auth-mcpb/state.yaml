@@ -1,0 +1,20 @@
+schema: 1
+id: CHG-0106-m13-auth-mcpb
+status: done
+phase: verified
+started_at: "2026-10-15"
+updated_at: "2026-10-16"
+completed:
+  - "Ecosystem audit after CHG-0105 mapped remaining gaps: generic remote-MCP OAuth (PRM/DCR), writable state on generic installs, multi-remote server.json silence, real MCPB schema + .mcpb zip source."
+  - "S2.3 multiple remotes -> ErrAmbiguousEntrypoint (fail-closed, no silent pick)."
+  - "S2.2 ApplyLaunchState: reviewed static env + connection-state mounts -> RuntimeEnvironment/Execution.Mounts + Stateful."
+  - "S2.4 real MCPB manifest (manifest_version 0.3, server.mcp_config, user_config, ${__dirname}) + .mcpb zip asset import with digest verify + pipeline routing."
+  - "S2.1 generic remote OAuth: 401->PRM(RFC9728)->AS metadata->DCR(RFC7591)->PKCE+RFC8707 authorize/token/refresh; provider doc + DCR client persisted in locator; restart-safe refresh; one bounded refresh-and-retry on rejected calls; race-safe restore via broker accessors."
+  - "scope: shared for remote_url installs: install_shared gate, Shared+Sharable class, catalog publication on admit paths (probe, credential form, OAuth callback); oauth markers on shared connections; refresh reads OAUTH_* from the owner locator — members ride one policy-owned credential."
+  - "scope: shared for repository source installs: install_shared gate in prepareSource, shared threaded through prepareSelfInstall/Async/ensurePreparing/finishSelfInstall, reviewed definition marked Shared+Sharable, publication promoted to catalog."
+next: []
+
+risks:
+  - "CIMD needs a public hub origin; only DCR/pre-registered client paths land in this slice."
+  - "Remote OAuth refresh re-discovers AS metadata per refresh; a disappeared AS fails closed."
+  - "Refresh-retry fires on any backend error for oauth-marked connections (bounded to one retry); non-auth failures lose one refresh round-trip."

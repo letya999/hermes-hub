@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"os"
 	"path/filepath"
@@ -81,7 +82,7 @@ func (c *ControlPlane) diagnosticsScope(auth identity.Envelope) diagScope {
 	defer c.Store.mu.RUnlock()
 	seen := map[string]bool{}
 	for _, binding := range c.Store.bindings {
-		if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID || binding.PolicyVersion != auth.PolicyVersion || binding.Status == RevokedStatus {
+		if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID || binding.PolicyVersion != auth.PolicyVersion || binding.Status == api.RevokedStatus {
 			continue
 		}
 		for _, workload := range c.Store.workloads {
@@ -100,15 +101,15 @@ func (c *ControlPlane) diagnosticsScope(auth identity.Envelope) diagScope {
 		// resolveLocked does at invocation time.
 		ownerID := auth.ContextID
 		switch binding.WorkloadClass {
-		case Shared:
+		case api.Shared:
 			ownerID = ""
-		case PerUser:
+		case api.PerUser:
 			ownerID = binding.ToolBindingID
 			if binding.ConnectionID != "" {
 				ownerID = auth.ContextID + ":" + auth.PrincipalID + ":" + binding.ConnectionID
 			}
 		}
-		workloadID := WorkloadInstanceID(binding.DefinitionID, binding.WorkloadClass, ownerID, "")
+		workloadID := api.WorkloadInstanceID(binding.DefinitionID, binding.WorkloadClass, ownerID, "")
 		if !seen[workloadID] {
 			seen[workloadID] = true
 			scope.workloads = append(scope.workloads, diagWorkload{WorkloadID: workloadID, BindingID: binding.ToolBindingID, DefinitionID: binding.DefinitionID, Status: "inferred"})
@@ -157,7 +158,7 @@ func diagParseQuery(args map[string]any) (diagQuery, error) {
 	if raw, ok := args["tail"]; ok {
 		value, ok := raw.(float64)
 		if !ok || value != float64(int(value)) {
-			return q, fmt.Errorf("%w: diagnostics tail must be an integer", ErrInvalid)
+			return q, fmt.Errorf("%w: diagnostics tail must be an integer", api.ErrInvalid)
 		}
 		q.tail = int(value)
 	}
@@ -167,38 +168,38 @@ func diagParseQuery(args map[string]any) (diagQuery, error) {
 	if q.tail > diagMaxTail {
 		q.tail = diagMaxTail
 	}
-	if raw := strings.TrimSpace(argString(args, "since")); raw != "" {
+	if raw := strings.TrimSpace(api.ArgString(args, "since")); raw != "" {
 		stamp, err := time.Parse(time.RFC3339Nano, raw)
 		if err != nil {
-			return q, fmt.Errorf("%w: diagnostics since must be RFC3339", ErrInvalid)
+			return q, fmt.Errorf("%w: diagnostics since must be RFC3339", api.ErrInvalid)
 		}
 		q.since = stamp.UTC()
 	}
-	if raw := strings.TrimSpace(argString(args, "until")); raw != "" {
+	if raw := strings.TrimSpace(api.ArgString(args, "until")); raw != "" {
 		stamp, err := time.Parse(time.RFC3339Nano, raw)
 		if err != nil {
-			return q, fmt.Errorf("%w: diagnostics until must be RFC3339", ErrInvalid)
+			return q, fmt.Errorf("%w: diagnostics until must be RFC3339", api.ErrInvalid)
 		}
 		q.until = stamp.UTC()
 	}
 	if !q.since.IsZero() && !q.until.IsZero() && q.until.Before(q.since) {
-		return q, fmt.Errorf("%w: diagnostics until precedes since", ErrInvalid)
+		return q, fmt.Errorf("%w: diagnostics until precedes since", api.ErrInvalid)
 	}
-	if search := strings.TrimSpace(argString(args, "search")); search != "" {
+	if search := strings.TrimSpace(api.ArgString(args, "search")); search != "" {
 		if len(search) > 256 {
-			return q, fmt.Errorf("%w: diagnostics search exceeds 256 bytes", ErrInvalid)
+			return q, fmt.Errorf("%w: diagnostics search exceeds 256 bytes", api.ErrInvalid)
 		}
 		q.search = strings.ToLower(search)
 	}
-	if severity := strings.ToLower(strings.TrimSpace(argString(args, "severity"))); severity != "" {
+	if severity := strings.ToLower(strings.TrimSpace(api.ArgString(args, "severity"))); severity != "" {
 		switch severity {
 		case "info", "warn", "error":
 			q.severity = severity
 		default:
-			return q, fmt.Errorf("%w: diagnostics severity must be info, warn or error", ErrInvalid)
+			return q, fmt.Errorf("%w: diagnostics severity must be info, warn or error", api.ErrInvalid)
 		}
 	}
-	q.selector = strings.TrimSpace(argString(args, "workload"))
+	q.selector = strings.TrimSpace(api.ArgString(args, "workload"))
 	return q, nil
 }
 
@@ -227,8 +228,12 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	if err != nil {
 		return nil, err
 	}
+	excluded, err := c.Store.ProjectionExclusions(auth)
+	if err != nil {
+		return nil, err
+	}
 	if c.DiagnosticsDir == "" {
-		return map[string]any{"enabled": false, "detail": "diagnostics are not enabled on this hub"}, nil
+		return map[string]any{"enabled": false, "excluded": excluded, "detail": "diagnostics are not enabled on this hub"}, nil
 	}
 	raw, _ := diagUserLimiter.LoadOrStore(auth.PrincipalID, make(chan struct{}, 2))
 	userSem := raw.(chan struct{})
@@ -249,14 +254,14 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	handle, err := os.Open(path) // #nosec G304 -- fixed file inside configured diagnostics dir.
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]any{"enabled": true, "workloads": scope.workloads, "lines": []map[string]any{}, "detail": "no diagnostics collected yet"}, nil
+			return map[string]any{"enabled": true, "workloads": scope.workloads, "excluded": excluded, "lines": []map[string]any{}, "detail": "no diagnostics collected yet"}, nil
 		}
-		return nil, fmt.Errorf("%w: diagnostics store", ErrInvalid)
+		return nil, fmt.Errorf("%w: diagnostics store", api.ErrInvalid)
 	}
 	defer handle.Close()
 	info, err := handle.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("%w: diagnostics store", ErrInvalid)
+		return nil, fmt.Errorf("%w: diagnostics store", api.ErrInvalid)
 	}
 	offset := int64(0)
 	if size := info.Size(); size > diagScanCap {
@@ -322,6 +327,7 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	return map[string]any{
 		"enabled":   true,
 		"workloads": scope.workloads,
+		"excluded":  excluded,
 		"runtime":   scope.runtime != "",
 		"lines":     matched,
 		"truncated": truncated,

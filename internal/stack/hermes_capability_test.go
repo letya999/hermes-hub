@@ -3,6 +3,7 @@ package stack
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -322,7 +323,7 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	if control["networks"].(M)[sharedNetworkName].(M)["aliases"].([]string)[0] != "toolhub-control" {
 		t.Fatal("ToolHub control alias is missing from shared network")
 	}
-	if !slices.Contains(services["model-relay"].(M)["networks"].([]string), managedAgentNetwork(s)) {
+	if _, ok := services["model-relay"].(M)["networks"].(M)[managedAgentNetwork(s)]; !ok {
 		t.Fatal("model relay is absent from private agent network")
 	}
 	toolhubRelay := services["toolhub-relay"].(M)
@@ -336,8 +337,29 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 		t.Fatal("agent can bypass model relay and reach CLIProxy directly")
 	}
 	relay := services["model-relay"].(M)
-	if relay["volumes"] != nil || relay["env_file"] != nil || relay["ports"] != nil || len(relay["extra_hosts"].([]string)) != 0 {
+	if relay["ports"] != nil || len(relay["extra_hosts"].([]string)) != 0 {
 		t.Fatalf("model relay has unnecessary authority: %v", relay)
+	}
+	// Bounded authority only: the merged registry mounts read-only, the
+	// selection state dir is the single writable mount, and env files carry
+	// provider key names plus the owner-switch bearer — no literals.
+	var relayMounts []string
+	for _, m := range relay["volumes"].([]any) {
+		relayMounts = append(relayMounts, fmt.Sprint(m.(M)["target"]))
+	}
+	slices.Sort(relayMounts)
+	if fmt.Sprint(relayMounts) != "[/run/model-state /run/models.yaml]" {
+		t.Fatalf("model relay mounts widened: %v", relayMounts)
+	}
+	var relayEnvFiles int
+	for _, f := range relay["env_file"].([]any) {
+		p := fmt.Sprint(f.(M)["path"])
+		if strings.HasSuffix(p, "runtime.dev.env") || strings.HasSuffix(p, "model-relay.auth") {
+			relayEnvFiles++
+		}
+	}
+	if relayEnvFiles != 2 {
+		t.Fatalf("model relay env files widened: %v", relay["env_file"])
 	}
 	if slices.Contains(services["credential-broker"].(M)["networks"].([]string), managedAgentNetwork(s)) {
 		t.Fatal("broker reachable from private agent network")

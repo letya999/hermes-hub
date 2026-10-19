@@ -1,6 +1,6 @@
 ---
 description: Current operations and planned scale-to-zero runtime lifecycle.
-last_verified: 2026-10-02
+last_verified: 2026-10-16
 ---
 # Operations
 
@@ -52,6 +52,12 @@ ID, or `runtime`). Secrets are redacted again at projection and host-supervisor
 lines appear only when they name the caller's own runtime container as a whole
 token. Requests are capped per principal and globally, so a single caller
 cannot starve diagnostics for others.
+
+The same response carries `excluded`: the caller's own bindings that the tool
+projection skipped, each with its binding/definition ID, projection revision
+and an exact reason — `policy_mismatch`, `disabled`, `revoked`, `stale`,
+`degraded` or `not_found`. A missing tool is therefore explainable to its
+owner without host access; another principal's exclusions never appear.
 
 ToolHub control operations are denied by default, including `discover`, `status`,
 `prepare_source`, `required_credentials`, `confirm`, `enable`, `rotate`, `disable`,
@@ -167,6 +173,18 @@ capability behind an explicit grant — never a core or default feature.
 These primitives are not a completed deployment boundary. Rendering does not yet
 provision managed identities or isolated roots, legacy deployments remain outside
 the guarantee, and human consent/migration still need CHG-0065.
+
+When upgrading to the rights-only `policy_version` hash, inventory every active
+managed profile and runtime envelope before restarting ToolHub. Binding migration
+does not reissue capability profiles. An old profile can fail startup validation
+with `capability runtime scope`, affecting the shared endpoint. Back up the
+registry locally, prepare a new revision bound to the rendered policy version,
+and use `hubctl capability --kind preview` above to review the unchanged grants.
+Publish only the reviewed revision under the actual operator identity and its
+authorization; preserve the issuer, reason and revision audit trail. Then verify
+startup and each principal's tool manifest. Never bypass scope validation or
+silently remint authority during render. Rollback requires the matching old
+rendered configuration, envelopes and registry backup as a set.
 Path prefixes are logical authorization constraints, not filesystem containment.
 Admission currently holds the existing store lock and a shared disk fence through
 the bounded call; a revoke waits for that call before committing. Executor leases,
@@ -401,9 +419,14 @@ sender IDs from the configured allowlist to user scopes, writes durable jobs and
 under `/state/gateway`, and runs one fresh bounded Hermes process per job. The default
 single-space deployment maps one user; a host-owned multiuser configuration maps each
 verified numeric ID to a separate `spaces/<user>` home and runtime.
-The runtime includes the deployed `SOUL.md` digest in its deterministic conversation
-session ID, so changed system instructions start a fresh chat session on the next
-message while durable owner memory remains intact.
+The runtime hashes the effective SOUL (`generated/soul-effective.<env>.md`
+— owner persona plus the rendered channel contract) into its deterministic
+conversation session ID, so a persona or contract change starts a fresh
+chat session on the next message while durable owner memory remains intact.
+Per-run instructions now carry only style/voice; `/status` shows
+`tool_surface`/`missing_tools`/`model_status` when a runtime reports a
+degraded surface, and `/usage` measures the session's input tokens and API
+calls.
 
 Long Telegram turns (for example, ToolHub source review/build) use Hermes' FIFO
 `display.busy_input_mode: queue`; a new ordinary message is kept for the next turn
@@ -446,6 +469,7 @@ best-effort deleted; it is never persisted. The gateway returns a one-time prote
 loopback form generated from the selected connector or MCP Connection Recipe; its fields,
 types, order, delivery metadata and OAuth alternatives are derived at request time.
 Alternative groups stay separate submits of the field names the recipe or the server named. The shortest set is open and the others are collapsed. A tools/list probe speaks stdio when the image command selects sse or http, and a fresh form link is delivered even if an older notice for the same onboarding already exists. The prepare notice includes that loopback form URL. A credential-gate submit with no reviewed broker contract stores the secret in the local encrypted store and finishes confirm and enable from that store; a reviewed contract still requires a broker credential. A failure after that secret is stored says the data was saved and sends the user back to chat confirmation. When that definition version is already a user publication of another principal, the submit keeps the next free patch version and leaves the existing publication in place.
+An all-optional Broker form may be submitted without values; the isolated MCP workload then starts without an env-file. Missing required inputs and invalid existing credential files still block startup.
 There is no static credential form. Groups reject credential entry. Set and delete also load the ToolHub registry
 (`HUB_TOOLHUB_STORE` or `spaces/<user>/runtime/toolhub/store.json`) so rotate and
 revoke cut an already-open MCP session and stop affected workloads. Personal-terminal
@@ -453,9 +477,11 @@ exposure copies selected names into that owner's `self-env.json` overlay and is
 reversible. The legacy `env_update` path is not used for managed secrets. Failed
 rotates leave the connection `degraded` until a successful rotate or an explicit
 revoke. ToolHub records `X-Hub-Job-ID` and `X-Hub-Run-ID` on MCP requests into the
-audit ledger together with a generated tool-call id. The communication worker
-appends matching job events when `HUB_AUDIT_LEDGER` or a credential store is
-configured. `HUB_CREDENTIAL_STORE` must be set on `hub-toolhub` for decrypt-and-inject.
+audit ledger together with a generated tool-call id. The communication hub no
+longer opens the credential store or the audit ledger — `HUB_CREDENTIAL_STORE`,
+`HUB_CREDENTIAL_KEY_FILE` and `HUB_AUDIT_LEDGER` are ToolHub/runtime settings
+and are inert to `hub-communication`. `HUB_CREDENTIAL_STORE` must be set on
+`hub-toolhub` for decrypt-and-inject.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
 To enable the Credential Broker path, configure the control, approval and
@@ -526,6 +552,25 @@ place, and prints a JSON report with paths, counts and checksums but no secret v
 message text, cookies or session contents. Rollback is restoring the untouched source
 into a new scope home; do not delete it until the new runtime is verified.
 
+Knowledge sources staged under the legacy `spool/knowledge/<principal>` tree are
+relocated the same way — offline, with the gateway stopped:
+
+```text
+hubctl spool migrate --spool <dir> --state <dir>          # dry-run report
+hubctl spool migrate --spool <dir> --state <dir> --apply
+```
+
+The command runs under `LockSpool`, copies (never moves) each
+`<spool>/knowledge/<principal>[/context]/<name>` into
+`<state>/knowledge/<principal>[/context]/`, and reports per principal what it
+copied, what already matched, and which names conflicted or were skipped
+(non-regular files, symlinks, invalid names, sources over 9 MiB). Existing
+targets are never overwritten. Because the source is left in place, a rollback
+to the previous image still finds its knowledge; delete `spool/knowledge` by
+hand only after the new release is verified. No other spool directory moved —
+`schedules`, `occurrences`, `watchers`, `digests`, `tasks`, `events`, `outbox`,
+`mappings`, `conversations`, `inbound` and `callbacks` keep their paths.
+
 Context data uses `hubctl context backup|restore|export|purge`. A verified snapshot
 covers Hermes home, workspace, connection metadata, ToolHub bindings, schedules and
 the communication delivery ledger. Plaintext secrets stay on `hubctl secret backup`
@@ -586,6 +631,35 @@ restart. This keeps unrelated runtime, speech and media images out of a
 gateway-only rebuild. After a successful `hubctl build` of the selected
 services, `hubctl up --no-build` starts those existing images without another
 build attempt.
+
+For a local Go edit, use `go run ./cmd/hubctl dev-rebuild --dir spaces/alice
+--env dev <service>`. It compiles one Linux binary with the host Go toolchain,
+builds a small overlay on the existing dev image, and recreates only that
+service. Supported names are `communication-hub`, `credential-broker`,
+`hub-media`, `toolhub`, `workload-controller`, `supervisor`, and
+`hermes-runtime` when present in that space. The selected service must already
+be enabled; `cliproxy`, speech images, Hermes/Python dependencies and Dockerfile
+changes still use `hubctl build`/`up`. The first dev base image must already
+exist. The command never uses a prod environment.
+
+The generated Compose file is unchanged: a later regular `hubctl up` returns
+the service to the full base image. In supervisor mode, `dev-rebuild
+hermes-runtime` records the exact per-user dev image for the next spawn and
+does not interrupt an active job. A subsequent full core dev build clears that
+selection. If the selected container fails to start, the command tries to
+restore the prior image and service. Each service/user has one local tag;
+runtime overlays also rebuild the `hubctl` tools executor alongside `hub-runtime`
+so catalog parsing and execution use the same source. Superseded stopped images
+and BuildKit cache are cleaned through the existing
+bounded hub cleanup path.
+
+After rebuilding a Compose service, verify its running image with
+`docker ps --filter name=hermes-hub-<user>-dev-<service>-1`; it should report
+the matching `hermes-hub-dev-<user>-<service>:local` tag and an `Up` status. Check the service's
+HTTP endpoint as well; only services with a Compose healthcheck report a
+meaningful `healthy` state. In supervisor mode, check
+`spaces/<user>/generated/dev-runtime-image` after rebuilding `hermes-runtime`;
+the new image is used when the next managed runtime starts.
 
 Rebuilds of the tagged hub image used to leave the superseded generation
 dangling at full unique-layer size. `hubctl build` and `hubctl up` now remove
@@ -680,7 +754,8 @@ Host: Windows 11 Pro 22631, 16 cores / 32 GiB; Docker Desktop on WSL2
 Runtime image `hermes-hub:0.3.0-dev`, id `sha256:dc8df91990b8…`, 1.19 GiB.
 Commit `baeafd4`. Commands: `POST /v1/leases` / `DELETE /v1/leases/<id>`
 against `hubctl supervisor --spaces spaces --env dev --runtime-image
-hermes-hub:0.3.0-dev --supervisor-listen 0.0.0.0:8876`, plus
+hermes-hub:0.3.0-dev --supervisor-listen 0.0.0.0:8876
+--supervisor-allow-wildcard-listen`, plus
 `docker stats --no-stream` / `docker inspect` point samples.
 
 Measured (single samples, one dev space):
@@ -691,7 +766,7 @@ Measured (single samples, one dev space):
 | restore after scale-to-zero → Ready | 78.0 s |
 | warm lease on running runtime | 0.58 s |
 | idle deadline → container removed | <45 s (reaper ≤5 s + stop grace ~40 s) |
-| warm TTL | 5 min (default `--warm-ttl`) |
+| warm TTL | 30 min (default `--warm-ttl`) |
 | managed runtime RSS (warm) | ~395–403 MiB (cap 1 GiB, 2 CPU, 1024 pids) |
 | runtime ctl sidecar RSS | ~8 MiB |
 | runtime CPU during cold start | ~100 % of 2-core cap for ~20–40 s |
@@ -746,22 +821,87 @@ HUB_SUPERVISOR_AUTH=<host-control-token> hubctl supervisor --spaces spaces
 HUB_SUPERVISOR_AUTH=<host-control-token> HUB_RUNTIME_SUPERVISOR_URL=http://host.docker.internal:8876 hubctl render --dir spaces/alice
 ```
 
-Two watchdog knobs bound long-running jobs. `HUB_SUPERVISOR_JOB_TIMEOUT`
-(default `130s`) is the supervisor's per-request HTTP timeout toward the
-runtime: when it elapses the job stream ends and the durable job is marked
-`uncertain`, while the runtime keeps executing and reconciliation observes it
-to a terminal state. Raise it for routinely long jobs. `HUB_RUN_STALL_TIMEOUT`
+Run lifetimes share one budget per hop rather than per-hop socket timeouts.
+`HUB_RUN_BUDGET` (default `30m`) is the single maximum duration of one job:
+the gateway job context, the supervisor stream relay and the runtime Hermes
+watchdog all read the same value — no hop may cut a run earlier.
+`HUB_STREAM_IDLE` (default `60s`) abandons a run stream after that much
+silence on any hop; the runtime emits transport-only `run.heartbeat` frames
+at most every 15 s so a thinking model never trips the deadline. Neither
+heartbeat is persisted nor delivered. `HUB_COLD_START_BUDGET` (default `4m`,
+seconds) bounds the gateway's submission retry while the supervisor is down
+or still booting — dial/connect failures and HTTP 503 retry with a 1 s→20 s
+exponential backoff, and only provably unadmitted requests retry at all.
+`HUB_SUPERVISOR_JOB_TIMEOUT` (default `130s`) still bounds the supervisor's
+non-stream HTTP calls toward the runtime. `HUB_RUN_STALL_TIMEOUT`
 (default `15m`) lives inside the runtime: if the Hermes run `updated_at`
 timestamp and the event stream both stay silent for that interval, the runtime
 issues a confirmed stop and fails the job as stalled instead of polling until
-the hard run timeout. Both accept Go durations (`130s`, `10m`) or bare
+the run budget. The duration knobs accept Go durations (`130s`, `10m`) or bare
 seconds; the supervisor passes `HUB_RUN_STALL_TIMEOUT` into spawned runtime
 containers.
 
+### Supervisor as a supervised service
+
+The supervisor is the lease authority for every running job — if the process
+dies, in-flight runs go blind until it returns. Run it under the host service
+manager, never a bare shell. It binds `127.0.0.1:8876` by default; a wildcard
+or empty listen host is refused inside `Serve` unless the caller opted in —
+`-allow-wildcard-listen` for `hub-supervisor`,
+`--supervisor-allow-wildcard-listen` for `hubctl supervisor`, and
+`-AllowWildcardListen` on the Windows task installer. Wildcard is required
+when Docker containers reach the host endpoint (`host.docker.internal`);
+only do that behind a firewall rule restricted to the Docker/WSL adapter
+subnet — the endpoint controls runtime lifecycle for every context.
+
+The token comes from `-auth-file` (or `HUB_SUPERVISOR_AUTH_FILE`), a regular
+owner-only file — `chmod 600` on unix, under the user profile or
+`<spaces>/.control` on Windows; symlinks, empty files and world-readable paths
+are rejected. `-auth` on the command line still works but logs a deprecation
+warning because argv is world-visible in process listings.
+
+Linux systemd unit example (`/etc/systemd/system/hermes-supervisor.service`):
+
+```ini
+[Unit]
+Description=hermes-hub supervisor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hub-supervisor -spaces /srv/hermes/spaces -auth-file /srv/hermes/spaces/.control/supervisor.token -listen 127.0.0.1:8876
+Restart=always
+RestartSec=10s
+StandardOutput=append:/srv/hermes/.local/supervisor.log
+StandardError=append:/srv/hermes/.local/supervisor-error.log
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/hermes /var/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target
+```
+
+On Windows use `scripts/install-supervisor-task.ps1`, which registers an
+at-logon Scheduled Task running the Go `-watch` parent, which restarts a crashed
+supervisor child after 1 s. Task Scheduler itself has a minimum restart interval
+of one minute and recovers the watcher. Pass `-Environment dev -Image <dev-image>`
+for a development deployment; the defaults select production. It uses the same
+`.local/supervisor.log` output files.
+
 The runtime uses pinned Hermes `/api/sessions` and `/v1/runs` for each accepted job.
 Persistent execution supports normalized event streaming, durable admission metadata
-and a spool event journal. Back up the spool's `events/` directory together with
+and a spool event journal. Observation is stream-first: while the run's SSE channel
+is open, durable status is only a fallback polled every 2 s; when the stream drops
+it tightens to 1 s. Back up the spool's `events/` directory together with
 jobs, mappings and outbox; receipts repair incomplete result handoff on restart.
+The gateway compacts terminal jobs, deliveries, events and mappings older than
+`HUB_SPOOL_RETENTION` (default 336 h) hourly inside the control loop — live work,
+open approvals and receipts with a delivery still pending or in flight are never
+removed. Point `HUB_MOCK_DIR` elsewhere to keep mock/e2e capture and chat links
+out of the production spool. The supervisor compacts its own terminal job records
+after 24 h to status/run_id/finished_at and never persists prompt text.
 Do not delete uncertain mappings or their leases to force a retry: the original run
 may already have performed an external action. Recovery observes that run through
 the private supervisor API and can report `interrupted` after a Hermes restart.
@@ -779,7 +919,7 @@ New supervisor runtime containers carry hermes-hub.owner, hermes-hub.context and
 
 Confirmed disappearance of a context runtime with current durable work consumes the same crash budget as a failed start. Repeated observations of that disappearance do not consume additional attempts. Recovery waits for the persisted backoff and preserves the original admitted run; it does not repeat the input. An idle registered context is not recreated. Owned exited containers follow the same recovery path, and terminal results use durable delivery handoff.
 
-Runtime reconciliation now also replaces verified owned exited/dead containers with current durable work after the persisted backoff. It removes the old container by verified immutable ID before launching a replacement generation. Foreign containers and idle registered contexts do not trigger replacement. A failure is counted once per generation, even if later observations change between exited and missing. Original run observation and delivery recovery remain separate from infrastructure replacement.
+Runtime reconciliation now also replaces verified owned exited/dead containers with current durable work after the persisted backoff. It removes the old container by verified immutable ID before launching a replacement generation. Foreign containers and idle registered contexts do not trigger automatic replacement; a confirmed missing idle container becomes stopped so the next wake starts a new generation. A failure is counted once per generation, even if later observations change between exited and missing. Original run observation and delivery recovery remain separate from infrastructure replacement.
 
 The private supervisor `POST /v1/pins` accepts the verified task identity fields
 and an explicit boolean `enabled`. Pins persist independently of container
@@ -788,10 +928,23 @@ or an unmigrated native Hermes cron. Disabling a pin does not cancel current
 jobs or remove user files; normal idle retention resumes. Pins require the
 private supervisor token and the same saved owner envelope for removal.
 
-A verified private owner may enqueue one-shot and recurring tasks through the
+A private owner manages routines with the [lifecycle tools](routines.md), including
+interval windows, paged discovery, revision-fenced edits and retained history.
+The owner may enqueue tasks through the
 schedules HTTP API (`/v1/routines`). The communication spool saves each
 occurrence before acknowledging it. Due occurrences become ordinary jobs
 with `trigger=cron`; the normal supervisor execution path wakes the context.
+The idle gateway checks due routines and uncertain-run recovery every five
+seconds; newly enqueued interactive jobs still wake workers immediately.
+An unresolved probe, script or agent job holds its schedule revision so later
+due times do not pile up. Malformed occurrence files move to
+`occurrences/quarantine`; investigate them before clearing evidence. A drifted
+nonterminal job mapping holds only its own schedule. Settled silent occurrences leave the hot directory on the hourly compaction
+pass. Full detail stays in `occurrences/archive` for 48 hours after its last
+write; a small deduplication receipt remains for the ordinary spool retention
+period (normally 14 days).
+Pending records and dispatched records with live jobs or deliveries are retained. This compaction runs with the
+existing hourly spool pass; a backlog still settles at 16 occurrences per pass.
 Duplicate ticks and restart reuse the same occurrence key. Inputs containing
 credential assignments are rejected. Catch-up is limited to one hour and each
 tick settles at most sixteen occurrences. Recurrence CRUD/DST and native cron
@@ -814,6 +967,44 @@ private conversation. The saved request expires after two minutes; the superviso
 confirms native cancellation before releasing its approval hold. A lost decision
 acknowledgement is observed without repeating approval. Native deny/hardline rules
 and current organization/tool authorization still apply.
+
+The gateway records Telegram message IDs for approval keyboards. It removes the
+request message after a saved decision or terminal run, including after a gateway
+restart, and suppresses queued approvals for terminal jobs. Legacy keyboards without
+send receipts are removed when their verified owner taps them after the run closes;
+the gateway never guesses message IDs or clears unrelated chat history.
+
+Workspace listings use read-only file tools and fenced code blocks for Telegram
+rich formatting. Per-run instructions keep unrelated unfinished or denied requests
+from earlier session turns out of the current task; protected writes still require
+their normal approval. Terminal results survive execution-worker cleanup, and stream
+and worker notifications share durable delivery IDs to avoid duplicate notices.
+
+Legacy `hub` stdio MCP children receive `HUB_COMMUNICATION_CONTROL_URL`, the
+per-runtime `HUB_RUNTIME_AUTH` reference as `HUB_COMMUNICATION_AUTH`, and the
+trusted principal/user IDs explicitly. New renders and legacy config materialization
+both supply these entries because MCP child environments filter inherited variables.
+Routine management still authenticates and checks ownership at the communication hub.
+The five routine tools use `hub-agent-tools@5.0.1` for named delivery destinations.
+`routine_list view=destinations` shows live owned task IDs and topics; create uses
+the current run's `origin_job_id` or an explicit `destination_task_id`. The hub
+resolves that ID under the owner lock. `routine_get` reports the saved destination
+and availability. `routine_edit action=update` may move future deliveries with a
+revision-fenced `destination_task_id` patch. Existing admitted jobs and old
+history retain their original audience. A revoked task/chat is not used as a
+fallback. See [routines.md](routines.md) for prompts and cleanup.
+Simple `job_kind: reminder` occurrences enqueue the exact text for delivery directly;
+they never enqueue an agent job or wake Hermes.
+
+Reminder snooze uses the existing schedule ID with a new revision: a one-shot
+gets a new deadline even after its previous occurrence entered the outbox, and
+recurring reminders keep their cron cadence after the deferred next run. The
+catch-up window (default one hour) starts at the deferred deadline. After longer
+downtime the scheduler records `missed` before advancing the schedule; it does not
+send a burst. Owner `routine_list`/routine HTTP reads expose
+`last_occurrence_state` and `last_delivery_state`; `/routines` labels missed and
+unconfirmed sends. `uncertain` is a lost/failed transport outcome, not proof of
+non-delivery: inspect it instead of recreating the reminder or retrying blindly.
 
 A verified owner keeps several independent task sessions inside one private DM.
 `/new [name]` creates a task and switches to it; a nameless task carries a
@@ -849,18 +1040,23 @@ back from the pinned Hermes session API; fields the upstream does not
 authoritatively expose — current-prompt context and the context window —
 render `unknown` instead of an estimate. Plain `/usage` reads the journal and
 provider quota without waking Hermes. When the operator configures
-`HUB_CLIPROXY_MGMT_URL`, `HUB_CLIPROXY_MGMT_KEY` and optionally
-`HUB_CLIPROXY_AUTH_INDEX` in the channel env file, `/usage` additionally
-queries the pinned CLIProxyAPI management surface (`auth-files`, then an
-authenticated `api-call` to the provider quota endpoint) and prints measured
-subscription limits with reset times; OAuth tokens stay inside the proxy. The
-result is cached for five minutes and failures render `недоступно` rather than
-a guess. Set these values in `secrets.<env>.env`: render regenerates
-`communication.<env>.env` and keeps the key out of the Hermes runtime. The
+`HUB_CLIPROXY_MGMT_KEY` (and optionally `HUB_CLIPROXY_MGMT_URL`,
+`HUB_CLIPROXY_AUTH_INDEX`) in `secrets.<env>.env`, the space's model-relay
+exposes `GET /v1/quota` — the same admin bearer that `/model` switching uses.
+The gateway's `/usage` calls that endpoint and prints the relay-rendered
+subscription limits with reset times; the relay queries the pinned CLIProxyAPI
+management surface (`auth-files`, then an authenticated `api-call` to the
+provider quota endpoint) so OAuth tokens stay inside the proxy. Without
+`HUB_CLIPROXY_MGMT_URL` the relay falls back to its own
+`HUB_MODEL_RELAY_CLIPROXY` address, so managed deployments only need the key.
+The result is cached by the gateway for five minutes and failures render
+`недоступно` rather than a guess. Render regenerates
+`model-relay.<env>.env` and keeps the management key out of both the
+communication env and the Hermes runtime. The
 CLIProxyAPI management key also enables privileged management endpoints, so
 use a strong private key and expose the proxy only to the local stack. In the
 proxy's private `config.yaml`, set `remote-management.secret-key` to that key
-and `remote-management.allow-remote: true` so the separate gateway container
+and `remote-management.allow-remote: true` so the separate relay container
 can reach it; the proxy stores the key as a hash after startup.
 Separately, every terminal job appends one measured input/output token
 entry to a durable per-scope usage journal; duplicate job/run pairs are ignored.
@@ -869,7 +1065,7 @@ accounting only, no quotas or blocks — and an unreachable usage endpoint never
 fails the job itself.
 
 Reconciliation reserves capacity for every restored non-stopped runtime. A
-missing idle container releases that capacity only after TTL and a durable
+confirmed missing idle container releases that capacity after a durable
 stopped-state write. A lost Docker launch acknowledgement keeps capacity until
 verified cleanup or authoritative absence. A saved lifecycle hold can recover
 compute and retains its original opaque release ID; its expiry timestamp is not
@@ -898,6 +1094,79 @@ Request timeout keeps the task uncertain and held; recovery observes the same
 run until it settles. The hub never deletes native locks, sessions or history to
 shorten that wait, and never submits a second copy of the input.
 
+### Job phases, reconciliation and quarantine
+
+Every supervisor job record carries an explicit phase
+(`queued`, `waking`, `running`, `waiting_for_approval`, `uncertain`,
+`completed`, `failed`, `cancelled`, `interrupted`) plus an `unconfirmed` flag
+for admissions whose execution outcome the hub has not observed. Legacy records
+without a phase are mapped on load; invalid transitions are rejected and logged.
+
+A job that loses its observation channel is not left open-ended. A periodic
+reconciler revisits unconfirmed records after at least thirty seconds of
+uncertainty: with an admitted run identity it re-observes the same run on the
+current generation; with no admitted run it uses the runtime `/v1/readmit`
+endpoint. Before the first Hermes POST, supervised jobs save the exact input,
+session ID and instructions atomically under the owning runtime's
+`/state/admissions/`. These private receipts contain user content: keep them
+inside that principal's state volume, outside source control and diagnostics.
+Readmit requires the matching receipt and original idempotency key; it does
+not rebuild a prompt from metadata or select a new session after a config change.
+Missing, corrupt, conflicting, future-dated or 23-hour-old receipts are refused.
+The one-hour margin stays inside Hermes' documented 24-hour key retention.
+New admissions remove receipts older than 24 hours; an idle runtime retains
+them until its next admission. Pre-upgrade records have no receipt and cannot
+be safely readmitted. External tool side effects still require their own
+idempotency contract. A job still unsettled after its
+original run budget is failed with the `run.timeout` cause — the owner gets a
+named failure, never an endless wait. Uncertain delivery notices are likewise
+deferred until the same window closes.
+
+Expiry of an unobservable job persists `interrupted` in both the job record
+and its replay response. If that write fails, the job remains unconfirmed and
+is retried; a non-durable terminal result must not release the recovery owner.
+
+On the gateway side, a malformed or unprocessable update no longer stops the
+polling loop: it is written to `quarantine/<update_id>.json` (update id, error
+class, timestamp — never message content), the offset advances and polling
+continues. The directory is capped at 1,000 records; the oldest are evicted.
+
+### Structured logs and `hubctl trace`
+
+Gateway and supervisor lifecycle lines are JSON on stdout: `time` (UTC),
+`level`, `msg`, `component` (`gateway`, `communication`, `supervisor`,
+`tools`, …), and job correlation fields `job_id`, `run_id`, `principal`,
+`status` where they apply. Container stdout therefore feeds any JSON log
+collector directly.
+
+`hubctl trace <job_id> [--user <principal>]` merges the chronology of one job
+across the supervisor log, the owning principal's space logs
+(`agent.log`, `gateway.log`, `errors.log`) and the managed runtime container's
+Docker logs, filtered by job/run/session identity, sorted by timestamp and
+redacted for tokens and message content. It resolves the job's principal from
+the persisted supervisor state; requesting a job that belongs to a different
+principal is refused. `--spaces` selects the spaces root.
+
+`/status` reports the caller-scoped operational health block alongside the
+tool surface: last-24h received→delivered latency percentiles (p50/p95),
+unconfirmed and failed job counts, the runtime's durable restart counter and
+average input tokens per call from the usage journal.
+
+### Synthetic canary
+
+`HUB_CANARY_INTERVAL` (e.g. `5m` or bare seconds) enables a periodic end-to-end
+probe through the real chain: a fixed prompt in a dedicated mock conversation
+asks for one `file_list` call, then the canary waits for the terminal mapping,
+requires exactly one `tool.start` receipt for `file_list` (allowing Hermes'
+discovery/invocation wrapper) and rejects unrelated tools,
+and verifies the reply reached the mock outbox. An optional runtime-surface
+pre-check reports `surface` when `file_list` is absent — an unreachable surface
+alone does not fail an otherwise healthy chain. Each tick is appended to the
+bounded `canary.jsonl` journal (1,000 lines). The owner receives at most one
+notice per new failure class and one recovery notice. The run timeout starts
+when each round begins, even when the previous round exceeded its interval;
+empty, invalid or
+nonpositive intervals disable the loop.
 
 ## Per-context communication rollout
 
@@ -928,7 +1197,17 @@ hubctl select-execution --dir spaces/alice --user alice --env prod --spool /mnt/
 hubctl up --dir spaces/alice --user alice --env prod
 ```
 
-The supervisor URL must be reachable from both the host CLI and the gateway container;
+Container deployment can select `http://supervisor:8876` to render the supervisor
+in the main infrastructure Compose stack using the existing control image.
+It publishes no host ports; user runtimes and their control relays use private
+Docker DNS. The supervisor alone receives the spaces root and Docker socket.
+Host-mode selection remains supported. Migration must drain the old writer and
+remove its verified runtime containers before switching; ownership IDs include
+the state path. Do not run the Windows task alongside the container writer.
+See [ADR-0040](adr/ADR-0040-single-stack-supervisor.md) for migration constraints.
+Live deployment acceptance is tracked separately in CHG-0097.
+
+For host-mode migration, the supervisor URL must be reachable from both the host CLI and the gateway container;
 configure its listener on the intended private interface and provide
 `HUB_SUPERVISOR_AUTH` to the CLI and Compose invocation. The default loopback listener
 alone is not reachable from a Docker container through `host.docker.internal`.
@@ -1083,3 +1362,40 @@ With no grant set, `hub-media` falls back to `HUB_MEDIA_UPSTREAM_KEY`,
 `OPENAI_API_KEY` or `FAL_KEY` in its own process env — for standalone runs
 outside the rendered stack. The rendered compose does not mount a media env
 file; a fal engine with neither grant nor env key refuses to boot.
+# Deployment configuration preflight
+
+`hubctl build` and `hubctl up` now run `docker compose config --quiet` before
+building, pruning or starting services. In supervisor mode, set
+`HUB_SUPERVISOR_AUTH` in the host environment or provision this stack's
+`supervisor.auth`; an unset or empty value stops the operation with a Compose
+error. Static mode does not need this bearer. The generated MCP child config
+passes routine control URL, auth, principal and runtime policy identifiers
+explicitly because the Python MCP stdio client inherits only a limited set of
+environment variables.
+
+Before `up`, a read-only Docker inspection rejects another running
+`communication-hub` using the same Telegram bot token. Stop the conflicting
+gateway intentionally, then retry. An infra-owning stack also rejects another
+running CLIProxy attached to `hermes-hub-runtime`, where both would claim the
+same DNS alias. `hubctl doctor --dir spaces/<user> --env dev
+--live` queries the selected provider's `/v1/models` and checks the configured
+model ID exactly. It needs host access to that URL; an internal Docker DNS name
+may be unreachable from the host. For this stack's `cliproxy`, the command uses
+its loopback-published Compose port. The normal `doctor` and build checks are
+offline and do not claim that a live provider is reachable.
+
+`just config-check` renders synthetic dev/prod, static and supervised profiles
+and validates them with Docker Compose. It is part of `just check`, `just build`
+and image CI. The native container gate starts a real MCP stdio child and asks
+a local fixture to create an exact reminder without contacting Telegram. CI
+publishes the base `cli-tools` and `cell-proxy` image stages alongside the hub;
+`just docker-check-prebuilt` pulls them. Optional operator-provided CLI images
+are separate and require their own catalog binding.
+When an existing supervised runtime is busy, an operator can request
+`POST /v1/restart-request` for its authenticated principal/context/runtime
+identity. The supervisor records the restart and applies the refreshed MCP
+configuration after the active lease finishes; it does not interrupt that task.
+
+References: [Docker Compose interpolation](https://docs.docker.com/reference/compose-file/interpolation/),
+[Compose config validation](https://docs.docker.com/reference/cli/docker/compose/config/),
+[MCP Python stdio transport](https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/stdio.py).

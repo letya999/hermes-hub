@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
 	"os"
@@ -21,9 +22,9 @@ import (
 func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
-	d.Credentials = []CredentialInput{{Name: "TOKEN", Required: true}}
+	d.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
 	d.Workload.Stateful = true
-	d.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
+	d.Execution.Mounts = []api.Mount{{Source: "connection-state", Target: "/state"}}
 	workspace := filepath.Join(root, "workspace")
 	if err := os.Mkdir(workspace, 0700); err != nil {
 		t.Fatal(err)
@@ -31,7 +32,7 @@ func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "credentials.env"), []byte("TOKEN=synthetic\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	budget, err := NewWorkloadBudget(1, time.Minute)
+	budget, err := api.NewWorkloadBudget(1, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestGenericDockerFallbackStartsBoundedRemoteProxy(t *testing.T) {
 		if binary == "docker" && len(args) > 0 && args[0] == "info" {
 			return []byte("linux"), nil
 		}
-		if binary == "docker" && len(args) > 0 && args[0] == "inspect" && contains(args, "--format") {
+		if binary == "docker" && len(args) > 0 && args[0] == "inspect" && api.Contains(args, "--format") {
 			return []byte(`{"hermes-generic-workload":{"IPAddress":"172.20.0.2"}}`), nil
 		}
 		if binary == "docker" && len(args) > 0 && args[0] == "inspect" && len(args) >= 3 {
@@ -291,15 +292,15 @@ func TestResolveArtifactImageRestoresFromQuarantine(t *testing.T) {
 	}
 	plan := genericPlan(d)
 	loaded := false
-	prevLoader := storedArtifactLoader
-	storedArtifactLoader = func(_ context.Context, dir, digest, image string, _ int64) (string, error) {
+	prevLoader := api.StoredArtifactLoader
+	api.StoredArtifactLoader = func(_ context.Context, dir, digest, image string, _ int64) (string, error) {
 		loaded = true
 		if dir != filepath.Join(root, "artifacts") || digest != d.Source.ArchiveDigest || image != plan.Image {
 			t.Fatalf("loader args: dir=%q digest=%q image=%q", dir, digest, image)
 		}
 		return "sha256:" + strings.Repeat("c", 64), nil
 	}
-	defer func() { storedArtifactLoader = prevLoader }()
+	defer func() { api.StoredArtifactLoader = prevLoader }()
 	c.command = func(_ context.Context, binary string, args ...string) ([]byte, error) {
 		if binary == "docker" && len(args) >= 3 && args[0] == "image" && args[1] == "inspect" && args[2] == plan.Image && loaded {
 			return []byte("sha256:" + strings.Repeat("b", 64)), nil
@@ -311,7 +312,7 @@ func TestResolveArtifactImageRestoresFromQuarantine(t *testing.T) {
 		t.Fatalf("quarantine restore: got %q loaded=%v err=%v", got, loaded, err)
 	}
 	loaded = false
-	storedArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
+	api.StoredArtifactLoader = func(context.Context, string, string, string, int64) (string, error) {
 		return "", errors.New("archive missing")
 	}
 	if _, err := c.resolveArtifactImage(context.Background(), plan); err == nil {
@@ -354,14 +355,14 @@ func TestGenericDockerFallbackRejectsStateAndCredentials(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")
 	base := d
-	for name, mutate := range map[string]func(*ToolDefinition){
-		"shared-state": func(definition *ToolDefinition) {
-			definition.Workload.Class = Shared
+	for name, mutate := range map[string]func(*api.ToolDefinition){
+		"shared-state": func(definition *api.ToolDefinition) {
+			definition.Workload.Class = api.Shared
 		},
-		"state":       func(definition *ToolDefinition) { definition.Workload.Stateful = true },
-		"credentials": func(definition *ToolDefinition) { definition.Credentials = []CredentialInput{{Name: "TOKEN"}} },
-		"host-workspace-mount": func(definition *ToolDefinition) {
-			definition.Execution.Mounts = []Mount{{Source: "workspace-readonly", Target: "/workspace", ReadOnly: true}}
+		"state":       func(definition *api.ToolDefinition) { definition.Workload.Stateful = true },
+		"credentials": func(definition *api.ToolDefinition) { definition.Credentials = []api.CredentialInput{{Name: "TOKEN"}} },
+		"host-workspace-mount": func(definition *api.ToolDefinition) {
+			definition.Execution.Mounts = []api.Mount{{Source: "workspace-readonly", Target: "/workspace", ReadOnly: true}}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -376,12 +377,41 @@ func TestGenericDockerFallbackRejectsStateAndCredentials(t *testing.T) {
 			}
 			plan := genericPlan(candidate)
 			if name == "shared-state" {
-				plan.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
+				plan.Execution.Mounts = []api.Mount{{Source: "connection-state", Target: "/state"}}
 			}
 			if _, err := controller.start(context.Background(), plan); err == nil {
 				t.Fatal("unsafe fallback workload accepted")
 			}
 		})
+	}
+	// A sharable shared workload may carry stored credentials through the
+	// workspace env-file: admission must fail on some later infrastructure
+	// step, never on the retain-credentials guard.
+	sharable := base
+	sharable.Workload.Class, sharable.Workload.Sharable = api.Shared, true
+	sharable.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
+	controller, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DockerFallback: true, BridgeBinary: parts[0], Definition: sharable, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.command = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("ToolHive v0.48.0"), nil
+	}
+	if _, err := controller.start(context.Background(), genericPlan(sharable)); err == nil || strings.Contains(err.Error(), "cannot retain") {
+		t.Fatalf("sharable shared workload rejected by credential guard: %v", err)
+	}
+	perRequest := base
+	perRequest.Workload.Class = api.Shared
+	perRequest.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true, PerRequest: true}}
+	controller, err = newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DockerFallback: true, BridgeBinary: parts[0], Definition: perRequest, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.command = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("ToolHive v0.48.0"), nil
+	}
+	if _, err := controller.start(context.Background(), genericPlan(perRequest)); err == nil || strings.Contains(err.Error(), "cannot retain") {
+		t.Fatalf("per-request shared workload rejected by credential guard: %v", err)
 	}
 }
 
@@ -428,10 +458,10 @@ func TestGenericFallbackHelpers(t *testing.T) {
 		t.Fatal("unsafe ToolHive endpoint accepted")
 	}
 	_ = os.Remove(filepath.Join(logRoot, "logs", name+".log"))
-	if _, err := isolatedCommandEnv(context.Background(), map[string]string{"HUB_TEST_ENV": "ok"}, os.Args[0], "-test.run=^$"); err != nil {
+	if _, err := api.IsolatedCommandEnv(context.Background(), map[string]string{"HUB_TEST_ENV": "ok"}, os.Args[0], "-test.run=^$"); err != nil {
 		t.Fatalf("isolated command: %v", err)
 	}
-	environ := isolatedToolHiveEnviron(map[string]string{"HOME": "isolated-home", "USERPROFILE": "isolated-home"})
+	environ := api.IsolatedToolHiveEnviron(map[string]string{"HOME": "isolated-home", "USERPROFILE": "isolated-home"})
 	homeHits := 0
 	for _, item := range environ {
 		if strings.HasPrefix(strings.ToUpper(item), "HOME=") {
@@ -457,7 +487,7 @@ func TestGenericFallbackHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !securityOptHasSeccomp([]string{"seccomp=" + parts[1]}, parts[1]) || !securityOptHasSeccomp([]string{"seccomp=" + string(profile)}, parts[1]) || securityOptHasSeccomp([]string{`seccomp={"defaultAction":"SCMP_ACT_ALLOW"}`}, parts[1]) {
+	if !api.SecurityOptHasSeccomp([]string{"seccomp=" + parts[1]}, parts[1]) || !api.SecurityOptHasSeccomp([]string{"seccomp=" + string(profile)}, parts[1]) || api.SecurityOptHasSeccomp([]string{`seccomp={"defaultAction":"SCMP_ACT_ALLOW"}`}, parts[1]) {
 		t.Fatal("seccomp option comparison broken")
 	}
 	c.command = func(_ context.Context, binary string, args ...string) ([]byte, error) {
@@ -558,7 +588,7 @@ func TestGenericFallbackHelpers(t *testing.T) {
 		}
 	}
 	mountPlan := genericPlan(d)
-	mountPlan.Execution.Mounts = []Mount{{Source: "connection-state", Target: "/state"}}
+	mountPlan.Execution.Mounts = []api.Mount{{Source: "connection-state", Target: "/state"}}
 	workload := genericWorkload{plan: mountPlan, bridgeVol: "bridge", stateVols: []string{"state"}}
 	validMounts := []genericMount{{Type: "volume", Name: "state", Destination: "/state", RW: true}, {Type: "volume", Name: "bridge", Destination: "/hermes-bridge", RW: false}}
 	if !fallbackBridgeMountsOK(validMounts, workload) {
@@ -616,7 +646,7 @@ func TestGenericDockerFallbackFailureBoundaries(t *testing.T) {
 			return binary == "docker" && len(args) > 1 && args[0] == "start" && strings.Contains(args[1], "-egress")
 		},
 		"proxy-inspect": func(binary string, args []string) bool {
-			return binary == "docker" && len(args) > 2 && args[0] == "inspect" && strings.Contains(args[1], "-egress") && contains(args, "--format")
+			return binary == "docker" && len(args) > 2 && args[0] == "inspect" && strings.Contains(args[1], "-egress") && api.Contains(args, "--format")
 		},
 		"seed-copy": func(binary string, args []string) bool {
 			return binary == "docker" && len(args) > 2 && args[0] == "cp" && strings.Contains(args[2], "bridge-seed")
@@ -631,7 +661,7 @@ func TestGenericDockerFallbackFailureBoundaries(t *testing.T) {
 			return binary == "docker" && len(args) > 1 && args[0] == "start" && !strings.Contains(args[1], "-egress") && !strings.Contains(args[1], "-relay")
 		},
 		"relay-create": func(binary string, args []string) bool {
-			return binary == "docker" && len(args) > 2 && args[0] == "create" && strings.Contains(args[2], "-relay") && contains(args, "--no-healthcheck")
+			return binary == "docker" && len(args) > 2 && args[0] == "create" && strings.Contains(args[2], "-relay") && api.Contains(args, "--no-healthcheck")
 		},
 		"relay-connect": func(binary string, args []string) bool {
 			return binary == "docker" && len(args) > 3 && args[0] == "network" && args[1] == "connect" && strings.Contains(args[3], "-relay")
@@ -673,7 +703,7 @@ func TestGenericDockerFallbackFailureBoundaries(t *testing.T) {
 				if binary == "docker" && len(args) > 0 && args[0] == "info" {
 					return []byte("linux"), nil
 				}
-				if binary == "docker" && len(args) > 0 && args[0] == "inspect" && contains(args, "--format") {
+				if binary == "docker" && len(args) > 0 && args[0] == "inspect" && api.Contains(args, "--format") {
 					return []byte(`{"hermes-generic-workload":{"IPAddress":"172.20.0.2"}}`), nil
 				}
 				if binary == "docker" && len(args) > 0 && args[0] == "inspect" && len(args) >= 3 {
@@ -742,7 +772,7 @@ func TestBrokerStateMountReachesGenericFallback(t *testing.T) {
 	sentinel := errors.New("stop before Docker mutation")
 	c.command = func(context.Context, string, ...string) ([]byte, error) { reached = true; return nil, sentinel }
 	plan := genericPlan(d)
-	plan.CredentialMounts = []Mount{{Source: filepath.Join(root, "lease", "state"), Target: "/state"}}
+	plan.CredentialMounts = []api.Mount{{Source: filepath.Join(root, "lease", "state"), Target: "/state"}}
 	if _, err := c.startDockerRemoteFallback(t.Context(), plan); err == nil || !reached {
 		t.Fatal("validated Broker state incorrectly requires another volume", err)
 	}

@@ -3,12 +3,12 @@ package devcheck
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -22,7 +22,7 @@ func ToolHubContract(ctx context.Context) error {
 	if endpoint == "" || remoteTool == "" || statefulTool == "" {
 		return fmt.Errorf("set TOOLHIVE_VMCP_ENDPOINT, TOOLHIVE_REMOTE_TOOL and TOOLHIVE_STATEFUL_TOOL")
 	}
-	if err := toolhub.ValidateBackendEndpoint(endpoint); err != nil {
+	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
 		return err
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "hermes-toolhub-contract", Version: "0.2.0"}, nil)

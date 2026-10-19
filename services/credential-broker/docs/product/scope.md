@@ -8,7 +8,7 @@ last_verified: "2026-09-18"
 | Область | В этой версии | Не входит |
 | --- | --- | --- |
 | Fields | Secret/string/json/pem/blob, fixed bounds, file upload | Произвольный исполняемый schema/UI plugin |
-| Contracts | Admin-reviewed JSON, immutable revision/digest | Автоугадывание README, GitHub build/install |
+| Contracts | Admin-reviewed JSON + динамическая регистрация через `broker:control` (collect-and-deliver + allow_shared для Sharable shared-определений), immutable revision/digest | Автоугадывание README, GitHub build/install, динамические routes/OAuth/state |
 | Enrollment | Link + approved browser + CSRF, TTL, idempotent creation | Новая user DB, Telegram bot или аккаунт-провайдер |
 | Providers | Optional local, Vault KV v2 read/write, Kubernetes read-only | AWS/Azure/1Password adapters и Kubernetes write |
 | OAuth | Static client, code+PKCE, state, refresh and rotation | Device flow, DCR, discovery, OIDC login, loopback relay |

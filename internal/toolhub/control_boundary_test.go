@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -17,19 +18,19 @@ import (
 func TestControlDefaultDenyBeforeAnySourceOrStateMutation(t *testing.T) {
 	store := NewStore()
 	var sourceCalls atomic.Int32
-	control := &ControlPlane{Store: store, SourceResolver: func(context.Context, string) (ArtifactSource, error) {
+	control := &ControlPlane{Store: store, SourceResolver: func(context.Context, string) (api.ArtifactSource, error) {
 		sourceCalls.Add(1)
-		return ArtifactSource{}, errors.New("unexpected source resolution")
+		return api.ArtifactSource{}, errors.New("unexpected source resolution")
 	}}
 	// These grants cover different actions and must never implicitly grant
 	// prepare_source, confirm, enable, diagnostics, or any other control tool.
-	for _, kind := range []GrantKind{GrantCatalogDefault, GrantSelfInstall} {
-		if err := putGrant(t, store, OperatorGrant(kind, "alice", "", "")); err != nil {
+	for _, kind := range []api.GrantKind{api.GrantCatalogDefault, api.GrantSelfInstall} {
+		if err := putGrant(t, store, api.OperatorGrant(kind, "alice", "", "")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, operation := range ControlOperations {
-		if _, err := control.Invoke(t.Context(), aliceAuth(), operation, map[string]any{"source": "https://github.com/example/mcp"}); !errors.Is(err, ErrUnauthorized) {
+	for _, operation := range api.ControlOperations {
+		if _, err := control.Invoke(t.Context(), aliceAuth(), operation, map[string]any{"source": "https://github.com/example/mcp"}); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("ungranted %s admitted: %v", operation, err)
 		}
 	}
@@ -37,7 +38,7 @@ func TestControlDefaultDenyBeforeAnySourceOrStateMutation(t *testing.T) {
 		t.Fatal("denied operation reached source resolution or changed state")
 	}
 	for _, operation := range []string{"invoke", "prepare_source"} {
-		if err := store.RequireControlOperation(aliceAuth(), operation); !errors.Is(err, ErrUnauthorized) {
+		if err := store.RequireControlOperation(aliceAuth(), operation); !errors.Is(err, api.ErrUnauthorized) {
 			t.Fatalf("ungranted %s allowed: %v", operation, err)
 		}
 	}
@@ -49,9 +50,9 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	var backendCalls atomic.Int32
 	gateway := &Gateway{Store: store, Control: control,
 		Tokens: map[string]identity.Envelope{aliceToken: aliceAuth(), bobToken: bobAuth()},
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			backendCalls.Add(1)
-			return BackendResult{Text: "unexpected"}, nil
+			return api.BackendResult{Text: "unexpected"}, nil
 		}),
 	}
 	handler, err := gateway.Handler()
@@ -70,12 +71,12 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 			t.Fatalf("hidden tool %s was callable", name)
 		}
 	}
-	onboarding := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard-control", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: OnboardingSelfInstall, Phase: PhasePreparing, Revision: 1, CreatedAt: time.Now()}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-control", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	grant := OperatorControlGrant("alice", "status")
+	grant := api.OperatorControlGrant("alice", "status")
 	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
@@ -85,15 +86,15 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	if listed, err := bob.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 0 {
 		t.Fatalf("cross-user control projection: %+v, %v", listed, err)
 	}
-	if body, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil || body["phase"] != PhasePreparing {
+	if body, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil || body["phase"] != api.PhasePreparing {
 		t.Fatalf("granted status failed: %+v, %v", body, err)
 	}
 	id := alice.ID()
-	grant.Status, grant.Revision = RevokedStatus, 2
+	grant.Status, grant.Revision = api.RevokedStatus, 2
 	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(t.Context(), aliceAuth(), "status", nil); !errors.Is(err, ErrUnauthorized) {
+	if _, err := control.Invoke(t.Context(), aliceAuth(), "status", nil); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("stale handler admitted revoked operation: %v", err)
 	}
 	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err == nil {
@@ -109,34 +110,34 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 
 func TestControlGrantValidationAndStoreFailure(t *testing.T) {
 	for _, operation := range []string{"", "*", "grant", "edit_config"} {
-		if err := OperatorControlGrant("alice", operation).Validate(); !errors.Is(err, ErrInvalid) {
+		if err := api.OperatorControlGrant("alice", operation).Validate(); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("unknown control grant accepted: %q, %v", operation, err)
 		}
 	}
-	grant := OperatorControlGrant("alice", "status")
+	grant := api.OperatorControlGrant("alice", "status")
 	grant.DefinitionID = "other"
-	if err := grant.Validate(); !errors.Is(err, ErrInvalid) {
+	if err := grant.Validate(); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("ambiguous control grant accepted: %v", err)
 	}
-	grant = OperatorGrant(GrantSelfInstall, "alice", "", "")
+	grant = api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")
 	grant.Operation = "status"
-	if err := grant.Validate(); !errors.Is(err, ErrInvalid) {
+	if err := grant.Validate(); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("cross-kind operation accepted: %v", err)
 	}
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", "status")
-	deny := OperatorControlGrant("alice", "status")
-	deny.GrantID, deny.Status = "control-deny", DisabledStatus
+	deny := api.OperatorControlGrant("alice", "status")
+	deny.GrantID, deny.Status = "control-deny", api.DisabledStatus
 	if err := putGrant(t, store, deny); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RequireControlOperation(aliceAuth(), "status"); !errors.Is(err, ErrUnauthorized) {
+	if err := store.RequireControlOperation(aliceAuth(), "status"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("deny did not win: %v", err)
 	}
-	if err := store.RequireControlOperation(aliceAuth(), "grant"); !errors.Is(err, ErrInvalid) {
+	if err := store.RequireControlOperation(aliceAuth(), "grant"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("agent authority administration accepted: %v", err)
 	}
-	if _, err := store.AllowedControlOperations(identity.Envelope{}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.AllowedControlOperations(identity.Envelope{}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("invalid identity accepted: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "store.json")

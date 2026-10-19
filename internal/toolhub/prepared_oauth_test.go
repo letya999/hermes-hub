@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,14 +21,14 @@ import (
 )
 
 func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
-	entry, matched, err := preparedForRepository("https://github.com/nspady/google-calendar-mcp", "")
+	entry, matched, err := api.PreparedForRepository("https://github.com/nspady/google-calendar-mcp", "")
 	if err != nil || !matched || entry.OAuth == nil {
 		t.Fatal("reviewed OAuth entry missing", err)
 	}
 	d := statefulContainerDefinition()
 	d.DefinitionID, d.Version = entry.ID, "1.0.0"
 	d.Source.Repository, d.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
-	d.Credentials = []CredentialInput{{Name: entry.OAuth.ClientInput, Required: true}}
+	d.Credentials = []api.CredentialInput{{Name: entry.OAuth.ClientInput, Required: true}}
 	d.CredentialContractID, d.CredentialContractRevision = entry.ContractID, entry.ContractRevision
 	d.CredentialContractEnv = map[string]string{entry.OAuth.ClientInput: entry.OAuth.ClientInput}
 	store := NewStore()
@@ -35,14 +36,14 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	ref := CredentialReference{Schema: SchemaVersion, CredentialRefID: "cred_calendar", ConnectionID: "conn_calendar", Revision: 1, Backend: "credential-broker", Locator: "credential_calendar", Keys: []string{entry.OAuth.ClientInput}, BrokerGrantID: "grant_calendar", BrokerContractID: entry.ContractID, BrokerContractRevision: entry.ContractRevision, BrokerEnv: d.CredentialContractEnv, Status: ActiveStatus}
+	ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: "cred_calendar", ConnectionID: "conn_calendar", Revision: 1, Backend: "credential-broker", Locator: "credential_calendar", Keys: []string{entry.OAuth.ClientInput}, BrokerGrantID: "grant_calendar", BrokerContractID: entry.ContractID, BrokerContractRevision: entry.ContractRevision, BrokerEnv: d.CredentialContractEnv, Status: api.ActiveStatus}
 	if err := store.PutCredentialReference(ref); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(Connection{Schema: SchemaVersion, ConnectionID: ref.ConnectionID, Owner: OwnerRef{Type: PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: ActiveStatus}); err != nil {
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: ref.ConnectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	on := Onboarding{Schema: SchemaVersion, OnboardingID: "onboard_calendar", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: OnboardingCatalog, Phase: PhaseAwaitingConfirm, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ConfirmationNonce: "nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1, CreatedAt: time.Now()}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ConfirmationNonce: "nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
@@ -60,17 +61,17 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkpoints := 0
-	c := &ControlPlane{Store: store, Secrets: secrets, FormOrigin: "http://127.0.0.1:8090", Injector: func(_ context.Context, _ EffectiveBinding) (CredentialInjection, error) {
-		return CredentialInjection{Environment: map[string]string{entry.OAuth.ClientInput: "/run/mcp-secrets/google/client.json"}, Mounts: []Mount{{Source: clientFile, Target: "/run/mcp-secrets/google/client.json", ReadOnly: true}, {Source: stateDir, Target: entry.StateTarget}}, Checkpoint: func() error { checkpoints++; return nil }}, nil
+	c := &ControlPlane{Store: store, Secrets: secrets, FormOrigin: "http://127.0.0.1:8090", Injector: func(_ context.Context, _ api.EffectiveBinding) (api.CredentialInjection, error) {
+		return api.CredentialInjection{Environment: map[string]string{entry.OAuth.ClientInput: "/run/mcp-secrets/google/client.json"}, Mounts: []api.Mount{{Source: clientFile, Target: "/run/mcp-secrets/google/client.json", ReadOnly: true}, {Source: stateDir, Target: entry.StateTarget}}, Checkpoint: func() error { checkpoints++; return nil }}, nil
 	}}
-	c.Ready = func(_ context.Context, _ EffectiveBinding) error {
+	c.Ready = func(_ context.Context, _ api.EffectiveBinding) error {
 		if _, err := os.Stat(filepath.Join(stateDir, entry.OAuth.TokenFile)); err != nil {
-			return ErrUnauthorized
+			return api.ErrUnauthorized
 		}
 		return nil
 	}
 	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.ConfirmationNonce})
-	if err != nil || body["phase"] != PhaseAwaitingOAuth {
+	if err != nil || body["phase"] != api.PhaseAwaitingOAuth {
 		t.Fatalf("handoff: %v %v", body, err)
 	}
 	authURL, _ := url.Parse(body["authorization_url"].(string))
@@ -89,14 +90,14 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 		}()
 	}
 	concurrent.Wait()
-	if err := c.completePreparedOAuth(t.Context(), "wrong", "code"); !errors.Is(err, ErrUnauthorized) {
+	if err := c.completePreparedOAuth(t.Context(), "wrong", "code"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatal("unbound callback accepted", err)
 	}
-	c.oauthMu.Lock()
-	clear(c.oauthFlows) // simulate a ToolHub restart while the browser link is outstanding
-	c.oauthMu.Unlock()
+	c.oauthFlows.mu.Lock()
+	clear(c.oauthFlows.flows) // simulate a ToolHub restart while the browser link is outstanding
+	c.oauthFlows.mu.Unlock()
 	resumed, err := c.status(auth, map[string]any{"onboarding_id": on.OnboardingID})
-	if err != nil || resumed["phase"] != PhaseAwaitingOAuth || resumed["authorization_url"] == authURL.String() {
+	if err != nil || resumed["phase"] != api.PhaseAwaitingOAuth || resumed["authorization_url"] == authURL.String() {
 		t.Fatal("status did not reissue lost OAuth link", err)
 	}
 	authURL, _ = url.Parse(resumed["authorization_url"].(string))
@@ -109,9 +110,9 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/calendar.readonly"}`))
 	}))
 	defer provider.Close()
-	c.oauthMu.Lock()
-	c.oauthFlows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
-	c.oauthMu.Unlock()
+	c.oauthFlows.mu.Lock()
+	c.oauthFlows.flows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
+	c.oauthFlows.mu.Unlock()
 	c.OAuth = oauth.NewBroker(secrets, []string{c.origin() + "/oauth/callback"})
 	gateway := &Gateway{Control: c}
 	callback := "/oauth/callback?state=" + url.QueryEscape(state) + "&code=fixture-code"
@@ -146,11 +147,11 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	if json.Unmarshal(raw, &tokens) != nil || tokens["normal"]["refresh_token"] != "fixture-refresh" {
 		t.Fatal("upstream token format was not saved")
 	}
-	if err := c.completePreparedOAuth(t.Context(), state, "fixture-code"); !errors.Is(err, ErrUnauthorized) {
+	if err := c.completePreparedOAuth(t.Context(), state, "fixture-code"); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatal("replayed callback accepted", err)
 	}
 	stored, _ := store.onboarding(on.OnboardingID)
-	if stored.Phase != PhaseEnabled || stored.ProviderAuthorizationURL != "" {
+	if stored.Phase != api.PhaseEnabled || stored.ProviderAuthorizationURL != "" {
 		t.Fatal("onboarding did not resume")
 	}
 	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d); err == nil || !strings.Contains(err.Error(), "existing token state") {
@@ -162,24 +163,24 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	if err := os.WriteFile(clientFile, []byte(`{"web":{"client_id":"fixture","client_secret":"fixture","redirect_uris":["http://wrong.example/callback"]}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d); !errors.Is(err, ErrInvalid) {
+	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal("unregistered web callback accepted", err)
 	}
 }
 
 func TestPreparedOAuthRejectsUnreviewedAdapter(t *testing.T) {
-	for _, mutate := range []func(*PreparedOAuth){
-		func(a *PreparedOAuth) { a.Scopes = []string{"https://www.googleapis.com/auth/calendar"} },
-		func(a *PreparedOAuth) { a.TokenFile = "../other.json" },
-		func(a *PreparedOAuth) { a.TokenFormat = "unreviewed" },
+	for _, mutate := range []func(*api.PreparedOAuth){
+		func(a *api.PreparedOAuth) { a.Scopes = []string{"https://www.googleapis.com/auth/calendar"} },
+		func(a *api.PreparedOAuth) { a.TokenFile = "../other.json" },
+		func(a *api.PreparedOAuth) { a.TokenFormat = "unreviewed" },
 	} {
-		var entries []PreparedEntry
-		if err := json.Unmarshal(preparedCatalogJSON, &entries); err != nil {
+		var entries []api.PreparedEntry
+		if err := json.Unmarshal(api.PreparedCatalogJSON, &entries); err != nil {
 			t.Fatal(err)
 		}
 		mutate(entries[1].OAuth)
 		encoded, _ := json.Marshal(entries)
-		if _, err := parsePreparedCatalog(encoded); !errors.Is(err, ErrInvalid) {
+		if _, err := api.ParsePreparedCatalog(encoded); !errors.Is(err, api.ErrInvalid) {
 			t.Fatal("unreviewed OAuth adapter accepted", err)
 		}
 	}

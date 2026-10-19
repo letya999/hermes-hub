@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,22 +15,22 @@ import (
 // owner-scoped effective binding. It is the replacement data shape for the
 // legacy service catalog.
 type CatalogEntry struct {
-	Name               string        `json:"name"`
-	Version            string        `json:"version"`
-	Transport          Transport     `json:"transport"`
-	WorkloadClass      WorkloadClass `json:"workload_class"`
-	Tools              []string      `json:"tools"`
-	BindingID          string        `json:"binding_id,omitempty"`
-	Status             string        `json:"status"`
-	Enabled            bool          `json:"enabled"`
-	MissingCredentials []string      `json:"missing_credentials,omitempty"`
+	Name               string            `json:"name"`
+	Version            string            `json:"version"`
+	Transport          api.Transport     `json:"transport"`
+	WorkloadClass      api.WorkloadClass `json:"workload_class"`
+	Tools              []string          `json:"tools"`
+	BindingID          string            `json:"binding_id,omitempty"`
+	Status             string            `json:"status"`
+	Enabled            bool              `json:"enabled"`
+	MissingCredentials []string          `json:"missing_credentials,omitempty"`
 }
 
 // Catalog returns only manifest metadata and the current exact-owner status.
 // It never infers enablement from a legacy feature list.
 func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return nil, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	if err := s.Reload(); err != nil {
 		return nil, err
@@ -47,7 +48,7 @@ func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 			entry := byDefinition[key]
 			if entry == nil {
 				definition := s.definitions[key]
-				entry = &CatalogEntry{Name: tool.DefinitionID, Version: tool.Version, Transport: definition.Transport, WorkloadClass: definition.Workload.Class, Enabled: true, Status: string(ActiveStatus)}
+				entry = &CatalogEntry{Name: tool.DefinitionID, Version: tool.Version, Transport: definition.Transport, WorkloadClass: definition.Workload.Class, Enabled: true, Status: string(api.ActiveStatus)}
 				byDefinition[key] = entry
 			}
 			entry.Tools = append(entry.Tools, tool.Name)
@@ -81,8 +82,8 @@ func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 		} else {
 			entry.BindingID = binding.ToolBindingID
 			entry.Status = string(binding.Status)
-			entry.Enabled = binding.Status == ActiveStatus
-			if binding.Status == ActiveStatus {
+			entry.Enabled = binding.Status == api.ActiveStatus
+			if binding.Status == api.ActiveStatus {
 				if _, err := s.resolveLocked(auth, binding.ToolBindingID); err != nil {
 					entry.Enabled = false
 					entry.Status = "stale"
@@ -100,10 +101,10 @@ func (s *Store) Catalog(auth identity.Envelope) ([]CatalogEntry, error) {
 	return entries, nil
 }
 
-func requiredCredentialNames(definition ToolDefinition) []string {
+func requiredCredentialNames(definition api.ToolDefinition) []string {
 	result := make([]string, 0)
 	for _, input := range definition.Credentials {
-		if input.Required {
+		if input.Required && !input.PerRequest && contractCoverable(input) {
 			result = append(result, input.Name)
 		}
 	}
@@ -111,11 +112,11 @@ func requiredCredentialNames(definition ToolDefinition) []string {
 	return result
 }
 
-func (s *Store) findBindingLocked(auth identity.Envelope, definition ToolDefinition) *ToolBinding {
-	var tombstone *ToolBinding
+func (s *Store) findBindingLocked(auth identity.Envelope, definition api.ToolDefinition) *api.ToolBinding {
+	var tombstone *api.ToolBinding
 	for _, binding := range s.bindings {
 		if binding.PrincipalID == auth.PrincipalID && binding.ContextID == auth.ContextID && binding.RuntimeID == auth.RuntimeID && binding.PolicyVersion == auth.PolicyVersion && binding.DefinitionID == definition.DefinitionID && binding.DefinitionVersion == definition.Version {
-			if binding.Status == RevokedStatus {
+			if binding.Status == api.RevokedStatus {
 				if tombstone == nil {
 					copy := binding
 					tombstone = &copy
@@ -134,17 +135,17 @@ func (s *Store) findBindingLocked(auth identity.Envelope, definition ToolDefinit
 // artifact metadata, so retries must reuse the approved record instead of
 // attempting to overwrite it. The newest matching version wins: a definition
 // superseded by a contract-bound revision must not be resurrected.
-func (s *Store) reusableSelfInstallDefinition(auth identity.Envelope, source ArtifactSource, definitionID, version string) (ToolDefinition, bool) {
+func (s *Store) reusableSelfInstallDefinition(auth identity.Envelope, source api.ArtifactSource, definitionID, version string) (api.ToolDefinition, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var best ToolDefinition
+	var best api.ToolDefinition
 	found := false
 	for _, definition := range s.definitions {
 		if definition.DefinitionID != definitionID || versionLess(definition.Version, version) || definition.Source.Repository != source.Repository || definition.Source.Subfolder != source.Subfolder || !strings.EqualFold(definition.Source.CommitSHA, source.CommitSHA) {
 			continue
 		}
 		publication := s.publicationLocked(definition)
-		if publication.Visibility != PublicationUser || publication.OwnerPrincipalID != auth.PrincipalID {
+		if publication.Visibility != api.PublicationUser || publication.OwnerPrincipalID != auth.PrincipalID {
 			continue
 		}
 		if !found || versionLess(best.Version, definition.Version) {
@@ -189,70 +190,70 @@ func nextPatchVersion(version string) string {
 // Enable creates the smallest effective binding for an immutable manifest,
 // or re-enables an existing non-revoked binding. Connections and credentials
 // must already exist and match the authenticated owner.
-func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (ToolBinding, error) {
+func (s *Store) Enable(auth identity.Envelope, definitionID, version string) (api.ToolBinding, error) {
 	return s.enableWithReady(context.Background(), auth, definitionID, version, nil)
 }
 
 // EnableReady admits a newly materialized workload before its binding is
 // persisted and its projection revision is published.
-func (s *Store) EnableReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, EffectiveBinding) error) (ToolBinding, error) {
+func (s *Store) EnableReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, api.EffectiveBinding) error) (api.ToolBinding, error) {
 	if ready == nil {
 		return s.Enable(auth, definitionID, version)
 	}
 	return s.enableWithReady(ctx, auth, definitionID, version, ready)
 }
 
-func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, EffectiveBinding) error) (ToolBinding, error) {
+func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, definitionID, version string, ready func(context.Context, api.EffectiveBinding) error) (api.ToolBinding, error) {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return ToolBinding{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return api.ToolBinding{}, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	s.mu.Lock()
 	definition, ok := s.definitions[definitionKey(definitionID, version)]
 	if !ok {
 		s.mu.Unlock()
-		return ToolBinding{}, fmt.Errorf("%w: manifest", ErrNotFound)
+		return api.ToolBinding{}, fmt.Errorf("%w: manifest", api.ErrNotFound)
 	}
 	pub := s.publicationLocked(definition)
-	if pub.Visibility == PublicationUser && pub.OwnerPrincipalID != auth.PrincipalID {
+	if pub.Visibility == api.PublicationUser && pub.OwnerPrincipalID != auth.PrincipalID {
 		s.mu.Unlock()
-		return ToolBinding{}, fmt.Errorf("%w: user definition owner", ErrUnauthorized)
+		return api.ToolBinding{}, fmt.Errorf("%w: user definition owner", api.ErrUnauthorized)
 	}
-	var connection *Connection
-	var credential *CredentialReference
+	var connection *api.Connection
+	var credential *api.CredentialReference
 	if len(definition.Credentials) > 0 {
 		matches := s.matchingOwnerConnectionsLocked(auth, definition)
 		if len(matches) == 0 {
 			s.mu.Unlock()
-			return ToolBinding{}, fmt.Errorf("%w: active owner connection and credential are required", ErrUnauthorized)
+			return api.ToolBinding{}, fmt.Errorf("%w: active owner connection and credential are required", api.ErrUnauthorized)
 		}
 		if len(matches) > 1 {
 			s.mu.Unlock()
-			return ToolBinding{}, fmt.Errorf("%w: ambiguous owner connection", ErrUnauthorized)
+			return api.ToolBinding{}, fmt.Errorf("%w: ambiguous owner connection", api.ErrUnauthorized)
 		}
 		c, r := matches[0].connection, matches[0].credential
 		connection, credential = &c, &r
 	}
-	if existing := s.findBindingLocked(auth, definition); existing != nil && existing.Status != RevokedStatus {
+	if existing := s.findBindingLocked(auth, definition); existing != nil && existing.Status != api.RevokedStatus {
 		current := connection == nil || (existing.ConnectionID == connection.ConnectionID && existing.CredentialRefID == credential.CredentialRefID)
 		if !current {
 			// The owner connection was rotated or superseded; the stale
 			// binding can never resolve again, so revoke it before
 			// materializing the replacement below.
 			stale := *existing
-			stale.Status = RevokedStatus
+			stale.Status = api.RevokedStatus
 			stale.Revision++
 			s.touchProjectionLocked(&stale)
 			s.bindings[stale.ToolBindingID] = stale
 		} else {
 			previous := *existing
 			previousProjection := s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)]
-			if existing.Status != ActiveStatus {
-				existing.Status = ActiveStatus
+			if existing.Status != api.ActiveStatus {
+				existing.Status = api.ActiveStatus
 				existing.Revision++
 				s.touchProjectionLocked(existing)
 				s.bindings[existing.ToolBindingID] = *existing
 			}
-			if ready != nil && existing.Status == ActiveStatus {
+			if ready != nil && existing.Status == api.ActiveStatus {
 				effective, err := s.resolveLocked(auth, existing.ToolBindingID)
 				if err == nil {
 					err = ready(ctx, effective)
@@ -261,31 +262,31 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 					s.bindings[existing.ToolBindingID] = previous
 					s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] = previousProjection
 					s.mu.Unlock()
-					return ToolBinding{}, err
+					return api.ToolBinding{}, err
 				}
 			}
 			s.supersedeOtherBindingsLocked(auth, definitionID, existing.ToolBindingID)
 			result := *existing
 			s.mu.Unlock()
 			if err := s.persistAndNotify(); err != nil {
-				return ToolBinding{}, err
+				return api.ToolBinding{}, err
 			}
 			return result, nil
 		}
 	}
-	binding := ToolBinding{Schema: SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1}
 	if connection != nil {
 		binding.ConnectionID, binding.ConnectionRevision = connection.ConnectionID, connection.Revision
 		binding.CredentialRefID, binding.CredentialRevision = credential.CredentialRefID, credential.Revision
 	}
-	binding.ToolBindingID = DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	if err := binding.Validate(); err != nil {
 		s.mu.Unlock()
-		return ToolBinding{}, err
+		return api.ToolBinding{}, err
 	}
-	if previous, ok := s.bindings[binding.ToolBindingID]; ok && previous.Status == RevokedStatus {
+	if previous, ok := s.bindings[binding.ToolBindingID]; ok && previous.Status == api.RevokedStatus {
 		s.mu.Unlock()
-		return ToolBinding{}, ErrRevoked
+		return api.ToolBinding{}, api.ErrRevoked
 	}
 	if ready != nil {
 		s.bindings[binding.ToolBindingID] = binding
@@ -296,7 +297,7 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 		if err != nil {
 			delete(s.bindings, binding.ToolBindingID)
 			s.mu.Unlock()
-			return ToolBinding{}, err
+			return api.ToolBinding{}, err
 		}
 	}
 	s.bindings[binding.ToolBindingID] = binding
@@ -307,7 +308,7 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 	}
 	s.mu.Unlock()
 	if err := s.persistAndNotify(); err != nil {
-		return ToolBinding{}, err
+		return api.ToolBinding{}, err
 	}
 	return binding, nil
 }
@@ -321,13 +322,13 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 func (s *Store) supersedeOtherBindingsLocked(auth identity.Envelope, definitionID, keepBindingID string) int {
 	disabled := 0
 	for id, other := range s.bindings {
-		if id == keepBindingID || other.DefinitionID != definitionID || other.Status != ActiveStatus {
+		if id == keepBindingID || other.DefinitionID != definitionID || other.Status != api.ActiveStatus {
 			continue
 		}
 		if other.PrincipalID != auth.PrincipalID || other.ContextID != auth.ContextID || other.RuntimeID != auth.RuntimeID {
 			continue
 		}
-		other.Status = DisabledStatus
+		other.Status = api.DisabledStatus
 		other.Revision++
 		s.touchProjectionLocked(&other)
 		s.bindings[id] = other
@@ -343,7 +344,7 @@ func (s *Store) supersedeOtherBindingsLocked(auth identity.Envelope, definitionI
 // their projected tools keep multiplying in the caller's surface.
 func (s *Store) SupersedeSiblings(auth identity.Envelope, definitionID, keepBindingID string) error {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	s.mu.Lock()
 	changed := s.supersedeOtherBindingsLocked(auth, definitionID, keepBindingID)
@@ -355,25 +356,28 @@ func (s *Store) SupersedeSiblings(auth identity.Envelope, definitionID, keepBind
 }
 
 type ownerConnectionMatch struct {
-	connection Connection
-	credential CredentialReference
+	connection api.Connection
+	credential api.CredentialReference
 }
 
-func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definition ToolDefinition) []ownerConnectionMatch {
+func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definition api.ToolDefinition) []ownerConnectionMatch {
 	matches := make([]ownerConnectionMatch, 0)
 	for _, candidate := range s.connections {
-		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != ActiveStatus || !candidate.Owner.Matches(auth) || candidate.CredentialRefID == "" {
+		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != api.ActiveStatus || candidate.CredentialRefID == "" {
+			continue
+		}
+		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) {
 			continue
 		}
 		reference, found := s.credentials[candidate.CredentialRefID]
-		if !found || reference.Status != ActiveStatus || reference.ConnectionID != candidate.ConnectionID {
+		if !found || reference.Status != api.ActiveStatus || reference.ConnectionID != candidate.ConnectionID {
 			continue
 		}
 		keys := map[string]bool{}
 		for _, key := range reference.Keys {
 			keys[key] = true
 		}
-		valid := definition.credentialsSatisfied(func(name string) bool { return keys[name] })
+		valid := definition.CredentialsSatisfied(func(name string) bool { return keys[name] })
 		if valid {
 			matches = append(matches, ownerConnectionMatch{connection: candidate, credential: reference})
 		}
@@ -385,24 +389,24 @@ func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definitio
 // ownership or credential metadata.
 func (s *Store) Disable(auth identity.Envelope, definitionID, version string) error {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
 	s.mu.Lock()
 	definition, ok := s.definitions[definitionKey(definitionID, version)]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: manifest", ErrNotFound)
+		return fmt.Errorf("%w: manifest", api.ErrNotFound)
 	}
 	binding := s.findBindingLocked(auth, definition)
 	if binding == nil {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: binding", ErrNotFound)
+		return fmt.Errorf("%w: binding", api.ErrNotFound)
 	}
-	if binding.Status == RevokedStatus {
+	if binding.Status == api.RevokedStatus {
 		s.mu.Unlock()
-		return ErrRevoked
+		return api.ErrRevoked
 	}
-	binding.Status = DisabledStatus
+	binding.Status = api.DisabledStatus
 	binding.Revision++
 	s.touchProjectionLocked(binding)
 	s.bindings[binding.ToolBindingID] = *binding

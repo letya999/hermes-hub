@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +12,11 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestFetchInboundUsesOwnerToolAndRejectsFailure(t *testing.T) {
-	name := toolhub.ProjectedToolName(agenttools.HubToolsDefinitionID, agenttools.HubToolsDefinition().Version, "inbox_fetch")
+	name := api.ProjectedToolName(agenttools.HubToolsDefinitionID, agenttools.HubToolsDefinition().Version, "inbox_fetch")
 	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 	returnedPath := "inbox/in-90/files/report.pdf"
 	server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -93,7 +93,7 @@ func TestAdmissionRequiresInboundSave(t *testing.T) {
 }
 
 func TestAdmissionGivesAgentSavedDocumentPath(t *testing.T) {
-	name := toolhub.ProjectedToolName(agenttools.HubToolsDefinitionID, agenttools.HubToolsDefinition().Version, "inbox_fetch")
+	name := api.ProjectedToolName(agenttools.HubToolsDefinitionID, agenttools.HubToolsDefinition().Version, "inbox_fetch")
 	tools := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 	tools.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{StructuredContent: map[string]any{"path": "inbox/in-90/files/report.pdf", "acknowledged": true}}, nil

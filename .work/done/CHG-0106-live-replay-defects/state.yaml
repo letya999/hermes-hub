@@ -1,0 +1,21 @@
+change: CHG-0106-live-replay-defects
+milestone: M13 follow-up — live Telegram replay defect fixes
+status: done
+slices:
+  S1-watcher-probe-fixes: done (watchValue non-empty group, 1MiB body cap, verbatim LastError; tests green; verified live — github-issues 398KB page extracts value, utctime/dzen report real error text)
+  S2-contract-errors: done (uncovered prepare failure names credentials; CreateRequest error names contract; superseded in part by CHG-0107 — contract-miss now heals via dynamic registration)
+  S3-session-leak-routing: done (durable prepare origin by onboarding id; verified live — outcome notice + agent reply delivered to group topic -1004499001527/66, not DM)
+  S4-message-retry-once: done (one -r1 retry for plain message failures; unit-tested, deployed; live run.failed not forced — invasive)
+  S5-broker-catalog-restore: done live (notion-token contract; full notion cycle status→form→confirm→enable, bind-dad368c6, 23 tools)
+  S6-latency: documented — supervisor /v1/jobs 30-190s is model+tool time; hub polling adds 1-5s
+  S7-live-replay-verification: done (stack rebuilt via hubctl build/up, 9 containers healthy; live checks above)
+just_check: done (86.3% total; rerun under CHG-0107 after optional-names fix)
+live_acceptance: done — defects 1,3,4 verified on live stack; defect 5 unit-only; defect 2 verified then refined under CHG-0107 (heals instead of failing)
+notes: >
+  Watcher defect decomposed into three real bugs: 256KiB body cap rejected
+  every real page (github issues page is 398KB), watchValue ignored non-first
+  capture groups so alternation regexes produced empty values forever, and
+  settleProbe discarded the real error into a constant string. Notion public
+  pages serve a JS shell — guidance steers agents to probe_kind=mcp_tool or
+  static markers. Contract gap that blocked notion-mcp resolved: CHG-0107
+  replaces the manual contract file workflow with dynamic registration.

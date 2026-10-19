@@ -1,14 +1,13 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"io"
 	"log"
 	"net/http"
@@ -16,9 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/envstore"
-	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 const maxPromptBytes = 2 * 1024 * 1024
@@ -26,7 +22,7 @@ const maxPromptBytes = 2 * 1024 * 1024
 // Connector installation is an isolated build, not an ordinary chat turn.
 // Keep the supervisor observing long enough for the ToolHub build ceiling;
 // Hermes itself sends the user periodic heartbeats while it waits.
-const hermesRunTimeout = 30 * time.Minute
+// The cap is the single run budget every hop shares (RunBudget).
 
 // ExecuteRequest is the private communication-hub to runtime contract.
 type ExecuteRequest struct {
@@ -59,17 +55,21 @@ type SelfEnvRequest struct {
 }
 
 type ExecuteResponse struct {
-	Text              string        `json:"text"`
-	JobID             string        `json:"job_id,omitempty"`
-	SessionID         string        `json:"session_id,omitempty"`
-	RunID             string        `json:"run_id,omitempty"`
-	RuntimeGeneration string        `json:"runtime_generation,omitempty"`
-	Status            string        `json:"status,omitempty"`
-	LastEvent         string        `json:"last_event,omitempty"`
-	EventID           string        `json:"event_id,omitempty"`
-	ApprovalID        string        `json:"approval_id,omitempty"`
-	ApprovalChoices   []string      `json:"approval_choices,omitempty"`
-	Artifacts         []ArtifactRef `json:"artifacts,omitempty"`
+	Text              string   `json:"text"`
+	JobID             string   `json:"job_id,omitempty"`
+	SessionID         string   `json:"session_id,omitempty"`
+	RunID             string   `json:"run_id,omitempty"`
+	RuntimeGeneration string   `json:"runtime_generation,omitempty"`
+	Status            string   `json:"status,omitempty"`
+	LastEvent         string   `json:"last_event,omitempty"`
+	EventID           string   `json:"event_id,omitempty"`
+	ToolName          string   `json:"tool_name,omitempty"`
+	ApprovalID        string   `json:"approval_id,omitempty"`
+	ApprovalChoices   []string `json:"approval_choices,omitempty"`
+	// ApprovalSummary is the redacted human-readable context of the flagged
+	// action (what is being approved), bounded at the runtime boundary.
+	ApprovalSummary string        `json:"approval_summary,omitempty"`
+	Artifacts       []ArtifactRef `json:"artifacts,omitempty"`
 	// Voice carries the text the model asked to deliver as a voice message
 	// (upstream VOICE: marker). The gateway synthesizes and sends it; the
 	// audio itself is never persisted — the text transcript stays canonical.
@@ -77,12 +77,6 @@ type ExecuteResponse struct {
 }
 
 type runtimeHTTP struct{}
-
-var signalRuntimeProcess = func() {
-	if process, err := os.FindProcess(os.Getpid()); err == nil {
-		_ = process.Signal(os.Interrupt)
-	}
-}
 
 func runtimeHandler() http.Handler {
 	return &runtimeHTTP{}
@@ -102,6 +96,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.ready(w, r)
 	case "/v1/execute":
 		s.execute(w, r)
+	case "/v1/readmit":
+		s.readmit(w, r)
 	case "/v1/observe":
 		s.observe(w, r)
 	case "/v1/control":
@@ -210,6 +206,45 @@ func (s *runtimeHTTP) execute(w http.ResponseWriter, r *http.Request) {
 	writeRuntimeJSON(w, http.StatusOK, response)
 }
 
+// readmit restores the original payload from the owning runtime's journal.
+// Missing legacy receipts cannot authorize execution with an invented input.
+func (s *runtimeHTTP) readmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorized(r) {
+		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	request, err := decodeExecuteRequest(w, r)
+	if err != nil {
+		writeRuntimeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	check := request
+	check.Text = "readmit"
+	if err := validateExecuteRequest(check); err != nil {
+		writeRuntimeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	payload, err := admissionPayload(request, nil)
+	if err != nil {
+		writeRuntimeError(w, http.StatusConflict, "original admission unavailable")
+		return
+	}
+	if r.Header.Get("Accept") == RunStreamContentType {
+		s.writeStream(w, request, func(emit func(ExecuteResponse) error) (ExecuteResponse, error) {
+			return s.postHermesRun(r.Context(), request, payload, emit)
+		})
+		return
+	}
+	response, err := s.postHermesRun(r.Context(), request, payload, nil)
+	response.JobID = request.JobID
+	response.RuntimeGeneration = os.Getenv("HUB_RUNTIME_GENERATION")
+	if err != nil {
+		writeRuntimeError(w, http.StatusInternalServerError, "runtime execution failed")
+		return
+	}
+	writeRuntimeJSON(w, http.StatusOK, response)
+}
+
 // executePersistent uses the pinned Hermes Gateway API inside this runtime.
 // No provider or session state crosses the owning container.
 func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequest) (ExecuteResponse, error) {
@@ -218,7 +253,7 @@ func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequ
 
 func (s *runtimeHTTP) executePersistentEvents(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
 	first, sawTool := s.admitAndObserve(ctx, request, emit)
-	if !retryColdWake(first.response, first.err, first.elapsed, sawTool) {
+	if errors.Is(first.err, errAdmissionReceipt) || !retryColdWake(first.response, first.err, first.elapsed, sawTool) {
 		return first.response, first.err
 	}
 	log.Printf("runtime retrying cold-start job=%s status=%s", request.JobID, first.response.Status)
@@ -228,372 +263,6 @@ func (s *runtimeHTTP) executePersistentEvents(ctx context.Context, request Execu
 	}
 	second, _ := s.admitAndObserve(ctx, retry, emit)
 	return second.response, second.err
-}
-
-type wakeAttempt struct {
-	response ExecuteResponse
-	err      error
-	elapsed  time.Duration
-}
-
-// retryColdWake repeats one chat turn that died before any tool call while
-// the runtime was still waking. A finished answer, a long failure, or a run
-// that already called a tool is left alone.
-func retryColdWake(response ExecuteResponse, err error, elapsed time.Duration, sawTool bool) bool {
-	if err == nil || sawTool || strings.TrimSpace(response.Text) != "" || elapsed > 20*time.Second {
-		return false
-	}
-	return response.Status == "failed" || response.Status == ""
-}
-
-func (s *runtimeHTTP) admitAndObserve(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (wakeAttempt, bool) {
-	started := time.Now()
-	sawTool := false
-	wrapped := emit
-	if emit != nil {
-		wrapped = func(event ExecuteResponse) error {
-			if event.LastEvent == "tool.start" || event.LastEvent == "tool.end" {
-				sawTool = true
-			}
-			return emit(event)
-		}
-	}
-	response, err := s.admitHermesRun(ctx, request, wrapped)
-	return wakeAttempt{response: response, err: err, elapsed: time.Since(started)}, sawTool
-}
-
-func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
-	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
-	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
-	client := &http.Client{Timeout: 10 * time.Second}
-	sessionID := sessionIDFor(request)
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/api/sessions", auth, map[string]any{"id": sessionID}, nil); err != nil && !errors.Is(err, errSessionExists) {
-		return ExecuteResponse{}, err
-	}
-	var admission struct {
-		RunID string `json:"run_id"`
-	}
-	runStart := time.Now()
-	input := request.Text
-	if request.InboundID != "" {
-		rel, err := fetchInbound(ctx, request.InboundID)
-		if err != nil {
-			return ExecuteResponse{}, err
-		}
-		input += "\nSaved incoming file: " + rel + ". Read or extract this file before answering."
-	}
-	runBody := map[string]any{"input": input, "session_id": sessionID}
-	if request.Instructions != "" {
-		runBody["instructions"] = request.Instructions
-	}
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, runBody, &admission, request.IdempotencyKey); err != nil {
-		return ExecuteResponse{}, err
-	}
-	if admission.RunID == "" {
-		return ExecuteResponse{}, errors.New("hermes returned no run ID")
-	}
-	markRunStart(admission.RunID)
-	known := ExecuteResponse{JobID: request.JobID, SessionID: sessionID, RunID: admission.RunID, RuntimeGeneration: os.Getenv("HUB_RUNTIME_GENERATION"), Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
-	return s.observeHermesRunWindow(ctx, known, emit, runStart)
-}
-
-func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
-	// A recovered observation never knew the run's start; the durable marker
-	// recorded at admission restores the artifact-scan window so files the
-	// interrupted run produced still deliver.
-	return s.observeHermesRunWindow(ctx, known, emit, runStartFor(known.RunID))
-}
-
-func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error, runStart time.Time) (ExecuteResponse, error) {
-	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
-	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
-	client := &http.Client{Timeout: 10 * time.Second}
-	sessionID := known.SessionID
-	admission := struct{ RunID string }{known.RunID}
-	var events <-chan nativeRunEvent
-	if emit != nil {
-		if err := emit(known); err != nil {
-			known.Status, known.LastEvent = "uncertain", "run.unknown"
-			return known, err
-		}
-		streamCtx, closeStream := context.WithCancel(ctx)
-		defer closeStream()
-		events = nativeRunEvents(streamCtx, base, auth, admission.RunID)
-	}
-	progress := 0
-	lastApproval := ""
-	// Stall watchdog: a run whose Hermes-side update timestamp stops moving
-	// for stallTimeout is hung (e.g. a severed upstream model stream) — stop
-	// it instead of polling until the hard deadline.
-	stallTimeout := durationEnv("HUB_RUN_STALL_TIMEOUT", 15*time.Minute)
-	lastProgress, lastRunUpdate := time.Now(), float64(0)
-	deadline := time.Now().Add(hermesRunTimeout)
-	for time.Now().Before(deadline) {
-		var status struct {
-			Status    string         `json:"status"`
-			Output    string         `json:"output"`
-			Error     string         `json:"error"`
-			Approval  nativeRunEvent `json:"approval"`
-			SessionID string         `json:"session_id"`
-			UpdatedAt float64        `json:"updated_at"`
-		}
-		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+admission.RunID, auth, nil, &status); err != nil {
-			known.Status, known.LastEvent = "uncertain", "run.unknown"
-			return known, err
-		}
-		if status.UpdatedAt > lastRunUpdate {
-			lastRunUpdate, lastProgress = status.UpdatedAt, time.Now()
-		} else if stallTimeout > 0 && time.Since(lastProgress) > stallTimeout {
-			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
-			cancel()
-			return result, fmt.Errorf("hermes run stalled (no update for %s)", stallTimeout)
-		}
-		if status.SessionID != "" && status.SessionID != sessionID {
-			known.Status = "uncertain"
-			return known, errors.New("run session mismatch")
-		}
-		switch status.Status {
-		case "waiting_for_approval":
-			if emit != nil && status.Approval.RequestID != "" && status.Approval.RequestID != lastApproval {
-				update := known
-				update.Status, update.LastEvent, update.EventID = "waiting_for_approval", "approval.request", "approval:"+status.Approval.RequestID
-				update.ApprovalID, update.ApprovalChoices = status.Approval.RequestID, status.Approval.Choices
-				if len(update.ApprovalID) > 256 {
-					return known, errors.New("invalid approval identity")
-				}
-				if err := emit(update); err != nil {
-					known.Status = "uncertain"
-					return known, err
-				}
-				lastApproval = update.ApprovalID
-			}
-		case "completed":
-			text, mediaRefs := extractMediaArtifacts(status.Output)
-			text, voice := extractVoiceLines(text)
-			if strings.TrimSpace(text) != "" || len(mediaRefs) > 0 || voice != "" {
-				final := ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: "completed", LastEvent: "run.completed", Text: text, Voice: voice}
-				final.Artifacts = mergeArtifacts(scanArtifacts(runStart), mediaRefs)
-				return final, nil
-			}
-			// Session history can contain a reply from an earlier run. Without
-			// run-correlated output it cannot safely stand in for this final.
-			known.Status, known.LastEvent = "uncertain", "run.unknown"
-			return known, errors.New("completed run returned no final output")
-		case "failed", "cancelled", "interrupted":
-			if status.Error != "" {
-				return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: status.Status, LastEvent: "run." + status.Status}, errors.New(status.Error)
-			}
-			return ExecuteResponse{SessionID: sessionID, RunID: admission.RunID, Status: status.Status, LastEvent: "run." + status.Status}, fmt.Errorf("hermes run %s", status.Status)
-		}
-		select {
-		case event, ok := <-events:
-			if !ok {
-				events = nil // Pinned Hermes destroys SSE transport on disconnect; poll durable status.
-				continue
-			}
-			lastProgress = time.Now() // A live event stream is progress by itself.
-			if event.RunID != admission.RunID {
-				known.Status, known.LastEvent = "uncertain", "run.unknown"
-				return known, errors.New("hermes stream returned another run")
-			}
-			update := known
-			update.LastEvent, update.EventID = event.Event, eventID(event)
-			switch event.Event {
-			case "approval.request":
-				if event.RequestID == "" || len(event.RequestID) > 256 {
-					return known, errors.New("invalid approval identity")
-				}
-				update.Status, update.ApprovalID, update.ApprovalChoices = "waiting_for_approval", event.RequestID, event.Choices
-				if lastApproval == event.RequestID {
-					continue
-				}
-				update.EventID, lastApproval = "approval:"+event.RequestID, event.RequestID
-			case "tool.start", "tool.started", "tool.end", "tool.completed", "run.started":
-				if progress >= 10 {
-					continue
-				}
-				progress++
-				if event.Event == "tool.started" {
-					update.LastEvent = "tool.start"
-				} else if event.Event == "tool.completed" {
-					update.LastEvent = "tool.end"
-				}
-				update.Text = toolProgressText(event)
-			default:
-				continue // Never project deltas, arguments, prompts or traces into chat.
-			}
-			if err := emit(update); err != nil {
-				known.Status, known.LastEvent = "uncertain", "run.unknown"
-				return known, err
-			}
-		case <-ctx.Done():
-			if emit != nil {
-				known.Status, known.LastEvent = "uncertain", "run.unknown"
-				return known, ctx.Err()
-			}
-			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
-			cancel()
-			return result, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
-	cancel()
-	return result, errors.New("hermes run timed out")
-}
-
-func toolProgressText(event nativeRunEvent) string {
-	if event.Error {
-		return "Шаг завершился ошибкой; проверяю причину."
-	}
-	tool := strings.ReplaceAll(event.Tool, "__", "_")
-	completed := event.Event == "tool.end" || event.Event == "tool.completed"
-	switch {
-	case strings.HasSuffix(tool, "toolhub_prepare_source"):
-		if completed {
-			switch toolResultPhase(event) {
-			case "preparing":
-				return "MCP: шаг 1/4 принят — сборка ещё идёт в фоне. Итог придёт отдельным сообщением."
-			case "failed":
-				return "MCP: подготовка не завершилась. Смотрю причину."
-			case "awaiting-credentials", "awaiting-confirm":
-				return "MCP: шаг 1/4 вернул ответ. Дальше статус и защищённая форма, если она нужна."
-			default:
-				return "MCP: шаг 1/4 вернул ответ. Если фаза ещё preparing, сборка продолжается в фоне."
-			}
-		}
-		return "MCP: шаг 1/4 — проверяю репозиторий и собираю изолированный образ. Обычно 2–15 минут."
-	case strings.HasSuffix(tool, "toolhub_required_credentials"):
-		if completed {
-			return "MCP: шаг 2/4 завершён — безопасная ссылка авторизации готова."
-		}
-		return "MCP: шаг 2/4 — готовлю безопасную авторизацию."
-	case strings.HasSuffix(tool, "toolhub_confirm"):
-		if completed {
-			return "MCP: шаг 3/4 завершён — учётные данные подтверждены."
-		}
-		return "MCP: шаг 3/4 — подтверждаю сохранённые учётные данные."
-	case strings.HasSuffix(tool, "toolhub_enable"):
-		if completed {
-			return "MCP: шаг 4/4 завершён — инструменты подключены без рестарта."
-		}
-		return "MCP: шаг 4/4 — запускаю workload и подключаю инструменты без рестарта."
-	case strings.HasSuffix(tool, "toolhub_invoke"):
-		return "MCP подключён — проверяю реальный вызов провайдера."
-	case completed:
-		return "Шаг завершён, продолжаю."
-	default:
-		return ""
-	}
-}
-
-func toolResultPhase(event nativeRunEvent) string {
-	parts := []string{event.Output, event.Text, string(event.Result)}
-	for _, part := range parts {
-		part = strings.ReplaceAll(part, " ", "")
-		for _, phase := range []string{"awaiting-credentials", "awaiting-confirm", "preparing", "failed", "enabled"} {
-			if strings.Contains(part, `"phase":"`+phase+`"`) {
-				return phase
-			}
-		}
-	}
-	return ""
-}
-
-func stopHermesRun(ctx context.Context, client *http.Client, base, auth, runID string) error {
-	return hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs/"+runID+"/stop", auth, map[string]any{}, nil)
-}
-
-func stopAndConfirmHermesRun(ctx context.Context, client *http.Client, base, auth string, known ExecuteResponse) (ExecuteResponse, error) {
-	known.Status, known.LastEvent = "uncertain", "run.unknown"
-	if err := stopHermesRun(ctx, client, base, auth, known.RunID); err != nil {
-		return known, err
-	}
-	for {
-		var status struct {
-			Status    string `json:"status"`
-			Output    string `json:"output"`
-			SessionID string `json:"session_id"`
-		}
-		if err := hermesRequest(ctx, client, http.MethodGet, base+"/v1/runs/"+known.RunID, auth, nil, &status); err != nil {
-			return known, err
-		}
-		if status.SessionID != "" && status.SessionID != known.SessionID {
-			return known, errors.New("run session mismatch")
-		}
-		switch status.Status {
-		case "completed", "failed", "cancelled", "interrupted":
-			known.Status, known.LastEvent, known.Text = status.Status, "run."+status.Status, status.Output
-			return known, nil
-		}
-		select {
-		case <-ctx.Done():
-			return known, ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-}
-
-func sessionIDFor(request ExecuteRequest) string {
-	sum := sha256.Sum256([]byte(request.ContextID + "\x00" + request.ConversationID + "\x00" + sessionRevision()))
-	return "hub-" + hex.EncodeToString(sum[:12])
-}
-
-func sessionRevision() string {
-	if revision := strings.TrimSpace(os.Getenv("HUB_SESSION_REVISION")); revision != "" {
-		return revision
-	}
-	body, _ := os.ReadFile("/config/SOUL.md")
-	hash := sha256.Sum256(body)
-	return hex.EncodeToString(hash[:])
-}
-
-var errSessionExists = errors.New("hermes session already exists")
-
-func hermesRequest(ctx context.Context, client *http.Client, method, endpoint, auth string, body any, target any, idempotency ...string) error {
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if auth != "" {
-		req.Header.Set("Authorization", "Bearer "+auth)
-	}
-	if len(idempotency) > 0 && idempotency[0] != "" {
-		req.Header.Set("Idempotency-Key", idempotency[0])
-	}
-	response, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusConflict && method == http.MethodPost && strings.HasSuffix(endpoint, "/api/sessions") {
-		return errSessionExists
-	}
-	if response.StatusCode/100 != 2 {
-		return fmt.Errorf("hermes API returned HTTP %d", response.StatusCode)
-	}
-	if target == nil {
-		return nil
-	}
-	limited := io.LimitReader(response.Body, 2*1024*1024)
-	if err := json.NewDecoder(limited).Decode(target); err != nil {
-		return fmt.Errorf("invalid hermes API response: %w", err)
-	}
-	return nil
 }
 
 func decodeExecuteRequest(w http.ResponseWriter, r *http.Request) (ExecuteRequest, error) {

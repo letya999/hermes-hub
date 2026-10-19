@@ -3,25 +3,31 @@ package communication
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 type prepareOutcomeRequest struct {
-	OnboardingID    string `json:"onboarding_id"`
-	Phase           string `json:"phase"`
-	DefinitionID    string `json:"definition_id"`
-	ContractID      string `json:"contract_id"`
-	BrokerRequestID string `json:"broker_request_id"`
-	Repository      string `json:"repository"`
-	Detail          string `json:"detail"`
-	FormURL         string `json:"form_url"`
-	Event           string `json:"event"`
-	Tools           int    `json:"tools"`
+	OnboardingID     string `json:"onboarding_id"`
+	Phase            string `json:"phase"`
+	DefinitionID     string `json:"definition_id"`
+	ContractID       string `json:"contract_id"`
+	CredentialIntake string `json:"credential_intake"`
+	BrokerRequestID  string `json:"broker_request_id"`
+	Repository       string `json:"repository"`
+	Detail           string `json:"detail"`
+	FormURL          string `json:"form_url"`
+	Event            string `json:"event"`
+	Tools            int    `json:"tools"`
+	// CreatedAt pins the onboarding creation instant so the gateway can find
+	// the message job that was running when the install was requested.
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // handlePrepareOutcome turns a finished ToolHub prepare into a channel reply
@@ -66,6 +72,10 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
 	}
+	if len(request.CredentialIntake) > 40 {
+		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
+		return
+	}
 	if request.BrokerRequestID != "" && !identity.ValidID(request.BrokerRequestID) {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
@@ -86,7 +96,10 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "prepare outcome rejected", http.StatusBadRequest)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// The channel-side link (QR invite, etc.) goes back to the caller so the
+	// agent can print it in its own reply — the notice alone is easy to miss.
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"login_url": loginURL})
 }
 
 func knownPreparePhase(phase string) bool {
@@ -136,7 +149,7 @@ func prepareOutcomeNotice(request prepareOutcomeRequest, loginURL string) string
 	}
 	switch request.Phase {
 	case "awaiting-credentials":
-		if request.ContractID == "telegram-session" && loginURL != "" {
+		if request.CredentialIntake == "telegram_qr" && loginURL != "" {
 			text := "Для подключения Telegram откройте на этом компьютере: " + loginURL + " Введите API ID и API hash, затем создайте QR и подтвердите вход в приложении Telegram. После входа напишите боту «продолжи подключение Telegram». Сессию в чат отправлять не нужно."
 			if request.FormURL != "" {
 				text += " Запасная форма: " + request.FormURL
@@ -227,8 +240,46 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		return errNoPrepareChannel
 	}
 	now := g.now().UTC()
-	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)
+	// The callback authenticates by principal only, so caller.ConversationID is
+	// the synthesized DM envelope: route by the still-active message job that
+	// initiated this onboarding, else the notice leaks to the DM root.
+	conversation, deliveryTarget := caller.ConversationID, caller.DeliveryTargetID
+	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], conversation)
+	// The initiating tool call runs inside its message job, so the job that
+	// existed — and most recently started — at the onboarding's creation
+	// instant is the initiator. It outranks a persisted route, which older
+	// builds may have bound through the unsafe newest-active heuristic.
+	origin, found := prepareOrigin{}, false
+	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() {
+		if mapping, ok := g.spool.initiatingMessageMapping(user.ID, created, request.Repository); ok {
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			found = true
+		}
+	}
+	if !found {
+		if persisted, ok := g.spool.loadPrepareOrigin(request.OnboardingID); ok {
+			origin, found = persisted, true
+		}
+	}
+	if !found {
+		if mapping, ok := g.spool.newestActiveMessageMapping(user.ID); ok {
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			found = true
+		}
+	}
+	if found {
+		// The origin job ends long before the build settles; persist the route
+		// so later outcomes still reach the same session.
+		_ = g.spool.putPrepareOrigin(request.OnboardingID, origin)
+	}
+	if found && origin.ConversationID != "" {
+		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
+		conversation, deliveryTarget = origin.ConversationID, origin.DeliveryTargetID
+	}
 	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: "telegram_bot", ChatID: bound.ChatID, TaskID: bound.TaskID, TopicID: bound.TopicID, Text: notice, CreatedAt: now}
+	// One evolving status message per onboarding: once the first notice was
+	// delivered, later updates edit it instead of stacking new messages.
+	delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
 	}
@@ -236,11 +287,13 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		// Wait for user action before resuming the agent.
 		return nil
 	}
-	task := g.spool.TaskByConversation(user, user.TelegramIDs[0], caller.ConversationID)
 	envelope := caller
-	if task.ChatID < 0 {
-		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(task.ChatID, 10)
+	envelope.ConversationID = conversation
+	envelope.DeliveryTargetID = deliveryTarget
+	if bound.ChatID < 0 && deliveryTarget == "" {
+		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(bound.ChatID, 10)
 	}
+	task := bound
 	job := Job{
 		Envelope: envelope, ID: key, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID,
 		ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "prepare", IdempotencyKey: key,

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"io/fs"
 	"os"
@@ -16,8 +17,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // exec-scratch is the private workload entrypoint for sandboxed tool calls.
@@ -28,7 +27,7 @@ import (
 // owns the network, mount and credential isolation; this process owns the
 // byte budgets.
 func runExecScratch(ctx context.Context) error {
-	var request toolhub.ScratchExecRequest
+	var request api.ScratchExecRequest
 	if err := json.NewDecoder(io.LimitReader(os.Stdin, toolsExecMaxRequest)).Decode(&request); err != nil {
 		return fmt.Errorf("exec-scratch request: %w", err)
 	}
@@ -46,7 +45,7 @@ func runExecScratch(ctx context.Context) error {
 			return fmt.Errorf("exec-scratch dirs: %w", err)
 		}
 	}
-	result := toolhub.ScratchExecResult{Stopped: true}
+	result := api.ScratchExecResult{Stopped: true}
 	emit := func() error {
 		result.ExportTar = packOutputs(outputs)
 		return json.NewEncoder(os.Stdout).Encode(result)

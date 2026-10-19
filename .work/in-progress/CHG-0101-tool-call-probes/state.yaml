@@ -1,0 +1,39 @@
+schema: 1
+change: CHG-0101
+title: Control-plane tool calls and mcp_tool probes
+status: in_progress
+branch: feat/m13-proactive-automation
+updated: 2026-10-14
+phase: implementation
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R3.1, R3.2]
+depends_on: [CHG-0099]
+github_milestone: M12 — Proactive Automation
+github_issue: 257
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S3.1-tool-call-endpoint: green
+  S3.2-mcp-tool-probe: green
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: recorded
+  live_acceptance: not_started
+evidence:
+  - "ToolHub POST /v1/tool-call: bearer owner credential + X-Hub-Principal, read-effect only, bounded JSON args, returns content text"
+  - "g.toolCallProbe: 15s ctx timeout, 256KiB cap, non-2xx/malformed/is_error/missing-config all fail as probe errors"
+  - "probe.kind=mcp_tool validated for watcher/check (tool name, no url, bounded args, optional requeue_tool); probeOne tool branch bypasses fetchWatch"
+  - "tickProactiveContext wires g.toolCallProbe; HTTP check creation seeds baseline via ToolHub for mcp_tool"
+  - "routine_create forwards probe.tool; catalog exposes tool arg"
+  - "tests: TestToolCallReturnsText, TestToolCallRejectsWriteEffect, TestToolCallRejectsForeignHeaderAndUnknown, TestMCPToolProbeFeedsWatcher, TestToolCallProbeHTTP, TestToolCallProbeErrors, TestMCPToolProbeValidation, TestTickProbesMCPToolWatcher, TestCheckMCPProbeSeedsBaselineOverHTTP, TestRoutineCreateForwardsMCPTool"
+  - "go test ./internal/toolhub ./internal/agenttools — ok"
+remaining:
+  - "issue #257 evidence comment (after PR; endpoint covers control-plane half, subscriptions are CHG-0103)"
+  - "docs/architecture tool-call probe paragraph"
+  - "just check at milestone close"
+limitations:
+  - "/v1/tool-call is synchronous request/response; no streaming or long-poll"
+  - "mcp_tool probe compares full returned text; no regex extraction on tool results yet"

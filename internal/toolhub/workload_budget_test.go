@@ -2,12 +2,13 @@ package toolhub
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"testing"
 	"time"
 )
 
 func TestWorkloadBudgetQueuesAndReclaimsIdle(t *testing.T) {
-	b, err := NewWorkloadBudget(1, time.Minute)
+	b, err := api.NewWorkloadBudget(1, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,16 +44,16 @@ func TestWorkloadBudgetQueuesAndReclaimsIdle(t *testing.T) {
 }
 
 func TestWorkloadBudgetRejectsDuplicateAndCancelledQueue(t *testing.T) {
-	if _, err := NewWorkloadBudget(0, time.Minute); err == nil {
+	if _, err := api.NewWorkloadBudget(0, time.Minute); err == nil {
 		t.Fatal("zero budget accepted")
 	}
-	if _, err := NewWorkloadBudget(1001, time.Minute); err == nil {
+	if _, err := api.NewWorkloadBudget(1001, time.Minute); err == nil {
 		t.Fatal("oversized budget accepted")
 	}
-	if _, err := NewWorkloadBudget(1, 0); err == nil {
+	if _, err := api.NewWorkloadBudget(1, 0); err == nil {
 		t.Fatal("zero idle TTL accepted")
 	}
-	b, err := NewWorkloadBudget(1, time.Minute)
+	b, err := api.NewWorkloadBudget(1, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestWorkloadBudgetRejectsDuplicateAndCancelledQueue(t *testing.T) {
 	if b.Release("work-missing") || b.Touch("work-missing") {
 		t.Fatal("unknown workload mutated budget")
 	}
-	var nilBudget *WorkloadBudget
+	var nilBudget *api.WorkloadBudget
 	if nilBudget.Capacity() != 0 {
 		t.Fatal("nil budget capacity")
 	}

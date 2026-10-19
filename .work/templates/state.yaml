@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-<NNNN>
+title: <title>
+status: in_progress            # in_progress | done | abandoned
+branch: <branch>
+updated: <YYYY-MM-DD>
+phase: design-complete         # design-complete | implementation | acceptance | done
+adr: ADR-<NNNN>
+spec: SPEC-<NNNN>
+requirements: [R<k>.1]
+depends_on: []
+github_milestone: M<N> — <Title>
+github_issue: <number or pending>
+design_status: accepted
+implementation_status: not_started
+slices:
+  S<k>.1-<name>: not_started   # not_started | red | green | accepted
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []                    # log lines, timings, commit hashes; no secrets or message content
+remaining: []
+limitations: []

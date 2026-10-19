@@ -56,14 +56,18 @@ jobs:
         run: |
           set +e
           pkgs=$(go list ./... | sort | awk -v s="$SHARD" 'NR % 4 == s')
-          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $pkgs > "test-${SHARD}.log" 2>&1
+          # -coverpkg=./... keeps the shard metric identical to `just check`
+          # (covergo instruments all packages per test binary); without it the
+          # merged profile counts only each package's own tests and the shared
+          # 85% floor rejects cross-package credit the local gate grants.
+          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" -coverpkg=./... "-coverprofile=coverage-${SHARD}.out" $pkgs > "test-${SHARD}.log" 2>&1
           rc=$?
           # Test binaries run as /tmp/go-build*/b*/<pkg>.test and outlive a
           # killed `go test`; the runner waits on the whole process tree, so
           # orphans must be reaped or the step never completes.
           pkill -f '/go-build.*/.*\.test' 2>/dev/null
           exit $rc
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: testlog-${{ matrix.shard }}
@@ -72,16 +76,19 @@ jobs:
       - name: propagate test verdict
         if: steps.gotest.outcome == 'failure'
         run: exit 1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.gotest.outcome == 'success'
         with:
           name: coverage-shard-${{ matrix.shard }}
           path: coverage-${{ matrix.shard }}.out
           include-hidden-files: false
-  checks-verify:
-    name: checks # main branch protection requires this status context
+  # Source-side gates run in parallel with the test shards; each job is a
+  # separate runner so wall-clock is the slowest one instead of their sum.
+  # checks-verify below stays the single required context and just asserts the
+  # results - branch protection never notices the split.
+  coverage:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     needs: checks
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,14 +98,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             services/credential-broker/go.mod
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with:
-          just-version: '1.57.0'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: docker/browser/package-lock.json
       - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           pattern: coverage-shard-*
@@ -114,16 +113,116 @@ jobs:
               tail -n +2 "$f" >> coverage.out
             fi
           done
-          go run ./cmd/devcheck coverage coverage.out 85
-      - run: just lint
-      - run: just docs-check
-      - run: just credential-broker-check
-      - run: just security
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          go run ./cmd/devcheck coverage coverage.out 85 75
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
           path: |
             coverage.out
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            services/credential-broker/go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: '1.57.0'
+      - run: just lint
+  docs-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/credential-broker/go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: '1.57.0'
+      - run: just docs-check
+      - run: just config-check
+  credential-broker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/credential-broker/go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: '1.57.0'
+      - run: just credential-broker-check
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/credential-broker/go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: '1.57.0'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: docker/browser/package-lock.json
+      - run: just security
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # history scan; a leaked secret hides in old commits
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --redact --verbose .
+  dependency-review:
+    # PR-only: diffs dependency changes against the base ref, rejects critical
+    # vulns and licenses outside the allowlist. Not part of the required
+    # aggregate because it cannot run on push events.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          allow-licenses: BSD-2-Clause, BSD-3-Clause, MIT, MIT-0, Apache-2.0, MPL-2.0, ISC, Unlicense, CC-BY-4.0, LicenseRef-scancode-google-patent-license-golang
+  checks-verify:
+    name: checks # main branch protection requires this status context
+    if: always()
+    needs: [checks, coverage, lint, docs-config, credential-broker, security, gitleaks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: assert every gate succeeded
+        env:
+          RESULTS: ${{ toJson(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e '[.[] | .result] | all(. == "success")' > /dev/null
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -133,7 +232,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [dev, prod, stt, tts]
+        target: [dev, prod, stt, tts, cli-tools, cell-proxy]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -151,6 +250,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - run: just config-check
       - run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}"
         env:
           HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
@@ -165,6 +265,11 @@ jobs:
         run: |
           go run ./cmd/devcheck docker-pull hermes-hub:test-tts tts
           go run -tags integration ./cmd/devcheck tts-cache-contract hermes-hub:test-tts
+      - name: Verify standalone STT decoder without network
+        if: matrix.target == 'stt'
+        run: |
+          go run ./cmd/devcheck docker-pull hermes-hub:test-stt stt
+          HUB_STT_CONTRACT_IMAGE=hermes-hub:test-stt HUB_STT_CONTRACT_PYTHON=python go test -tags integration -run TestSTTDecodeContract -count=1 ./internal/devcheck
   container-gates:
     needs: image
     runs-on: ubuntu-latest
@@ -211,13 +316,18 @@ jobs:
               go run ./cmd/devcheck docker-smoke hermes-hub:test
               if [ "$TARGET" = prod ]; then just credential-broker-docker-check; fi
               ;;
-            native) go run -tags integration ./cmd/devcheck hermes-native-contract hermes-hub:test ;;
+            native)
+              go run -tags integration ./cmd/devcheck hermes-native-contract hermes-hub:test
+              HUB_CONTRACT_IMAGE=hermes-hub:test go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
+              ;;
             supervisor) go run -tags integration ./cmd/devcheck supervisor-contract hermes-hub:test ;;
             gateway) go run -tags integration ./cmd/devcheck gateway-lifecycle hermes-hub:test ;;
             capabilities) go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test ;;
             network) go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test ;;
             managed) go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test ;;
             scratch)
+              go run ./cmd/devcheck docker-pull hermes-hub-cli-tools:test cli-tools
+              go run ./cmd/devcheck docker-pull hermes-hub-cell-proxy:test cell-proxy
               go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
               go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
               ;;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,9 @@ func TestControlToolContractRoutesInstallBeforeLifecycle(t *testing.T) {
 	if !strings.Contains(prepare, "call this first") || !strings.Contains(prepare, "GitHub repository URL") {
 		t.Fatalf("prepare_source does not own explicit install routing: %q", prepare)
 	}
+	if !strings.Contains(prepare, "resend") || !strings.Contains(prepare, "required_credentials") {
+		t.Fatalf("prepare_source does not route resend/status requests to resume: %q", prepare)
+	}
 	for _, op := range []string{"disable", "revoke", "remove"} {
 		description, _ := controlToolContract(op)
 		if !strings.Contains(description, "only when the user's current message explicitly requests") {
@@ -53,23 +57,23 @@ func bobAuth() identity.Envelope {
 	return identity.TelegramEnvelope("bob", 8, "runtime-bob", "policy-1")
 }
 
-func catalogReadDefinition() ToolDefinition {
+func catalogReadDefinition() api.ToolDefinition {
 	definition := remoteDefinition()
 	definition.DefinitionID = "catalog-read"
 	definition.Credentials = nil
-	definition.Tools = []ToolSpec{{Name: "search", Effect: ReadEffect}}
+	definition.Tools = []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}}
 	return definition
 }
 
-func userMCPDefinition() ToolDefinition {
+func userMCPDefinition() api.ToolDefinition {
 	definition := catalogReadDefinition()
 	definition.DefinitionID = "user-mcp"
 	return definition
 }
 
-func fixtureReviewer(definition ToolDefinition) SourceReviewer {
-	return func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
-		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review"}, nil
+func fixtureReviewer(definition api.ToolDefinition) api.SourceReviewer {
+	return func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
+		return api.SourceReview{Definition: definition, Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition), ReviewDigest: "sha256:review"}, nil
 	}
 }
 
@@ -79,19 +83,19 @@ func githubCommitURL() string {
 
 func TestControlResolvesRepositoryURLBeforeReview(t *testing.T) {
 	definition := userMCPDefinition()
-	fix := newControlFixture(t, func(_ context.Context, source ArtifactSource, _ *RecipeCandidate) (SourceReview, error) {
+	fix := newControlFixture(t, func(_ context.Context, source api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {
 		if source.Repository != "https://github.com/example/mcp" || source.CommitSHA != "0123456789abcdef0123456789abcdef01234567" {
 			t.Fatalf("review received mutable source: %+v", source)
 		}
-		return SourceReview{Definition: definition, Permissions: toolNames(definition), Effects: effectNames(definition), ReviewDigest: "sha256:review"}, nil
+		return api.SourceReview{Definition: definition, Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition), ReviewDigest: "sha256:review"}, nil
 	})
-	fix.control.SourceResolver = func(_ context.Context, raw string) (ArtifactSource, error) {
+	fix.control.SourceResolver = func(_ context.Context, raw string) (api.ArtifactSource, error) {
 		if raw != "https://github.com/example/mcp" {
 			t.Fatalf("resolver input=%q", raw)
 		}
-		return ArtifactSource{Repository: raw, CommitSHA: "0123456789abcdef0123456789abcdef01234567"}, nil
+		return api.ArtifactSource{Repository: raw, CommitSHA: "0123456789abcdef0123456789abcdef01234567"}, nil
 	}
-	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := callControl(t, fix.session(t, aliceToken), "prepare_source", map[string]any{"source": "https://github.com/example/mcp", "request_key": "repo-url"})
@@ -111,23 +115,23 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 	definition.Source.Repository = "https://github.com/example/mcp"
 	definition.Source.CommitSHA = "0123456789abcdef0123456789abcdef01234567"
 	// Reuse requires an intact confirmed tool contract; stamp a consistent one.
-	definition.Source.ToolContractSource = ToolContractReviewManifest
-	digest, err := confirmedToolContractDigest(ConfirmedToolContract{Source: ToolContractReviewManifest, Tools: definition.Tools})
+	definition.Source.ToolContractSource = api.ToolContractReviewManifest
+	digest, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: api.ToolContractReviewManifest, Tools: definition.Tools})
 	if err != nil {
 		t.Fatal(err)
 	}
 	definition.Source.ToolContractDigest = digest
-	fix := newControlFixture(t, func(context.Context, ArtifactSource, *RecipeCandidate) (SourceReview, error) {
+	fix := newControlFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 		t.Fatal("retry rebuilt an immutable source instead of reusing it")
-		return SourceReview{}, nil
+		return api.SourceReview{}, nil
 	})
 	if err := fix.store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := fix.store.PutPublication(DefinitionPublication{DefinitionID: "mcp", Version: "0.0.2", Visibility: PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
+	if err := fix.store.PutPublication(api.DefinitionPublication{DefinitionID: "mcp", Version: "0.0.2", Visibility: api.PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{
@@ -137,7 +141,7 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-	if onboarding.DefinitionID != "mcp" || onboarding.CommitSHA != definition.Source.CommitSHA || onboarding.Phase != PhaseAwaitingCreds {
+	if onboarding.DefinitionID != "mcp" || onboarding.CommitSHA != definition.Source.CommitSHA || onboarding.Phase != api.PhaseAwaitingCreds {
 		t.Fatalf("reused onboarding=%+v", onboarding)
 	}
 }
@@ -151,20 +155,20 @@ type controlFixture struct {
 	audit   []map[string]string
 }
 
-func newControlFixture(t *testing.T, reviewer SourceReviewer) *controlFixture {
+func newControlFixture(t *testing.T, reviewer api.SourceReviewer) *controlFixture {
 	t.Helper()
 	store := NewStore()
-	grantTestControlOperations(t, store, "alice", append(ControlOperations, "invoke")...)
-	grantTestControlOperations(t, store, "bob", append(ControlOperations, "invoke")...)
+	grantTestControlOperations(t, store, "alice", append(api.ControlOperations, "invoke")...)
+	grantTestControlOperations(t, store, "bob", append(api.ControlOperations, "invoke")...)
 	var calls atomic.Int32
 	fix := &controlFixture{store: store, calls: &calls}
 	control := &ControlPlane{Store: store, Reviewer: reviewer, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: 10 * time.Minute}
 	gateway := &Gateway{
 		Store:  store,
 		Tokens: map[string]identity.Envelope{aliceToken: aliceAuth(), bobToken: bobAuth()},
-		Backend: backendFunc(func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error) {
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
-			return BackendResult{Text: "ok"}, nil
+			return api.BackendResult{Text: "ok"}, nil
 		}),
 		Control: control,
 		Audit: func(_ string, fields map[string]string) {
@@ -189,7 +193,7 @@ func newControlFixture(t *testing.T, reviewer SourceReviewer) *controlFixture {
 func grantTestControlOperations(t *testing.T, store *Store, principal string, operations ...string) {
 	t.Helper()
 	for _, operation := range operations {
-		if err := putGrant(t, store, OperatorControlGrant(principal, operation)); err != nil {
+		if err := putGrant(t, store, api.OperatorControlGrant(principal, operation)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -236,10 +240,10 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, fix.store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, fix.store, OperatorGrant(GrantSelfInstall, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
@@ -252,7 +256,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	for _, tool := range listed.Tools {
 		have[tool.Name] = true
 	}
-	for _, op := range ControlOperations {
+	for _, op := range api.ControlOperations {
 		if !have[op] {
 			t.Fatalf("missing control operation %s", op)
 		}
@@ -264,7 +268,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared["phase"] != PhaseAwaitingConfirm || prepared["binding_id"] != "" {
+	if prepared["phase"] != api.PhaseAwaitingConfirm || prepared["binding_id"] != "" {
 		t.Fatalf("prepare catalog=%v", prepared)
 	}
 	if _, err := callControl(t, alice, "prepare_source", map[string]any{"user_id": "bob", "definition_id": "catalog-read", "version": "1.0.0"}); err == nil {
@@ -281,7 +285,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 		}
 	}
 	status, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil || status["phase"] != PhaseAwaitingConfirm {
+	if err != nil || status["phase"] != api.PhaseAwaitingConfirm {
 		t.Fatalf("status=%v err=%v", status, err)
 	}
 	creds, err := callControl(t, alice, "required_credentials", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -296,7 +300,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	enabled, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil || enabled["binding_id"] == "" || enabled["phase"] != PhaseEnabled {
+	if err != nil || enabled["binding_id"] == "" || enabled["phase"] != api.PhaseEnabled {
 		t.Fatalf("enable=%v err=%v", enabled, err)
 	}
 	again, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -307,7 +311,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected := ProjectedToolName("catalog-read", "1.0.0", "search")
+	projected := api.ProjectedToolName("catalog-read", "1.0.0", "search")
 	if !toolListed(aliceTools, projected) {
 		t.Fatal("alice missing her projected tool")
 	}
@@ -325,8 +329,8 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 		t.Fatal("bob read alice onboarding")
 	}
 	// Self-install is open by default; a revoked grant is the per-principal deny.
-	revoked := OperatorGrant(GrantSelfInstall, "bob", "", "")
-	revoked.Status = RevokedStatus
+	revoked := api.OperatorGrant(api.GrantSelfInstall, "bob", "", "")
+	revoked.Status = api.RevokedStatus
 	if err := putGrant(t, fix.store, revoked); err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +364,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, err := fix.store.binding(userBinding)
-	if err != nil || after.WorkloadClass != PerUser || after.PrincipalID != "alice" {
+	if err != nil || after.WorkloadClass != api.PerUser || after.PrincipalID != "alice" {
 		t.Fatalf("promotion converted user binding: %+v err=%v", after, err)
 	}
 	if _, err := callControl(t, bob, "enable", map[string]any{"definition_id": "user-mcp", "version": "1.0.0"}); err == nil {
@@ -385,7 +389,7 @@ func TestControlResponsesAreNonSecret(t *testing.T) {
 	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, fix.store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
@@ -413,7 +417,7 @@ func TestControlMCPReportsProgress(t *testing.T) {
 	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	if err := putGrant(t, fix.store, OperatorGrant(GrantCatalogDefault, "alice", "", "")); err != nil {
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
 	messages := make(chan string, 4)

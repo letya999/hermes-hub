@@ -1,0 +1,31 @@
+schema: 1
+change: CHG-0115
+title: Routine snooze acceptance correction
+status: done
+updated: 2026-10-18
+phase: accepted
+implementation_status: complete
+adr: ADR-0042
+spec: SPEC-0056
+depends_on: [CHG-0114]
+validation:
+  just_check: passed
+  go_statement_coverage: 86.36%
+  deployed_http: passed; early snooze returns HTTP 400 without changing revision
+  real_delivery: passed; Telegram provider message ID and one completed outbox delivery
+  secret_scan: passed; Gitleaks on communication and stack
+  docs: passed
+evidence:
+  - The pasted transcript and retained history agree on three delivered runs for manual-stretch-test at 10:08, 10:10 and 10:21 MSK; there was no 10:31 run.
+  - At 10:24 the next run was 2026-10-19 10:08 MSK. The accepted snooze to 2026-10-18 10:31 was a no-op, although the agent reported it as the next run.
+  - Red-green HTTP regression now requires a deadline later than effective next_due, returns 400 for an earlier deadline, and preserves the saved revision and schedule.
+  - The rendered SOUL now reminds the agent that next run may be tomorrow; its prompt rendering test passed.
+  - Supported dev-rebuild installed the communication-hub dev image; live HTTP rejected an early snooze with revision unchanged.
+  - A fresh default-destination reminder manual-audit-2c04eb85a0 fired once through telegram_bot. Its history reported dispatched and delivered, and its done outbox record had one attempt and a Telegram provider message ID.
+  - The fixture was deleted after delivery; its preview has zero future runs. Seven previously paused routines remain paused at revision 2.
+  - Final just check passed with 86.36 percent own Go coverage, formatting, vet, tidy diff, staticcheck, gosec, docs, actionlint and deployment configuration contract.
+remaining: []
+limitations:
+  - Dev currently exposes 12 owned destinations in one private Telegram chat and zero topic bindings; physical delivery between two distinct Telegram topics was not testable here.
+  - The transcript contains one 30-second history request timeout at 10:00; a retry succeeded, and later live reads completed, but latency under concurrent load was not characterized.
+  - Full multi-image Docker CI gate and production rollout were not run locally.

@@ -7,76 +7,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
-
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
-// RunOutcome is the small result envelope shared by the gateway and supervisor.
-// Text is deliberately bounded by the HTTP contract; mapping files never store
-// the input prompt.
-type RunOutcome struct {
-	Text              string
-	JobID             string
-	SessionID         string
-	RunID             string
-	RuntimeGeneration string
-	Status            string
-	LastEvent         string
-	// Artifacts carry generated files already fetched into the spool; Blob is
-	// set on success, Error records the explicit failure reason otherwise.
-	Artifacts []hubruntime.ArtifactRef
-	// Voice is the run-requested spoken payload (upstream VOICE: marker).
-	Voice string
-}
-
-// JobMapping is durable routing/lifecycle metadata. Binding fields are copied
-// at acceptance and are never changed by a retry or a caller-supplied payload.
-type JobMapping struct {
-	IdentitySchema      int             `json:"identity_schema"`
-	ExternalIdentityID  string          `json:"external_identity_id"`
-	ObservationAttempts uint64          `json:"observation_attempts,omitempty"`
-	NextObservationAt   time.Time       `json:"next_observation_at,omitempty"`
-	Control             *PendingControl `json:"control,omitempty"`
-	CancelRequested     bool            `json:"cancel_requested,omitempty"`
-	JobID               string          `json:"job_id"`
-	IdempotencyKey      string          `json:"idempotency_key"`
-	Fingerprint         string          `json:"fingerprint"`
-	PrincipalID         string          `json:"principal_id"`
-	ActorID             string          `json:"actor_id"`
-	ContextID           string          `json:"context_id"`
-	ScopeID             string          `json:"scope_id"`
-	RuntimeID           string          `json:"runtime_id"`
-	ConversationID      string          `json:"conversation_id"`
-	DeliveryTargetID    string          `json:"delivery_target_id"`
-	OrganizationID      string          `json:"organization_id"`
-	UserID              string          `json:"user_id"`
-	PolicyVersion       string          `json:"policy_version"`
-	Channel             string          `json:"channel"`
-	Trigger             string          `json:"trigger"`
-	// TaskID/TopicID pin the durable task binding; Style/StyleVersion/
-	// StyleSnapshotted pin the admitted-run presentation snapshot.
-	TaskID            string    `json:"task_id,omitempty"`
-	TopicID           int64     `json:"topic_id,omitempty"`
-	Style             string    `json:"style,omitempty"`
-	StyleVersion      uint64    `json:"style_version,omitempty"`
-	StyleSnapshotted  bool      `json:"style_snapshotted,omitempty"`
-	Status            string    `json:"status"`
-	SessionID         string    `json:"session_id,omitempty"`
-	RunID             string    `json:"run_id,omitempty"`
-	RuntimeGeneration string    `json:"runtime_generation,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	TerminalAt        time.Time `json:"terminal_at,omitempty"`
-	LastKnownEvent    string    `json:"last_known_event,omitempty"`
-	EventPosition     uint64    `json:"event_position,omitempty"`
-	LastEventID       string    `json:"last_event_id,omitempty"`
-	ApprovalID        string    `json:"approval_id,omitempty"`
-	ApprovalChoices   []string  `json:"approval_choices,omitempty"`
-	ApprovalDeadline  time.Time `json:"approval_deadline,omitempty"`
-	ApprovalState     string    `json:"approval_state,omitempty"`
-	Result            string    `json:"result,omitempty"`
+// Only controlled status labels reach chat; upstream error text may contain credentials.
+func failureMessage(jobID, status string) string {
+	switch status {
+	case "cancelled":
+		return "Задача отменена (run.cancelled). ID: " + jobID
+	case "interrupted":
+		return "Выполнение задачи прервано (run.interrupted). ID: " + jobID
+	default:
+		return "Не удалось завершить задачу: ошибка выполнения агента (run.failed). ID: " + jobID
+	}
 }
 
 type ConversationMapping struct {
@@ -87,40 +32,15 @@ type ConversationMapping struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-func jobFingerprint(job Job) string {
-	textHash := job.TextSHA256
-	if textHash == "" {
-		h := sha256.Sum256([]byte(job.Text))
-		textHash = hex.EncodeToString(h[:])
-	}
-	value := struct {
-		Envelope       any
-		OrganizationID string
-		UserID         string
-		ActorID        string
-		ScopeID        string
-		Channel        string
-		Trigger        string
-		SlackChannel   string
-		SlackThread    string
-		TextHash       string
-	}{job.Envelope, job.OrganizationID, job.UserID, job.ActorID, job.ScopeID, job.Channel, job.Trigger, job.SlackChannel, job.SlackThread, textHash}
-	b, _ := json.Marshal(value)
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
-
-// MatchesJob is used by the read-only migration audit before changing executors.
-func (mapping JobMapping) MatchesJob(job Job) bool {
-	return mapping.JobID == job.ID && mapping.IdempotencyKey == job.IdempotencyKey && mapping.Fingerprint == jobFingerprint(job) && mapping.UserID == job.UserID && mapping.ContextID == job.ContextID && mapping.PrincipalID == job.PrincipalID && mapping.RuntimeID == job.RuntimeID && mapping.ConversationID == job.ConversationID && mapping.DeliveryTargetID == job.DeliveryTargetID && mapping.PolicyVersion == job.PolicyVersion && mapping.ExternalIdentityID == job.ExternalIdentityID && mapping.IdentitySchema == job.Schema && mapping.ScopeID == job.ScopeID && mapping.ActorID == job.ActorID && mapping.OrganizationID == job.OrganizationID && mapping.Channel == job.Channel && mapping.Trigger == job.Trigger
-}
-
-func mappingFromJob(job Job, now time.Time) JobMapping {
-	return JobMapping{IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: jobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
-}
-
 func (s *Spool) mappingPath(id string) string {
 	return filepath.Join(s.root, "mappings", spoolFileID(id)+".json")
+}
+
+// idempotencyIndexPath locates the by-key index entry for an idempotency key
+// (SPEC-0053 R2.3): a constant-time pointer to the owning job mapping.
+func (s *Spool) idempotencyIndexPath(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return filepath.Join(s.root, "mappings", "by-key", hex.EncodeToString(h[:])+".json")
 }
 
 func (s *Spool) conversationPath(principal, context, conversation string) string {
@@ -128,8 +48,82 @@ func (s *Spool) conversationPath(principal, context, conversation string) string
 	return filepath.Join(s.root, "conversations", hex.EncodeToString(h[:])+".json")
 }
 
+func (s *Spool) writeIdempotencyIndexLocked(key, jobID string) error {
+	return atomicJSON(s.idempotencyIndexPath(key), struct {
+		JobID string `json:"job_id"`
+	}{jobID})
+}
+
 func (s *Spool) writeMappingLocked(mapping JobMapping) error {
-	return atomicJSON(s.mappingPath(mapping.JobID), mapping)
+	if err := atomicJSON(s.mappingPath(mapping.JobID), mapping); err != nil {
+		return err
+	}
+	if s.activeMappings != nil {
+		if terminalStatus(mapping.Status) {
+			delete(s.activeMappings, mapping.JobID)
+		} else {
+			s.activeMappings[mapping.JobID] = true
+		}
+	}
+	if strings.TrimSpace(mapping.IdempotencyKey) != "" {
+		return s.writeIdempotencyIndexLocked(mapping.IdempotencyKey, mapping.JobID)
+	}
+	return nil
+}
+
+// Active IDs avoid reading terminal history on every control tick. Callers still
+// reload each durable mapping under the spool lock before acting on it.
+func (s *Spool) activeMappingIDs() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeMappings == nil {
+		entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+		if err != nil {
+			return nil, err
+		}
+		active := map[string]bool{}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+			var mapping JobMapping
+			if err != nil || json.Unmarshal(body, &mapping) != nil {
+				continue
+			}
+			if mapping.JobID != "" && !terminalStatus(mapping.Status) && entry.Name() == spoolFileID(mapping.JobID)+".json" {
+				active[mapping.JobID] = true
+			}
+		}
+		s.activeMappings = active
+	}
+	ids := make([]string, 0, len(s.activeMappings))
+	for id := range s.activeMappings {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+// ActiveJobsForTask lists the caller's non-terminal mappings bound to one task.
+func (s *Spool) ActiveJobsForTask(principal, taskID string) ([]JobMapping, error) {
+	ids, err := s.activeMappingIDs()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []JobMapping{}
+	for _, id := range ids {
+		mapping, err := s.loadMappingLocked(id)
+		if err != nil || mapping.PrincipalID != principal || terminalStatus(mapping.Status) || mapping.CancelRequested {
+			continue
+		}
+		if mapping.TaskID == taskID {
+			out = append(out, mapping)
+		}
+	}
+	return out, nil
 }
 
 func (s *Spool) loadMappingLocked(id string) (JobMapping, error) {
@@ -195,6 +189,9 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 		mapping.LastKnownEvent = outcome.LastEvent
 	}
 	if status != "" {
+		if status == "uncertain" && mapping.UncertainSince.IsZero() {
+			mapping.UncertainSince = time.Now().UTC()
+		}
 		mapping.Status = status
 	}
 	if terminal && mapping.Control != nil {
@@ -208,6 +205,7 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 	mapping.UpdatedAt = time.Now().UTC()
 	if terminal {
 		mapping.TerminalAt = mapping.UpdatedAt
+		mapping.UncertainSince = time.Time{}
 	}
 	if err := s.writeMappingLocked(mapping); err != nil {
 		return err

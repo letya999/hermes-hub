@@ -35,7 +35,7 @@ func oauthBegin(t *testing.T, f *fixture) (v1.Request, string, url.Values) {
 	t.Helper()
 	r := f.request(alice, "oauth", "google", "google_request")
 	cookie := f.pair(alice, r)
-	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("input-config")}); e != nil {
+	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("input-config")}, nil); e != nil {
 		t.Fatal(e)
 	}
 	target, e := f.b.StartOAuth(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID))

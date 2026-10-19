@@ -16,6 +16,14 @@ type RuntimeHealth struct {
 	Degraded            int    `json:"degraded"`
 	Unknown             int    `json:"unknown"`
 	ExternalConnections string `json:"external_connections"`
+	// SPEC-0053 R1.4-R1.6: the rendered manifest's expectation vs the served
+	// surface, names nothing serves, per-surface reasons, and the provider
+	// catalog verdict for the configured model. Observation only — a degraded
+	// surface never restarts the runtime.
+	ToolSurface  string            `json:"tool_surface"`
+	MissingTools []string          `json:"missing_tools,omitempty"`
+	ToolReasons  map[string]string `json:"tool_reasons,omitempty"`
+	ModelStatus  string            `json:"model_status"`
 }
 
 func (s *runtimeHTTP) health(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +89,14 @@ func (s *runtimeHTTP) health(w http.ResponseWriter, r *http.Request) {
 		health.ConnectorHealth = "unknown"
 	} else if health.Connected > 0 {
 		health.ConnectorHealth = "healthy"
+	}
+	surface := surfaceProbe(r.Context())
+	health.ToolSurface, health.MissingTools, health.ToolReasons, health.ModelStatus = surface.surface, surface.missing, surface.reasons, surface.model
+	// R1.5/R1.6: a degraded surface or a missing configured model is a
+	// readiness verdict, not a restart cause — the supervisor remediates only
+	// "unavailable", which a degraded probe must never mask.
+	if health.HermesReadiness == "ready" && (surface.surface == "degraded" || surface.model == "model_not_found") {
+		health.HermesReadiness = "degraded"
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(health)

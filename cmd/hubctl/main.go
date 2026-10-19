@@ -13,6 +13,8 @@ import (
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -24,6 +26,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx, os.Args[1:]); err != nil {
@@ -31,12 +34,19 @@ func main() {
 		os.Exit(1)
 	}
 }
+func warmTTLFlag(f *flag.FlagSet) *time.Duration {
+	return f.Duration("warm-ttl", supervisor.DefaultWarmTTL, "idle runtime retention")
+}
+
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
+	if op == "dev-rebuild" {
+		return runDevRebuild(ctx, args[1:])
+	}
 	if op == "connector" {
 		return runConnector(ctx, args[1:])
 	}
@@ -138,13 +148,34 @@ func run(ctx context.Context, args []string) error {
 		file := f.String("f", "", "desired-state file (yaml)")
 		profile := f.String("user", "me", "person identifier")
 		spoolDir := f.String("spool", "", "communication spool")
+		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *file == "" || *spoolDir == "" {
 			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
 		}
-		rep, err := applyFile(*spoolDir, *profile, *file)
+		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
+	if op == "spool" {
+		f := flag.NewFlagSet("spool", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir")
+		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
+		apply := f.Bool("apply", false, "apply migration; default is dry-run")
+		if len(args) < 2 || args[1] != "migrate" {
+			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
+		}
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *spoolDir == "" || *stateDir == "" {
+			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
+		}
+		rep, err := spoolMigrate(*spoolDir, *stateDir, *apply)
 		if err != nil {
 			return err
 		}
@@ -163,6 +194,7 @@ func run(ctx context.Context, args []string) error {
 	config := f.String("config", "companion.yaml", "native bridge config")
 	apply := f.Bool("apply", false, "apply migration; default is dry-run")
 	noBuild := f.Bool("no-build", false, "start existing images without rebuilding (up only)")
+	live := f.Bool("live", false, "doctor: verify the selected model against the live provider catalog")
 	stateSource := f.String("state-volume", "", "legacy runtime state directory")
 	toolHubStore := f.String("toolhub-store", "", "absolute ToolHub registry path")
 	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
@@ -171,8 +203,9 @@ func run(ctx context.Context, args []string) error {
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
 	supervisorImage := f.String("runtime-image", "hermes-hub:0.3.0-prod", "pinned runtime image for the host supervisor")
 	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8876", "private host supervisor address")
+	supervisorWildcard := f.Bool("supervisor-allow-wildcard-listen", false, "permit binding the supervisor control plane on all interfaces")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
-	warmTTL := f.Duration("warm-ttl", 5*time.Minute, "idle runtime retention")
+	warmTTL := warmTTLFlag(f)
 	maxRuntimes := f.Int("max-runtimes", 8, "maximum running context runtimes")
 	spoolDir := f.String("spool", "", "mounted stopped gateway spool for execution migration")
 	executionMode := f.String("execution-mode", "", "supervisor or static")
@@ -182,8 +215,11 @@ func run(ctx context.Context, args []string) error {
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if f.NArg() != 0 && op != "exec" && op != "build" && op != "up" {
+	if f.NArg() != 0 && op != "exec" && op != "build" && op != "up" && op != "trace" {
 		return fmt.Errorf("unexpected arguments")
+	}
+	if op == "trace" && f.NArg() != 1 {
+		return fmt.Errorf("trace requires exactly one job id")
 	}
 	if op == "build" || op == "up" {
 		for _, service := range f.Args() {
@@ -194,6 +230,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if *noBuild && op != "up" {
 		return fmt.Errorf("--no-build is only valid with up")
+	}
+	if *live && op != "doctor" {
+		return fmt.Errorf("--live is only valid with doctor")
 	}
 	if *dir == "" {
 		*dir = filepath.Join("spaces", *profile)
@@ -229,7 +268,7 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		defer stopLog()
-		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes})
+		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes, AllowWildcardListen: *supervisorWildcard})
 		if err != nil {
 			return err
 		}
@@ -288,6 +327,14 @@ func run(ctx context.Context, args []string) error {
 		return t.Server().Run(ctx, &mcp.StdioTransport{})
 	case "render":
 		return stack.RenderEnvironment(*dir, *root, *environment)
+	case "trace":
+		explicitUser := ""
+		f.Visit(func(fl *flag.Flag) {
+			if fl.Name == "user" {
+				explicitUser = *profile
+			}
+		})
+		return runTrace(ctx, os.Stdout, f.Arg(0), explicitUser, *spacesRoot)
 	}
 	if !slices.Contains([]string{"doctor", "build", "up", "down", "logs", "chat", "telegram-login", "meet-auth", "exec"}, op) {
 		return fmt.Errorf("unknown command %q", op)
@@ -310,6 +357,29 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("configuration incomplete:\n- %s", strings.Join(issues, "\n- "))
 		}
 		if op == "doctor" {
+			if *live {
+				key := secrets["OPENAI_API_KEY"]
+				if key == "" {
+					key = orgSecrets["OPENAI_API_KEY"]
+				}
+				client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+					return fmt.Errorf("model catalog redirects are not followed")
+				}}
+				composePath := filepath.Join(*dir, "generated", "compose."+*environment+".yaml")
+				if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) {
+					composePath = filepath.Join(*dir, "compose."+*environment+".yaml")
+				}
+				portLookup := doctorPortLookup(*dir, func(ctx context.Context, env, args []string) ([]byte, error) {
+					cmd := exec.CommandContext(ctx, "docker", args...)
+					cmd.Env = env
+					return cmd.CombinedOutput()
+				})
+				if err := doctorLiveModel(ctx, s.ModelURL, key, s.Model, composePath, portLookup, client); err != nil {
+					return err
+				}
+				fmt.Println("Selected model is present in the provider catalog.")
+				return nil
+			}
 			fmt.Println("Configuration valid. OAuth sessions, provider permissions and Docker runtime require live verification.")
 			return nil
 		}
@@ -341,6 +411,31 @@ func run(ctx context.Context, args []string) error {
 		return dockerCmd(append(append([]string{}, prefix...), a...)...).Run()
 	}
 	if op == "build" || op == "up" {
+		// Resolve required variables and env files before any Docker mutation.
+		// Quiet mode validates without printing the resolved credentials.
+		if err := docker("config", "--quiet"); err != nil {
+			return fmt.Errorf("compose configuration preflight: %w", err)
+		}
+		if op == "up" {
+			s, readErr := stack.ReadEnvironment(*dir, *environment)
+			if readErr != nil {
+				return readErr
+			}
+			if s.RendersInfra() {
+				if err := checkProviderAliasOwnership(ctx, "hermes-hub-"+s.User+"-"+*environment, dockerOutput); err != nil {
+					return err
+				}
+			}
+			if s.Has("telegram") {
+				secrets, secretErr := stack.ReadSecrets(filepath.Join(*dir, "secrets."+*environment+".env"))
+				if secretErr != nil {
+					return secretErr
+				}
+				if err := checkTelegramOwnership(ctx, "hermes-hub-"+s.User+"-"+*environment, secrets["TELEGRAM_BOT_TOKEN"], dockerOutput); err != nil {
+					return err
+				}
+			}
+		}
 		if !*noBuild {
 			if os.Getenv("DOCKER_BUILDKIT") == "0" {
 				fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
@@ -372,6 +467,13 @@ func run(ctx context.Context, args []string) error {
 				image := "hermes-hub-" + stage + ":0.3.0-" + *environment
 				if err := dockerCmd("build", "--target", stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)
+				}
+			}
+			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
+				for _, pin := range []string{"dev-runtime-image", "dev-script-image"} {
+					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) {
+						return err
+					}
 				}
 			}
 		}

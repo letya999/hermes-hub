@@ -64,7 +64,7 @@ func apiContract() contract.Contract {
 }
 
 func TestTelegramAuthSubmitIsOwnerAndContractBound(t *testing.T) {
-	c := contract.Contract{ID: "telegram-session", Revision: 1, Title: "Telegram", Storage: "local", Fields: []contract.Field{
+	c := contract.Contract{ID: "telegram-session", Revision: 2, Title: "Telegram", Storage: "local", Fields: []contract.Field{
 		{ID: "api_id", Label: "API ID", Kind: "string", Required: true, MaxBytes: 20},
 		{ID: "api_hash", Label: "API hash", Kind: "secret", Required: true, MaxBytes: 128},
 		{ID: "session", Label: "Session", Kind: "secret", Required: true, MaxBytes: 8192},
@@ -182,7 +182,7 @@ func parseResponse[T any](t *testing.T, w *httptest.ResponseRecorder, status int
 	return out
 }
 func (f *httpFixture) create() v1.Request {
-	w := f.api("POST", "/v1/requests", "broker:control", actor, v1.CreateRequest{ContractID: f.b.Catalog()[0].ID, ContractRevision: 1, ConnectionID: "connection1", OnboardingID: "onboard1", IdempotencyKey: "request_one", OwnerKind: "user"})
+	w := f.api("POST", "/v1/requests", "broker:control", actor, v1.CreateRequest{ContractID: f.b.Catalog()[0].ID, ContractRevision: f.b.Catalog()[0].Revision, ConnectionID: "connection1", OnboardingID: "onboard1", IdempotencyKey: "request_one", OwnerKind: "user"})
 	return parseResponse[v1.Request](f.t, w, 201)
 }
 func formBytes(t *testing.T, fields [][2]string) ([]byte, string) {
@@ -508,20 +508,20 @@ func TestMultipartLimits(t *testing.T) {
 		raw, ct := formBytes(t, fields)
 		r := httptest.NewRequest("POST", "/", bytes.NewReader(raw))
 		r.Header.Set("Content-Type", ct)
-		v, _, e := readForm(r)
+		v, _, _, e := readForm(r)
 		v.Wipe()
 		if e == nil {
 			t.Fatal("bad multipart accepted")
 		}
 	}
 	many := [][2]string{{"csrf", "x"}}
-	for i := 0; i < 34; i++ {
+	for i := 0; i < 130; i++ {
 		many = append(many, [2]string{fmt.Sprintf("f%d", i), "x"})
 	}
 	raw, ct := formBytes(t, many)
 	r := httptest.NewRequest("POST", "/", bytes.NewReader(raw))
 	r.Header.Set("Content-Type", ct)
-	if _, _, e := readForm(r); e == nil {
+	if _, _, _, e := readForm(r); e == nil {
 		t.Fatal("parts")
 	}
 	many = [][2]string{{"csrf", "x"}}
@@ -531,13 +531,13 @@ func TestMultipartLimits(t *testing.T) {
 	raw, ct = formBytes(t, many)
 	r = httptest.NewRequest("POST", "/", bytes.NewReader(raw))
 	r.Header.Set("Content-Type", ct)
-	if _, _, e := readForm(r); e == nil {
+	if _, _, _, e := readForm(r); e == nil {
 		t.Fatal("total")
 	}
 	for _, contentType := range []string{"text/plain", "multipart/form-data", "multipart/form-data; boundary=bad"} {
 		r = httptest.NewRequest("POST", "/", strings.NewReader("invalid"))
 		r.Header.Set("Content-Type", contentType)
-		if _, _, e := readForm(r); e == nil {
+		if _, _, _, e := readForm(r); e == nil {
 			t.Fatal("format")
 		}
 	}
@@ -550,7 +550,7 @@ func TestMultipartLimits(t *testing.T) {
 	_ = mw.Close()
 	r = httptest.NewRequest("POST", "/", &b)
 	r.Header.Set("Content-Type", mw.FormDataContentType())
-	values, token, e := readForm(r)
+	values, token, _, e := readForm(r)
 	if e != nil || token != "x" || string(values["config"]) != "{}" {
 		t.Fatal(e)
 	}

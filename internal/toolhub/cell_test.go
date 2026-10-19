@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -365,13 +366,13 @@ func (f *cellDockerFake) removed(name string) bool {
 	return !ok
 }
 
-func cellExecution() ExecutionPolicy {
-	return ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: []string{"127.0.0.1"}}
+func cellExecution() api.ExecutionPolicy {
+	return api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: []string{"127.0.0.1"}}
 }
 
 // cellFixture builds a controller on the fake daemon: real state root, a
 // shipped cellinit file, and the operator envelope the render layer emits.
-func cellFixture(t *testing.T, mutate func(*CLIControllerConfig)) (*genericController, *cellDockerFake) {
+func cellFixture(t *testing.T, mutate func(*api.CLIControllerConfig)) (*genericController, *cellDockerFake) {
 	t.Helper()
 	root := t.TempDir()
 	binDir := filepath.Join(root, "bin")
@@ -386,13 +387,13 @@ func cellFixture(t *testing.T, mutate func(*CLIControllerConfig)) (*genericContr
 	if err := os.WriteFile(seccomp, []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &CLIControllerConfig{
+	cfg := &api.CLIControllerConfig{
 		ToolsImage:    "hermes-hub-cli-tools:test",
 		CellInit:      cellinit,
 		ProxyImage:    "hermes-hub-cell-proxy:test",
 		AllowedEgress: []string{"github.com", "gitlab.com", "bitbucket.org", "api.github.com", "codeberg.org", "127.0.0.1"},
 		Ceiling:       cellExecution(),
-		Approved:      []CLIApproval{{DefinitionID: "cli-git-ls-remote", DefinitionVersion: "1.0.1", Command: "git", Execution: ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: []string{"github.com", "gitlab.com", "bitbucket.org"}}}},
+		Approved:      []api.CLIApproval{{DefinitionID: "cli-git-ls-remote", DefinitionVersion: "1.0.1", Command: "git", Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: []string{"github.com", "gitlab.com", "bitbucket.org"}}}},
 		UserCommands:  []string{"rg"},
 		PoolSize:      2,
 	}
@@ -412,9 +413,9 @@ func cellFixture(t *testing.T, mutate func(*CLIControllerConfig)) (*genericContr
 
 // cliReq builds an owner-catalog exec request; egress defaults to loopback so
 // the cell lands on network none unless the test declares otherwise.
-func cliReq(command string, execution ExecutionPolicy) cliExecRequest {
-	return cliExecRequest{
-		Plan:      controllerPlan{WorkloadID: "w-cli-alice", DefinitionID: "cli-owner", DefinitionVersion: "1.0.0", Command: command, Execution: execution},
+func cliReq(command string, execution api.ExecutionPolicy) api.CliExecRequest {
+	return api.CliExecRequest{
+		Plan:      api.ControllerPlan{WorkloadID: "w-cli-alice", DefinitionID: "cli-owner", DefinitionVersion: "1.0.0", Command: command, Execution: execution},
 		Command:   command,
 		Principal: "alice", ContextID: "ctx-alice", BindingID: "bind-1",
 	}
@@ -490,7 +491,7 @@ func containsArgPair(args []string, key, value string) bool {
 func TestCLIExecPlanDenials(t *testing.T) {
 	c, _ := cellFixture(t, nil)
 	valid := cliReq("rg", cellExecution())
-	deny := func(name string, req cliExecRequest, want error) {
+	deny := func(name string, req api.CliExecRequest, want error) {
 		t.Helper()
 		if _, err := c.execCLI(context.Background(), req); !errors.Is(err, want) {
 			t.Fatalf("%s: expected %v, got %v", name, want, err)
@@ -498,39 +499,39 @@ func TestCLIExecPlanDenials(t *testing.T) {
 	}
 	bad := valid
 	bad.Plan.DefinitionID = "no spaces"
-	deny("identity", bad, ErrInvalid)
+	deny("identity", bad, api.ErrInvalid)
 	bad = valid
 	bad.Plan.Execution.MaxPIDs = c.config.CLI.Ceiling.MaxPIDs + 1
-	deny("over-ceiling", bad, ErrUnauthorized)
+	deny("over-ceiling", bad, api.ErrUnauthorized)
 	bad = valid
 	bad.Plan.Execution.Egress = []string{"evil.example.com"}
-	deny("egress", bad, ErrUnauthorized)
+	deny("egress", bad, api.ErrUnauthorized)
 	bad = valid
 	bad.Command = "git"
-	deny("unapproved command", bad, ErrUnauthorized)
+	deny("unapproved command", bad, api.ErrUnauthorized)
 	bad = valid
 	bad.Command = "rg;rm"
-	deny("shell command", bad, ErrInvalid)
+	deny("shell command", bad, api.ErrInvalid)
 	bad = valid
 	bad.Plan.WorkspacePath = "/state"
-	deny("container-mcp field", bad, ErrInvalid)
+	deny("container-mcp field", bad, api.ErrInvalid)
 	bad = valid
 	bad.Env = []string{"HTTPS_PROXY=http://evil.example"}
-	deny("caller proxy env", bad, ErrUnauthorized)
+	deny("caller proxy env", bad, api.ErrUnauthorized)
 	bad = valid
 	bad.Env = []string{"PATH=/evil"}
-	deny("caller PATH", bad, ErrUnauthorized)
+	deny("caller PATH", bad, api.ErrUnauthorized)
 	bad = valid
-	bad.Lifecycle = CLILifecycleTask
-	deny("task without job", bad, ErrInvalid)
+	bad.Lifecycle = api.CLILifecycleTask
+	deny("task without job", bad, api.ErrInvalid)
 	bad = valid
 	bad.Lifecycle = "bogus"
-	deny("unknown lifecycle", bad, ErrInvalid)
+	deny("unknown lifecycle", bad, api.ErrInvalid)
 	bad = valid
-	bad.Lifecycle = CLILifecycleSharedPool // missing stateless marker
-	deny("stateful pool cell", bad, ErrUnauthorized)
+	bad.Lifecycle = api.CLILifecycleSharedPool // missing stateless marker
+	deny("stateful pool cell", bad, api.ErrUnauthorized)
 	bad = valid
-	bad.Brokered = []cliBrokeredCred{{EnvName: "TOKEN", Host: "api.example.com", Value: "v"}}
+	bad.Brokered = []api.CliBrokeredCred{{EnvName: "TOKEN", Host: "api.example.com", Value: "v"}}
 	// Brokered creds are allowed by shape — but the proxy image is configured
 	// so this request passes validation and exercises the cred-proxy path.
 	if _, err := c.execCLI(context.Background(), bad); err != nil {
@@ -556,7 +557,7 @@ func TestCLIExecCellProfileDrift(t *testing.T) {
 	for name, mutate := range drifts {
 		c, fake := cellFixture(t, nil)
 		fake.inspectDrift = func(_ string, container *genericContainer) { mutate(container) }
-		if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, ErrIsolation) {
+		if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, api.ErrIsolation) {
 			t.Fatalf("%s: drifted cell admitted: %v", name, err)
 		}
 	}
@@ -624,7 +625,7 @@ func TestCLIExecEgressSidecars(t *testing.T) {
 func TestCLIExecWarmReuseCanaryAndRelease(t *testing.T) {
 	c, fake := cellFixture(t, nil)
 	req := cliReq("rg", cellExecution())
-	req.Lifecycle = CLILifecycleBinding
+	req.Lifecycle = api.CLILifecycleBinding
 	if _, err := c.execCLI(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +642,7 @@ func TestCLIExecWarmReuseCanaryAndRelease(t *testing.T) {
 		t.Fatalf("metrics=%+v", metrics)
 	}
 	// Release through the controller path kills the warm cell.
-	c.releaseCells(context.Background(), cliReleaseRequest{PrincipalID: "alice", BindingID: "bind-1", Reason: "test"})
+	c.releaseCells(context.Background(), api.CliReleaseRequest{PrincipalID: "alice", BindingID: "bind-1", Reason: "test"})
 	c.mu.Lock()
 	left := len(c.cells().cells)
 	c.mu.Unlock()
@@ -682,7 +683,7 @@ func TestCLIExecWarmReuseCanaryAndRelease(t *testing.T) {
 func TestCLIExecPoolClaimRelease(t *testing.T) {
 	c, fake := cellFixture(t, nil)
 	req := cliReq("rg", cellExecution())
-	req.Lifecycle = CLILifecycleSharedPool
+	req.Lifecycle = api.CLILifecycleSharedPool
 	req.Stateless = true
 	if _, err := c.execCLI(context.Background(), req); err != nil {
 		t.Fatal(err)
@@ -730,9 +731,9 @@ func TestCLIExecPoolClaimRelease(t *testing.T) {
 }
 
 func TestCLIExecPoolStarvationBound(t *testing.T) {
-	c, fake := cellFixture(t, func(cfg *CLIControllerConfig) { cfg.PoolSize = 1; cfg.PoolClaimWaitSeconds = 1 })
+	c, fake := cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.PoolSize = 1; cfg.PoolClaimWaitSeconds = 1 })
 	req := cliReq("rg", cellExecution())
-	req.Lifecycle = CLILifecycleSharedPool
+	req.Lifecycle = api.CLILifecycleSharedPool
 	req.Stateless = true
 	if _, err := c.execCLI(context.Background(), req); err != nil {
 		t.Fatal(err)
@@ -748,7 +749,7 @@ func TestCLIExecPoolStarvationBound(t *testing.T) {
 	if held == nil {
 		t.Fatal("pool claim lost the cell")
 	}
-	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, ErrIsolation) {
+	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("starved pool admitted: %v", err)
 	}
 	c.mu.Lock()
@@ -773,7 +774,7 @@ func TestCLIExecPoolStarvationBound(t *testing.T) {
 }
 
 func TestCLIExecRuntimeTiers(t *testing.T) {
-	c, fake := cellFixture(t, func(cfg *CLIControllerConfig) { cfg.Runtime = "runsc" })
+	c, fake := cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.Runtime = "runsc" })
 	response, err := c.execCLI(context.Background(), cliReq("rg", cellExecution()))
 	if err != nil {
 		t.Fatalf("runsc cell denied: %v", err)
@@ -789,40 +790,40 @@ func TestCLIExecRuntimeTiers(t *testing.T) {
 		t.Fatalf("create lacked --runtime runsc: %v", create)
 	}
 	// A daemon without the tier denies.
-	c, fake = cellFixture(t, func(cfg *CLIControllerConfig) { cfg.Runtime = "kata" })
+	c, fake = cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.Runtime = "kata" })
 	fake.runtimes = []string{"runc"}
-	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, ErrIsolation) {
+	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("missing kata runtime admitted: %v", err)
 	}
 	// An unknown tier is rejected by config validation, not just at create.
-	c, _ = cellFixture(t, func(cfg *CLIControllerConfig) { cfg.Runtime = "bogus" })
-	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, ErrInvalid) {
+	c, _ = cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.Runtime = "bogus" })
+	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("unknown runtime admitted: %v", err)
 	}
 }
 
 func TestCLIExecWorkspaceScopes(t *testing.T) {
-	c, _ := cellFixture(t, func(cfg *CLIControllerConfig) { cfg.SpacesRoot = t.TempDir() })
+	c, _ := cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.SpacesRoot = t.TempDir() })
 	// Binding scope binds an existing dir under the state root.
 	workspace := filepath.Join(c.config.StateRoot, "per-user", "alice")
 	if err := os.MkdirAll(workspace, 0700); err != nil {
 		t.Fatal(err)
 	}
 	req := cliReq("rg", cellExecution())
-	req.Workspace = cliWorkspace{Scope: "binding", Path: workspace, Access: "rw"}
+	req.Workspace = api.CliWorkspace{Scope: "binding", Path: workspace, Access: "rw"}
 	if _, err := c.execCLI(context.Background(), req); err != nil {
 		t.Fatalf("binding scope denied: %v", err)
 	}
 	// Outside the state root denies before any docker call.
 	bad := cliReq("rg", cellExecution())
-	bad.Workspace = cliWorkspace{Scope: "binding", Path: t.TempDir(), Access: "rw"}
-	if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, ErrIsolation) {
+	bad.Workspace = api.CliWorkspace{Scope: "binding", Path: t.TempDir(), Access: "rw"}
+	if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("outside workspace admitted: %v", err)
 	}
 	// Missing dir denies.
 	missing := cliReq("rg", cellExecution())
-	missing.Workspace = cliWorkspace{Scope: "binding", Path: filepath.Join(c.config.StateRoot, "gone")}
-	if _, err := c.execCLI(context.Background(), missing); !errors.Is(err, ErrIsolation) {
+	missing.Workspace = api.CliWorkspace{Scope: "binding", Path: filepath.Join(c.config.StateRoot, "gone")}
+	if _, err := c.execCLI(context.Background(), missing); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("missing workspace admitted: %v", err)
 	}
 	// Principal scope resolves under the configured spaces root.
@@ -830,22 +831,22 @@ func TestCLIExecWorkspaceScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	principal := cliReq("rg", cellExecution())
-	principal.Workspace = cliWorkspace{Scope: "principal"}
+	principal.Workspace = api.CliWorkspace{Scope: "principal"}
 	if _, err := c.execCLI(context.Background(), principal); err != nil {
 		t.Fatalf("principal scope denied: %v", err)
 	}
 	// A path supplied without a scope is a contract violation.
 	none := cliReq("rg", cellExecution())
-	none.Workspace = cliWorkspace{Scope: "none", Path: workspace}
-	if _, err := c.execCLI(context.Background(), none); !errors.Is(err, ErrInvalid) {
+	none.Workspace = api.CliWorkspace{Scope: "none", Path: workspace}
+	if _, err := c.execCLI(context.Background(), none); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("unscoped workspace path admitted: %v", err)
 	}
 	// Pool cells may not carry a workspace at all.
 	pool := cliReq("rg", cellExecution())
-	pool.Lifecycle = CLILifecycleSharedPool
+	pool.Lifecycle = api.CLILifecycleSharedPool
 	pool.Stateless = true
-	pool.Workspace = cliWorkspace{Scope: "binding", Path: workspace}
-	if _, err := c.execCLI(context.Background(), pool); !errors.Is(err, ErrUnauthorized) {
+	pool.Workspace = api.CliWorkspace{Scope: "binding", Path: workspace}
+	if _, err := c.execCLI(context.Background(), pool); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("pool workspace admitted: %v", err)
 	}
 }
@@ -868,18 +869,18 @@ func TestCLIExecArtifactAndToolboxPlans(t *testing.T) {
 	bad := cliReq("mytool", cellExecution())
 	bad.Plan.Image = "ghcr.io/example/mytool"
 	bad.Plan.Digest = "sha256:" + strings.Repeat("9", 64)
-	if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrUnauthorized) {
+	if _, err := c.execCLI(context.Background(), bad); !errors.Is(err, api.ErrInvalid) && !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bare artifact command admitted: %v", err)
 	}
 	// Toolbox cells mount the pinned member images at /tools/<i>.
-	c, fake = cellFixture(t, func(cfg *CLIControllerConfig) {
+	c, fake = cellFixture(t, func(cfg *api.CLIControllerConfig) {
 		cfg.Toolboxes = map[string][]string{"searchbox": {"ghcr.io/example/toolbox@sha256:" + strings.Repeat("8", 64)}}
 	})
 	fake.images["ghcr.io/example/toolbox@sha256:"+strings.Repeat("8", 64)] = "sha256:" + strings.Repeat("8", 64)
 	req = cliReq("/bin/search", cellExecution())
 	req.Plan.Image = "ghcr.io/example/toolbox"
 	req.Plan.Digest = "sha256:" + strings.Repeat("8", 64)
-	req.Lifecycle = CLILifecycleToolbox
+	req.Lifecycle = api.CLILifecycleToolbox
 	req.ToolboxID = "searchbox"
 	if _, err := c.execCLI(context.Background(), req); err != nil {
 		t.Fatalf("toolbox exec denied: %v", err)
@@ -900,7 +901,7 @@ func TestCLIExecArtifactAndToolboxPlans(t *testing.T) {
 	fake.mu.Lock()
 	var toolboxBase string
 	for name, member := range fake.containers {
-		if member.Config.Labels["hermes-hub.cell.lifecycle"] == CLILifecycleToolbox {
+		if member.Config.Labels["hermes-hub.cell.lifecycle"] == api.CLILifecycleToolbox {
 			toolboxBase = member.Config.Image
 			_ = name
 		}
@@ -912,13 +913,13 @@ func TestCLIExecArtifactAndToolboxPlans(t *testing.T) {
 	// A request for a member image outside the toolbox denies.
 	fake.images["ghcr.io/example/other@sha256:"+strings.Repeat("8", 64)] = "sha256:" + strings.Repeat("7", 64)
 	req.Plan.Image = "ghcr.io/example/other"
-	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, ErrUnauthorized) {
+	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("foreign toolbox member admitted: %v", err)
 	}
 	// Unknown toolbox ids deny.
 	req.Plan.Image = "ghcr.io/example/toolbox"
 	req.ToolboxID = "missing"
-	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, ErrUnauthorized) {
+	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unknown toolbox admitted: %v", err)
 	}
 }
@@ -947,7 +948,7 @@ func TestCLIExecOutputLimitAndExitCode(t *testing.T) {
 	}
 	// Docker-level failure is an isolation error.
 	fake.failDocker = errors.New("daemon gone")
-	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, ErrIsolation) {
+	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("daemon failure admitted: %v", err)
 	}
 }
@@ -999,7 +1000,7 @@ func TestCLIExecHTTPContract(t *testing.T) {
 func TestCLICellCleanupRotation(t *testing.T) {
 	c, fake := cellFixture(t, nil)
 	req := cliReq("rg", cellExecution())
-	req.Lifecycle = CLILifecycleBinding
+	req.Lifecycle = api.CLILifecycleBinding
 	if _, err := c.execCLI(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -1029,7 +1030,7 @@ func TestCLICellCleanupRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	poolReq := cliReq("rg", cellExecution())
-	poolReq.Lifecycle, poolReq.Stateless = CLILifecycleSharedPool, true
+	poolReq.Lifecycle, poolReq.Stateless = api.CLILifecycleSharedPool, true
 	if _, err := c.execCLI(context.Background(), poolReq); err != nil {
 		t.Fatal(err)
 	}
@@ -1060,8 +1061,8 @@ func TestCellWorkspacePrincipalManagedLayout(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "bob", "workspace"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	req := func(p string) cliExecRequest {
-		return cliExecRequest{Principal: p, Workspace: cliWorkspace{Scope: "principal"}}
+	req := func(p string) api.CliExecRequest {
+		return api.CliExecRequest{Principal: p, Workspace: api.CliWorkspace{Scope: "principal"}}
 	}
 	// Managed principal with the env configured resolves managed/<env>/workspace.
 	c.config.CLI.SpacesRoot, c.config.CLI.Environment = root, "dev"
@@ -1086,7 +1087,7 @@ func TestCellWorkspacePrincipalManagedLayout(t *testing.T) {
 	}
 	// Without a spaces root the scope refuses to guess.
 	c.config.CLI.SpacesRoot = ""
-	if _, _, err = c.cellWorkspaceBind(req("alice")); !errors.Is(err, ErrIsolation) {
+	if _, _, err = c.cellWorkspaceBind(req("alice")); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("principal scope without spaces root: %v", err)
 	}
 }
@@ -1105,7 +1106,7 @@ func TestWaitProxyListen(t *testing.T) {
 	old := proxyListenTimeout
 	proxyListenTimeout = 250 * time.Millisecond
 	defer func() { proxyListenTimeout = old }()
-	if err := c.waitProxyListen(context.Background(), "p-gone"); !errors.Is(err, ErrIsolation) {
+	if err := c.waitProxyListen(context.Background(), "p-gone"); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("dead proxy err=%v, want ErrIsolation", err)
 	}
 }

@@ -106,7 +106,8 @@ HTTPServer(('0.0.0.0',8090),Handler).serve_forever()`
 	const modelFixture = `from http.server import BaseHTTPRequestHandler,HTTPServer
 class Handler(BaseHTTPRequestHandler):
  def do_POST(self):
-  if self.headers.get('X-Canary-Redirect')=='metadata':
+  body=self.rfile.read(int(self.headers.get('Content-Length') or 0))
+  if self.headers.get('X-Canary-Redirect')=='metadata' or b'"canary_redirect":1' in body:
    self.send_response(307); self.send_header('Location','http://169.254.169.254/latest/meta-data/'); self.end_headers(); return
   body=self.path.encode(); self.send_response(200); self.end_headers(); self.wfile.write(body)
  def log_message(self,*args): pass
@@ -169,7 +170,9 @@ for attempt in range(30):
  except OSError:
   time.sleep(.2)
 else: raise AssertionError("model relay unavailable on private network")
-try: opener.open(urllib.request.Request("http://model-relay:8318/v1/chat/completions",data=b'{"model":"synthetic"}',headers={"Content-Type":"application/json","X-Canary-Redirect":"metadata"},method="POST"),timeout=2)
+# The relay forwards only Authorization/Content-Type and the JSON body, so the
+# redirect trigger rides the body marker, not the canary header.
+try: opener.open(urllib.request.Request("http://model-relay:8318/v1/chat/completions",data=b'{"model":"synthetic","canary_redirect":1}',headers={"Content-Type":"application/json"},method="POST"),timeout=2)
 except urllib.error.HTTPError as error: assert error.code==502 and not error.headers.get("Location")
 else: raise AssertionError("model relay forwarded metadata redirect")
 for body in (b'{"model":"other"}',b'{"model":"synthetic","model":"synthetic"}'):

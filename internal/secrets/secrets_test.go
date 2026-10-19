@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -101,23 +102,23 @@ func TestInjectAfterAuthorizeAndIsolation(t *testing.T) {
 	registry, auth, binding := seededRegistry(t, infos[0].Locator)
 	svc.Registry = registry
 	root := t.TempDir()
-	projected := toolhub.ProjectedToolName("google-work", "1.0.0", "search")
+	projected := api.ProjectedToolName("google-work", "1.0.0", "search")
 	injected, err := svc.Inject(auth, projected, root, "")
 	if err != nil || injected.Env["GOOGLE_TOKEN"] != secret {
 		t.Fatalf("inject=%+v err=%v", injected, err)
 	}
-	body, err := os.ReadFile(filepath.Join(root, "per-user", "alice", "alice", "google-work", toolhub.CredentialReferenceID("google-work", 0), "credentials.env"))
+	body, err := os.ReadFile(filepath.Join(root, "per-user", "alice", "alice", "google-work", api.CredentialReferenceID("google-work", 0), "credentials.env"))
 	if err != nil || !strings.Contains(string(body), secret) {
 		t.Fatalf("workload file=%s err=%v", body, err)
 	}
 	bob := identity.TelegramEnvelope("bob", 9, "runtime-bob", "policy-1")
-	if _, err := svc.Inject(bob, projected, t.TempDir(), ""); !errors.Is(err, toolhub.ErrUnauthorized) && !errors.Is(err, toolhub.ErrNotFound) {
+	if _, err := svc.Inject(bob, projected, t.TempDir(), ""); !errors.Is(err, api.ErrUnauthorized) && !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("cross-user inject: %v", err)
 	}
 	if err := injected.Wipe(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "per-user", "alice", "alice", "google-work", toolhub.CredentialReferenceID("google-work", 0), "credentials.env")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "per-user", "alice", "alice", "google-work", api.CredentialReferenceID("google-work", 0), "credentials.env")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("injected file survived wipe")
 	}
 	catalog, err := registry.Catalog(auth)
@@ -150,14 +151,14 @@ func TestSharedStaticCredentialRejectedAtInject(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := toolhub.NewStore()
-	definition := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:      toolhub.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-		Tools:       []toolhub.ToolSpec{{Name: "search", Effect: toolhub.ReadEffect}},
-		Credentials: []toolhub.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true, PerRequest: false}},
-		Workload:    toolhub.WorkloadPolicy{Class: toolhub.Shared, Rationale: "should be rejected"},
-		Execution:   toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
-		Health:      toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:      api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
+		Tools:       []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
+		Credentials: []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true, PerRequest: false}},
+		Workload:    api.WorkloadPolicy{Class: api.Shared, Rationale: "should be rejected"},
+		Execution:   api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
+		Health:      api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := store.RegisterDefinition(definition); err == nil {
 		t.Fatal("shared static credential definition accepted")
@@ -238,7 +239,7 @@ func TestInjectMissingCiphertextFailsClosed(t *testing.T) {
 	svc := newService(t)
 	registry, auth, _ := seededRegistry(t, "loc-missing00000000000000000000")
 	svc.Registry = registry
-	projected := toolhub.ProjectedToolName("google-work", "1.0.0", "search")
+	projected := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := svc.Inject(auth, projected, t.TempDir(), ""); err == nil {
 		t.Fatal("missing ciphertext injected")
 	}
@@ -256,7 +257,7 @@ func TestRotateSucceedsAgainstRegistry(t *testing.T) {
 	if err := svc.Rotate("alice", "GOOGLE_TOKEN", randomValue(t), "google-work"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := registry.Resolve(auth, binding.ToolBindingID); !errors.Is(err, toolhub.ErrStale) {
+	if _, err := registry.Resolve(auth, binding.ToolBindingID); !errors.Is(err, api.ErrStale) {
 		t.Fatalf("rotated binding still current: %v", err)
 	}
 }
@@ -270,13 +271,13 @@ func TestFailedRotateMarksDegraded(t *testing.T) {
 	}
 	registry, auth, binding := seededRegistry(t, infos[0].Locator)
 	svc.Registry = registry
-	if err := registry.SetConnectionStatus("google-work", toolhub.DisabledStatus); err != nil {
+	if err := registry.SetConnectionStatus("google-work", api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Rotate("alice", "GOOGLE_TOKEN", randomValue(t), "google-work"); err == nil {
 		t.Fatal("rotate on disabled connection succeeded")
 	}
-	if _, err := registry.Resolve(auth, binding.ToolBindingID); !errors.Is(err, toolhub.ErrDegraded) && !errors.Is(err, toolhub.ErrStale) && !errors.Is(err, toolhub.ErrUnauthorized) && !errors.Is(err, toolhub.ErrNotFound) {
+	if _, err := registry.Resolve(auth, binding.ToolBindingID); !errors.Is(err, api.ErrDegraded) && !errors.Is(err, api.ErrStale) && !errors.Is(err, api.ErrUnauthorized) && !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("failed rotate did not fail closed: %v", err)
 	}
 	info, err := svc.Backend.Info(infos[0].Locator, "alice")
@@ -285,35 +286,35 @@ func TestFailedRotateMarksDegraded(t *testing.T) {
 	}
 }
 
-func seededRegistry(t *testing.T, locator string) (*toolhub.Store, identity.Envelope, toolhub.ToolBinding) {
+func seededRegistry(t *testing.T, locator string) (*toolhub.Store, identity.Envelope, api.ToolBinding) {
 	t.Helper()
 	store := toolhub.NewStore()
-	definition := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:      toolhub.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-		Tools:       []toolhub.ToolSpec{{Name: "search", Effect: toolhub.ReadEffect}, {Name: "send", Effect: toolhub.WriteEffect}},
-		Credentials: []toolhub.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true}},
-		Workload:    toolhub.WorkloadPolicy{Class: toolhub.PerUser, Rationale: "OAuth account and provider session are user-owned"},
-		Execution:   toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
-		Health:      toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:      api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
+		Tools:       []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}, {Name: "send", Effect: api.WriteEffect}},
+		Credentials: []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true}},
+		Workload:    api.WorkloadPolicy{Class: api.PerUser, Rationale: "OAuth account and provider session are user-owned"},
+		Execution:   api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
+		Health:      api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	credential := toolhub.CredentialReference{Schema: toolhub.SchemaVersion, CredentialRefID: toolhub.CredentialReferenceID("google-work", 1), ConnectionID: "google-work", Revision: 1, Backend: "local", Locator: locator, Keys: []string{"GOOGLE_TOKEN"}, Status: toolhub.ActiveStatus}
+	credential := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 1), ConnectionID: "google-work", Revision: 1, Backend: "local", Locator: locator, Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
 	if err := store.PutCredentialReference(credential); err != nil {
 		t.Fatal(err)
 	}
-	connection := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: "google-work", Owner: toolhub.OwnerRef{Type: toolhub.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: credential.CredentialRefID, Revision: 1, Status: toolhub.ActiveStatus}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "google-work", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: credential.CredentialRefID, Revision: 1, Status: api.ActiveStatus}
 	if err := store.PutConnection(connection); err != nil {
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
-	binding := toolhub.ToolBinding{Schema: toolhub.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: toolhub.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
-	binding.ToolBindingID = toolhub.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	return store, auth, binding
 }
 
@@ -380,7 +381,7 @@ func TestReuseLocatorRotateErrorsAndInjectFilters(t *testing.T) {
 	}
 	registry, auth, _ := seededRegistry(t, first[0].Locator)
 	svc.Registry = registry
-	injected, err := svc.Inject(auth, toolhub.ProjectedToolName("google-work", "1.0.0", "search"), t.TempDir(), "")
+	injected, err := svc.Inject(auth, api.ProjectedToolName("google-work", "1.0.0", "search"), t.TempDir(), "")
 	if err != nil || injected.Env["GOOGLE_TOKEN"] != secret || injected.Env["OTHER_TOKEN"] != "" {
 		t.Fatalf("filter=%+v err=%v", injected.Env, err)
 	}
@@ -399,43 +400,43 @@ func TestReuseLocatorRotateErrorsAndInjectFilters(t *testing.T) {
 func TestInjectWithoutCredentialAndPerJobWipe(t *testing.T) {
 	svc := newService(t)
 	store := toolhub.NewStore()
-	definition := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "notes-work", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:    toolhub.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-		Tools:     []toolhub.ToolSpec{{Name: "search", Effect: toolhub.ReadEffect}},
-		Workload:  toolhub.WorkloadPolicy{Class: toolhub.PerJob, Rationale: "ephemeral job state is owner-scoped"},
-		Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
-		Health:    toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "notes-work", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:    api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
+		Tools:     []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
+		Workload:  api.WorkloadPolicy{Class: api.PerJob, Rationale: "ephemeral job state is owner-scoped"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
+		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	connection := toolhub.Connection{Schema: toolhub.SchemaVersion, ConnectionID: "notes-work", Owner: toolhub.OwnerRef{Type: toolhub.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, Revision: 1, Status: toolhub.ActiveStatus}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "notes-work", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, Revision: 1, Status: api.ActiveStatus}
 	if err := store.PutConnection(connection); err != nil {
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
-	binding := toolhub.ToolBinding{Schema: toolhub.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: toolhub.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
 	svc.Registry = store
 	root := t.TempDir()
-	injected, err := svc.Inject(auth, toolhub.ProjectedToolName("notes-work", "1.0.0", "search"), root, "job-one")
+	injected, err := svc.Inject(auth, api.ProjectedToolName("notes-work", "1.0.0", "search"), root, "job-one")
 	if err != nil || len(injected.Env) != 0 {
 		t.Fatalf("no-credential inject=%+v err=%v", injected, err)
 	}
 	if err := injected.Wipe(); err != nil {
 		t.Fatal(err)
 	}
-	shared := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "shared-work", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:      toolhub.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-		Tools:       []toolhub.ToolSpec{{Name: "search", Effect: toolhub.ReadEffect}},
-		Credentials: []toolhub.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true, PerRequest: true}},
-		Workload:    toolhub.WorkloadPolicy{Class: toolhub.Shared, Rationale: "per-request credentials only"},
-		Execution:   toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
-		Health:      toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	shared := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "shared-work", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:      api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
+		Tools:       []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
+		Credentials: []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true, PerRequest: true}},
+		Workload:    api.WorkloadPolicy{Class: api.Shared, Rationale: "per-request credentials only"},
+		Execution:   api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
+		Health:      api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := store.RegisterDefinition(shared); err != nil {
 		t.Fatal(err)
@@ -523,11 +524,11 @@ func TestApplyChatCutsOpenSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry, auth, binding := seededRegistry(t, infos[0].Locator)
-	workload, err := toolhub.NewWorkloadInstance(binding, &toolhub.OwnerRef{Type: toolhub.ContextOwner, ID: "alice"}, "", 1, time.Now().UTC(), time.Time{})
+	workload, err := api.NewWorkloadInstance(binding, &api.OwnerRef{Type: api.ContextOwner, ID: "alice"}, "", 1, time.Now().UTC(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	workload.Status = toolhub.RunningStatus
+	workload.Status = api.RunningStatus
 	if err := registry.PutWorkloadInstance(workload); err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +552,7 @@ func TestApplyChatCutsOpenSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	name := toolhub.ProjectedToolName("google-work", "1.0.0", "search")
+	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "ok"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +575,7 @@ func TestApplyChatCutsOpenSession(t *testing.T) {
 
 type toolhubCallCounter struct{ n *atomic.Int32 }
 
-func (c toolhubCallCounter) Call(context.Context, toolhub.EffectiveBinding, toolhub.ToolSpec, map[string]any) (toolhub.BackendResult, error) {
+func (c toolhubCallCounter) Call(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 	c.n.Add(1)
-	return toolhub.BackendResult{Text: "ok"}, nil
+	return api.BackendResult{Text: "ok"}, nil
 }

@@ -7,6 +7,7 @@
 /dist/
 /bin/
 coverage.out
+cov-*.out
 /coverage
 /.playwright-mcp/
 **/node_modules/
@@ -25,3 +26,6 @@ docker/observability/.secrets/
 /.work/df-test
 /.work/hub-stt-out
 /.work/s-out.json
+.work/**/verify/
+/.work/bin/
+/.work/*.mcpb

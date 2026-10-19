@@ -322,6 +322,14 @@ func TestDocumentImageProfile(t *testing.T) {
 	if _, ok := Compose(settings, repo, space)["volumes"].(M)["broker-secrets-media"]; !ok {
 		t.Fatal("compose missing broker-secrets-media volume")
 	}
+	// Engine ladder + model routes ride the deploy env, same contract as the
+	// other HUB_MEDIA_* knobs — the sidecar never sees literal credentials.
+	for _, want := range []string{"HUB_MEDIA_ENGINES", "HUB_MEDIA_MODEL_ROUTES", "HUB_MEDIA_COMMAND"} {
+		v, ok := mediaEnv[want].(string)
+		if !ok || !strings.Contains(v, want) {
+			t.Fatalf("hub-media missing %s passthrough: %#v", want, mediaEnv[want])
+		}
+	}
 	// The runtime's env_file list must include media.auth, otherwise
 	// HUB_MEDIA_AUTH never materializes inside the container.
 	foundMediaAuth := false

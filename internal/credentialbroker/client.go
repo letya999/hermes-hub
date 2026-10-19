@@ -33,22 +33,23 @@ type Config struct {
 func (c Config) Enabled() bool { return strings.TrimSpace(c.URL) != "" }
 
 func (c Config) New(auth identity.Envelope, audience string) (*brokerclient.Client, error) {
-	if !c.Enabled() {
-		return nil, errors.New("credential broker is not configured")
-	}
-	key, err := readPrivateKey(c.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-	defer clear(key)
-	signingKey := append(ed25519.PrivateKey(nil), key...)
+	return c.newWithActor(auth, audience, Actor(auth, "", ""))
+}
+
+// NewContextManaged signs calls as a context manager: the broker requires the
+// assertion to issue credentials owned by a shared workload context instead of
+// a per-user principal.
+func (c Config) NewContextManaged(auth identity.Envelope, audience string) (*brokerclient.Client, error) {
 	actor := Actor(auth, "", "")
-	return brokerclient.New(c.URL, brokerclient.Signer{
-		KeyID: c.KeyID, Issuer: c.Issuer, Audience: audience, PrivateKey: signingKey,
-	}, actor, c.HTTPClient)
+	actor.ContextManager = true
+	return c.newWithActor(auth, audience, actor)
 }
 
 func (c Config) NewForBinding(auth identity.Envelope, audience, bindingID, workloadID string) (*brokerclient.Client, error) {
+	return c.newWithActor(auth, audience, Actor(auth, bindingID, workloadID))
+}
+
+func (c Config) newWithActor(auth identity.Envelope, audience string, actor brokeridentity.Actor) (*brokerclient.Client, error) {
 	if !c.Enabled() {
 		return nil, errors.New("credential broker is not configured")
 	}
@@ -60,7 +61,7 @@ func (c Config) NewForBinding(auth identity.Envelope, audience, bindingID, workl
 	signingKey := append(ed25519.PrivateKey(nil), key...)
 	return brokerclient.New(c.URL, brokerclient.Signer{
 		KeyID: c.KeyID, Issuer: c.Issuer, Audience: audience, PrivateKey: signingKey,
-	}, Actor(auth, bindingID, workloadID), c.HTTPClient)
+	}, actor, c.HTTPClient)
 }
 
 func Actor(auth identity.Envelope, bindingID, workloadID string) brokeridentity.Actor {

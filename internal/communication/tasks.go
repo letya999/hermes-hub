@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
 // Task is a durable owner/context-scoped conversation unit. The binding is
@@ -21,43 +23,18 @@ import (
 // session: ConversationID feeds sessionIDFor, so each task owns a
 // deterministic upstream session. The implicit "default" task keeps the
 // legacy telegram-<chat> conversation and is materialized only on mutation.
-const defaultTaskID = "default"
+const defaultTaskID = commodel.DefaultTaskID
 
 const (
 	taskNameLimit  = 64
 	taskStyleLimit = 1024
 )
 
-type Task struct {
-	Schema         int       `json:"schema"`
-	TaskID         string    `json:"task_id"`
-	Name           string    `json:"name"`
-	PrincipalID    string    `json:"principal_id"`
-	ContextID      string    `json:"context_id"`
-	Channel        string    `json:"channel"`
-	Peer           string    `json:"peer"`
-	ChatID         int64     `json:"chat_id"`
-	TopicID        int64     `json:"topic_id,omitempty"`
-	ConversationID string    `json:"conversation_id"`
-	Style          string    `json:"style,omitempty"`
-	StyleVersion   uint64    `json:"style_version,omitempty"`
-	Archived       bool      `json:"archived,omitempty"`
-	NameAuto       bool      `json:"name_auto,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
-
 func taskConversation(chatID int64, taskID string) string {
-	base := "telegram-" + strconv.FormatInt(chatID, 10)
-	if taskID == "" || taskID == defaultTaskID {
-		return base
-	}
-	return base + "-" + taskID
+	return commodel.TaskConversation(chatID, taskID)
 }
 
-func defaultTask(user User, chatID int64) Task {
-	return Task{Schema: 1, TaskID: defaultTaskID, Name: "default", PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", ChatID: chatID, ConversationID: taskConversation(chatID, defaultTaskID)}
-}
+func defaultTask(user User, chatID int64) Task { return commodel.DefaultTask(user, chatID) }
 
 // validTaskName bounds operator-chosen labels; they never reach a provider.
 func validTaskName(name string) bool {
@@ -313,6 +290,14 @@ func (s *Spool) TaskByID(user User, chatID int64, taskID string) (Task, error) {
 	return s.taskByIDLocked(user, chatID, taskID)
 }
 
+// TaskBySelector resolves a live task by id or unique name — the selector
+// surface shared by /archive and other mutating commands.
+func (s *Spool) TaskBySelector(user User, chatID int64, selector string) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.findTaskLocked(user, chatID, selector)
+}
+
 func (s *Spool) taskByIDLocked(user User, chatID int64, taskID string) (Task, error) {
 	if taskID == "" || taskID == defaultTaskID {
 		task, err := s.loadTaskLocked(user.ID, defaultTaskID)
@@ -481,6 +466,92 @@ func (s *Spool) RenameTask(user User, chatID int64, taskID, name string) (Task, 
 	return task, s.materializeTaskLocked(task)
 }
 
+// RebindTaskTopic moves a task's topic binding to another topic — e.g. from
+// the caller's topic to a bot-created forum topic. The target must be free or
+// already bound to the same task.
+func (s *Spool) RebindTaskTopic(user User, chatID int64, taskID string, newTopic int64) error {
+	if newTopic == 0 {
+		return errors.New("missing topic")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, err := s.taskForMutationLocked(user, chatID, taskID)
+	if err != nil {
+		return err
+	}
+	if bound, err := s.topicTaskLocked(user.ID, chatID, newTopic); err != nil {
+		return err
+	} else if bound != "" && bound != taskID {
+		return errors.New("topic is already bound")
+	}
+	if task.TopicID != 0 && task.TopicID != newTopic {
+		if err := os.Remove(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	task.TopicID = newTopic
+	return s.materializeTaskLocked(task)
+}
+
+// RenameTopicTask mirrors a forum-topic rename onto the bound session so the
+// session list shows the same name the topic carries; an adopted auto name
+// is dropped since the user named the topic deliberately. Unbound, stale or
+// archived bindings are a no-op.
+func (s *Spool) RenameTopicTask(user User, chatID, topicID int64, name string) error {
+	name = strings.TrimSpace(name)
+	if topicID == 0 || !validTaskName(name) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taskID, err := s.topicTaskLocked(user.ID, chatID, topicID)
+	if err != nil || taskID == "" {
+		return err
+	}
+	task, err := s.loadTaskLocked(user.ID, taskID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if task.Archived || task.Name == name {
+		return nil
+	}
+	task.Name = name
+	task.NameAuto = false
+	return s.writeTaskLocked(task)
+}
+
+// FixTopicPlaceholder replaces the adoption placeholder "topic-<id>" with
+// the real forum topic name when the service message arrives after the
+// topic was already bound. A task carrying any other name keeps it.
+func (s *Spool) FixTopicPlaceholder(user User, chatID, topicID int64, name string) error {
+	name = strings.TrimSpace(name)
+	if topicID == 0 || !validTaskName(name) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taskID, err := s.topicTaskLocked(user.ID, chatID, topicID)
+	if err != nil || taskID == "" {
+		return err
+	}
+	task, err := s.loadTaskLocked(user.ID, taskID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if task.Archived || task.Name != "topic-"+strconv.FormatInt(topicID, 10) {
+		return nil
+	}
+	task.Name = name
+	task.NameAuto = false
+	return s.writeTaskLocked(task)
+}
+
 // ArchiveTask retires a live task: its topic binding and current pointer are
 // released and the chat falls back to the default conversation. The task file
 // keeps its session binding for audit; the same name can be reused later.
@@ -583,6 +654,49 @@ func (s *Spool) deleteTaskLocked(user User, chatID int64, task Task) (Task, erro
 		return Task{}, err
 	}
 	return task, nil
+}
+
+// UnarchiveTask restores an archived task by id or unique name and makes it
+// the chat's current session; a topic binding is restored and reported via
+// rebound unless another live task adopted the topic meanwhile.
+func (s *Spool) UnarchiveTask(user User, chatID int64, selector string) (Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, err := s.loadTaskLocked(user.ID, selector)
+	if err != nil || !task.Archived {
+		tasks, lerr := s.listTasksLocked(user.ID)
+		if lerr != nil {
+			return Task{}, false, lerr
+		}
+		found, count := Task{}, 0
+		for _, t := range tasks {
+			if t.Archived && t.Name == selector {
+				found, count = t, count+1
+			}
+		}
+		if count > 1 {
+			return Task{}, false, errors.New("task name is ambiguous; use its id")
+		}
+		if count == 0 {
+			return Task{}, false, errors.New("task not found")
+		}
+		task = found
+	}
+	if task.ChatID != chatID {
+		return Task{}, false, errors.New("task belongs to a different chat")
+	}
+	if task.TopicID != 0 {
+		if bound, err := s.topicTaskLocked(user.ID, chatID, task.TopicID); err != nil {
+			return Task{}, false, err
+		} else if bound != "" && bound != task.TaskID {
+			task.TopicID = 0
+		}
+	}
+	task.Archived = false
+	if err := s.materializeTaskLocked(task); err != nil {
+		return Task{}, false, err
+	}
+	return task, task.TopicID != 0, s.setCurrentLocked(task)
 }
 
 // ListArchivedTasks returns the owner's archived tasks, oldest first.

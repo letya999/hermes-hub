@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"image"
 	"image/png"
 	"net/http"
@@ -196,7 +197,7 @@ func TestServiceEnableRejectsOrganizationScope(t *testing.T) {
 
 func TestManagedLegacyServicesDoNotClaimEnablement(t *testing.T) {
 	v := fixture(t)
-	v.ToolPolicy = &toolhub.ToolPolicySnapshot{Schema: 1, Principal: "alice"}
+	v.ToolPolicy = &api.ToolPolicySnapshot{Schema: 1, Principal: "alice"}
 	v.StateDir = t.TempDir()
 	restarted := false
 	v.Restart = func() error { restarted = true; return nil }
@@ -224,20 +225,20 @@ func TestToolHubManifestCatalogEnableDisableIsOptIn(t *testing.T) {
 	state := t.TempDir()
 	storePath := filepath.Join(state, "toolhub", "store.json")
 	store := toolhub.NewStore()
-	grant := toolhub.OperatorGrant(toolhub.GrantCatalogDefault, "alice", "", "")
-	if err := toolhub.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
+	grant := api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")
+	if err := api.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.PutGrant(grant); err != nil {
 		t.Fatal(err)
 	}
-	definition := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:    toolhub.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},
-		Tools:     []toolhub.ToolSpec{{Name: "search", Effect: toolhub.ReadEffect}},
-		Workload:  toolhub.WorkloadPolicy{Class: toolhub.PerUser, Rationale: "owner-scoped test"},
-		Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"example.invalid"}},
-		Health:    toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:    api.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},
+		Tools:     []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
+		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "owner-scoped test"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"example.invalid"}},
+		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
@@ -271,11 +272,11 @@ func TestToolHubManifestCatalogEnableDisableIsOptIn(t *testing.T) {
 	if err != nil || enabled["enabled"] != true || enabled["binding_id"] != binding.ToolBindingID {
 		t.Fatal(enabled, err)
 	}
-	missingDefinition := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "needs", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source: toolhub.DefinitionSource{URL: "https://needs.example/mcp", TLSMode: "required"}, Tools: []toolhub.ToolSpec{{Name: "read", Effect: toolhub.ReadEffect}},
-		Credentials: []toolhub.CredentialInput{{Name: "NEEDS_TOKEN", Required: true}}, Workload: toolhub.WorkloadPolicy{Class: toolhub.PerUser, Rationale: "credential test"},
-		Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"needs.example"}}, Health: toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	missingDefinition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "needs", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source: api.DefinitionSource{URL: "https://needs.example/mcp", TLSMode: "required"}, Tools: []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}},
+		Credentials: []api.CredentialInput{{Name: "NEEDS_TOKEN", Required: true}}, Workload: api.WorkloadPolicy{Class: api.PerUser, Rationale: "credential test"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"needs.example"}}, Health: api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := v.ToolHub.RegisterDefinition(missingDefinition); err != nil {
 		t.Fatal(err)
@@ -295,7 +296,7 @@ func TestToolHubManifestCatalogEnableDisableIsOptIn(t *testing.T) {
 	if _, err := legacy.ServiceDisable(Input{Service: "demo"}); err == nil {
 		t.Fatal("legacy service_disable accepted")
 	}
-	if _, err := os.Stat(filepath.Join(state, toolhub.ReconnectMarkerName)); err != nil {
+	if _, err := os.Stat(filepath.Join(state, api.ReconnectMarkerName)); err != nil {
 		t.Fatal("reconnect marker missing after catalog mutation:", err)
 	}
 	reloaded, err := toolhub.Load(storePath)
@@ -338,20 +339,20 @@ func TestToolHubOrganizationCanDisableButNotEnable(t *testing.T) {
 	state := t.TempDir()
 	storePath := filepath.Join(state, "toolhub", "store.json")
 	store := toolhub.NewStore()
-	grant := toolhub.OperatorGrant(toolhub.GrantDefinition, "alice", "demo", "1.0.0")
-	if err := toolhub.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
+	grant := api.OperatorGrant(api.GrantDefinition, "alice", "demo", "1.0.0")
+	if err := api.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.PutGrant(grant); err != nil {
 		t.Fatal(err)
 	}
-	definition := toolhub.ToolDefinition{
-		Schema: toolhub.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: toolhub.RemoteMCP,
-		Source:    toolhub.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},
-		Tools:     []toolhub.ToolSpec{{Name: "search", Effect: toolhub.ReadEffect}},
-		Workload:  toolhub.WorkloadPolicy{Class: toolhub.PerUser, Rationale: "owner-scoped test"},
-		Execution: toolhub.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"example.invalid"}},
-		Health:    toolhub.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:    api.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},
+		Tools:     []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
+		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "owner-scoped test"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"example.invalid"}},
+		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
 	}
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
@@ -600,7 +601,7 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 26 {
+	if err != nil || len(list.Tools) != 29 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, name := range []string{"document_extract", "document_create", "image_inspect", "artifact_remove", "settings_get", "settings_set", "archive_create", "archive_unpack", "inbox_fetch"} {
@@ -631,6 +632,38 @@ func TestMCPWire(t *testing.T) {
 	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "file_write", Arguments: map[string]any{"path": "drafts/test.md", "text": "real MCP call"}})
 	if err != nil || result.IsError {
 		t.Fatal(result, err)
+	}
+}
+
+// SPEC-0053 R1.7: expected tool failures (bad path, missing dependency,
+// unsupported media, malformed input) must cross the wire as a CallToolResult
+// with IsError set and a user-visible message — never as a transport error,
+// so a client does not tear down the session or trip a circuit breaker.
+func TestMCPWireExpectedFailures(t *testing.T) {
+	t.Setenv("HUB_HH_ENABLED", "false")
+	t.Setenv("HUB_HERMES_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+	client, closeAll := connectHub(t, fixture(t))
+	defer closeAll()
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"file_read", map[string]any{"path": "../outside.txt"}},
+		{"routine_list", map[string]any{}},
+		{"image_inspect", map[string]any{"paths": []string{"clip.gif"}}},
+		{"settings_set", map[string]any{"key": "model"}},
+	} {
+		result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
+		if err != nil {
+			t.Fatalf("%s: expected failure became a transport error: %v", tc.name, err)
+		}
+		if result == nil || !result.IsError {
+			t.Fatalf("%s: expected IsError result, got %+v", tc.name, result)
+		}
+		if toolPlain(result) == "" || !strings.Contains(toolPlain(result), `"text"`) {
+			t.Fatalf("%s: IsError result carries no message: %s", tc.name, toolPlain(result))
+		}
 	}
 }
 
@@ -697,7 +730,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	client, cleanup := connectHub(t, v)
 	defer cleanup()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 26 {
+	if err != nil || len(list.Tools) != 29 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, tool := range list.Tools {
@@ -788,7 +821,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 30 {
+	if err != nil || len(listed.Tools) != 33 {
 		t.Fatal(len(listed.Tools), err)
 	}
 	made, body := callHub(t, granted, "image_generate", map[string]any{"name": "pic", "prompt": "a red square"})

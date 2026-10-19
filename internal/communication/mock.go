@@ -12,14 +12,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // The mock channel is the local acceptance bench: real pipeline, zero
 // external APIs. Inbound goes through the same task binding and queue as a
 // channel message; outbound deliveries are captured durably under
 // spool/mock-sent for inspection instead of being sent anywhere.
+
+// mockRoot locates mock-channel capture; HUB_MOCK_DIR relocates it out of the
+// production spool for e2e/dev runs (SPEC-0053 R2.3).
+func (g *Gateway) mockRoot() string {
+	if g.config.MockDir != "" {
+		return g.config.MockDir
+	}
+	return g.spool.root
+}
 
 // handleMockMessage injects one user message for the calling principal.
 // client_id is the caller's idempotency handle — repeats never enqueue twice.
@@ -100,7 +107,7 @@ func (g *Gateway) handleMockOutbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	entries, err := os.ReadDir(filepath.Join(g.spool.root, "mock-sent"))
+	entries, err := os.ReadDir(filepath.Join(g.mockRoot(), "mock-sent"))
 	type snapshot struct {
 		Delivery
 		ArtifactData map[string][]byte `json:"artifact_data,omitempty"`
@@ -111,7 +118,7 @@ func (g *Gateway) handleMockOutbox(w http.ResponseWriter, r *http.Request) {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 				continue
 			}
-			b, err := os.ReadFile(filepath.Join(g.spool.root, "mock-sent", e.Name()))
+			b, err := os.ReadFile(filepath.Join(g.mockRoot(), "mock-sent", e.Name()))
 			if err != nil {
 				continue
 			}
@@ -134,7 +141,7 @@ func (g *Gateway) handleMockOutbox(w http.ResponseWriter, r *http.Request) {
 // A mock chat belongs to exactly one principal, like a Telegram DM belongs
 // to one account; the binding under spool/mock-links survives restarts.
 func (g *Gateway) mockLinkOwner(chatID int64) (string, error) {
-	b, err := os.ReadFile(filepath.Join(g.spool.root, "mock-links", strconv.FormatInt(chatID, 10)+".json"))
+	b, err := os.ReadFile(filepath.Join(g.mockRoot(), "mock-links", strconv.FormatInt(chatID, 10)+".json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
@@ -163,7 +170,7 @@ func (g *Gateway) mockLinkClaim(chatID int64, principal string) error {
 		}
 		return nil
 	}
-	return atomicJSON(filepath.Join(g.spool.root, "mock-links", strconv.FormatInt(chatID, 10)+".json"), map[string]string{"principal": principal})
+	return atomicJSON(filepath.Join(g.mockRoot(), "mock-links", strconv.FormatInt(chatID, 10)+".json"), map[string]string{"principal": principal})
 }
 
 // captureMock persists a completed delivery as the channel's durable record.
@@ -185,16 +192,5 @@ func (g *Gateway) captureMock(d *Delivery) error {
 		}
 		artifacts[artifact.Name] = data
 	}
-	return atomicJSON(filepath.Join(g.spool.root, "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts})
-}
-
-func (user User) mockEnvelope(chatID int64) identity.Envelope {
-	runtimeID, policy := user.RuntimeID, user.PolicyVersion
-	if runtimeID == "" {
-		runtimeID = user.ID
-	}
-	if policy == "" {
-		policy = envOr("HUB_POLICY_VERSION", "policy-1")
-	}
-	return identity.MockEnvelope(user.ID, chatID, runtimeID, policy)
+	return atomicJSON(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts})
 }

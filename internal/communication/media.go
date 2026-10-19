@@ -149,7 +149,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 		media = message.Audio
 	}
 	topic := messageTopicID(message)
-	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
+	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if err := rejectMedia(envelope, g.config.MediaMaxDuration); err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, "Голосовое сообщение отклонено: слишком большое, длинное или неподдерживаемый тип.")
 	}
@@ -185,18 +185,35 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	if media == nil {
 		return nil
 	}
-	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
+	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if envelope.Size > mediaSizeLimit {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Файл слишком большой.")
 	}
 	name := media.FileName
 	if name == "" {
-		name = media.FileID
+		name = "in-" + strconv.Itoa(update.UpdateID)
 	}
 	inbox := ""
 	if path, err := g.downloadTelegramMedia(ctx, media.FileID); err == nil && path != "" {
 		defer os.Remove(path)
 		if staged, err := os.Open(path); err == nil {
+			if media.FileName == "" {
+				var header [512]byte
+				n, readErr := staged.Read(header[:])
+				_, seekErr := staged.Seek(0, io.SeekStart)
+				if readErr != nil && readErr != io.EOF || seekErr != nil {
+					_ = staged.Close()
+					return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Не удалось сохранить файл. Отправьте его ещё раз.")
+				}
+				switch http.DetectContentType(header[:n]) {
+				case "image/jpeg":
+					name += ".jpg"
+				case "image/png":
+					name += ".png"
+				case "image/webp":
+					name += ".webp"
+				}
+			}
 			rec := InboundRecord{ID: "in-" + strconv.Itoa(update.UpdateID), UserID: user.ID, ConversationID: envelope.ConversationID, Name: name, Mime: envelope.MIME, CreatedAt: time.Now().UTC()}
 			if err := g.spool.StageInbound(rec, staged); err == nil {
 				inbox = rec.ID
@@ -312,7 +329,7 @@ func (c HTTPTranscriber) Transcribe(ctx context.Context, path, mime string) (str
 	}
 	text := strings.TrimSpace(string(payload))
 	if err := json.Unmarshal(payload, &parsed); err == nil && parsed.Text != "" {
-		text = parsed.Text
+		text = strings.TrimSpace(parsed.Text)
 	}
 	if text == "" {
 		return "", errors.New("empty transcript")

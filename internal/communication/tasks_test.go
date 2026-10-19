@@ -186,11 +186,11 @@ func TestTaskExplicitBindAndWrongTopicGuards(t *testing.T) {
 		t.Fatal("topic rebind accepted")
 	}
 	// A job claiming a foreign chat's task is rejected at admission.
-	foreign := Job{Envelope: user.envelope(11), ID: "foreign", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", ChatID: 999, TaskID: bound.TaskID, Text: "x"}
+	foreign := Job{Envelope: user.Envelope(11), ID: "foreign", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", ChatID: 999, TaskID: bound.TaskID, Text: "x"}
 	if _, err := g.spool.Enqueue(foreign); err == nil {
 		t.Fatal("foreign-chat task binding admitted")
 	}
-	if _, err := g.spool.Enqueue(Job{Envelope: user.envelope(11), ID: "missing-task", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", ChatID: 11, TaskID: "t-absent", Text: "x"}); err == nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: user.Envelope(11), ID: "missing-task", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", ChatID: 11, TaskID: "t-absent", Text: "x"}); err == nil {
 		t.Fatal("missing task binding admitted")
 	}
 }
@@ -209,7 +209,7 @@ func TestStyleSnapshotPinnedPerJobAndIsolated(t *testing.T) {
 	if _, err := g.spool.SetTaskStyle(user, 11, task.TaskID, "laconic"); err != nil {
 		t.Fatal(err)
 	}
-	envelope := user.envelope(11)
+	envelope := user.Envelope(11)
 	envelope.ConversationID = task.ConversationID
 	job := Job{Envelope: envelope, ID: "style-job-1", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "style-job-1", ChatID: 11, TaskID: task.TaskID, Text: "hi"}
 	if _, err := g.spool.Enqueue(job); err != nil {
@@ -249,7 +249,7 @@ func TestStyleSnapshotPinnedPerJobAndIsolated(t *testing.T) {
 		t.Fatalf("reset leaked style: %q", style)
 	}
 	// Style on one task never reaches another task or the default task.
-	defaultJob := Job{Envelope: user.envelope(11), ID: "default-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "default-job", ChatID: 11, TaskID: defaultTaskID, Text: "hi"}
+	defaultJob := Job{Envelope: user.Envelope(11), ID: "default-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "default-job", ChatID: 11, TaskID: defaultTaskID, Text: "hi"}
 	if _, err := g.spool.Enqueue(defaultJob); err != nil {
 		t.Fatal(err)
 	}
@@ -447,20 +447,19 @@ func TestUsageUpdateRunsBesideUpdatePoll(t *testing.T) {
 }
 
 func TestUsageOverviewIncludesQuotaWithoutBlockingPoll(t *testing.T) {
-	management := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v0/management/auth-files":
-			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{"provider": "antigravity", "auth_index": "own", "project_id": "own-project"}}})
-		case "/v0/management/api-call":
-			_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 200, "body": `{"groups":[{"displayName":"Gemini","buckets":[{"window":"weekly","remainingFraction":0.75}]}]}`})
-		default:
-			w.WriteHeader(http.StatusNotFound)
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/quota" || r.Header.Get("Authorization") != "Bearer test-key" {
+			w.WriteHeader(http.StatusForbidden)
+			return
 		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"lines": []string{
+			"Лимиты подписки (u@example.com):",
+			"  Gemini: weekly 75.0%.",
+		}})
 	}))
-	defer management.Close()
-	t.Setenv("HUB_CLIPROXY_MGMT_URL", management.URL)
-	t.Setenv("HUB_CLIPROXY_MGMT_KEY", "test-key")
-	t.Setenv("HUB_CLIPROXY_AUTH_INDEX", "")
+	defer relay.Close()
+	t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "test-key")
 	g, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -530,13 +529,13 @@ func TestTaskCommandRejectsBadInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := g.useCommand(user, 11, "/use"); !strings.Contains(got, "Используйте /use") {
+	if got := g.useCommand(context.Background(), user, 11, "/use"); !strings.Contains(got, "Используйте /use") {
 		t.Fatalf("/use hint=%q", got)
 	}
-	if got := g.newTaskCommand(user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
+	if got, _ := g.newTaskCommand(context.Background(), user, 11, 0, "/new bad\x00name"); !strings.Contains(got, "отклонена") {
 		t.Fatalf("invalid name accepted: %q", got)
 	}
-	if got := g.deleteCommand(user, 11, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
+	if got, _ := g.deleteCommand(context.Background(), user, 11, 0, task, "/delete"); !strings.Contains(got, "Не удалось удалить") {
 		t.Fatalf("default delete=%q", got)
 	}
 	if _, err := g.spool.SetTaskStyle(user, 11, task.TaskID, "\x07"); err == nil {
@@ -676,7 +675,7 @@ func TestScheduleKeepsTaskBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller := user.envelope(11)
+	caller := user.Envelope(11)
 	schedule := Schedule{ScheduleID: "cron-1", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, TopicID: 5, Timezone: "UTC", Expression: "* * * * *", Input: "tick", CreatedAt: g.now().UTC()}
 	if _, err := g.spool.CreateSchedule(schedule, caller, ""); err != nil {
 		t.Fatal(err)
@@ -687,17 +686,19 @@ func TestScheduleKeepsTaskBinding(t *testing.T) {
 	if err := validateOccurrence(occ, caller); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(occ.Job); err != nil {
+	if err := g.spool.PutOccurrence(occ, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.DispatchDueOccurrences(occ.DueAt, g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := g.spool.ClaimJob()
 	if err != nil || claimed == nil {
 		t.Fatal("cron job missing")
 	}
-	if claimed.ConversationID != task.ConversationID || claimed.TopicID != 5 {
+	// Routines isolate their session per schedule; the task binding survives
+	// for delivery routing only.
+	if claimed.ConversationID != routineConversation(schedule.ScheduleID) || claimed.TaskID != task.TaskID || claimed.TopicID != 5 {
 		t.Fatalf("cron job lost task binding: %+v", claimed)
-	}
-	if claimed.Envelope.ConversationID != task.ConversationID {
-		t.Fatal("envelope not rebound to task conversation")
 	}
 }

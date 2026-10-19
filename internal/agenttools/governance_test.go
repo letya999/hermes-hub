@@ -3,12 +3,11 @@ package agenttools
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // The rendered snapshot is the executor's third-plane fence: it re-checks
@@ -21,7 +20,7 @@ func TestToolPolicyDispatchDeny(t *testing.T) {
 	if _, err := v.ExecCall(context.Background(), "file_read", map[string]any{"path": "docs/a.txt"}, nil); err != nil {
 		t.Fatalf("nil policy must not deny: %v", err)
 	}
-	v.ToolPolicy = &toolhub.ToolPolicySnapshot{Schema: 1, Principal: "me", Deny: []string{"files"}}
+	v.ToolPolicy = &api.ToolPolicySnapshot{Schema: 1, Principal: "me", Deny: []string{"files"}}
 	if _, err := v.ExecCall(context.Background(), "file_read", map[string]any{"path": "docs/a.txt"}, nil); err == nil || !strings.Contains(err.Error(), "denied by tool governance") {
 		t.Fatalf("denied family admitted: %v", err)
 	}
@@ -33,7 +32,7 @@ func TestToolPolicyDispatchDeny(t *testing.T) {
 		t.Fatal("deny_all admitted a call")
 	}
 	// cap:read refuses write-effect tools of the family, keeps reads.
-	v.ToolPolicy = &toolhub.ToolPolicySnapshot{Schema: 1, Principal: "me", ReadOnly: []string{"files"}}
+	v.ToolPolicy = &api.ToolPolicySnapshot{Schema: 1, Principal: "me", ReadOnly: []string{"files"}}
 	if _, err := v.ExecCall(context.Background(), "file_write", map[string]any{"path": "docs/b.txt", "text": "x"}, nil); err == nil || !strings.Contains(err.Error(), "read-only") {
 		t.Fatalf("capped family admitted a write: %v", err)
 	}
@@ -62,7 +61,7 @@ func TestToolPolicyLoadFailsClosed(t *testing.T) {
 	if _, err := OpenRoots(dir, "", ""); err == nil {
 		t.Fatal("corrupt policy opened an executor")
 	}
-	body, _ := json.Marshal(toolhub.ToolPolicySnapshot{Schema: 1, Principal: "me", Deny: []string{"ssh"}})
+	body, _ := json.Marshal(api.ToolPolicySnapshot{Schema: 1, Principal: "me", Deny: []string{"ssh"}})
 	if err := os.WriteFile(policyPath, body, 0600); err != nil {
 		t.Fatal(err)
 	}

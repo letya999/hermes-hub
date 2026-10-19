@@ -3,6 +3,7 @@ package communication
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -256,8 +257,16 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("expired catch-up wrote occurrence: %v %v", entries, err)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expired catch-up must retain one missed record: %v %v", entries, err)
+	}
+	body, err := os.ReadFile(filepath.Join(s.root, "occurrences", entries[0].Name()))
+	var missed RoutineOccurrence
+	if err != nil || json.Unmarshal(body, &missed) != nil || missed.State != "missed" || missed.ScheduleID != created.ScheduleID {
+		t.Fatalf("expired catch-up record: %+v %v", missed, err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("expired catch-up admitted work: %+v %v", job, err)
 	}
 	live, err := s.CreateSchedule(Schedule{ScheduleID: "exists", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "exists"}, caller, "")
 	if err != nil {

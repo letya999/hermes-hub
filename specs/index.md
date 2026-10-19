@@ -2,6 +2,15 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0059](active/SPEC-0059-watcher-probe-pipeline.md) | Frozen: watcher fetch/extract pipeline, isolated script/command probes, snapshotted recipes |
+| [SPEC-0058](active/SPEC-0058-routine-destinations.md) | Frozen: routine destination discovery, binding, edits and history |
+| [SPEC-0057](active/SPEC-0057-compact-routine-tools.md) | Frozen: five-tool routine interface amendment |
+| [SPEC-0056](active/SPEC-0056-routine-lifecycle.md) | Frozen: owner routine lifecycle and interval windows |
+| [SPEC-0055](active/SPEC-0055-routine-occurrence-recovery.md) | Active amendment: routine coalescing, fault isolation and bounded occurrence detail |
+| [SPEC-0054](active/SPEC-0054-proactive-automation.md) | Frozen: verified follow-ups, watcher notification policy, control-plane tool calls, owner brief and event subscriptions (M12) |
+| [SPEC-0053](active/SPEC-0053-execution-chain-reliability.md) | Frozen: M19 execution chain SLOs, stop-loss, tool surface, latency, recovery and visibility requirements |
+| [SPEC-0052](active/SPEC-0052-telegram-operation-contracts.md) | Draft: Telegram image, watcher, reminder, approval and exact-file acceptance; albums are a subsequent slice |
+| [SPEC-0051](active/SPEC-0051-deployment-contracts.md) | Frozen: environment, provider and Docker deployment contracts |
 | [SPEC-0050](active/SPEC-0050-m10-stabilization.md) | Frozen: M10 remediation amendment |
 | [SPEC-0049](active/SPEC-0049-operability.md) | Frozen: mock, additive apply and BuildKit discipline |
 | [SPEC-0048](active/SPEC-0048-proactive-routines.md) | Frozen: watchers, checks, deterministic digests and knowledge |
@@ -15,6 +24,7 @@
 | [SPEC-0042](active/SPEC-0042-capability-isolation-and-proof.md) | Frozen: execution isolation, file/shell boundaries and T01-T22 acceptance; implementation in CHG-0065 |
 | [SPEC-0041](active/SPEC-0041-default-deny-capabilities.md) | Frozen successor to SPEC-0040 defaults: complete inventory, explicit profiles/grants, routing and revocation; implementation in CHG-0065 |
 | [SPEC-0040](active/SPEC-0040-capability-profile.md) | Frozen earlier capability matrix; defaults/enforcement superseded by SPEC-0041/0042 |
+| [SPEC-0040](active/SPEC-0040-media-generation-service.md) | hub-media generation sidecar (number collides with capability-profile; kept for reference stability) |
 | [SPEC-0039](active/SPEC-0039-media-sidecars.md) | Standalone hub-stt/hub-tts services (separate images): OpenAI-compatible API, swappable engines, durable async jobs for long recordings |
 | [SPEC-0038](active/SPEC-0038-voice-readiness.md) | `/voice` reports STT and TTS readiness separately; live voice evidence is a deployment gate |
 | [SPEC-0037](active/SPEC-0037-artifact-delivery.md) | Run artifact handoff: bounded runtime fetch endpoint, spool staging, ordered channel delivery |

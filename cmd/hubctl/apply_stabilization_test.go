@@ -11,6 +11,7 @@ import (
 
 func TestM10ApplyPrevalidatesEveryResourceAndBoundsInput(t *testing.T) {
 	root := t.TempDir()
+	state := filepath.Join(t.TempDir(), "state")
 	source := filepath.Join(root, "source.md")
 	if err := os.WriteFile(source, []byte("snapshot"), 0600); err != nil {
 		t.Fatal(err)
@@ -43,7 +44,7 @@ func TestM10ApplyPrevalidatesEveryResourceAndBoundsInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			spool := filepath.Join(t.TempDir(), "spool")
-			if _, err := applyFile(spool, "alice", spec); err == nil {
+			if _, err := applyFile(spool, state, "alice", spec); err == nil {
 				t.Fatal("invalid apply accepted")
 			}
 			files, _ := filepath.Glob(filepath.Join(spool, "schedules", "*.json"))
@@ -61,19 +62,19 @@ func TestM10ApplyPrevalidatesEveryResourceAndBoundsInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = applyFile(spool, "alice", spec); err == nil {
+	if _, err = applyFile(spool, state, "alice", spec); err == nil {
 		unlock()
 		t.Fatal("offline apply ignored gateway lock")
 	}
 	unlock()
-	if _, err = applyFile(spool, "../alice", spec); err == nil {
+	if _, err = applyFile(spool, state, "../alice", spec); err == nil {
 		t.Fatal("invalid principal accepted")
 	}
 	oversized := filepath.Join(root, "too-big.yaml")
 	if err = os.WriteFile(oversized, []byte(strings.Repeat("x", (1<<20)+1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = applyFile(spool, "alice", oversized); err == nil {
+	if _, err = applyFile(spool, state, "alice", oversized); err == nil {
 		t.Fatal("oversize YAML accepted")
 	}
 	if _, err = readApplySource(root); err == nil {
@@ -82,23 +83,23 @@ func TestM10ApplyPrevalidatesEveryResourceAndBoundsInput(t *testing.T) {
 	if _, err = readKnowledgeSource(root); err == nil {
 		t.Fatal("directory accepted as knowledge")
 	}
-	if _, err = applyKnowledge(spool, "alice", "notes.md", source); err != nil {
+	if _, err = applyKnowledge(state, "alice", "notes.md", source); err != nil {
 		t.Fatal(err)
 	}
 	// No initial-file read may follow a sibling user's link.
-	victim := filepath.Join(spool, "knowledge", "bob")
+	victim := filepath.Join(state, "knowledge", "bob")
 	if err = os.MkdirAll(victim, 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err = os.WriteFile(filepath.Join(victim, "private.md"), []byte("private"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	owner := filepath.Join(spool, "knowledge", "linked")
+	owner := filepath.Join(state, "knowledge", "linked")
 	if err = os.Symlink(victim, owner); err != nil {
 		t.Log("symlink test unavailable on this host")
 		return
 	}
-	if _, err = applyKnowledge(spool, "linked", "private.md", source); err == nil {
+	if _, err = applyKnowledge(state, "linked", "private.md", source); err == nil {
 		t.Fatal("knowledge owner symlink accepted")
 	}
 	bytes, err := os.ReadFile(filepath.Join(victim, "private.md"))

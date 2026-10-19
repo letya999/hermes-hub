@@ -3,13 +3,13 @@ package stack
 import (
 	_ "embed"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"gopkg.in/yaml.v3"
 )
 
@@ -231,6 +231,10 @@ var toolhubCapabilityID = map[string]string{
 	"terminal": "terminal", "code_exec": "terminal", "web": "web",
 	"settings": "settings",
 }
+
+// ToolHubCapabilityID reports the executor capability family a `via: toolhub`
+// entry name consumes, or "" for names outside the family vocabulary.
+func ToolHubCapabilityID(name string) string { return toolhubCapabilityID[name] }
 
 // readOnlyCapabilities lists the ToolHub capability ids whose `access: ro`
 // entries force write-effect tools off inside the runtime executor.
@@ -518,9 +522,9 @@ func rawMCPServers(s Settings) M {
 	managed := s.CapabilityMode == "managed"
 	// The whole declaration surface is one governance section: user_mcp on a
 	// personal space, org_mcp for the merged organization catalog.
-	section := toolhub.SectionUserMCP
+	section := api.SectionUserMCP
 	if s.OrgScoped() {
-		section = toolhub.SectionOrgMCP
+		section = api.SectionOrgMCP
 	}
 	if !s.govAllows(section) {
 		return servers
@@ -606,7 +610,7 @@ func (s Settings) Has(name string) bool {
 	case "telegram", "slack_app":
 		return slices.Contains(s.Ingress, name)
 	case "telegram_auth":
-		return s.TelegramAuth
+		return s.Has("telegram") && (s.TelegramAuth == nil || *s.TelegramAuth)
 	case "browser_act":
 		return s.toolToggle("browser", "act")
 	case "ssh_write":

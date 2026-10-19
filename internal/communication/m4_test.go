@@ -441,7 +441,7 @@ func TestRoutineHTTPControlAndTelegramCommand(t *testing.T) {
 	g.now = func() time.Time { return time.Unix(50, 0) }
 	due := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
 	user := g.user("alice")
-	caller := user.envelope(11)
+	caller := user.Envelope(11)
 	if _, err := g.spool.CreateSchedule(Schedule{ScheduleID: "morning", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due, Input: "say hello", CreatedAt: g.now().UTC()}, caller, g.config.NativeCron); err != nil {
 		t.Fatal(err)
 	}

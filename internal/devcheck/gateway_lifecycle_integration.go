@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io/fs"
 	"net"
 	"net/http"
@@ -24,7 +25,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 // gatewayLifecycleSmoke uses the production Telegram adapter, worker, spool,
@@ -56,7 +56,11 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	}
 	defer exec.Command("docker", "network", "rm", network).Run()
 	control := "synthetic-gateway-control-0123456789"
-	cfg := supervisor.Config{SpacesRoot: root, Image: image, Network: network, RuntimeAuth: control, PortBase: 32000}
+	// The deployment default warm window is now 30 min (SPEC-0053 S2), far
+	// beyond this check's budget, so the fixture pins its own five-minute
+	// window and verifies the extension+reap mechanics at that value.
+	const warmWindow = 5 * time.Minute
+	cfg := supervisor.Config{SpacesRoot: root, Image: image, Network: network, RuntimeAuth: control, PortBase: 32000, WarmTTL: warmWindow}
 	manager, err := supervisor.New(cfg)
 	if err != nil {
 		return err
@@ -94,7 +98,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		if err := os.MkdirAll(filepath.Join(dir, "runtime", "toolhub"), 0700); err != nil {
 			return err
 		}
-		if err := toolhub.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), toolhub.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
+		if err := api.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), api.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
 			return err
 		}
 		if err := stack.RenderEnvironment(dir, ".", "prod"); err != nil {
@@ -261,7 +265,13 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	}
 	appendTask(71001, 21)
 	if err := wait("Alice cold start and final", coldStartBudget, func() bool { mu.Lock(); defer mu.Unlock(); return finals[21] == 1 }); err != nil {
-		return err
+		runtime, _, _ := manager.Status(bindings[0])
+		inspect, _ := exec.Command("docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}", runtime.Container).CombinedOutput()
+		logs, _ := exec.Command("docker", "logs", "--tail", "12", runtime.Container).CombinedOutput()
+		if len(logs) > 4096 {
+			logs = logs[len(logs)-4096:]
+		}
+		return fmt.Errorf("%w: runtime=%s inspect=%q logs=%q", err, runtime.State, strings.TrimSpace(string(inspect)), string(logs))
 	}
 	first, err := readMapping(71001)
 	if err != nil || first.Status != "completed" || first.ContextID != users[0].ID || first.RuntimeID != users[0].ID || first.RunID == "" {
@@ -284,7 +294,26 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 			runtime, ok, err := manager.Status(binding)
 			return err == nil && ok && runtime.Leases == 0 && runtime.State == supervisor.Idle
 		}); err != nil {
-			return err
+			runtime, _, _ := manager.Status(binding)
+			detail := ""
+			if raw, readErr := os.ReadFile(filepath.Join(root, ".control", "supervisor.json")); readErr == nil {
+				var state struct {
+					Items []struct {
+						Leases map[string]json.RawMessage `json:"leases"`
+					} `json:"items"`
+				}
+				if jsonErr := json.Unmarshal(raw, &state); jsonErr == nil {
+					for i, item := range state.Items {
+						for id, lease := range item.Leases {
+							detail += fmt.Sprintf("; item%d %s=%s", i, id, string(lease))
+						}
+					}
+				}
+				if len(detail) > 4096 {
+					detail = detail[:4096]
+				}
+			}
+			return fmt.Errorf("%w (last observed leases=%d state=%s%s)", err, runtime.Leases, runtime.State, detail)
 		}
 		runtime, ok, err := manager.Status(binding)
 		if err != nil || !ok || runtime.Leases != 0 || runtime.State != supervisor.Idle {
@@ -313,15 +342,14 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	if err != nil || second.SessionID != first.SessionID || second.RunID == first.RunID || second.RuntimeGeneration != first.RuntimeGeneration {
 		return errors.New("warm gateway task lost session/generation or reused the run")
 	}
-	if err := wait("warm terminal lease settlement", 10*time.Second, func() bool {
-		runtime, ok, err := manager.Status(bindings[0])
-		return err == nil && ok && runtime.Leases == 0 && runtime.State == supervisor.Idle
+	var after supervisor.Runtime
+	if err := wait("warm terminal lease settlement and extended deadline", 10*time.Second, func() bool {
+		var ok bool
+		after, ok, err = manager.Status(bindings[0])
+		return err == nil && ok && after.Leases == 0 && after.State == supervisor.Idle &&
+			after.IdleDeadline.After(before.IdleDeadline) && after.IdleDeadline.Sub(after.LastUsed) >= warmWindow-time.Second
 	}); err != nil {
-		return err
-	}
-	after, _, err := manager.Status(bindings[0])
-	if err != nil || !after.IdleDeadline.After(before.IdleDeadline) || after.IdleDeadline.Sub(after.LastUsed) < 5*time.Minute-time.Second {
-		return fmt.Errorf("new message did not extend default five-minute warm lease window: state=%s leases=%d previous=%s deadline=%s last_used=%s", after.State, after.Leases, before.IdleDeadline, after.IdleDeadline, after.LastUsed)
+		return fmt.Errorf("%w: state=%s leases=%d previous=%s deadline=%s last_used=%s", err, after.State, after.Leases, before.IdleDeadline, after.IdleDeadline, after.LastUsed)
 	}
 	idleDeadlines[bindings[0].UserID] = after.IdleDeadline
 	fmt.Println("Real gateway passed: two authenticated users, exact homes, duplicate updates once, warm session reuse and released leases; waiting actual five-minute idle window")
@@ -339,7 +367,13 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		}
 		return allStopped
 	}); err != nil {
-		return err
+		detail := ""
+		for _, binding := range bindings {
+			if runtime, ok, statusErr := manager.Status(binding); statusErr == nil && ok {
+				detail += fmt.Sprintf("; %s state=%s leases=%d health=%s ownership=%s desired=%v deadline=%s", binding.UserID, runtime.State, runtime.Leases, runtime.RuntimeHealth, runtime.Ownership, runtime.Desired, runtime.IdleDeadline)
+			}
+		}
+		return fmt.Errorf("%w%s", err, detail)
 	}
 	if earlyShutdown {
 		return errors.New("runtime stopped before its real five-minute idle deadline")

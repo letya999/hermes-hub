@@ -59,7 +59,7 @@ func (m *Manager) Prepare(id string, expires time.Time, c contract.Contract, b, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := v1.Materialized{LeaseID: id, ExpiresAt: expires, Env: map[string]string{}}
-	if !leaseID.MatchString(id) || c.Validate() != nil || c.ValidateValues(b) != nil {
+	if !leaseID.MatchString(id) || c.ValidateStructure() != nil || c.ValidateValues(b) != nil {
 		return out, ErrMaterialize
 	}
 	root := filepath.Join(m.root, id)
