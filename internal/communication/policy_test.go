@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -416,7 +417,7 @@ func TestBriefForeignWatchesExcluded(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
-	bobEnv := bob.envelope(22)
+	bobEnv := bob.Envelope(22)
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-foreign", Envelope: bobEnv, OrganizationID: o.Job.OrganizationID, UserID: "bob", ActorID: "bob", ScopeID: "user:bob", Channel: "telegram_bot", ChatID: 22, Timezone: "UTC", Expression: "0 * * * *", Input: "bob watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/b"}}, bobEnv, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -574,6 +575,9 @@ func TestBriefSourceIDsScope(t *testing.T) {
 	if !strings.Contains(job.Text, "in scope") || strings.Contains(job.Text, "out of scope") {
 		t.Fatalf("source_ids scope not honored: %q", job.Text)
 	}
+	if err := g.authorizeOccurrence(*job); err != nil {
+		t.Fatalf("brief bundle fails send-time re-authorization: %v", err)
+	}
 }
 
 // S4.2 — a revoked brief cancels its due occurrence through the shared
@@ -656,6 +660,152 @@ func TestBriefRevokedStaysQuietAndRestartDedups(t *testing.T) {
 	}
 }
 
+// S4.3 — inside the owner's quiet window a brief slot stays pending: no
+// model call, no delivery. After the window the same occurrence dispatches
+// and its unread changes still compose the brief (SPEC-0054 R4, A4).
+func TestBriefQuietDefersSlot(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wq-b", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "feed", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/qb"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wq-b"), WatchState{ScheduleID: "wq-b", Baseline: "h", Value: "v", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "briefq", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief", QuietFrom: now.Add(-30 * time.Minute).Format("15:04"), QuietTo: now.Add(30 * time.Minute).Format("15:04")}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	o.ScheduleID = "briefq"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatal("quiet window admitted a brief job")
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("quiet window produced a brief delivery")
+	}
+	var occ RoutineOccurrence
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	if err != nil || json.Unmarshal(b, &occ) != nil || occ.State != "pending" {
+		t.Fatalf("quiet brief occurrence state: %s %v", occ.State, err)
+	}
+	// The window is over and the slot is still inside catch-up: the deferred
+	// brief dispatches and the queued change reaches the model.
+	if err := s.DispatchDueOccurrences(now.Add(45*time.Minute), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("deferred brief never admitted its job")
+	}
+	if !strings.Contains(job.Text, "feed") {
+		t.Fatalf("deferred brief lost the queued change: %q", job.Text)
+	}
+}
+
+// S4.3 — a persistently failing source is named unavailable once per
+// distinct error; the next slot reports the ongoing count in the
+// deterministic footer instead of repeating the same line (SPEC-0054 R4).
+func TestBriefUnavailableErrorDeduped(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "werr", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "fragile", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/e"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("werr"), WatchState{ScheduleID: "werr", LastError: "connection refused", LastSuccess: time.Now().UTC().Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "briefe", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief"}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "briefe"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil || !strings.Contains(job.Text, "недоступен") {
+		t.Fatalf("first slot did not name the unavailable source: %+v %v", job, err)
+	}
+	if err := s.CompleteJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	o2 := o
+	o2.DueAt = now.Add(25 * time.Hour)
+	if err := s.PutOccurrence(o2, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now.Add(26*time.Hour), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatal("same unavailable error woke the model a second time")
+	}
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || !strings.Contains(d.Text, "Источников недоступно: 1") {
+		t.Fatalf("second slot did not report the ongoing count: %+v %v", d, err)
+	}
+}
+
+// S4.3 — two dispatchers racing one due brief admit a single agent job:
+// the engine mutex serializes them and the second pass sees the settled
+// occurrence (SPEC-0054 R4, A6).
+func TestBriefTwoWorkersSingleJob(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wrace", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "feed", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/race"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wrace"), WatchState{ScheduleID: "wrace", Baseline: "h", Value: "v", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "briefraced"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- s.DispatchDueOccurrences(now, g.authorizeOccurrence)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("raced brief admitted no job")
+	}
+	if extra, err := s.ClaimJob(); err != nil || extra != nil {
+		t.Fatal("two workers admitted two brief jobs")
+	}
+}
+
 // S5.1 — a tool result carrying an events array (or a bare array) yields one
 // discrete event per item with its durable identity (SPEC-0054 R5.2).
 func TestExtractEventsArray(t *testing.T) {
@@ -714,7 +864,7 @@ func TestEventNotifyFanout(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(`{"events":[{"id":"a1","text":"first mail"},{"id":"b2","text":"second mail"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]bool{}
@@ -740,7 +890,7 @@ func TestEventNotifyFanout(t *testing.T) {
 	if err := s.DispatchDueOccurrences(now.Add(time.Hour), g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.ClaimDelivery(); err != nil || d != nil {
@@ -785,7 +935,7 @@ func TestEventAgentSinkBundles(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(`{"events":[{"id":"a1","text":"first mail"},{"id":"b2","text":"second mail"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
@@ -794,6 +944,12 @@ func TestEventAgentSinkBundles(t *testing.T) {
 	}
 	if !strings.Contains(job.Text, "untrusted") || !strings.Contains(job.Text, "first mail") || !strings.Contains(job.Text, "second mail") {
 		t.Fatalf("bundle missing events or untrusted flag: %q", job.Text)
+	}
+	// The claimed bundle must survive the send-time re-authorization the
+	// delivery worker applies to every cron job — a rewritten bundle id must
+	// still resolve to its own occurrence for the conversation check.
+	if err := g.authorizeOccurrence(*job); err != nil {
+		t.Fatalf("bundle job fails send-time re-authorization: %v", err)
 	}
 	if d, err := s.ClaimDelivery(); err != nil || d != nil {
 		t.Fatal("agent sink produced a plain delivery")
@@ -858,7 +1014,7 @@ func TestEventSeenBounded(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(payload), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(s.eventPath("ev5"))
@@ -895,7 +1051,7 @@ func TestEventDailyCap(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(`{"events":[{"id":"a1","text":"first"},{"id":"b2","text":"second"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -938,7 +1094,7 @@ func TestEventBundleBounded(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return []byte(payload), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
@@ -985,7 +1141,7 @@ func TestEventOverflowCounted(t *testing.T) {
 		}
 		return []byte(`{"events":[{"id":"a1","text":"first mail"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(s.eventPath("ev6"))
@@ -1033,7 +1189,7 @@ func TestEventNotifyCapOverflow(t *testing.T) {
 		}
 		return []byte(`{"events":[{"id":"e1","text":"m1"},{"id":"e2","text":"m2"},{"id":"e3","text":"m3"},{"id":"e4","text":"m4"},{"id":"e5","text":"m5"},{"id":"e6","text":"m6"},{"id":"e7","text":"m7"},{"id":"e8","text":"m8"},{"id":"e9","text":"m9"},{"id":"e10","text":"m10"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	delivered := 0
@@ -1087,7 +1243,7 @@ func TestEventDegradedOnAuthError(t *testing.T) {
 	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
 		return nil, errors.New("tool error: hub-mail-events-abc: is_error: 403 forbidden")
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(s.eventPath("ev3"))
@@ -1133,7 +1289,7 @@ func TestWatchesCommandLists(t *testing.T) {
 		}
 		return nil, errors.New("tool error: 403 forbidden")
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
@@ -1153,7 +1309,7 @@ func TestWatchesCommandLists(t *testing.T) {
 	if err := s.DispatchDueOccurrences(now.Add(time.Hour), g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now.Add(time.Hour), g.authorizeOccurrence, nil, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	out = g.watchesCommand(user, 11)
@@ -1216,7 +1372,7 @@ func TestMCPToolProbeFeedsWatcher(t *testing.T) {
 		if err := s.DispatchDueOccurrences(occ.DueAt, g.authorizeOccurrence); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, noFetch, toolCall); err != nil {
+		if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, noFetch, toolCall, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

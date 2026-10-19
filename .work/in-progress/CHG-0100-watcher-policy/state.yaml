@@ -3,8 +3,8 @@ change: CHG-0100
 title: Watcher notification policy
 status: in_progress
 branch: feat/m13-proactive-automation
-updated: 2026-10-14
-phase: implementation
+updated: 2026-10-17
+phase: verification
 adr: ADR-0041
 spec: SPEC-0054
 requirements: [R2.1, R2.2, R2.3]
@@ -19,19 +19,22 @@ slices:
   S2.3-agent-escalation: green
 validation:
   documents: updated
-  just_check: not_run
+  just_check: passed
   docker_check: not_run
   red_team: recorded
-  live_acceptance: not_started
+  live_acceptance: A4 passed on dev stack (2026-10-17); notify_mode=agent verified live (untrusted-evidence jobs ran to done)
 evidence:
   - "quiet_from/quiet_to + Delivery.not_before; ClaimDelivery skips deferred entries (bounded 256-file scan); digest delivery defers too"
   - "daily_limit 0..32 + WatchState.notify_day/notify_count; over-cap occurrence settles capped, baseline still advances"
   - "notify_mode=agent enqueues untrusted-evidence job via enqueueLocked; rejected on non-probing kinds"
   - "tests: TestQuietHoursDeferDelivery, TestQuietOvernightWraps, TestQuietValidation, TestDigestRespectsQuietWindow, TestDailyLimitCaps, TestDailyLimitValidation, TestAgentEscalationOnChange, TestAgentModeRejectedOnReminder, TestRoutineCreateForwardsPolicyFields"
   - "go test ./internal/communication — ok 32.8s; go test ./internal/agenttools — ok"
+  - "live A4 dev stack 2026-10-17: watcher quiet_from..quiet_to over httpbin/uuid — 3 changes produced pending deliveries with not_before=window end, zero reached mock-sent inside the window; after window end pending outbox drained to 0 with 11 v2 deliveries in mock-sent (defer, never drop); daily_limit=1 — first change delivered once, 12+ later occurrences settled capped, baseline advanced"
+  - "live A4 notify_mode=agent: watcher over httpbin/uuid admitted 2 untrusted-evidence jobs (text prefix '[untrusted watcher evidence]'), both reached done via the live runtime; no plain delivery; occurrences dispatched"
+  - "live recovery: pre-fix build's DispatchDueOccurrences aborted the pass on error leaving 12071 pending occurrences; rebuilt via dev-rebuild — backlog drained, real watcher deliveries resumed"
+  - "TestProbeResultReceiptReplaysAfterCrash added: .probe-result receipt replays without re-fetch, delivery id dedupes repeated replay"
 remaining:
   - "issue #248 evidence comment (after PR)"
-  - "live acceptance A4 on dev stack"
   - "just check at milestone close"
 limitations:
   - "quiet window defers delivery but the agent-escalation job itself is not deferred (the agent's reply rides the normal run-delivery path)"

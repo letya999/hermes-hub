@@ -74,6 +74,9 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			config = prepared.Apply(config)
 			resolution.Connection = prepared.Overlay(resolution.Connection)
 		}
+		if resolution.State == "ready" {
+			ApplyLaunchState(&config, resolution.Launch)
+		}
 		config.Credentials = resolution.Connection.CredentialInputs()
 		// Only reviewed deliveries enter the Broker mapping; unrelated optional
 		// upstream settings remain metadata, not required form fields.
@@ -145,6 +148,39 @@ func DefaultSelfInstallConfig(source ArtifactSource) ArtifactImportConfig {
 			TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64,
 		},
 		Health: HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
+	}
+}
+
+// ApplyLaunchState projects reviewed durable-state declarations from a recipe
+// onto the import config. Only hub-managed named volumes are honored; compose
+// host mounts and unsafe targets are dropped because ExecutionPolicy.Validate
+// would reject the definition anyway and silently rewriting them is worse.
+func ApplyLaunchState(config *ArtifactImportConfig, launch LaunchRecipe) {
+	if launch.Transport != ContainerMCP {
+		return
+	}
+	for _, mount := range launch.Mounts {
+		if mount.Source != "connection-state" {
+			continue
+		}
+		if !strings.HasPrefix(mount.Target, "/") || strings.Contains(mount.Target, "..") || slices.ContainsFunc(config.Execution.Mounts, func(existing Mount) bool { return existing.Target == mount.Target }) {
+			continue
+		}
+		config.Execution.Mounts = append(config.Execution.Mounts, mount)
+	}
+	if len(config.Execution.Mounts) > 0 {
+		config.Workload.Stateful = true
+	}
+	for name, value := range launch.Environment {
+		if EnvKey(name) == "" {
+			continue
+		}
+		if config.RuntimeEnvironment == nil {
+			config.RuntimeEnvironment = map[string]string{}
+		}
+		if _, fixed := config.RuntimeEnvironment[name]; !fixed {
+			config.RuntimeEnvironment[name] = value
+		}
 	}
 }
 

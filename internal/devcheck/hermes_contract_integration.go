@@ -100,7 +100,7 @@ func nativeContractProvider() (*httptest.Server, string, error) {
 		if request.Stream && !hasToolResult && (input == "contract probe" || input == "approval probe") {
 			command := "printf '1\\n' >> /workspace/contract-executions; printf HUB_TOOL_SECRET_CANARY"
 			if strings.TrimSpace(input) == "approval probe" {
-				command = "mkdir -p /workspace/hub-approval-probe && chmod -R 777 /workspace/hub-approval-probe && printf HUB_TOOL_SECRET_CANARY"
+				command = "mkdir -p /workspace/hub-approval-probe && chmod -R 777 /workspace/hub-approval-probe && printf 'HUB_TOOL_%s\\n' SECRET_CANARY"
 			}
 			arguments, _ := json.Marshal(map[string]string{"command": command})
 			message := map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"index": 0, "id": "probe-terminal", "type": "function", "function": map[string]any{"name": "terminal", "arguments": string(arguments)}}}}

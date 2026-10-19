@@ -98,3 +98,49 @@ func TestPreparedOverlayAndEnvArgs(t *testing.T) {
 		t.Fatalf("unknown source gated: %v", err)
 	}
 }
+
+// The gitlab source ships docker/.env.example with GITLAB_PROJECT_ID=<YOUR_…>:
+// discovery marks the placeholder required, but the reviewed gitlab-pat
+// contract can never deliver it. Overlay must demote such leftover extras to
+// optional or the produced definition fails "missing credential broker
+// delivery" at validation.
+func TestPreparedOverlayDemotesUnreviewedExtras(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry PreparedEntry
+	for _, e := range entries {
+		if e.ID == "gitlab" {
+			entry = e
+		}
+	}
+	if entry.ID == "" {
+		t.Fatal("gitlab prepared entry missing")
+	}
+	conn := entry.Overlay(ConnectionRecipe{Fields: []ConnectionField{
+		{Name: "GITLAB_PROJECT_ID", Required: true, Type: "string", Delivery: "env"},
+		{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Required: true, Type: "token", Secret: true, Delivery: "env"},
+	}})
+	byName := map[string]ConnectionField{}
+	for _, f := range conn.Fields {
+		byName[f.Name] = f
+	}
+	if !byName["GITLAB_PERSONAL_ACCESS_TOKEN"].Required {
+		t.Fatal("reviewed field lost its required flag")
+	}
+	if byName["GITLAB_PROJECT_ID"].Required {
+		t.Fatal("unreviewed upstream extra stayed required")
+	}
+	// End-to-end shape: the overlaid recipe must still yield a definition that
+	// passes the credential broker delivery check.
+	config := NormalizeArtifactImportConfig(entry.Apply(DefaultSelfInstallConfig(entry.Source)))
+	config.Credentials = conn.CredentialInputs()
+	definition := ToolDefinition{Schema: SchemaVersion, DefinitionID: entry.ID, Version: config.Version, Transport: ContainerMCP,
+		Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + strings.Repeat("a", 64)},
+		Credentials: config.Credentials, CredentialGroups: config.CredentialGroups, CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
+		Environment: config.Environment, RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment, Tools: config.Tools, Workload: config.Workload, Execution: config.Execution, Health: config.Health}
+	if err := definition.Validate(); err != nil {
+		t.Fatalf("overlaid definition invalid: %v", err)
+	}
+}

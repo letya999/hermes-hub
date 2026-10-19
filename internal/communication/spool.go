@@ -1,13 +1,11 @@
 package communication
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/gofrs/flock"
-	"github.com/letya999/hermes-hub/internal/identity"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,97 +13,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gofrs/flock"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
-
-// Job is immutable routing context plus the user message. Sensitive prompts are
-// held only in memory by Spool and are intentionally absent from job files.
-type Job struct {
-	identity.Envelope
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	UserID         string `json:"user_id"`
-	ActorID        string `json:"actor_id"`
-	ScopeID        string `json:"scope_id"`
-	Channel        string `json:"channel"`
-	Trigger        string `json:"trigger"`
-	IdempotencyKey string `json:"idempotency_key"`
-	ChatID         int64  `json:"chat_id"`
-	MessageID      int    `json:"message_id"`
-	// TaskID/TopicID pin the durable task binding at acceptance: every reply,
-	// progress event, approval, artifact and voice note returns to the same
-	// task/topic. Model output never re-routes them.
-	TaskID       string    `json:"task_id,omitempty"`
-	TopicID      int64     `json:"topic_id,omitempty"`
-	SlackChannel string    `json:"slack_channel,omitempty"`
-	SlackThread  string    `json:"slack_thread,omitempty"`
-	Text         string    `json:"text,omitempty"`
-	InboundID    string    `json:"inbound_id,omitempty"`
-	Sensitive    bool      `json:"sensitive"`
-	TextSHA256   string    `json:"text_sha256,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-}
-
-type Delivery struct {
-	ID               string `json:"id"`
-	OccurrenceID     string `json:"occurrence_id,omitempty"`
-	JobID            string `json:"job_id"`
-	IdempotencyKey   string `json:"idempotency_key,omitempty"`
-	ConversationID   string `json:"conversation_id"`
-	DeliveryTargetID string `json:"delivery_target_id"`
-	Channel          string `json:"channel,omitempty"`
-	ChatID           int64  `json:"chat_id"`
-	TaskID           string `json:"task_id,omitempty"`
-	// TopicID is the Telegram topic the delivery must land in; sent as
-	// direct_messages_topic_id for private chats or message_thread_id for
-	// group forum topics (see topicField).
-	TopicID      int64  `json:"topic_id,omitempty"`
-	SlackChannel string `json:"slack_channel,omitempty"`
-	SlackThread  string `json:"slack_thread,omitempty"`
-	Text         string `json:"text"`
-	Format       string `json:"format,omitempty"`
-	// NotBefore defers quiet-window deliveries: the entry stays durable in
-	// pending until the schedule's quiet window ends (SPEC-0054 R2.1).
-	NotBefore time.Time `json:"not_before,omitempty"`
-	// PartCount/SentParts persist multi-part progress so a mid-sequence failure
-	// leaves an uncertain delivery with an exact sent boundary; SourceSent marks
-	// the optional raw-source document part of the same ordered sequence.
-	PartCount  int  `json:"part_count,omitempty"`
-	SentParts  int  `json:"sent_parts,omitempty"`
-	SourceSent bool `json:"source_sent,omitempty"`
-	// Artifacts are run-generated files fetched into outbox/blobs while the
-	// runtime was answering; SentArtifacts is their durable send boundary.
-	Artifacts     []hubruntime.ArtifactRef `json:"artifacts,omitempty"`
-	SentArtifacts int                      `json:"sent_artifacts,omitempty"`
-	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
-	// synthesized audio is sent straight to the channel and never persisted.
-	Voice string `json:"voice,omitempty"`
-	// VoiceSent distinguishes accepted sendVoice from the intentional text fallback.
-	VoiceSent bool `json:"voice_sent,omitempty"`
-	// Buttons carries Telegram inline-keyboard rows (one button per row) for
-	// channels that support them; Data is the opaque callback payload.
-	Buttons            []DeliveryButton `json:"buttons,omitempty"`
-	ApprovalJobID      string           `json:"approval_job_id,omitempty"`
-	ApprovalID         string           `json:"approval_id,omitempty"`
-	ApprovalRunID      string           `json:"approval_run_id,omitempty"`
-	ApprovalGeneration string           `json:"approval_generation,omitempty"`
-	TelegramMessageID  int              `json:"telegram_message_id,omitempty"`
-	// EditMessageID targets a status message already delivered: the delivery
-	// worker edits it instead of sending a new message (SPEC-0053 R2.2).
-	EditMessageID int `json:"edit_message_id,omitempty"`
-	// StreamPosition orders status updates so a replayed event can never move
-	// the rendered status backwards.
-	StreamPosition uint64 `json:"stream_position,omitempty"`
-	// StatusClosed marks the run's status message finalized: late events must
-	// not resurrect or edit it.
-	StatusClosed bool      `json:"status_closed,omitempty"`
-	Attempts     int       `json:"attempts"`
-	CreatedAt    time.Time `json:"created_at"`
-}
-
-type DeliveryButton struct {
-	Text string `json:"text"`
-	Data string `json:"data"`
-}
 
 // approvalButtonsLocked persists one durable callback record per choice and
 // returns the inline-keyboard row. Callback data stays under Telegram's
@@ -175,6 +86,15 @@ type Spool struct {
 	// JobDone, when set, runs asynchronously at each terminal outcome so the
 	// ToolHub cell controller can reap task-tier cells keyed by the job.
 	JobDone func(jobID, principalID string)
+	// probeScript, when set, runs a watcher script probe inside the isolated
+	// script runtime: (occurrence, source, fetched input, mount-space flag,
+	// prefetched need results). Nil fails the probe — a script probe without
+	// the supervisor never runs in-process.
+	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
+	// rt is the routines engine (internal/routines) sharing this spool's
+	// mutex and root; it owns the schedules/occurrences/watchers/digests
+	// subtrees and borrows the rest of the spool through its Deps seam.
+	rt *routines.Engine
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -230,6 +150,22 @@ func OpenSpool(root string) (*Spool, error) {
 			return nil, err
 		}
 	}
+	s.rt = routines.NewEngine(root, &s.mu, routines.Deps{
+		Hooks:             scheduleDraftHooks,
+		EnqueueJob:        s.enqueueLocked,
+		EnqueueDelivery:   s.enqueueDeliveryLocked,
+		LoadMapping:       s.loadMappingLocked,
+		LoadTask:          s.loadTaskLocked,
+		ListTasks:         s.listTasksLocked,
+		TopicTask:         s.topicTaskLocked,
+		WriteDeliveryBlob: s.WriteDeliveryBlob,
+		NormalizeDelivery: normalizeDelivery,
+		WriteJSONAtomic:   atomicJSON,
+		Signal:            s.signal,
+		ChannelFor:        func(id string) routines.OccurrenceChannel { return channelFor(nil, id) },
+		ProbeScript:       func() routines.ProbeScriptFunc { return s.probeScript },
+		SettleEvents:      s.settleEvents,
+	})
 	return s, nil
 }
 
@@ -383,6 +319,9 @@ func (s *Spool) Compact(now time.Time, retention time.Duration) error {
 	if err := s.compactReceiptsLocked(aged); err != nil {
 		return err
 	}
+	if err := s.compactOccurrencesLocked(now, retention); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return err
@@ -415,6 +354,151 @@ func (s *Spool) Compact(now time.Time, retention time.Duration) error {
 		}
 		if strings.TrimSpace(mapping.IdempotencyKey) != "" {
 			_ = os.Remove(s.idempotencyIndexPath(mapping.IdempotencyKey))
+		}
+	}
+	return nil
+}
+
+// compactOccurrencesLocked moves settled, silent detail out of the hot scan.
+// Detail stays in an archive for 48 hours; a small receipt keeps the normal
+// spool deduplication horizon. Active and dispatched work stays untouched.
+func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration) error {
+	outcomes, err := s.routineDeliveryStatesLocked()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(s.root, "occurrences")
+	archiveDir := filepath.Join(dir, "archive")
+	receiptDir := filepath.Join(dir, "receipts")
+	activeDelivery := map[string]bool{}
+	for _, outboxDir := range []string{"pending", "sending"} {
+		items, err := os.ReadDir(filepath.Join(s.root, "outbox", outboxDir))
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			if item.IsDir() || !strings.HasSuffix(item.Name(), ".json") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(s.root, "outbox", outboxDir, item.Name()))
+			if err != nil {
+				return err
+			}
+			var delivery Delivery
+			if json.Unmarshal(body, &delivery) != nil {
+				return errors.New("invalid live delivery")
+			}
+			if delivery.OccurrenceID != "" {
+				activeDelivery[delivery.OccurrenceID] = true
+			}
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var o RoutineOccurrence
+		if json.Unmarshal(body, &o) != nil || entry.Name() != occurrenceID(o)+".json" {
+			continue
+		}
+		switch o.State {
+		case "no_change", "missed", "blocked", "cancelled", "capped", "skipped", "failed":
+		case "dispatched":
+			if activeDelivery[o.Job.ID] {
+				continue
+			}
+			live := false
+			for _, jobDir := range []string{"pending", "running"} {
+				_, statErr := os.Stat(filepath.Join(s.root, jobDir, spoolFileID(o.Job.ID)+".json"))
+				if statErr == nil {
+					live = true
+				}
+				if statErr != nil && !os.IsNotExist(statErr) {
+					return statErr
+				}
+			}
+			if live {
+				continue
+			}
+			mapping, mappingErr := s.loadMappingLocked(o.Job.ID)
+			if mappingErr == nil && !terminalStatus(mapping.Status) {
+				continue
+			}
+			if mappingErr != nil && !os.IsNotExist(mappingErr) {
+				continue
+			}
+		default:
+			continue
+		}
+		if err := os.MkdirAll(receiptDir, 0700); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(archiveDir, 0700); err != nil {
+			return err
+		}
+		receiptPath := filepath.Join(receiptDir, entry.Name())
+		if err := atomicJSON(receiptPath, routineHistoryReceipt{ID: o.Job.ID, ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, Run: s.routineRunLocked(o, outcomes)}); err != nil {
+			return err
+		}
+		if err := os.Chtimes(receiptPath, info.ModTime(), info.ModTime()); err != nil {
+			return err
+		}
+		if err := os.Rename(path, filepath.Join(archiveDir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	archives, err := os.ReadDir(archiveDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range archives {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(archiveDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(now.Add(-48 * time.Hour)) {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	receipts, err := os.ReadDir(receiptDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range receipts {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(receiptDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(now.Add(-retention)) {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

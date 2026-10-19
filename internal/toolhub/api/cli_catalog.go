@@ -47,7 +47,7 @@ func cliGitLsRemoteDefinition() ToolDefinition {
 func CliRipgrepDefinition() ToolDefinition {
 	return ToolDefinition{
 		Schema: SchemaVersion, DefinitionID: "cli-rg-search", Version: "1.0.2", Transport: BoundedCLI,
-		Source: DefinitionSource{Command: "rg", Args: []string{"--no-heading", "--color=never", "--line-number", "--Max-count", "200"}},
+		Source: DefinitionSource{Command: "rg", Args: []string{"--no-heading", "--color=never", "--line-number", "--max-count", "200"}},
 		Tools: []ToolSpec{
 			{Name: "search", Description: "Search the caller's workspace with ripgrep; bounded to 200 matches.", Effect: ReadEffect,
 				CapabilityID: "cli.search", Uses: []CapabilityUse{{Action: "search", Resource: "files"}},

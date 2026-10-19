@@ -176,6 +176,7 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 					update := known
 					update.Status, update.LastEvent, update.EventID = "waiting_for_approval", "approval.request", "approval:"+status.Approval.RequestID
 					update.ApprovalID, update.ApprovalChoices = status.Approval.RequestID, status.Approval.Choices
+					update.ApprovalSummary = approvalSummaryText(status.Approval)
 					if len(update.ApprovalID) > 256 {
 						return known, errors.New("invalid approval identity")
 					}
@@ -222,6 +223,7 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 					return known, errors.New("invalid approval identity")
 				}
 				update.Status, update.ApprovalID, update.ApprovalChoices = "waiting_for_approval", event.RequestID, event.Choices
+				update.ApprovalSummary = approvalSummaryText(event)
 				if lastApproval == event.RequestID {
 					continue
 				}
@@ -260,6 +262,22 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 	result, _ := stopAndConfirmHermesRun(stopCtx, client, base, auth, known)
 	cancel()
 	return result, errors.New("hermes run timed out")
+}
+
+// approvalSummaryText renders what the approval actually gates; upstream
+// redacts secrets in description/command before they reach the stream. One
+// bounded line so the prompt stays readable and cannot smuggle layout.
+func approvalSummaryText(event nativeRunEvent) string {
+	desc := strings.Join(strings.Fields(event.Description), " ")
+	cmd := strings.Join(strings.Fields(event.Command), " ")
+	text := desc
+	if cmd != "" {
+		text = strings.TrimSpace(cmd + " — " + desc)
+	}
+	if r := []rune(text); len(r) > 300 {
+		text = string(r[:299]) + "…"
+	}
+	return text
 }
 
 func toolProgressText(event nativeRunEvent) string {

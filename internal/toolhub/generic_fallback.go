@@ -45,7 +45,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 			err = fmt.Errorf("%s: %w", step, err)
 		}
 	}()
-	if definition.Workload.Class == api.Shared && (definition.Workload.Stateful || len(definition.Credentials) != 0 || len(plan.Execution.Mounts) != 0) {
+	if definition.Workload.Class == api.Shared && (definition.Workload.Stateful || len(plan.Execution.Mounts) != 0 || (!definition.Workload.Sharable && slices.ContainsFunc(definition.Credentials, func(input api.CredentialInput) bool { return !input.PerRequest }))) {
 		return genericWorkload{}, fmt.Errorf("%w: shared Docker fallback cannot retain state or credentials", api.ErrIsolation)
 	}
 	for _, mount := range plan.Execution.Mounts {
@@ -222,10 +222,12 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		if materializeErr != nil {
 			return genericWorkload{}, materializeErr
 		}
-		if _, err = api.ReadGenericSecrets(credentialEnv, definition); err != nil {
-			return genericWorkload{}, err
+		if credentialEnv != "" {
+			if _, err = api.ReadGenericSecrets(credentialEnv, definition); err != nil {
+				return genericWorkload{}, err
+			}
+			bridgeArgs = append(bridgeArgs, "--env-file", credentialEnv)
 		}
-		bridgeArgs = append(bridgeArgs, "--env-file", credentialEnv)
 		plan.CredentialMounts = append(plan.CredentialMounts, credentialMounts...)
 	}
 	for i, mount := range plan.Execution.Mounts {
@@ -356,6 +358,12 @@ func writeWorldReadableTemp(dir, pattern, content string) (string, error) {
 
 func materializeRuntimeCredentials(workspace string, definition api.ToolDefinition) (string, []api.Mount, error) {
 	source := filepath.Join(workspace, "credentials.env")
+	if _, err := os.Lstat(source); os.IsNotExist(err) && definition.CredentialsSatisfied(func(string) bool { return false }) {
+		if workspace == "" || api.NoSymlinkPath(workspace) != nil {
+			return "", nil, api.ErrIsolation
+		}
+		return "", nil, nil
+	}
 	values, err := api.ReadGenericSecrets(source, definition)
 	if err != nil {
 		return "", nil, err
@@ -367,7 +375,22 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 		if value == "" {
 			continue
 		}
-		if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
+		if input.Delivery == "file" {
+			if value != input.Target {
+				// Reviewed contract: the submitted content is a file the workload
+				// reads at Target. Mount it read-only and hand the container the
+				// path — never the content — through the env var. When the env
+				// already carries Target the file arrives through the Broker
+				// lease mount in the plan; staging a second bind on the same
+				// target makes docker create fail on the duplicate mount point.
+				path := filepath.Join(workspace, input.Name+".secret")
+				if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+					return "", nil, err
+				}
+				mounts = append(mounts, api.Mount{Source: path, Target: input.Target, ReadOnly: true})
+				value = input.Target
+			}
+		} else if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
 			path := filepath.Join(workspace, input.Name+".json")
 			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
 				return "", nil, err

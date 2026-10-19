@@ -79,6 +79,34 @@ EMPTY=
 	}
 }
 
+func TestConnectionFieldDeploySecretDemoted(t *testing.T) {
+	// Secrets that protect the MCP server's own listener (HTTP bearer,
+	// session/signing material) are deployment material the operator mints
+	// or the runtime generates — never values the owner can supply. A
+	// heuristic env-line source must not make them required user input.
+	conn := ParseExampleEnv([]byte(`
+MCP_HTTP_AUTH_TOKEN=
+SESSION_SECRET=
+SERVER_AUTH_SECRET=
+WB_API_TOKEN=
+UPSTREAM_API_KEY=
+`), ".env.example")
+	byName := map[string]ConnectionField{}
+	for _, f := range conn.Fields {
+		byName[f.Name] = f
+	}
+	for _, name := range []string{"MCP_HTTP_AUTH_TOKEN", "SESSION_SECRET", "SERVER_AUTH_SECRET"} {
+		if f, ok := byName[name]; !ok || f.Required {
+			t.Fatalf("deploy secret %s must stay optional: %+v", name, f)
+		}
+	}
+	for _, name := range []string{"WB_API_TOKEN", "UPSTREAM_API_KEY"} {
+		if f := byName[name]; !f.Required || !f.Secret {
+			t.Fatalf("upstream credential %s lost required: %+v", name, f)
+		}
+	}
+}
+
 func TestParseServerManifestMatching(t *testing.T) {
 	source := ArtifactSource{Repository: "https://github.com/o/r", Subfolder: "srv"}
 	doc := []byte(`{

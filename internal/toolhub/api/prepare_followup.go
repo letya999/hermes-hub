@@ -30,10 +30,10 @@ func DeliverPrepareEvent(ctx context.Context, auth identity.Envelope, onboarding
 	PostPrepareNotice(ctx, auth, onboarding, event, 0)
 }
 
-func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) {
+func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) string {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), "/")
 	if base == "" || auth.PrincipalID == "" || onboarding.OnboardingID == "" {
-		return
+		return ""
 	}
 	token := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH"))
 	if token == "" {
@@ -44,7 +44,7 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		}
 	}
 	if token == "" {
-		return
+		return ""
 	}
 	payload := map[string]any{
 		"onboarding_id":     onboarding.OnboardingID,
@@ -56,6 +56,16 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		"detail":            PublicPrepareError(ErrString(onboarding.Error)),
 		"form_url":          credentialNoticeURL(onboarding),
 	}
+	// The reviewed contract declares how credentials may be collected; the
+	// channel offers that intake (e.g. QR login) instead of sniffing ids.
+	if reviewed, ok, rerr := PreparedContractFor(onboarding.BrokerContractID, onboarding.BrokerContractRevision); rerr == nil && ok && reviewed.Intake != "" {
+		payload["credential_intake"] = reviewed.Intake
+	}
+	if !onboarding.CreatedAt.IsZero() {
+		// The gateway resolves the originating session from this instant; it
+		// travels on every notice so a restarted gateway can still rebind.
+		payload["created_at"] = onboarding.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
 	if event != "" {
 		payload["event"] = event
 	}
@@ -64,13 +74,13 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return ""
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body))
 	if err != nil {
-		return
+		return ""
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -78,12 +88,20 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	response, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("toolhub prepare outcome delivery failed onboarding=%s: %v", onboarding.OnboardingID, err)
-		return
+		return ""
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
 		log.Printf("toolhub prepare outcome delivery onboarding=%s status=%d", onboarding.OnboardingID, response.StatusCode)
+		return ""
 	}
+	// The channel returns the sign-in link it minted for this request (QR
+	// invite and friends); callers may surface it in the tool result.
+	var outcome struct {
+		LoginURL string `json:"login_url"`
+	}
+	_ = json.NewDecoder(response.Body).Decode(&outcome)
+	return outcome.LoginURL
 }
 
 func credentialNoticeURL(onboarding Onboarding) string {

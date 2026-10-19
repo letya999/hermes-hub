@@ -96,7 +96,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if err := putGrant(t, store, api.Grant{Schema: api.SchemaVersion, GrantID: "grant-selfalice", Kind: api.GrantSelfInstall, PrincipalID: "alice", IssuedBy: "operator", Status: api.ActiveStatus, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil); !errors.Is(err, api.ErrInvalid) {
+	if _, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "no-reviewer", nil, false, ""); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("nil reviewer: %v", err)
 	}
 	control.Reviewer = fixtureReviewer(userMCPDefinition())
@@ -286,7 +286,11 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "revoke", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+	preview, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]}); err != nil {
 		t.Fatal(err)
 	}
 	hints := credentialHints(api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}, {Name: "CALL_TOKEN", Required: true, PerRequest: true}}})
@@ -558,7 +562,7 @@ func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
 		}}
 	done := make(chan error, 1)
 	go func() {
-		_, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "req-wake", nil)
+		_, err := control.prepareSelfInstall(context.Background(), aliceAuth(), githubCommitURL(), "req-wake", nil, false, "")
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)

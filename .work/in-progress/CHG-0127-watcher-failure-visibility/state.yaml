@@ -1,0 +1,65 @@
+schema: 1
+change: CHG-0127
+title: Watcher failure visibility and quiet/drift fixes
+status: in_progress
+branch: refactor/comm-plane-separation
+updated: 2026-10-19
+phase: validation
+github_issue: 248
+design_status: implemented
+implementation_status: implemented
+slices:
+  S1-failure-visibility: completed
+  S2-vacuous-values: completed
+  S3-quiet-escalation: completed
+  S4-drift-noise: completed
+  S5-error-detail: completed
+  S6-script-image-pin: completed
+  S7-bundle-job-refs: completed
+  S8-events-dir-recovery: completed
+validation:
+  documents: done
+  just_check: passed
+  docker_check: not_run
+  just_security: not_run
+  live_acceptance: passed
+evidence:
+  - "just check: all packages green, coverage 86.38% (>=85%)"
+  - "live re-acceptance 2026-10-18 22:48-23:09 UTC on dev stack
+    (dev-rebuild communication-hub): lv-dead alert probe status 302
+    telegram msg 3338, lv-empty probe produced empty value msg 3337,
+    lv-check equals:Example Domain met msg 3339, dedupe 5 failed ticks
+    1 alert each, last_error in /v1/routines listing, lv-aquiet agent
+    escalation capped inside quiet window then resumed, lv-cap
+    daily_limit=1 capped after first notify, lv-quiet deferred to
+    not_before, 0 binding drift in 30m with live agent escalations"
+  - "lv-file command probe: baseline live-ok -> file edit -> change
+    notification 23:08; required new S6 — dev script containers spawned
+    the stale base image; dev-rebuild communication-hub now pins
+    generated/dev-script-image and scriptHTTP resolves it, full core
+    builds clear it like the runtime pin"
+  - "S7 bundle authorization (2026-10-19 live): brief/event-agent/stream
+    bundle jobs carried prefixed ids (brief-/event-/stream-) the
+    occurrence-resolving conversation check could not match, so every
+    admitted bundle died send-side 'routine policy changed' -> job.failed.
+    Bundles now keep the resolvable ref (occurrence job id / stream seed);
+    routineConversationOf resolves stream-<sid>[-rev]-<hash> refs and the
+    delivery verifier re-authorizes stream batches via their owning
+    schedule. Live: bv-brief bundle completed with LLM response delivered;
+    bx-evt-http agent bundle conversation routine-bx-evt-http completed,
+    agent answered 'Страница доступна...' to Telegram"
+  - "S8 events-dir recovery collision (2026-10-19 live): first restart
+    with event-subscription state files crash-looped 'invalid stream
+    receipt' — recoverStreamEvents treated every spool/events/*.json as a
+    stream receipt, while CHG-0103 event states and slack dedup markers
+    share the dir. Recovery now skips records bearing schedule_id/provider
+    markers; corrupt-receipt rejection unchanged (regression test +
+    live restart verified healthy)"
+notes: >
+  Failure alerts dedupe per normalized error and reset after the first
+  successful probe. Agent escalation in quiet hours settles capped (cannot
+  defer a model wake like a delivery). Probe kinds bypass the binding-drift
+  check entirely. dev-script-image pin is supervisor-mode only; prod script
+  containers keep the core image. Bundle jobs keep the resolvable ref id —
+  an occurrence job id or a deterministic stream seed — so send-time
+  re-authorization reaches the same schedule the settle path authorized.

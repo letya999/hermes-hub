@@ -2,13 +2,10 @@ package communication
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/credentialbroker"
-	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"gopkg.in/yaml.v3"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"io"
 	"net/url"
 	"os"
@@ -17,64 +14,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"gopkg.in/yaml.v3"
 )
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var telegramIDPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
 var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
-var spoolIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var spoolIDPattern = commodel.IDPattern
+var serviceNamePattern = commodel.ServiceNamePattern
 var gatewayOwnedEnv = map[string]bool{
 	"TELEGRAM_BOT_TOKEN": true, "TELEGRAM_ALLOWED_USERS": true,
 	"SLACK_SIGNING_SECRET": true, "SLACK_BOT_TOKEN": true, "SLACK_APP_TOKEN": true, "SLACK_ALLOWED_USERS": true,
-}
-
-// SlackLink is a verified workspace+sender pair. Email and display name never fill it.
-type SlackLink struct {
-	TeamID string `yaml:"team_id" json:"team_id"`
-	UserID string `yaml:"user_id" json:"user_id"`
-}
-
-func (l SlackLink) key() string {
-	return strings.ToLower(strings.TrimSpace(l.TeamID)) + "/" + strings.ToLower(strings.TrimSpace(l.UserID))
-}
-
-// User is the stable internal user plus its channel bindings and runtime roots.
-type User struct {
-	RuntimeID      string            `yaml:"runtime_id,omitempty" json:"runtime_id,omitempty"`
-	PolicyVersion  string            `yaml:"policy_version,omitempty" json:"policy_version,omitempty"`
-	ID             string            `yaml:"id" json:"id"`
-	Enabled        bool              `yaml:"enabled" json:"enabled"`
-	TelegramIDs    []int64           `yaml:"telegram_ids" json:"telegram_ids"`
-	SlackIDs       []SlackLink       `yaml:"slack_ids,omitempty" json:"slack_ids,omitempty"`
-	StateDir       string            `yaml:"state_dir" json:"state_dir"`
-	WorkspaceDir   string            `yaml:"workspace_dir" json:"workspace_dir"`
-	Features       []string          `yaml:"features,omitempty" json:"features,omitempty"`
-	PolicyDisabled []string          `yaml:"policy_disabled,omitempty" json:"policy_disabled,omitempty"`
-	ConfiguredEnv  map[string]bool   `yaml:"-" json:"-"`
-	Env            map[string]string `yaml:"-" json:"-"`
-}
-
-// envelope binds each verified channel user independently of process-wide env.
-func (user User) envelope(externalID int64) identity.Envelope {
-	runtimeID, policy := user.RuntimeID, user.PolicyVersion
-	if runtimeID == "" {
-		runtimeID = user.ID
-	}
-	if policy == "" {
-		policy = envOr("HUB_POLICY_VERSION", "policy-1")
-	}
-	return identity.TelegramEnvelope(user.ID, externalID, runtimeID, policy)
-}
-
-func (user User) slackEnvelope(teamID, slackUser string) identity.Envelope {
-	runtimeID, policy := user.RuntimeID, user.PolicyVersion
-	if runtimeID == "" {
-		runtimeID = user.ID
-	}
-	if policy == "" {
-		policy = envOr("HUB_POLICY_VERSION", "policy-1")
-	}
-	return identity.SlackEnvelope(user.ID, teamID, slackUser, runtimeID, policy)
 }
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
@@ -111,9 +65,6 @@ type Config struct {
 	RuntimeAuth       string        `yaml:"-"`
 	PollTimeout       time.Duration `yaml:"-"`
 	HermesCommand     string        `yaml:"-"`
-	CredentialStore   string        `yaml:"-"`
-	CredentialKeyFile string        `yaml:"-"`
-	ToolHubStore      string        `yaml:"-"`
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
@@ -121,7 +72,6 @@ type Config struct {
 	TelegramAuthEnabled bool                    `yaml:"-"`
 	TelegramAuthAPIID   string                  `yaml:"-"`
 	TelegramAuthAPIHash string                  `yaml:"-"`
-	AuditLedger         string                  `yaml:"-"`
 	BrokerApprove       credentialbroker.Config `yaml:"-"`
 	// Workers bounds concurrent job execution; contexts serialize per
 	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
@@ -132,6 +82,18 @@ type Config struct {
 	// MockDir relocates mock-channel capture outside the production spool;
 	// empty keeps the historical spool/mock-* location (SPEC-0053 R2.3).
 	MockDir string `yaml:"-"`
+	// ServiceEndpoints is the operator-registered catalog of probe services
+	// (external renderers, parser APIs like job_ftch): name → endpoint. The
+	// schedule draft names a key; URLs never come from the probe, so internal
+	// addresses stay an explicit operator decision (SPEC-0059 R5.5).
+	ServiceEndpoints map[string]ServiceEndpoint `yaml:"service_endpoints,omitempty"`
+}
+
+// ServiceEndpoint is one registered probe service: the URL the hub POSTs
+// the probe request to, and an optional bearer token for that endpoint.
+type ServiceEndpoint struct {
+	URL  string `json:"url" yaml:"url"`
+	Auth string `json:"auth,omitempty" yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -151,6 +113,11 @@ func (c Config) Validate() error {
 		}
 		if c.RuntimeAuth == "" {
 			return errors.New("runtime auth is required")
+		}
+	}
+	for name, endpoint := range c.ServiceEndpoints {
+		if err := validateServiceEndpoint(name, endpoint); err != nil {
+			return fmt.Errorf("service_endpoints: %w", err)
 		}
 	}
 	seenUsers, seenTelegram, seenSlack := map[string]bool{}, map[int64]bool{}, map[string]bool{}
@@ -191,7 +158,7 @@ func (c Config) Validate() error {
 			seenTelegram[telegramID] = true
 		}
 		for _, link := range user.SlackIDs {
-			key := link.key()
+			key := link.Key()
 			if link.TeamID == "" || link.UserID == "" || strings.ContainsAny(key, " \t@") || seenSlack[key] {
 				return fmt.Errorf("invalid or duplicate Slack identity %s/%s", link.TeamID, link.UserID)
 			}
@@ -273,12 +240,8 @@ func ConfigFromEnv() (Config, error) {
 		}
 		config.PollTimeout = 25 * time.Second
 		config.HermesCommand = envOr("HUB_HERMES_COMMAND", "hermes")
-		config.CredentialStore = os.Getenv("HUB_CREDENTIAL_STORE")
-		config.CredentialKeyFile = os.Getenv("HUB_CREDENTIAL_KEY_FILE")
-		config.ToolHubStore = os.Getenv("HUB_TOOLHUB_STORE")
-		config.AuditLedger = os.Getenv("HUB_AUDIT_LEDGER")
 		config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
-		config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
+		config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") != "false" && config.TelegramToken != ""
 		if err != nil {
 			return Config{}, err
 		}
@@ -317,14 +280,61 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), CredentialStore: os.Getenv("HUB_CREDENTIAL_STORE"), CredentialKeyFile: os.Getenv("HUB_CREDENTIAL_KEY_FILE"), ToolHubStore: os.Getenv("HUB_TOOLHUB_STORE"), AuditLedger: os.Getenv("HUB_AUDIT_LEDGER"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
+	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
-	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") == "true"
+	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") != "false" && config.TelegramToken != ""
+	if err != nil {
+		return Config{}, err
+	}
+	config.ServiceEndpoints, err = serviceEndpointsFromEnv()
 	if err != nil {
 		return Config{}, err
 	}
 	fillChannelSecrets(&config)
 	return config, nil
+}
+
+// serviceEndpointsFromEnv parses HUB_SERVICE_ENDPOINTS — a JSON object of
+// name → "url" or {"url","auth"} — into the registered probe-service catalog
+// used by render/service watcher kinds (SPEC-0059 R5.5).
+func serviceEndpointsFromEnv() (map[string]ServiceEndpoint, error) {
+	raw := strings.TrimSpace(os.Getenv("HUB_SERVICE_ENDPOINTS"))
+	if raw == "" {
+		return nil, nil
+	}
+	var entries map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &entries) != nil {
+		return nil, errors.New("HUB_SERVICE_ENDPOINTS must be a JSON object")
+	}
+	out := map[string]ServiceEndpoint{}
+	for name, encoded := range entries {
+		var endpoint ServiceEndpoint
+		var plain string
+		if json.Unmarshal(encoded, &plain) == nil {
+			endpoint.URL = plain
+		} else if json.Unmarshal(encoded, &endpoint) != nil {
+			return nil, fmt.Errorf("HUB_SERVICE_ENDPOINTS: %q must be a url or {url,auth}", name)
+		}
+		if err := validateServiceEndpoint(name, endpoint); err != nil {
+			return nil, fmt.Errorf("HUB_SERVICE_ENDPOINTS: %w", err)
+		}
+		out[name] = endpoint
+	}
+	return out, nil
+}
+
+// validateServiceEndpoint keeps every registration path (env JSON, YAML
+// config) on the same rules: a restricted name and a credential-free http(s)
+// URL, so a schedule key can never smuggle in its own target.
+func validateServiceEndpoint(name string, endpoint ServiceEndpoint) error {
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid service name %q", name)
+	}
+	u, err := url.Parse(endpoint.URL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+		return fmt.Errorf("%q must be an http(s) url without credentials", name)
+	}
+	return nil
 }
 
 // spoolRetentionFromEnv reads HUB_SPOOL_RETENTION as a duration; the default

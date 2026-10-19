@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/letya999/hermes-hub/internal/stack"
 	"io"
 	"os"
 	"os/exec"
@@ -12,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 type Runner interface {

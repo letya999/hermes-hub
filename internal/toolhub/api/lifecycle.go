@@ -17,7 +17,7 @@ type WorkloadWorkspace struct {
 // OpenWorkloadWorkspace creates only the state that the resolved workload is
 // allowed to own. Per-user paths are stable across restart; per-job paths are
 // temporary and must be cleaned by the returned function on every terminal
-// outcome. Shared workloads receive no filesystem state.
+// outcome. Shared workloads get a context-scoped path, never a job-scoped one.
 func OpenWorkloadWorkspace(root string, effective EffectiveBinding, jobID string) (WorkloadWorkspace, error) {
 	root, err := filepath.Abs(root)
 	if err != nil || root == "" {
@@ -69,7 +69,12 @@ func bindingWorkspacePath(root string, effective EffectiveBinding, jobID string)
 		if jobID != "" {
 			return "", fmt.Errorf("%w: shared workload cannot have job state", ErrUnauthorized)
 		}
-		return "", nil
+		if !identity.ValidID(effective.Binding.ContextID) {
+			return "", fmt.Errorf("%w: shared context", ErrInvalid)
+		}
+		// The credential is context-owned: its materialization is scoped to
+		// the context, not to any single principal's directory.
+		return filepath.Join(root, "shared", effective.Binding.ContextID, definitionID), nil
 	case PerUser:
 		if jobID != "" || !identity.ValidID(effective.Binding.ContextID) {
 			return "", fmt.Errorf("%w: per-user context", ErrInvalid)

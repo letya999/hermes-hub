@@ -259,7 +259,8 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if json.Unmarshal(b, &st) != nil || !st.ChangedAt.Equal(o3.DueAt.UTC()) {
 		t.Fatalf("watch state: %+v", st)
 	}
-	// A probe error records failure without notifying or losing the baseline.
+	// A probe error records failure and alerts the owner once — the baseline
+	// is preserved.
 	o4 := o
 	o4.DueAt = o3.DueAt.Add(time.Hour)
 	if err := s.PutOccurrence(o4, caller); err != nil {
@@ -271,8 +272,9 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if err := s.ProbeDueOccurrences(o4.DueAt, func(context.Context, string) ([]byte, error) { return nil, errors.New("timeout") }); err != nil {
 		t.Fatal(err)
 	}
-	if d, _ := s.ClaimDelivery(); d != nil {
-		t.Fatalf("failing probe notified the user: %+v", d)
+	d, err = s.ClaimDelivery()
+	if err != nil || d == nil || !strings.Contains(d.Text, "probe failed") || !strings.Contains(d.Text, "timeout") {
+		t.Fatalf("failing probe must alert the owner once: %+v %v", d, err)
 	}
 	// A probe without a regex compares the whole bounded body.
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w2", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch page", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/whole"}}, caller, ""); err != nil {
@@ -313,7 +315,7 @@ func TestFetchWatchBounded(t *testing.T) {
 	var sawNoCache bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawNoCache = r.Header.Get("Cache-Control") == "no-cache"
-		_, _ = w.Write(bytes.Repeat([]byte("x"), 300*1024))
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 1100*1024))
 	}))
 	defer server.Close()
 	g := &Gateway{watchHTTP: server.Client()}
@@ -324,7 +326,7 @@ func TestFetchWatchBounded(t *testing.T) {
 	if !sawNoCache {
 		t.Fatal("watch fetch must bypass caches")
 	}
-	if len(body) > 256*1024 {
+	if len(body) > 1024*1024 {
 		t.Fatalf("fetch body unbounded: %d", len(body))
 	}
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))

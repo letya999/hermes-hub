@@ -120,8 +120,13 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
-	if err != nil || job == nil || !strings.HasPrefix(job.ID, "brief-") || !strings.Contains(job.Text, "refactor cron") || !strings.Contains(job.Text, "untrusted snapshot") {
+	if err != nil || job == nil || !strings.HasPrefix(job.ID, "routine-") || !strings.Contains(job.Text, "refactor cron") || !strings.Contains(job.Text, "untrusted snapshot") {
 		t.Fatalf("brief job: %+v %v", job, err)
+	}
+	// The admitted bundle keeps the occurrence id so send-time
+	// re-authorization resolves its schedule-pinned conversation.
+	if err := g.authorizeOccurrence(*job); err != nil {
+		t.Fatalf("brief bundle fails send-time re-authorization: %v", err)
 	}
 
 	// Event subscription: mcp_tool probe, two fresh events — one delivery
@@ -139,7 +144,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	}
 	toolBody := []byte(`{"events":[{"id":"m-1","text":"first mail"},{"id":"m-2","text":"second mail"}]}`)
 	toolCall := func(context.Context, string, *WatchProbe) ([]byte, error) { return toolBody, nil }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	seen := 0
@@ -167,7 +172,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	if err := s.DispatchDueOccurrences(eo.DueAt, g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := s.ClaimDelivery(); d != nil {
@@ -184,7 +189,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	}
 	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, func(context.Context, string, *WatchProbe) ([]byte, error) {
 		return nil, errors.New("403 forbidden")
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	state, err = s.EventStateOf("e1")

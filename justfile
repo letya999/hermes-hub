@@ -20,13 +20,21 @@ config-check:
     go test -tags integration -run TestDeploymentConfigurationContract -count=1 ./internal/stack
 
 go-check:
-    go run ./cmd/devcheck covergo coverage.out 85
+    # Per-package floor 75: keeps an internal/ package from hiding behind
+    # another package's tests under -coverpkg=./... (lowest today ~80%).
+    go run ./cmd/devcheck covergo coverage.out 85 75
 
 lint:
     go run ./cmd/devcheck format
     go vet ./...
+    go mod tidy -diff
     # v0.8.1 cannot import Go 1.27.2 export data; pin the updated importer.
     go run honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20261009230814-452d5bb86b45 ./...
+    # moby-style pragmatism: G101/G204/G30x are structural noise here (exec is the
+    # product, workspace paths are computed, shared dirs are 0755/0660 on purpose);
+    # G104/G110 stay enabled and are #nosec'd per site.
+    # devcheck scopes both Go modules and avoids PowerShell 5 hanging on gosec.
+    go run ./cmd/devcheck gosec
 
 docs-check:
     go run ./cmd/devcheck docs

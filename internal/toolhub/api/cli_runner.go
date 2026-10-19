@@ -17,6 +17,11 @@ import (
 var (
 	ErrOutputLimit = errors.New("bounded CLI output limit exceeded")
 	ErrIsolation   = errors.New("bounded CLI isolation is unavailable")
+	// ErrCredentialDelivery marks a materialized credential bundle that does
+	// not cover the definition's required inputs — an owner-fixable failure
+	// (a field left blank or demoted on the form), unlike the infrastructure
+	// faults ErrIsolation usually reports.
+	ErrCredentialDelivery = errors.New("credential delivery does not satisfy the definition")
 )
 
 // CLIRunner submits bounded-cli calls to the controller's /cli-exec: the

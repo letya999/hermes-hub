@@ -2,18 +2,16 @@ package communication
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/audit"
-	"github.com/letya999/hermes-hub/internal/diagnostics"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/diagnostics"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // editThrottle bounds status-message edits to one per interval per chat
@@ -84,6 +82,22 @@ func (g *Gateway) worker(ctx context.Context) {
 					_ = g.spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: outcome.SessionID, RunID: outcome.RunID, RuntimeGeneration: outcome.RuntimeGeneration, Status: "uncertain", LastEvent: "run.unknown"})
 				}
 				_ = g.spool.FailJob(job.ID)
+				// A plain run.failed on a user message is usually a transient
+				// model/provider outage: retry once as a fresh run before
+				// telling the owner. Uncertain outcomes reconcile instead.
+				retried := false
+				if retryableMessageFailure(*job, outcome.Status, runErr) {
+					retry := *job
+					retry.ID = job.ID + "-r1"
+					retry.IdempotencyKey = job.IdempotencyKey + "-r1"
+					retry.CreatedAt = g.now().UTC()
+					if accepted, err := g.spool.Enqueue(retry); err == nil && accepted {
+						retried = true
+						if chatID, messageID := g.spool.CloseStatusDelivery(job.ID); messageID > 0 {
+							_ = g.api.DeleteMessage(ctx, chatID, messageID)
+						}
+					}
+				}
 				key, message := "job-"+job.ID+"-error", failureMessage(job.ID, outcome.Status)
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
 					key = "job-" + job.ID + "-uncertain"
@@ -118,7 +132,7 @@ func (g *Gateway) worker(ctx context.Context) {
 						}
 					}
 				}
-				if deliver {
+				if deliver && !retried {
 					_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
 				}
 				if outcome.Status == "" {
@@ -147,6 +161,19 @@ func (g *Gateway) worker(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// retryableMessageFailure bounds automatic retries to plain user messages
+// whose run simply failed; uncertain outcomes reconcile, cancels and
+// interrupts are intentional, and cron/prepare continuations report instead.
+func retryableMessageFailure(job Job, status string, err error) bool {
+	if job.Trigger != "message" || strings.HasSuffix(job.ID, "-r1") {
+		return false
+	}
+	if errors.Is(err, ErrUncertain) || status == "uncertain" || status == "cancelled" || status == "interrupted" {
+		return false
+	}
+	return true
 }
 
 // deliveryLoop drains the outbox on the spool's notify signal with a
@@ -181,7 +208,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			return
 		}
 		user := g.user(mapping.PrincipalID)
-		current := user.envelope(1)
+		current := user.Envelope(1)
 		if delivery.ApprovalRunID == "" || delivery.ApprovalGeneration == "" || delivery.ApprovalRunID != mapping.RunID || delivery.ApprovalGeneration != mapping.RuntimeGeneration || delivery.ConversationID != mapping.ConversationID || delivery.DeliveryTargetID != mapping.DeliveryTargetID || !user.Enabled || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion {
 			_ = g.spool.UncertainDelivery(delivery.ID)
 			return
@@ -195,14 +222,13 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		}
 		if found {
 			user := g.user(mapping.PrincipalID)
-			current := user.envelope(1)
+			current := user.Envelope(1)
 			if !user.Enabled || user.ID != mapping.PrincipalID || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion || (delivery.DeliveryTargetID != "" && delivery.DeliveryTargetID != mapping.DeliveryTargetID) {
 				_ = g.spool.UncertainDelivery(delivery.ID)
 				return
 			}
-			if mapping.Channel == "mock" {
-				owner, err := g.mockLinkOwner(delivery.ChatID)
-				if err != nil || owner != user.ID {
+			if v, ok := g.channel(mapping.Channel).(deliveryTargetVerifier); ok && v != nil {
+				if err := v.VerifyDeliveryTarget(delivery, user.ID); err != nil {
 					_ = g.spool.UncertainDelivery(delivery.ID)
 					return
 				}
@@ -211,9 +237,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	}
 	if delivery.OccurrenceID != "" {
 		g.spool.mu.Lock()
-		b, readErr := os.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(delivery.OccurrenceID)+".json"))
-		var o RoutineOccurrence
-		valid := readErr == nil && json.Unmarshal(b, &o) == nil && g.spool.occurrenceCurrentLocked(o) && g.authorizeOccurrence(o.Job) == nil
+		valid := g.occurrenceRefAuthorizedLocked(delivery.OccurrenceID)
 		g.spool.mu.Unlock()
 		if !valid {
 			_ = g.spool.UncertainDelivery(delivery.ID)
@@ -221,103 +245,18 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		}
 	}
 	delivery.Attempts++
-	var sendErr error
-	switch delivery.Channel {
-	case "mock":
-		// The local test bench captures instead of sending: the durable
-		// record under spool/mock-sent is what /v1/mock/outbox reports.
-		sendErr = g.captureMock(delivery)
-	case "slack_app":
-		if g.slack == nil {
-			sendErr = errors.New("slack delivery is not configured")
-			break
-		}
-		if delivery.Format == formatMarkdown {
-			sendErr = g.sendParts(delivery, renderSlack(delivery.Text), func(part string) error {
-				return g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, part)
-			})
-		} else {
-			sendErr = g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, delivery.Text)
-		}
-	default:
-		if delivery.EditMessageID > 0 {
-			// Status update: edit the delivered status message in place
-			// (SPEC-0053 R2.2), no more than once per editInterval per chat.
-			g.edits.mu.Lock()
-			if now, last := g.now(), g.edits.last[delivery.ChatID]; !last.IsZero() && now.Sub(last) < 2*time.Second {
-				g.edits.mu.Unlock()
-				_ = g.spool.RetryDelivery(delivery.ID)
-				return
-			}
-			sendErr = g.api.EditMessageText(ctx, delivery.ChatID, delivery.EditMessageID, limitTelegramText(delivery.Text))
-			if sendErr == nil {
-				if g.edits.last == nil {
-					g.edits.last = map[int64]time.Time{}
-				}
-				g.edits.last[delivery.ChatID] = g.now()
-			}
-			g.edits.mu.Unlock()
-			break
-		}
-		speak, voiceOnly := g.voicePlan(*delivery)
-		if strings.TrimSpace(delivery.Text) == "" {
-			// A VOICE:-only reply keeps its spoken payload as the text
-			// fallback so an unavailable synthesizer never swallows it.
-			delivery.Text = speak
-		}
-		voiceSent := false
-		if voiceOnly && speak != "" {
-			voiceErr := g.sendVoiceReply(ctx, *delivery, speak)
-			voiceSent = voiceErr == nil
-			delivery.VoiceSent = voiceSent
-			if errors.Is(voiceErr, ErrUncertain) {
-				sendErr = voiceErr
-			}
-		}
-		if !voiceSent && sendErr == nil {
-			if delivery.Format == formatMarkdown {
-				sendErr = g.sendTelegramMarkdown(ctx, delivery)
-			} else if len(delivery.Buttons) > 0 {
-				if receiptAPI, ok := g.api.(interface {
-					SendKeyboardReceipt(context.Context, int64, int64, string, []DeliveryButton) (int, error)
-				}); ok {
-					delivery.TelegramMessageID, sendErr = receiptAPI.SendKeyboardReceipt(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), delivery.Buttons)
-					if sendErr == nil && delivery.ApprovalJobID != "" {
-						sendErr = g.spool.trackApprovalMessage(*delivery)
-					}
-				} else {
-					sendErr = g.api.SendKeyboard(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), delivery.Buttons)
-				}
-			} else {
-				// Capturing the send receipt is what lets later status events
-				// edit this message in place instead of stacking new ones.
-				if receiptAPI, ok := g.api.(interface {
-					SendMessageReceipt(context.Context, int64, int64, string, string) (int, error)
-				}); ok {
-					delivery.TelegramMessageID, sendErr = receiptAPI.SendMessageReceipt(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
-					if sendErr == nil && delivery.TelegramMessageID > 0 {
-						sendErr = g.spool.UpdateSending(*delivery)
-					}
-				} else {
-					sendErr = g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText(delivery.Text), "")
-				}
-			}
-			if sendErr == nil && speak != "" && !voiceOnly {
-				voiceErr := g.sendVoiceReply(ctx, *delivery, speak)
-				delivery.VoiceSent = voiceErr == nil
-				if errors.Is(voiceErr, ErrUncertain) {
-					sendErr = voiceErr
-				}
-			}
-		}
-		if speak != "" {
-			if err := g.spool.UpdateSending(*delivery); err != nil {
-				sendErr = err
-			}
-		}
+	ch := g.channel(delivery.Channel)
+	if ch == nil {
+		log.Printf("gateway delivery channel=%q job_id=%q delivery_id=%q status=unrouted", delivery.Channel, delivery.JobID, delivery.ID)
+		_ = g.spool.UncertainDelivery(delivery.ID)
+		return
 	}
-	if sendErr == nil && delivery.Channel != "mock" && delivery.SentArtifacts < len(delivery.Artifacts) {
-		sendErr = g.sendDeliveryArtifacts(ctx, delivery)
+	sendErr := ch.Deliver(ctx, delivery)
+	if errors.Is(sendErr, errDeliveryRetried) {
+		return
+	}
+	if sendErr == nil && ch.Caps().Artifacts && delivery.SentArtifacts < len(delivery.Artifacts) {
+		sendErr = g.sendDeliveryArtifacts(ctx, ch, delivery)
 	}
 	if sendErr != nil {
 		log.Printf("gateway delivery channel=%q job_id=%q delivery_id=%q status=uncertain", delivery.Channel, delivery.JobID, delivery.ID)
@@ -397,9 +336,9 @@ func (g *Gateway) sendTelegramMarkdown(ctx context.Context, delivery *Delivery) 
 // sendDeliveryArtifacts ships staged run artifacts after the text parts, in
 // order, with a durable boundary. A ref with Error still produces one explicit
 // notice: a generated file that never arrives is never silent.
-func (g *Gateway) sendDeliveryArtifacts(ctx context.Context, delivery *Delivery) error {
+func (g *Gateway) sendDeliveryArtifacts(ctx context.Context, ch Channel, delivery *Delivery) error {
 	for i := delivery.SentArtifacts; i < len(delivery.Artifacts); i++ {
-		if err := g.sendArtifact(ctx, delivery, delivery.Artifacts[i]); err != nil {
+		if err := ch.DeliverArtifact(ctx, delivery, delivery.Artifacts[i]); err != nil {
 			_ = g.spool.UpdateSending(*delivery)
 			return err
 		}
@@ -411,45 +350,11 @@ func (g *Gateway) sendDeliveryArtifacts(ctx context.Context, delivery *Delivery)
 	return nil
 }
 
-func (g *Gateway) sendArtifact(ctx context.Context, delivery *Delivery, ref hubruntime.ArtifactRef) error {
-	if delivery.Channel == "slack_app" {
-		if g.slack == nil {
-			return errors.New("slack delivery is not configured")
-		}
-		note := "Файл готов: " + ref.Name + " — сохранён в workspace, доставка файлов в Slack пока не поддерживается"
-		if ref.Error != "" {
-			note = "Файл не удалось доставить: " + ref.Name
-		}
-		return g.slack.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, note)
-	}
-	if ref.Error != "" {
-		return g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, limitTelegramText("Файл не удалось доставить: "+ref.Name), "")
-	}
-	data, err := g.spool.ReadDeliveryBlob(delivery.ID, ref.Blob)
-	if err != nil {
-		return err
-	}
-	if ref.Mime == "image/png" || ref.Mime == "image/jpeg" {
-		if err := g.api.SendPhoto(ctx, delivery.ChatID, delivery.TopicID, ref.Name, "", data); err == nil {
-			return nil
-		}
-	}
-	if strings.HasPrefix(ref.Mime, "video/") {
-		if err := g.api.SendVideo(ctx, delivery.ChatID, delivery.TopicID, ref.Name, "", data); err == nil {
-			return nil
-		}
-	}
-	return g.api.SendDocument(ctx, delivery.ChatID, delivery.TopicID, ref.Name, "", data)
-}
-
 // voicePlan decides what is spoken and whether the voice message replaces
 // text delivery. Speech is a per-reply tool: only an upstream VOICE: marker
 // requests it (marker-only replies are voice-only, text+marker sends both).
 // There is no conversation-level voice mode.
 func (g *Gateway) voicePlan(delivery Delivery) (speak string, voiceOnly bool) {
-	if delivery.Channel == "slack_app" {
-		return "", false
-	}
 	if speak = strings.TrimSpace(delivery.Voice); speak != "" {
 		return speak, strings.TrimSpace(delivery.Text) == ""
 	}
@@ -488,21 +393,4 @@ func (g *Gateway) recordJob(job Job, outcome RunOutcome) {
 		status = "completed"
 	}
 	diagnostics.Logger("gateway").Info("job outcome", "job_id", job.ID, "run_id", outcome.RunID, "principal", job.UserID, "status", status)
-	if g.audit == nil {
-		return
-	}
-	principal := job.PrincipalID
-	if principal == "" {
-		principal = job.UserID
-	}
-	if principal == "" {
-		return
-	}
-	event := audit.NewEvent("job", principal, status)
-	event.JobID = job.ID
-	event.HermesRunID = outcome.RunID
-	event.RuntimeID = job.RuntimeID
-	event.ContextID = job.ContextID
-	event.PolicyRevision = job.PolicyVersion
-	_ = g.audit.Append(event)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 func TestM10RegressionMockAttachmentNeverCallsTelegram(t *testing.T) {

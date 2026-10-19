@@ -22,7 +22,7 @@ func runtimeSelfEnvKeys(s Settings) []string {
 }
 
 func runtimeProtectedEnvKeys(s Settings) []string {
-	keys := append([]string{}, GatewaySecretKeys()...)
+	keys := append(append([]string{}, GatewaySecretKeys()...), ModelRelaySecretKeys()...)
 	for _, key := range strings.Split(organizationSecretKeys(s), ",") {
 		if key != "" && !slices.Contains(keys, key) {
 			keys = append(keys, key)
@@ -121,6 +121,14 @@ func RenderEnvironment(dir, root, environment string) error {
 	}
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
+	}
+	if s.CapabilityMode == "managed" {
+		if err = writeModelRegistry(dir, s); err != nil {
+			return err
+		}
+		if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {
+			return err
+		}
 	}
 	if s.Has("transcription") || s.Has("image_gen") {
 		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
@@ -355,7 +363,16 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 	if token := runtimeAuthToken(filepath.Join(dir, "runtime.auth")); token != "" {
 		gateway["HUB_COMMUNICATION_AUTH"] = token
 	}
+	relay := map[string]string{}
+	for _, key := range ModelRelaySecretKeys() {
+		if value := user[key]; value != "" {
+			relay[key] = value
+		}
+	}
 	if err := writeEnvFile(filepath.Join(dir, "runtime."+environment+".env"), runtime); err != nil {
+		return err
+	}
+	if err := writeEnvFile(filepath.Join(dir, "model-relay."+environment+".env"), relay); err != nil {
 		return err
 	}
 	return writeEnvFile(filepath.Join(dir, "communication."+environment+".env"), gateway)

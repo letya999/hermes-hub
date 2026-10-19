@@ -1,0 +1,27 @@
+change: CHG-0125-domain-model-relocation
+status: done
+branch: refactor/comm-plane-separation
+done:
+  - internal/commodel — листовая доменная модель (Job/Delivery/Task/User/Schedule/...)
+    + алиасы в communication; пополнена Event, TerminalStatus, TaskConversation,
+    DefaultTaskID, FileID, DefaultTask
+  - internal/channel — Channel iface + Caps + контрактные ошибки + адаптеры
+    telegram/slack/mock за Deps-швами
+  - internal/routines — пакет семантики расписаний (validate/cron/timing/
+    extract/recipes/ids) + DraftHooks для канала и скрипта
+  - boundary-тесты commodel/channel/routines + ID-золотники
+  - internal/channel/conformance_test.go — контрактные проверки каждого
+    адаптера на заглушках deps (ID/Caps, normalize, ownership, admission)
+  - internal/routines/invariants_test.go — байт-точный occurrence-id golden,
+    RoutineConversation, RoutineFailureDigest
+  - routines engine: schedules/occurrences/watchers/digests/proactive/
+    destinations/reminder/scriptrun переехали в internal/routines за
+    routines.Engine (общий *sync.Mutex + root спула, владение
+    schedules//occurrences//watchers//digests/, заимствование спула через
+    Deps-замыкания; gateway-методы и эвент-плоскость остались в communication,
+    *Spool держит форвардеры; engine_test.go фиксирует seam без communication)
+next: []
+verification:
+  - just check PASS (coverage 86.39%, lint/docs/config clean)
+  - docs/channels.md + ADR-0046..0050 добавлены; architecture.md обновлён
+  - Ф5 вынесен в CHG-0126: hubctl spool migrate (knowledge → state, copy-not-move)

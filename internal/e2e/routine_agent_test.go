@@ -16,7 +16,7 @@ import (
 )
 
 func TestRoutineAgentRequiresIndependentStateAndCleansOnlyOwnFixture(t *testing.T) {
-	for _, name := range []string{"routine_create", "routine_list", "routine_update", "routine_snooze", "routine_pause", "routine_delete"} {
+	for _, name := range []string{"routine_create", "routine_list", "routine_edit", "routine_snooze", "routine_pause", "routine_delete"} {
 		for _, lie := range []bool{false, true} {
 			t.Run(name+map[bool]string{false: "/correct", true: "/false-claim"}[lie], func(t *testing.T) {
 				root := t.TempDir()
@@ -79,7 +79,7 @@ func TestRoutineAgentRequiresIndependentStateAndCleansOnlyOwnFixture(t *testing.
 							}
 						} else if !lie {
 							switch name {
-							case "routine_update":
+							case "routine_edit":
 								fixture.Expression, fixture.Input, fixture.Revision = "once:2099-02-01T00:00:00Z", marker, 2
 							case "routine_snooze":
 								fixture.SnoozedUntil = time.Date(2099, 3, 1, 0, 0, 0, 0, time.UTC)

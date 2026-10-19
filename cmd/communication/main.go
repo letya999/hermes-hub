@@ -53,7 +53,9 @@ func main() {
 }
 
 func runScriptHelper(args []string, out io.Writer) error {
-	if len(args) != 2 {
+	// argv: b64(source) dueAt [b64(input) watchRoot [b64(need) xN]] — needs are
+	// hub-prefetched read-tool results capped at four by the supervisor.
+	if len(args) != 2 && (len(args) < 4 || len(args) > 8) {
 		return fmt.Errorf("invalid script arguments")
 	}
 	source, err := base64.StdEncoding.DecodeString(args[0])
@@ -64,11 +66,30 @@ func runScriptHelper(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var input, watchRoot string
+	var needs []string
+	if len(args) >= 4 {
+		raw, err := base64.StdEncoding.DecodeString(args[2])
+		if err != nil {
+			return err
+		}
+		input = string(raw)
+		if args[3] != "-" {
+			watchRoot = args[3]
+		}
+		for _, encoded := range args[4:] {
+			raw, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return err
+			}
+			needs = append(needs, string(raw))
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	watchdog := time.AfterFunc(5*time.Second, func() { os.Exit(1) })
 	defer watchdog.Stop()
-	emitted, err := communication.RunScript(ctx, string(source), due)
+	emitted, err := communication.RunScriptProbe(ctx, string(source), due, input, watchRoot, needs)
 	if err != nil {
 		return err
 	}

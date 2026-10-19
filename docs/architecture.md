@@ -40,7 +40,22 @@ Managed Compose assigns each user/environment an internal agent network.
 Hermes reaches ToolHub and a per-user model relay there. The ToolHub relay
 exposes MCP plus the caller-scoped connector inventory used by readiness;
 the model relay forwards chat completions only for the selected model and
-returns only that model from CLIProxy's read-only catalog.
+returns only that model from CLIProxy's read-only catalog. The ladder is no
+longer env-hardcoded: layered registries (`spaces/models.yaml`, the
+organization's `models.yaml`, then the owner's own) merge into
+`generated/models.<env>.yaml`, mounted read-only at `/run/models.yaml`.
+Each logical model names an ordered ladder of `{provider, model}` hops with
+per-hop provider model ids; providers hold fixed endpoints plus `key_env`
+references into the space's secrets file — never literal keys. A hop cools
+down for a minute after a quota/auth/provider failure and every attempt is
+logged as an audit receipt. Owners granted a model (`owners:`) can switch it
+from chat: `/model` in the communication gateway calls the space's own
+`model-relay-<user>:8318` admin endpoint (`PUT /v1/model`, bearer from
+`model-relay.auth`), which persists the choice to `model-select.json`; the
+relay re-reads the registry when the file changes.
+`spaces/profiles.yaml` still overlays model, model_url and cliproxy topology
+per owner (default → named → the owner's own file), and `cliproxy: dedicated`
+renders a secondary space its own proxy instead of the shared infra one.
 CLIProxy, broker and sibling runtimes are not directly attached to the agent
 network. Managed launch requires supervised network lifecycle, immutable
 extension content and private executors.
@@ -73,6 +88,10 @@ Telegram IDs are transport links, never filesystem or authorization keys.
 Hermes owns reasoning, chat, tool selection, memory, skills and hooks. Go owns
 space initialization, strict configuration, organization policy resolution, Docker
 lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
+A routine's clock, execution and delivery remain separate durable records. The
+[routine lifecycle](routines.md) exposes owner/context-scoped business operations
+through ToolHub with revision fences, bounded discovery/history and interval
+windows; ADR-0042 records decisions and CHG-0112 the acceptance boundary.
 A small Go binary supervises container processes. There is no replacement agent loop,
 CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
 using files and tools; web retrieval uses the Hermes `web` toolset with
@@ -191,7 +210,37 @@ authorized request. An uncertain result is never silently retried.
 
 Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
 channel sender (Telegram Bot API or Slack App Events API) to the configured user scope, persist jobs and replies in
-`/state/gateway`, and run one bounded invocation at a time. Slack App credentials stay
+`/state/gateway`, and run one bounded invocation at a time. The durable domain model
+(`Job`, `Delivery`, `Task`, `User`, `Schedule`, `RoutineOccurrence`, `JobMapping`, …)
+lives in the leaf `internal/commodel`; `internal/communication` re-exports it through
+type aliases so its exported contract stays stable. Channel-specific behavior sits
+behind `internal/channel`: the `Channel` contract plus the telegram/slack/mock
+adapters, each reaching the gateway only through an injected `Deps` struct
+(`TelegramDeps`, `SlackDeps`, `MockDeps`). Delivery, artifact sending, routine
+admission/authorization, envelope mapping, blocked-notice routing and the optional
+capabilities (`Caps`: typing presence, editable status, artifacts, destinations,
+routine-origin pinning) dispatch through `channelPlugins[id]` rather than
+provider-name switches. A new channel implements that seam and registers an adapter;
+core job, spool and schedule mechanics stay channel-neutral. Routine semantics and
+orchestration — draft validation, cron/timing math, extract pipelines, recipes,
+durable ids, and the `routines.Engine` driving schedule ticks, occurrences,
+watchers, digests, proactive runs, script execution, reminders and destination
+bindings — live in the leaf `internal/routines`. The engine shares the spool's
+mutex and root and reaches the gateway, channels and runtime through an
+injected `Deps` seam, so `internal/routines` never imports them back.
+The operational plane — the synthetic canary probe and the caller-scoped health
+block — lives in `internal/commops`, a leaf package that reaches the gateway only
+through injected `Deps` closures, so ops code cannot touch gateway internals. Each
+of `commodel`, `channel`, `routines`, `commops` and `serviceauth` carries a parser
+boundary test fixing the import direction. `internal/channel` also carries a
+conformance suite that exercises every registered adapter against stubbed deps —
+identity/normalize, capability declarations, occurrence-ownership validation and
+routine admission — so a new channel proves the contract without a gateway, and
+`internal/routines` freezes the durable id formats (occurrence hash inputs,
+routine conversation, failure digest) with byte-exact goldens. The shared
+enrolled-tokens file contract
+(`{"<token>": <envelope>}`) is owned by `internal/serviceauth`; authorization decisions
+stay local to each service. Slack App credentials stay
 in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
 media envelope, transcribe through the replaceable STT worker, and submit text to the
 same Hermes session. Spoken replies are a per-reply tool, not a mode: a `VOICE:` line in
@@ -381,7 +430,10 @@ created anonymous per-user workload IDs and `per-user/<context>/<definition>`
 directories are not reused or automatically moved/deleted. The existing
 credential-bearing Telegram/controller path remains connection-scoped. The generic
 Docker fallback gives each binding its own workload ID, network, volumes and
-`credentials.env`; shared stateful or credential-bearing workloads stay denied.
+`credentials.env`; shared stateful workloads stay denied, and a shared
+credential-bearing workload exists only where a `Shared` definition carries the
+reviewed `sharable` flag under an operator shared-credential policy — members
+then resolve the policy owner's single connection and workload.
 Live Docker 95-plus-5 used 100 sequential unique networks, volumes and
 containers (95 distinct owner env-files + 5 of one shared file). One hundred
 users means one hundred **registered** bindings and a bounded live set

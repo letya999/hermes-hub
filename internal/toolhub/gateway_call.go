@@ -55,10 +55,23 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		defer cancel()
 		var result api.BackendResult
 		var callErr error
-		if caller, ok := g.Backend.(api.EnvBackend); ok {
+		caller, envOK := g.Backend.(api.EnvBackend)
+		if envOK {
 			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, injection.Environment)
 		} else {
 			result, callErr = g.Backend.Call(callCtx, effective, projected.Tool, arguments)
+		}
+		// An OAuth-managed remote connection whose token was just rejected gets
+		// one refresh-and-retry: a renewed bearer re-injects from the locator.
+		if callErr != nil && envOK && g.OAuthRefresh != nil && effective.Connection != nil && effective.Connection.Metadata["oauth_provider"] != "" {
+			if refreshed, refreshErr := g.OAuthRefresh(callCtx, effective); refreshErr == nil && refreshed && g.Injector != nil {
+				if fresh, injErr := g.Injector(ctx, effective); injErr == nil {
+					if fresh.Cleanup != nil {
+						defer fresh.Cleanup()
+					}
+					result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, fresh.Environment)
+				}
+			}
 		}
 		if callErr != nil {
 			_ = g.audit("deny", mergeAudit(auditFields(auth, projected, effective, "backend-error"), corr))

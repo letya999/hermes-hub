@@ -40,10 +40,13 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
+	if op == "dev-rebuild" {
+		return runDevRebuild(ctx, args[1:])
+	}
 	if op == "connector" {
 		return runConnector(ctx, args[1:])
 	}
@@ -145,13 +148,34 @@ func run(ctx context.Context, args []string) error {
 		file := f.String("f", "", "desired-state file (yaml)")
 		profile := f.String("user", "me", "person identifier")
 		spoolDir := f.String("spool", "", "communication spool")
+		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *file == "" || *spoolDir == "" {
 			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
 		}
-		rep, err := applyFile(*spoolDir, *profile, *file)
+		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
+	if op == "spool" {
+		f := flag.NewFlagSet("spool", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir")
+		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
+		apply := f.Bool("apply", false, "apply migration; default is dry-run")
+		if len(args) < 2 || args[1] != "migrate" {
+			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
+		}
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *spoolDir == "" || *stateDir == "" {
+			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
+		}
+		rep, err := spoolMigrate(*spoolDir, *stateDir, *apply)
 		if err != nil {
 			return err
 		}
@@ -443,6 +467,13 @@ func run(ctx context.Context, args []string) error {
 				image := "hermes-hub-" + stage + ":0.3.0-" + *environment
 				if err := dockerCmd("build", "--target", stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)
+				}
+			}
+			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
+				for _, pin := range []string{"dev-runtime-image", "dev-script-image"} {
+					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) {
+						return err
+					}
 				}
 			}
 		}

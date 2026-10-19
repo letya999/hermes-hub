@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -28,9 +29,7 @@ type streamReceipt struct {
 	StatusDelivery bool `json:"status_delivery,omitempty"`
 }
 
-func terminalStatus(status string) bool {
-	return status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted"
-}
+func terminalStatus(status string) bool { return commodel.TerminalStatus(status) }
 
 func outcomeFromEvent(event hubruntime.ExecuteResponse) RunOutcome {
 	return RunOutcome{JobID: event.JobID, SessionID: event.SessionID, RunID: event.RunID, RuntimeGeneration: event.RuntimeGeneration, Status: event.Status, LastEvent: event.LastEvent, Text: event.Text, Artifacts: event.Artifacts, Voice: event.Voice}
@@ -133,8 +132,20 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			text, id, markdown = event.Text, "job-"+job.ID+"-response", true
 		case terminalStatus(event.Status):
 			text, id = failureMessage(job.ID, event.Status), "job-"+job.ID+"-error"
+			if event.Status == "cancelled" && mapping.ApprovalID != "" && !mapping.ApprovalDeadline.IsZero() && !time.Now().Before(mapping.ApprovalDeadline) {
+				if mapping.Control != nil && mapping.Control.Choice == "deny" {
+					text = "Подтверждение действия отклонено — задача отменена. ID: " + job.ID
+				} else {
+					text = "Подтверждение действия истекло — задача отменена. ID: " + job.ID
+				}
+			}
 		case event.LastEvent == "approval.request":
-			text = "Требуется подтверждение действия.\n/approve " + job.ID + " " + event.ApprovalID + " <choice>\nВарианты: " + strings.Join(event.ApprovalChoices, ", ") + "\nОтмена: /cancel " + job.ID
+			text = "Требуется подтверждение действия."
+			if event.ApprovalSummary != "" {
+				text += "\n" + event.ApprovalSummary
+			}
+			text += "\nДействует до " + receipt.ApprovalDeadline.Format("15:04 UTC") + "; затем задача будет отменена."
+			text += "\n/approve " + job.ID + " " + event.ApprovalID + " <choice>\nВарианты: " + strings.Join(event.ApprovalChoices, ", ") + "\nОтмена: /cancel " + job.ID
 		case event.LastEvent == "tool.start" || event.LastEvent == "tool.end" || event.LastEvent == "run.started":
 			text, markdown = strings.TrimSpace(event.Text), true
 			if text == "" && event.LastEvent == "run.started" {
@@ -143,11 +154,13 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			if text == strings.TrimSpace(mapping.Result) {
 				text = ""
 			}
-			if text != "" && job.Channel == "telegram_bot" {
-				// One editable status message per job (SPEC-0053 R2.2): the
-				// pending record coalesces to the latest text, and once sent
-				// the done record's message ID becomes the edit target.
-				id, markdown, statusDelivery = "job-"+job.ID+"-status", false, true
+			if text != "" {
+				if ch := channelFor(nil, job.Channel); ch != nil && ch.Caps().EditableStatus {
+					// One editable status message per job (SPEC-0053 R2.2): the
+					// pending record coalesces to the latest text, and once sent
+					// the done record's message ID becomes the edit target.
+					id, markdown, statusDelivery = "job-"+job.ID+"-status", false, true
+				}
 			}
 		}
 		if text != "" {
@@ -331,6 +344,17 @@ func (s *Spool) recoverStreamEvents() error {
 		}
 		var receipt streamReceipt
 		if err := json.Unmarshal(b, &receipt); err != nil || receipt.JobID == "" || receipt.Position == 0 {
+			// The dir is shared: event-subscription states and slack dedup
+			// markers are valid JSON owned by other contracts; only their
+			// readers may reject them. Anything else malformed is a corrupt
+			// receipt and stays fatal.
+			var foreign struct {
+				ScheduleID string `json:"schedule_id"`
+				Provider   string `json:"provider"`
+			}
+			if json.Unmarshal(b, &foreign) == nil && (foreign.ScheduleID != "" || foreign.Provider != "") {
+				continue
+			}
 			return errors.New("invalid stream receipt")
 		}
 		receipts = append(receipts, receipt)

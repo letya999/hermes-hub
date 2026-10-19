@@ -61,6 +61,26 @@ Tests:
 - `TestBriefPausedStaysQuiet`: paused schedule -> occurrence cancelled.
 - `TestBriefRestartIdempotent`: receipt replay after "crash" -> one effect.
 
+### S4.3 Quiet window, error dedup, race (added on refactor/comm-plane-separation)
+
+Anchors: `occurrences.go` dispatch branch; `digests.go` `dispatchBriefLocked`.
+
+Change:
+1. A brief occurrence inside `quiet_from`/`quiet_to` stays pending — the
+   slot's effect is a model call, which cannot ride a delivery
+   `not_before`. Still-due slots fire after the window; a window longer
+   than catch-up settles `missed` and the unread cursor carries changes.
+2. The same failure episode is named once via `cursor.Errors`; later
+   slots carry only the unavailable count in the deterministic footer.
+3. Catalog 5.0.1: `routine_create` documents kind=brief.
+
+Tests:
+- `TestBriefQuietDefersSlot`: quiet -> pending, no job/delivery; after
+  the window -> one job with the queued change.
+- `TestBriefUnavailableErrorDeduped`: slot2 with the same error -> no
+  model, footer count.
+- `TestBriefTwoWorkersSingleJob`: two concurrent dispatchers -> one job.
+
 ## Red-team checklist
 
 - Snapshot lines are bounded; watch values pass `boundedWatchText`.

@@ -1,0 +1,43 @@
+schema: 1
+change: CHG-0118
+title: Communication plane separation, phase 0 — routine tick isolation and boundary hardening
+status: done
+branch: refactor/comm-plane-separation
+updated: 2026-10-18
+phase: implementation
+requirements: []
+depends_on: []
+design_status: accepted
+implementation_status: done
+slices:
+  S1-schedule-record-isolation: done
+  S2-blocked-state: done
+  S3-routine-draft: done
+  S4-credential-gate: done
+  S5-slack-durable-marker: done
+validation:
+  documents: done
+  just_check: pass
+  docker_check: not_required
+  red_team: done
+  live_acceptance: not_required
+evidence:
+  - "just check: PASS — gofmt, vet, mod tidy, staticcheck, gosec, docs, actionlint, deployment contract; Go statement coverage 86.35% (>=85%)"
+  - "go test ./internal/communication -count=1: PASS (full package, ~67s under just check)"
+  - "Restored 5 pre-existing M19 tests in routine_isolation_test.go that an earlier edit had overwritten; all pass"
+  - "TestTickSchedulesQuarantinesUnreadableRecord: poison record -> schedules/quarantine, other owner still ticks"
+  - "TestProactiveStagesContinueAfterFailure: stage-0 failure does not cancel dispatch stage"
+  - "TestTickBlocksUnreadableScheduleState + TestTickBlocksOnOccurrenceAuthorizationFailure: blocked state, one notice"
+  - "TestBlockNoticeGoesToOwnerHomeNotDestination: notice targets envelope DeliveryTargetID, never the stale binding"
+  - "TestDispatchDenialBlocksOccurrenceNotSchedule: stale record cannot poison a healthy routine"
+  - "TestBlockedScheduleSkipsAndResumesOnEdit: edit clears block, routine fires again"
+  - "TestRoutineDraftDropsInternalFields: revision/enabled/snoozed_until/native_cron_ref/identity/task_id ignored on POST"
+  - "TestConfigFromEnvBlanksCredentialStoreUnderBroker: env and yaml paths"
+  - "TestSlackEventMarkedOnlyAfterDurableIngest: denied ingest stays unseen, retry ingests, third post dedupes"
+  - "TestRoutineCardDoesNotReportBrokenBindingsHealthy/pointer updated: notice reaches owner home, stale pointer admits nothing"
+  - "TestM10DigestQuietSelectionAndRecovery unchanged-green after dispatch-time block reverted"
+remaining: []
+limitations:
+  - "Slack App channel retained per plan; only the durable-marker bug fixed"
+  - "blocked clears on any successful owner edit or resume; no separate unblock endpoint"
+  - "blocked notice dedupes via LastFailureSHA256 digest of normalized reason"

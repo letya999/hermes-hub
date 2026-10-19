@@ -250,7 +250,7 @@ func TestStyleForRunErrorBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := Job{Envelope: user.envelope(11), ID: "orphan-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "orphan-job", ChatID: 11, TaskID: orphan.TaskID, Text: "x"}
+	job := Job{Envelope: user.Envelope(11), ID: "orphan-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "orphan-job", ChatID: 11, TaskID: orphan.TaskID, Text: "x"}
 	if _, err := spool.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope := user.envelope(11)
+	envelope := user.Envelope(11)
 	envelope.ConversationID = bound.ConversationID
 	job := Job{Envelope: envelope, ID: "status-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "status-job", ChatID: 11, TaskID: bound.TaskID, Text: "x"}
 	if _, err := g.spool.Enqueue(job); err != nil {

@@ -138,7 +138,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 }
 
 func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[string]any, error) {
-	if api.ArgString(args, "onboarding_id") == "" && api.ArgString(args, "definition_id") == "" {
+	if api.ArgString(args, "onboarding_id") == "" && api.ArgString(args, "definition_id") == "" && api.ArgString(args, "selector") == "" && api.ArgString(args, "name") == "" && api.ArgString(args, "source") == "" && api.ArgString(args, "operation_id") == "" && api.ArgString(args, "request_key") == "" {
 		c.Store.mu.RLock()
 		var latest api.Onboarding
 		for _, candidate := range c.Store.onboardings {
@@ -208,10 +208,11 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	}
 	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
-		if errors.Is(err, api.ErrUnauthorized) {
+		if errors.Is(err, api.ErrUnauthorized) || errors.Is(err, api.ErrCredentialDelivery) {
 			if entry, matched, lookupErr := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); lookupErr == nil && matched && entry.OAuth != nil {
 				return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
 			}
+			c.resetSubmittedCredential(&onboarding)
 		}
 		return nil, c.persistFailure(onboarding, api.PublicPrepareError(err), err)
 	}
@@ -221,6 +222,7 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	onboarding.CredentialRefID = binding.CredentialRefID
 	onboarding.BrokerRotateCredentialID = ""
 	onboarding.Error = ""
+	onboarding.ErrorCode = ""
 	onboarding.Phase = api.PhaseConfirmed
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -306,6 +308,7 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		return nil, err
 	}
 	onboarding.Error = ""
+	onboarding.ErrorCode = ""
 	onboarding.Phase = api.PhaseEnabled
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -354,7 +357,49 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
+	if onboarding.Phase == api.PhaseRemoved {
+		return c.statusBody(onboarding, false), nil
+	}
+	// Destructive step: a bare call previews what goes away and arms a nonce;
+	// only the nonce-carrying follow-up deletes credentials and state.
+	nonce := api.ArgString(args, "remove_nonce")
+	if onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce {
+		if nonce != "" {
+			return nil, fmt.Errorf("%w: remove confirmation", api.ErrUnauthorized)
+		}
+		onboarding.RemoveNonce = api.RandomNonce()
+		onboarding.RemoveExpires = c.now().Add(c.ttl())
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(onboarding); err != nil {
+			return nil, err
+		}
+		body := c.statusBody(onboarding, false)
+		body["requires_confirmation"] = true
+		body["remove_nonce"] = onboarding.RemoveNonce
+		body["next_action"] = "confirm_remove"
+		body["instructions"] = "Removing this connector deletes its credentials, workspace and runtime state permanently. Repeat remove with remove_nonce to execute; ask the user to confirm first."
+		return body, nil
+	}
+	if onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
+		return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
+	}
+	onboarding.RemoveNonce = ""
 	_ = c.cutAuthorization(onboarding)
+	// Remove deletes the owner's ciphertext, not just revokes it — a revoked
+	// marker still leaves the secret recoverable. A credential owned by
+	// someone else (shared policy store owner) is left untouched: removing
+	// one member's connector must not destroy the shared secret.
+	if c.Secrets != nil && onboarding.Locator != "" {
+		owner := onboarding.PrincipalID
+		if onboarding.CredentialOwner != "" {
+			owner = onboarding.CredentialOwner
+		}
+		if owner == onboarding.PrincipalID {
+			if err := c.Secrets.Delete(onboarding.Locator, owner); err != nil && !errors.Is(err, credstore.ErrNotFound) {
+				return nil, err
+			}
+		}
+	}
 	if onboarding.BindingID != "" {
 		if binding, err := c.Store.binding(onboarding.BindingID); err == nil {
 			definition, _ := c.definitionOf(onboarding)
@@ -367,6 +412,9 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 			if err := api.RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
 				return nil, err
 			}
+		}
+		if err := c.Store.RemoveBindingRecords(onboarding.BindingID); err != nil {
+			return nil, err
 		}
 	}
 	onboarding.Phase = api.PhaseRemoved
@@ -396,9 +444,15 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	if onboarding.Recipe != nil {
 		body["recipe"] = onboarding.Recipe
 	}
+	if len(onboarding.CredentialSources) > 0 {
+		body["credential_sources"] = onboarding.CredentialSources
+	}
 	if onboarding.BrokerRequestID != "" {
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		if onboarding.BrokerAuthorizationURL != "" {
+		// A channel sign-in link outranks the Broker form; an LLM caller
+		// parrots whichever URL it sees first, so the fallback URL leaves the
+		// result while a signin_url exists. The stored onboarding keeps it.
+		if onboarding.BrokerAuthorizationURL != "" && onboarding.ChannelAuthURL == "" {
 			body["authorization_url"] = onboarding.BrokerAuthorizationURL
 		}
 	}
@@ -446,6 +500,21 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 				}
 			}
 		}
+		if onboarding.ChannelAuthURL != "" {
+			// The communication plane minted a sign-in link for this request
+			// (QR page and friends); it outranks the Broker form, which stays
+			// as the manual fallback. Parroting authorization_url as the
+			// primary path makes users submit the form and never see the
+			// channel link. A stale informational error (e.g. the
+			// admission-pending detail) must not suppress the link either:
+			// with no URL in the result the agent reconstructs the Broker
+			// connect URL itself.
+			// The Broker form stays a stored fallback but must not exist for
+			// the agent at all: mentioning an "authorization_url fallback"
+			// makes the model reconstruct and parrot that URL anyway.
+			body["signin_url"] = onboarding.ChannelAuthURL
+			body["instructions"] = "Send signin_url to the user verbatim as the only link — it is the sign-in page for this request. Do not offer, construct, or mention any other link. Never ask for credentials in chat."
+		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"
 		body["instructions"] = "Call confirm with onboarding_id and the nonce from this response, then call enable. No browser action is required."
@@ -463,6 +532,9 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	}
 	if onboarding.Error != "" {
 		body["error"] = onboarding.Error
+	}
+	if onboarding.ErrorCode != "" {
+		body["error_code"] = onboarding.ErrorCode
 	}
 	if onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
 		body["nonce"] = onboarding.ConfirmationNonce

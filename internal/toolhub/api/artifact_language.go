@@ -62,23 +62,63 @@ var LanguageBaseImages = map[string]string{
 }
 
 // detectRecipeLanguage picks the manifest-declared language or infers one from
-// context files. Multiple manifests stay ambiguous and fail closed.
+// context files. Several root manifests are disambiguated by the runtime-stage
+// toolchain in the upstream Dockerfile; otherwise the call stays ambiguous and
+// fails closed.
 func detectRecipeLanguage(files map[string][]byte, language string) (string, error) {
 	if language != "" {
 		return language, nil
 	}
+	var detected []string
 	for name, manifest := range languageManifests {
 		if _, exists := files[manifest]; exists {
-			if language != "" {
-				return "", fmt.Errorf("%w: multiple languages; select one", ErrInvalid)
-			}
-			language = name
+			detected = append(detected, name)
 		}
+	}
+	if len(detected) > 1 {
+		return dockerfileRuntimeLanguage(files, detected), nil
+	}
+	if len(detected) == 1 {
+		language = detected[0]
 	}
 	if language == "" && files["requirements.txt"] != nil {
 		language = "python"
 	}
 	return language, nil
+}
+
+// dockerfileRuntimeLanguage resolves a manifest tie when the final-stage FROM
+// of an upstream Dockerfile names exactly one of the detected toolchains —
+// that is the image the server actually ships in (for example a Python
+// monorepo whose root package.json only installs dev tooling).
+func dockerfileRuntimeLanguage(files map[string][]byte, detected []string) string {
+	data, _ := findFile(files, "Dockerfile")
+	runtime := ""
+	for _, line := range dockerfileInstructions(data) {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "FROM") {
+			runtime = fields[1]
+		}
+	}
+	if runtime == "" {
+		return ""
+	}
+	runtime = strings.ToLower(runtime)
+	selected := ""
+	for _, language := range detected {
+		token := language
+		if language == "go" {
+			token = "golang"
+		}
+		if !strings.Contains(runtime, token) {
+			continue
+		}
+		if selected != "" {
+			return ""
+		}
+		selected = language
+	}
+	return selected
 }
 
 // writeRecipeContext packs the (possibly extended) file set back into a tar
@@ -180,7 +220,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 					continue
 				}
 				if selected != "" {
-					return ArtifactRecipe{}, nil, fmt.Errorf("%w: ambiguous MCP workspace", ErrInvalid)
+					return ArtifactRecipe{}, nil, fmt.Errorf("%w: multiple *-mcp workspaces; select one literal argv", ErrAmbiguousEntrypoint)
 				}
 				selected = name
 				pkg = candidate
@@ -234,20 +274,37 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 			locks = []string{"requirements.txt"}
 		}
 		if files["pyproject.toml"] != nil {
+			// A uv workspace resolves member packages by file:// path, which
+			// pip install cannot do: the members install through uv sync and
+			// their console scripts land in the same venv bin directory.
+			uvWorkspace := files["uv.lock"] != nil && bytes.Contains(files[manifest], []byte("[tool.uv.workspace]"))
 			installTarget := "."
 			if len(pythonExtras) > 0 {
 				installTarget = "\".[" + strings.Join(pythonExtras, ",") + "]\""
 			}
-			lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install "+installTarget)
+			if uvWorkspace {
+				locks = append(locks, "uv.lock")
+				lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install uv",
+					"ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0",
+					"RUN "+runPrefix+"/opt/venv/bin/uv sync --all-packages --frozen --no-dev")
+			} else {
+				lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install "+installTarget)
+			}
 			scripts := artifactTOMLSection(files[manifest], "project.scripts")
 			primary := artifactTOMLSection(files[manifest], "project")["name"]
 			if scripts[primary] != "" {
 				scripts = map[string]string{primary: scripts[primary]}
 			}
+			if len(scripts) == 0 && uvWorkspace {
+				scripts = uvWorkspaceScripts(files)
+			}
 			for name := range scripts {
 				if ValidCommand(name) && !strings.Contains(name, "/") {
 					automatic = append(automatic, []string{"/opt/venv/bin/" + name})
 				}
+			}
+			if len(automatic) > 1 && uvWorkspace {
+				automatic = disambiguatePythonScripts(automatic, files)
 			}
 		}
 		if len(automatic) == 0 {
@@ -264,7 +321,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 			mains = disambiguateGoMain(mains, files)
 		}
 		if len(mains) != 1 {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Go recipe requires one main package", ErrInvalid)
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Go recipe requires one main package; select literal argv", ErrAmbiguousEntrypoint)
 		}
 		goMainBase = path.Base(mains[0])
 		// JSON exec form avoids interpolating even repository directory names.
@@ -281,7 +338,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 		locks = []string{"Cargo.lock"}
 		name := artifactTOMLSection(files[manifest], "package")["name"]
 		if !toolNamePattern.MatchString(name) || files["src/main.rs"] == nil || strings.Contains(string(files[manifest]), "[[bin]]") || strings.Contains(string(files[manifest]), "[workspace]") {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Rust recipe requires one package binary", ErrInvalid)
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: Rust recipe requires one package binary; select literal argv", ErrAmbiguousEntrypoint)
 		}
 		lines = append(lines, "RUN "+runPrefix+"cargo build --release --locked")
 		automatic = [][]string{{"/app/target/release/" + name}}
@@ -292,7 +349,7 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 	}
 	if len(entrypoint) == 0 {
 		if len(inferred) != 1 {
-			return ArtifactRecipe{}, nil, fmt.Errorf("%w: ambiguous MCP entrypoint; select literal argv", ErrInvalid)
+			return ArtifactRecipe{}, nil, fmt.Errorf("%w: select literal argv", ErrAmbiguousEntrypoint)
 		}
 		entrypoint = inferred[0]
 	} else {
@@ -397,6 +454,65 @@ func disambiguateGoMain(mains []string, files map[string][]byte) []string {
 	for _, dir := range mains {
 		if bases[path.Base(dir)] {
 			selected = append(selected, dir)
+		}
+	}
+	return selected
+}
+
+// uvWorkspaceScripts collects [project.scripts] names from the member
+// manifests declared by the root [tool.uv.workspace] members list, e.g.
+// packages/* in a uv monorepo whose root project installs no script itself.
+func uvWorkspaceScripts(files map[string][]byte) map[string]string {
+	var prefixes []string
+	section := false
+	for _, line := range strings.Split(string(files["pyproject.toml"]), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			section = strings.Trim(line, "[]") == "tool.uv.workspace"
+			continue
+		}
+		if !section {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "members" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if !strings.HasPrefix(value, "[") {
+			continue
+		}
+		for _, member := range strings.Split(strings.Trim(value, "[]"), ",") {
+			if member = strings.Trim(strings.TrimSpace(member), "\"'"); member != "" {
+				prefixes = append(prefixes, strings.TrimSuffix(member, "/*"))
+			}
+		}
+	}
+	scripts := map[string]string{}
+	for name, data := range files {
+		if name == "pyproject.toml" || !strings.HasSuffix(name, "/pyproject.toml") {
+			continue
+		}
+		dir := strings.TrimSuffix(name, "/pyproject.toml")
+		for _, prefix := range prefixes {
+			if dir == prefix || strings.HasPrefix(dir, prefix+"/") {
+				for script := range artifactTOMLSection(data, "project.scripts") {
+					scripts[script] = dir
+				}
+			}
+		}
+	}
+	return scripts
+}
+
+// disambiguatePythonScripts selects console scripts named by the upstream
+// Dockerfile's exec-form CMD — its documented default command.
+func disambiguatePythonScripts(candidates [][]string, files map[string][]byte) [][]string {
+	_, cmd := upstreamDockerfileEntrypoint(files)
+	var selected [][]string
+	for _, candidate := range candidates {
+		if len(cmd) > 0 && len(candidate) > 0 && path.Base(candidate[len(candidate)-1]) == path.Base(cmd[0]) {
+			selected = append(selected, candidate)
 		}
 	}
 	return selected

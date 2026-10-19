@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // The mock channel is the local acceptance bench: real pipeline, zero
@@ -195,15 +193,4 @@ func (g *Gateway) captureMock(d *Delivery) error {
 		artifacts[artifact.Name] = data
 	}
 	return atomicJSON(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts})
-}
-
-func (user User) mockEnvelope(chatID int64) identity.Envelope {
-	runtimeID, policy := user.RuntimeID, user.PolicyVersion
-	if runtimeID == "" {
-		runtimeID = user.ID
-	}
-	if policy == "" {
-		policy = envOr("HUB_POLICY_VERSION", "policy-1")
-	}
-	return identity.MockEnvelope(user.ID, chatID, runtimeID, policy)
 }

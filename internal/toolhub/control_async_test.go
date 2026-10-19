@@ -362,6 +362,35 @@ func TestPrepareSelfInstallRetriesStalePreparing(t *testing.T) {
 	close(release)
 }
 
+func TestPrepareSourceRequestKeyRetriesStalePreparing(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
+		calls.Add(1)
+		<-release
+		return api.SourceReview{Definition: userMCPDefinition()}, nil
+	})
+	// Same crashed-prepare shape, reached through request_key: the idempotency
+	// early return must skip the stale stub so the retry re-runs review instead
+	// of polling a dead "preparing" record forever.
+	stale := api.Onboarding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
+		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now().Add(-time.Hour),
+		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+		DefinitionID: "mcp", DefinitionVersion: "0.0.1", IdempotencyKey: "k-stale"}
+	stale.OnboardingID = api.DeterministicID("onboard", "alice", "alice", "runtime", "k-stale")
+	if err := control.Store.PutOnboarding(stale); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "k-stale"})
+	if err != nil || body["phase"] != api.PhasePreparing {
+		t.Fatalf("keyed stale retry=%v err=%v", body, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("keyed stale preparing record did not retry: %d reviews", calls.Load())
+	}
+	close(release)
+}
+
 func TestPrepareSelfInstallConcurrentCallsShareOneReview(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32

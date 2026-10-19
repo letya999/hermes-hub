@@ -19,7 +19,7 @@ reconnect (#74 / M5.3).
 | `Onboarding` | Async install/review/confirm state | Authenticated control operations for that principal only |
 | `ToolBinding` | Effective projection for one principal/context/runtime | `confirm`/`enable` for the authenticated principal |
 | `CredentialReference` | Opaque locator and key names | Created per binding by default; shared locator only under an explicit admin policy |
-| Workload | Running instance | Started on demand; never shared for stateful or static-credential definitions |
+| Workload | Running instance | Started on demand; shared across policy members only when the definition is `Shared` and explicitly `sharable` |
 
 Promoting a user MCP to a trusted catalog item publishes a shared
 definition. Existing user bindings stay principal-owned and do not become
@@ -75,8 +75,13 @@ Defaults:
 - several bindings per user are allowed;
 - one external credential shared across users only with an explicit admin
   shared-credential policy;
-- workloads stay separate even when a locator is shared;
-- a shared workload is allowed only for stateless per-request credentials.
+- member bindings on a shared policy resolve the store owner's single
+  connection and workload id;
+- a shared workload is allowed only for stateless definitions; stored
+  credentials require the reviewed `sharable` flag, member lifecycle actions
+  stay scoped to the member's binding, and only the policy's store owner may
+  rotate or revoke the shared credential;
+- a non-sharable shared definition still rejects stored credentials.
 
 OAuth uses authorization-code with PKCE (S256), state bound to principal /
 context / onboarding, allowlisted redirect, TTL and a single-use nonce.
@@ -90,7 +95,14 @@ affected binding, stop starting/running workloads, and deny the next
 
 Repeated `enable` of the same binding is idempotent (same binding id, no
 second workload). `disable` and `remove` omit the binding from projection
-and delete only that binding's volumes. Effect or budget escalation above
+and delete only that binding's volumes. Lifecycle operations resolve a
+conversational `selector` (definition id, source repository URL or basename;
+`name`/`source` are aliases) and refuse ambiguous matches with a candidate
+list. `remove` is two-phase: a bare call returns a deletion preview and
+`remove_nonce`; only the nonce-carrying repeat deletes credential ciphertext
+and unreferenced connection/binding/credential rows, keeping a scrubbed
+onboarding tombstone for idempotent status replay. `status` also resolves an
+onboarding by `operation_id` (the original `request_key`). Effect or budget escalation above
 the reviewed definition is denied before write or start. Concurrent
 `enable` / `disable` / `revoke` serialize on the registry fence so a later
 call observes the new state; an already admitted call finishes under its

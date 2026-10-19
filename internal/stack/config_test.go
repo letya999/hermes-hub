@@ -238,6 +238,80 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	}
 }
 
+func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model-relay:8318/v1"
+	settings.CapabilityMode = "managed"
+	settings.CapabilityProfileID = "p"
+	settings.CapabilityGeneration = 1
+	settings.Tools, settings.Ingress = testTools("workspace", "telegram"), testIngress("workspace", "telegram")
+	if err := saveSpace(d, settings); err != nil {
+		t.Fatal(err)
+	}
+	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
+	if err := os.WriteFile(filepath.Join(d, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
+		t.Fatal(err)
+	}
+	secrets := "OPENAI_API_KEY=model\nTELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\nHUB_CLIPROXY_MGMT_URL=http://cliproxy:8317\nHUB_CLIPROXY_MGMT_KEY=mgmt\nHUB_CLIPROXY_AUTH_INDEX=idx\n"
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	gatewayEnv, err := os.ReadFile(filepath.Join(d, "communication.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(gatewayEnv), "HUB_CLIPROXY") {
+		t.Fatalf("cliproxy management key still reaches the gateway: %q", gatewayEnv)
+	}
+	relayEnv, err := os.ReadFile(filepath.Join(d, "model-relay.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"HUB_CLIPROXY_MGMT_URL=http://cliproxy:8317", "HUB_CLIPROXY_MGMT_KEY=mgmt", "HUB_CLIPROXY_AUTH_INDEX=idx"} {
+		if !strings.Contains(string(relayEnv), want) {
+			t.Fatalf("model-relay env missing %q: %q", want, relayEnv)
+		}
+	}
+	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(runtimeEnv), "HUB_CLIPROXY") {
+		t.Fatalf("cliproxy management key leaked into agent runtime env: %q", runtimeEnv)
+	}
+	relay, ok := Compose(settings, root, d)["services"].(M)["model-relay"].(M)
+	if !ok {
+		t.Fatal("model-relay service missing")
+	}
+	found := false
+	for _, file := range relay["env_file"].([]any) {
+		if strings.Contains(file.(M)["path"].(string), "model-relay.prod.env") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("model-relay env file not mounted: %v", relay["env_file"])
+	}
+}
+
 func TestDisabledComponentsStayCold(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram")}
 	runtime := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)
@@ -435,28 +509,48 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 	}
 }
 
-func TestTelegramAuthUsesOptionalSingleProcessGatewayImage(t *testing.T) {
+func TestTelegramAuthDefaultsOnWithTelegramIngress(t *testing.T) {
 	dir := t.TempDir()
 	authEnv := filepath.Join(dir, "telegram-auth.dev.env")
 	if err := os.WriteFile(authEnv, []byte("HUB_TELEGRAM_AUTH_API_ID=123\nHUB_TELEGRAM_AUTH_API_HASH="+strings.Repeat("a", 32)+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), TelegramAuth: true, Memory: true}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), Memory: true}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	if !s.Has("telegram_auth") {
+		t.Fatal("telegram_auth must auto-enable with telegram ingress")
+	}
 	services := Compose(s, "/source", dir)["services"].(M)
 	gw := services["communication-hub"].(M)
-	if gw["entrypoint"].([]string)[0] != "communication-hub" || gw["build"].(M)["target"] != "dev-telegram-auth" || gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
-		t.Fatalf("optional auth image not selected: %#v", gw)
+	// QR login lives in the one communication-hub build — no variant image.
+	if gw["image"] != "hermes-hub:0.3.0-dev" {
+		t.Fatalf("gateway must run the standard image: %#v", gw["image"])
 	}
-	if services["credential-broker"].(M)["image"] != gw["image"] {
-		t.Fatal("Telegram Broker endpoint must run from the built optional image")
+	if gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
+		t.Fatalf("auth not enabled by default: %#v", gw["environment"])
+	}
+	if services["credential-broker"].(M)["image"] != "hermes-hub:0.3.0-dev" {
+		t.Fatal("broker must run the standard image")
 	}
 	files := gw["env_file"].([]any)
 	if len(files) < 2 || files[1].(M)["path"] != filepath.ToSlash(authEnv) {
 		t.Fatal("private Telegram app credentials were not mounted")
 	}
+
+	off := false
+	s.TelegramAuth = &off
+	services = Compose(s, "/source", dir)["services"].(M)
+	if s.Has("telegram_auth") {
+		t.Fatal("telegram_auth must be off when explicitly false")
+	}
+	if services["communication-hub"].(M)["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "false" {
+		t.Fatal("explicit opt-out not propagated")
+	}
+
+	on := true
+	s.TelegramAuth = &on
 	s.Tools = testTools("workspace")
 	s.Ingress = testIngress("workspace")
 	if s.Validate() == nil {

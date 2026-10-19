@@ -13,6 +13,19 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 
 | Change | State |
 |---|---|
+| [CHG-0127](in-progress/CHG-0127-watcher-failure-visibility/plan.md) | Issue #248 live-run fixes: probe-failure alerts, vacuous-value rejection, quiet agent escalation, drift noise, dev script-image pin; live re-acceptance passed on dev stack |
+| [CHG-0126](done/CHG-0126-spool-knowledge-migration/plan.md) | Done: hubctl spool migrate — offline knowledge copy spool→state, dry-run/conflict-safe, just check green |
+| [CHG-0125](done/CHG-0125-domain-model-relocation/plan.md) | Done: commodel/channel/routines packages, engine relocation, conformance + goldens; coverage 86.39% |
+| [CHG-0114](done/CHG-0114-routine-destinations/plan.md) | Routine delivery destinations; done |
+| [CHG-0115](done/CHG-0115-routine-snooze-audit/plan.md) | Routine snooze acceptance correction; done |
+| [CHG-0113](done/CHG-0113-compact-routine-tools/plan.md) | Done: five public routine tools; deployed MCP lifecycle and just check passed, coverage 86.32% |
+| [CHG-0112](done/CHG-0112-routine-lifecycle/plan.md) | Done: full routine lifecycle and interval windows; deployed ToolHub, real Telegram and just check passed; live policy boundary recorded |
+| [CHG-0111](done/CHG-0111-durable-reminder-acceptance/plan.md) | Done: issue #247 reminder recovery, snooze, history isolation and real Telegram acceptance; just check passed |
+| [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; verification in progress |
+| [CHG-0109](in-progress/CHG-0109-fast-local-rebuild/plan.md) | Fast local Go service rebuild, in progress |
+| [CHG-0106](done/CHG-0106-live-replay-defects/plan.md) | Done: live-replay defect fixes — watcher probes, session leak routing, contract errors, retry, broker catalog; live verified |
+| [CHG-0107](done/CHG-0107-dynamic-contracts/plan.md) | Done: dynamic credential contracts (POST /v1/contracts + ToolHub synthesis) + live-verified rotate/self-service on google_workspace_mcp |
+| [CHG-0105](done/CHG-0105-broker-drift-self-heal/plan.md) | Done: live-smoke fixes — broker drift self-heal, agent tool guidance, stale artifact reuse; live replay verified |
 | [CHG-0104](in-progress/CHG-0104-event-streams/plan.md) | M12 follow-up: stream event subscriptions (delivery=stream) |
 | [CHG-0103](in-progress/CHG-0103-event-subscriptions/plan.md) | M12 stage 5: event subscriptions, sinks, watch_* surface, telegram event tools |
 | [CHG-0102](in-progress/CHG-0102-owner-brief/plan.md) | M12 stage 4: opt-in owner brief — deterministic snapshot, in-slot model synthesis |
@@ -45,6 +58,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 | [CHG-0076](in-progress/CHG-0076-tool-governance/plan.md) | Tool governance — inventory, scoped policy, grants, enforcement planes |
 | [CHG-0075](in-progress/CHG-0075-remote-mcp/plan.md) | Milestone 8 issues 83/84/85/96: owner-scoped remote MCP register/admit/project through prepare_source remote_url |
 | [CHG-0074](in-progress/CHG-0074-telegram-auth-plugin/plan.md) | Opt-in in-process Telegram QR login deployed locally; live account acceptance pending owner scan |
+| [CHG-0128](in-progress/CHG-0128-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; intake declared by the contract; owner rescan pending |
 | [CHG-0074](in-progress/CHG-0074-host-hygiene/plan.md) | Host hygiene batch (issues 226→222→224→223→221+225→171→46) |
 | [CHG-0073](in-progress/CHG-0073-prepared-bundle-telegram/plan.md) | Issues 39/115: 12-ID prepared bundle discovery, selected personal Telegram source and protected onboarding; verification in progress |
 | [CHG-0072](in-progress/CHG-0072-managed-hotfixes/plan.md) | Managed-mode hotfixes from live Telegram verification |

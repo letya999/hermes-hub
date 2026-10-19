@@ -8,6 +8,8 @@ last_verified: 2026-10-07
 
 | Document | Purpose | Verified |
 |---|---|---|
+| [routines.md](routines.md) | Routine lifecycle, interval windows, scope, outcomes and acceptance | 2026-10-18 |
+| [channels.md](channels.md) | Channel adapter contract, Caps, registry dispatch, conformance and how to add a channel | 2026-10-18 |
 | [m10-stabilization.md](m10-stabilization.md) | Current file, routine, usage, knowledge and mock behavior | 2026-10-12 |
 | [ai-stp-compatibility.md](ai-stp-compatibility.md) | Pinned issue 181 compatibility research and corrections | 2026-10-11 |
 | [cli-policy.md](cli-policy.md) | Isolated terminal, private package installs and atomic operator catalog binding | 2026-10-12 |
@@ -16,7 +18,7 @@ last_verified: 2026-10-07
 | [integrations.md](integrations.md) | Upstream source pins and connector contracts | 2026-10-07 |
 | [prepared-connectors.md](prepared-connectors.md) | Exact-source prepared catalog, bundle states, generic lifecycle and handoffs | 2026-10-07 |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup | 2026-09-15 |
-| [operations.md](operations.md) | Deployment, runtime lifecycle, explicit control grants, backup and recovery | 2026-10-02 |
+| [operations.md](operations.md) | Deployment, runtime lifecycle, explicit control grants, backup and recovery | 2026-10-16 |
 | [ci-latency.md](ci-latency.md) | Measured CI baseline, preserved gates and speed limits | 2026-10-11 |
 | [e2e-acceptance.md](e2e-acceptance.md) | Sequential capability registry and evidence boundaries | 2026-10-12 |
 | [validation.md](validation.md) | Actual evidence and unverified boundaries | 2026-09-28 |

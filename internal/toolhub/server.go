@@ -2,7 +2,6 @@ package toolhub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/audit"
@@ -10,6 +9,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
@@ -257,6 +257,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		return api.AdmitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
+	gateway.OAuthRefresh = remoteOAuthRefresh(secrets, control.OAuth)
 	control.Injector = gateway.Injector
 	control.PrepareDone = gateway.notifyPrepareDone
 	control.Governance = gateway.Governance
@@ -373,20 +374,16 @@ func agentBackendFromEnv() api.ToolBackend {
 // The endpoint holds one identity per principal; entries are checked the same
 // way as the primary env token before the gateway accepts them.
 func loadTokenEnvelopes(path string) (map[string]identity.Envelope, error) {
-	body, err := os.ReadFile(path)
+	entries, err := serviceauth.ReadTokenEnvelopes(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: ToolHub tokens file: %v", api.ErrInvalid, err)
 	}
-	var entries map[string]identity.Envelope
-	if err := json.Unmarshal(body, &entries); err != nil || len(entries) == 0 {
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("%w: ToolHub tokens file must map tokens to envelopes", api.ErrInvalid)
 	}
-	for token, auth := range entries {
-		if len(token) < 32 || strings.ContainsAny(token, "\r\n") {
+	for token := range entries {
+		if len(token) < 32 {
 			return nil, fmt.Errorf("%w: ToolHub tokens file token", api.ErrInvalid)
-		}
-		if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-			return nil, fmt.Errorf("%w: ToolHub tokens file identity: %v", api.ErrInvalid, err)
 		}
 	}
 	return entries, nil

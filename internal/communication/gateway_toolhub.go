@@ -6,15 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/serviceauth"
+	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // connectionsCommand answers /connections: the operator-facing connection
@@ -22,55 +22,19 @@ import (
 // builtin agent tools, bounded CLIs, containerized and remote MCP servers.
 func (g *Gateway) connectionsCommand(user User, sender int64) string {
 	answer := connectionList(user)
-	if g.secrets == nil || g.secrets.Registry == nil {
-		// Broker-approve mode keeps the ToolHub store inside the ToolHub
-		// container; ask it over the control endpoint instead.
-		if lines, ok := g.toolHubConnectorsHTTP(user); ok {
-			return answer + lines
-		}
-		return answer + "\nКоннекторы ToolHub: реестр недоступен."
+	// The ToolHub store lives inside the ToolHub container; ask it over the
+	// control endpoint.
+	if lines, ok := g.toolHubConnectorsHTTP(user); ok {
+		return answer + lines
 	}
-	tools, err := g.secrets.Registry.ListProjectedTools(user.envelope(sender))
-	if err != nil {
-		return answer + "\nКоннекторы ToolHub: не удалось получить список."
-	}
-	if len(tools) == 0 {
-		return answer + "\nКоннекторы ToolHub: нет."
-	}
-	kind := map[string]string{}
-	for _, t := range tools {
-		if _, seen := kind[t.DefinitionID]; seen {
-			continue
-		}
-		label := string(t.Tool.Effect)
-		if def, derr := g.secrets.Registry.Definition(t.DefinitionID, t.Version); derr == nil {
-			label = string(def.Transport)
-		}
-		kind[t.DefinitionID] = label
-	}
-	lines := []string{"", "Коннекторы ToolHub:"}
-	seen := map[string]bool{}
-	for _, t := range tools {
-		if seen[t.DefinitionID] {
-			continue
-		}
-		seen[t.DefinitionID] = true
-		var names []string
-		for _, o := range tools {
-			if o.DefinitionID == t.DefinitionID {
-				names = append(names, o.Name)
-			}
-		}
-		lines = append(lines, "- "+connectorLine(t.DefinitionID, kind[t.DefinitionID], names))
-	}
-	return answer + strings.Join(lines, "\n")
+	return answer + "\nКоннекторы ToolHub: реестр недоступен."
 }
 
 // watchesCommand answers /watches: the caller's event subscriptions with
 // source, sink, last success/error and degraded state — owner-scoped via
 // ListSchedules, so a sibling's subscriptions never render (SPEC-0054 R5.5).
 func (g *Gateway) watchesCommand(user User, sender int64) string {
-	items, err := g.spool.ListSchedules(user.envelope(sender))
+	items, err := g.spool.ListSchedules(user.Envelope(sender))
 	if err != nil {
 		return "Список подписок недоступен."
 	}
@@ -220,13 +184,10 @@ func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
 // principal's inventory.
 func (g *Gateway) toolHubCredential(userID string) (token, principalHeader string) {
 	if path := strings.TrimSpace(g.config.ControlTokensFile); path != "" {
-		if body, err := os.ReadFile(path); err == nil {
-			var entries map[string]identity.Envelope
-			if json.Unmarshal(body, &entries) == nil {
-				for candidate, envelope := range entries {
-					if envelope.PrincipalID == userID && len(candidate) >= 32 {
-						return candidate, ""
-					}
+		if entries, err := serviceauth.ReadTokenEnvelopes(path); err == nil {
+			for candidate, envelope := range entries {
+				if envelope.PrincipalID == userID && len(candidate) >= 32 {
+					return candidate, ""
 				}
 			}
 		}
@@ -299,6 +260,53 @@ func (g *Gateway) toolCallProbeWithin(ctx context.Context, principalID string, p
 		return nil, errors.New("tool probe failed")
 	}
 	return []byte(out.Text), nil
+}
+
+// serviceProbe POSTs a render/service probe to an operator-registered
+// endpoint from Config.ServiceEndpoints; the response body feeds the normal
+// extract chain (SPEC-0059 R5.4/R5.5). Endpoint URLs come only from operator
+// config — a probe can name a key but never reach an arbitrary address.
+func (g *Gateway) serviceProbe(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
+	endpoint, ok := g.config.ServiceEndpoints[probe.Service]
+	if !ok {
+		return nil, fmt.Errorf("probe service %q is not registered", probe.Service)
+	}
+	body, err := json.Marshal(map[string]any{
+		"kind":     probe.Kind,
+		"url":      probe.URL,
+		"args":     probe.Args,
+		"steps":    probe.Steps,
+		"wait_for": probe.WaitFor,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint.URL, "/"), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if endpoint.Auth != "" {
+		req.Header.Set("Authorization", "Bearer "+endpoint.Auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > 512*1024 {
+		return nil, errors.New("service probe response exceeds size limit")
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("probe service %q status %d", probe.Service, resp.StatusCode)
+	}
+	return raw, nil
 }
 
 // toolHubJobDone notifies ToolHub that a job reached a terminal status so

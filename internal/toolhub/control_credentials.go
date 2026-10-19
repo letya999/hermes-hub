@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -128,6 +129,12 @@ func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]st
 		}
 		value := strings.TrimSpace(values[hint.Name])
 		if value == "" {
+			// The owner may demote a required field on the form itself
+			// (opt:<name>): the submit is accepted without a value and the
+			// readiness probe decides whether the server tolerates the gap.
+			if strings.TrimSpace(values["opt:"+hint.Name]) != "" {
+				continue
+			}
 			return nil, fmt.Errorf("%w: missing %s", api.ErrInvalid, hint.Name)
 		}
 		filtered[hint.Name] = value
@@ -325,6 +332,7 @@ func credentialProbeFailure(err error) string {
 // returned error instead of silently dropping both cause and state update.
 func (c *ControlPlane) persistFailure(onboarding api.Onboarding, errorText string, cause error) error {
 	onboarding.Error = errorText
+	onboarding.ErrorCode = api.ErrorCode(cause)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return fmt.Errorf("%w (recording failure state failed: %v)", cause, err)
@@ -354,7 +362,11 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == api.PhaseAwaitingCreds {
 		body["input"] = "credential-broker"
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		body["authorization_url"] = onboarding.BrokerAuthorizationURL
+		// With a channel sign-in link the Broker form is fallback only; an LLM
+		// caller parrots whichever URL it sees, so it must leave the result.
+		if onboarding.ChannelAuthURL == "" {
+			body["authorization_url"] = onboarding.BrokerAuthorizationURL
+		}
 		delete(body, "form_url")
 		delete(body, "form_path")
 	}
@@ -420,6 +432,13 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		c.noteFormRejection(onboarding, err)
 		return err
 	}
+	// Optional inputs filled on the same form are stored and delivered like any
+	// other value; empty ones simply stay absent.
+	for _, hint := range onboarding.Optional {
+		if value := strings.TrimSpace(values[hint.Name]); value != "" {
+			filtered[hint.Name] = value
+		}
+	}
 	authEnv := onboardingEnvelope(onboarding)
 	if onboarding.AdmissionPending {
 		definition, defErr := c.definitionOf(onboarding)
@@ -451,6 +470,11 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		if regErr := c.registerAdmittedDefinition(&admitted, onboarding.PrincipalID); regErr != nil {
 			return c.persistFailure(onboarding, credentialProbeFailure(regErr), regErr)
 		}
+		if admitted.Workload.Class == api.Shared {
+			if err := c.Store.PromoteToCatalog(admitted.DefinitionID, admitted.Version, onboarding.PrincipalID); err != nil {
+				return c.persistFailure(onboarding, credentialProbeFailure(err), err)
+			}
+		}
 		onboarding.Definition = &admitted
 		onboarding.DefinitionID = admitted.DefinitionID
 		onboarding.DefinitionVersion = admitted.Version
@@ -459,6 +483,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		onboarding.ReviewDigest = admitted.Source.ReviewDigest
 		onboarding.AdmissionPending = false
 		onboarding.Error = ""
+		onboarding.ErrorCode = ""
 	}
 	locator := onboarding.Locator
 	owner := onboarding.PrincipalID
@@ -538,7 +563,16 @@ func credentialHints(definition api.ToolDefinition) []api.CredentialHint {
 		if strings.Contains(upper, "CREDENTIALS") {
 			kind, delivery = "json", "json"
 		}
-		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: input.Name, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form"})
+		// A reviewed delivery/target on the input wins over the name
+		// heuristics: the form renders and submits what the contract says.
+		if input.Delivery != "" {
+			delivery = input.Delivery
+		}
+		target := input.Name
+		if input.Target != "" {
+			target = input.Target
+		}
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form", Source: input.Source})
 	}
 	return hints
 }
@@ -556,7 +590,7 @@ func credentialHintsForRecipe(definition api.ToolDefinition, recipe api.Connecti
 		hint := "protected loopback form"
 		hints = append(hints, api.CredentialHint{
 			Name: field.Name, Type: typ, Secret: field.Secret, Delivery: field.Delivery,
-			Target: field.Target, Alternative: field.Alternative, Hint: hint,
+			Target: field.Target, Alternative: field.Alternative, Hint: hint, Source: field.Source,
 		})
 	}
 	if len(hints) == 0 {
@@ -573,10 +607,64 @@ func credentialHintsForRecipe(definition api.ToolDefinition, recipe api.Connecti
 	return hints
 }
 
+// optionalCredentialHints mirrors credentialHints for inputs the definition
+// declares as non-required. The user still sees them on the protected form —
+// upstream sources routinely declare useful knobs (default project, API URL)
+// that must be editable without gating onboarding.
+func optionalCredentialHints(definition api.ToolDefinition) []api.CredentialHint {
+	hints := make([]api.CredentialHint, 0, len(definition.Credentials))
+	for _, input := range definition.Credentials {
+		if input.Required || input.PerRequest || !contractCoverable(input) {
+			continue
+		}
+		kind := api.ConnectionType(input.Name)
+		delivery := "env"
+		if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") {
+			kind, delivery = "json", "json"
+		}
+		if input.Delivery != "" {
+			delivery = input.Delivery
+		}
+		target := input.Name
+		if input.Target != "" {
+			target = input.Target
+		}
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, Hint: "protected loopback form", Source: input.Source})
+	}
+	return hints
+}
+
 func credentialNames(onboarding api.Onboarding) []string {
 	names := make([]string, 0, len(onboarding.Required))
 	for _, hint := range onboarding.Required {
 		names = append(names, hint.Name)
 	}
+	return names
+}
+
+// brokerCredentialKeys lists the names a broker-bound credential reference
+// covers. The contract env map already carries every collectable input —
+// required or optional — while onboarding.Required only names the required
+// ones, so an all-optional definition would otherwise produce an empty key
+// set that reference validation rejects.
+func brokerCredentialKeys(definition api.ToolDefinition, onboarding api.Onboarding) []string {
+	if len(definition.CredentialContractEnv) == 0 {
+		return credentialNames(onboarding)
+	}
+	seen := map[string]bool{}
+	names := make([]string, 0, len(definition.CredentialContractEnv)+len(onboarding.Required))
+	for name := range definition.CredentialContractEnv {
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	for _, hint := range onboarding.Required {
+		if !seen[hint.Name] {
+			seen[hint.Name] = true
+			names = append(names, hint.Name)
+		}
+	}
+	slices.Sort(names)
 	return names
 }

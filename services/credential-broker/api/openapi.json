@@ -202,6 +202,9 @@
           "oauth_provider": {
             "type": "string"
           },
+          "intake": {
+            "type": "string"
+          },
           "allow_shared": {
             "type": "boolean"
           }
@@ -215,6 +218,24 @@
           "fields",
           "allow_shared"
         ]
+      },
+      "Extra": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Field"
+            }
+          },
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Delivery"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "Actor": {
         "type": "object",
@@ -333,6 +354,9 @@
           },
           "rotate_credential_id": {
             "type": "string"
+          },
+          "extra": {
+            "$ref": "#/components/schemas/Extra"
           }
         },
         "additionalProperties": false,
@@ -672,6 +696,9 @@
           "lease_id": {
             "type": "string"
           },
+          "contract_id": {
+            "type": "string"
+          },
           "binding_id": {
             "type": "string"
           },
@@ -838,6 +865,48 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "registerContract",
+        "summary": "Register a collect-and-deliver contract",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contract"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Contract"
               }
             }
           }

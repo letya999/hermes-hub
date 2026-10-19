@@ -2,8 +2,9 @@ package communication
 
 import (
 	"context"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"strings"
+
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // botCommandInventory is the single source of truth for supported slash
@@ -22,6 +23,7 @@ var botCommandInventory = []struct {
 	{"status", "Текущая задача без вызова модели"},
 	{"routines", "Напоминания и фоновые проверки"},
 	{"usage", "Журнал расхода: /usage [day|week|month|session]"},
+	{"model", "Модель и провайдер: /model [имя]"},
 	{"connectors", "Подключения и коннекторы ToolHub"},
 	{"connections", "Подключения и коннекторы ToolHub"},
 	{"watches", "Подписки на события коннекторов"},

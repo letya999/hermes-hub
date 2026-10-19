@@ -68,6 +68,31 @@ func ensureMediaAuth(path string) error {
 	return os.WriteFile(path, content, 0600)
 }
 
+// ensureModelRelayAuth provisions the bearer the communication gateway
+// presents to its own space's model-relay for owner model switching.
+func ensureModelRelayAuth(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("model-relay auth must be a regular file")
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	value := make([]byte, 32)
+	if _, err = rand.Read(value); err != nil {
+		return err
+	}
+	token := hex.EncodeToString(value)
+	content := make([]byte, 0, len(token)+25)
+	content = append(content, "HUB_MODEL_RELAY_ADMIN="...)
+	content = append(content, token...)
+	content = append(content, '\n')
+	return os.WriteFile(path, content, 0600)
+}
+
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.
 func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
 	source := filepath.Join(dir, "media.auth")

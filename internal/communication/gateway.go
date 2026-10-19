@@ -7,13 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/audit"
-	"github.com/letya999/hermes-hub/internal/diagnostics"
-	"github.com/letya999/hermes-hub/internal/envstore"
-	"github.com/letya999/hermes-hub/internal/identity"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/secrets"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"log"
 	"net/http"
@@ -25,6 +18,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/commops"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/identity"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 type Gateway struct {
@@ -42,8 +41,6 @@ type Gateway struct {
 	usageWG      sync.WaitGroup
 	commandCtx   context.Context
 	now          func() time.Time
-	secrets      *secrets.Service
-	audit        *audit.Ledger
 	transcriber  Transcriber
 	synthesizer  Synthesizer
 	forms        formRegistry
@@ -58,6 +55,10 @@ type Gateway struct {
 	// controlPolls counts control-loop mapping scans; an idle loop scans at
 	// most once per second (SPEC-0053 R2.3).
 	controlPolls atomic.Int64
+	// opsOnce/ops lazily build the commops engine (canary + health) — the
+	// ops plane reaches the gateway only through injected deps.
+	opsOnce sync.Once
+	ops     *commops.Engine
 }
 
 func New(config Config) (*Gateway, error) {
@@ -108,7 +109,7 @@ func New(config Config) (*Gateway, error) {
 			users[id] = user
 		}
 		for _, link := range user.SlackIDs {
-			slackUsers[link.key()] = user
+			slackUsers[link.Key()] = user
 		}
 	}
 	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand)
@@ -117,16 +118,16 @@ func New(config Config) (*Gateway, error) {
 		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}
 	}
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
-	secretService, ledger, err := openCredentialSurface(config)
-	if err != nil {
-		return nil, err
-	}
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, secrets: secretService, audit: ledger, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	spool.JobDone = g.toolHubJobDone
+	spool.probeScript = g.runProbeScript
 	if config.TelegramAuthEnabled {
-		g.telegramAuth, err = newTelegramAuthState(config)
-		if err != nil {
-			return nil, err
+		// Enabled by default on telegram stacks: missing Broker/form-origin
+		// prerequisites degrade to no QR invites instead of refusing to start.
+		if state, authErr := newTelegramAuthState(config); authErr == nil {
+			g.telegramAuth = state
+		} else {
+			log.Printf("telegram auth disabled: %v", authErr)
 		}
 	}
 	// HUB_LOG_CONTENT_UNTIL is the explicit content-capture switch: an
@@ -161,55 +162,6 @@ func (g *Gateway) contentField(visible string) string {
 		return "text=" + strconv.Quote(diagnostics.Redact(visible))
 	}
 	return "text_len=" + strconv.Itoa(len(visible))
-}
-
-func openCredentialSurface(config Config) (*secrets.Service, *audit.Ledger, error) {
-	if config.BrokerApprove.Enabled() {
-		return nil, nil, nil
-	}
-	if config.CredentialStore == "" {
-		return nil, nil, nil
-	}
-	opened, err := secrets.Open(config.CredentialStore, config.CredentialKeyFile, nil, "")
-	if err != nil {
-		return nil, nil, err
-	}
-	auditPath := config.AuditLedger
-	if auditPath == "" {
-		auditPath = filepath.Join(filepath.Dir(config.CredentialStore), "audit.jsonl")
-	}
-	ledger, err := audit.Open(auditPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	opened.Audit = ledger
-	opened.EnvFile = func(owner string) string {
-		for _, user := range config.Users {
-			if user.ID == owner {
-				return filepath.Join(user.StateDir, envstore.FileName)
-			}
-		}
-		return ""
-	}
-	storePath := config.ToolHubStore
-	if storePath == "" && len(config.Users) > 0 && config.Users[0].StateDir != "" {
-		candidate := filepath.Join(config.Users[0].StateDir, "runtime", "toolhub", "store.json")
-		if _, err := os.Lstat(candidate); err == nil {
-			storePath = candidate
-		}
-	}
-	if storePath != "" {
-		if _, err := os.Lstat(storePath); err == nil {
-			registry, err := toolhub.Load(storePath)
-			if err != nil {
-				return nil, nil, err
-			}
-			opened.Registry = registry
-		} else if !os.IsNotExist(err) {
-			return nil, nil, err
-		}
-	}
-	return opened, ledger, nil
 }
 
 func (g *Gateway) Run(ctx context.Context) error {
@@ -352,7 +304,7 @@ func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) erro
 	if query.From != nil {
 		if user, ok := g.users[query.From.ID]; ok {
 			if jobID, requestID, choice, err := g.spool.ApprovalCallback(query.Data); err == nil {
-				caller := user.envelope(query.From.ID)
+				caller := user.Envelope(query.From.ID)
 				if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
 					caller.ConversationID = mapping.ConversationID
 					caller.DeliveryTargetID = mapping.DeliveryTargetID
@@ -442,7 +394,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		// conversation so an owner can act on another task's job; the verified
 		// sender identity still carries the proof.
 		callerForJob := func(jobID string) identity.Envelope {
-			env := user.envelope(message.From.ID)
+			env := user.Envelope(message.From.ID)
 			if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
 				env.ConversationID = mapping.ConversationID
 				env.DeliveryTargetID = mapping.DeliveryTargetID
@@ -472,7 +424,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			fields := strings.Fields(text)
 			answer := "Используйте /credentials <request-id> <код из формы Credential Broker>."
 			if len(fields) == 3 && g.config.BrokerApprove.Enabled() {
-				caller := user.envelope(message.From.ID)
+				caller := user.Envelope(message.From.ID)
 				client, err := g.config.BrokerApprove.New(caller, "broker:approve")
 				if err == nil {
 					err = client.Approve(ctx, fields[1], fields[2])
@@ -517,22 +469,39 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			}
 			return reply(answer)
 		case "routines":
-			items, err := g.spool.ListSchedules(user.envelope(message.From.ID))
+			items, err := g.spool.ListSchedules(user.Envelope(message.From.ID))
 			if err != nil {
 				return reply("Список напоминаний недоступен.")
 			}
 			lines := []string{"Напоминания и проверки:"}
 			for _, item := range items {
 				state := "активно"
-				if item.Paused || !item.Enabled {
+				switch routineState(item) {
+				case "paused":
 					state = "пауза"
+				case "completed":
+					state = "расписание завершено"
 				}
-				lines = append(lines, item.ScheduleID+" — "+item.JobKind+", "+state+", "+item.NextDue.UTC().Format(time.RFC3339))
+				if item.LastOccurrenceState == "missed" {
+					state += ", последнее срабатывание пропущено"
+				}
+				if item.LastDeliveryState == "uncertain" {
+					state += ", доставка не подтверждена"
+				} else if item.LastDeliveryState == "delivered" {
+					state += ", доставлено"
+				}
+				due := "следующих запусков нет"
+				if !item.NextDue.IsZero() {
+					due = item.NextDue.UTC().Format(time.RFC3339)
+				}
+				lines = append(lines, item.ScheduleID+" — "+item.JobKind+", "+state+", "+due)
 			}
 			if len(items) == 0 {
 				lines = append(lines, "Пока нет.")
 			}
 			return reply(strings.Join(lines, "\n"))
+		case "model":
+			return reply(modelCommand(ctx, text))
 		case "usage":
 			overview := true
 			if fields := strings.Fields(text); len(fields) >= 2 && fields[1] == "session" {
@@ -602,15 +571,12 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 }
 
 func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string) error {
-	envelope := user.envelope(sender)
-	if channel == "mock" {
-		envelope = user.mockEnvelope(chatID)
+	ch := g.channel(channel)
+	if ch == nil {
+		return errors.New("channel is not registered")
 	}
+	envelope := ch.JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
-	if channel == "telegram_bot" && chatID < 0 {
-		// Group forum jobs deliver to the group chat, not the sender's DM.
-		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(chatID, 10)
-	}
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
@@ -620,8 +586,8 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 		// a failed wake is harmless — /v1/jobs ensures again on dispatch.
 		go g.wakeRuntime(job)
 	}
-	if channel == "telegram_bot" {
-		_ = g.api.SendChatAction(ctx, chatID, task.TopicID, "typing")
+	if ch.Caps().Typing {
+		_ = ch.SendPresence(ctx, chatID, task.TopicID)
 	}
 	return nil
 }
@@ -666,7 +632,11 @@ func (g *Gateway) progressTick(ctx context.Context) {
 	}
 	for _, id := range ids {
 		m, found, err := g.spool.Mapping(id)
-		if err != nil || !found || m.Channel != "telegram_bot" || m.CancelRequested {
+		if err != nil || !found || m.CancelRequested {
+			continue
+		}
+		ch := g.channel(m.Channel)
+		if ch == nil || !ch.Caps().Typing {
 			continue
 		}
 		// Only an admitted run earns live progress: a queued or wedged job
@@ -674,7 +644,7 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		if m.RunID == "" {
 			continue
 		}
-		_ = g.api.SendChatAction(ctx, m.ChatID, m.TopicID, "typing")
+		_ = ch.SendPresence(ctx, m.ChatID, m.TopicID)
 		base := strings.TrimSpace(m.StatusText)
 		if base == "" {
 			base = "Выполняю запрос."
@@ -729,7 +699,7 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 			values[key] = ""
 		}
 		slices.Sort(keys)
-		if form, formErr := g.createCredentialForm(user.envelope(user.TelegramIDs[0]), keys); formErr == nil {
+		if form, formErr := g.createCredentialForm(user.Envelope(user.TelegramIDs[0]), keys); formErr == nil {
 			reply = "Введите данные только в защищённой форме: " + form.FormURL
 		}
 	}

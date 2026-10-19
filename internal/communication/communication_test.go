@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"log"
 	"net/http"
@@ -21,7 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -29,16 +29,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-func TestOpenCredentialSurfaceSkipsLocalStoreWhenBrokerApprovalIsConfigured(t *testing.T) {
-	service, ledger, err := openCredentialSurface(Config{
-		CredentialStore: filepath.Join(t.TempDir(), "must-not-open"),
-		BrokerApprove:   credentialbroker.Config{URL: "https://broker.example"},
-	})
-	if err != nil || service != nil || ledger != nil {
-		t.Fatalf("credential surface was opened: service=%v ledger=%v err=%v", service != nil, ledger != nil, err)
-	}
-}
 
 type forumOp struct {
 	method string
@@ -500,7 +490,7 @@ func TestToolHubJobDoneUsesPrincipalCredential(t *testing.T) {
 
 	g.config.Supervised = false
 	token := strings.Repeat("a", 32)
-	entries, err := json.Marshal(map[string]identity.Envelope{token: {PrincipalID: "alice"}})
+	entries, err := json.Marshal(map[string]identity.Envelope{token: identity.TelegramEnvelope("alice", 11, "alice", "policy-1")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1241,16 +1231,6 @@ func TestSpoolAndTelegramErrorPaths(t *testing.T) {
 func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
 	c := testConfig(t)
 	c.FormOrigin = "http://127.0.0.1:8081"
-	key, err := credstore.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := credstore.WriteKeyFile(keyFile, key); err != nil {
-		t.Fatal(err)
-	}
-	c.CredentialStore = filepath.Join(t.TempDir(), "store.enc")
-	c.CredentialKeyFile = keyFile
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -1278,9 +1258,9 @@ func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
 	if strings.Contains(joined, secret) || !strings.Contains(joined, "Группы не принимают секреты") || !strings.Contains(joined, "защищённой форме") {
 		t.Fatalf("sent=%v", fake.sent)
 	}
-	listed, err := g.secrets.List("alice")
-	if err != nil || len(listed) != 0 {
-		t.Fatalf("stored=%+v err=%v", listed, err)
+	stored, _ := envstore.Load(filepath.Join(c.Users[0].StateDir, envstore.FileName), "GITHUB_TOKEN", "")
+	if stored["GITHUB_TOKEN"] == secret {
+		t.Fatal("chat secret reached the env store")
 	}
 }
 
@@ -1540,96 +1520,6 @@ func TestCredentialFormRuntimeRejectsUpdate(t *testing.T) {
 	}
 }
 
-func TestCredentialFormPersistsThroughEncryptedStore(t *testing.T) {
-	key, err := credstore.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := credstore.WriteKeyFile(keyFile, key); err != nil {
-		t.Fatal(err)
-	}
-	c := testConfig(t)
-	c.CredentialStore = filepath.Join(t.TempDir(), "store.enc")
-	c.CredentialKeyFile = keyFile
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodPost, "/credentials/form", nil)
-	form := credentialForm{OwnerID: "alice", Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1")}
-	if err := g.persistCredentialForm(request, form, map[string]string{"GITHUB_TOKEN": "encrypted-secret"}); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := g.secrets.List("alice")
-	if err != nil || len(entries) != 1 || entries[0].Name != "GITHUB_TOKEN" {
-		t.Fatalf("encrypted entries=%+v err=%v", entries, err)
-	}
-}
-
-type correlatingRunner struct {
-	runID string
-}
-
-func (c correlatingRunner) Run(_ context.Context, job Job, _ User) (string, error) {
-	return "answer for " + job.UserID, nil
-}
-
-func (c correlatingRunner) RunOutcome(_ context.Context, job Job) (RunOutcome, error) {
-	return RunOutcome{Text: "answer for " + job.UserID, JobID: job.ID, RunID: c.runID, Status: "completed", LastEvent: "run.completed"}, nil
-}
-
-func TestWorkerAppendsJobCorrelation(t *testing.T) {
-	c := testConfig(t)
-	key, err := credstore.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := credstore.WriteKeyFile(keyFile, key); err != nil {
-		t.Fatal(err)
-	}
-	c.CredentialStore = filepath.Join(t.TempDir(), "store.enc")
-	c.CredentialKeyFile = keyFile
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeAPI{}
-	g.api = fake
-	g.runner = correlatingRunner{runID: "run-worker"}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); g.worker(ctx) }()
-	if _, err := g.spool.Enqueue(Job{ID: "worker-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", ChatID: 11, Text: "hello", Envelope: identity.TelegramEnvelope("alice", 11, "runtime", "policy-1")}); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if g.audit != nil {
-			events, err := g.audit.List("alice")
-			if err == nil && len(events) > 0 {
-				cancel()
-				<-done
-				found := false
-				for _, event := range events {
-					if event.Kind == "job" && event.JobID == "worker-job" && event.HermesRunID == "run-worker" {
-						found = true
-					}
-				}
-				if !found {
-					t.Fatalf("job correlation missing: %+v", events)
-				}
-				return
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	<-done
-	t.Fatal("worker did not append job correlation")
-}
-
 type chatStopRecorder struct{ ids []string }
 
 func (s *chatStopRecorder) Stop(id string) error {
@@ -1713,9 +1603,6 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 	if err := registry.Save(toolHubPath); err != nil {
 		t.Fatal(err)
 	}
-	c.CredentialStore = storePath
-	c.CredentialKeyFile = keyFile
-	c.ToolHubStore = toolHubPath
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)

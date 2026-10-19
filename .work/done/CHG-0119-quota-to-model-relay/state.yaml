@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0119
+title: "Phase 1 slice 1c — quota lookup moves from communication to model-relay"
+status: done
+branch: refactor/comm-plane-separation
+updated: 2026-10-18
+phase: implementation
+requirements: []
+depends_on:
+  - CHG-0118
+design_status: accepted
+implementation_status: done
+slices:
+  S1-relay-quota-endpoint: done
+  S2-gateway-quota-client: done
+  S3-stack-secret-routing: done
+validation:
+  documents: done
+  just_check: pass
+  docker_check: not_required
+  red_team: done
+  live_acceptance: not_required
+evidence:
+  - "just check: PASS — gofmt, vet, mod tidy, staticcheck, gosec, docs, actionlint, deployment contract; Go statement coverage 86.34% (>=85%)"
+  - "TestModelRelayQuotaRendersSubscriptionLines: registry relay serves cliproxy management quota as rendered lines, $TOKEN$ substitution preserved"
+  - "TestModelRelayQuotaRequiresAdminToken: /v1/quota 403s without/with wrong HUB_MODEL_RELAY_ADMIN bearer"
+  - "TestModelRelayQuotaHonestWithoutKey + TestModelRelayQuotaFallsBackToRelayCliproxyURL: honest unconfigured line; HUB_MODEL_RELAY_CLIPROXY fallback"
+  - "TestModelRelayQuotaSelectsOnlyActiveAntigravityCredential: pickAuthFile moved to runtime, semantics preserved"
+  - "TestQuotaLinesRendersMeasuredBuckets + TestQuotaLinesDisabledOrFailing rewritten against the relay boundary: bearer sent, 5-min cache held, honest failure lines"
+  - "TestUsageOverviewIncludesQuotaWithoutBlockingPoll updated: /usage polls the relay, never blocks update delivery"
+  - "TestRenderRoutesCliproxyManagementToModelRelay: HUB_CLIPROXY_* absent from communication.env and runtime env, present in model-relay.<env>.env mounted on the relay service"
+  - "TestRenderEnvHelpers: HUB_CLIPROXY_MGMT_KEY stays in runtimeProtectedEnvKeys"
+remaining: []
+limitations:
+  - "Unmanaged deployments lose /usage quota lines (same shape as /model: no managed relay -> 'источник не настроен')"
+  - "5-minute cache stays in the gateway (quotaTracker); the relay serves fresh lines per call"
+  - "Live CLIProxy/provider verification not performed — owner gate"

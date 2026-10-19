@@ -28,13 +28,13 @@ func routineAgentCase(ctx context.Context, client *http.Client, config communica
 	prompt, expected := "", marker
 	switch name {
 	case "routine_create":
-		prompt = fmt.Sprintf("Use routine_create to create exactly id %s, kind reminder, timezone UTC, expression %s, text %s.", id, expression, secret)
+		prompt = fmt.Sprintf("Use routine_create with origin_job_id from this run's routing reference to create exactly id %s in this session, kind reminder, timezone UTC, expression %s, text %s.", id, expression, secret)
 	case "routine_list":
 		// The answer is absent from the prompt: only reading the fixture reveals it.
 		prompt = fmt.Sprintf("Use routine_list. Find exactly schedule_id %s. Return only %s followed by a space and its input field. Do not change any routines.", id, marker)
 		expected = marker + " " + secret
-	case "routine_update":
-		prompt = fmt.Sprintf("Use routine_update only on id %s, expression %s, text %s.", id, changed, marker)
+	case "routine_edit":
+		prompt = fmt.Sprintf("Read routine_get for id %s. Use routine_edit action=update with its expected_revision and patch {\"expression\":%q,\"input\":%q} only on that id.", id, changed, marker)
 	case "routine_snooze":
 		prompt = fmt.Sprintf("Use routine_snooze only on id %s, expression (until) %s.", id, until)
 	case "routine_pause", "routine_delete":
@@ -87,7 +87,7 @@ func routineAgentCase(ctx context.Context, client *http.Client, config communica
 		}
 		valid := actual.Expression == expression && actual.Input == secret
 		switch name {
-		case "routine_update":
+		case "routine_edit":
 			valid = actual.Expression == changed && actual.Input == marker && actual.Revision > 1
 		case "routine_pause":
 			valid = valid && actual.Paused

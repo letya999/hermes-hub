@@ -68,6 +68,63 @@ func TestGenerateArtifactRecipeLanguages(t *testing.T) {
 	}
 }
 
+func TestDetectRecipeLanguageDockerfileDisambiguates(t *testing.T) {
+	base := "example/toolchain@sha256:" + strings.Repeat("a", 64)
+	// A Python monorepo carrying a dev-only root package.json (ru-marketplace-mcp
+	// layout): the runtime stage FROM names the real toolchain.
+	files := map[string]string{
+		"pyproject.toml": "[project.scripts]\nmcp-server = 'server:main'",
+		"package.json":   `{"name":"dev-tools","private":true}`,
+		"uv.lock":        "",
+		"server.py":      "def main(): pass",
+		"Dockerfile":     "FROM ghcr.io/astral-sh/uv:0.11.32-python3.12-trixie-slim AS builder\nFROM python:3.12-slim-trixie AS runtime\n",
+	}
+	recipe, _, err := GenerateArtifactRecipe(languageContext(t, files), "", base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(recipe.Entrypoint, []string{"/opt/venv/bin/mcp-server"}) {
+		t.Fatalf("argv = %v", recipe.Entrypoint)
+	}
+	// Truly ambiguous (no toolchain hint anywhere) still fails closed.
+	ambiguous := map[string]string{
+		"pyproject.toml":    "[project.scripts]\nmcp = 'server:main'",
+		"package.json":      `{"bin":"server.js"}`,
+		"package-lock.json": "{}",
+		"server.js":         "",
+	}
+	if _, _, err := GenerateArtifactRecipe(languageContext(t, ambiguous), "", base, nil); err == nil {
+		t.Fatal("ambiguous languages accepted")
+	}
+}
+
+// A uv-workspace repo (ru-marketplace-mcp layout) declares no root
+// [project.scripts]: the console scripts live in member manifests, and the
+// upstream Dockerfile CMD names the default server among them.
+func TestGenerateArtifactRecipeUvWorkspace(t *testing.T) {
+	base := "example/toolchain@sha256:" + strings.Repeat("a", 64)
+	files := map[string]string{
+		"pyproject.toml":                         "[project]\nname = 'ru-marketplace-mcp'\n\n[tool.uv.workspace]\nmembers = ['packages/*']\n",
+		"uv.lock":                                "",
+		"Dockerfile":                             "FROM python:3.12-slim\nCMD [\"wb-mcp\"]\n",
+		"packages/wb-connector/pyproject.toml":   "[project.scripts]\nwb-mcp = 'wb_connector.server:main'",
+		"packages/ozon-connector/pyproject.toml": "[project.scripts]\nozon-mcp = 'ozon_connector.server:main'",
+	}
+	recipe, contextBytes, err := GenerateArtifactRecipe(languageContext(t, files), "", base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(recipe.Entrypoint, []string{"/opt/venv/bin/wb-mcp"}) {
+		t.Fatalf("argv = %v", recipe.Entrypoint)
+	}
+	if !bytes.Contains(contextBytes, []byte("uv sync")) {
+		t.Fatal("workspace recipe does not install members with uv")
+	}
+	if !slices.Contains(recipe.DependencyLocks, "uv.lock") {
+		t.Fatalf("locks = %v", recipe.DependencyLocks)
+	}
+}
+
 func TestGenerateArtifactRecipeSelectsPinnedBase(t *testing.T) {
 	recipe, _, err := GenerateArtifactRecipe(languageContext(t, map[string]string{
 		"package.json": `{"bin":"server.js"}`, "package-lock.json": "{}",

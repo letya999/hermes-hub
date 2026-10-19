@@ -46,9 +46,11 @@ type Settings struct {
 	// (managed executor with per-call admission and audit), `mcp[:server]`
 	// (builtin connector or an mcp_servers definition) or `off`. Absent
 	// means denied.
-	Tools           map[string]ToolEntry `yaml:"tools,omitempty"`
-	Ingress         []string             `yaml:"ingress,omitempty"`
-	TelegramAuth    bool                 `yaml:"telegram_auth,omitempty"`
+	Tools   map[string]ToolEntry `yaml:"tools,omitempty"`
+	Ingress []string             `yaml:"ingress,omitempty"`
+	// TelegramAuth is tri-state: nil auto-enables QR login whenever telegram
+	// ingress runs, true forces it on (still requires telegram), false opts out.
+	TelegramAuth    *bool                `yaml:"telegram_auth,omitempty"`
 	Workspace       Workspace            `yaml:"workspace,omitempty"`
 	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
 	Hooks           map[string]any       `yaml:"hooks,omitempty"`
@@ -61,14 +63,17 @@ type Settings struct {
 	Organization    string               `yaml:"organization,omitempty"`
 	Model           string               `yaml:"model"`
 	ModelURL        string               `yaml:"model_url"`
-	Timezone        string               `yaml:"timezone"`
-	GoogleEmail     string               `yaml:"google_email"`
-	GitLabHost      string               `yaml:"gitlab_host"`
-	DesktopURL      string               `yaml:"desktop_url"`
-	DraftsURL       string               `yaml:"drafts_url"`
-	OAuthPort       int                  `yaml:"oauth_port"`
-	BrowserPort     int                  `yaml:"browser_port"`
-	SlackEventsPort int                  `yaml:"slack_events_port,omitempty"`
+	// Cliproxy selects the proxy topology: "shared" (default) resolves the
+	// infra space's instance; "dedicated" renders a cliproxy per space.
+	Cliproxy        string `yaml:"cliproxy,omitempty"`
+	Timezone        string `yaml:"timezone"`
+	GoogleEmail     string `yaml:"google_email"`
+	GitLabHost      string `yaml:"gitlab_host"`
+	DesktopURL      string `yaml:"desktop_url"`
+	DraftsURL       string `yaml:"drafts_url"`
+	OAuthPort       int    `yaml:"oauth_port"`
+	BrowserPort     int    `yaml:"browser_port"`
+	SlackEventsPort int    `yaml:"slack_events_port,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -176,11 +181,17 @@ func HealUserSoul(spaceDir, templatePath string) error {
 // GatewaySecretKeys stay in communication-hub. They are never injected into
 // Hermes runtime env or ToolHub connectors.
 func GatewaySecretKeys() []string {
-	return []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS", "HUB_CLIPROXY_MGMT_URL", "HUB_CLIPROXY_MGMT_KEY", "HUB_CLIPROXY_AUTH_INDEX"}
+	return []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"}
+}
+
+// ModelRelaySecretKeys own the CLIProxy management surface. They render into
+// model-relay.<env>.env — never into the gateway env or the agent runtime.
+func ModelRelaySecretKeys() []string {
+	return []string{"HUB_CLIPROXY_MGMT_URL", "HUB_CLIPROXY_MGMT_KEY", "HUB_CLIPROXY_AUTH_INDEX"}
 }
 
 func GatewayOwnedSecret(key string) bool {
-	return slices.Contains(GatewaySecretKeys(), key)
+	return slices.Contains(GatewaySecretKeys(), key) || slices.Contains(ModelRelaySecretKeys(), key)
 }
 
 func selfEnvKeys(s Settings) []string {
@@ -343,6 +354,15 @@ func (s Settings) Validate() error {
 	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
 		return fmt.Errorf("managed capability identity requires capability_mode managed")
 	}
+	switch s.Cliproxy {
+	case "", "shared":
+	case "dedicated":
+		if s.RendersInfra() {
+			return fmt.Errorf("cliproxy: dedicated cannot render on the infra space itself")
+		}
+	default:
+		return fmt.Errorf("cliproxy must be shared or dedicated")
+	}
 	if s.Schema < 1 || s.Schema > 3 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1..3 and profile a lowercase identifier")
 	}
@@ -379,7 +399,7 @@ func (s Settings) Validate() error {
 	if s.Has("telegram_write") && !s.Has("telegram_user") {
 		return fmt.Errorf("telegram_write requires telegram_user")
 	}
-	if s.TelegramAuth && !s.Has("telegram") {
+	if s.TelegramAuth != nil && *s.TelegramAuth && !s.Has("telegram") {
 		return fmt.Errorf("telegram_auth requires telegram")
 	}
 	if s.Has("google_write") && !s.Has("google") {

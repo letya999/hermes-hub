@@ -1,6 +1,6 @@
 ---
 description: Current M10 file, routine, mock, knowledge and usage contracts after stabilization.
-last_verified: 2026-10-12
+last_verified: 2026-10-18
 ---
 # M10 stabilization
 
@@ -48,12 +48,39 @@ tombstone and retired IDs cannot be reused. Already admitted Hermes work may
 continue; queued delivery is checked again before sending. Cancellation cannot
 recall a message already accepted by an external service.
 
-Two background workers admit at most 16 oldest occurrences per pass and one per
-source. HTTP requests have a 10-second deadline and a 256 KiB response limit;
+Two background workers admit at most 16 oldest eligible occurrences per pass and
+one per source. Due occurrences inside their catch-up window take priority over
+expired backlog, so recording old misses cannot starve a fresh reminder. The
+16-settlements-per-pass bound is unchanged. HTTP requests have a 10-second deadline and a 1 MiB response limit;
 public-IP validation occurs at connection time, ambient proxies and redirects
 are disabled. Private endpoints and credential-bearing URLs are refused.
 The default probe compares a body or first regex capture. A missing capture is
-an error, not an empty successful value. `github_issue` accepts the exact public
+an error, not an empty successful value. Probes separate fetch from extraction:
+an ordered `extract` pipeline (css, html2text, regex, grep, drop_regex,
+drop_lines, sort_lines, strip, json_path, rss; at most 8 steps) reduces the
+fetched body to the canonical compared value, and a failing or empty step is a
+probe error, never a silent "unchanged". `kind=script` ships the (optionally
+pre-extracted) fragment to the disposable script container as `input()` and
+requires exactly one emitted value. `kind=command` never fetches; it runs the
+script with only the owner's `spaces/<user>/watch` directory bind-mounted
+read-only at `/watch` and bounded `read_file`/`list_dir`/`hash_path` builtins
+confined to that root. `probe.recipe` expands builtin presets into snapshotted
+schedule fields at create time; explicit fields win and unknown recipes are
+rejected. `kind=tool` normalizes to `mcp_tool`: the ToolHub path already
+limits probes to read-effect tools under owner grants, so projected read
+tools (file_read, knowledge_search, web_search, MCP connectors) are lawful
+sources. `kind=script`/`kind=command` may declare `needs[]` — at most four
+read-tool calls the hub prefetches under the owner binding and exposes via
+the `needs()` builtin (each result truncated to 64 KiB); a failed need
+settles as a probe error and the container stays networkless.
+`deliver_mode` picks notify (default), content (value every tick) or
+artifact (value staged as a durable outbox file, `artifact_name`-named).
+`kind=render` and `kind=service` POST a bounded structured request —
+kind/url/args/steps/wait_for — to an operator-registered
+`service_endpoints` entry (never a schedule-supplied URL); render steps are
+a declarative browser-action list, and the ≤512 KiB response flows through
+the same extract chain. Check-kind baseline seeding uses the same service
+path. `github_issue` accepts the exact public
 GitHub issue REST URL and compares only `state`; it needs no account and supports
 no private repositories. Checks accept `changed`, `unchanged` or `equals:<value>`.
 Creation validates ownership before its baseline request; schedule and initial
@@ -75,6 +102,31 @@ permanently consume every digest slot. `GET /v1/routines/<id>` returns schedule 
 `POST /v1/routines/<id>/snooze {until: RFC3339}` postpones checks and invalidates
 old queued occurrences. Deterministic digests do not call a model.
 
+Reminder snooze replaces a one-shot deadline and rearms that same schedule with a
+new revision, including when the old occurrence is already queued for delivery.
+For recurring schedules, snooze postpones an earlier next due time to `until`;
+subsequent runs retain the original cron expression and owner timezone. A weekly
+Friday 10:00 Moscow reminder therefore stays on that weekly cadence after snooze.
+The catch-up window is measured from the deferred deadline, saved on the occurrence
+and honoured by both scheduling and dispatch (one hour by default). A late tick
+outside it writes a durable `missed` occurrence before advancing or retiring the
+schedule. Recovery admits at most one occurrence, never a burst of missed slots.
+An expired pending reminder from an earlier slot does not block the current slot
+of its recurring schedule; agent jobs keep their existing overlap fence.
+Existing snoozes written before `NextDue` was updated also use `snoozed_until` as
+their effective deadline; no bulk rewrite or replay of already-retired reminders
+is performed.
+
+Owner routine reads include derived `last_occurrence_state` and
+`last_delivery_state` for reminders. The latter is `delivered` only with a completed
+outbox record; a failed/unknown transport answer is `uncertain` and is not resent on
+restart. `/routines` also names missed and unconfirmed deliveries. Occurrence detail
+is read from the hot spool or its existing archive; after detail retention expires,
+or if that detail cannot be verified, its state reads `unavailable`. These read-only
+fields do not change creation idempotency or authorize access to another owner.
+An unverified or expired occurrence never exposes the state of an outbox receipt
+through a caller-supplied history reference.
+
 Starlark routines require the supervisor. It starts a disposable core-image
 container with no network, mounts or injected secrets; read-only filesystem,
 unprivileged UID, dropped capabilities, 128 MiB memory/swap ceiling, 0.5 CPU and
@@ -85,15 +137,14 @@ fails a script explicitly rather than executing it inside the control process.
 
 ## Knowledge (#249)
 
-Sources remain operator-staged snapshots and connector exports, served GET-only.
-No guessed provider API or new live connector is introduced. Shared operator
-control tokens address a user's personal context. Enrolled runtime tokens bind
-the exact context; `X-Hub-Context` cannot switch it. Disabled users and revoked
-tokens are rejected on every request. Reads reject unsafe names, non-regular
-files and bodies exceeding 9 MiB. `knowledge_search` returns up to eight matching
-lines with source, line number, SHA256 and modification time. It scans at most
-128 sources and approximately 32 MiB (the last bounded source may exceed the
-remaining budget). Content is untrusted evidence and cannot change tool policy.
+Sources remain operator-staged snapshots and connector exports under
+`<state>/knowledge/<user>/` (the runtime's own state volume; a `<context>`
+subdir narrows a non-personal context). The agent tools read the directory
+in-process — no HTTP hop, no control token; the gateway no longer serves
+`/v1/knowledge`. Reads reject unsafe names, non-regular files and bodies
+exceeding 9 MiB. `knowledge_search` returns up to eight matching lines with
+source, line number, SHA256 and modification time, scanning at most 128
+sources. Content is untrusted evidence and cannot change tool policy.
 
 ## Usage and Telegram (#194, #195, #214)
 

@@ -22,8 +22,16 @@ validation:
   just_check: pass
   docker_check: not_run
   red_team: done
-  live_acceptance: not_available
+  live_acceptance: verified 2026-10-19 (stream mode via telegram-mcp
+    wait_for_new_message under CHG-0104; issue #257 closed)
 evidence:
+  - "live 2026-10-18 dev stack (issue #257 comment): real github-mcp-server
+    connector via ToolHub /v1/tool-call — issue_read event -> notify sink ->
+    owner Telegram; seen-set dedup held over 5+ polls (notify_count=1);
+    foreign tool -> policy deny 403 -> degraded:true + last_error durable;
+    notify sink ran with zero jobs/model/runtime; agent sink bundled
+    [untrusted event evidence] correctly, runtime spawn failed on local
+    docker (environment), job failed visibly not silently"
   - internal/communication: TestEventNotifyFanout, TestEventAgentSinkBundles,
     TestEventDailyCap, TestEventSeenBounded, TestEventOverflowCounted,
     TestEventNotifyCapOverflow, TestEventBundleBounded,
@@ -36,8 +44,8 @@ evidence:
   - docs/architecture.md event-subscription paragraph;
     docs/prepared-connectors.md event tools + persistent-workload limitation
 remaining:
-  - live acceptance A7 (real connector, crash mid-fanout) needs a deployment;
-    reported as unavailable, not claimed from mocks
+  - crash mid-fanout replay staging and stream delivery still need a
+    wait-capable connector + deployment; poll path verified live 2026-10-18
 limitations:
   - requeue_tool is invoked by event id only; cap-overflow events stay unseen
     for the next occurrence rather than requeued (connector still holds them)

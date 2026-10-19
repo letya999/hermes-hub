@@ -34,8 +34,10 @@ provably go through the approved BuildKit paths.
    state on the local spool, the same direct-spool authority as
    `hubctl routine`.
 2. v1 surface: `routines:` (id, kind, chat_id, timezone, expression,
-   input, url, regex, expect) and `knowledge:` (name, source) files
-   materialized under `spool/knowledge/<user>/`.
+   input, url, regex, expect) materialized under `spool/schedules`, and
+   `knowledge:` (name, source) files materialized under
+   `<state>/knowledge/<user>/` via the `--state <dir>` flag; a spec
+   carrying knowledge without `--state` is rejected.
 3. Idempotent: reapplying an unchanged spec reports `unchanged` and
    creates nothing. A schedule id that exists with a different spec is a
    loud conflict — apply never mutates a live schedule (baseline and

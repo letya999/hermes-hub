@@ -61,6 +61,50 @@ func TestHTTPRunnerContract(t *testing.T) {
 	}
 }
 
+func TestHTTPRunnerPinsRoutineOriginPerNewMappingAndPreservesLegacyReplay(t *testing.T) {
+	g, env, a, b := destinationFixture(t)
+	for _, tc := range []struct {
+		id     string
+		task   Task
+		legacy bool
+	}{{"new-a", a, false}, {"new-b", b, false}, {"legacy", a, true}} {
+		t.Run(tc.id, func(t *testing.T) {
+			job := Job{ID: tc.id, Envelope: env, OrganizationID: g.config.OrganizationID, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, TaskID: tc.task.TaskID, TopicID: tc.task.TopicID, Text: "fixture", Trigger: "message", IdempotencyKey: tc.id}
+			job.ConversationID = tc.task.ConversationID
+			body, _ := json.Marshal(mappingFromJob(job, time.Now().UTC()))
+			var record map[string]any
+			_ = json.Unmarshal(body, &record)
+			if tc.legacy {
+				delete(record, "routine_origin_version")
+			}
+			if err := atomicJSON(g.spool.mappingPath(job.ID), record); err != nil {
+				t.Fatal(err)
+			}
+			var got hubruntime.ExecuteRequest
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: job.ID, Text: "ok"})
+			}))
+			defer server.Close()
+			runner := HTTPRunner{URL: server.URL, HTTP: server.Client(), Spool: g.spool}
+			for attempt := 0; attempt < 2; attempt++ {
+				if _, err := runner.RunOutcome(context.Background(), job); err != nil {
+					t.Fatal(err)
+				}
+				expected := `"origin_job_id":"` + job.ID + `"`
+				if !tc.legacy && !strings.Contains(got.Instructions, expected) {
+					t.Errorf("current origin missing: %q", got.Instructions)
+				}
+				if tc.legacy && got.Instructions != "" {
+					t.Errorf("legacy replay instructions changed: %q", got.Instructions)
+				}
+			}
+		})
+	}
+}
+
 // Voice advertises the VOICE: convention through run instructions only when
 // the gateway actually has a synthesizer — managed runtimes see no tools
 // server instructions, so the channel itself carries the contract.

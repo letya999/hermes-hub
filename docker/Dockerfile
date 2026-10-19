@@ -20,9 +20,6 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cellinit ./cmd/cellinit
 
-FROM go_build AS go_telegram_auth
-RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -tags telegramauth -buildvcs=false -trimpath -ldflags='-s -w' -o /communication-hub-telegram-auth ./cmd/communication
-
 FROM golang:1.27.2-bookworm AS cliproxy_build
 RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin ba7e55836dee959e93ec6d41395865d9ec535086; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
@@ -142,9 +139,3 @@ RUN mkdir /src && chown 10001:10001 /src
 USER 10001:10001
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
-
-FROM prod AS prod-telegram-auth
-COPY --from=go_telegram_auth /communication-hub-telegram-auth /usr/local/bin/communication-hub
-
-FROM dev AS dev-telegram-auth
-COPY --from=go_telegram_auth /communication-hub-telegram-auth /usr/local/bin/communication-hub

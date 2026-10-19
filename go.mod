@@ -4,6 +4,7 @@ go 1.27.2
 
 require (
 	github.com/HugoSmits86/nativewebp v1.3.0
+	github.com/andybalholm/cascadia v1.3.3
 	github.com/gofrs/flock v0.13.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/gotd/td v0.162.0
@@ -15,6 +16,7 @@ require (
 	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9
 	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.46.0
+	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 	rsc.io/qr v0.2.0
@@ -60,7 +62,6 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

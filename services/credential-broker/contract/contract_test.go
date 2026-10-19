@@ -56,6 +56,7 @@ func TestContractAdmission(t *testing.T) {
 		}},
 		{"empty input", func(c *Contract) { c.Fields = nil; c.Deliveries = nil }},
 		{"oauth invalid", func(c *Contract) { c.OAuthProvider = "../provider" }},
+		{"unknown intake", func(c *Contract) { c.Intake = "web_form" }},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

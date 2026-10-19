@@ -1,0 +1,15 @@
+id: CHG-0123
+status: done
+branch: refactor/comm-plane-separation
+base: dev
+slices:
+  - S1: internal/commops — Engine + Deps (15 deps, no communication imports)
+  - S2: Gateway wiring via opsEngine() sync.Once + compat shims
+evidence: >
+  All TestCanary*/health/status tests green unchanged via shims;
+  communication suite 152s green; toolhub 44s green; just check PASS,
+  coverage 86.36%.
+notes: >
+  cmd-level canary orchestration intentionally not done — Run owns the
+  loop; process contract unchanged. WriteJSONAtomic dep keeps the
+  durable-write primitive on the spool owner.

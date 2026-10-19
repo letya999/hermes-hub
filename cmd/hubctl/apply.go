@@ -47,7 +47,7 @@ type applySpec struct {
 	} `yaml:"knowledge"`
 }
 
-func applyFile(spoolDir, profile, path string) (ApplyReport, error) {
+func applyFile(spoolDir, stateDir, profile, path string) (ApplyReport, error) {
 	rep := ApplyReport{Routines: map[string]string{}, Knowledge: map[string]string{}}
 	body, err := readApplySource(path)
 	if err != nil {
@@ -88,6 +88,9 @@ func applyFile(spoolDir, profile, path string) (ApplyReport, error) {
 			return rep, fmt.Errorf("routine %q: %w", r.ID, err)
 		}
 	}
+	if len(cfg.Knowledge) > 0 && strings.TrimSpace(stateDir) == "" {
+		return rep, fmt.Errorf("apply requires --state <dir> for knowledge entries")
+	}
 	knowledge := map[string][]byte{}
 	totalBytes := 0
 	for _, k := range cfg.Knowledge {
@@ -117,7 +120,7 @@ func applyFile(spoolDir, profile, path string) (ApplyReport, error) {
 		rep.Routines[r.ID] = action
 	}
 	for _, k := range cfg.Knowledge {
-		action, err := writeKnowledge(spoolDir, profile, k.Name, knowledge[k.Name])
+		action, err := writeKnowledge(stateDir, profile, k.Name, knowledge[k.Name])
 		if err != nil {
 			return rep, fmt.Errorf("knowledge %q: %w", k.Name, err)
 		}
@@ -195,8 +198,10 @@ func sameRoutine(a, b communication.Schedule) bool {
 	}
 	norm := func(s communication.Schedule) communication.Schedule {
 		s.Revision, s.NextDue, s.CreatedAt, s.UpdatedAt = 0, time.Time{}, time.Time{}, time.Time{}
+		s.IntervalAnchor = time.Time{}
 		s.Enabled, s.Paused, s.CatchUpWindow = false, false, 0
 		s.Creation, s.Probe = nil, nil
+		s.PriorEnvelopes = nil
 		return s
 	}
 	return fmt.Sprintf("%+v", norm(a)) == fmt.Sprintf("%+v", norm(b))
@@ -226,7 +231,7 @@ func readKnowledgeSource(source string) ([]byte, error) {
 	return body, err
 }
 
-func applyKnowledge(spoolDir, profile, name, source string) (string, error) {
+func applyKnowledge(stateDir, profile, name, source string) (string, error) {
 	if !knowledgeName(name) || !identity.ValidID(profile) {
 		return "", fmt.Errorf("invalid knowledge destination")
 	}
@@ -234,17 +239,17 @@ func applyKnowledge(spoolDir, profile, name, source string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return writeKnowledge(spoolDir, profile, name, body)
+	return writeKnowledge(stateDir, profile, name, body)
 }
 
-func writeKnowledge(spoolDir, profile, name string, body []byte) (string, error) {
+func writeKnowledge(stateDir, profile, name string, body []byte) (string, error) {
 	if !knowledgeName(name) || !identity.ValidID(profile) {
 		return "", fmt.Errorf("invalid knowledge destination")
 	}
-	if err := os.MkdirAll(spoolDir, 0700); err != nil {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return "", err
 	}
-	spool, err := os.OpenRoot(spoolDir)
+	spool, err := os.OpenRoot(stateDir)
 	if err != nil {
 		return "", err
 	}

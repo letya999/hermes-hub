@@ -116,7 +116,7 @@ func TestStablePromptRendered(t *testing.T) {
 	if !strings.Contains(text, "# Persona") || !strings.Contains(text, "Speak plainly.") {
 		t.Fatalf("effective SOUL lost the persona: %q", text)
 	}
-	for _, want := range []string{"artifacts/documents/", "MEDIA: ", "routine_create", "file_list"} {
+	for _, want := range []string{"artifacts/documents/", "MEDIA: ", "routine_create", "file_list", "Snooze must be later than the actual next run"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("effective SOUL missing contract fragment %q", want)
 		}

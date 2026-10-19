@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ type Provider struct {
 	TokenURL      string
 	DeviceCodeURL string
 	Audience      string
+	// RegistrationURL is the AS's RFC7591 dynamic-client-registration
+	// endpoint; Resource is the RFC8707 audience the PRM declared; Scopes are
+	// the PRM/AS-advertised scope values offered on authorize.
+	RegistrationURL string
+	Resource        string
+	Scopes          []string
 }
 
 // ClientCredential is the OAuth client registered with a provider. The secret
@@ -153,16 +160,23 @@ func (b *Broker) StartAuth(request AuthRequest) (StartResult, error) {
 	if prov.Audience != "" {
 		values.Set("audience", prov.Audience)
 	}
+	if prov.Resource != "" {
+		values.Set("resource", prov.Resource)
+	}
 	if client := b.client(request.Provider); client.ID != "" {
 		values.Set("client_id", client.ID)
 	}
-	if len(request.Scopes) > 0 {
+	scopes := request.Scopes
+	if len(scopes) == 0 {
+		scopes = prov.Scopes
+	}
+	if len(scopes) > 0 {
 		if request.Provider == "slack" {
 			// Official Slack v2 user authorization; `scope` would request a bot
 			// token, which this broker path must never produce.
-			values.Set("user_scope", strings.Join(request.Scopes, ","))
+			values.Set("user_scope", strings.Join(scopes, ","))
 		} else {
-			values.Set("scope", strings.Join(request.Scopes, " "))
+			values.Set("scope", strings.Join(scopes, " "))
 		}
 	}
 	if request.AccessType != "" {
@@ -374,10 +388,21 @@ func (b *Broker) Refresh(principal, connection, provider string) (TokenMeta, err
 }
 
 func (b *Broker) DiscoverRemoteMCP(resourceURL string) (Provider, error) {
+	return b.DiscoverRemoteMCPAs("remote-mcp", resourceURL)
+}
+
+// DiscoverRemoteMCPAs runs RFC9728 protected-resource discovery under a
+// caller-chosen provider name so two remote endpoints can never overwrite
+// each other's slot. The well-known URI is inserted between origin and path
+// (RFC9728 §3.1): https://host/mcp discovers
+// https://host/.well-known/oauth-protected-resource/mcp, and a path-bearing
+// issuer maps its AS metadata the same RFC8414 way. Every discovered URL
+// must be https — an AS answer that downgrades to plain HTTP fails closed.
+func (b *Broker) DiscoverRemoteMCPAs(name, resourceURL string) (Provider, error) {
 	if err := b.ready(); err != nil {
 		return Provider{}, err
 	}
-	resource, err := b.getJSON(strings.TrimRight(resourceURL, "/") + ProtectedResourceWellKnown)
+	resource, err := b.getJSON(wellKnownURL(resourceURL, ProtectedResourceWellKnown))
 	if err != nil {
 		return Provider{}, err
 	}
@@ -386,27 +411,145 @@ func (b *Broker) DiscoverRemoteMCP(resourceURL string) (Provider, error) {
 		return Provider{}, fmt.Errorf("%w: authorization_servers", ErrInvalid)
 	}
 	issuer, _ := servers[0].(string)
-	if issuer == "" {
+	if !secureDiscoveredURL(issuer) {
 		return Provider{}, fmt.Errorf("%w: issuer", ErrInvalid)
 	}
-	meta, err := b.getJSON(strings.TrimRight(issuer, "/") + AuthorizationServerWellKnown)
+	meta, err := b.getJSON(wellKnownURL(issuer, AuthorizationServerWellKnown))
 	if err != nil {
 		return Provider{}, err
 	}
+	return b.registerDiscovered(name, resourceURL, resource, meta)
+}
+
+// wellKnownURL inserts a well-known suffix between the origin and the
+// resource path, the construction RFC9728 and RFC8414 both specify.
+func wellKnownURL(rawURL, suffix string) string {
+	u, err := url.Parse(strings.TrimRight(rawURL, "/"))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host + suffix + u.EscapedPath()
+}
+
+// secureDiscoveredURL is the fail-closed gate on every URL a metadata
+// document hands back: https, no embedded credentials, no fragment. Plain
+// http is admitted only for loopback issuers so local development and test
+// authorization servers still work.
+func secureDiscoveredURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost")
+}
+
+// registerDiscovered builds the provider from the PRM document + AS metadata
+// and stores it under name. The PRM-declared resource becomes the RFC8707
+// audience; the AS registration endpoint enables RFC7591 DCR.
+func (b *Broker) registerDiscovered(name, resourceURL string, resource, meta map[string]any) (Provider, error) {
 	authorize, _ := meta["authorization_endpoint"].(string)
 	token, _ := meta["token_endpoint"].(string)
 	device, _ := meta["device_authorization_endpoint"].(string)
-	if authorize == "" || token == "" {
+	registration, _ := meta["registration_endpoint"].(string)
+	if !secureDiscoveredURL(authorize) || !secureDiscoveredURL(token) || registration != "" && !secureDiscoveredURL(registration) {
 		return Provider{}, fmt.Errorf("%w: discovered endpoints", ErrInvalid)
 	}
-	provider := Provider{Name: "remote-mcp", AuthorizeURL: authorize, TokenURL: token, DeviceCodeURL: device}
+	declared, _ := resource["resource"].(string)
+	provider := Provider{
+		Name: name, AuthorizeURL: authorize, TokenURL: token, DeviceCodeURL: device,
+		Resource: declared, RegistrationURL: registration,
+	}
+	if provider.Resource == "" {
+		provider.Resource = strings.TrimRight(resourceURL, "/")
+	}
+	for _, doc := range []map[string]any{resource, meta} {
+		for _, scope := range stringList(doc["scopes_supported"]) {
+			if !slices.Contains(provider.Scopes, scope) {
+				provider.Scopes = append(provider.Scopes, scope)
+			}
+		}
+	}
 	b.mu.Lock()
 	if b.Providers == nil {
 		b.Providers = map[string]Provider{}
 	}
-	b.Providers["remote-mcp"] = provider
+	b.Providers[name] = provider
 	b.mu.Unlock()
 	return provider, nil
+}
+
+func stringList(raw any) []string {
+	items, _ := raw.([]any)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// RegisterClient performs RFC7591 dynamic client registration when the
+// provider's AS advertises a registration endpoint.
+func (b *Broker) RegisterClient(provider, redirectURI string) (ClientCredential, error) {
+	if err := b.ready(); err != nil {
+		return ClientCredential{}, err
+	}
+	prov, err := b.provider(provider)
+	if err != nil {
+		return ClientCredential{}, err
+	}
+	if prov.RegistrationURL == "" {
+		return ClientCredential{}, fmt.Errorf("%w: no registration endpoint", ErrInvalid)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"client_name": "hermes-hub", "redirect_uris": []string{redirectURI},
+		"grant_types": []string{"authorization_code", "refresh_token"}, "response_types": []string{"code"},
+		"token_endpoint_auth_method": "none",
+	})
+	if err != nil {
+		return ClientCredential{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, prov.RegistrationURL, strings.NewReader(string(payload)))
+	if err != nil {
+		return ClientCredential{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	clientCopy := *b.HTTP
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := clientCopy.Do(req)
+	if err != nil {
+		return ClientCredential{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024+1))
+	if err != nil || len(body) > 64*1024 || resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return ClientCredential{}, fmt.Errorf("%w: registration %s", ErrDenied, resp.Status)
+	}
+	var document map[string]any
+	if json.Unmarshal(body, &document) != nil {
+		return ClientCredential{}, fmt.Errorf("%w: registration JSON", ErrInvalid)
+	}
+	id, _ := document["client_id"].(string)
+	if id == "" {
+		return ClientCredential{}, fmt.Errorf("%w: registration client_id", ErrInvalid)
+	}
+	secret, _ := document["client_secret"].(string)
+	credential := ClientCredential{ID: id, Secret: secret}
+	b.mu.Lock()
+	if b.Clients == nil {
+		b.Clients = map[string]ClientCredential{}
+	}
+	b.Clients[provider] = credential
+	b.mu.Unlock()
+	return credential, nil
 }
 
 func (b *Broker) persist(principal, connection, provider string, tokens map[string]string) (TokenMeta, error) {
@@ -548,6 +691,44 @@ func (b *Broker) getJSON(endpoint string) (map[string]any, error) {
 	return payload, nil
 }
 
+// Provider returns the discovered metadata for a named provider slot.
+func (b *Broker) Provider(name string) (Provider, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	prov, ok := b.Providers[name]
+	return prov, ok
+}
+
+// Client returns the registered client credential for a provider slot.
+func (b *Broker) Client(name string) ClientCredential {
+	return b.client(name)
+}
+
+// RestoreProvider installs a durable provider document into an empty slot —
+// used to rebuild broker memory from the credential store after a restart.
+func (b *Broker) RestoreProvider(name string, prov Provider) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.Providers == nil {
+		b.Providers = map[string]Provider{}
+	}
+	if _, ok := b.Providers[name]; !ok {
+		b.Providers[name] = prov
+	}
+}
+
+// RestoreClient installs a durable client credential into an empty slot.
+func (b *Broker) RestoreClient(name string, credential ClientCredential) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.Clients == nil {
+		b.Clients = map[string]ClientCredential{}
+	}
+	if _, ok := b.Clients[name]; !ok {
+		b.Clients[name] = credential
+	}
+}
+
 func (b *Broker) provider(name string) (Provider, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -563,6 +744,9 @@ func (b *Broker) exchangeClient(provider, endpoint string, form url.Values) (map
 	if client.ID != "" && !client.BasicAuth {
 		form.Set("client_id", client.ID)
 		form.Set("client_secret", client.Secret)
+	}
+	if prov, err := b.provider(provider); err == nil && prov.Resource != "" {
+		form.Set("resource", prov.Resource)
 	}
 	resp, err := b.postFormClient(endpoint, form, client)
 	if err != nil {

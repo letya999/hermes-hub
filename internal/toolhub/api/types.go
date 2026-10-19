@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"time"
 )
@@ -36,7 +37,27 @@ var (
 	ErrStale        = errors.New("toolhub record is stale")
 	ErrRevoked      = errors.New("toolhub record is revoked")
 	ErrDegraded     = errors.New("toolhub connection is degraded")
+	// Resolution sentinels wrap ErrInvalid so existing fail-closed callers keep
+	// failing closed while stable machine-readable codes reach status.
+	ErrAmbiguousEntrypoint           = fmt.Errorf("%w: ambiguous MCP entrypoint", ErrInvalid)
+	ErrUnsupportedCredentialContract = fmt.Errorf("%w: unsupported credential contract", ErrInvalid)
+	ErrUnsupportedAuth               = fmt.Errorf("%w: unsupported authentication contract", ErrInvalid)
 )
+
+// ErrorCode maps a resolution or lifecycle failure onto a stable snake_case
+// code a chat-facing agent can explain. Unmapped errors return "".
+func ErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrAmbiguousEntrypoint):
+		return "ambiguous_entrypoint"
+	case errors.Is(err, ErrUnsupportedCredentialContract):
+		return "unsupported_credential_contract"
+	case errors.Is(err, ErrUnsupportedAuth):
+		return "unsupported_auth"
+	default:
+		return ""
+	}
+}
 
 type WorkloadClass string
 
@@ -137,6 +158,9 @@ type CredentialInput struct {
 	Delivery string `json:"delivery,omitempty"`
 	Target   string `json:"target,omitempty"`
 	Prefix   string `json:"prefix,omitempty"`
+	// Source is the metadata file the input was discovered from, carried over
+	// from the connection recipe for audit.
+	Source string `json:"source,omitempty"`
 }
 
 type WorkloadPolicy struct {
@@ -161,6 +185,9 @@ type WorkloadPolicy struct {
 	WorkspaceScope string `json:"workspace_scope,omitempty"`
 	// WorkspaceAccess is "" or "ro" (default) or "rw"; rw must be declared.
 	WorkspaceAccess string `json:"workspace_access,omitempty"`
+	// Sharable declares that a Shared-class workload may carry stored
+	// credentials under a shared-credential policy.
+	Sharable bool `json:"sharable,omitempty"`
 }
 
 // Bounded-cli cell lifecycle tiers (WorkloadPolicy.Lifecycle).

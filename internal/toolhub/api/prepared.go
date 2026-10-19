@@ -273,6 +273,24 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 	return entries, nil
 }
 
+// PreparedContractFor returns the embedded reviewed broker contract for the
+// prepared entry pinning id@revision, so a definition bound to a contract the
+// broker catalog lost or never had registers the reviewed JSON — never a
+// contract synthesized from noisy upstream metadata.
+func PreparedContractFor(id string, revision int) (contract.Contract, bool, error) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		return contract.Contract{}, false, err
+	}
+	for _, entry := range entries {
+		if entry.ContractID == id && entry.ContractRevision == revision {
+			brokerContract, err := entry.BrokerContract()
+			return brokerContract, err == nil, err
+		}
+	}
+	return contract.Contract{}, false, nil
+}
+
 func PreparedCredentialGate(source ArtifactSource) error {
 	entry, ok, err := PreparedForSource(source)
 	if err != nil || !ok || !entry.AuthBeforeToolsList {
@@ -337,10 +355,25 @@ func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConf
 }
 
 func (entry PreparedEntry) Overlay(connection ConnectionRecipe) ConnectionRecipe {
+	reviewed := map[string]bool{}
+	for _, field := range entry.Connection.Fields {
+		reviewed[field.Name] = true
+	}
 	connection.Fields = slices.DeleteFunc(connection.Fields, func(field ConnectionField) bool { _, fixed := entry.RuntimeEnvironment[field.Name]; return fixed })
 	for _, field := range entry.Connection.Fields {
 		connection.Fields = slices.DeleteFunc(connection.Fields, func(existing ConnectionField) bool { return existing.Name == field.Name })
 		connection.Fields = append(connection.Fields, field)
+	}
+	// The reviewed contract is the only authority on required inputs: an
+	// upstream field the prepared entry does not declare can never be
+	// form-collected or contract-delivered. Discovery marks compose-example
+	// placeholders required (docker/.env.example GITLAB_PROJECT_ID=<YOUR_…>),
+	// which would fail the definition on "missing credential broker
+	// delivery" — leftover extras stay optional knobs instead.
+	for i := range connection.Fields {
+		if !reviewed[connection.Fields[i].Name] {
+			connection.Fields[i].Required = false
+		}
 	}
 	return normalizeConnection(connection)
 }

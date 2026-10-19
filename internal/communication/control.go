@@ -15,15 +15,6 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
-type PendingControl struct {
-	NextAttemptAt time.Time         `json:"next_attempt_at,omitempty"`
-	Caller        identity.Envelope `json:"caller"`
-	Action        string            `json:"action"`
-	RequestID     string            `json:"request_id,omitempty"`
-	Choice        string            `json:"choice,omitempty"`
-	State         string            `json:"state"`
-}
-
 func ownsMapping(caller identity.Envelope, mapping JobMapping) bool {
 	return caller.Schema != 0 && caller.Schema == mapping.IdentitySchema && caller.ExternalIdentityID != "" && caller.ExternalIdentityID == mapping.ExternalIdentityID && caller.PrincipalID == mapping.PrincipalID && caller.ContextID == mapping.ContextID && caller.ConversationID == mapping.ConversationID && caller.DeliveryTargetID == mapping.DeliveryTargetID && caller.RuntimeID == mapping.RuntimeID && caller.PolicyVersion == mapping.PolicyVersion
 }

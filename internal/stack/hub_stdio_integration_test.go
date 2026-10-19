@@ -105,7 +105,7 @@ async def main():
             await session.initialize()
             names={t.name for t in (await session.list_tools()).tools}
             assert 'routine_create' in names,names
-            result=await session.call_tool('routine_create',{'id':'stdio-contract','timezone':'UTC','expression':'once:2099-01-01T00:00:00Z','text':'REMINDER-7319','kind':'reminder'})
+            result=await session.call_tool('routine_create',{'id':'stdio-contract','destination_task_id':'default','timezone':'UTC','expression':'once:2099-01-01T00:00:00Z','text':'REMINDER-7319','kind':'reminder'})
             assert not result.is_error,result
 asyncio.run(main())
 `

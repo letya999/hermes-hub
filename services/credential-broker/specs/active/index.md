@@ -7,4 +7,6 @@ last_verified: "2026-09-18"
 
 | Документ | Когда открывать |
 | --- | --- |
+| [Credential Broker: динамические контракты](credential-broker-dynamic-contracts.md) | Динамическая регистрация collect-and-deliver контрактов через broker:control. |
+| [Credential Broker: effective contract на запрос](credential-broker-effective-contract.md) | Request-scoped extras и понижение обязательности поля при сабмите формы. |
 | [Credential Broker v1](credential-broker-v1.md) | Замороженный контракт MVP и трассировка требований на исполняемые тесты. |

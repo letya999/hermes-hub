@@ -7,10 +7,12 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -23,7 +25,7 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 	if c.Broker == nil || !c.Broker.Enabled() || c.BrokerRuntime == nil || !c.BrokerRuntime.Enabled() || c.AdmitWithCredentials == nil || credentialID == "" {
 		return api.ToolDefinition{}, fmt.Errorf("%w: Broker admission unavailable", api.ErrIsolation)
 	}
-	control, err := c.Broker.New(auth, "broker:control")
+	control, err := c.brokerControl(auth, definition.Workload.Class == api.Shared)
 	if err != nil {
 		return api.ToolDefinition{}, err
 	}
@@ -40,7 +42,7 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := control.Do(cleanupCtx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.ID)+"/revoke", nil, nil); err != nil {
+		if err := control.Do(cleanupCtx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.ID)+"/revoke", nil, nil); err != nil && !brokerclient.IsNotFound(err) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker grant revoke: %v", api.ErrIsolation, err))
 		}
 	}()
@@ -114,18 +116,37 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 				environment[input] = value
 			}
 		}
+		// Request-scoped extras deliver under the input name itself: a value the
+		// owner filled on the form reaches the workload without a contract edit.
+		for _, input := range effective.Definition.Credentials {
+			if input.PerRequest {
+				continue
+			}
+			if _, mapped := environment[input.Name]; !mapped {
+				if value := materialized.Env[input.Name]; value != "" {
+					environment[input.Name] = value
+				}
+			}
+		}
 		// The contract may deliver alternative credential groups (e.g. a Jira
 		// block or a Confluence block): a complete group satisfies the member
 		// keys of the other alternatives, but never missing standalone keys.
 		if !effective.Definition.CredentialsSatisfied(func(name string) bool { return environment[name] != "" }) {
 			_ = release(false, false)
-			return api.CredentialInjection{}, fmt.Errorf("%w: broker delivery does not satisfy %s", api.ErrIsolation, effective.Definition.DefinitionID)
+			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery does not satisfy %s", api.ErrIsolation, api.ErrCredentialDelivery, effective.Definition.DefinitionID)
 		}
 		for _, input := range effective.Credential.Keys {
-			if environment[input] == "" && !api.GroupedCredentialInput(effective.Definition, input) {
-				_ = release(false, false)
-				return api.CredentialInjection{}, fmt.Errorf("%w: broker delivery %s", api.ErrIsolation, input)
+			if environment[input] != "" || api.GroupedCredentialInput(effective.Definition, input) {
+				continue
 			}
+			// Optional inputs the user left blank in the form are legitimately
+			// absent; required coverage was already enforced by the satisfied
+			// check above. Undeclared or required names still fail closed.
+			if slices.ContainsFunc(effective.Definition.Credentials, func(c api.CredentialInput) bool { return c.Name == input && !c.Required }) {
+				continue
+			}
+			_ = release(false, false)
+			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery %s", api.ErrIsolation, api.ErrCredentialDelivery, input)
 		}
 		mounts := make([]api.Mount, 0, len(materialized.Mounts))
 		var checkpoint func() error

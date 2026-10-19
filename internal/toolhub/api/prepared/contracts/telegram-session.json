@@ -1,6 +1,6 @@
 {
   "id": "telegram-session",
-  "revision": 1,
+  "revision": 2,
   "title": "Personal Telegram MTProto session (separate from the bot)",
   "storage": "local",
   "fields": [
@@ -9,6 +9,7 @@
     {"id": "session", "label": "Personal StringSession (never bot token)", "kind": "secret", "required": true, "max_bytes": 8192},
     {"id": "expected_user_id", "label": "Expected numeric Telegram user ID", "kind": "string", "required": true, "max_bytes": 20}
   ],
+  "intake": "telegram_qr",
   "allow_shared": false,
   "deliveries": [
     {"type": "env", "field": "api_id", "target": "TELEGRAM_API_ID"},

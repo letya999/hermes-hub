@@ -384,6 +384,35 @@ func TestGenericDockerFallbackRejectsStateAndCredentials(t *testing.T) {
 			}
 		})
 	}
+	// A sharable shared workload may carry stored credentials through the
+	// workspace env-file: admission must fail on some later infrastructure
+	// step, never on the retain-credentials guard.
+	sharable := base
+	sharable.Workload.Class, sharable.Workload.Sharable = api.Shared, true
+	sharable.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
+	controller, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DockerFallback: true, BridgeBinary: parts[0], Definition: sharable, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.command = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("ToolHive v0.48.0"), nil
+	}
+	if _, err := controller.start(context.Background(), genericPlan(sharable)); err == nil || strings.Contains(err.Error(), "cannot retain") {
+		t.Fatalf("sharable shared workload rejected by credential guard: %v", err)
+	}
+	perRequest := base
+	perRequest.Workload.Class = api.Shared
+	perRequest.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true, PerRequest: true}}
+	controller, err = newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DockerFallback: true, BridgeBinary: parts[0], Definition: perRequest, MaxActive: 1, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.command = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("ToolHive v0.48.0"), nil
+	}
+	if _, err := controller.start(context.Background(), genericPlan(perRequest)); err == nil || strings.Contains(err.Error(), "cannot retain") {
+		t.Fatalf("per-request shared workload rejected by credential guard: %v", err)
+	}
 }
 
 func TestGenericFallbackHelpers(t *testing.T) {
