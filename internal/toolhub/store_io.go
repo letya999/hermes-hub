@@ -33,7 +33,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -99,6 +99,9 @@ func (s *Store) saveLocked(path string) error {
 		}
 		state.Onboardings = append(state.Onboardings, onboarding)
 	}
+	for _, op := range s.operations {
+		state.Operations = append(state.Operations, op)
+	}
 	if len(s.recipes) > 0 {
 		state.Recipes = s.recipes
 	}
@@ -117,6 +120,7 @@ func (s *Store) saveLocked(path string) error {
 	slices.SortFunc(state.Workloads, func(a, b api.WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
 	slices.SortFunc(state.Grants, func(a, b api.Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
 	slices.SortFunc(state.Onboardings, func(a, b api.Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
+	slices.SortFunc(state.Operations, func(a, b api.Operation) int { return strings.Compare(a.OperationID, b.OperationID) })
 	slices.SortFunc(state.Publications, func(a, b api.DefinitionPublication) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
@@ -269,6 +273,12 @@ func Load(path string) (*Store, error) {
 			return nil, err
 		}
 		store.onboardings[onboarding.OnboardingID] = onboarding
+	}
+	for _, op := range state.Operations {
+		if err := op.Validate(); err != nil {
+			return nil, err
+		}
+		store.operations[op.OperationID] = op
 	}
 	for digest, resolution := range state.Recipes {
 		if check, err := api.ResolutionDigest(resolution); err != nil || check != digest {

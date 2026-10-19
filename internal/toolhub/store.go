@@ -28,6 +28,7 @@ type Store struct {
 	projectionRevisions map[string]uint64
 	grants              map[string]api.Grant
 	onboardings         map[string]api.Onboarding
+	operations          map[string]api.Operation
 	recipes             map[string]api.RecipeResolution
 	publications        map[string]api.DefinitionPublication
 	sharedPolicies      map[string]api.SharedCredentialPolicy
@@ -613,6 +614,7 @@ type snapshot struct {
 	ProjectionRevisions map[string]uint64               `json:"projection_revisions,omitempty"`
 	Grants              []api.Grant                     `json:"grants,omitempty"`
 	Onboardings         []api.Onboarding                `json:"onboardings,omitempty"`
+	Operations          []api.Operation                 `json:"operations,omitempty"`
 	Recipes             map[string]api.RecipeResolution `json:"recipes,omitempty"`
 	Publications        []api.DefinitionPublication     `json:"publications,omitempty"`
 	SharedPolicies      []api.SharedCredentialPolicy    `json:"shared_credential_policies,omitempty"`
