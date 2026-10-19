@@ -27,6 +27,19 @@ const (
 	OpStepDone    = "done"
 )
 
+// Canonical connector operation step names. The install intent persists this
+// frozen order at creation so the journal runner can resume an in-flight
+// record: every step is idempotent and keyed by name.
+const (
+	OpStepResolve            = "resolve"
+	OpStepFetchArtifact      = "fetch_artifact"
+	OpStepCollectCredentials = "collect_credentials"
+	OpStepAdmitProbe         = "admit_probe"
+	OpStepBind               = "bind"
+	OpStepProject            = "project"
+	OpStepNotify             = "notify"
+)
+
 // Stable typed error codes for connector_* results — the control-flow
 // contract. Results never branch on prose.
 const (
@@ -75,6 +88,7 @@ type Operation struct {
 	RequestKey    string          `json:"request_key"`
 	State         string          `json:"state"`
 	Steps         []OperationStep `json:"steps,omitempty"`
+	OnboardingID  string          `json:"onboarding_id,omitempty"`
 	SupersededBy  string          `json:"superseded_by,omitempty"`
 	ErrorCode     string          `json:"error_code,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
@@ -89,7 +103,7 @@ func (o Operation) Validate() error {
 		return fmt.Errorf("%w: operation intent or target", ErrInvalid)
 	}
 	switch o.State {
-	case OpStateQueued, OpStateAwaitingConfirm, OpStateRunning, OpStateDone, OpStateFailed:
+	case OpStateQueued, OpStateAwaitingUser, OpStateAwaitingConfirm, OpStateRunning, OpStateDone, OpStateFailed:
 	default:
 		return fmt.Errorf("%w: operation state", ErrInvalid)
 	}

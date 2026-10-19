@@ -24,6 +24,8 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 		return c.connectorSearch(ctx, api.ArgString(args, "query"), api.ArgString(args, "kind"))
 	case "connector_status":
 		return c.connectorStatus(auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
+	case "connector_install":
+		return c.connectorInstall(ctx, auth, args)
 	default:
 		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "unknown connector tool"}, nil
 	}

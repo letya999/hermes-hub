@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -479,5 +480,231 @@ func TestConnectorStatus(t *testing.T) {
 	foreign := identity.TelegramEnvelope("bobuser", 8, "runtime", "policy-1")
 	if _, err := c.InvokeConnector(context.Background(), foreign, "connector_status", map[string]any{"operation_id": op.OperationID}); err == nil {
 		t.Fatal("foreign operation status leaked")
+	}
+}
+
+// S3.5: connector_install journals one operation; a credentialed catalog
+// target ends awaiting_user with link_sent; a repeat call is idempotent.
+func TestConnectorInstallJournal(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "google-work", "version": "2.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || !result.LinkSent {
+		t.Fatalf("install result: %+v", result)
+	}
+	op, err := store.OperationFor(auth, result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Intent != api.OpIntentInstall || op.OnboardingID == "" {
+		t.Fatalf("operation: %+v", op)
+	}
+	stepStates := map[string]string{}
+	for _, step := range op.Steps {
+		stepStates[step.Name] = step.State
+	}
+	if stepStates[api.OpStepResolve] != api.OpStepDone || stepStates[api.OpStepFetchArtifact] != api.OpStepDone || stepStates[api.OpStepCollectCredentials] != api.OpStepDone {
+		t.Fatalf("install journal steps: %+v", op.Steps)
+	}
+	// The onboarding really waits on the protected form.
+	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseAwaitingCreds || onboarding.FormNonce == "" {
+		t.Fatalf("onboarding after install: %v %+v", err, onboarding)
+	}
+	// Same request key → same operation, no duplicate onboarding.
+	again, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "google-work", "version": "2.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.OperationID != result.OperationID {
+		t.Fatalf("idempotent install opened a second operation: %q vs %q", again.OperationID, result.OperationID)
+	}
+}
+
+// S3.5: after the human steps land the connector enabled, resuming the
+// journaled operation completes every remaining step exactly once — the
+// install tool reports done, not a fresh run.
+func TestConnectorInstallResumeCompletion(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "google-work", "version": "2.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := store.OperationFor(auth, result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the human path completing out-of-band: the connector is
+	// enabled under the same onboarding record.
+	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.Phase = api.PhaseEnabled
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "google-work", "version": "2.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+		t.Fatalf("resumed install: %+v", resumed)
+	}
+	finished, err := store.OperationFor(auth, result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range finished.Steps {
+		if step.State != api.OpStepDone {
+			t.Fatalf("step %s not completed on resume: %+v", step.Name, finished.Steps)
+		}
+	}
+	// A third call reports the finished operation — no side effects rerun.
+	third, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "google-work", "version": "2.0.0"})
+	if err != nil || third.State != api.OpStateDone {
+		t.Fatalf("third install: %v %+v", err, third)
+	}
+}
+
+// S3.5: a catalog CLI definition installs through the same journal and
+// lands the same onboarding shape the primitive catalog path produces —
+// no credentials means the human gate is confirmation, not a form.
+func TestConnectorInstallCatalogCLI(t *testing.T) {
+	store, auth, policy, profile := managedStore(t)
+	definition := api.CliRipgrepDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "cli-rg", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, Revision: 1, Status: api.ActiveStatus}
+	if err := store.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	rule := api.CapabilityRule{CapabilityID: "cli.search", ImplementationDigest: api.DefinitionDigest(definition), Action: "search", Resource: "files", ConnectionID: connection.ConnectionID, Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
+	policy.Revision++
+	policy.Ceiling = append(policy.Ceiling, rule)
+	policy.Defaults = append(policy.Defaults, rule)
+	if err := putPolicy(t, store, policy); err != nil {
+		t.Fatal(err)
+	}
+	profile.Revision++
+	profile.PolicyRevision = policy.Revision
+	profile.Connectors = api.ConnectorsPersonal
+	profile.Selections = append(profile.Selections, api.CapabilitySelection{CapabilityID: "cli.search", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		ImplementationDigest: api.DefinitionDigest(definition), ToolName: "search", Name: "rg_search", ConnectionID: connection.ConnectionID})
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "cli-rg-search", "version": definition.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+		t.Fatalf("cli catalog install result: %+v", result)
+	}
+	op, err := store.OperationFor(auth, result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
+	if err != nil || onboarding.Mode != api.OnboardingCatalog || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" {
+		t.Fatalf("cli catalog onboarding: %v %+v", err, onboarding)
+	}
+}
+
+// S3.5: concurrent installs of the same target serialize onto one
+// operation and one onboarding.
+func TestConnectorInstallConcurrent(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	ids := make(chan string, 8)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "google-work", "version": "2.0.0"})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			ids <- result.OperationID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+		} else if id != first {
+			t.Fatalf("concurrent installs diverged: %q vs %q", first, id)
+		}
+	}
+	var onboardings int
+	for _, o := range store.onboardings {
+		if o.DefinitionID == "google-work" && o.Mode == api.OnboardingCatalog {
+			onboardings++
+		}
+	}
+	if onboardings != 1 {
+		t.Fatalf("concurrent install created %d onboardings", onboardings)
+	}
+}
+
+// S3.5: a prepared-catalog id installs through the same journal. Without a
+// reviewer the pipeline fails the onboarding and the operation records the
+// failure instead of hanging.
+func TestConnectorInstallPrepared(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	profile.SelfInstall = true
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, PrepareSyncWindow: -1}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.State != api.OpStateFailed {
+		t.Fatalf("prepared install result: %+v", result)
+	}
+	op, err := store.OperationFor(auth, result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.State != api.OpStateFailed || op.OnboardingID == "" {
+		t.Fatalf("operation: %+v", op)
+	}
+	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
+	if err != nil || (onboarding.Mode != api.OnboardingSelfInstall && onboarding.Mode != api.OnboardingRemote) {
+		t.Fatalf("prepared install onboarding: %v %+v", err, onboarding)
 	}
 }
