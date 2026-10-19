@@ -163,6 +163,34 @@ with a read-only `tools/list` before anything persists — a failed probe
 leaves no ciphertext, connection or Broker credential and re-renders the
 form with the entered values page-side.
 
+## Catalog tiers (M13 P5)
+
+Entries declare a `tier`: `t0` for the reviewed prepared catalog, `t1` for
+operator-confirmed imports, `t2` for the arbitrary-source path. A T0 entry
+carries `image` — `{ref, digest, provenance, sbom}` — the CI-built OCI pin.
+`ref` is the `<repo>@sha256:…` form the registry returns; the definition
+splits it into the bare repository image and the admitted digest, and
+runtime admission verifies the pin instead of rebuilding — a pinned entry
+never reaches the restricted builder or a repository fetch
+([ADR-0050](adr/ADR-0050-ci-built-connector-images.md)). Entries without an
+image pin keep the existing review-and-build path.
+
+`hubctl connector import <ref>` turns a T1 ref into a recipe draft:
+`mcp-registry:<name>@<version>`, `docker:mcp/<name>@<digest>`,
+`toolhive:<name>`, `mcpb:<owner>/<repo>@<tag>`, `hermes:<name>@<commit>`
+(the upstream `optional-mcps` tree) and `aqua:<pkg>@<version>`. Parsing is
+pure — the ledger records only what the ref asserted, so identical refs give
+identical review digests. Without `--confirm` the command prints the digest
+and writes nothing; `--confirm` stores the content-addressed recipe.
+
+Catalog entries may carry `toolsets`, `default_enabled` and
+`default_excluded`: install projects the default set only, and
+`connector_enable <target> toolsets=[<set>]` widens a binding to the named
+sets — a `default_excluded` tool appears only through an explicitly enabled
+toolset. `PrefetchPlan` computes which pinned images to warm inside the 8
+GiB cache cap: it evicts only hub-labelled (`hermes-hub.*`) images, never a
+foreign one, and skips a target rather than breach the budget.
+
 ## Bundle IDs and one-operation start
 
 Call ToolHub `prepare_source` once with the repository URL shown in a ready

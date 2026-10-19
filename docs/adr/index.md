@@ -7,6 +7,7 @@ last_verified: 2026-10-02
 | Record | Decision |
 |---|---|
 | [ADR-0049](ADR-0049-ownership-finalizers.md) | Accepted: ownership labels on spawned resources, persisted finalizer ladder with verified-zero receipts, one reconciler, revoke-wins commit, bounded store compaction |
+| [ADR-0050](ADR-0050-ci-built-connector-images.md) | Accepted: catalog tiers T0/T1/T2, CI-built digest-pinned images with zero-build admission, deterministic `connector import` under --confirm, staged toolset projection, bounded prefetch |
 | [ADR-0048](ADR-0048-unified-connector-surface.md) | Accepted: nine `connector_*` tools over one durable operation journal; typed codes, no prose markers or link material in agent results; same facade on MCP, hubctl and control HTTP |
 | [ADR-0047](ADR-0047-human-action-surface.md) | Accepted: one-time `?t=` human-action links on an opt-in public surface, origin-channel delivery, device flow and paste-redirect OAuth, transactional credential save |
 | [ADR-0046](ADR-0046-recipe-source-ledger.md) | Accepted: content-addressed secret-free recipes, ranked source ledgers, fail-closed same-rank ambiguity, digest-referenced onboardings |
