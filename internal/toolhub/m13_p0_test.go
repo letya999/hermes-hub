@@ -3,8 +3,8 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1209,9 +1209,9 @@ func resolveLocalSignature(t *testing.T, files map[string][]byte) string {
 
 func TestResolveLocalRecipeDeterministicDigest(t *testing.T) {
 	files := map[string][]byte{
-		"Dockerfile":       []byte("FROM img:1\nENTRYPOINT [\"./server\"]\nENV API_KEY x\nVOLUME /state\n"),
-		"docs/readme.md":   []byte("requires API_KEY and REGION set\n"),
-		".env.example":     []byte("API_KEY=\nREGION=\n"),
+		"Dockerfile":              []byte("FROM img:1\nENTRYPOINT [\"./server\"]\nENV API_KEY x\nVOLUME /state\n"),
+		"docs/readme.md":          []byte("requires API_KEY and REGION set\n"),
+		".env.example":            []byte("API_KEY=\nREGION=\n"),
 		"tools/extra.env.example": []byte("MISC=\n"),
 		"sub/Dockerfile.alt":      []byte("FROM img:1\nENTRYPOINT [\"./server\"]\n"),
 	}
@@ -1259,4 +1259,78 @@ func TestResolveLocalRecipeMultipleServerJSON(t *testing.T) {
 	if _, _, _, err := api.ResolveLocalRecipe(noRoot, api.ArtifactSource{}); !errors.Is(err, api.ErrAmbiguousEntrypoint) {
 		t.Fatalf("two nested server.json without a root one: %v", err)
 	}
+}
+
+// CHG-0127 follow-up: every stopWorkloads call site must surface the stop
+// failure — a silently skipped stop leaves a revoked/disabled connector's
+// runtime alive while reporting success (gosec G104 found the discards).
+
+func storeWithRunningBindingWorkload(t *testing.T) (*Store, api.ToolBinding) {
+	t.Helper()
+	store, auth, binding := seededStore(t)
+	store.Stopper = errStopper{}
+	workload, err := api.NewWorkloadInstance(binding, &api.OwnerRef{Type: api.ContextOwner, ID: auth.ContextID}, "", 1, time.Now().UTC(), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workload.Status = api.RunningStatus
+	if err := store.PutWorkloadInstance(workload); err != nil {
+		t.Fatal(err)
+	}
+	return store, binding
+}
+
+func TestStopFailureSurfacesOnEveryCaller(t *testing.T) {
+	t.Run("SetConnectionStatus", func(t *testing.T) {
+		store, _ := storeWithRunningBindingWorkload(t)
+		if err := store.SetConnectionStatus("google-work", api.DisabledStatus); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+			t.Fatalf("SetConnectionStatus discarded stop failure: %v", err)
+		}
+	})
+	t.Run("MarkDegraded", func(t *testing.T) {
+		store, _ := storeWithRunningBindingWorkload(t)
+		if err := store.MarkDegraded("google-work"); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+			t.Fatalf("MarkDegraded discarded stop failure: %v", err)
+		}
+	})
+	t.Run("RemoveBindingRecords", func(t *testing.T) {
+		store, binding := storeWithRunningBindingWorkload(t)
+		if err := store.RemoveBindingRecords(binding.ToolBindingID); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+			t.Fatalf("RemoveBindingRecords discarded stop failure: %v", err)
+		}
+	})
+	t.Run("RotateCredentialRecord", func(t *testing.T) {
+		store, _ := storeWithRunningBindingWorkload(t)
+		reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 2), ConnectionID: "google-work", Revision: 2, Backend: "local", Locator: "local://alice/google/2", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
+		if _, err := store.RotateCredentialRecord(reference); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+			t.Fatalf("RotateCredentialRecord discarded stop failure: %v", err)
+		}
+	})
+	t.Run("Reload", func(t *testing.T) {
+		src, binding := storeWithRunningBindingWorkload(t)
+		path := filepath.Join(t.TempDir(), "registry.json")
+		if err := src.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		live, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live.Stopper = errStopper{}
+		_ = binding
+		other, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for id, w := range other.workloads {
+			w.Status = api.StoppedStatus
+			other.workloads[id] = w
+		}
+		if err := other.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := live.Reload(); err == nil || !strings.Contains(err.Error(), "runtime unreachable") {
+			t.Fatalf("Reload discarded stop failure: %v", err)
+		}
+	})
 }

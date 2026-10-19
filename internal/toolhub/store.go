@@ -295,12 +295,12 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 	}
 	stopped := s.stopAffectedLocked(connection.ConnectionID)
 	s.mu.Unlock()
-	s.stopWorkloads(stopped)
+	stopErr := s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
 		_ = s.MarkDegraded(connection.ConnectionID)
 		return api.CredentialReference{}, err
 	}
-	return reference, nil
+	return reference, stopErr
 }
 
 func (s *Store) SetConnectionStatus(connectionID string, status api.Status) error {
@@ -328,8 +328,11 @@ func (s *Store) SetConnectionStatus(connectionID string, status api.Status) erro
 	}
 	stopped := s.stopAffectedLocked(connectionID)
 	s.mu.Unlock()
-	s.stopWorkloads(stopped)
-	return s.persistAndNotify()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persistAndNotify(); err != nil {
+		return err
+	}
+	return stopErr
 }
 
 func (s *Store) MarkDegraded(connectionID string) error {
@@ -350,8 +353,11 @@ func (s *Store) MarkDegraded(connectionID string) error {
 	}
 	stopped := s.stopAffectedLocked(connectionID)
 	s.mu.Unlock()
-	s.stopWorkloads(stopped)
-	return s.persistAndNotify()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persistAndNotify(); err != nil {
+		return err
+	}
+	return stopErr
 }
 
 func (s *Store) SetTerminalExposure(connectionID string, enabled bool) error {
@@ -433,8 +439,11 @@ func (s *Store) RemoveBindingRecords(bindingID string) error {
 		}
 	}
 	s.mu.Unlock()
-	s.stopWorkloads(stopped)
-	return s.persistAndNotify()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persistAndNotify(); err != nil {
+		return err
+	}
+	return stopErr
 }
 
 func (s *Store) Resolve(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {

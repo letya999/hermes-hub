@@ -364,8 +364,7 @@ func (s *Store) Reload() error {
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.diskStamp = fresh.diskStamp
 	s.mu.Unlock()
-	s.stopWorkloads(stopped)
-	return nil
+	return s.stopWorkloads(stopped)
 }
 
 func (s *Store) validateLocked() error {
