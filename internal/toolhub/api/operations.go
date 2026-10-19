@@ -14,10 +14,12 @@ const (
 )
 
 const (
-	OpStateQueued  = "queued"
-	OpStateRunning = "running"
-	OpStateDone    = "done"
-	OpStateFailed  = "failed"
+	OpStateQueued          = "queued"
+	OpStateAwaitingUser    = "awaiting_user"
+	OpStateAwaitingConfirm = "awaiting_confirm"
+	OpStateRunning         = "running"
+	OpStateDone            = "done"
+	OpStateFailed          = "failed"
 )
 
 const (
@@ -87,7 +89,7 @@ func (o Operation) Validate() error {
 		return fmt.Errorf("%w: operation intent or target", ErrInvalid)
 	}
 	switch o.State {
-	case OpStateQueued, OpStateRunning, OpStateDone, OpStateFailed:
+	case OpStateQueued, OpStateAwaitingConfirm, OpStateRunning, OpStateDone, OpStateFailed:
 	default:
 		return fmt.Errorf("%w: operation state", ErrInvalid)
 	}

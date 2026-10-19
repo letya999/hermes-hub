@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -143,6 +144,22 @@ func (s *Store) ResolveConnectorTarget(auth identity.Envelope, target string) (C
 // facade maps it to the stable result code and echoes Candidates.
 type ErrAmbiguousTarget struct {
 	Candidates []api.OperationCandidate
+}
+
+// RequireConnectorTool gates one connector_* tool on the caller's admitted
+// set — bundle profiles only; legacy per-op grants cannot mint these names.
+func (s *Store) RequireConnectorTool(auth identity.Envelope, tool string) error {
+	if !slices.Contains(api.ConnectorTools, tool) {
+		return fmt.Errorf("%w: unknown connector tool", api.ErrInvalid)
+	}
+	allowed, err := s.AllowedControlOperations(auth)
+	if err != nil {
+		return err
+	}
+	if !allowed[tool] {
+		return fmt.Errorf("%w: connector tool", api.ErrUnauthorized)
+	}
+	return nil
 }
 
 func (e *ErrAmbiguousTarget) Error() string {

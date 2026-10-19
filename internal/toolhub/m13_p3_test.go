@@ -352,3 +352,132 @@ func TestConnectorsBundleAllowedOps(t *testing.T) {
 		t.Fatalf("none must admit nothing: %v %v", allowed, err)
 	}
 }
+
+// S3.4: connector_list returns the caller's own connectors with the uniform
+// result shape; foreign connectors never appear.
+func TestConnectorList(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	mine := m13P3Onboarding(auth, "gh", "github", "https://github.com/github/github-mcp-server", api.PhaseEnabled)
+	foreign := m13P3Onboarding(identity.TelegramEnvelope("bobuser", 8, "runtime", "policy-1"), "fb", "foreign-def", "https://github.com/org/foreign-mcp", api.PhaseEnabled)
+	for _, o := range []api.Onboarding{mine, foreign} {
+		if err := store.PutOnboarding(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &ControlPlane{Store: store, Now: time.Now}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_list", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != api.OpStateDone {
+		t.Fatalf("list state: %+v", result)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].ID != mine.OnboardingID {
+		t.Fatalf("list must contain exactly my connector: %+v", result.Candidates)
+	}
+	if result.Candidates[0].Source != mine.SourceURL || result.Candidates[0].Kind == "" {
+		t.Fatalf("candidate fields: %+v", result.Candidates[0])
+	}
+	// A principal without the connectors bundle cannot call the facade.
+	unmanaged := m13P3Auth(t)
+	empty := NewStore()
+	c2 := &ControlPlane{Store: empty, Now: time.Now}
+	if _, err := c2.InvokeConnector(context.Background(), unmanaged, "connector_list", nil); !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("unmanaged caller admitted: %v", err)
+	}
+	// Authority-laundering arguments are rejected before dispatch.
+	if _, err := c.InvokeConnector(context.Background(), auth, "connector_list", map[string]any{"owner": "bobuser"}); err == nil {
+		t.Fatal("authority argument accepted")
+	}
+}
+
+// S3.4: connector_search queries the reviewed catalogs and returns typed
+// candidates — never credentials or URLs the caller did not name.
+func TestConnectorSearch(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_search", map[string]any{"query": "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != api.OpStateDone || len(result.Candidates) == 0 {
+		t.Fatalf("search found nothing: %+v", result)
+	}
+	found := false
+	for _, candidate := range result.Candidates {
+		if candidate.ID == "github" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("github entry missing: %+v", result.Candidates)
+	}
+	// An empty query is a typed failure, not a panic.
+	empty, err := c.InvokeConnector(context.Background(), auth, "connector_search", map[string]any{})
+	if err == nil && empty.Code == "" {
+		t.Fatalf("empty query accepted: %+v", empty)
+	}
+}
+
+// S3.4: connector_status maps the target's phase onto the operation-state
+// vocabulary and resolves operation ids too.
+func TestConnectorStatus(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	enabled := m13P3Onboarding(auth, "gh", "github", "https://github.com/github/github-mcp-server", api.PhaseEnabled)
+	waiting := m13P3Onboarding(auth, "wt", "gitlab", "https://gitlab.example.com/mcp", api.PhaseAwaitingCreds)
+	for _, o := range []api.Onboarding{enabled, waiting} {
+		if err := store.PutOnboarding(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &ControlPlane{Store: store, Now: time.Now}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"target": "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != api.OpStateDone {
+		t.Fatalf("enabled connector status: %+v", result)
+	}
+	result, err = c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"target": "gitlab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != api.OpStateAwaitingUser {
+		t.Fatalf("awaiting-credentials connector status: %+v", result)
+	}
+	// operation_id lookups reach the journal.
+	op := api.Operation{Schema: api.SchemaVersion, OperationID: api.DeterministicID("op", "st"),
+		Intent: api.OpIntentInstall, Target: "github", RequestKey: api.OperationRequestKey(auth, api.OpIntentInstall, "github"),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		State: api.OpStateAwaitingConfirm, CreatedAt: time.Now().UTC()}
+	if err := store.PutOperation(op); err != nil {
+		t.Fatal(err)
+	}
+	result, err = c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"operation_id": op.OperationID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != api.OpStateAwaitingConfirm || result.OperationID != op.OperationID {
+		t.Fatalf("operation status: %+v", result)
+	}
+	// A foreign operation stays invisible.
+	foreign := identity.TelegramEnvelope("bobuser", 8, "runtime", "policy-1")
+	if _, err := c.InvokeConnector(context.Background(), foreign, "connector_status", map[string]any{"operation_id": op.OperationID}); err == nil {
+		t.Fatal("foreign operation status leaked")
+	}
+}
