@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -776,6 +777,77 @@ func TestCredentialBrokerDyingRequestRegenerates(t *testing.T) {
 	}
 	if notice["broker_request_id"] != "request_fresh" {
 		t.Fatalf("owner was not told about the re-minted request: %v", notice)
+	}
+}
+
+// For a contract declaring QR intake the status result must steer the agent to
+// the channel notice, not parrot the Broker form URL as the primary path —
+// otherwise the user keeps clicking the wrong link.
+func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_live" {
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", ContractID: "telegram-session", ContractRevision: 2, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_live", ExpiresAt: time.Now().Add(15 * time.Minute)})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "telegram-session"
+	definition.CredentialContractRevision = 2
+	definition.CredentialContractEnv = map[string]string{
+		"TELEGRAM_API_ID":           "TELEGRAM_API_ID",
+		"TELEGRAM_API_HASH":         "TELEGRAM_API_HASH",
+		"TELEGRAM_SESSION_STRING":   "TELEGRAM_SESSION_STRING",
+		"TELEGRAM_EXPECTED_USER_ID": "TELEGRAM_EXPECTED_USER_ID",
+	}
+	definition.Credentials = nil
+	for name := range definition.CredentialContractEnv {
+		definition.Credentials = append(definition.Credentials, api.CredentialInput{Name: name, Required: true})
+	}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_live"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_live"
+	onboarding.BrokerContractID = "telegram-session"
+	onboarding.BrokerContractRevision = 2
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions, _ := body["instructions"].(string)
+	if !strings.Contains(instructions, "QR") || strings.Contains(instructions, "open the credential URL") {
+		t.Fatalf("QR intake still pushes the form as primary path: %q", instructions)
 	}
 }
 
