@@ -710,6 +710,56 @@ func TestBriefQuietDefersSlot(t *testing.T) {
 	}
 }
 
+// S4.3 — a persistently failing source is named unavailable once per
+// distinct error; the next slot reports the ongoing count in the
+// deterministic footer instead of repeating the same line (SPEC-0054 R4).
+func TestBriefUnavailableErrorDeduped(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "werr", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "fragile", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/e"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("werr"), WatchState{ScheduleID: "werr", LastError: "connection refused", LastSuccess: time.Now().UTC().Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "briefe", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief"}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "briefe"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil || !strings.Contains(job.Text, "недоступен") {
+		t.Fatalf("first slot did not name the unavailable source: %+v %v", job, err)
+	}
+	if err := s.CompleteJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	o2 := o
+	o2.DueAt = now.Add(25 * time.Hour)
+	if err := s.PutOccurrence(o2, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now.Add(26*time.Hour), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatal("same unavailable error woke the model a second time")
+	}
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || !strings.Contains(d.Text, "Источников недоступно: 1") {
+		t.Fatalf("second slot did not report the ongoing count: %+v %v", d, err)
+	}
+}
+
 // S5.1 — a tool result carrying an events array (or a bare array) yields one
 // discrete event per item with its durable identity (SPEC-0054 R5.2).
 func TestExtractEventsArray(t *testing.T) {

@@ -136,6 +136,7 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 	}
 	brief, _ := e.LoadScheduleLocked(o.ScheduleID)
 	lines := []string{}
+	unavailable := 0
 	entries, err := os.ReadDir(filepath.Join(e.root, "watchers"))
 	if err != nil {
 		return err
@@ -164,6 +165,14 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 			continue
 		}
 		if st.LastError != "" {
+			unavailable++
+			// The same failure episode is named once; later slots carry the
+			// ongoing count in the deterministic footer (digest semantics).
+			errorID := WatchHash(st.LastError + st.LastSuccess.UTC().Format(time.RFC3339Nano))
+			if cursor.Errors[st.ScheduleID] == errorID {
+				continue
+			}
+			cursor.Errors[st.ScheduleID] = errorID
 			lastSuccess := "нет успешных проверок"
 			if !st.LastSuccess.IsZero() {
 				lastSuccess = st.LastSuccess.UTC().Format(time.RFC3339)
@@ -171,6 +180,7 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 			lines = append(lines, "• "+BoundedWatchText(owner.Input)+": источник недоступен; последние данные "+lastSuccess)
 			continue
 		}
+		delete(cursor.Errors, st.ScheduleID)
 		changed := st.Generation > cursor.Generations[st.ScheduleID]
 		if st.Generation == 0 {
 			changed = !st.ChangedAt.IsZero() && st.ChangedAt.After(cursor.LastDigestAt)
@@ -200,7 +210,11 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 		open++
 	}
 	if len(lines) == 0 {
-		d, err := e.normalizeDelivery(commodel.Delivery{ID: "brief-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\nНовых изменений нет.", CreatedAt: now.UTC()})
+		message := "Новых изменений нет."
+		if unavailable > 0 {
+			message += fmt.Sprintf(" Источников недоступно: %d.", unavailable)
+		}
+		d, err := e.normalizeDelivery(commodel.Delivery{ID: "brief-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + message, CreatedAt: now.UTC()})
 		if err != nil {
 			return err
 		}
