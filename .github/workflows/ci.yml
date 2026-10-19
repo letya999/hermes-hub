@@ -56,7 +56,11 @@ jobs:
         run: |
           set +e
           pkgs=$(go list ./... | sort | awk -v s="$SHARD" 'NR % 4 == s')
-          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" "-coverprofile=coverage-${SHARD}.out" $pkgs > "test-${SHARD}.log" 2>&1
+          # -coverpkg=./... keeps the shard metric identical to `just check`
+          # (covergo instruments all packages per test binary); without it the
+          # merged profile counts only each package's own tests and the shared
+          # 85% floor rejects cross-package credit the local gate grants.
+          timeout -k 30 1500 go test -race -v -shuffle=on -count=1 "-timeout=10m" -coverpkg=./... "-coverprofile=coverage-${SHARD}.out" $pkgs > "test-${SHARD}.log" 2>&1
           rc=$?
           # Test binaries run as /tmp/go-build*/b*/<pkg>.test and outlive a
           # killed `go test`; the runner waits on the whole process tree, so
