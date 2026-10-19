@@ -100,6 +100,10 @@ const (
 	ActiveStatus   Status = "active"
 	DisabledStatus Status = "disabled"
 	RevokedStatus  Status = "revoked"
+	// DeletingStatus marks a connection whose finalizers are running: not
+	// Active means Authorize and EffectiveBinding deny it before the ladder
+	// finishes.
+	DeletingStatus Status = "deleting"
 	DegradedStatus Status = "degraded"
 	StartingStatus Status = "starting"
 	RunningStatus  Status = "running"

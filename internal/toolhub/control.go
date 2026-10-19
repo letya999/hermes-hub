@@ -45,6 +45,16 @@ type ControlPlane struct {
 	// selector: disable and revoke kill warm cells, the /v1 job-end route
 	// kills task cells. Nil leaves cells to the controller's own ladder.
 	CLIRelease func(context.Context, api.CliReleaseRequest) error
+	// LabelQuery lists Docker objects (container/volume/network/image) whose
+	// labels match the query; remove's verify-zero and the reconciler read the
+	// connection footprint through it. Nil means no controller seam — verify
+	// passes vacuously.
+	LabelQuery func(context.Context, map[string]string) (map[string][]string, error)
+	// LabelPurge deletes one labelled Docker object by kind
+	// (container/volume/network/image); the volume/network/image-ref
+	// finalizers sweep leftovers through it. Nil skips the sweep — the
+	// controller's own release path already removed them.
+	LabelPurge func(context.Context, string, string) error
 	// PrepareSyncWindow bounds how long prepare_source waits for review+build
 	// before returning the durable "preparing" record; the work then continues
 	// on a detached context and its result is read via status. Zero uses the
@@ -388,53 +398,53 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 	}
 	// Keep the spent nonce as a tombstone: a replayed link matches it and gets
 	// a 410 "fresh link" page instead of an opaque 401.
-	cleanupErr := c.cutAuthorization(onboarding, true)
-	// Remove deletes the owner's ciphertext, not just revokes it — a revoked
-	// marker still leaves the secret recoverable. A credential owned by
-	// someone else (shared policy store owner) is left untouched: removing
-	// one member's connector must not destroy the shared secret.
-	if cleanupErr == nil && c.Secrets != nil && onboarding.Locator != "" {
-		owner := onboarding.PrincipalID
-		if onboarding.CredentialOwner != "" {
-			owner = onboarding.CredentialOwner
+	if len(onboarding.Finalizers) == 0 {
+		// Immediate cut before the destructive ladder: the binding leaves the
+		// projection and the connection drops to deleting (non-active ⇒
+		// Authorize denies) while finalizers purge the footprint.
+		if err := c.revokeAccess(onboarding, api.DeletingStatus); err != nil {
+			return nil, err
 		}
-		if owner == onboarding.PrincipalID {
-			if err := c.Secrets.Delete(onboarding.Locator, owner); err != nil && !errors.Is(err, credstore.ErrNotFound) {
-				cleanupErr = err
-			}
-		}
-	}
-	if cleanupErr != nil {
-		onboarding.Phase = api.PhaseCleanupIncomplete
-		onboarding.Error = "cleanup did not converge"
-		onboarding.ErrorCode = "cleanup_incomplete"
+		onboarding.Finalizers = newRemoveLadder()
+		onboarding.RemoveFootprint = c.labelFootprint(ctx, onboarding)
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
 		}
-		body := c.statusBody(onboarding, false)
-		body["retryable"] = true
-		body["next_action"] = "remove"
-		return body, nil
 	}
-	if onboarding.BindingID != "" {
-		if binding, err := c.Store.binding(onboarding.BindingID); err == nil {
-			definition, _ := c.definitionOf(onboarding)
-			effective := api.EffectiveBinding{Binding: binding, Definition: definition}
-			if binding.ConnectionID != "" {
-				if conn, _, err := c.Store.OwnedConnection(auth, binding.ConnectionID); err == nil {
-					effective.Connection = &conn
-				}
-			}
-			if err := api.RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
+	for i := range onboarding.Finalizers {
+		step := &onboarding.Finalizers[i]
+		if step.State == api.FinalizerDone {
+			continue
+		}
+		step.Attempts++
+		step.Error = ""
+		if err := c.runRemoveFinalizer(ctx, onboarding, step.Name); err != nil {
+			step.State = api.FinalizerFailed
+			step.Error = api.PublicPrepareError(err)
+			onboarding.Phase = api.PhaseCleanupIncomplete
+			onboarding.ErrorCode = "cleanup_incomplete"
+			onboarding.Revision++
+			if err := c.Store.PutOnboarding(onboarding); err != nil {
 				return nil, err
 			}
+			body := c.statusBody(onboarding, false)
+			body["retryable"] = true
+			body["next_action"] = "remove"
+			body["finalizer"] = step.Name
+			return body, nil
 		}
-		if err := c.Store.RemoveBindingRecords(onboarding.BindingID); err != nil {
+		step.State = api.FinalizerDone
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
 		}
 	}
+	if onboarding.ConnectionID != "" && !c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
+		_ = c.Store.SetConnectionStatus(onboarding.ConnectionID, api.RevokedStatus)
+	}
 	onboarding.Phase = api.PhaseRemoved
+	onboarding.RemoveReceipt = removeReceipt(onboarding.RemoveFootprint)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -463,6 +473,12 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	}
 	if len(onboarding.CredentialSources) > 0 {
 		body["credential_sources"] = onboarding.CredentialSources
+	}
+	if len(onboarding.Finalizers) > 0 {
+		body["finalizers"] = onboarding.Finalizers
+	}
+	if onboarding.RemoveReceipt != "" {
+		body["remove_receipt"] = onboarding.RemoveReceipt
 	}
 	if onboarding.BrokerRequestID != "" {
 		body["broker_request_id"] = onboarding.BrokerRequestID

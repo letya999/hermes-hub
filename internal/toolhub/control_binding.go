@@ -325,21 +325,44 @@ func (c *ControlPlane) rotateLocal(auth identity.Envelope, onboarding api.Onboar
 }
 
 func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding, purge bool) error {
-	if onboarding.BindingID != "" {
-		if err := c.Store.SetBindingStatus(onboarding.BindingID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
-			return err
-		}
+	if err := c.revokeAccess(onboarding, api.RevokedStatus); err != nil {
+		return err
 	}
 	// A member of a shared connection cuts only its own binding: revoking the
 	// connection, its ciphertext or the shared workload is owner-only.
 	if c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
 		return nil
 	}
-	if onboarding.ConnectionID != "" {
-		if err := c.Store.SetConnectionStatus(onboarding.ConnectionID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
+	if err := c.revokeBrokerCredential(onboarding); err != nil {
+		return err
+	}
+	if err := c.revokeLocalCredentialStatus(onboarding); err != nil {
+		return err
+	}
+	return c.releaseBindingWorkloads(onboarding, purge)
+}
+
+// revokeAccess is the immediate cut: the binding leaves the projection and
+// the connection drops to connStatus (deleting during remove, revoked for
+// disable). A member of a shared connection touches only its own binding.
+func (c *ControlPlane) revokeAccess(onboarding api.Onboarding, connStatus api.Status) error {
+	if onboarding.BindingID != "" {
+		if err := c.Store.SetBindingStatus(onboarding.BindingID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
 			return err
 		}
 	}
+	if c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
+		return nil
+	}
+	if onboarding.ConnectionID != "" {
+		if err := c.Store.SetConnectionStatus(onboarding.ConnectionID, connStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *ControlPlane) revokeBrokerCredential(onboarding api.Onboarding) error {
 	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 		if control, err := c.brokerControl(auth, c.onboardingShared(onboarding)); err == nil {
@@ -348,6 +371,10 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding, purge bool) e
 			}
 		}
 	}
+	return nil
+}
+
+func (c *ControlPlane) revokeLocalCredentialStatus(onboarding api.Onboarding) error {
 	if c.Secrets != nil && onboarding.Locator != "" {
 		owner := onboarding.PrincipalID
 		if onboarding.CredentialOwner != "" {
@@ -357,7 +384,7 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding, purge bool) e
 			return err
 		}
 	}
-	return c.releaseBindingWorkloads(onboarding, purge)
+	return nil
 }
 
 // releaseBindingWorkloads stops the workload owned by the onboarding binding.

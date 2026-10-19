@@ -123,6 +123,16 @@ type Onboarding struct {
 	// deletes credentials, workloads and state.
 	RemoveNonce              string    `json:"remove_nonce,omitempty"`
 	RemoveExpires            time.Time `json:"remove_expires,omitempty"`
+	// Finalizers is the convergent remove ladder: each named step is
+	// idempotent and recorded so a retry resumes at the first incomplete
+	// step and connector_status shows where a cleanup is stuck.
+	Finalizers []Finalizer `json:"finalizers,omitempty"`
+	// RemoveReceipt is the verified-zero summary emitted once every label
+	// query across Docker, Broker and the filesystem reports no leftovers.
+	RemoveReceipt string `json:"remove_receipt,omitempty"`
+	// RemoveFootprint counts labelled resources found when the remove
+	// started; the receipt reports what the ladder purged.
+	RemoveFootprint map[string]int `json:"remove_footprint,omitempty"`
 	IdempotencyKey           string    `json:"idempotency_key,omitempty"`
 	FormNonce                string    `json:"form_nonce,omitempty"`
 	FormExpires              time.Time `json:"form_expires,omitempty"`

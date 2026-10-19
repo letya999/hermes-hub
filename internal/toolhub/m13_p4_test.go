@@ -2,14 +2,20 @@ package toolhub
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -161,6 +167,236 @@ func TestWorkspaceOwnershipMarker(t *testing.T) {
 	}
 	if marker.Owner != "principal-1" || marker.Connection != "conn_9" || marker.Binding != "bind_9" {
 		t.Fatalf("marker=%+v", marker)
+	}
+}
+
+// S4.2: remove runs the finalizer ladder, records each step and reports a
+// verified-zero receipt once the label query comes back empty.
+func TestRemoveEmitsVerifiedReceipt(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	footprint := map[string][]string{"container": {"w-1"}, "volume": {"v-1"}, "network": {"n-1"}}
+	queried := false
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir()}
+	c.LabelQuery = func(_ context.Context, labels map[string]string) (map[string][]string, error) {
+		if labels[api.LabelConnection] != enabled.ConnectionID {
+			t.Errorf("label query without connection label: %v", labels)
+		}
+		if !queried {
+			queried = true
+			return footprint, nil
+		}
+		return map[string][]string{}, nil
+	}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != api.OpStateAwaitingConfirm {
+		t.Fatalf("remove preview: %+v", result)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseRemoved {
+		t.Fatalf("onboarding after purge: %v %+v", err, onboarding)
+	}
+	if len(onboarding.Finalizers) == 0 {
+		t.Fatal("no finalizer ladder recorded")
+	}
+	for _, step := range onboarding.Finalizers {
+		if step.State != api.FinalizerDone {
+			t.Fatalf("finalizer %s not done: %+v", step.Name, onboarding.Finalizers)
+		}
+	}
+	if !strings.Contains(onboarding.RemoveReceipt, "verified 0") {
+		t.Fatalf("receipt missing or unverified: %q", onboarding.RemoveReceipt)
+	}
+}
+
+// S4.2: a failing finalizer (broker revoke 500) leaves cleanup_incomplete
+// naming the stuck step; a retry resumes the ladder and converges.
+func TestRemoveFinalizerRetryAfterFault(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	enabled.BrokerCredentialID = "credential_1"
+	enabled.Revision++
+	if err := store.PutOnboarding(enabled); err != nil {
+		t.Fatal(err)
+	}
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	revokes := 0
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		revokes++
+		if revokes <= 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer broker.Close()
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir(),
+		Broker: &credentialbroker.Config{URL: broker.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"},
+	}
+	if _, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseCleanupIncomplete {
+		t.Fatalf("expected cleanup_incomplete after broker 500: %v %+v", err, onboarding)
+	}
+	if body["finalizer"] != api.FinalizerBrokerCredential {
+		t.Fatalf("stuck finalizer not reported: %v", body)
+	}
+	// Attempts 2 and 3 still fail; attempt 4 reaches the stubbed 204.
+	for i := 0; i < 3; i++ {
+		if _, err = c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseRemoved {
+		t.Fatalf("onboarding after retries: %v %+v", err, onboarding)
+	}
+	if !strings.Contains(onboarding.RemoveReceipt, "verified 0") {
+		t.Fatalf("receipt: %q", onboarding.RemoveReceipt)
+	}
+}
+
+// S4.2: verify-zero is a real label query — a leftover volume keeps the
+// remove in cleanup_incomplete instead of emitting a false receipt.
+func TestRemoveVerifyZeroBlocksOnLeftover(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir()}
+	c.LabelQuery = func(context.Context, map[string]string) (map[string][]string, error) {
+		return map[string][]string{"volume": {"stray-state-vol"}}, nil
+	}
+	if _, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseCleanupIncomplete {
+		t.Fatalf("leftover volume not caught by verify-zero: %v %+v", err, onboarding)
+	}
+	var verify *api.Finalizer
+	for i := range onboarding.Finalizers {
+		if onboarding.Finalizers[i].Name == api.FinalizerVerifyZero {
+			verify = &onboarding.Finalizers[i]
+		}
+	}
+	if verify == nil || verify.State != api.FinalizerFailed {
+		t.Fatalf("verify-zero finalizer state: %+v", onboarding.Finalizers)
+	}
+}
+
+// S4.2: the volumes/network sweeps purge leftovers the release path missed;
+// the receipt names what the ladder actually removed.
+func TestRemoveSweepsLeftoversAndReceiptCounts(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	live := map[string]map[string]bool{"volume": {"stray-1": true, "stray-2": true}, "container": {"w-1": true}, "network": {"net-1": true}}
+	var purged []string
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir()}
+	c.LabelQuery = func(_ context.Context, labels map[string]string) (map[string][]string, error) {
+		out := map[string][]string{}
+		for kind, names := range live {
+			for name := range names {
+				out[kind] = append(out[kind], name)
+			}
+		}
+		return out, nil
+	}
+	c.LabelPurge = func(_ context.Context, kind, name string) error {
+		purged = append(purged, kind+"/"+name)
+		delete(live[kind], name)
+		return nil
+	}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseRemoved {
+		t.Fatalf("sweep did not converge: %v %+v", err, onboarding)
+	}
+	if len(purged) != 4 {
+		t.Fatalf("purged=%v", purged)
+	}
+	if !strings.Contains(onboarding.RemoveReceipt, "2 volumes") || !strings.Contains(onboarding.RemoveReceipt, "1 container") || !strings.Contains(onboarding.RemoveReceipt, "1 network") {
+		t.Fatalf("receipt lacks counts: %q", onboarding.RemoveReceipt)
+	}
+	// Resuming the journaled remove completes the operation; the durable
+	// record and connector_status both surface the verified-zero receipt and
+	// the finalizer ladder.
+	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.State != api.OpStateDone || !strings.Contains(resumed.Summary, "verified 0") {
+		t.Fatalf("resumed remove: %+v", resumed)
+	}
+	status, err := c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"operation_id": result.OperationID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := json.Marshal(status)
+	if !strings.Contains(string(summary), "verified 0") || !strings.Contains(string(summary), "verify-zero") {
+		t.Fatalf("connector_status lacks receipt/finalizers: %s", summary)
 	}
 }
 

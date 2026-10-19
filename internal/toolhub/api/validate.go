@@ -43,7 +43,7 @@ func CredentialReferenceID(connectionID string, revision uint64) string {
 }
 
 func (c Connection) Validate() error {
-	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus && c.Status != DegradedStatus) {
+	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus && c.Status != DegradedStatus && c.Status != DeletingStatus) {
 		return fmt.Errorf("%w: connection metadata", ErrInvalid)
 	}
 	if err := c.Owner.Validate(); err != nil {

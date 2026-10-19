@@ -62,6 +62,35 @@ func PlanOwnership(effective EffectiveBinding) OwnershipLabels {
 	return ownership
 }
 
+// Finalizer names in the convergent remove ladder. Order matters: workloads
+// stop before state volumes, the broker credential goes before the local
+// ciphertext, and verify-zero is the last gate before the tombstone receipt.
+const (
+	FinalizerWorkloads        = "workloads"
+	FinalizerVolumes          = "volumes"
+	FinalizerNetwork          = "network"
+	FinalizerBrokerCredential = "broker-credential"
+	FinalizerCiphertext       = "ciphertext"
+	FinalizerWorkspace        = "workspace"
+	FinalizerImageRef         = "image-ref"
+	FinalizerVerifyZero       = "verify-zero"
+)
+
+// Finalizer states.
+const (
+	FinalizerPending = "pending"
+	FinalizerDone    = "done"
+	FinalizerFailed  = "failed"
+)
+
+// Finalizer is one idempotent remove step recorded on the onboarding.
+type Finalizer struct {
+	Name     string `json:"name"`
+	State    string `json:"state"`
+	Attempts int    `json:"attempts,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
 // WorkspaceOwnershipFile is the marker file a materialized workload
 // workspace carries so the workspace finalizer can prove ownership.
 const WorkspaceOwnershipFile = ".hermes-owner"

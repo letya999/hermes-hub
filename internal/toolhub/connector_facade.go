@@ -85,7 +85,14 @@ func (c *ControlPlane) connectorStatus(auth identity.Envelope, target, operation
 		if err != nil {
 			return api.OperationResult{}, err
 		}
-		return api.OperationResult{OperationID: op.OperationID, State: op.State, Code: op.ErrorCode, Summary: op.Intent + " " + op.Target}, nil
+		result := api.OperationResult{OperationID: op.OperationID, State: op.State, Code: op.ErrorCode, Summary: op.Intent + " " + op.Target}
+		if op.OnboardingID != "" {
+			if onboarding, err := c.Store.OnboardingFor(auth, op.OnboardingID); err == nil {
+				result.Finalizers = onboarding.Finalizers
+				result.Receipt = onboarding.RemoveReceipt
+			}
+		}
+		return result, nil
 	}
 	resolved, err := c.Store.ResolveConnectorTarget(auth, target)
 	if err != nil {

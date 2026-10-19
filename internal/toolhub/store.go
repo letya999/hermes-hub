@@ -306,7 +306,7 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 }
 
 func (s *Store) SetConnectionStatus(connectionID string, status api.Status) error {
-	if status != api.ActiveStatus && status != api.DisabledStatus && status != api.RevokedStatus {
+	if status != api.ActiveStatus && status != api.DisabledStatus && status != api.RevokedStatus && status != api.DeletingStatus {
 		return fmt.Errorf("%w: connection status", api.ErrInvalid)
 	}
 	s.mu.Lock()

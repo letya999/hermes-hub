@@ -183,7 +183,7 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 		if err := c.Store.PutOperation(op); err != nil {
 			return api.OperationResult{}, err
 		}
-		return api.OperationResult{OperationID: op.OperationID, State: api.OpStateDone, Summary: "remove " + op.Target}, nil
+		return api.OperationResult{OperationID: op.OperationID, State: api.OpStateDone, Summary: "remove " + op.Target + " — " + onboarding.RemoveReceipt}, nil
 	}
 	if onboarding.RemoveNonce == "" {
 		// Bare remove mints the one-time link and halts for the human.

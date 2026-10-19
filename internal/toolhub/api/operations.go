@@ -77,6 +77,8 @@ type OperationResult struct {
 	Summary     string               `json:"summary"`
 	LinkSent    bool                 `json:"link_sent,omitempty"`
 	Candidates  []OperationCandidate `json:"candidates,omitempty"`
+	Finalizers  []Finalizer          `json:"finalizers,omitempty"`
+	Receipt     string               `json:"receipt,omitempty"`
 }
 
 // OperationCandidate is one selector match shown on ambiguity.
