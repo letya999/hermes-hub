@@ -85,6 +85,13 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	if err := resolution.Connection.Validate(); err != nil {
 		return RecipeResolution{}, err
 	}
+	// Re-run the recorded ledger to enrich the merged recipe: the winning
+	// claims carry each field's ladder rank and token help link, and the
+	// resolved trust tier summarises the worst winning rank for the form.
+	// Locally parsed fields without ledger claims keep their Source tag. A
+	// ledger-level disagreement degrades to a warning — the merge above and
+	// the review gate already decided admissibility.
+	enrichResolution(&resolution)
 	if !HasLaunch(resolution.Launch) {
 		resolution.Warnings = append(resolution.Warnings, "no complete launch recipe was proven; existing language fallback remains required")
 	}
@@ -134,9 +141,50 @@ func candidateLedgerEntries(candidate RecipeCandidate, ignored bool, fetchedAt s
 	}
 	for _, field := range candidate.Connection.Fields {
 		required, secret := field.Required, field.Secret
-		entry(Claim{Field: field.Name, Required: &required, Secret: &secret, Delivery: field.Delivery, Target: field.Target}, candidate.CredentialRank)
+		entry(Claim{Field: field.Name, Required: &required, Secret: &secret, Delivery: field.Delivery, Target: field.Target, TokenURL: field.TokenURL}, candidate.CredentialRank)
 	}
 	return entries
+}
+
+// enrichResolution replays the recorded ledger and stamps the resolved trust
+// tier plus per-field rank/token_url onto the merged connection recipe.
+// Without usable claims the resolution keeps an empty tier — an empty ledger
+// resolves to T0, which would misreport locally derived recipes as fully
+// verified. Ledger disagreement surfaces as a warning, never a resolver error.
+func enrichResolution(resolution *RecipeResolution) {
+	usable := false
+	for _, entry := range resolution.Ledger {
+		if !entry.Ignored && (entry.Claim.Field != "" || entry.Claim.Attribute != "") {
+			usable = true
+			break
+		}
+	}
+	if !usable {
+		return
+	}
+	kind := SubjectCLI
+	switch resolution.Launch.Transport {
+	case ContainerMCP:
+		kind = SubjectContainerMCP
+	case RemoteMCP:
+		kind = SubjectRemoteMCP
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: kind, Ref: resolution.Source.Repository}, resolution.Ledger)
+	if err != nil {
+		resolution.Warnings = append(resolution.Warnings, "ledger enrichment failed: "+err.Error())
+		return
+	}
+	resolution.Trust = recipe.Trust
+	provenance := map[string]ConnectionField{}
+	for _, field := range recipe.Credentials.Fields {
+		provenance[field.Name] = field
+	}
+	for i, field := range resolution.Connection.Fields {
+		if proven, ok := provenance[field.Name]; ok {
+			resolution.Connection.Fields[i].Rank = proven.Rank
+			resolution.Connection.Fields[i].TokenURL = proven.TokenURL
+		}
+	}
 }
 
 func LookupCatalogs(ctx context.Context, catalogs []RecipeCatalog, lookup RecipeLookup) []RecipeCandidate {

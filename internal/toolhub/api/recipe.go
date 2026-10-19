@@ -48,6 +48,12 @@ type ConnectionField struct {
 	// candidates. It lets callers pick one authoritative source when
 	// upstream declarations disagree.
 	Source string `json:"source,omitempty"`
+	// Rank is the winning claim's ladder rank — rendered on the credential
+	// form so the human sees how strong the declaration's evidence is.
+	Rank Rank `json:"rank,omitempty"`
+	// TokenURL is an upstream "create a token here" link (e.g. a pre-filled
+	// GitHub PAT settings page); https-only, rendered as help, never fetched.
+	TokenURL string `json:"token_url,omitempty"`
 }
 
 type ConnectionAlternative struct {
@@ -151,6 +157,10 @@ type RecipeResolution struct {
 	Evidence   []RecipeEvidence `json:"evidence,omitempty"`
 	Warnings   []string         `json:"warnings,omitempty"`
 	State      string           `json:"state"`
+	// Trust is the resolved tier (T0/T1/T2) and Egress the workload's
+	// reachable hosts — both rendered on the human credential form.
+	Trust  TrustTier `json:"trust,omitempty"`
+	Egress []string  `json:"egress,omitempty"`
 	// Ledger is the reproducible record of every external claim consulted:
 	// catalog responses land here (kept or ignored) before repository-file
 	// claims, so re-resolution is auditable without repeating fetches.

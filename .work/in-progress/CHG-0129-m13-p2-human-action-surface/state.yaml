@@ -3,7 +3,7 @@ change: CHG-0129
 title: M13 P2 channel-agnostic human action surface — one-time links
 status: in_progress
 branch: feat/m14-toolhub-connector-platform
-updated: "2025-12-23"
+updated: "2026-10-19"
 phase: implementation
 requirements: [S2.1, S2.2, S2.3, S2.4, S2.5, S2.6, S2.7, S2.8]
 depends_on: [CHG-0127, CHG-0128]
@@ -12,11 +12,11 @@ github_issue: 283
 design_status: accepted
 implementation_status: in_progress
 slices:
-  S2.1-one-time-link-tokens: not_started
-  S2.2-public-origin: not_started
-  S2.3-device-flow: not_started
-  S2.4-paste-redirect: not_started
-  S2.5-recipe-rendered-form: not_started
+  S2.1-one-time-link-tokens: committed
+  S2.2-public-origin: committed
+  S2.3-device-flow: committed
+  S2.4-paste-redirect: committed
+  S2.5-recipe-rendered-form: committed
   S2.6-transactional-save: not_started
   S2.7-delivery-caps-hubctl: not_started
   S2.8-property-test-docs: not_started

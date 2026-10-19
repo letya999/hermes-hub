@@ -615,6 +615,77 @@ func TestConnectPasteRejectsForeignState(t *testing.T) {
 	}
 }
 
+// S2.5: the credential form renders the resolved recipe — trust tier,
+// egress hosts, source@commit — and per-field provenance (source+rank) with
+// the recipe's token_url as a "get the token" link.
+func TestCredentialFormRendersRecipeProvenance(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	definition.Tools = append(definition.Tools, api.ToolSpec{Name: "delete_forecast", Effect: api.WriteEffect})
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	resolution := api.RecipeResolution{
+		Source:  api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: strings.Repeat("1", 40)},
+		Launch:  api.LaunchRecipe{Artifact: "ghcr.io/acme/weather@sha256:" + strings.Repeat("2", 64), Transport: api.ContainerMCP},
+		Evidence: []api.RecipeEvidence{{Source: "server.json", Detail: "declared env contract"}},
+		State:   "ready",
+		Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{
+			{Name: "ACME_API_KEY", Required: true, Secret: true, Delivery: "env", Source: "server.json", Rank: api.RankR3, TokenURL: "https://acme.example/settings/tokens"},
+			{Name: "ACME_INSECURE", Required: false, Secret: false, Delivery: "env", Source: "server.json", TokenURL: "http://acme.example/not-https"},
+			{Name: "ACME_REGION", Required: false, Secret: false, Delivery: "env", Source: ".env.example", Unverified: true},
+		}},
+		Egress: []string{"api.acme.example"},
+	}
+	resolution.Trust = api.TrustT1
+	digest, err := store.PutRecipe(resolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-prov", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Required: []api.CredentialHint{
+			{Name: "ACME_API_KEY", Secret: true, Delivery: "env", Source: "server.json"},
+			{Name: "ACME_INSECURE", Delivery: "env", Source: "server.json"},
+			{Name: "ACME_REGION", Delivery: "env", Source: ".env.example"},
+		},
+		FormNonce: "prov-tok", FormExpires: time.Now().Add(time.Hour),
+		RecipeDigest: digest, Recipe: &resolution,
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &Gateway{Control: control}
+	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/credentials/onb-prov?t=prov-tok")
+	gateway.serveCredentials(rec, req)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("form status=%d", rec.Code)
+	}
+	for _, want := range []string{"T1", "api.acme.example", "acme/weather", "server.json", "https://acme.example/settings/tokens", "suggested"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("form missing %q: %.400s", want, body)
+		}
+	}
+	if strings.Contains(body, `href="http://`) || strings.Contains(body, "not-https") {
+		t.Fatal("non-https token_url rendered as a link")
+	}
+	// Write tools are listed with an explicit disabled-by-default marker so
+	// the human sees the connector can mutate before saving credentials.
+	if !strings.Contains(body, "delete_forecast") || !strings.Contains(body, "по умолчанию") {
+		t.Fatalf("write tool not listed as disabled-by-default: %.400s", body)
+	}
+}
+
 func TestRemoveLinkReplayReturns410(t *testing.T) {
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", api.ControlOperations...)

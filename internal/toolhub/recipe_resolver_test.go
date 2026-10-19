@@ -122,6 +122,34 @@ func TestRecipeResolverIgnoresNameOnlyCatalogAndRunsCatalogsConcurrently(t *test
 	}
 }
 
+// S2.5: catalog-proven claims enrich the resolved connection recipe with
+// rank + token_url and set the resolution's trust tier, so the human
+// credential form can show provenance without re-running resolution.
+func TestRecipeResolverEnrichesFieldsFromLedger(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	source := api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
+	resolver := api.RecipeResolver{Catalogs: []api.RecipeCatalog{testRecipeCatalogFunc(func(context.Context, api.RecipeLookup) ([]api.RecipeCandidate, error) {
+		return []api.RecipeCandidate{{
+			Repository: source.Repository, CommitSHA: commit, Source: "mcp-registry", CredentialRank: api.RankR2, LaunchRank: api.RankL4,
+			Launch: api.LaunchRecipe{Transport: api.RemoteMCP, Endpoint: "https://mcp.example/weather"},
+			Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{
+				{Name: "WEATHER_TOKEN", Required: true, Secret: true, Delivery: "env", TokenURL: "https://acme.example/tokens"},
+			}},
+		}}, nil
+	})}}
+	resolution, err := resolver.Resolve(context.Background(), source, resolverContext(t, map[string]string{"README.md": "weather"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Trust == "" {
+		t.Fatal("resolution carries no trust tier")
+	}
+	field := resolution.Connection.Fields[0]
+	if field.Rank != api.RankR2 || field.TokenURL != "https://acme.example/tokens" {
+		t.Fatalf("field provenance not enriched: %+v", field)
+	}
+}
+
 func TestRecipeResolverQueriesCatalogsWithSourceOnlyLookup(t *testing.T) {
 	// The catalog answer must not depend on repository files: image/version
 	// hints parsed out of repo metadata are low-rank and never reach the

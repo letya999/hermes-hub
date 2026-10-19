@@ -306,6 +306,59 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 			b.WriteString(`<form method="post" enctype="multipart/form-data">`)
 			b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
 		}
+		var recipeFields map[string]api.ConnectionField
+		if recipe := g.Control.recipeOf(onboarding); recipe != nil {
+			recipeFields = map[string]api.ConnectionField{}
+			for _, field := range recipe.Connection.Fields {
+				recipeFields[field.Name] = field
+			}
+			b.WriteString("<p class=\"meta\">")
+			repo := strings.TrimPrefix(recipe.Source.Repository, "https://github.com/")
+			if repo != "" {
+				b.WriteString("<strong>" + html.EscapeString(repo) + "</strong>")
+				if recipe.Source.CommitSHA != "" {
+					commit := recipe.Source.CommitSHA
+					if len(commit) > 12 {
+						commit = commit[:12]
+					}
+					b.WriteString("@" + html.EscapeString(commit))
+				}
+			}
+			if onboarding.DefinitionVersion != "" {
+				b.WriteString(" · " + html.EscapeString(onboarding.DefinitionVersion))
+			}
+			if recipe.Trust != "" {
+				b.WriteString(" · trust " + html.EscapeString(string(recipe.Trust)))
+			}
+			if len(recipe.Egress) > 0 {
+				b.WriteString(" · egress: " + html.EscapeString(strings.Join(recipe.Egress, ", ")))
+			}
+			b.WriteString("</p>")
+		}
+		// Tool inventory: read tools are on; write tools are listed as
+		// disabled-by-default so the human sees the connector can mutate
+		// before saving credentials.
+		if definition, err := g.Control.definitionOf(onboarding); err == nil && len(definition.Tools) > 0 {
+			var reads, writes []string
+			for _, tool := range definition.Tools {
+				if tool.Effect == api.WriteEffect {
+					writes = append(writes, tool.Name)
+				} else {
+					reads = append(reads, tool.Name)
+				}
+			}
+			b.WriteString("<p class=\"meta\">Инструменты: ")
+			if len(reads) > 0 {
+				b.WriteString(html.EscapeString(strings.Join(reads, ", ")))
+			}
+			if len(writes) > 0 {
+				if len(reads) > 0 {
+					b.WriteString("; ")
+				}
+				b.WriteString("запись (по умолчанию выключены): " + html.EscapeString(strings.Join(writes, ", ")))
+			}
+			b.WriteString("</p>")
+		}
 		if recipe := g.Control.recipeOf(onboarding); recipe != nil {
 			for _, alternative := range recipe.Connection.Alternatives {
 				if alternative.URL == "" {
@@ -322,7 +375,7 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 				b.WriteString("<details><summary>Войти кодом на другом устройстве</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "\">Открыть страницу кода устройства</a></details>")
 			}
 		}
-		writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce)
+		writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce, recipeFields)
 		if !separate {
 			b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></form>`)
 		}
@@ -710,10 +763,10 @@ func credentialFormIntro(hints []api.CredentialHint) string {
 	return "Введите запрошенные поля. Они сохранятся в защищённом хранилище и не попадут в чат."
 }
 
-func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string) {
+func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string, recipeFields map[string]api.ConnectionField) {
 	if !credentialHintsUseAlternatives(hints) {
 		for _, hint := range hints {
-			b.WriteString(credentialFieldMarkup(hint))
+			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name]))
 		}
 		writeOptionalCredentialFields(b, optional)
 		return
@@ -748,7 +801,7 @@ func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialH
 		b.WriteString(html.EscapeString(legend))
 		b.WriteString("</legend>")
 		for _, hint := range group {
-			b.WriteString(credentialFieldMarkup(hint))
+			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name]))
 		}
 		writeOptionalCredentialFields(b, optional)
 		b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></fieldset></form>`)
@@ -797,7 +850,40 @@ func credentialLinkRejected(err error) bool {
 	return strings.Contains(text, "form nonce") || strings.Contains(text, "expired form") || strings.Contains(text, "credentials not expected")
 }
 
-func credentialFieldMarkup(hint api.CredentialHint) string {
+// credentialFieldProvenance renders where the field declaration came from —
+// metadata source, ladder rank and an upstream "create a token" link — and
+// demotes heuristic-only (unverified) fields to a visible suggestion rather
+// than a required input.
+func credentialFieldProvenance(field api.ConnectionField) string {
+	if field.Name == "" {
+		return ""
+	}
+	parts := []string{}
+	if field.Source != "" {
+		parts = append(parts, "источник: "+field.Source)
+	}
+	if field.Rank != "" {
+		parts = append(parts, "rank "+string(field.Rank))
+	}
+	out := ""
+	if len(parts) > 0 {
+		out = "<small class=\"prov\">" + html.EscapeString(strings.Join(parts, " · ")) + "</small>"
+	}
+	if field.Unverified {
+		out += "<small class=\"prov\">suggested from " + html.EscapeString(field.Source) + " — пожалуйста, проверьте</small>"
+	}
+	if field.TokenURL != "" && strings.HasPrefix(field.TokenURL, "https://") {
+		out += "<small class=\"prov\"><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(field.TokenURL) + "\">Создать токен у провайдера</a></small>"
+	}
+	return out
+}
+
+func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField) string {
+	prov := credentialFieldProvenance(field)
+	if field.Unverified {
+		markup := optionalCredentialFieldMarkup(hint)
+		return markup + prov
+	}
 	label := html.EscapeString(credentialFieldLabel(hint))
 	inputName := html.EscapeString(hint.Name)
 	inputType := "password"
@@ -817,10 +903,10 @@ func credentialFieldMarkup(hint api.CredentialHint) string {
 		return `<fieldset><legend>Данные OAuth-клиента Google</legend><label>Выберите скачанный JSON-файл<input type="file" name="google_oauth_file" accept=".json,application/json"></label><small>Подойдёт файл с именем вроде client_secret_….apps.googleusercontent.com.json.</small><details><summary>Или ввести значения вручную</summary><label>Client ID<input type="text" name="google_oauth_client_id" autocomplete="off"></label><label>Client Secret<input type="password" name="google_oauth_client_secret" autocomplete="off"></label></details></fieldset>`
 	}
 	if hint.Delivery == "file" {
-		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + "</label>"
+		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + prov + "</label>"
 	}
 	if hint.Delivery == "json" || strings.EqualFold(hint.Type, "json") {
-		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + "</label>"
+		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + prov + "</label>"
 	}
 	autocomplete := "off"
 	switch inputType {
@@ -839,7 +925,7 @@ func credentialFieldMarkup(hint api.CredentialHint) string {
 		tag = "обязательное"
 		opt = `<label class="opt"><input type="checkbox" name="opt:` + inputName + `" value="1"> Поле не требуется — запустить без него</label>`
 	}
-	return "<label>" + label + " <small class=\"tag\">" + tag + "</small>" + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + "</label>" + opt
+	return "<label>" + label + " <small class=\"tag\">" + tag + "</small>" + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + prov + "</label>" + opt
 }
 
 // optionalCredentialFieldMarkup renders a discovered non-required input: same

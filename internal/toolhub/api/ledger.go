@@ -52,6 +52,9 @@ type Claim struct {
 	Attribute string `json:"attribute,omitempty"`
 	Value     string `json:"value,omitempty"` // canonical JSON of the attribute value
 	Method    string `json:"method,omitempty"`
+	// TokenURL carries a source-declared "create a token here" help link for
+	// a credential field; https-only, surfaced to the human form verbatim.
+	TokenURL string `json:"token_url,omitempty"`
 }
 
 // LedgerEntry records one external claim for reproducible re-resolution:
@@ -190,7 +193,7 @@ func ResolveLedger(subject RecipeSubject, entries []LedgerEntry) (Recipe, error)
 		if err != nil {
 			return Recipe{}, fmt.Errorf("%w: %s (%s)", ErrAmbiguousCredentialContract, name, err)
 		}
-		field := ConnectionField{Name: name, Delivery: winner.Claim.Delivery, Target: winner.Claim.Target, Source: winner.Source}
+		field := ConnectionField{Name: name, Delivery: winner.Claim.Delivery, Target: winner.Claim.Target, Source: winner.Source, Rank: winner.Rank, TokenURL: winner.Claim.TokenURL}
 		if winner.Claim.Required != nil {
 			field.Required = *winner.Claim.Required
 		}

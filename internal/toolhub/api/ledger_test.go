@@ -69,6 +69,23 @@ func credEntry(field string, required bool, rank Rank, source string) LedgerEntr
 	}
 }
 
+// S2.5: the winning claim's rank and token_url land on the resolved field —
+// the human form renders both as provenance/help.
+func TestLedgerFieldCarriesRankAndTokenURL(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Field: "GITHUB_TOKEN", Required: boolp(true), Secret: boolp(true), Delivery: "env", TokenURL: "https://github.com/settings/tokens/new"}, Source: "server.json", Rank: RankR3},
+		{Claim: Claim{Field: "GITHUB_TOKEN", Required: boolp(true), Secret: boolp(true), Delivery: "env"}, Source: ".env.example", Rank: RankR6},
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectContainerMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := recipe.Credentials.Fields[0]
+	if f.Rank != RankR3 || f.TokenURL != "https://github.com/settings/tokens/new" {
+		t.Fatalf("winner provenance lost: %+v", f)
+	}
+}
+
 func TestLedgerR2OverridesR6(t *testing.T) {
 	entries := []LedgerEntry{
 		credEntry("API_TOKEN", true, RankR6, ".env.example"),
