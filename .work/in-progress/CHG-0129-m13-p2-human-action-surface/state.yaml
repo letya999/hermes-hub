@@ -17,9 +17,9 @@ slices:
   S2.3-device-flow: committed
   S2.4-paste-redirect: committed
   S2.5-recipe-rendered-form: committed
-  S2.6-transactional-save: not_started
-  S2.7-delivery-caps-hubctl: not_started
-  S2.8-property-test-docs: not_started
+  S2.6-transactional-save: committed
+  S2.7-delivery-caps-hubctl: committed
+  S2.8-property-test-docs: in_progress
 validation:
   documents: pending
   just_check: not_run

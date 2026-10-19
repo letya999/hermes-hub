@@ -27,6 +27,22 @@ func adapterFixtures(t *testing.T) map[string]Channel {
 	}
 }
 
+// CHG-0129 S2.7: Caps().Actions declares that a channel carries actionable
+// affordances (link surfaces the user can act on). Adapters without it keep
+// receiving the same notice with the plain link in the message text — the
+// fallback is the contract, not a degraded mode.
+func TestConformanceActionsCapability(t *testing.T) {
+	fixtures := adapterFixtures(t)
+	if !fixtures["telegram_bot"].Caps().Actions {
+		t.Fatal("telegram must declare action-link delivery")
+	}
+	for _, id := range []string{"slack_app", "mock"} {
+		if fixtures[id].Caps().Actions {
+			t.Fatalf("%s must not declare action-link delivery", id)
+		}
+	}
+}
+
 // Every adapter names a stable channel id and answers Caps without a gateway.
 func TestConformanceIDAndCaps(t *testing.T) {
 	for id, ch := range adapterFixtures(t) {
