@@ -237,15 +237,26 @@ const (
 )
 
 type ExecutionPolicy struct {
-	TimeoutSeconds int          `json:"timeout_seconds"`
-	OutputBytes    int          `json:"output_bytes"`
-	CPUMillis      int          `json:"cpu_millis"`
-	MemoryMiB      int          `json:"memory_mib"`
-	MaxPIDs        int          `json:"max_pids"`
-	Egress         []string     `json:"egress"`
-	TCPForwards    []TCPForward `json:"tcp_forwards,omitempty"`
-	Mounts         []Mount      `json:"mounts,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+	OutputBytes    int      `json:"output_bytes"`
+	CPUMillis      int      `json:"cpu_millis"`
+	MemoryMiB      int      `json:"memory_mib"`
+	MaxPIDs        int      `json:"max_pids"`
+	Egress         []string `json:"egress"`
+	// EgressClass selects the proxy policy shape. Empty is the bounded
+	// allowlist every workload carries; "web" is the browser class —
+	// arbitrary HTTPS through the per-workload proxy with a deny list of
+	// private, loopback, link-local, metadata and hub-internal
+	// destinations. Under "web" the Egress list carries reviewed extra deny
+	// entries, never allow entries.
+	EgressClass string       `json:"egress_class,omitempty"`
+	TCPForwards []TCPForward `json:"tcp_forwards,omitempty"`
+	Mounts      []Mount      `json:"mounts,omitempty"`
 }
+
+// EgressWeb is the only non-default egress class: browser workloads browse
+// the open web but stay behind the audited per-workload proxy.
+const EgressWeb = "web"
 
 // TCPForward binds a loopback listener inside the workload to one reviewed
 // host:port destination supplied by a non-secret credential environment

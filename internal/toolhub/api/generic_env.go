@@ -185,9 +185,138 @@ func GenericProxyConfig(egress []string) (string, error) {
 	return "http_port 3128\nacl connect method CONNECT\n" + strings.Join(lines, "\n") + "\nhttp_access deny all\ncache deny all\naccess_log none\ncache_log /dev/stderr\npid_filename /tmp/squid.pid\n", nil
 }
 
+// ProxyConfigFor selects the proxy renderer for one plan: web-class
+// workloads render the deny-first policy with connection refinements, every
+// other workload keeps the bounded allowlist. Refinements off the web class
+// fail closed.
+func ProxyConfigFor(plan ControllerPlan) (string, error) {
+	if plan.Execution.EgressClass == EgressWeb {
+		return WebProxyConfigFor(plan.Execution.Egress, plan.EgressAllow, plan.EgressDeny)
+	}
+	if len(plan.EgressAllow) > 0 || len(plan.EgressDeny) > 0 {
+		return "", ErrIsolation
+	}
+	return GenericProxyConfig(plan.Execution.Egress)
+}
+
+// WebProxyConfigFor renders the web-class policy with connection
+// refinements: deny entries join the built-in deny list, allow entries
+// narrow the open tail to the named hosts. Deny is always evaluated first,
+// so a host present in both lists stays denied.
+func WebProxyConfigFor(extraDeny, allow, deny []string) (string, error) {
+	config, err := renderWebProxy(extraDeny, deny)
+	if err != nil {
+		return "", err
+	}
+	if len(allow) == 0 {
+		return config, nil
+	}
+	if len(allow) > 32 {
+		return "", ErrIsolation
+	}
+	var names []string
+	for _, entry := range allow {
+		host, err := webEgressHost(entry)
+		if err != nil {
+			return "", err
+		}
+		names = append(names, host)
+	}
+	allowACL := "acl web_allow dstdomain " + strings.Join(names, " ") + "\n"
+	marker := "http_access allow CONNECT web_port"
+	return strings.Replace(config, marker, allowACL+"http_access allow CONNECT web_allow web_port", 1), nil
+}
+
+func webEgressHost(entry string) (string, error) {
+	entry = strings.ToLower(strings.TrimSpace(entry))
+	if entry == "" || strings.ContainsAny(entry, "\r\n") || strings.Contains(entry, "/") {
+		return "", ErrIsolation
+	}
+	hostOnly, _, ok := strings.Cut(entry, ":")
+	if !ok {
+		hostOnly = entry
+	}
+	if !strings.Contains(hostOnly, ".") && hostOnly != "localhost" {
+		return "", ErrIsolation
+	}
+	if !strings.HasPrefix(hostOnly, ".") && net.ParseIP(hostOnly) == nil {
+		hostOnly = "." + hostOnly
+	}
+	return hostOnly, nil
+}
+
+// webDenyIPACLs are destination ranges a browser workload may never reach:
+// unroutable, loopback, private, CGNAT, link-local and cloud metadata. The
+// dst ACL resolves the CONNECT target at request time, so a rebound name is
+// still denied on its resolved address.
+var webDenyIPACLs = []string{
+	"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+	"169.254.0.0/16", "169.254.169.254/32", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+	"192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
+	"203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+	"::/128", "::1/128", "fc00::/7", "fe80::/10",
+}
+
+// webDenyHosts are hub-internal and loopback names a browser must never
+// navigate to — page content is untrusted, and the hub control plane, the
+// credential broker and the viewer endpoint stay out of reach.
+var webDenyHosts = []string{
+	"localhost", ".localhost", ".internal", ".local",
+	"metadata.google.internal", "host.docker.internal",
+	"toolhub", "credential-broker", "broker", "hub", "hermes-runtime",
+}
+
+// WebProxyConfig renders the web-class egress policy: CONNECT is limited to
+// port 443 and every deny rule is evaluated before the allow tail, so the
+// reviewed and built-in deny entries can never be bypassed by order.
+func WebProxyConfig(extraDeny []string) (string, error) {
+	return WebProxyConfigFor(extraDeny, nil, nil)
+}
+
+func renderWebProxy(extraDeny, connDeny []string) (string, error) {
+	if len(extraDeny)+len(connDeny) > 64 {
+		return "", ErrIsolation
+	}
+	hosts := append([]string(nil), webDenyHosts...)
+	ips := append([]string(nil), webDenyIPACLs...)
+	for _, entry := range append(append([]string(nil), extraDeny...), connDeny...) {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" || strings.ContainsAny(entry, "\r\n") {
+			return "", ErrIsolation
+		}
+		if strings.Contains(entry, "/") {
+			ips = append(ips, entry)
+			continue
+		}
+		hostOnly, _, ok := strings.Cut(entry, ":")
+		if !ok {
+			hostOnly = entry
+		}
+		if net.ParseIP(hostOnly) != nil {
+			ips = append(ips, hostOnly+"/32")
+			continue
+		}
+		if !strings.Contains(hostOnly, ".") {
+			return "", ErrIsolation
+		}
+		if !strings.HasPrefix(hostOnly, ".") {
+			hostOnly = "." + hostOnly
+		}
+		hosts = append(hosts, hostOnly)
+	}
+	var lines []string
+	lines = append(lines, "acl web_deny dstdomain "+strings.Join(hosts, " "))
+	lines = append(lines, "acl web_deny_ip dst "+strings.Join(ips, " "))
+	lines = append(lines, "acl web_port port 443")
+	lines = append(lines, "http_access deny CONNECT web_deny")
+	lines = append(lines, "http_access deny CONNECT web_deny_ip")
+	lines = append(lines, "http_access allow CONNECT web_port")
+	return "http_port 3128\nacl CONNECT method CONNECT\n" + strings.Join(lines, "\n") + "\nhttp_access deny all\ncache deny all\naccess_log none\ncache_log /dev/stderr\npid_filename /tmp/squid.pid\n", nil
+}
+
 func EqualStrings(a, b []string) bool { return strings.Join(a, "\x00") == strings.Join(b, "\x00") }
 func ReflectExecution(a, b ExecutionPolicy) bool {
-	return a.TimeoutSeconds == b.TimeoutSeconds && a.OutputBytes == b.OutputBytes && a.CPUMillis == b.CPUMillis && a.MemoryMiB == b.MemoryMiB && a.MaxPIDs == b.MaxPIDs && EqualStrings(a.Egress, b.Egress) && reflectTCPForwards(a.TCPForwards, b.TCPForwards) && ReflectMounts(a.Mounts, b.Mounts)
+	return a.TimeoutSeconds == b.TimeoutSeconds && a.OutputBytes == b.OutputBytes && a.CPUMillis == b.CPUMillis && a.MemoryMiB == b.MemoryMiB && a.MaxPIDs == b.MaxPIDs && a.EgressClass == b.EgressClass && EqualStrings(a.Egress, b.Egress) && reflectTCPForwards(a.TCPForwards, b.TCPForwards) && ReflectMounts(a.Mounts, b.Mounts)
 }
 func reflectTCPForwards(a, b []TCPForward) bool {
 	return len(a) == len(b) && func() bool {

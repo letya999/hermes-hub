@@ -144,7 +144,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		// for read-only tools on a fresh volume.
 		_, _ = c.docker(ctx, "run", "--rm", "--user", "0:0", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--mount", "type=volume,source="+volume+",target=/state", "--entrypoint", "chmod", imageRef, "0777", "/state")
 	}
-	proxyConfig, err := api.GenericProxyConfig(plan.Execution.Egress)
+	proxyConfig, err := api.ProxyConfigFor(plan)
 	if err != nil {
 		return genericWorkload{}, err
 	}

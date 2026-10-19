@@ -424,6 +424,9 @@ func (d ToolDefinition) Validate() error {
 	if err := d.Execution.Validate(d.Workload.Class); err != nil {
 		return err
 	}
+	if d.Execution.EgressClass == EgressWeb && d.Transport != ContainerMCP {
+		return fmt.Errorf("%w: web egress needs a container network controller", ErrInvalid)
+	}
 	for _, host := range d.Execution.Egress {
 		if strings.Contains(host, "/") && d.Transport != ContainerMCP {
 			return fmt.Errorf("%w: CIDR egress requires a container network controller", ErrInvalid)
@@ -632,7 +635,10 @@ func (s DefinitionSource) Validate(transport Transport) error {
 }
 
 func (e ExecutionPolicy) Validate(class WorkloadClass) error {
-	if e.TimeoutSeconds < 1 || e.TimeoutSeconds > MaxExecutionTimeout || e.OutputBytes < 1 || e.OutputBytes > MaxOutputBytes || e.CPUMillis < 1 || e.CPUMillis > MaxCPUMillis || e.MemoryMiB < 16 || e.MemoryMiB > MaxMemoryMiB || e.MaxPIDs < 1 || e.MaxPIDs > MaxPIDs || len(e.Egress) == 0 || len(e.Egress) > 32 || len(e.Mounts) > 8 || len(e.TCPForwards) > 8 {
+	if e.EgressClass != "" && e.EgressClass != EgressWeb {
+		return fmt.Errorf("%w: unknown egress class", ErrInvalid)
+	}
+	if e.TimeoutSeconds < 1 || e.TimeoutSeconds > MaxExecutionTimeout || e.OutputBytes < 1 || e.OutputBytes > MaxOutputBytes || e.CPUMillis < 1 || e.CPUMillis > MaxCPUMillis || e.MemoryMiB < 16 || e.MemoryMiB > MaxMemoryMiB || e.MaxPIDs < 1 || e.MaxPIDs > MaxPIDs || (len(e.Egress) == 0 && e.EgressClass != EgressWeb) || len(e.Egress) > 32 || len(e.Mounts) > 8 || len(e.TCPForwards) > 8 {
 		return fmt.Errorf("%w: execution limits are missing or unbounded", ErrInvalid)
 	}
 	listenPorts := map[int]bool{}

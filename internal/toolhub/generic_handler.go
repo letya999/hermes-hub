@@ -197,7 +197,7 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), proxyVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	proxyConfig, err := api.GenericProxyConfig(plan.Execution.Egress)
+	proxyConfig, err := api.ProxyConfigFor(plan)
 	if err != nil {
 		return genericWorkload{}, err
 	}

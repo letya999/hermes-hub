@@ -34,6 +34,44 @@ type ControllerPlan struct {
 	// every Docker object the plan spawns so removal and reconciliation can
 	// find the footprint by label query.
 	Ownership OwnershipLabels `json:"ownership,omitempty"`
+	// EgressAllow/EgressDeny carry the connection's web-egress refinement:
+	// allow narrows the open tail to named hosts, deny appends deny entries.
+	// They render only under egress class "web".
+	EgressAllow []string `json:"egress_allow,omitempty"`
+	EgressDeny  []string `json:"egress_deny,omitempty"`
+}
+
+// ControllerPlanFor builds the immutable plan for one effective binding.
+// Web-class connections may carry egress_allow/egress_deny refinements in
+// their metadata; they are validated at connection admission and parsed here
+// into plan fields the proxy renderer consumes. Off the web class they stay
+// empty so a bounded workload can never smuggle an open tail.
+func ControllerPlanFor(effective EffectiveBinding) (ControllerPlan, error) {
+	plan := ControllerPlan{
+		WorkloadID:        effective.WorkloadID,
+		DefinitionID:      effective.Definition.DefinitionID,
+		DefinitionVersion: effective.Definition.Version,
+		Image:             effective.Definition.Source.Image,
+		Digest:            effective.Definition.Source.Digest,
+		ToolHiveVersion:   effective.Definition.Workload.ToolHiveVersion,
+		SidecarImages:     effective.Definition.Workload.SidecarImages,
+		Execution:         effective.Definition.Execution,
+		CredentialMounts:  effective.CredentialMounts,
+		Definition:        effective.Definition,
+		Ownership:         PlanOwnership(effective),
+	}
+	if effective.Definition.Execution.EgressClass == EgressWeb && effective.Connection != nil {
+		allow, err := ParseEgressList(effective.Connection.Metadata["egress_allow"])
+		if err != nil {
+			return ControllerPlan{}, err
+		}
+		deny, err := ParseEgressList(effective.Connection.Metadata["egress_deny"])
+		if err != nil {
+			return ControllerPlan{}, err
+		}
+		plan.EgressAllow, plan.EgressDeny = allow, deny
+	}
+	return plan, nil
 }
 
 type ControllerRelease struct {
@@ -148,20 +186,12 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 		if err != nil {
 			return AdmissionReceipt{}, err
 		}
-		return SubmitPlan(ctx, client, endpoint, token, ControllerPlan{
-			WorkspacePath:     workspace.Path,
-			WorkloadID:        effective.WorkloadID,
-			DefinitionID:      effective.Definition.DefinitionID,
-			DefinitionVersion: effective.Definition.Version,
-			Image:             effective.Definition.Source.Image,
-			Digest:            effective.Definition.Source.Digest,
-			ToolHiveVersion:   effective.Definition.Workload.ToolHiveVersion,
-			SidecarImages:     effective.Definition.Workload.SidecarImages,
-			Execution:         effective.Definition.Execution,
-			CredentialMounts:  effective.CredentialMounts,
-			Definition:        effective.Definition,
-			Ownership:         PlanOwnership(effective),
-		}, effective)
+		plan, err := ControllerPlanFor(effective)
+		if err != nil {
+			return AdmissionReceipt{}, err
+		}
+		plan.WorkspacePath = workspace.Path
+		return SubmitPlan(ctx, client, endpoint, token, plan, effective)
 	}, nil
 }
 
