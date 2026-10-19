@@ -22,7 +22,7 @@ slices:
   S3.8-typed-codes-docs: done
 validation:
   documents: done
-  just_check: pending
+  just_check: "passed 86.35% (fmt/vet/tidy/staticcheck/gosec/docs/actionlint/stack-contract all green)"
   docker_check: not_run
   live_acceptance: not_started
 evidence:

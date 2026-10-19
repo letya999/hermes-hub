@@ -191,10 +191,10 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 		_, _ = c.docker(ctx, "network", "rm", network)
 		_, _ = c.docker(ctx, "volume", "rm", proxyVol)
 	}()
-	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), network)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), network)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), proxyVol)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), proxyVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
 	proxyConfig, err := api.GenericProxyConfig(plan.Execution.Egress)
@@ -208,7 +208,7 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 	}
 	defer os.Remove(fileName)
 	limits := []string{"--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs)}
-	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.scopeLabelArgs()...)
+	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.planLabelArgs(plan)...)
 	args = append(append(args, limits...), plan.SidecarImages[0])
 	if _, err := c.docker(ctx, args...); err != nil {
 		return genericWorkload{}, err

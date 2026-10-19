@@ -109,6 +109,13 @@ func (c *genericController) scopeLabelArgs() []string {
 	return nil
 }
 
+// planLabelArgs adds the ownership label set of the plan being spawned so
+// every created object answers a `hermes-hub.connection=<id>` label query —
+// the index finalizers and the reconciler purge by.
+func (c *genericController) planLabelArgs(plan api.ControllerPlan) []string {
+	return append(c.scopeLabelArgs(), plan.Ownership.Args()...)
+}
+
 type genericContainer struct {
 	Image string
 	State struct {

@@ -30,6 +30,10 @@ type ControllerPlan struct {
 	// controller creates the sandbox cell and returns its identity in the
 	// receipt rather than attesting a shared executor.
 	Command string `json:"command,omitempty"`
+	// Ownership stamps hermes-hub.owner/connection/binding/recipe labels on
+	// every Docker object the plan spawns so removal and reconciliation can
+	// find the footprint by label query.
+	Ownership OwnershipLabels `json:"ownership,omitempty"`
 }
 
 type ControllerRelease struct {
@@ -156,6 +160,7 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 			Execution:         effective.Definition.Execution,
 			CredentialMounts:  effective.CredentialMounts,
 			Definition:        effective.Definition,
+			Ownership:         PlanOwnership(effective),
 		}, effective)
 	}, nil
 }
