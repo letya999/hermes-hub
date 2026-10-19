@@ -643,6 +643,142 @@ func TestCredentialBrokerMissingRequestRegeneratesAndNotifies(t *testing.T) {
 	}
 }
 
+// A still-pending request also deserves a re-notice: the QR invite it produced
+// has a shorter TTL than the request itself, so asking again must re-deliver
+// the link instead of leaving the owner with the dead page.
+func TestCredentialBrokerPendingRequestReNotifies(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_live" {
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_live"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-pending", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_live"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_live"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	if notice["broker_request_id"] != "request_live" {
+		t.Fatalf("owner was not re-notified about the live request: %v", notice)
+	}
+}
+
+// A pending request with less life left than a QR invite's TTL would mint a
+// link that dies before the owner finishes scanning; treat it as dead and
+// re-mint instead.
+func TestCredentialBrokerDyingRequestRegenerates(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_dying":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_dying", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_dying", ExpiresAt: time.Now().Add(5 * time.Minute)})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_fresh", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_fresh", ExpiresAt: time.Now().Add(15 * time.Minute)})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_fresh":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_fresh", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_fresh", ExpiresAt: time.Now().Add(15 * time.Minute)})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-dying", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_dying"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_dying"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["broker_request_id"] != "request_fresh" {
+		t.Fatalf("dying request was not replaced: %v", body)
+	}
+	if notice["broker_request_id"] != "request_fresh" {
+		t.Fatalf("owner was not told about the re-minted request: %v", notice)
+	}
+}
+
 // An optional contract delivery for a declared credential input must reach the
 // workload env mapping; only required names gate contract selection.
 func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {

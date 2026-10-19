@@ -80,12 +80,13 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		// A dead link must not pin the onboarding forever: expired or canceled
 		// requests are replaced by a fresh one under a new idempotency key. The
 		// same applies when the broker dropped the request record entirely
-		// (ledger reset, volume drift).
+		// (ledger reset, volume drift), or when a pending request has less life
+		// left than the channel invite it would produce.
 		request, err := control.Request(ctx, onboarding.BrokerRequestID)
 		if err != nil && !brokerclient.IsNotFound(err) {
 			return err
 		}
-		if err != nil || request.Status == "expired" || request.Status == "canceled" {
+		if err != nil || c.brokerRequestDead(request) {
 			onboarding.BrokerRequestID = ""
 			onboarding.BrokerAuthorizationURL = ""
 			onboarding.BrokerAttempts++
@@ -152,6 +153,20 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		}
 	}
 	return c.refreshBrokerRequest(ctx, auth, onboarding)
+}
+
+// brokerRequestDead reports whether the request can still carry a credential
+// submission: terminal statuses are dead outright, and a pending request with
+// less life than a channel invite (10 minutes) would produce a link that dies
+// while the owner is still scanning — remint it early instead.
+func (c *ControlPlane) brokerRequestDead(request brokerv1.Request) bool {
+	switch request.Status {
+	case "expired", "canceled":
+		return true
+	case "ready", "submitted", "approved":
+		return false
+	}
+	return !request.ExpiresAt.IsZero() && request.ExpiresAt.Before(c.now().Add(12*time.Minute))
 }
 
 // brokerCredentialActive verifies a stored broker credential is still live
@@ -248,7 +263,7 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
 		return nil
 	}
-	if request.Status == "expired" || request.Status == "canceled" {
+	if c.brokerRequestDead(request) {
 		// The broker still has the record but the connect link is dead:
 		// mint a fresh request instead of resending an unusable URL.
 		onboarding.BrokerRequestID = ""
@@ -267,6 +282,12 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 	onboarding.BrokerAuthorizationURL = request.AuthorizationURL
 	onboarding.BrokerContractID = request.ContractID
 	onboarding.BrokerContractRevision = request.ContractRevision
+	if request.Status == "pending" && onboarding.Phase == api.PhaseAwaitingCreds {
+		// The QR invite minted for this request dies before the request does;
+		// every credentials ask re-delivers the notice so a fresh link lands
+		// in the channel. The gateway dedupes while the invite is alive.
+		api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+	}
 	changed := false
 	if request.Status == "ready" && request.CredentialID != "" {
 		if onboarding.AdmissionPending {
