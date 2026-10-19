@@ -43,6 +43,13 @@ type OperationStep struct {
 	State string `json:"state"`
 }
 
+// OperationCandidate is one selector match shown on ambiguity.
+type OperationCandidate struct {
+	ID     string `json:"id"`
+	Source string `json:"source,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+}
+
 type Operation struct {
 	Schema        int             `json:"schema"`
 	OperationID   string          `json:"operation_id"`
@@ -58,6 +65,7 @@ type Operation struct {
 	SupersededBy  string          `json:"superseded_by,omitempty"`
 	ErrorCode     string          `json:"error_code,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at,omitempty"`
 }
 
 func (o Operation) Validate() error {

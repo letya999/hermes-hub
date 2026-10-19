@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -131,6 +132,116 @@ func TestOperationValidate(t *testing.T) {
 		mutate(&op)
 		if err := op.Validate(); err == nil {
 			t.Fatalf("%s: invalid operation accepted", name)
+		}
+	}
+}
+
+func m13P3Onboarding(auth identity.Envelope, suffix, definitionID, source, phase string) api.Onboarding {
+	return api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, suffix),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingCatalog, DefinitionID: definitionID, DefinitionVersion: "1.0.0",
+		SourceURL: source, Phase: phase, Revision: 1, CreatedAt: time.Now().UTC(),
+	}
+}
+
+// S3.2: deterministic selector — exact id → alias → source URL → basename →
+// registry name; ambiguity lists candidates; removed and foreign records
+// never match.
+func TestConnectorTargetSelector(t *testing.T) {
+	store := NewStore()
+	auth := m13P3Auth(t)
+	gh := m13P3Onboarding(auth, "gh", "github", "https://github.com/github/github-mcp-server", api.PhaseEnabled)
+	db := m13P3Onboarding(auth, "db", "dbhub", "https://github.com/bytebase/dbhub", api.PhaseEnabled)
+	removed := m13P3Onboarding(auth, "rm", "removed-def", "https://github.com/org/gone-mcp", api.PhaseRemoved)
+	foreign := m13P3Onboarding(identity.TelegramEnvelope("bobuser", 8, "runtime", "policy-1"), "fb", "foreign-def", "https://github.com/org/foreign-mcp", api.PhaseEnabled)
+	for _, o := range []api.Onboarding{gh, db, removed, foreign} {
+		if err := store.PutOnboarding(o); err != nil {
+			t.Fatalf("seed %s: %v", o.OnboardingID, err)
+		}
+	}
+	cases := []struct {
+		name, target, wantOnboarding string
+	}{
+		{"exact onboarding id", gh.OnboardingID, gh.OnboardingID},
+		{"exact definition id", "github", gh.OnboardingID},
+		{"registry alias", "sql", db.OnboardingID},
+		{"source url", "https://github.com/bytebase/dbhub", db.OnboardingID},
+		{"repo basename", "github-mcp-server", gh.OnboardingID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.ResolveConnectorTarget(auth, tc.target)
+			if err != nil {
+				t.Fatalf("resolve %q: %v", tc.target, err)
+			}
+			if got.OnboardingID != tc.wantOnboarding {
+				t.Fatalf("resolve %q = %q, want %q", tc.target, got.OnboardingID, tc.wantOnboarding)
+			}
+		})
+	}
+	for _, target := range []string{"gone-mcp", "removed-def", removed.OnboardingID, "foreign-mcp", "foreign-def", foreign.OnboardingID} {
+		if _, err := store.ResolveConnectorTarget(auth, target); err == nil {
+			t.Fatalf("removed/foreign target %q resolved", target)
+		}
+	}
+}
+
+// S3.2: ambiguity lists candidates and fails with the typed
+// ambiguous_target code; superseded records are never candidates.
+func TestConnectorTargetAmbiguity(t *testing.T) {
+	store := NewStore()
+	auth := m13P3Auth(t)
+	one := m13P3Onboarding(auth, "a", "alpha-mcp", "https://github.com/orgone/shared-name", api.PhaseEnabled)
+	two := m13P3Onboarding(auth, "b", "beta-mcp", "https://github.com/orgtwo/shared-name", api.PhaseEnabled)
+	superseded := m13P3Onboarding(auth, "s", "gamma-mcp", "https://github.com/orgthree/shared-name", api.PhaseEnabled)
+	superseded.SupersededBy = two.OnboardingID
+	for _, o := range []api.Onboarding{one, two, superseded} {
+		if err := store.PutOnboarding(o); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	_, err := store.ResolveConnectorTarget(auth, "shared-name")
+	var ambiguous *ErrAmbiguousTarget
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("expected ambiguous_target, got %v", err)
+	}
+	if len(ambiguous.Candidates) != 2 {
+		t.Fatalf("expected 2 candidates (superseded excluded), got %+v", ambiguous.Candidates)
+	}
+	seen := map[string]bool{}
+	for _, candidate := range ambiguous.Candidates {
+		seen[candidate.ID] = true
+	}
+	if !seen[one.OnboardingID] || !seen[two.OnboardingID] {
+		t.Fatalf("candidates missing live records: %+v", ambiguous.Candidates)
+	}
+}
+
+// S3.2: connection ids resolve; registry display names resolve through the
+// catalog; failed records never match.
+func TestConnectorTargetRegistryAndFailed(t *testing.T) {
+	store := NewStore()
+	auth := m13P3Auth(t)
+	conn := m13P3Onboarding(auth, "c", "dbhub", "https://github.com/bytebase/dbhub", api.PhaseEnabled)
+	conn.ConnectionID = "conn-deadbeef00"
+	failed := m13P3Onboarding(auth, "f", "failed-def", "https://github.com/org/dead-mcp", api.PhaseFailed)
+	for _, o := range []api.Onboarding{conn, failed} {
+		if err := store.PutOnboarding(o); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	got, err := store.ResolveConnectorTarget(auth, "conn-deadbeef00")
+	if err != nil || got.OnboardingID != conn.OnboardingID {
+		t.Fatalf("connection id did not resolve: %v %+v", err, got)
+	}
+	got, err = store.ResolveConnectorTarget(auth, "DBHub (fallback SQL)")
+	if err != nil || got.OnboardingID != conn.OnboardingID {
+		t.Fatalf("registry name did not resolve: %v %+v", err, got)
+	}
+	for _, target := range []string{"dead-mcp", "failed-def", failed.OnboardingID} {
+		if _, err := store.ResolveConnectorTarget(auth, target); err == nil {
+			t.Fatalf("failed target %q resolved", target)
 		}
 	}
 }
