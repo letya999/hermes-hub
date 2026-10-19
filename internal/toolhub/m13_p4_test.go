@@ -140,7 +140,7 @@ func TestCellStampsOwnershipLabels(t *testing.T) {
 // spawned resources can be found by label query later.
 func TestPlanOwnershipFromEffective(t *testing.T) {
 	effective := api.EffectiveBinding{
-		Binding:   api.ToolBinding{PrincipalID: "principal-1", ToolBindingID: "bind_9"},
+		Binding:    api.ToolBinding{PrincipalID: "principal-1", ToolBindingID: "bind_9"},
 		Connection: &api.Connection{ConnectionID: "conn_9"},
 	}
 	effective.Definition.Source.RecipeDigest = "sha256:" + strings.Repeat("9", 64)

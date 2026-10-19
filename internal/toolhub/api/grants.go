@@ -121,8 +121,8 @@ type Onboarding struct {
 	// RemoveNonce/RemoveExpires arm the destructive remove: the first call
 	// previews and issues the nonce; only a follow-up remove carrying it
 	// deletes credentials, workloads and state.
-	RemoveNonce              string    `json:"remove_nonce,omitempty"`
-	RemoveExpires            time.Time `json:"remove_expires,omitempty"`
+	RemoveNonce   string    `json:"remove_nonce,omitempty"`
+	RemoveExpires time.Time `json:"remove_expires,omitempty"`
 	// Finalizers is the convergent remove ladder: each named step is
 	// idempotent and recorded so a retry resumes at the first incomplete
 	// step and connector_status shows where a cleanup is stuck.
@@ -132,21 +132,21 @@ type Onboarding struct {
 	RemoveReceipt string `json:"remove_receipt,omitempty"`
 	// RemoveFootprint counts labelled resources found when the remove
 	// started; the receipt reports what the ladder purged.
-	RemoveFootprint map[string]int `json:"remove_footprint,omitempty"`
-	IdempotencyKey           string    `json:"idempotency_key,omitempty"`
-	FormNonce                string    `json:"form_nonce,omitempty"`
-	FormExpires              time.Time `json:"form_expires,omitempty"`
-	Locator                  string    `json:"locator,omitempty"`
-	CredentialOwner          string    `json:"credential_owner,omitempty"`
-	BrokerRequestID          string    `json:"broker_request_id,omitempty"`
-	BrokerAttempts           int       `json:"broker_attempts,omitempty"`
-	BrokerCredentialID       string    `json:"broker_credential_id,omitempty"`
-	BrokerRotateCredentialID string    `json:"broker_rotate_credential_id,omitempty"`
-	BrokerGrantID            string    `json:"broker_grant_id,omitempty"`
-	BrokerContractID         string    `json:"broker_contract_id,omitempty"`
-	BrokerContractRevision   int       `json:"broker_contract_revision,omitempty"`
-	BrokerAuthorizationURL   string    `json:"broker_authorization_url,omitempty"`
-	ProviderAuthorizationURL string    `json:"provider_authorization_url,omitempty"`
+	RemoveFootprint          map[string]int `json:"remove_footprint,omitempty"`
+	IdempotencyKey           string         `json:"idempotency_key,omitempty"`
+	FormNonce                string         `json:"form_nonce,omitempty"`
+	FormExpires              time.Time      `json:"form_expires,omitempty"`
+	Locator                  string         `json:"locator,omitempty"`
+	CredentialOwner          string         `json:"credential_owner,omitempty"`
+	BrokerRequestID          string         `json:"broker_request_id,omitempty"`
+	BrokerAttempts           int            `json:"broker_attempts,omitempty"`
+	BrokerCredentialID       string         `json:"broker_credential_id,omitempty"`
+	BrokerRotateCredentialID string         `json:"broker_rotate_credential_id,omitempty"`
+	BrokerGrantID            string         `json:"broker_grant_id,omitempty"`
+	BrokerContractID         string         `json:"broker_contract_id,omitempty"`
+	BrokerContractRevision   int            `json:"broker_contract_revision,omitempty"`
+	BrokerAuthorizationURL   string         `json:"broker_authorization_url,omitempty"`
+	ProviderAuthorizationURL string         `json:"provider_authorization_url,omitempty"`
 	// OAuthProvider names the broker slot that minted this onboarding's
 	// credential. Set only for OAuth-managed connections so the call path
 	// knows a rejected call may be refreshed and retried once.

@@ -18,12 +18,15 @@ slices:
   S4.4-connection-locks: done
   S4.5-store-compaction: done
   S4.6-tool-surface-digest: done
-  S4.7-docs-closeout: not_started
+  S4.7-docs-closeout: done
 validation:
   documents: pending
-  just_check: not_run
+  just_check: green (86.34%)
   docker_check: not_run
   live_acceptance: not_started
 evidence: []
-remaining: []
+remaining:
+  - live acceptance gates (docker stack, restart-mid-remove) require owner deploy
+  - LabelQuery/LabelPurge seams and periodic reconciler scheduling are wired at
+    the deployment boundary; served-endpoint wiring deferred (no observable seam)
 limitations: []

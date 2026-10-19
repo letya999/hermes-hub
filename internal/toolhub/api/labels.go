@@ -56,9 +56,9 @@ func (o OwnershipLabels) Map() map[string]string {
 // scope removal, the recipe digest marks drift.
 func PlanOwnership(effective EffectiveBinding) OwnershipLabels {
 	ownership := OwnershipLabels{
-		Owner:     effective.Binding.PrincipalID,
-		Binding:   effective.Binding.ToolBindingID,
-		Recipe:    effective.Definition.Source.RecipeDigest,
+		Owner:   effective.Binding.PrincipalID,
+		Binding: effective.Binding.ToolBindingID,
+		Recipe:  effective.Definition.Source.RecipeDigest,
 	}
 	if effective.Connection != nil {
 		ownership.Connection = effective.Connection.ConnectionID

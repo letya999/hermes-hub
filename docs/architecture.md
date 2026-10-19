@@ -596,3 +596,27 @@ against official Google, Slack and Atlassian URLs, with remote MCP discovery via
 RFC 8414/9728. The audit ledger records who, runtime, connection, revision and
 job/run/call correlation without prompts or tokens. Generated MCP remains the
 default; ToolHub stays opt-in through `HUB_TOOLHUB_*`.
+
+### Connector lifecycle (M13 P4)
+
+Every resource ToolHub spawns for a connector — containers, sidecars,
+volumes, networks, bounded-cli cells — carries ownership labels
+(`hermes-hub.owner`, `hermes-hub.connection`, `hermes-hub.binding`,
+`hermes-hub.operation`, `hermes-hub.recipe`); workspace directories carry
+the same identity in a `.hermes-owner` marker
+([ADR-0049](adr/ADR-0049-ownership-finalizers.md)). `connector_remove`
+marks the connection `deleting`, revokes authorization before any
+destructive step, then runs a persisted finalizer ladder: workloads,
+volumes, network, broker credential, ciphertext, workspace, image
+reference, verify-zero. Each finalizer is idempotent; a retry resumes at
+the first incomplete step and `connector_status` reports the stuck
+finalizer as `cleanup_incomplete`. Removal completes only when a
+label-scoped query across Docker, Broker and the filesystem returns zero —
+the operation record then carries the verified removal receipt. One
+reconciler scans the same label selectors at a bounded rate: orphans whose
+owner connection is gone are purged, missing credentials or recipe/tool
+digests drift mark the connection `degraded` and notify the owner for
+reauth — secrets are never silently re-minted. A connection revoked while
+a readiness probe runs outside the store lock wins at commit, and the file
+store compacts terminal records on write (removed tombstones 30 days,
+terminal operations 7 days).
