@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0131
+title: M13 P4 ownership labels + finalizers + reconciler
+status: in_progress
+branch: feat/m14-toolhub-connector-platform
+updated: "2026-10-19"
+phase: implementation
+requirements: [S4.1, S4.2, S4.3, S4.4, S4.5, S4.6, S4.7]
+depends_on: [CHG-0130]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 285
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S4.1-ownership-labels: not_started
+  S4.2-finalizer-ladder: not_started
+  S4.3-reconciler: not_started
+  S4.4-connection-locks: not_started
+  S4.5-store-compaction: not_started
+  S4.6-tool-surface-digest: not_started
+  S4.7-docs-closeout: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []
