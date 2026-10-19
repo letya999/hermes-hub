@@ -48,10 +48,12 @@ type Store struct {
 	// leaseMu guards the refresh-lease ledger and the connStatus mirror.
 	// Refresh can run inside the admission read lock (s.mu.RLock), so these
 	// never take s.mu — a write there would self-deadlock.
-	leaseMu       sync.Mutex
-	refreshLeases map[string]api.RefreshLease
-	connStatus    map[string]api.Status
-	leasesLoaded  bool
+	leaseMu           sync.Mutex
+	refreshLeases     map[string]api.RefreshLease
+	connStatus        map[string]api.Status
+	leasesLoaded      bool
+	viewerLinks       map[string]viewerLink
+	viewerLinksLoaded bool
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {

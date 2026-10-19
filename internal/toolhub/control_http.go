@@ -589,6 +589,43 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
+// serveViewer answers the owner-bound browser viewer link: a spent or
+// expired nonce gets 410 gone, a forged one 403, a live one renders the
+// viewer shell and marks the link used — the nonce never reaches any tool
+// result, and the viewer is never an unauthenticated published port.
+func (g *Gateway) serveViewer(w http.ResponseWriter, r *http.Request) {
+	if !loopbackHTTP(r) {
+		http.Error(w, "loopback only", http.StatusForbidden)
+		return
+	}
+	if g == nil || g.Control == nil {
+		http.NotFound(w, r)
+		return
+	}
+	connectionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/viewer/"), "/")
+	if connectionID == "" || strings.Contains(connectionID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	connection, err := g.Control.Store.SpendViewerLink(connectionID, linkToken(r), g.Control.now())
+	if errors.Is(err, api.ErrLinkGone) {
+		goneLinkPage(w)
+		return
+	}
+	if err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+	_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser viewer</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}</style><main><h1>Browser viewer</h1><p>Интерактивная сессия открыта для `+html.EscapeString(connection.DefinitionID)+`. Вход на сайты выполняется только здесь — никогда не отправляйте пароли в чат.</p></main></html>`)
+}
+
 // serveDevice renders and polls the RFC 8628 device-flow page: the link
 // token is the onboarding's form/confirmation nonce, GET starts (or reuses) a
 // device authorization and shows the user code + verification URI, POST polls

@@ -26,7 +26,7 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 	case "connector_search":
 		result, err = c.connectorSearch(ctx, api.ArgString(args, "query"), api.ArgString(args, "kind"))
 	case "connector_status":
-		result, err = c.connectorStatus(auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
+		result, err = c.connectorStatus(ctx, auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
 	case "connector_install":
 		result, err = c.connectorInstall(ctx, auth, args)
 	case "connector_enable":
@@ -100,7 +100,7 @@ func (c *ControlPlane) connectorSearch(ctx context.Context, query, kind string) 
 
 // connectorStatus reports one operation or resolves a target to its live
 // connector state. Operation ids reach the journal directly.
-func (c *ControlPlane) connectorStatus(auth identity.Envelope, target, operationID string) (api.OperationResult, error) {
+func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelope, target, operationID string) (api.OperationResult, error) {
 	if operationID != "" {
 		op, err := c.Store.OperationFor(auth, operationID)
 		if err != nil {
@@ -126,6 +126,17 @@ func (c *ControlPlane) connectorStatus(auth identity.Envelope, target, operation
 	state := api.OpStateDone
 	if onboarding.Phase == api.PhaseAwaitingCreds {
 		state = api.OpStateAwaitingUser
+	}
+	// Browser connectors mint the owner viewer link on status: the nonce
+	// travels only on the channel notice, never inside the tool result.
+	if resolved.ConnectionID != "" {
+		if connection, ok := c.Store.connectionFor(resolved.ConnectionID); ok && connection.Status == api.ActiveStatus {
+			if definition, derr := c.Store.definitionByID(connection.DefinitionID); derr == nil && definition.Execution.EgressClass == api.EgressWeb {
+				if nonce, _, merr := c.Store.MintViewerLink(auth, connection.ConnectionID, resolved.OnboardingID, c.now(), c.ttl()); merr == nil {
+					api.DeliverViewerLink(ctx, auth, connection.ConnectionID, api.ViewerLinkURL(connection.ConnectionID, nonce))
+				}
+			}
+		}
 	}
 	return api.OperationResult{State: state, Summary: onboarding.DefinitionID + " " + onboarding.Phase}, nil
 }

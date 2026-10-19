@@ -41,7 +41,10 @@ var (
 	// failing closed while stable machine-readable codes reach status.
 	// ErrReconsent marks a granted-set shortfall (RFC6750 insufficient_scope):
 	// the fix is a new consent round, never a token refresh.
-	ErrReconsent                     = fmt.Errorf("%w: re-consent required", ErrUnauthorized)
+	ErrReconsent = fmt.Errorf("%w: re-consent required", ErrUnauthorized)
+	// ErrLinkGone marks a one-time link that was already spent or expired —
+	// the HTTP surface maps it to 410 Gone, distinct from a forged nonce.
+	ErrLinkGone                      = fmt.Errorf("%w: link expired or spent", ErrInvalid)
 	ErrAmbiguousEntrypoint           = fmt.Errorf("%w: ambiguous MCP entrypoint", ErrInvalid)
 	ErrUnsupportedCredentialContract = fmt.Errorf("%w: unsupported credential contract", ErrInvalid)
 	ErrUnsupportedAuth               = fmt.Errorf("%w: unsupported authentication contract", ErrInvalid)
