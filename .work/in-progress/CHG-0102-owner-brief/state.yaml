@@ -19,10 +19,10 @@ slices:
   S4.3-quiet-dedup-race: green
 validation:
   documents: updated
-  just_check: not_run
+  just_check: pass
   docker_check: not_run
   red_team: recorded
-  live_acceptance: not_started
+  live_acceptance: pass
 evidence:
   - "job_kind=brief: snapshot = changed watch sources (source_ids filter, authorize recheck, unavailable named) + open tasks (<=16); empty slot -> deterministic delivery, no model"
   - "non-empty slot admits one child job id 'brief-'+occurrenceID (avoids routine- prefix cancellation), routine conversation, [untrusted snapshot] prefix"
@@ -34,10 +34,13 @@ evidence:
   - "send-time re-authorization already covered both effects: cron jobs re-check at claim (gateway_delivery.go), occurrence-ref deliveries re-check at send (occurrenceRefAuthorizedLocked)"
   - "tests: TestBriefEmptySlotNoModel, TestBriefChangeAdmitsOneJob, TestBriefUnavailableNamed, TestBriefForeignWatchesExcluded, TestBriefListsOpenTasks, TestBriefCursorAdvances, TestBriefSourceIDsScope, TestBriefRevokedStaysQuietAndRestartDedups, TestBriefQuietDefersSlot, TestBriefUnavailableErrorDeduped, TestBriefTwoWorkersSingleJob"
   - "go test ./internal/communication (-race incl. two-worker) — ok; go test ./internal/agenttools — ok"
+  - "just check: PASS — gofmt, vet, mod tidy, staticcheck, gosec, docs, actionlint, deployment contract; Go statement coverage 86.17% (>=85%)"
+  - "live A6 on spaces/local dev stack: hubctl dev-rebuild communication-hub -> running container on hermes-hub-dev-local-communication-hub:local sha256:be0fe81e6726; API 401 unauth / 200 auth"
+  - "live A6: watcher watch-zen-chg102 (http probe https://api.github.com/zen, expect=changed, every:60s) fired a real change -> telegram-sent watch-routine-6ddf0d09... at 17:08:11Z"
+  - "live A6: brief-chg102 (source_ids=[watch-zen-chg102], every:120s) slot 17:08:18Z admitted exactly one agent job routine-16d13e8b...; runtime outcome completed 17:09:10Z; ONE composed overview (646 chars) telegram-sent to real chat 480637186 — not a notification stream"
+  - "live A6: fixtures retired via owner API DELETE 204 (brief-chg102, watch-zen-chg102); drift log 'occurrence job binding drift' is the pre-existing admitted-job reconciliation guard, job still ran once"
 remaining:
   - "issue #250 evidence comment (after PR)"
-  - "live acceptance A6 on dev stack"
-  - "just check at milestone close"
 limitations:
   - "brief snapshot sections are watch changes + open tasks; provider sections (calendar etc.) deferred per plan"
   - "no dedicated length field: brief length/section intent rides the instruction text; deterministic sections stay bounded (<=16 lines, bounded values)"
