@@ -34,7 +34,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -113,6 +113,9 @@ func (s *Store) saveLocked(path string) error {
 	for _, policy := range s.sharedPolicies {
 		state.SharedPolicies = append(state.SharedPolicies, policy)
 	}
+	for _, team := range s.teams {
+		state.Teams = append(state.Teams, team)
+	}
 	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
@@ -127,6 +130,7 @@ func (s *Store) saveLocked(path string) error {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
 	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
+	slices.SortFunc(state.Teams, func(a, b api.Team) int { return strings.Compare(a.TeamID, b.TeamID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -301,6 +305,12 @@ func Load(path string) (*Store, error) {
 		}
 		store.sharedPolicies[policy.PolicyID] = policy
 	}
+	for _, team := range state.Teams {
+		if err := team.Validate(); err != nil {
+			return nil, err
+		}
+		store.teams[team.TeamID] = team
+	}
 	for _, binding := range store.bindings {
 		key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
 		if binding.ProjectionRevision > store.projectionRevisions[key] {
@@ -404,6 +414,7 @@ func (s *Store) Reload() error {
 	s.onboardings = fresh.onboardings
 	s.publications = fresh.publications
 	s.sharedPolicies = fresh.sharedPolicies
+	s.teams = fresh.teams
 	s.capabilityPolicies = fresh.capabilityPolicies
 	s.capabilityProfiles = fresh.capabilityProfiles
 	s.capabilityChanges = fresh.capabilityChanges

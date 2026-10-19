@@ -117,6 +117,18 @@ func (r Recipe) Validate() error {
 			return fmt.Errorf("%w: recipe environment %s carries credential material", ErrInvalid, key)
 		}
 	}
+	// shareable gates: sharing the connection means one shared workload —
+	// that is only defined for a stateless recipe. Sharing the credential
+	// keeps a workload per member, so durable state stays allowed.
+	switch r.Shareable {
+	case "", "none", "credential":
+	case "connection":
+		if r.State != "" && r.State != "none" {
+			return fmt.Errorf("%w: shareable connection requires a stateless recipe", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: shareable mode", ErrInvalid)
+	}
 	return nil
 }
 

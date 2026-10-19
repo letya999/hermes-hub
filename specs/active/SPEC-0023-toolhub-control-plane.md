@@ -111,3 +111,35 @@ recorded revision.
 Ninety-five unique credential references plus five uses of one shared
 reference keep distinct locators/workloads/state. Sequential uniqueness is
 enough; one hundred concurrent MCP+ToolHive stacks are not required.
+
+## Team connections (M13 P7)
+
+A `Team` record (`team_id`, `members`, `write_members`, `allow_writes`,
+monotonic `revision`, `issued_by`, `status`) is operator-published and
+confirmed like a capability policy; the store keeps it durable across
+`Load`/`Reload` and rejects stale revisions so membership cannot be
+downgraded by an old record. A connection may be owned by
+`OwnerRef{team}` — such an owner never matches an identity envelope;
+membership is evaluated against the stored team on every call, so member
+removal denies on the next `connector_status`, projection or invoke.
+
+Recipes and definitions declare `shareable: credential` (per-member
+workloads over the shared credential reference, valid for stateful
+definitions) or `shareable: connection` (one shared workload, admitted
+only for `state: none` definitions); unknown modes fail closed at
+validation. Members bind their own binding and projection against the team
+connection and keep their own audit identity; write-effect tools stay
+hidden unless the team record enables writes team-wide or names the
+member.
+
+Member lifecycle verbs (`connector_disable`, `connector_reauth`,
+`connector_remove`, `connector_allow_writes`) on a team connector return
+the stable `not_permitted` code and never mutate team-owned rows; a member
+removing their own binding drops only that binding and its workload —
+the shared connection and credential survive even the last member's
+remove. Operator rotation propagates to members on the next call without
+reconnect while in-flight calls finish on their resolved snapshot;
+`DropTeamConnection` is the operator remove, purging member bindings plus
+the shared rows once. `connector_list` shows team connections with a
+`team` badge and call audit carries the channel `JobEnvelope` sender as
+`sender_id` plus `team_id`, `connection_id` and `binding_id` attribution.

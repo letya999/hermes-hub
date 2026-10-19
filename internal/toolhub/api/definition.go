@@ -15,7 +15,7 @@ import (
 )
 
 func (o OwnerRef) Validate() error {
-	if (o.Type != PrincipalOwner && o.Type != ContextOwner) || !identity.ValidID(o.ID) {
+	if (o.Type != PrincipalOwner && o.Type != ContextOwner && o.Type != TeamOwner) || !identity.ValidID(o.ID) {
 		return fmt.Errorf("%w: invalid owner", ErrInvalid)
 	}
 	return nil
@@ -384,6 +384,15 @@ func (d ToolDefinition) Validate() error {
 	}
 	if d.Workload.Class == Shared && (d.Workload.Stateful || len(d.Execution.Mounts) > 0) {
 		return fmt.Errorf("%w: shared workload cannot own state or mounts", ErrInvalid)
+	}
+	switch d.Workload.Shareable {
+	case "", "credential":
+	case "connection":
+		if d.Workload.Class != Shared {
+			return fmt.Errorf("%w: shareable connection needs one shared workload", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: shareable mode", ErrInvalid)
 	}
 	if d.Workload.Class == PerJob && d.Workload.Stateful && !HasMountSource(d.Execution.Mounts, "job-state") {
 		return fmt.Errorf("%w: stateful per-job workload needs job-state", ErrInvalid)

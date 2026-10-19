@@ -121,7 +121,24 @@ type OwnerType string
 const (
 	PrincipalOwner OwnerType = "principal"
 	ContextOwner   OwnerType = "context"
+	TeamOwner      OwnerType = "team"
 )
+
+// Team is an operator-published, confirmed member list. It reuses the
+// capability-policy confirmation machinery and adds no IAM dependency;
+// membership is evaluated per call against the stored record.
+type Team struct {
+	Schema       int           `json:"schema"`
+	TeamID       string        `json:"team_id"`
+	Members      []string      `json:"members"`
+	WriteMembers []string      `json:"write_members,omitempty"`
+	AllowWrites  bool          `json:"allow_writes,omitempty"`
+	Revision     uint64        `json:"revision"`
+	IssuedBy     string        `json:"issued_by"`
+	IssuedAt     time.Time     `json:"issued_at"`
+	Status       Status        `json:"status"`
+	Confirmation *Confirmation `json:"confirmation,omitempty"`
+}
 
 type OwnerRef struct {
 	Type OwnerType `json:"type"`
@@ -203,6 +220,11 @@ type WorkloadPolicy struct {
 	// Sharable declares that a Shared-class workload may carry stored
 	// credentials under a shared-credential policy.
 	Sharable bool `json:"sharable,omitempty"`
+	// Shareable is the explicit team-connector mode: "credential" shares one
+	// team credential across per-member workloads (PerUser), "connection"
+	// shares one credential and one workload (Shared). Empty means a
+	// connector is not team-shareable.
+	Shareable string `json:"shareable,omitempty"`
 }
 
 // Bounded-cli cell lifecycle tiers (WorkloadPolicy.Lifecycle).

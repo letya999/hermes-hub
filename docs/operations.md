@@ -207,6 +207,20 @@ control listener (`POST /v1/connectors:install`, `POST /v1/connectors/{id}:disab
 `X-Hub-Principal`). All three surfaces call `ControlPlane.InvokeConnector` — one
 implementation, one journal.
 
+Team connectors (ADR-0051) extend the surface: the operator publishes a
+confirmed `Team` record (`members`, `write_members`, `allow_writes`,
+monotonic `revision`) and shares a connection under `OwnerRef{team}` —
+`shareable: credential` keeps one workload per member on the shared
+credential reference, `shareable: connection` runs one shared workload and
+is admitted only for stateless definitions. Members see the entry in
+`connector_list` with the `team` badge; their lifecycle calls on it return
+`not_permitted`, write tools stay hidden unless the team record enables
+them, and removing a member drops only that member's binding and workload.
+Operator rotation flows to members on the next call without reconnect —
+in-flight calls finish on the revision they resolved — while
+`DropTeamConnection` purges every member binding plus the shared rows at
+once.
+
 When upgrading to the rights-only `policy_version` hash, inventory every active
 managed profile and runtime envelope before restarting ToolHub. Binding migration
 does not reissue capability profiles. An old profile can fail startup validation

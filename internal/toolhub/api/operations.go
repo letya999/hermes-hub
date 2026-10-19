@@ -86,6 +86,9 @@ type OperationCandidate struct {
 	ID     string `json:"id"`
 	Source string `json:"source,omitempty"`
 	Kind   string `json:"kind,omitempty"`
+	// Badge marks candidates the caller can use but does not own — today the
+	// only value is "team" for a member's team-owned connection.
+	Badge string `json:"badge,omitempty"`
 }
 
 type Operation struct {

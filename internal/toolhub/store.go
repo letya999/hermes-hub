@@ -35,6 +35,7 @@ type Store struct {
 	recipes             map[string]api.RecipeResolution
 	publications        map[string]api.DefinitionPublication
 	sharedPolicies      map[string]api.SharedCredentialPolicy
+	teams               map[string]api.Team
 	capabilityPolicies  map[string]api.CapabilityPolicy
 	capabilityProfiles  map[string]api.CapabilityProfile
 	capabilityChanges   []api.CapabilityChange
@@ -165,6 +166,105 @@ func (s *Store) PutConnection(connection api.Connection) error {
 
 // HasConnection reports whether a connection record exists in the store —
 // the reconciler uses it to tell orphans from desired resources.
+func (s *Store) PutTeam(team api.Team) error {
+	if err := team.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if existing, ok := s.teams[team.TeamID]; ok && team.Revision <= existing.Revision {
+		s.mu.Unlock()
+		return api.ErrConflict
+	}
+	s.teams[team.TeamID] = team
+	s.mu.Unlock()
+	return s.persist()
+}
+
+// ShareTeamConnection is the operator's one-shot team publication: it mints
+// the deterministic team-owned connection and credential reference for a
+// definition that declares a shareable mode. Members converge through
+// Enable — no per-member credential is ever minted.
+func (s *Store) ShareTeamConnection(teamID, definitionID, version, backend, locator string, keys []string) (api.Connection, api.CredentialReference, error) {
+	s.mu.Lock()
+	team, ok := s.teams[teamID]
+	if !ok || team.Status != api.ActiveStatus {
+		s.mu.Unlock()
+		return api.Connection{}, api.CredentialReference{}, fmt.Errorf("%w: team", api.ErrNotFound)
+	}
+	definition, ok := s.definitions[definitionKey(definitionID, version)]
+	if !ok {
+		s.mu.Unlock()
+		return api.Connection{}, api.CredentialReference{}, fmt.Errorf("%w: manifest", api.ErrNotFound)
+	}
+	if definition.Workload.Shareable != "credential" && definition.Workload.Shareable != "connection" {
+		s.mu.Unlock()
+		return api.Connection{}, api.CredentialReference{}, fmt.Errorf("%w: definition is not team-shareable", api.ErrUnauthorized)
+	}
+	connectionID := api.DeterministicID("conn", "team", teamID, definitionID, version)
+	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), Status: api.ActiveStatus}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.TeamOwner, ID: teamID}, DefinitionID: definitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"shareable": definition.Workload.Shareable}}
+	if err := reference.Validate(); err != nil {
+		s.mu.Unlock()
+		return api.Connection{}, api.CredentialReference{}, err
+	}
+	if err := connection.Validate(); err != nil {
+		s.mu.Unlock()
+		return api.Connection{}, api.CredentialReference{}, err
+	}
+	s.credentials[reference.CredentialRefID] = reference
+	s.connections[connectionID] = connection
+	s.noteConnectionStatusLocked(connection)
+	s.mu.Unlock()
+	return connection, reference, s.persist()
+}
+
+// DropTeamConnection is the operator remove path for a team-owned connection:
+// every member binding referencing it is revoked and dropped with its
+// workloads, then the shared connection and its credential references go away.
+func (s *Store) DropTeamConnection(connectionID string) error {
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	if connection.Owner.Type != api.TeamOwner {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: not a team connection", api.ErrInvalid)
+	}
+	var stopped []string
+	for bindingID, binding := range s.bindings {
+		if binding.ConnectionID != connectionID {
+			continue
+		}
+		binding.Status = api.RevokedStatus
+		s.touchProjectionLocked(&binding)
+		s.bindings[bindingID] = binding
+		stopped = append(stopped, s.stopBindingLocked(bindingID)...)
+		delete(s.bindings, bindingID)
+	}
+	for refID, ref := range s.credentials {
+		if ref.ConnectionID == connectionID {
+			delete(s.credentials, refID)
+		}
+	}
+	delete(s.connections, connectionID)
+	s.forgetConnectionStatusLocked(connectionID)
+	s.mu.Unlock()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persistAndNotify(); err != nil {
+		return err
+	}
+	return stopErr
+}
+
+func (s *Store) TeamFor(id string) (api.Team, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	team, ok := s.teams[id]
+	return team, ok
+}
+
 func (s *Store) HasConnection(id string) bool {
 	_, ok := s.connectionFor(id)
 	return ok
@@ -547,11 +647,14 @@ func (s *Store) RemoveBindingRecords(bindingID string) error {
 		}
 	}
 	if binding.ConnectionID != "" && !referenced {
-		delete(s.connections, binding.ConnectionID)
-		s.forgetConnectionStatusLocked(binding.ConnectionID)
-		for refID, ref := range s.credentials {
-			if ref.ConnectionID == binding.ConnectionID {
-				delete(s.credentials, refID)
+		connection := s.connections[binding.ConnectionID]
+		if connection.Owner.Type != api.TeamOwner {
+			delete(s.connections, binding.ConnectionID)
+			s.forgetConnectionStatusLocked(binding.ConnectionID)
+			for refID, ref := range s.credentials {
+				if ref.ConnectionID == binding.ConnectionID {
+					delete(s.credentials, refID)
+				}
 			}
 		}
 	}
@@ -647,7 +750,8 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 	if !ok {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: connection", api.ErrStale)
 	}
-	if !connection.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, connection) {
+	teamCovered := s.teamConnectionCoversLocked(auth, connection)
+	if !connection.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, connection) && !teamCovered {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: exact connection owner", api.ErrUnauthorized)
 	}
 	if connection.Status == api.RevokedStatus {
@@ -656,16 +760,34 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 	if connection.Status == api.DegradedStatus {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: connection", api.ErrDegraded)
 	}
-	if connection.Status != api.ActiveStatus || connection.Revision != binding.ConnectionRevision || connection.DefinitionID != definition.DefinitionID {
+	// A member's team binding follows the connection: the operator's rotation
+	// bumps the connection revision and the next call must pick it up without
+	// a member reconnect, so the binding's recorded pins are not the check —
+	// the connection's current revision and reference are.
+	if !teamCovered && (connection.Status != api.ActiveStatus || connection.Revision != binding.ConnectionRevision || connection.DefinitionID != definition.DefinitionID) {
+		return api.EffectiveBinding{}, fmt.Errorf("%w: current connection revision", api.ErrStale)
+	}
+	if teamCovered && (connection.Status != api.ActiveStatus || connection.DefinitionID != definition.DefinitionID) {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: current connection revision", api.ErrStale)
 	}
 	effective.Connection = &connection
 	if len(definition.Credentials) > 0 {
-		if binding.CredentialRefID == "" || connection.CredentialRefID != binding.CredentialRefID || binding.CredentialRevision == 0 {
+		refID, refRevision := binding.CredentialRefID, binding.CredentialRevision
+		if teamCovered {
+			// Follow the connection's current reference; its own revision is
+			// authoritative — a status flip bumps the connection revision
+			// without minting a new credential.
+			refID = connection.CredentialRefID
+			refRevision = 1
+		}
+		if refID == "" || refRevision == 0 {
 			return api.EffectiveBinding{}, fmt.Errorf("%w: current credential reference", api.ErrStale)
 		}
-		reference, ok := s.credentials[binding.CredentialRefID]
-		if !ok || reference.Status != api.ActiveStatus || reference.ConnectionID != connection.ConnectionID || reference.Revision != binding.CredentialRevision {
+		reference, ok := s.credentials[refID]
+		if !ok || reference.Status != api.ActiveStatus || reference.ConnectionID != connection.ConnectionID {
+			return api.EffectiveBinding{}, fmt.Errorf("%w: current credential revision", api.ErrStale)
+		}
+		if !teamCovered && reference.Revision != refRevision {
 			return api.EffectiveBinding{}, fmt.Errorf("%w: current credential revision", api.ErrStale)
 		}
 		keys := map[string]bool{}
@@ -759,6 +881,7 @@ type snapshot struct {
 	Recipes             map[string]api.RecipeResolution `json:"recipes,omitempty"`
 	Publications        []api.DefinitionPublication     `json:"publications,omitempty"`
 	SharedPolicies      []api.SharedCredentialPolicy    `json:"shared_credential_policies,omitempty"`
+	Teams               []api.Team                      `json:"teams,omitempty"`
 	CapabilityChanges   []api.CapabilityChange          `json:"capability_changes,omitempty"`
 	BindingChanges      []bindingChange                 `json:"binding_changes,omitempty"`
 }

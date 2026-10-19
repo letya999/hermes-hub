@@ -288,6 +288,29 @@ func (p SharedCredentialPolicy) Validate() error {
 	return nil
 }
 
+// A team must carry an operator confirmation: members gain real call
+// authorization through the record, so a self-declared team is refused.
+func (t Team) Validate() error {
+	if t.Confirmation == nil {
+		return fmt.Errorf("%w: team record", ErrInvalid)
+	}
+	return nil
+}
+
+// IsMember answers the only question a call path needs: membership is
+// evaluated per call against the stored record, so a removed member loses
+// access without touching stored bindings first.
+func (t Team) IsMember(principalID string) bool {
+	return t.Status == ActiveStatus && slices.Contains(t.Members, principalID)
+}
+
+// CanWrite gates the write-effect surface for a member: the operator's
+// team-wide allow-writes flag or a named write_members entry opens it;
+// membership alone never does.
+func (t Team) CanWrite(principalID string) bool {
+	return t.IsMember(principalID) && (t.AllowWrites || slices.Contains(t.WriteMembers, principalID))
+}
+
 func (o Onboarding) Validate() error {
 	if o.Schema != SchemaVersion || !identity.ValidID(o.OnboardingID) || !identity.ValidID(o.PrincipalID) || !identity.ValidID(o.ContextID) || !identity.ValidID(o.RuntimeID) || !identity.ValidID(o.PolicyVersion) || o.Revision == 0 {
 		return fmt.Errorf("%w: onboarding identity", ErrInvalid)

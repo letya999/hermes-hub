@@ -135,6 +135,7 @@ func (g *Gateway) CallAuthorized(ctx context.Context, auth identity.Envelope, na
 func auditFields(auth identity.Envelope, projected api.ProjectedTool, effective api.EffectiveBinding, outcome string) map[string]string {
 	fields := map[string]string{
 		"principal_id":   auth.PrincipalID,
+		"sender_id":      auth.ExternalIdentityID,
 		"context_id":     auth.ContextID,
 		"runtime_id":     auth.RuntimeID,
 		"policy_version": auth.PolicyVersion,
@@ -155,6 +156,9 @@ func auditFields(auth identity.Envelope, projected api.ProjectedTool, effective 
 	if effective.Connection != nil {
 		fields["connection_id"] = effective.Connection.ConnectionID
 		fields["connection_revision"] = fmt.Sprint(effective.Connection.Revision)
+		if effective.Connection.Owner.Type == api.TeamOwner {
+			fields["team_id"] = effective.Connection.Owner.ID
+		}
 	}
 	if effective.Credential != nil {
 		fields["credential_revision"] = fmt.Sprint(effective.Credential.Revision)

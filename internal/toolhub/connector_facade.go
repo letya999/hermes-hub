@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -17,31 +18,41 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 	if err := c.Store.RequireConnectorTool(auth, tool); err != nil {
 		return api.OperationResult{}, err
 	}
+	var result api.OperationResult
+	var err error
 	switch tool {
 	case "connector_list":
-		return c.connectorList(auth)
+		result, err = c.connectorList(auth)
 	case "connector_search":
-		return c.connectorSearch(ctx, api.ArgString(args, "query"), api.ArgString(args, "kind"))
+		result, err = c.connectorSearch(ctx, api.ArgString(args, "query"), api.ArgString(args, "kind"))
 	case "connector_status":
-		return c.connectorStatus(auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
+		result, err = c.connectorStatus(auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
 	case "connector_install":
-		return c.connectorInstall(ctx, auth, args)
+		result, err = c.connectorInstall(ctx, auth, args)
 	case "connector_enable":
-		return c.connectorPhase(ctx, auth, args, api.OpIntentEnable)
+		result, err = c.connectorPhase(ctx, auth, args, api.OpIntentEnable)
 	case "connector_disable":
-		return c.connectorPhase(ctx, auth, args, api.OpIntentDisable)
+		result, err = c.connectorPhase(ctx, auth, args, api.OpIntentDisable)
 	case "connector_remove":
-		return c.connectorRemove(ctx, auth, args)
+		result, err = c.connectorRemove(ctx, auth, args)
 	case "connector_reauth":
-		return c.connectorReauth(ctx, auth, args)
+		result, err = c.connectorReauth(ctx, auth, args)
 	case "connector_allow_writes":
-		return c.connectorAllowWrites(ctx, auth, args)
+		result, err = c.connectorAllowWrites(ctx, auth, args)
 	default:
 		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "unknown connector tool"}, nil
 	}
+	// A member's lifecycle verbs on a team-owned connection resolve to the
+	// typed team denial — report it as the stable not_permitted code.
+	if errors.Is(err, ErrTeamConnectionTarget) {
+		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: tool}, nil
+	}
+	return result, err
 }
 
-// connectorList enumerates the caller's live connectors.
+// connectorList enumerates the caller's live connectors plus every team
+// connection whose stored team record lists the caller as an active member —
+// those carry the "team" badge because members use but never own them.
 func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResult, error) {
 	c.Store.mu.RLock()
 	var candidates []api.OperationCandidate
@@ -50,6 +61,16 @@ func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResul
 			continue
 		}
 		candidates = append(candidates, api.OperationCandidate{ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode})
+	}
+	for _, connection := range c.Store.connections {
+		if connection.Owner.Type != api.TeamOwner {
+			continue
+		}
+		team, ok := c.Store.teams[connection.Owner.ID]
+		if !ok || !team.IsMember(auth.PrincipalID) {
+			continue
+		}
+		candidates = append(candidates, api.OperationCandidate{ID: connection.ConnectionID, Source: connection.DefinitionID, Badge: "team"})
 	}
 	c.Store.mu.RUnlock()
 	return api.OperationResult{

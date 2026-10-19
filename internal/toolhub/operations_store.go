@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -137,8 +138,27 @@ func (s *Store) ResolveConnectorTarget(auth identity.Envelope, target string) (C
 		o := matches[0]
 		return ConnectorTarget{OnboardingID: o.OnboardingID, DefinitionID: o.DefinitionID, ConnectionID: o.ConnectionID, SourceURL: o.SourceURL, Kind: o.Mode}, nil
 	}
+	// A member naming a team-owned connection they may call but never mutate
+	// resolves to the typed team denial rather than a bare not-found — the
+	// resource exists and the facade reports not_permitted.
+	for _, connection := range s.connections {
+		if connection.Owner.Type != api.TeamOwner {
+			continue
+		}
+		if target != connection.ConnectionID && target != connection.DefinitionID {
+			continue
+		}
+		if team, ok := s.teams[connection.Owner.ID]; ok && team.IsMember(auth.PrincipalID) {
+			return ConnectorTarget{}, fmt.Errorf("%w: connector %q", ErrTeamConnectionTarget, target)
+		}
+	}
 	return ConnectorTarget{}, fmt.Errorf("%w: connector %q", api.ErrNotFound, target)
 }
+
+// ErrTeamConnectionTarget marks a lifecycle target that resolved to a
+// team-owned connection the caller may use as a member but never mutate —
+// the facade maps it to the not_permitted result code.
+var ErrTeamConnectionTarget = errors.New("team-owned connection")
 
 // ErrAmbiguousTarget is the typed ambiguous_target selector failure; the
 // facade maps it to the stable result code and echoes Candidates.

@@ -204,6 +204,28 @@ func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
 	return ok && connection.Metadata["shared_policy"] != "" && connection.Owner.ID != principalID
 }
 
+// teamConnectionCoversLocked admits a member to a team-owned connection: the
+// owner ref names the team and membership is read from the stored record on
+// every call, so member removal takes effect without mutating bindings.
+func (s *Store) teamConnectionCoversLocked(auth identity.Envelope, connection api.Connection) bool {
+	if connection.Owner.Type != api.TeamOwner {
+		return false
+	}
+	team, ok := s.teams[connection.Owner.ID]
+	return ok && team.IsMember(auth.PrincipalID)
+}
+
+// teamMemberWritesLocked reports whether a call through this connection may
+// carry write-effect tools: non-team connections keep their existing surface,
+// team members need the operator's write policy on the team record.
+func (s *Store) teamMemberWritesLocked(auth identity.Envelope, effective api.EffectiveBinding) bool {
+	if effective.Connection == nil || effective.Connection.Owner.Type != api.TeamOwner {
+		return true
+	}
+	team, ok := s.teams[effective.Connection.Owner.ID]
+	return ok && team.CanWrite(auth.PrincipalID)
+}
+
 func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition api.ToolDefinition) error {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)

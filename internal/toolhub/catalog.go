@@ -411,7 +411,7 @@ func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definitio
 		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != api.ActiveStatus || candidate.CredentialRefID == "" {
 			continue
 		}
-		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) {
+		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) && !s.teamConnectionCoversLocked(auth, candidate) {
 			continue
 		}
 		reference, found := s.credentials[candidate.CredentialRefID]
