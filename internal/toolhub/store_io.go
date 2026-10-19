@@ -34,7 +34,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -239,6 +239,7 @@ func Load(path string) (*Store, error) {
 			}
 		}
 		store.connections[connection.ConnectionID] = connection
+		store.noteConnectionStatusLocked(connection)
 	}
 	for _, binding := range state.Bindings {
 		if err := binding.Validate(); err != nil {
@@ -410,6 +411,11 @@ func (s *Store) Reload() error {
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.diskStamp = fresh.diskStamp
 	s.mu.Unlock()
+	// Re-sync the lock-free status mirror wholesale: the freshly loaded set
+	// is authoritative, so connections removed on disk leave no stale entries.
+	s.leaseMu.Lock()
+	s.connStatus = fresh.connStatus
+	s.leaseMu.Unlock()
 	return s.stopWorkloads(stopped)
 }
 

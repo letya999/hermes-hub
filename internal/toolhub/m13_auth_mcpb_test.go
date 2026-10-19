@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -360,7 +361,7 @@ func TestRemoteOAuthRefreshRetriesCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
-	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth)
+	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth, fix.store)
 	alice := fix.session(t, aliceToken)
 
 	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()})
@@ -389,7 +390,7 @@ func TestRemoteOAuthRefreshRetriesCall(t *testing.T) {
 	// encrypted locator, not in-process maps.
 	restarted := fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
 	fix.control.OAuth = restarted
-	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, restarted)
+	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, restarted, fix.store)
 	// The AS rotates the accepted token; the next call must refresh and retry.
 	fixture.accepted.Store("oauth-at-2")
 	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
@@ -431,7 +432,7 @@ func TestRemoteOAuthRefreshConcurrentRestore(t *testing.T) {
 	}
 	// A restarted broker has no provider/client memory: both restores race.
 	broker := fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
-	refresh := remoteOAuthRefresh(fix.secrets, broker)
+	refresh := remoteOAuthRefresh(fix.secrets, broker, fix.store)
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
@@ -446,6 +447,444 @@ func TestRemoteOAuthRefreshConcurrentRestore(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// onboardRemoteOAuth runs the full prepare→authorize→callback pipeline and
+// returns the enabled connection plus its credential reference.
+func onboardRemoteOAuth(t *testing.T, fixture *remoteOAuthFixture, fix *remoteControlFixture) (api.Connection, api.CredentialReference) {
+	t.Helper()
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
+	alice := fix.session(t, aliceToken)
+	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	authURL, _ := url.Parse(providerAuthURLOf(t, fix.store, prepared["onboarding_id"]))
+	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
+	caller := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "alice", DeliveryTargetID: "alice", PolicyVersion: onboarding.PolicyVersion}
+	connection, reference, err := fix.store.OwnedConnection(caller, onboarding.ConnectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connection, reference
+}
+
+// S6.2: the durable (connection, provider) refresh lease serializes
+// concurrent expiry — N callers observe one AS exchange, the rest join on
+// the rotated token instead of double-spending it.
+func TestRefreshLeaseSingleExchangeUnderConcurrency(t *testing.T) {
+	fixture := newRemoteOAuthFixture(t)
+	fix := newRemoteControlFixture(t)
+	connection, reference := onboardRemoteOAuth(t, fixture, fix)
+	broker := fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
+	refresh := remoteOAuthRefresh(fix.secrets, broker, fix.store)
+	binding := api.EffectiveBinding{
+		Binding:    api.ToolBinding{PrincipalID: "alice"},
+		Connection: &connection,
+		Credential: &reference,
+	}
+	before := fixture.tokenHits.Load()
+	var wg sync.WaitGroup
+	results := make(chan bool, 16)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			refreshed, err := refresh(context.Background(), binding)
+			if err != nil {
+				t.Errorf("refresh: %v", err)
+				return
+			}
+			results <- refreshed
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for refreshed := range results {
+		if !refreshed {
+			t.Fatal("joiner reported no refresh")
+		}
+	}
+	if hits := fixture.tokenHits.Load() - before; hits != 1 {
+		t.Fatalf("concurrent refreshes hit the AS %d times, want 1", hits)
+	}
+}
+
+// S6.2: a connection revoked while its token exchange is in flight keeps
+// nothing — the freshly minted token set is purged and the lease released.
+func TestRefreshLeaseRevokeWins(t *testing.T) {
+	fixture := newRemoteOAuthFixture(t)
+	fixture.refreshHold = make(chan struct{})
+	fix := newRemoteControlFixture(t)
+	connection, reference := onboardRemoteOAuth(t, fixture, fix)
+	broker := fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
+	refresh := remoteOAuthRefresh(fix.secrets, broker, fix.store)
+	binding := api.EffectiveBinding{
+		Binding:    api.ToolBinding{PrincipalID: "alice"},
+		Connection: &connection,
+		Credential: &reference,
+	}
+	done := make(chan error, 1)
+	go func() {
+		refreshed, err := refresh(context.Background(), binding)
+		if refreshed {
+			done <- fmt.Errorf("refreshed a revoked connection")
+			return
+		}
+		done <- err
+	}()
+	for i := 0; i < 200 && !fixture.refreshEntered.Load(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !fixture.refreshEntered.Load() {
+		t.Fatal("refresh exchange never started")
+	}
+	if err := fix.store.SetConnectionStatus(connection.ConnectionID, api.RevokedStatus); err != nil {
+		t.Fatal(err)
+	}
+	close(fixture.refreshHold)
+	if err := <-done; !errors.Is(err, api.ErrRevoked) {
+		t.Fatalf("in-flight refresh after revoke: %v", err)
+	}
+	if _, err := fix.secrets.Get(reference.Locator, "alice"); err == nil {
+		t.Fatal("revoked connection kept the minted token set")
+	}
+	// Revoked at entry too: a fresh attempt must not reach the AS.
+	before := fixture.tokenHits.Load()
+	if refreshed, err := refresh(context.Background(), binding); refreshed || !errors.Is(err, api.ErrRevoked) {
+		t.Fatalf("revoked connection refreshed: refreshed=%v err=%v", refreshed, err)
+	}
+	if fixture.tokenHits.Load() != before {
+		t.Fatal("revoked connection reached the token endpoint")
+	}
+}
+
+// S6.2: refresh is invoked from inside the admission callback, which runs
+// under the registry read lock — the lease must never take that lock, or a
+// rejected token wedges every later caller forever.
+func TestRefreshLeaseAcquireInsideAdmissionLock(t *testing.T) {
+	as := oauth.NewFixture()
+	defer as.Close()
+	store, auth, binding := seededStore(t)
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "lease.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective, err := store.Resolve(auth, binding.ToolBindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, _ := json.Marshal(as.Provider())
+	locator := effective.Credential.Locator
+	if err := secrets.Put(locator, "alice", map[string]string{
+		"REFRESH_TOKEN":      "rt-old",
+		"OAUTH_PROVIDER":     "fixture",
+		"OAUTH_CONNECTION":   "google-work",
+		"OAUTH_PROVIDER_DOC": string(prov),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	broker := oauth.NewBroker(secrets, nil)
+	broker.HTTP = as.Server.Client()
+	refresh := remoteOAuthRefresh(secrets, broker, store)
+	done := make(chan error, 1)
+	go func() {
+		done <- store.Authorize(auth, binding.ToolBindingID, func(effective api.EffectiveBinding) error {
+			refreshed, err := refresh(context.Background(), effective)
+			if err != nil {
+				return err
+			}
+			if !refreshed {
+				return fmt.Errorf("refresh reported no rotation")
+			}
+			return nil
+		})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+		if as.RefreshCount("rt-old") != 1 {
+			t.Fatalf("refresh token exchanged %d times, want 1", as.RefreshCount("rt-old"))
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("refresh lease deadlocked under the admission read lock")
+	}
+}
+
+// S6.2: revoke landing while a refresh exchange is in flight — and the
+// refresh itself is running inside the admission read lock — must still win.
+// A status read that takes the registry lock deadlocks against the queued
+// writer; the lease path reads the lock-free mirror instead.
+type holdRefreshTransport struct {
+	base    http.RoundTripper
+	hold    chan struct{}
+	entered *atomic.Bool
+}
+
+func (t holdRefreshTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, "/token") {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if strings.Contains(string(body), "grant_type=refresh_token") {
+			t.entered.Store(true)
+			<-t.hold
+		}
+	}
+	return t.base.RoundTrip(r)
+}
+
+func TestRefreshLeaseRevokeWinsInsideAdmission(t *testing.T) {
+	as := oauth.NewFixture()
+	defer as.Close()
+	store, auth, binding := seededStore(t)
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "lease-revoke.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective, err := store.Resolve(auth, binding.ToolBindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, _ := json.Marshal(as.Provider())
+	if err := secrets.Put(effective.Credential.Locator, "alice", map[string]string{
+		"REFRESH_TOKEN":      "rt-old",
+		"OAUTH_PROVIDER":     "fixture",
+		"OAUTH_CONNECTION":   "google-work",
+		"OAUTH_PROVIDER_DOC": string(prov),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	broker := oauth.NewBroker(secrets, nil)
+	transport := holdRefreshTransport{base: as.Server.Client().Transport, hold: make(chan struct{}), entered: &atomic.Bool{}}
+	broker.HTTP = &http.Client{Transport: transport}
+	refresh := remoteOAuthRefresh(secrets, broker, store)
+	done := make(chan error, 1)
+	go func() {
+		done <- store.Authorize(auth, binding.ToolBindingID, func(effective api.EffectiveBinding) error {
+			_, err := refresh(context.Background(), effective)
+			return err
+		})
+	}()
+	for i := 0; i < 200 && !transport.entered.Load(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !transport.entered.Load() {
+		t.Fatal("refresh exchange never started")
+	}
+	// The writer queues behind the admission read lock — it cannot land until
+	// the call returns, but its pending state must not deadlock the in-flight
+	// refresh's status checks.
+	revoked := make(chan error, 1)
+	go func() { revoked <- store.SetConnectionStatus("google-work", api.RevokedStatus) }()
+	for i := 0; i < 200; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(transport.hold)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("refresh under a queued writer: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("refresh deadlocked against a queued revocation writer")
+	}
+	select {
+	case err := <-revoked:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("revocation never applied after the refresh returned")
+	}
+}
+
+// S6.2: a store re-loaded from disk feeds the status mirror — a restarted
+// hub must lease against the persisted connection, not report NotFound.
+func TestRefreshLeaseAfterStoreReload(t *testing.T) {
+	as := oauth.NewFixture()
+	defer as.Close()
+	store, auth, binding := seededStore(t)
+	path := filepath.Join(t.TempDir(), "registry.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "lease-reload.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective, err := loaded.Resolve(auth, binding.ToolBindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, _ := json.Marshal(as.Provider())
+	if err := secrets.Put(effective.Credential.Locator, "alice", map[string]string{
+		"REFRESH_TOKEN":      "rt-old",
+		"OAUTH_PROVIDER":     "fixture",
+		"OAUTH_CONNECTION":   "google-work",
+		"OAUTH_PROVIDER_DOC": string(prov),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	broker := oauth.NewBroker(secrets, nil)
+	broker.HTTP = as.Server.Client()
+	refresh := remoteOAuthRefresh(secrets, broker, loaded)
+	refreshed, err := refresh(context.Background(), effective)
+	if err != nil || !refreshed {
+		t.Fatalf("refresh on reloaded store: refreshed=%v err=%v", refreshed, err)
+	}
+}
+
+// S6.2: Reload re-syncs the status mirror — a revoke persisted by another
+// writer must close the refresh path on the live store too.
+func TestRefreshLeaseReloadSeesRevoke(t *testing.T) {
+	as := oauth.NewFixture()
+	defer as.Close()
+	store, auth, binding := seededStore(t)
+	path := filepath.Join(t.TempDir(), "registry.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	live, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The effective binding resolves while the connection is still active —
+	// the revoke then lands on disk like an in-flight caller would see it.
+	effective, err := live.Resolve(auth, binding.ToolBindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoker, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := revoker.SetConnectionStatus("google-work", api.RevokedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := revoker.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "lease-revoke.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, _ := json.Marshal(as.Provider())
+	if err := secrets.Put(effective.Credential.Locator, "alice", map[string]string{
+		"REFRESH_TOKEN":      "rt-old",
+		"OAUTH_PROVIDER":     "fixture",
+		"OAUTH_CONNECTION":   "google-work",
+		"OAUTH_PROVIDER_DOC": string(prov),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	broker := oauth.NewBroker(secrets, nil)
+	broker.HTTP = as.Server.Client()
+	refresh := remoteOAuthRefresh(secrets, broker, live)
+	refreshed, err := refresh(context.Background(), effective)
+	if err == nil || refreshed {
+		t.Fatalf("refresh after reloaded revoke: refreshed=%v err=%v", refreshed, err)
+	}
+}
+
+// S6.2 unit: an expired lease is taken over by the next caller — the stale
+// holder's release must not drop the successor's claim.
+func TestRefreshLeaseExpiryTakeover(t *testing.T) {
+	store, _, _ := seededStore(t)
+	now := time.Now()
+	first, acquired, err := store.AcquireRefreshLease("google-work", "fixture", time.Second, now)
+	if err != nil || !acquired {
+		t.Fatalf("first acquire: acquired=%v err=%v", acquired, err)
+	}
+	second, acquired, err := store.AcquireRefreshLease("google-work", "fixture", time.Second, now.Add(2*time.Second))
+	if err != nil || !acquired {
+		t.Fatalf("takeover after expiry: acquired=%v err=%v", acquired, err)
+	}
+	if second.Holder == first.Holder {
+		t.Fatal("takeover reused the expired holder")
+	}
+	if err := store.ReleaseRefreshLease("google-work", "fixture", first.Holder); err != nil {
+		t.Fatal(err)
+	}
+	if !store.refreshLeaseHeld("google-work", "fixture", now.Add(2500*time.Millisecond)) {
+		t.Fatal("stale holder release dropped the live lease")
+	}
+}
+
+// S6.2 unit: the lease ledger survives a store reload — a restarted hub still
+// sees the in-flight claim instead of double-spending the refresh token.
+func TestRefreshLeaseDurableAcrossRestart(t *testing.T) {
+	store, _, _ := seededStore(t)
+	path := filepath.Join(t.TempDir(), "registry.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	live, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, acquired, err := live.AcquireRefreshLease("google-work", "fixture", time.Hour, time.Now())
+	if err != nil || !acquired {
+		t.Fatalf("acquire: acquired=%v err=%v", acquired, err)
+	}
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, acquired, err := restarted.AcquireRefreshLease("google-work", "fixture", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acquired || next.Holder != lease.Holder {
+		t.Fatalf("restart lost the lease: acquired=%v holder=%q want %q", acquired, next.Holder, lease.Holder)
+	}
+}
+
+// S6.2 unit: missing and degraded connections can never take the lease.
+func TestRefreshLeaseFailsClosed(t *testing.T) {
+	store, _, _ := seededStore(t)
+	if _, _, err := store.AcquireRefreshLease("ghost-conn-0000", "fixture", time.Second, time.Now()); err == nil {
+		t.Fatal("lease acquired for a missing connection")
+	}
+	if err := store.MarkDegraded("google-work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AcquireRefreshLease("google-work", "fixture", time.Second, time.Now()); err == nil {
+		t.Fatal("lease acquired for a degraded connection")
+	}
 }
 
 // A remote endpoint may be declared shared at prepare time: scope=shared
@@ -535,7 +974,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	fixture := newRemoteOAuthFixture(t)
 	fix := newRemoteControlFixture(t)
 	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
-	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth)
+	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth, fix.store)
 	alice := fix.session(t, aliceToken)
 
 	args := map[string]any{"remote_url": fixture.endpoint(), "scope": "shared"}
@@ -630,6 +1069,10 @@ type remoteOAuthFixture struct {
 	tokenHits    atomic.Int32
 	dialAddr     string
 	transport    *http.Transport
+	// refreshHold, when non-nil, parks the refresh_token grant until closed —
+	// revoke-during-refresh tests hold the exchange mid-flight.
+	refreshHold    chan struct{}
+	refreshEntered atomic.Bool
 }
 
 func newRemoteOAuthFixture(t *testing.T) *remoteOAuthFixture {
@@ -692,6 +1135,10 @@ func newRemoteOAuthFixture(t *testing.T) *remoteOAuthFixture {
 		case form.Get("grant_type") == "authorization_code" && form.Get("code") == "oauth-code" && form.Get("code_verifier") != "":
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "oauth-at-1", "refresh_token": "oauth-rt-1", "token_type": "Bearer", "expires_in": 3600})
 		case form.Get("grant_type") == "refresh_token" && form.Get("refresh_token") != "":
+			fixture.refreshEntered.Store(true)
+			if fixture.refreshHold != nil {
+				<-fixture.refreshHold
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "oauth-at-2", "refresh_token": "oauth-rt-2", "token_type": "Bearer", "expires_in": 3600})
 		default:
 			http.Error(w, "invalid_grant", http.StatusBadRequest)
@@ -772,7 +1219,7 @@ func TestInsufficientScopeDoesNotRefreshLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	fix.control.OAuth = fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
-	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth)
+	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, fix.control.OAuth, fix.store)
 	alice := fix.session(t, aliceToken)
 	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"remote_url": fixture.endpoint()})
 	if err != nil {

@@ -107,6 +107,23 @@ type Operation struct {
 	UpdatedAt     time.Time       `json:"updated_at,omitempty"`
 }
 
+// RefreshLease is the durable (connection, provider) refresh claim: one
+// caller holds it while exchanging a rotating refresh token; concurrent
+// callers join on the holder's result instead of double-spending.
+type RefreshLease struct {
+	ConnectionID string    `json:"connection_id"`
+	Provider     string    `json:"provider"`
+	Holder       string    `json:"holder"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+func (l RefreshLease) Validate() error {
+	if !identity.ValidID(l.ConnectionID) || l.Provider == "" || l.Holder == "" || l.ExpiresAt.IsZero() {
+		return fmt.Errorf("%w: refresh lease", ErrInvalid)
+	}
+	return nil
+}
+
 func (o Operation) Validate() error {
 	if !identity.ValidID(o.PrincipalID) {
 		return fmt.Errorf("%w: operation principal", ErrInvalid)

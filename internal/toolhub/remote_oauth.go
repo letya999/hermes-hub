@@ -210,10 +210,19 @@ func (c *ControlPlane) completeRemoteOAuth(ctx context.Context, flow *preparedOA
 // connection whose call was rejected. The provider document and DCR client
 // are restored from the owner's locator — the durable record — so refresh
 // works across hub restarts without re-discovery.
-func remoteOAuthRefresh(secrets credstore.Backend, broker *oauth.Broker) func(context.Context, api.EffectiveBinding) (bool, error) {
-	return func(_ context.Context, effective api.EffectiveBinding) (bool, error) {
+func remoteOAuthRefresh(secrets credstore.Backend, broker *oauth.Broker, store *Store) func(context.Context, api.EffectiveBinding) (bool, error) {
+	return func(ctx context.Context, effective api.EffectiveBinding) (bool, error) {
 		if effective.Connection == nil || effective.Credential == nil {
 			return false, nil
+		}
+		connectionID := effective.Connection.ConnectionID
+		// A non-active connection never reaches the token endpoint — revoke
+		// wins before any secret material is even read. The status mirror is
+		// lease-guarded: this closure can run inside the admission read lock.
+		if store != nil {
+			if status, ok := store.connectionStatusFor(connectionID); !ok || status != api.ActiveStatus {
+				return false, api.ErrRevoked
+			}
 		}
 		owner := effective.Binding.PrincipalID
 		if effective.Connection.Owner.ID != "" {
@@ -254,6 +263,40 @@ func remoteOAuthRefresh(secrets credstore.Backend, broker *oauth.Broker) func(co
 		if values["REFRESH_TOKEN"] == "" || provider == "" || oauthConnection == "" {
 			return false, nil
 		}
+		// One durable lease per (connection, provider): only the holder talks
+		// to the token endpoint — a rotating refresh token is single-use.
+		if store == nil {
+			return false, fmt.Errorf("%w: refresh lease store", api.ErrInvalid)
+		}
+		priorRefresh := values["REFRESH_TOKEN"]
+		lease, acquired, err := store.AcquireRefreshLease(connectionID, provider, 30*time.Second, time.Now())
+		if err != nil {
+			return false, err
+		}
+		if !acquired {
+			// Join: wait out the holder, then report refreshed iff the stored
+			// refresh token rotated — no second exchange happens.
+			for time.Now().Before(lease.ExpiresAt) && store.refreshLeaseHeld(connectionID, provider, time.Now()) {
+				select {
+				case <-ctx.Done():
+					return false, ctx.Err()
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			latest, getErr := secrets.Get(effective.Credential.Locator, owner)
+			if getErr != nil {
+				return false, getErr
+			}
+			return latest["REFRESH_TOKEN"] != "" && latest["REFRESH_TOKEN"] != priorRefresh, nil
+		}
+		defer func() { _ = store.ReleaseRefreshLease(connectionID, provider, lease.Holder) }()
+		latest, err := secrets.Get(effective.Credential.Locator, owner)
+		if err != nil {
+			return false, err
+		}
+		if latest["REFRESH_TOKEN"] != "" && latest["REFRESH_TOKEN"] != priorRefresh {
+			return true, nil
+		}
 		if _, ok := broker.Provider(provider); !ok {
 			var prov oauth.Provider
 			if err := json.Unmarshal([]byte(values["OAUTH_PROVIDER_DOC"]), &prov); err != nil || prov.TokenURL == "" || prov.AuthorizeURL == "" {
@@ -266,6 +309,12 @@ func remoteOAuthRefresh(secrets credstore.Backend, broker *oauth.Broker) func(co
 		}
 		if _, err := broker.Refresh(owner, oauthConnection, provider); err != nil {
 			return false, err
+		}
+		// Revoke wins: a connection that lost its active status while the
+		// exchange was in flight keeps nothing — the minted set is purged.
+		if status, ok := store.connectionStatusFor(connectionID); !ok || status != api.ActiveStatus {
+			_ = secrets.Delete(effective.Credential.Locator, owner)
+			return false, api.ErrRevoked
 		}
 		return true, nil
 	}

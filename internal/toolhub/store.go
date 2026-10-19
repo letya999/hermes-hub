@@ -44,6 +44,13 @@ type Store struct {
 	exMu           sync.Mutex
 	exclusions     map[string]api.ProjectionExclusion
 	exclusionOrder []string
+	// leaseMu guards the refresh-lease ledger and the connStatus mirror.
+	// Refresh can run inside the admission read lock (s.mu.RLock), so these
+	// never take s.mu — a write there would self-deadlock.
+	leaseMu       sync.Mutex
+	refreshLeases map[string]api.RefreshLease
+	connStatus    map[string]api.Status
+	leasesLoaded  bool
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
@@ -152,6 +159,7 @@ func (s *Store) PutConnection(connection api.Connection) error {
 		return fmt.Errorf("%w: connection is immutable within a revision", api.ErrConflict)
 	}
 	s.connections[connection.ConnectionID] = connection
+	s.noteConnectionStatusLocked(connection)
 	return nil
 }
 
@@ -320,6 +328,7 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 	connection.CredentialRefID = reference.CredentialRefID
 	connection.Revision = reference.Revision
 	s.connections[connection.ConnectionID] = connection
+	s.noteConnectionStatusLocked(connection)
 	for id, binding := range s.bindings {
 		if binding.ConnectionID == connection.ConnectionID {
 			s.touchProjectionLocked(&binding)
@@ -353,6 +362,7 @@ func (s *Store) SetConnectionStatus(connectionID string, status api.Status) erro
 	connection.Status = status
 	connection.Revision++
 	s.connections[connectionID] = connection
+	s.noteConnectionStatusLocked(connection)
 	for id, binding := range s.bindings {
 		if binding.ConnectionID == connectionID {
 			s.touchProjectionLocked(&binding)
@@ -378,6 +388,7 @@ func (s *Store) MarkDegraded(connectionID string) error {
 	connection.Status = api.DegradedStatus
 	connection.Revision++
 	s.connections[connectionID] = connection
+	s.noteConnectionStatusLocked(connection)
 	for id, binding := range s.bindings {
 		if binding.ConnectionID == connectionID {
 			s.touchProjectionLocked(&binding)
@@ -460,6 +471,7 @@ func (s *Store) RemoveBindingRecords(bindingID string) error {
 	}
 	if binding.ConnectionID != "" && !referenced {
 		delete(s.connections, binding.ConnectionID)
+		s.forgetConnectionStatusLocked(binding.ConnectionID)
 		for refID, ref := range s.credentials {
 			if ref.ConnectionID == binding.ConnectionID {
 				delete(s.credentials, refID)
