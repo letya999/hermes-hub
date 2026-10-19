@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -125,6 +126,15 @@ func credentialGateHints(names []string, groups [][]string) []api.CredentialHint
 // json-delivery field keeps newlines only when the value parses as JSON —
 // otherwise it would fall through to an env line.
 func credentialValueLineSafe(hint api.CredentialHint, value string) error {
+	if hint.MaxLength > 0 && len(value) > hint.MaxLength {
+		return fmt.Errorf("%w: %s exceeds %d bytes", api.ErrInvalid, hint.Name, hint.MaxLength)
+	}
+	if hint.Format != "" {
+		pattern, err := regexp.Compile(hint.Format)
+		if err != nil || !pattern.MatchString(value) {
+			return fmt.Errorf("%w: %s does not match its declared format", api.ErrInvalid, hint.Name)
+		}
+	}
 	if hint.Delivery == "file" {
 		return nil
 	}
@@ -623,7 +633,7 @@ func credentialHints(definition api.ToolDefinition) []api.CredentialHint {
 		if input.Target != "" {
 			target = input.Target
 		}
-		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form", Source: input.Source})
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form", Source: input.Source, Format: input.Format, MaxLength: input.MaxLength})
 	}
 	return hints
 }
@@ -642,6 +652,7 @@ func credentialHintsForRecipe(definition api.ToolDefinition, recipe api.Connecti
 		hints = append(hints, api.CredentialHint{
 			Name: field.Name, Type: typ, Secret: field.Secret, Delivery: field.Delivery,
 			Target: field.Target, Alternative: field.Alternative, Hint: hint, Source: field.Source,
+			Format: field.Format, MaxLength: field.MaxLength,
 		})
 	}
 	if len(hints) == 0 {
@@ -680,7 +691,7 @@ func optionalCredentialHints(definition api.ToolDefinition) []api.CredentialHint
 		if input.Target != "" {
 			target = input.Target
 		}
-		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, Hint: "protected loopback form", Source: input.Source})
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, Hint: "protected loopback form", Source: input.Source, Format: input.Format, MaxLength: input.MaxLength})
 	}
 	return hints
 }

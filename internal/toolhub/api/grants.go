@@ -88,6 +88,10 @@ type CredentialHint struct {
 	// Source names the metadata file the field was discovered from when the
 	// hint came from a connection recipe (server.json, .env.example, ...).
 	Source string `json:"source,omitempty"`
+	// Format is a recipe-declared regex the submitted value must match, and
+	// MaxLength its byte bound — both enforced at the submit boundary.
+	Format    string `json:"format,omitempty"`
+	MaxLength int    `json:"max_length,omitempty"`
 }
 
 type Onboarding struct {

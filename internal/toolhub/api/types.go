@@ -168,6 +168,10 @@ type CredentialInput struct {
 	// Source is the metadata file the input was discovered from, carried over
 	// from the connection recipe for audit.
 	Source string `json:"source,omitempty"`
+	// Format/MaxLength carry the recipe's declared value contract to the
+	// credential submit boundary.
+	Format    string `json:"format,omitempty"`
+	MaxLength int    `json:"max_length,omitempty"`
 }
 
 type WorkloadPolicy struct {

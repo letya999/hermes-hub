@@ -88,3 +88,44 @@ func TestConnectorEnableToolsets(t *testing.T) {
 		t.Fatalf("enabled toolsets=%v", binding.EnabledToolsets)
 	}
 }
+
+// CHG-0133 S6.1: recipe-declared format and length limits are enforced at
+// the submit boundary — a wrong-shaped token never reaches the store.
+func TestCredentialFormatValidation(t *testing.T) {
+	hints := []api.CredentialHint{
+		{Name: "GH_TOKEN", Type: "token", Secret: true, Delivery: "env", Format: `^(ghp_|github_pat_)[A-Za-z0-9_]{8,}$`, MaxLength: 255},
+		{Name: "API_URL", Delivery: "env", MaxLength: 10},
+	}
+	if _, err := filterSubmittedCredentials(hints, map[string]string{"GH_TOKEN": "not-a-token", "API_URL": "ok"}); err == nil {
+		t.Fatal("format-violating token accepted")
+	}
+	if _, err := filterSubmittedCredentials(hints, map[string]string{"GH_TOKEN": "ghp_abcdefgh1234", "API_URL": "01234567890"}); err == nil {
+		t.Fatal("over-length value accepted")
+	}
+	if _, err := filterSubmittedCredentials(hints, map[string]string{"GH_TOKEN": "ghp_abcdefgh1234", "API_URL": "ok"}); err != nil {
+		t.Fatalf("valid credentials rejected: %v", err)
+	}
+}
+
+// S6.1: recipe-declared format/length reach the rendered hint, so the same
+// validation drives both the protected form and the submit path.
+func TestRecipeFieldFormatReachesHint(t *testing.T) {
+	recipe := api.ConnectionRecipe{Fields: []api.ConnectionField{
+		{Name: "GH_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Format: `^ghp_`, MaxLength: 255},
+	}}
+	hints := credentialHintsForRecipe(api.ToolDefinition{}, recipe)
+	if len(hints) != 1 || hints[0].Format != `^ghp_` || hints[0].MaxLength != 255 {
+		t.Fatalf("hint=%+v", hints)
+	}
+	definition := api.ToolDefinition{Credentials: recipe.CredentialInputs()}
+	fallback := credentialHints(definition)
+	if len(fallback) != 1 || fallback[0].Format != `^ghp_` || fallback[0].MaxLength != 255 {
+		t.Fatalf("input hint=%+v", fallback)
+	}
+	optional := optionalCredentialHints(api.ToolDefinition{Credentials: []api.CredentialInput{
+		{Name: "API_URL", Format: `^https://`, MaxLength: 64},
+	}})
+	if len(optional) != 1 || optional[0].Format != `^https://` || optional[0].MaxLength != 64 {
+		t.Fatalf("optional hint=%+v", optional)
+	}
+}

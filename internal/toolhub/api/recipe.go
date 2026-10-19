@@ -54,6 +54,10 @@ type ConnectionField struct {
 	// TokenURL is an upstream "create a token here" link (e.g. a pre-filled
 	// GitHub PAT settings page); https-only, rendered as help, never fetched.
 	TokenURL string `json:"token_url,omitempty"`
+	// Format is a review-declared regex the submitted value must match and
+	// MaxLength its byte bound — enforced at the credential submit boundary.
+	Format    string `json:"format,omitempty"`
+	MaxLength int    `json:"max_length,omitempty"`
 }
 
 type ConnectionAlternative struct {
@@ -106,7 +110,7 @@ func (r ConnectionRecipe) CredentialInputs() []CredentialInput {
 		if target == field.Name {
 			target = ""
 		}
-		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required, Delivery: field.Delivery, Target: target, Source: field.Source})
+		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required, Delivery: field.Delivery, Target: target, Source: field.Source, Format: field.Format, MaxLength: field.MaxLength})
 	}
 	return inputs
 }
